@@ -21000,69 +21000,165 @@ def _run_lever_loop(
                 # survivor replaced it (Branch A or Branch C), emit
                 # typed structural_causal_dropped records + halt the
                 # AG with no_structural_alternative.
-                try:
-                    from genie_space_optimizer.optimization.stages.gates import (
-                        detect_structural_causal_drop,
-                    )
-                    _structural_drops = detect_structural_causal_drop(
-                        blast_dropped=tuple(_blast_dropped or ()),
-                        narrow_survivors=tuple(_narrow_kept or ()),
-                        ag_rca_id=str(ag.get("rca_id") or ""),
-                        ag_target_qids=tuple(_blast_target_qids),
-                    )
-                    if _structural_drops:
-                        _emit_structural_causal_dropped_records(
-                            run_id=str(run_id),
-                            iteration=int(iteration_counter),
-                            ag_id=str(ag_id),
-                            cluster_id=str(
-                                (ag.get("source_cluster_ids") or ["?"])[0]
+                # RCO-4 Task 7 — delegate the structural-causal halt
+                # decision to ``stages.gates.resolve_narrow_replacement``
+                # when ``GSO_STAGE6_NARROW_REPL_PURE`` is truthy. Side
+                # effects (halt record emission, _blast_kept wipe) remain
+                # in the harness; the helper owns the pure decision.
+                from genie_space_optimizer.common.config import (
+                    stage6_narrow_repl_pure_enabled as _stage6_nr_pure_on,
+                )
+                if _stage6_nr_pure_on():
+                    try:
+                        from genie_space_optimizer.optimization.stages.gate_types import (
+                            NarrowReplacementInput as _RCO4_NRInput,
+                        )
+                        from genie_space_optimizer.optimization.stages.gates import (
+                            resolve_narrow_replacement as _rco4_resolve_nr,
+                        )
+                        _rco4_nr_outcome = _rco4_resolve_nr(
+                            _RCO4_NRInput(
+                                ag_id=str(ag_id),
+                                ag_rca_id=str(ag.get("rca_id") or ""),
+                                ag_target_qids=tuple(_blast_target_qids),
+                                ag_root_cause=str(ag.get("root_cause") or ""),
+                                blast_dropped=tuple(_blast_dropped or ()),
+                                qid_to_question_text=_branch_c_qid_to_question_text(
+                                    clusters=clusters,
+                                    benchmarks=benchmarks,
+                                    ag_target_qids=_blast_target_qids,
+                                ) or {},
+                                qid_to_reference_sql=reference_sqls or {},
                             ),
-                            rca_id=str(ag.get("rca_id") or ""),
-                            root_cause=str(ag.get("root_cause") or ""),
-                            drops=_structural_drops,
-                            iter_inputs=_current_iter_inputs,
+                            narrow_survivors=tuple(_narrow_kept or ()),
                         )
-                        # Halt the AG: stamp patches=[] so the patch_cap
-                        # short-circuits, mirror no_causal_applyable_halt's
-                        # pattern.
-                        _ag_for_halt = dict(ag)
-                        _ag_for_halt["dropped_proposal_ids"] = tuple(
-                            str(d.original_proposal_id)
-                            for d in _structural_drops
+                        if _rco4_nr_outcome.halt_no_structural_alternative:
+                            # Rehydrate StructuralCausalDrop instances
+                            # from the outcome dicts so the existing
+                            # halt-emit helpers (which take typed drops)
+                            # remain unchanged.
+                            from genie_space_optimizer.optimization.stages.gates import (
+                                StructuralCausalDrop as _RCO4_SCD,
+                            )
+                            _structural_drops = tuple(
+                                _RCO4_SCD(
+                                    ag_rca_id=str(d["ag_rca_id"]),
+                                    original_proposal_id=str(d["original_proposal_id"]),
+                                    original_patch_type=str(d["original_patch_type"]),
+                                    original_target=str(d["original_target"]),
+                                    drop_reason=str(d["drop_reason"]),
+                                    target_qids=tuple(
+                                        str(q) for q in (d.get("target_qids") or ())
+                                    ),
+                                )
+                                for d in _rco4_nr_outcome.structural_causal_dropped
+                            )
+                            _emit_structural_causal_dropped_records(
+                                run_id=str(run_id),
+                                iteration=int(iteration_counter),
+                                ag_id=str(ag_id),
+                                cluster_id=str(
+                                    (ag.get("source_cluster_ids") or ["?"])[0]
+                                ),
+                                rca_id=str(ag.get("rca_id") or ""),
+                                root_cause=str(ag.get("root_cause") or ""),
+                                drops=_structural_drops,
+                                iter_inputs=_current_iter_inputs,
+                            )
+                            _ag_for_halt = dict(ag)
+                            _ag_for_halt["dropped_proposal_ids"] = tuple(
+                                str(d.original_proposal_id)
+                                for d in _structural_drops
+                            )
+                            _ag_for_halt["target_qids"] = tuple(_blast_target_qids)
+                            _ag_for_halt["lever_set"] = tuple(
+                                int(l)
+                                for l in (ag.get("lever_set") or ag.get("Levers") or ())
+                                if l is not None
+                            )
+                            _emit_no_structural_alternative_halt(
+                                run_id=str(run_id),
+                                iteration=int(iteration_counter),
+                                ag=_ag_for_halt,
+                                iter_inputs=_current_iter_inputs,
+                                reflection_buffer=reflection_buffer,
+                            )
+                            _current_iter_inputs.setdefault(
+                                "_c16_no_structural_alternative_ags", []
+                            ).append(str(ag_id))
+                            _blast_kept = []
+                    except Exception:
+                        logger.debug(
+                            "RCO-4 Task 7: resolve_narrow_replacement "
+                            "raised (non-fatal); falling back to legacy "
+                            "inline path",
+                            exc_info=True,
                         )
-                        # Prefer the blast target set so the halt records
-                        # cite the live targets.
-                        _ag_for_halt["target_qids"] = tuple(
-                            _blast_target_qids
+                else:
+                    # Legacy path — unchanged from Cycle 16 T4.
+                    try:
+                        from genie_space_optimizer.optimization.stages.gates import (
+                            detect_structural_causal_drop,
                         )
-                        _ag_for_halt["lever_set"] = tuple(
-                            int(l)
-                            for l in (ag.get("lever_set") or ag.get("Levers") or ())
-                            if l is not None
+                        _structural_drops = detect_structural_causal_drop(
+                            blast_dropped=tuple(_blast_dropped or ()),
+                            narrow_survivors=tuple(_narrow_kept or ()),
+                            ag_rca_id=str(ag.get("rca_id") or ""),
+                            ag_target_qids=tuple(_blast_target_qids),
                         )
-                        _emit_no_structural_alternative_halt(
-                            run_id=str(run_id),
-                            iteration=int(iteration_counter),
-                            ag=_ag_for_halt,
-                            iter_inputs=_current_iter_inputs,
-                            reflection_buffer=reflection_buffer,
+                        if _structural_drops:
+                            _emit_structural_causal_dropped_records(
+                                run_id=str(run_id),
+                                iteration=int(iteration_counter),
+                                ag_id=str(ag_id),
+                                cluster_id=str(
+                                    (ag.get("source_cluster_ids") or ["?"])[0]
+                                ),
+                                rca_id=str(ag.get("rca_id") or ""),
+                                root_cause=str(ag.get("root_cause") or ""),
+                                drops=_structural_drops,
+                                iter_inputs=_current_iter_inputs,
+                            )
+                            # Halt the AG: stamp patches=[] so the patch_cap
+                            # short-circuits, mirror no_causal_applyable_halt's
+                            # pattern.
+                            _ag_for_halt = dict(ag)
+                            _ag_for_halt["dropped_proposal_ids"] = tuple(
+                                str(d.original_proposal_id)
+                                for d in _structural_drops
+                            )
+                            # Prefer the blast target set so the halt records
+                            # cite the live targets.
+                            _ag_for_halt["target_qids"] = tuple(
+                                _blast_target_qids
+                            )
+                            _ag_for_halt["lever_set"] = tuple(
+                                int(l)
+                                for l in (ag.get("lever_set") or ag.get("Levers") or ())
+                                if l is not None
+                            )
+                            _emit_no_structural_alternative_halt(
+                                run_id=str(run_id),
+                                iteration=int(iteration_counter),
+                                ag=_ag_for_halt,
+                                iter_inputs=_current_iter_inputs,
+                                reflection_buffer=reflection_buffer,
+                            )
+                            # Track for the I11 evidence builder later in
+                            # this iteration's finalize block (Task 5).
+                            _current_iter_inputs.setdefault(
+                                "_c16_no_structural_alternative_ags", []
+                            ).append(str(ag_id))
+                            # Wipe the kept set so the patch_cap loop runs
+                            # with zero survivors for this AG.
+                            _blast_kept = []
+                    except Exception:
+                        logger.debug(
+                            "Cycle 16 T4: structural-drop halt block "
+                            "raised (non-fatal); continuing with current "
+                            "_blast_kept",
+                            exc_info=True,
                         )
-                        # Track for the I11 evidence builder later in
-                        # this iteration's finalize block (Task 5).
-                        _current_iter_inputs.setdefault(
-                            "_c16_no_structural_alternative_ags", []
-                        ).append(str(ag_id))
-                        # Wipe the kept set so the patch_cap loop runs
-                        # with zero survivors for this AG.
-                        _blast_kept = []
-                except Exception:
-                    logger.debug(
-                        "Cycle 16 T4: structural-drop halt block "
-                        "raised (non-fatal); continuing with current "
-                        "_blast_kept",
-                        exc_info=True,
-                    )
                 if _blast_dropped:
                     print(
                         _section(f"[{ag_id}] BLAST-RADIUS GATE", "-") + "\n"
