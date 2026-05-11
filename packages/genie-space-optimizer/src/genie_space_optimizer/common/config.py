@@ -6008,38 +6008,29 @@ def stage_handlers_chunk_d_enabled() -> bool:
 
 
 def stage6_blast_radius_pure_enabled() -> bool:
-    """RCO-4 Task 5 — when ``GSO_STAGE6_BLAST_RADIUS_PURE`` is truthy,
-    the harness's inline blast-radius gate firing delegates to
-    ``stages.gates.run_blast_radius_production_gate``. Default-off so
-    legacy callers stay byte-stable until RCO-3's batched flip."""
-    import os as _os
-
-    return _os.environ.get(
-        "GSO_STAGE6_BLAST_RADIUS_PURE", "0"
-    ).lower() in {"1", "true", "yes", "on"}
+    """RCO-4 Task 5 — when truthy, the harness's inline blast-radius
+    gate firing delegates to
+    ``stages.gates.run_blast_radius_production_gate``. Default-ON as
+    of the RCO-4b consolidating-trial plan (2026-05-13). Set
+    ``GSO_STAGE6_BLAST_RADIUS_PURE=0`` to restore the legacy path."""
+    return _flag_default_on("GSO_STAGE6_BLAST_RADIUS_PURE")
 
 
 def stage6_narrow_repl_pure_enabled() -> bool:
-    """RCO-4 Task 6 — when ``GSO_STAGE6_NARROW_REPL_PURE`` is truthy,
-    the harness's inline narrow-replacement Branch-C orchestration
-    delegates to ``stages.gates.resolve_narrow_replacement``.
-    Default-off; RCO-3 batches the flip."""
-    import os as _os
-
-    return _os.environ.get(
-        "GSO_STAGE6_NARROW_REPL_PURE", "0"
-    ).lower() in {"1", "true", "yes", "on"}
+    """RCO-4 Task 6 — when truthy, the harness's inline
+    narrow-replacement Branch-C orchestration delegates to
+    ``stages.gates.resolve_narrow_replacement``. Default-ON as of the
+    RCO-4b consolidating-trial plan (2026-05-13). Set
+    ``GSO_STAGE6_NARROW_REPL_PURE=0`` to restore the legacy path."""
+    return _flag_default_on("GSO_STAGE6_NARROW_REPL_PURE")
 
 
 def stage6_applyability_pure_enabled() -> bool:
-    """RCO-4 Task 7 — when ``GSO_STAGE6_APPLYABILITY_PURE`` is truthy,
-    the harness's applyability call site delegates to
-    ``stages.gates.run_applyability_gate``. Default-off."""
-    import os as _os
-
-    return _os.environ.get(
-        "GSO_STAGE6_APPLYABILITY_PURE", "0"
-    ).lower() in {"1", "true", "yes", "on"}
+    """RCO-4 Task 7 — when truthy, the harness's applyability call
+    site delegates to ``stages.gates.run_applyability_gate``.
+    Default-ON as of the RCO-4b consolidating-trial plan (2026-05-13).
+    Set ``GSO_STAGE6_APPLYABILITY_PURE=0`` to restore the legacy path."""
+    return _flag_default_on("GSO_STAGE6_APPLYABILITY_PURE")
 
 
 def journey_producer_strict_enabled() -> bool:
@@ -6067,64 +6058,65 @@ def journey_producer_strict_enabled() -> bool:
 # ---------------------------------------------------------------------------
 # RCO-4b — Per-gate-stage extraction flags for ``_run_gate_checks``
 # ---------------------------------------------------------------------------
-# All six default-off. Phase A consumes only the propagation flag; the
-# other five are reserved for Phases B-E.
+# All six default-ON as of the RCO-4b consolidating-trial plan
+# (2026-05-13). Set ``GSO_GATE_CHECKS_*_PURE=0`` on any flag to fall
+# back to the legacy inline branch.
 
 def gate_checks_propagation_pure_enabled() -> bool:
-    """RCO-4b Phase A — when ``GSO_GATE_CHECKS_PROPAGATION_PURE`` is
-    truthy, ``_run_gate_checks`` delegates the propagation-wait block
-    to ``stages.eval_gates.run_propagation_wait_gate``. Default-off
-    keeps legacy callers byte-stable."""
-    import os as _os
-
-    return _os.environ.get(
-        "GSO_GATE_CHECKS_PROPAGATION_PURE", "0"
-    ).lower() in {"1", "true", "yes", "on"}
+    """RCO-4b Phase A — when truthy, ``_run_gate_checks`` delegates
+    the propagation-wait block to
+    ``stages.eval_gates.run_propagation_wait_gate``. Default-ON as of
+    the RCO-4b consolidating-trial plan (2026-05-13). Set
+    ``GSO_GATE_CHECKS_PROPAGATION_PURE=0`` to restore the legacy path."""
+    return _flag_default_on("GSO_GATE_CHECKS_PROPAGATION_PURE")
 
 
 def gate_checks_slice_pure_enabled() -> bool:
-    """RCO-4b Phase B — reserved. Default-off."""
-    import os as _os
-
-    return _os.environ.get(
-        "GSO_GATE_CHECKS_SLICE_PURE", "0"
-    ).lower() in {"1", "true", "yes", "on"}
+    """RCO-4b Phase B — when truthy, ``_run_gate_checks`` delegates
+    the slice-gate stage to the pure helpers in
+    ``stages.eval_gates``. Default-ON as of the RCO-4b
+    consolidating-trial plan (2026-05-13). Set
+    ``GSO_GATE_CHECKS_SLICE_PURE=0`` to restore the legacy path."""
+    return _flag_default_on("GSO_GATE_CHECKS_SLICE_PURE")
 
 
 def gate_checks_p0_pure_enabled() -> bool:
-    """RCO-4b Phase C — reserved. Default-off."""
-    import os as _os
-
-    return _os.environ.get(
-        "GSO_GATE_CHECKS_P0_PURE", "0"
-    ).lower() in {"1", "true", "yes", "on"}
+    """RCO-4b Phase C — when truthy, ``_run_gate_checks`` delegates
+    the P0-gate stage to the pure helpers in
+    ``stages.eval_gates``. Default-ON as of the RCO-4b
+    consolidating-trial plan (2026-05-13). Set
+    ``GSO_GATE_CHECKS_P0_PURE=0`` to restore the legacy path."""
+    return _flag_default_on("GSO_GATE_CHECKS_P0_PURE")
 
 
 def gate_checks_asi_extraction_pure_enabled() -> bool:
-    """RCO-4b Phase D — reserved. Default-off."""
-    import os as _os
-
-    return _os.environ.get(
-        "GSO_GATE_CHECKS_ASI_EXTRACTION_PURE", "0"
-    ).lower() in {"1", "true", "yes", "on"}
+    """RCO-4b Phase D — when truthy, ``_run_gate_checks`` delegates
+    the ASI-extraction audit forwarding to
+    ``stages.eval_gates.forward_asi_extraction_audit``. Default-ON as
+    of the RCO-4b consolidating-trial plan (2026-05-13). Set
+    ``GSO_GATE_CHECKS_ASI_EXTRACTION_PURE=0`` to restore the legacy
+    path."""
+    return _flag_default_on("GSO_GATE_CHECKS_ASI_EXTRACTION_PURE")
 
 
 def gate_checks_baseline_drift_pure_enabled() -> bool:
-    """RCO-4b Phase D — reserved. Default-off."""
-    import os as _os
-
-    return _os.environ.get(
-        "GSO_GATE_CHECKS_BASELINE_DRIFT_PURE", "0"
-    ).lower() in {"1", "true", "yes", "on"}
+    """RCO-4b Phase D — when truthy, ``_run_gate_checks`` delegates
+    the baseline-drift diagnostic to
+    ``stages.eval_gates.build_baseline_drift_diagnostic``. Default-ON
+    as of the RCO-4b consolidating-trial plan (2026-05-13). Set
+    ``GSO_GATE_CHECKS_BASELINE_DRIFT_PURE=0`` to restore the legacy
+    path."""
+    return _flag_default_on("GSO_GATE_CHECKS_BASELINE_DRIFT_PURE")
 
 
 def gate_checks_full_eval_acceptance_pure_enabled() -> bool:
-    """RCO-4b Phase E — reserved. Default-off."""
-    import os as _os
-
-    return _os.environ.get(
-        "GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE", "0"
-    ).lower() in {"1", "true", "yes", "on"}
+    """RCO-4b Phase E — when truthy, ``_run_gate_checks`` delegates
+    the full-eval acceptance verdict to
+    ``stages.eval_gates.decide_full_eval_acceptance``. Default-ON as
+    of the RCO-4b consolidating-trial plan (2026-05-13). Set
+    ``GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE=0`` to restore the
+    legacy path."""
+    return _flag_default_on("GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE")
 
 
 def gso_contract_health_summary_enabled() -> bool:

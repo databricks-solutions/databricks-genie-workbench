@@ -1,13 +1,18 @@
 """RCO-4b consolidating-trial preflight — proves the codebase is
-ready to submit the trial.
+ready to submit the trial via the standard lever-loop submission
+path (no per-submission env-var setup).
 
 Asserts:
-1. All nine feature-flag accessors exist and default to False.
-2. The harness imports each accessor at the expected line range
-   (catches accidental flag rename / removal during Phase A–E hygiene
-   sweeps).
-3. The sequence-guard test for ``_run_gate_checks`` audit ordering
-   still passes.
+1. All nine feature-flag accessors exist and default to True (the
+   default-ON posture introduced by the RCO-4b consolidating-trial
+   plan; the lever-loop job exercises every new pure helper on the
+   standard submission path).
+2. Setting the env var to a falsy value disables — the rollback
+   escape hatch.
+3. The harness imports each accessor by name (catches accidental
+   flag rename / removal during Phase A–E hygiene sweeps).
+4. The lever-loop job still defaults ``GSO_LOOP_INVARIANTS_STRICT``
+   to ``"0"`` (RCO-2b owns that flip, not this trial).
 
 Gate: this test MUST pass before the operator runs Task 6.
 """
@@ -44,8 +49,8 @@ NINE_FLAGS = (
 
 
 @pytest.fixture
-def fresh_config(monkeypatch):
-    """Reload config with every trial env var cleared so default-off
+def fresh_config_no_env(monkeypatch):
+    """Reload config with every trial env var cleared so default-ON
     behavior is observable."""
     for env_var, _ in NINE_FLAGS:
         monkeypatch.delenv(env_var, raising=False)
@@ -56,31 +61,37 @@ def fresh_config(monkeypatch):
 
 
 @pytest.mark.parametrize("env_var,accessor_name", NINE_FLAGS)
-def test_each_flag_accessor_exists_and_defaults_off(
-    env_var, accessor_name, fresh_config
+def test_each_flag_accessor_defaults_on(
+    env_var, accessor_name, fresh_config_no_env
 ):
-    accessor = getattr(fresh_config, accessor_name, None)
+    accessor = getattr(fresh_config_no_env, accessor_name, None)
     assert accessor is not None, (
         f"missing accessor {accessor_name} for env var {env_var} "
         f"— RCO-4b trial submission blocked"
     )
-    assert accessor() is False, (
-        f"{accessor_name}() must default to False when {env_var} is "
-        f"unset; got True"
+    assert accessor() is True, (
+        f"{accessor_name}() must default to True when {env_var} is "
+        f"unset; got False. The RCO-4b consolidating-trial plan "
+        f"flipped this default — restore the flip in config.py."
     )
 
 
 @pytest.mark.parametrize("env_var,accessor_name", NINE_FLAGS)
-def test_each_flag_accessor_honors_truthy_env_var(
-    env_var, accessor_name, monkeypatch
+@pytest.mark.parametrize("falsy_value", ["0", "false", "False", "no", "off"])
+def test_each_flag_accessor_honors_falsy_env_var(
+    env_var, accessor_name, falsy_value, monkeypatch
 ):
-    monkeypatch.setenv(env_var, "1")
+    """Rollback escape hatch — setting the env var to a falsy value
+    must restore the legacy code path."""
+    monkeypatch.setenv(env_var, falsy_value)
     from genie_space_optimizer.common import config
 
     importlib.reload(config)
     accessor = getattr(config, accessor_name)
-    assert accessor() is True, (
-        f"{accessor_name}() must return True when {env_var}=1; got False"
+    assert accessor() is False, (
+        f"{accessor_name}() must return False when "
+        f"{env_var}={falsy_value!r}; got True. Rollback escape hatch "
+        f"is broken."
     )
 
 
@@ -101,6 +112,28 @@ def test_harness_imports_all_nine_accessors():
         assert accessor_name in harness_src, (
             f"harness.py does not reference {accessor_name} — the "
             f"RCO-4 / RCO-4b delegation may have been removed"
+        )
+
+
+def test_accessors_use_flag_default_on_helper():
+    """The default-flip uses the canonical ``_flag_default_on`` helper
+    (the same one ``gso_contract_health_summary_enabled`` uses). Each
+    of the nine accessor bodies must reference it."""
+    from pathlib import Path
+
+    config_src = (
+        Path(__file__).parent.parent.parent
+        / "src"
+        / "genie_space_optimizer"
+        / "common"
+        / "config.py"
+    ).read_text()
+    for env_var, _ in NINE_FLAGS:
+        marker = f'_flag_default_on("{env_var}")'
+        assert marker in config_src, (
+            f"config.py is missing the default-on accessor body "
+            f"{marker!r}. The RCO-4b default-flip did not land for "
+            f"this flag."
         )
 
 
