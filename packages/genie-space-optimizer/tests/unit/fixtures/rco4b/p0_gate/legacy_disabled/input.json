@@ -1,0 +1,10 @@
+{
+  "p0_gate_input": {
+    "ag_id": "ag-001",
+    "run_id": "run-fixture-p0-legacy-disabled",
+    "iteration": 1,
+    "p0_benchmark_count": 5,
+    "legacy_gates_enabled": false
+  },
+  "post_eval_input": null
+}

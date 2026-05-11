@@ -1,0 +1,16 @@
+{
+  "pre_eval_outcome": {
+    "should_run": true,
+    "skip_reason": null,
+    "passed": null,
+    "failure_count": 0,
+    "rollback_reason": null
+  },
+  "post_eval_outcome": {
+    "should_run": false,
+    "skip_reason": null,
+    "passed": false,
+    "failure_count": 3,
+    "rollback_reason": "p0_gate: 3 failures"
+  }
+}
