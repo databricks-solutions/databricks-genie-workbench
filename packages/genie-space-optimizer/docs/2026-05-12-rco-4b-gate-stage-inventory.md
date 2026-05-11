@@ -107,7 +107,12 @@ The sequence-guard test at `tests/unit/test_rco4b_run_gate_checks_sequence_guard
 **Side effects:**
 - `mlflow.end_run`, `write_stage`, `_eval_stage.run_evaluation`, `write_iteration`, attribution-drift reattribution
 
-**Why deferred to Phase E:** largest, most entangled. Has multi-branch acceptance logic in Part 2.
+**Status:** verdict consolidation extracted in Phase E — one pure
+helper in `stages/eval_gates.py` (`decide_full_eval_acceptance`).
+Default-off behind `GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE`. Phase
+E is the final decomposition phase; with E landed, every gate-stage
+inside `_run_gate_checks` has a pure-helper extraction. See
+`2026-05-12-rco-4b-phase-e-full-eval-acceptance-plan.md`.
 
 ### 5. asi_extraction
 

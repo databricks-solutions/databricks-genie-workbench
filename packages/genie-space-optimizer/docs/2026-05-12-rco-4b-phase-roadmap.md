@@ -84,16 +84,31 @@ parallelize.
 
 ## Phase E — Full-eval acceptance
 
-**Plan:** `docs/<TBD>-rco-4b-phase-e-full-eval-acceptance-extraction-plan.md`.
+**Plan:** `docs/2026-05-12-rco-4b-phase-e-full-eval-acceptance-plan.md`.
+
+**Status:** in-flight — extracts the verdict-consolidation decision
+from the ~700-line full-eval block. Largest extraction of RCO-4b
+(three audit-emission sites instead of two).
 
 **Scope:**
-- Split Part 1 (eval run) and Part 2 (decide) into two helpers: `run_full_eval_acceptance_part_1` and `run_full_eval_acceptance_part_2`.
-- Part 2 constructs the canonical `ControlPlaneAcceptance` instance — unblocks RCO-4's alignment-gate deferral.
-- Includes `pre_arbiter_regression_guardrail` as a sub-decision of Part 2.
+- Add `decide_full_eval_acceptance` to `eval_gates.py` consolidating
+  upstream `_strict_decision`, `_t4_verdict`, `_control_plane_decision`,
+  and `regressions[]` into a typed verdict outcome carrying all three
+  audit-metrics payloads.
+- Three audit emissions stay in harness on both branches (verdict /
+  rollback / accept).
+- Default-off behind `GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE`.
 
-**Blocked by:** Phase A. Soft-blocked by Phases B/C/D in the sense that landing those first reduces the diff size of Phase E's harness wiring (the inline body around Phase E shrinks each time another phase lands).
+**Blocked by:** Phase A.
 
-**Estimated commits:** ~15.
+**Estimated commits:** ~8 (1 doc + 1 contract refine + 1 helper +
+1 harness wiring + 1 sequence-guard + 1 fixtures + 1 parity +
+1 roadmap close).
+
+**Phase E completion marks RCO-4b as fully landed.** With all six
+gate-stages extracted, the next milestone is the consolidating
+trial run that validates RCO-2b + RCO-3 + RCO-4c + RCO-6
+simultaneously.
 
 ## Phase F (post-RCO-4b) — Unblock RCO-4's deferred gates
 
