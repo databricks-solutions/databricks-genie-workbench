@@ -192,9 +192,24 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 - Harness orchestration is thin and mostly passes typed inputs to helpers.
 - A failing patch can be traced to exactly one gate decision and one typed reason.
 
-### RCO-4b — `_run_gate_checks` Decomposition (Deferred)
+### RCO-4b — `_run_gate_checks` Decomposition (Phased)
 
-**Status:** deferred — surfaced during RCO-4 drafting.
+**Status:** Phase A landed (2026-05-12) — propagation_wait extracted; typed contracts defined for all six stages; sequence-guard test pins production firing order. Phases B-E remain.
+
+**Phase A plan:** `docs/2026-05-12-rco-4b-phase-a-run-gate-checks-decomposition-plan.md`.
+
+**Phase roadmap:** `docs/2026-05-12-rco-4b-phase-roadmap.md`.
+
+**Stage inventory:** `docs/2026-05-12-rco-4b-gate-stage-inventory.md`.
+
+**Phases:**
+- A — Foundation + propagation_wait extraction. ✅ landed.
+- B — Slice gate extraction. Pending.
+- C — P0 gate extraction. Pending. (Independent of B.)
+- D — ASI + baseline-drift extraction. Pending. (Independent of B/C.)
+- E — Full-eval-acceptance extraction. Pending. (Soft-blocked by B/C/D for diff-size reasons.)
+
+**Closeout signal:** RCO-4b is "closed-local pending corpus" when Phases A-E have all landed and the sequence-guard test passes with every per-stage feature flag flippable to true with parity verified.
 
 **Why this exists:** RCO-4 extracted three of six conceptual gates. The remaining three (alignment, reflection, cap) are entangled with the 800-line ``_run_gate_checks`` function in ``optimization/harness.py``. Decomposing that function is its own multi-task plan; doing it inside RCO-4 would have pushed RCO-4 past a single-PR scope.
 
