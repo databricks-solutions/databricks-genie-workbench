@@ -240,6 +240,8 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 ### RCO-7 — Canonical Sort at LLM-to-Deterministic Boundaries
 
+**Status:** closed-local pending corpus — four LLM ingestion boundaries (strategist response, AG stage, proposal/patch selection, arbiter verdict) now route through ``optimization/llm_boundary_sort.py`` with canonical sort-by-key. Shuffle-equivalent regression tests cover each site (``tests/unit/test_rco7_*``) plus a harness-side grep guard. Corpus confirmation pending the next airline run.
+
 **Why this exists:** LLM outputs may be semantically identical but list-ordered differently. Deterministic stages should not depend on incidental LLM ordering.
 
 **Primary files:**
@@ -314,7 +316,7 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 ### Tier 1 — Can Draft/Execute Now
 
 2. RCO-1: Bundle replay-assembler parity closeout. ✅ closed-local pending corpus.
-3. RCO-7: Canonical sort audit at LLM boundaries.
+3. RCO-7: Canonical sort audit at LLM boundaries. ✅ closed-local pending corpus.
 4. RCO-8: Sub-stage production-shape boundary fixtures.
 
 These are relatively low-conflict and do not require the contract-health keystone to exist first.
