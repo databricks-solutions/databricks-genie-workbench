@@ -1,0 +1,13 @@
+{
+  "pre_eval_outcome": {
+    "should_run": false,
+    "skip_reason": "slice_too_broad",
+    "broadness_ratio": 0.6,
+    "effective_tolerance": null,
+    "passed": null,
+    "rollback_reason": null,
+    "regression_judge": null
+  },
+  "effective_tolerance": null,
+  "post_eval_outcome": null
+}

@@ -1,0 +1,21 @@
+{
+  "pre_eval_outcome": {
+    "should_run": true,
+    "skip_reason": null,
+    "broadness_ratio": 0.2,
+    "effective_tolerance": null,
+    "passed": null,
+    "rollback_reason": null,
+    "regression_judge": null
+  },
+  "effective_tolerance": 5.0,
+  "post_eval_outcome": {
+    "should_run": false,
+    "skip_reason": null,
+    "broadness_ratio": null,
+    "effective_tolerance": 5.0,
+    "passed": false,
+    "rollback_reason": "slice_gate: correctness",
+    "regression_judge": "correctness"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "slice_gate_input": {
+    "ag_id": "ag-002",
+    "run_id": "run-fixture-slice-disabled",
+    "iteration": 1,
+    "all_benchmark_qids": ["q-1", "q-2", "q-3", "q-4", "q-5"],
+    "prev_failure_qids": [],
+    "affected_question_ids": ["q-1"],
+    "baseline_passing_qids_known": true,
+    "slice_benchmark_count": 2,
+    "full_benchmark_count": 5,
+    "best_accuracy": 80.0,
+    "noise_floor": 1.0,
+    "legacy_gates_enabled": true,
+    "slice_gate_enabled": false
+  },
+  "tolerance_constants": {
+    "base_tol_standard": 5.0,
+    "base_tol_small_corpus": 10.0,
+    "small_corpus_threshold_rows": 30
+  },
+  "slice_min_reduction": 0.5,
+  "broadness_small_corpus_rows": 30,
+  "post_eval_input": null
+}
