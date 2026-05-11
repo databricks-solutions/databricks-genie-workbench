@@ -920,3 +920,106 @@ def test_i10_wired_into_run_invariants() -> None:
     violations = run_invariants(evidence)
     i10 = [v for v in violations if v["invariant_id"] == "I10"]
     assert i10, f"expected I10 in combined output, got {violations!r}"
+
+
+def test_i11_green_when_no_iteration_has_structural_drops() -> None:
+    from genie_space_optimizer.optimization.invariants import (
+        check_i11_causal_continuity,
+    )
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "structural_causal_dropped_count": 0,
+                "narrow_branch_c_synthesized_count": 0,
+                "no_structural_alternative_ag_ids": (),
+            },
+            {
+                "iteration": 2,
+                "structural_causal_dropped_count": 0,
+                "narrow_branch_c_synthesized_count": 0,
+                "no_structural_alternative_ag_ids": (),
+            },
+        ],
+    }
+    assert check_i11_causal_continuity(evidence) == []
+
+
+def test_i11_green_when_drops_replaced_by_branch_c_survivors() -> None:
+    from genie_space_optimizer.optimization.invariants import (
+        check_i11_causal_continuity,
+    )
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "structural_causal_dropped_count": 2,
+                "narrow_branch_c_synthesized_count": 2,
+                "no_structural_alternative_ag_ids": (),
+            },
+        ],
+    }
+    assert check_i11_causal_continuity(evidence) == []
+
+
+def test_i11_green_when_drops_halt_with_no_structural_alternative() -> None:
+    from genie_space_optimizer.optimization.invariants import (
+        check_i11_causal_continuity,
+    )
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "structural_causal_dropped_count": 1,
+                "narrow_branch_c_synthesized_count": 0,
+                "no_structural_alternative_ag_ids": ("AG_DECOMPOSED_H002",),
+            },
+        ],
+    }
+    assert check_i11_causal_continuity(evidence) == []
+
+
+def test_i11_red_when_drops_neither_replaced_nor_halted() -> None:
+    from genie_space_optimizer.optimization.invariants import (
+        check_i11_causal_continuity,
+    )
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 3,
+                "structural_causal_dropped_count": 2,
+                "narrow_branch_c_synthesized_count": 0,
+                "no_structural_alternative_ag_ids": (),
+            },
+        ],
+    }
+    violations = check_i11_causal_continuity(evidence)
+    assert len(violations) == 1
+    v = violations[0]
+    assert v["invariant_id"] == "I11"
+    assert v["iteration"] == 3
+    assert v["title"] == "causal_continuity_violated"
+
+
+def test_i11_silent_when_evidence_keys_absent() -> None:
+    """Legacy fixtures (pre-Cycle-16) carry no I11 keys; I11 must stay
+    silent so byte-stability holds."""
+    from genie_space_optimizer.optimization.invariants import (
+        check_i11_causal_continuity,
+    )
+    evidence = {
+        "iterations": [
+            {"iteration": 1, "acceptance_decision": {"reason_code": "accepted"}},
+        ],
+    }
+    assert check_i11_causal_continuity(evidence) == []
+
+
+def test_i11_wired_into_run_invariants() -> None:
+    """run_invariants includes check_i11_causal_continuity in its
+    dispatch tuple."""
+    import inspect
+    from genie_space_optimizer.optimization import invariants
+
+    src = inspect.getsource(invariants.run_invariants)
+    assert "check_i11_causal_continuity" in src

@@ -643,7 +643,70 @@ def check_i13_target_delta_totality(evidence: Mapping[str, Any]) -> list[dict]:
     return violations
 
 
-# All 9 invariants (I1–I8 + I13) are now implemented and wired in run_invariants.
+def check_i11_causal_continuity(evidence: Mapping[str, Any]) -> list[dict]:
+    """I11 — Cycle 16 T5. Causal continuity through safety gates.
+
+    For every iteration where ``structural_causal_dropped_count > 0``
+    (the blast-radius gate dropped at least one structural-causal
+    patch), require either:
+
+      (a) ``narrow_branch_c_synthesized_count > 0`` — Branch C L5
+          synthesis produced at least one survivor for the dropped
+          parent(s), OR
+
+      (b) ``no_structural_alternative_ag_ids`` is non-empty — at least
+          one AG was honestly halted with the Cycle 16 T4 terminal
+          record.
+
+    Silent when no iteration carries ``structural_causal_dropped_count``
+    (legacy fixtures pre-Cycle-16 stay green).
+
+    Closes anchor #4 (run 294, 100% accepted airline) F8 instance plus
+    the F2/F3 evidence threads cited in roadmap line 663-668: when the
+    structural causal patch is dropped, the optimizer either
+    synthesizes a narrower causal alternative (Branch C) or halts
+    honestly. Never silently degrades to non-structural-only.
+    """
+    violations: list[dict] = []
+    iters = list(evidence.get("iterations") or [])
+    saw_signal = False
+    for it in iters:
+        dropped = int(it.get("structural_causal_dropped_count") or 0)
+        synthesized = int(it.get("narrow_branch_c_synthesized_count") or 0)
+        halted_ags = tuple(
+            it.get("no_structural_alternative_ag_ids") or ()
+        )
+        # Detect whether the iteration carries any C16 evidence at all.
+        if (
+            "structural_causal_dropped_count" in it
+            or "narrow_branch_c_synthesized_count" in it
+            or "no_structural_alternative_ag_ids" in it
+        ):
+            saw_signal = True
+        if dropped <= 0:
+            continue
+        if synthesized > 0 or halted_ags:
+            continue
+        violations.append(_violation(
+            invariant_id="I11",
+            title="causal_continuity_violated",
+            detail=(
+                f"iter {int(it.get('iteration') or 0)} dropped "
+                f"{dropped} structural-causal patch(es) but neither "
+                f"Branch C synthesized a survivor nor an AG was halted "
+                f"with no_structural_alternative"
+            ),
+            iteration=int(it.get("iteration") or 0),
+            structural_causal_dropped_count=dropped,
+            narrow_branch_c_synthesized_count=synthesized,
+            no_structural_alternative_ag_ids=list(halted_ags),
+        ))
+    if not saw_signal:
+        return []
+    return violations
+
+
+# All invariants (I1–I8 + I11 + I13) are now implemented and wired in run_invariants.
 
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
@@ -660,6 +723,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i8_plateau_input,
         check_i9_acceptance_render_byte_equality,  # Cycle 15.1-T1
         check_i10_applied_patch_id_injective,  # Cycle 15.1-T2
+        check_i11_causal_continuity,  # Cycle 16 T5
         check_i13_target_delta_totality,  # Cycle 14-T0
     ):
         try:

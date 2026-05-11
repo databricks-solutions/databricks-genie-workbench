@@ -19,7 +19,8 @@ the run-end runner, not the per-iteration runner.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 _ACCEPTANCE_DECISION_TYPES: tuple[str, ...] = (
     "control_plane_acceptance",
@@ -166,6 +167,30 @@ def _project_iteration(
     rca_present = {
         str(k): bool(v) for k, v in dict(rca_present_raw).items()
     }
+    _decision_records = list(
+        current_iter_inputs.get("decision_records") or []
+    )
+    # Cycle 16 T5 — I11 evidence keys (causal continuity).
+    # Count typed records in this iteration's decision_records;
+    # halt AGs from the per-iter set stamped during blast-radius gate.
+    _c16_structural_dropped_count = sum(
+        1 for r in _decision_records
+        if isinstance(r, Mapping)
+        and r.get("reason_code") == "structural_causal_dropped"
+    )
+    _c16_branch_c_synthesized_count = sum(
+        1 for r in _decision_records
+        if isinstance(r, Mapping)
+        and r.get("decision_type")
+        == "narrow_replacement_branch_c_synthesized"
+    )
+    _c16_no_structural_alternative_ag_ids = tuple(
+        str(a) for a in (
+            current_iter_inputs.get(
+                "_c16_no_structural_alternative_ags"
+            ) or ()
+        )
+    )
     return {
         "iteration": int(iteration),
         "clusters": _project_clusters(current_iter_inputs),
@@ -181,9 +206,11 @@ def _project_iteration(
         ),
         "open_hard_cluster_ids": open_hard,
         "rca_cards_present": rca_present,
-        "decision_records": list(
-            current_iter_inputs.get("decision_records") or []
-        ),
+        "decision_records": _decision_records,
+        # Cycle 16 T5 — I11 causal-continuity evidence keys.
+        "structural_causal_dropped_count": _c16_structural_dropped_count,
+        "narrow_branch_c_synthesized_count": _c16_branch_c_synthesized_count,
+        "no_structural_alternative_ag_ids": _c16_no_structural_alternative_ag_ids,
     }
 
 
