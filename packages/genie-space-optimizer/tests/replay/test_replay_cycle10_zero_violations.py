@@ -4,13 +4,16 @@ The cycle 10 raw fixture is committed at
 ``tests/replay/fixtures/airline_real_v1_cycle10_raw.json`` (extracted
 from optimization_run_id ``407772af-9662-4803-be6b-f00a368c528a``).
 
-The two strict assertions stay skipped until PR-C (lane-aware journey
-validator) and PR-B2 (decision-record producer wiring) ship. The
-"fixture loaded" smoke test runs always so regressions in the fixture
-file itself surface immediately.
+Cycle 17 T1 + T2 closes the producer bugs documented in the prior
+skip docstring:
+  - T1 extension #2 (evaluated → post_eval) — clears the 3 "qids
+    reach post_eval directly from evaluated" violations.
+  - T2 producer fix under GSO_JOURNEY_PRODUCER_STRICT — clears the
+    5 ``clustered → soft_signal`` violations (qid_016 dual-emit).
 """
 from __future__ import annotations
 
+import importlib
 import json
 import pathlib
 
@@ -52,24 +55,16 @@ def test_every_iteration_has_decision_records(fixture):
         )
 
 
-@pytest.mark.skip(
-    reason=(
-        "Cycle 10 raw fixture — post-PR-C lane-aware validator eliminated "
-        "the flat-validator cross-lane false positives, but 8 trunk-level "
-        "producer violations remain on the captured fixture: 3 qids reach "
-        "post_eval directly from `evaluated` (filtered between eval and "
-        "classification — no `clustered`/`soft_signal`/`already_passing`/"
-        "`gt_correction_candidate` emitted by the replay's "
-        "`_classify_eval_rows`), and qid_016 emits both `soft_signal` and "
-        "`clustered` in the same iteration, producing `clustered -> "
-        "soft_signal` after canonical sort. These are real producer bugs "
-        "in `lever_loop_replay._classify_eval_rows` / fixture shape, NOT "
-        "validator gaps. Unskip after a PR-D follow-up fixes the "
-        "classification path so every evaluated qid lands in exactly one "
-        "partition."
-    )
-)
-def test_replay_yields_zero_violations(fixture):
+def test_replay_yields_zero_violations(fixture, monkeypatch):
+    """Cycle 17 T4 — with T1 extensions unconditional + T2 producer
+    fix activated via GSO_JOURNEY_PRODUCER_STRICT, the cycle 10
+    fixture produces zero journey-contract violations.
+    """
+    monkeypatch.setenv("GSO_JOURNEY_PRODUCER_STRICT", "1")
+    from genie_space_optimizer.common import config
+
+    importlib.reload(config)
+
     result = run_replay(fixture)
     assert list(result.validation.violations) == [], (
         f"replay produced {len(result.validation.violations)} violations: "
