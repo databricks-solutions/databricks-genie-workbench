@@ -112,3 +112,100 @@ class ContractHealthSummary:
             replay_is_valid=bool(blob.get("replay_is_valid")),
             replay_violation_count=int(blob.get("replay_violation_count") or 0),
         )
+
+
+def _classify_phase_h(payload: Mapping[str, Any] | None) -> tuple[str, str]:
+    """Extract (listing_status, validator_status) from the Phase H marker
+    payload. ``None`` (marker not emitted) means both are ``skipped``."""
+    if not payload:
+        return ("skipped", "skipped")
+    listing = str(payload.get("listing_status") or "skipped")
+    validator = str(payload.get("validator_status") or "skipped")
+    return (listing, validator)
+
+
+def _classify_bundle(
+    failed: Sequence[Mapping[str, Any]],
+    incomplete: Sequence[Mapping[str, Any]] | None,
+) -> str:
+    """Reduce bundle-completeness markers to a single status string."""
+    if failed:
+        return "assembly_failed"
+    if incomplete:
+        return "incomplete"
+    return "complete"
+
+
+def build_contract_health_summary(
+    *,
+    optimization_run_id: str,
+    invariant_violations: Sequence[Mapping[str, Any]],
+    phase_h_strict_validation: Mapping[str, Any] | None,
+    bundle_assembly_failed: Sequence[Mapping[str, Any]],
+    bundle_assembly_incomplete: Sequence[Mapping[str, Any]] | None,
+    replay_validation: Mapping[str, Any] | None,
+) -> ContractHealthSummary:
+    """Aggregate evidence into a typed contract-health summary.
+
+    The ``merge_gate_status`` is computed deterministically:
+      - any HIGH-tier invariant violation        → MERGE_GATE_BLOCKED
+      - Phase H ``listing_status`` == ``failed`` → MERGE_GATE_BLOCKED
+      - Phase H ``validator_status`` == ``failed``→ MERGE_GATE_BLOCKED
+      - bundle_assembly_failed non-empty         → MERGE_GATE_BLOCKED
+      - otherwise, if MEDIUM violations OR Phase H skipped OR
+        bundle incomplete OR replay invalid       → WARN
+      - else                                     → HEALTHY
+
+    No side effects. Safe to call from anywhere.
+    """
+    high: list[Mapping[str, Any]] = []
+    medium: list[Mapping[str, Any]] = []
+    for v in invariant_violations or ():
+        inv_id = str((v or {}).get("invariant_id") or "")
+        if classify_invariant_severity(inv_id) is SeverityTier.HIGH:
+            high.append(dict(v))
+        else:
+            medium.append(dict(v))
+
+    listing_status, validator_status = _classify_phase_h(phase_h_strict_validation)
+    bundle_status = _classify_bundle(
+        bundle_assembly_failed or (),
+        bundle_assembly_incomplete,
+    )
+
+    rv = dict(replay_validation or {})
+    replay_is_valid = bool(rv.get("is_valid", True)) if rv else True
+    replay_violation_count = int(rv.get("violation_count") or 0)
+
+    blocking = (
+        bool(high)
+        or listing_status == "failed"
+        or validator_status == "failed"
+        or bundle_status == "assembly_failed"
+    )
+    warning = (
+        bool(medium)
+        or listing_status == "skipped"
+        or validator_status == "skipped"
+        or bundle_status == "incomplete"
+        or (bool(rv) and not replay_is_valid)
+    )
+
+    if blocking:
+        status = MergeGateStatus.MERGE_GATE_BLOCKED
+    elif warning:
+        status = MergeGateStatus.WARN
+    else:
+        status = MergeGateStatus.HEALTHY
+
+    return ContractHealthSummary(
+        optimization_run_id=str(optimization_run_id),
+        merge_gate_status=status,
+        high_tier_violations=tuple(high),
+        medium_tier_violations=tuple(medium),
+        phase_h_listing_status=listing_status,
+        phase_h_validator_status=validator_status,
+        bundle_status=bundle_status,
+        replay_is_valid=replay_is_valid,
+        replay_violation_count=replay_violation_count,
+    )
