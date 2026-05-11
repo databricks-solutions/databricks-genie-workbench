@@ -30,6 +30,9 @@ Invariant IDs:
   I13 — target_delta_states is total over target_qids; LOOKUP_FAILED
         implies reason_code=target_resolution_failed; FIXED /
         STILL_HARD agree with legacy bucket tuples
+  I12 — replay validity (canonical HIGH-tier replay-validity invariant,
+        Cycle 17 T3). Same predicate as I5; co-exists for tier-
+        separation in C16-T4's contract-health summary.
 """
 
 from __future__ import annotations
@@ -706,7 +709,48 @@ def check_i11_causal_continuity(evidence: Mapping[str, Any]) -> list[dict]:
     return violations
 
 
-# All invariants (I1–I8 + I11 + I13) are now implemented and wired in run_invariants.
+def check_i12_replay_validity(evidence: Mapping[str, Any]) -> list[dict]:
+    """I12 — replay validity: zero illegal trunk transitions.
+
+    Cycle 17 T3 canonical-ID registration. C16-T4's contract-health
+    summary reads I12 from the HIGH severity tier; the merge gate
+    (C16-T5) blocks run exit when I12 is non-green.
+
+    Reads ``evidence["replay_validation"]`` produced by the harness
+    end-of-iteration validator (`_validate_journeys_at_iteration_end`)
+    or the run-end replay driver (`lever_loop_replay.run_replay`).
+    Silent when no replay validation is present so legacy fixtures
+    (pre-Cycle-12 runs without `replay_validation` capture) stay
+    green.
+
+    Co-exists with the MEDIUM-severity I5 (same predicate, lower
+    tier). Both fire on the same evidence; downstream C16-T4 reads
+    them at different severities. The duplication is intentional:
+    I5 retains its position for back-compat; I12 is the canonical
+    HIGH-tier surface registered under the canonical roadmap ID.
+
+    Anchor: ``runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097``
+    postmortem F9 — 25 illegal trunk transitions clear under
+    Cycle 17 T1+T2 + flag-on.
+    """
+    rv = dict(evidence.get("replay_validation") or {})
+    if not rv:
+        return []
+    if bool(rv.get("is_valid")):
+        return []
+    return [_violation(
+        invariant_id="I12",
+        title="replay_validity_violated",
+        detail=(
+            f"replay reports {int(rv.get('violation_count') or 0)} illegal "
+            f"trunk transitions: {dict(rv.get('violation_details') or {})}"
+        ),
+        violation_count=int(rv.get("violation_count") or 0),
+        violation_details=dict(rv.get("violation_details") or {}),
+    )]
+
+
+# All invariants (I1–I8 + I11 + I12 + I13) are now implemented and wired in run_invariants.
 
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
@@ -725,6 +769,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i10_applied_patch_id_injective,  # Cycle 15.1-T2
         check_i11_causal_continuity,  # Cycle 16 T5
         check_i13_target_delta_totality,  # Cycle 14-T0
+        check_i12_replay_validity,  # Cycle 17 T3
     ):
         try:
             violations.extend(check(evidence))

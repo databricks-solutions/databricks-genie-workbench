@@ -1023,3 +1023,86 @@ def test_i11_wired_into_run_invariants() -> None:
 
     src = inspect.getsource(invariants.run_invariants)
     assert "check_i11_causal_continuity" in src
+
+
+def test_check_i12_silent_when_no_replay_validation():
+    """Cycle 17 T3 — I12 returns no violations when the run did not
+    produce a replay validation report (legacy fixtures, pre-Cycle-12
+    runs). Mirrors I5/I9/I10 silent-when-absent semantics.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i12_replay_validity,
+    )
+
+    assert check_i12_replay_validity({}) == []
+    assert check_i12_replay_validity({"replay_validation": {}}) == []
+
+
+def test_check_i12_green_when_replay_valid():
+    """Cycle 17 T3 — I12 returns no violations when the replay report
+    is valid (zero illegal trunk transitions).
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i12_replay_validity,
+    )
+
+    evidence = {
+        "replay_validation": {
+            "is_valid": True,
+            "violation_count": 0,
+            "violation_details": {},
+        },
+    }
+    assert check_i12_replay_validity(evidence) == []
+
+
+def test_check_i12_violation_when_replay_invalid():
+    """Cycle 17 T3 — I12 returns one violation when the replay report
+    is invalid. The violation carries the illegal-transition count
+    and per-transition breakdown.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i12_replay_validity,
+    )
+
+    evidence = {
+        "replay_validation": {
+            "is_valid": False,
+            "violation_count": 25,
+            "violation_details": {
+                "clustered -> already_passing": 10,
+                "clustered -> soft_signal": 15,
+            },
+        },
+    }
+    out = check_i12_replay_validity(evidence)
+    assert len(out) == 1
+    v = out[0]
+    assert v["invariant_id"] == "I12"
+    assert v["title"] == "replay_validity_violated"
+    assert v["violation_count"] == 25
+    assert v["violation_details"] == {
+        "clustered -> already_passing": 10,
+        "clustered -> soft_signal": 15,
+    }
+
+
+def test_run_invariants_includes_i12():
+    """Cycle 17 T3 — I12 is wired into the aggregator. The result list
+    contains the I12 violation for an invalid replay-validation
+    evidence dict.
+    """
+    from genie_space_optimizer.optimization.invariants import run_invariants
+
+    evidence = {
+        "replay_validation": {
+            "is_valid": False,
+            "violation_count": 1,
+            "violation_details": {"x -> y": 1},
+        },
+    }
+    out = run_invariants(evidence)
+    assert any(v.get("invariant_id") == "I12" for v in out), (
+        f"I12 must be in run_invariants output; got: "
+        f"{[v.get('invariant_id') for v in out]}"
+    )
