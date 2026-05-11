@@ -1083,3 +1083,69 @@ If the pilot shows no re-targeting effect, open a follow-up cycle
 to refine the prompt template (the slot is present but not
 prompting attention; experiment with positioning it earlier in
 the context block).
+
+## Cycle 16 — L5 Narrow Replacement Branch C + Structural-Causal Continuity (I11)
+
+- **Date drafted:** 2026-05-10
+- **Status:** SHIPPED (T1+T2 closed-local 2026-05-10; pending Tier-3 corpus ratification).
+- **Plan:** [`2026-05-10-cycle-16-l5-narrow-replacement-plan.md`](./2026-05-10-cycle-16-l5-narrow-replacement-plan.md)
+
+### Section 1: Corpus runs (post-deploy Tier-3 pilot)
+
+To be filled in after the operator runs the airline anchor + 7Now anchor corpus pilots with `GSO_L6_NARROW_REPLACEMENT_BRANCH_C=1`.
+
+### Section 2: Postmortem clustering
+
+C-16-A: Branch C synthesizer produces `add_example_sql` per resolvable QID when `add_sql_snippet_expression` / `add_sql_snippet_measure` is blast-radius dropped and `GSO_L6_NARROW_REPLACEMENT_BRANCH_C=1`.
+
+### Section 3: AG hypothesis(es)
+
+```text
+AG-16-A: L5 question-scoped example-SQL narrow replacement (Branch C)
+  Cluster: C-16-A
+  RCA: airline iter-1 structural-shape L6 patch dropped at blast-radius;
+       non-structural causal patches survive; Branch A's query_id-in-CASE
+       form is semantically wrong for metric-view DDL (no query_id column).
+  Causal target: optimization/cluster_driven_synthesis.py
+       (build_l5_example_sql_replacement + narrow_replacement_diagnosis
+        Branch C dispatch),
+       optimization/harness.py (_run_narrow_l6_replacement_loop
+        Branch C wiring + _emit_no_structural_alternative_halt),
+       optimization/stages/gates.py (detect_structural_causal_drop),
+       optimization/invariants.py (check_i11_causal_continuity),
+       optimization/invariant_projection.py (I11 evidence keys).
+  Expected effect: when flag on, blast-radius-dropped expression/measure
+       patch → one add_example_sql per resolvable target QID (sorted by
+       QID ascending for replay byte-stability); I11 passes;
+       no_structural_alternative halt fires iff synthesis is empty.
+  Negative-space: flag off → replay byte-stable; I11 silent on legacy
+       fixtures.
+  Feature flag: GSO_L6_NARROW_REPLACEMENT_BRANCH_C (default OFF).
+  Plan ref: 2026-05-10-cycle-16-l5-narrow-replacement-plan.md, T1–T5.
+```
+
+### Section 4: Feature flags introduced this cycle
+
+| Flag | Default | Touches | Isolated test |
+|---|---|---|---|
+| `GSO_L6_NARROW_REPLACEMENT_BRANCH_C` | OFF (default) | T1, T2, T3 | `test_branch_c_diagnosis::test_branch_c_not_dispatched_when_flag_off`, `test_branch_c_wiring_in_narrow_loop::test_no_branch_c_call_when_flag_off` |
+
+### Section 5: Gate results
+
+| Gate | Status | Evidence |
+|---|---|---|
+| Byte-stable replay (flags off) | PASS | All 5 task commits gated on airline anchor replay test |
+| Tier-1 unit test suite (T1–T5) | PASS | `2 failed (pre-existing skill_parser), 4364 passed, 21 skipped, 7 xfailed` — all Cycle 16 tests green |
+| I11 invariant registration | PASS | `check_i11_causal_continuity` wired between I10 and I13 in `run_invariants()`; canonical ID matches roadmap spec |
+| Flag default-OFF verification | PASS | `l6_narrow_replacement_branch_c_enabled()` returns False with no env override |
+| Tier-3 corpus delta (lever-loop pilot) | PENDING | combined corpus pilot with `GSO_L6_NARROW_REPLACEMENT_BRANCH_C=1` |
+
+### Section 6: Decision
+
+`SHIPPED (T1+T2) pending Tier-3 corpus ratification`. T1 (Branch C synthesizer), T2 (structural-causal-drop detector + `no_structural_alternative` halt), T3 (narrow-loop Branch C wiring), T4 (harness blast-radius gate halt block), and T5 (I11 causal-continuity invariant + evidence projection) are all closed-local. Flag `GSO_L6_NARROW_REPLACEMENT_BRANCH_C` ships default-OFF; promote to default-on after corpus pilot demonstrates at least one `narrow_replacement_branch_c_synthesized` record on a blast-radius-dropping run with the flag on, and zero byte-stability regressions with the flag off.
+
+### Section 7: Seeds for next cycle
+
+- **Corpus pilot:** run airline anchor with `GSO_L6_NARROW_REPLACEMENT_BRANCH_C=1`; verify `GSO_NARROW_REPLACEMENT_BRANCH_C_SYNTHESIZED_V1` markers present on the iteration where a structural L6 patch was blast-radius dropped. If the synthesized `add_example_sql` patches improve the target QID score, promote the flag default-on.
+- **I11 corpus validation:** verify I11 passes on the corpus pilot run (all iterations with `structural_causal_dropped_count > 0` have either `narrow_branch_c_synthesized_count > 0` or `no_structural_alternative_ag_ids` non-empty).
+- **C16-T3 through T6 remain open:** bucket attribution (T3), contract-health marker (T4), merge-gate exit (T5), strict-mode default flip (T6) are sequenced after T1+T2 corpus validation.
