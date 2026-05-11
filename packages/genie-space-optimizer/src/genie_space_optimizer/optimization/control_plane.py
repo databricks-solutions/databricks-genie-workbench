@@ -842,6 +842,36 @@ def ambiguous_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class ControlPlaneAcceptance:
+    """Canonical runtime acceptance decision for Stage 9.
+
+    RCO-5 designates this dataclass as the SINGLE canonical owner of
+    Stage-9 acceptance semantics. Every harness-side acceptance
+    decision flows through an instance of this class; every rendered
+    surface (``format_full_eval_marker_payload``, ``acceptance_decided``
+    ``DecisionRecord``, ``FULL EVAL`` print block, Phase B / Phase H
+    transcripts) is a view over the same instance.
+
+    Two ancillary types exist and are intentionally NOT canonical:
+
+    * ``optimization.acceptance_policy.GainGateDecision`` — the upstream
+      gain-gate sub-decision. Feeds into ``ControlPlaneAcceptance``
+      construction; never a substitute for it.
+    * ``tools.lever_loop_stdout_parser.ParsedAcceptanceView`` — a
+      parser projection of canonical render output, exposing only the
+      observable subset (no baseline/candidate accuracy floats, no
+      regression-debt buckets). Use ``parsed_view_to_control_plane``
+      in that module to project a view into a canonical-shaped object
+      with sentinel-filled unobservable fields.
+
+    The structural rule "no other class named ``AcceptanceDecision``
+    exists in this codebase" is enforced by
+    ``tests/unit/test_rco5_acceptance_structural_guard.py``. The
+    runtime render-drift guard is I9 in
+    ``optimization/invariants.py``.
+
+    See ``docs/2026-05-11-rco-5-acceptance-consolidation-policy.md``
+    for the full policy.
+    """
     accepted: bool
     reason_code: str
     baseline_accuracy: float
