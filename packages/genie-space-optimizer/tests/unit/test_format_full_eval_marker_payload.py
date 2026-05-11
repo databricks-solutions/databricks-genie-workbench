@@ -81,6 +81,10 @@ def test_helper_returns_dict_with_stable_keys() -> None:
         # accepted_with_attribution_drift branch fires.
         "accidentally_improved_qids",
         "unresolved_target_debt_qids",
+        # Cycle 16-T3: first-class bucket for QIDs that were hard at
+        # baseline AND remained hard at candidate AND are not in the
+        # AG's declared target set.
+        "existing_hard_still_hard_outside_target_qids",
         "reason_detail",
     }
     assert set(payload.keys()) == expected_keys
