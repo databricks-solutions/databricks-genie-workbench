@@ -36,3 +36,19 @@ def classify_invariant_severity(invariant_id: str) -> SeverityTier:
     if invariant_id in HIGH_TIER_INVARIANT_IDS:
         return SeverityTier.HIGH
     return SeverityTier.MEDIUM
+
+
+class MergeGateStatus(enum.Enum):
+    """RCO-2a merge-gate result category.
+
+    The category is computed deterministically from invariant
+    violations + Phase H validation status + bundle completeness +
+    replay validity. RCO-2a wires the category into stdout (via
+    ``GSO_CONTRACT_HEALTH_V1``) and into the operator transcript, but
+    the production job exit code is NOT yet driven by it. RCO-2b will
+    flip ``MERGE_GATE_BLOCKED`` to a non-zero task exit.
+    """
+
+    HEALTHY = "healthy"
+    WARN = "warn"
+    MERGE_GATE_BLOCKED = "merge_gate_blocked"
