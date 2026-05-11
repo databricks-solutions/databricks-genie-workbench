@@ -562,3 +562,49 @@ def parse_lever_loop_stdout(text: str) -> LeverLoopStdoutView:
         patch_survival=patch_survival,
         acceptance_decision=acceptance_decision,
     )
+
+
+def parsed_view_to_control_plane(view: ParsedAcceptanceView):
+    """RCO-5 — project a ``ParsedAcceptanceView`` into a
+    ``ControlPlaneAcceptance`` with unobservable fields filled by
+    canonical sentinels.
+
+    The projection is one-way and lossy: the stdout parser cannot
+    observe baseline/candidate accuracy floats or any of the
+    regression-classification buckets beyond what is rendered in the
+    operator-facing ``FULL EVAL`` block. Floats are filled with
+    ``0.0``; tuple-typed buckets are filled with ``()``.
+
+    Use this when downstream tooling expects a
+    ``ControlPlaneAcceptance`` regardless of whether the source was a
+    runtime decision or a stdout parse — for example, a postmortem
+    tool that compares accepted reason codes across runs where some
+    bundles have MLflow captures and some only have stdout.
+    """
+    from genie_space_optimizer.optimization.control_plane import (
+        ControlPlaneAcceptance,
+    )
+
+    return ControlPlaneAcceptance(
+        accepted=bool(view.accepted),
+        reason_code=str(view.reason_code or ""),
+        baseline_accuracy=0.0,
+        candidate_accuracy=0.0,
+        delta_pp=0.0,
+        target_qids=tuple(str(q) for q in (view.target_qids or ())),
+        target_fixed_qids=tuple(str(q) for q in (view.target_fixed_qids or ())),
+        target_still_hard_qids=tuple(
+            str(q) for q in (view.target_still_hard_qids or ())
+        ),
+        out_of_target_regressed_qids=(),
+        regression_debt_qids=(),
+        protected_regressed_qids=(),
+        soft_to_hard_regressed_qids=(),
+        passing_to_hard_regressed_qids=(),
+        unknown_to_hard_regressed_qids=(),
+        target_delta_states=(),
+        target_soft_passing_qids=(),
+        accidentally_improved_qids=(),
+        unresolved_target_debt_qids=(),
+        existing_hard_still_hard_outside_target_qids=(),
+    )
