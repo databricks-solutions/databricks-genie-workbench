@@ -1,0 +1,206 @@
+"""RCO-4b Phase A Task 3 — JSON round-trip for the new typed gate-stage
+input/output dataclasses. Phase A defines all six; subsequent phases
+consume them.
+"""
+
+from __future__ import annotations
+
+import json
+
+from genie_space_optimizer.optimization.stages.gate_types import (
+    AsiExtractionInput,
+    AsiExtractionOutcome,
+    BaselineDriftDiagnosticInput,
+    BaselineDriftDiagnosticOutcome,
+    FullEvalAcceptanceInput,
+    FullEvalAcceptanceOutcome,
+    P0GateInput,
+    P0GateOutcome,
+    PropagationWaitInput,
+    PropagationWaitOutcome,
+    SliceGateInput,
+    SliceGateOutcome,
+)
+
+
+def test_propagation_wait_input_roundtrips() -> None:
+    inp = PropagationWaitInput(
+        ag_id="AG_alpha",
+        max_wait_seconds=30,
+        poll_interval_seconds=2.0,
+        applied_patches_count=3,
+        patched_objects=("table_a", "table_b"),
+        expected_instruction_snippets=("foo bar", "baz qux"),
+        has_dictionary_changes=False,
+    )
+    s = json.dumps(inp.to_json())
+    rt = PropagationWaitInput.from_json(json.loads(s))
+    assert rt == inp
+
+
+def test_propagation_wait_outcome_roundtrips() -> None:
+    """Outcome carries ``audit_decision`` ('confirmed' or
+    'waited_full_budget') plus an optional ``reason_code`` for the
+    full-budget branch — matching the real harness ``_audit_emit`` shape
+    at lines 12915-12946."""
+    out = PropagationWaitOutcome(
+        propagated=True,
+        elapsed_seconds=4.0,
+        max_wait_seconds=30,
+        applied_patches_count=3,
+        audit_decision="confirmed",
+        reason_code=None,
+    )
+    s = json.dumps(out.to_json())
+    rt = PropagationWaitOutcome.from_json(json.loads(s))
+    assert rt == out
+
+
+def test_propagation_wait_outcome_roundtrips_with_reason_code() -> None:
+    out = PropagationWaitOutcome(
+        propagated=False,
+        elapsed_seconds=10.0,
+        max_wait_seconds=10,
+        applied_patches_count=1,
+        audit_decision="waited_full_budget",
+        reason_code="snippet_not_observed",
+    )
+    s = json.dumps(out.to_json())
+    rt = PropagationWaitOutcome.from_json(json.loads(s))
+    assert rt == out
+
+
+def test_slice_gate_input_roundtrips() -> None:
+    inp = SliceGateInput(
+        ag_id="AG_alpha",
+        run_id="run_X",
+        iteration=3,
+        all_benchmark_qids=("q1", "q2", "q3"),
+        prev_failure_qids=("q1",),
+        affected_question_ids=("q2",),
+        baseline_passing_qids_known=True,
+        slice_benchmark_count=2,
+        full_benchmark_count=3,
+        best_accuracy=80.0,
+        noise_floor=2.0,
+        legacy_gates_enabled=False,
+        slice_gate_enabled=True,
+    )
+    s = json.dumps(inp.to_json())
+    rt = SliceGateInput.from_json(json.loads(s))
+    assert rt == inp
+
+
+def test_slice_gate_outcome_roundtrips() -> None:
+    out = SliceGateOutcome(
+        should_run=False,
+        skip_reason="legacy_gates_disabled",
+        effective_tolerance=None,
+        broadness_ratio=None,
+        passed=None,
+        rollback_reason=None,
+        regression_judge=None,
+    )
+    s = json.dumps(out.to_json())
+    rt = SliceGateOutcome.from_json(json.loads(s))
+    assert rt == out
+
+
+def test_p0_gate_input_roundtrips() -> None:
+    inp = P0GateInput(
+        ag_id="AG_alpha",
+        run_id="run_X",
+        iteration=3,
+        p0_benchmark_count=5,
+        legacy_gates_enabled=True,
+    )
+    s = json.dumps(inp.to_json())
+    rt = P0GateInput.from_json(json.loads(s))
+    assert rt == inp
+
+
+def test_p0_gate_outcome_roundtrips() -> None:
+    out = P0GateOutcome(
+        should_run=True,
+        skip_reason=None,
+        passed=False,
+        failure_count=2,
+        rollback_reason="p0_gate: 2 failures",
+    )
+    s = json.dumps(out.to_json())
+    rt = P0GateOutcome.from_json(json.loads(s))
+    assert rt == out
+
+
+def test_asi_extraction_input_roundtrips() -> None:
+    inp = AsiExtractionInput(
+        ag_id="AG_alpha",
+        applied_instruction_texts=("instr_1", "instr_2"),
+        post_eval_pre_arbiter_accuracy=70.0,
+        post_eval_post_arbiter_accuracy=75.0,
+        baseline_post_arbiter_accuracy=72.0,
+    )
+    s = json.dumps(inp.to_json())
+    rt = AsiExtractionInput.from_json(json.loads(s))
+    assert rt == inp
+
+
+def test_asi_extraction_outcome_roundtrips() -> None:
+    out = AsiExtractionOutcome(
+        triggered=True,
+        gate_name="asi_extraction",
+        audit_metrics={"asi_indicator": 1.0},
+    )
+    s = json.dumps(out.to_json())
+    rt = AsiExtractionOutcome.from_json(json.loads(s))
+    assert rt == out
+
+
+def test_baseline_drift_diagnostic_input_roundtrips() -> None:
+    inp = BaselineDriftDiagnosticInput(
+        ag_id="AG_alpha",
+        iteration=3,
+        prev_iter_pre_accept_baseline=80.0,
+        current_post_arbiter_accuracy=72.0,
+        diagnostic_threshold_pp=5.0,
+    )
+    s = json.dumps(inp.to_json())
+    rt = BaselineDriftDiagnosticInput.from_json(json.loads(s))
+    assert rt == inp
+
+
+def test_baseline_drift_diagnostic_outcome_roundtrips() -> None:
+    out = BaselineDriftDiagnosticOutcome(
+        triggered=True,
+        delta_pp=8.0,
+        audit_metrics={"prev": 80.0, "current": 72.0},
+    )
+    s = json.dumps(out.to_json())
+    rt = BaselineDriftDiagnosticOutcome.from_json(json.loads(s))
+    assert rt == out
+
+
+def test_full_eval_acceptance_input_roundtrips() -> None:
+    inp = FullEvalAcceptanceInput(
+        ag_id="AG_alpha",
+        iteration=3,
+        full_eval_post_arbiter_accuracy=82.0,
+        baseline_post_arbiter_accuracy=80.0,
+        min_gain_pp=1.0,
+        target_qids=("q1", "q2"),
+        cumulative_regression_debt=0,
+    )
+    s = json.dumps(inp.to_json())
+    rt = FullEvalAcceptanceInput.from_json(json.loads(s))
+    assert rt == inp
+
+
+def test_full_eval_acceptance_outcome_roundtrips() -> None:
+    out = FullEvalAcceptanceOutcome(
+        accepted=True,
+        branch="accepted",
+        rollback_reason=None,
+    )
+    s = json.dumps(out.to_json())
+    rt = FullEvalAcceptanceOutcome.from_json(json.loads(s))
+    assert rt == out

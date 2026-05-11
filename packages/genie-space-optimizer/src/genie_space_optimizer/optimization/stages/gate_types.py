@@ -170,3 +170,180 @@ class ApplyabilityGateOutcome(JsonRoundTrip):
             applyable=tuple(dict(c) for c in (payload.get("applyable") or [])),
             rejected=tuple(dict(d) for d in (payload.get("rejected") or [])),
         )
+
+
+# ---------------------------------------------------------------------------
+# RCO-4b — Typed input/output contracts for ``_run_gate_checks`` stages
+# ---------------------------------------------------------------------------
+#
+# Phase A defines all six stage contracts up-front so Phases B/C/D/E can
+# implement the corresponding helpers independently. Only PropagationWait*
+# is consumed in Phase A.
+#
+# Cross-references:
+#   - Inventory: docs/2026-05-12-rco-4b-gate-stage-inventory.md
+#   - Phase roadmap: docs/2026-05-12-rco-4b-phase-roadmap.md
+
+
+@dataclass(frozen=True)
+class PropagationWaitInput(JsonRoundTrip):
+    """Input for ``run_propagation_wait_gate``.
+
+    The pure helper consumes already-resolved values; the harness
+    extracts ``applied_patches_count`` / ``expected_instruction_snippets``
+    / ``has_dictionary_changes`` from ``apply_log`` before calling.
+    """
+    ag_id: str
+    max_wait_seconds: int
+    poll_interval_seconds: float
+    applied_patches_count: int
+    patched_objects: tuple[str, ...]
+    expected_instruction_snippets: tuple[str, ...]
+    has_dictionary_changes: bool
+
+
+@dataclass(frozen=True)
+class PropagationWaitOutcome(JsonRoundTrip):
+    """Outcome of ``run_propagation_wait_gate``.
+
+    The helper does not perform I/O. The harness reads ``elapsed_seconds``
+    and ``audit_decision`` to emit the audit row and, if applicable,
+    sleep the remainder of the max-wait budget.
+
+    Field shape mirrors the real harness ``_audit_emit`` calls at
+    ``harness._run_gate_checks:12915-12946``:
+      * Confirmed branch: ``audit_decision="confirmed"``, ``reason_code=None``.
+      * Full-budget branch: ``audit_decision="waited_full_budget"``,
+        ``reason_code`` is either ``"no_verifiable_snippet"`` (when
+        ``expected_instruction_snippets`` was empty) or
+        ``"snippet_not_observed"`` (when polling timed out without
+        finding any expected snippet).
+    """
+    propagated: bool
+    elapsed_seconds: float
+    max_wait_seconds: int
+    applied_patches_count: int
+    audit_decision: str  # "confirmed" or "waited_full_budget"
+    reason_code: str | None = None
+
+
+@dataclass(frozen=True)
+class SliceGateInput(JsonRoundTrip):
+    """Input for ``run_slice_gate`` (Phase B).
+
+    The two-step decision (pre-eval / post-eval) is handled by a
+    helper that returns a ``should_run`` flag and, on the second
+    invocation, the rollback decision. Phase B will split this into
+    two helpers if needed; the contract here is the union of both.
+    """
+    ag_id: str
+    run_id: str
+    iteration: int
+    all_benchmark_qids: tuple[str, ...]
+    prev_failure_qids: tuple[str, ...]
+    affected_question_ids: tuple[str, ...]
+    baseline_passing_qids_known: bool
+    slice_benchmark_count: int
+    full_benchmark_count: int
+    best_accuracy: float
+    noise_floor: float
+    legacy_gates_enabled: bool
+    slice_gate_enabled: bool
+
+
+@dataclass(frozen=True)
+class SliceGateOutcome(JsonRoundTrip):
+    """Outcome of ``run_slice_gate`` (Phase B)."""
+    should_run: bool
+    skip_reason: str | None = None
+    effective_tolerance: float | None = None
+    broadness_ratio: float | None = None
+    passed: bool | None = None
+    rollback_reason: str | None = None
+    regression_judge: str | None = None
+
+
+@dataclass(frozen=True)
+class P0GateInput(JsonRoundTrip):
+    """Input for ``run_p0_gate`` (Phase C)."""
+    ag_id: str
+    run_id: str
+    iteration: int
+    p0_benchmark_count: int
+    legacy_gates_enabled: bool
+
+
+@dataclass(frozen=True)
+class P0GateOutcome(JsonRoundTrip):
+    """Outcome of ``run_p0_gate`` (Phase C)."""
+    should_run: bool
+    skip_reason: str | None = None
+    passed: bool | None = None
+    failure_count: int = 0
+    rollback_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class AsiExtractionInput(JsonRoundTrip):
+    """Input for ``run_asi_extraction`` (Phase D)."""
+    ag_id: str
+    applied_instruction_texts: tuple[str, ...]
+    post_eval_pre_arbiter_accuracy: float
+    post_eval_post_arbiter_accuracy: float
+    baseline_post_arbiter_accuracy: float
+
+
+@dataclass(frozen=True)
+class AsiExtractionOutcome(JsonRoundTrip):
+    """Outcome of ``run_asi_extraction`` (Phase D)."""
+    triggered: bool
+    gate_name: str
+    audit_metrics: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BaselineDriftDiagnosticInput(JsonRoundTrip):
+    """Input for ``run_baseline_drift_diagnostic`` (Phase D)."""
+    ag_id: str
+    iteration: int
+    prev_iter_pre_accept_baseline: float
+    current_post_arbiter_accuracy: float
+    diagnostic_threshold_pp: float
+
+
+@dataclass(frozen=True)
+class BaselineDriftDiagnosticOutcome(JsonRoundTrip):
+    """Outcome of ``run_baseline_drift_diagnostic`` (Phase D)."""
+    triggered: bool
+    delta_pp: float
+    audit_metrics: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FullEvalAcceptanceInput(JsonRoundTrip):
+    """Input for ``run_full_eval_acceptance`` (Phase E).
+
+    Phase E may split this into Part-1 (eval-run) and Part-2 (decide)
+    inputs; this is the union shape for the typed-contract guard.
+    """
+    ag_id: str
+    iteration: int
+    full_eval_post_arbiter_accuracy: float
+    baseline_post_arbiter_accuracy: float
+    min_gain_pp: float
+    target_qids: tuple[str, ...]
+    cumulative_regression_debt: int
+
+
+@dataclass(frozen=True)
+class FullEvalAcceptanceOutcome(JsonRoundTrip):
+    """Outcome of ``run_full_eval_acceptance`` (Phase E).
+
+    The full canonical ``ControlPlaneAcceptance`` instance is constructed
+    by the helper and returned alongside this outcome via a sibling
+    field (Phase E adds it). For Phase A's typed-contract guard we only
+    need the accept/reject + branch tag here.
+    """
+    accepted: bool
+    branch: str
+    rollback_reason: str | None = None
