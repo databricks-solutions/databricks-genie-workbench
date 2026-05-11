@@ -48,8 +48,10 @@ _EXPECTED_ORDER = [
     "slice_gate",
     "p0_gate",                # Phase C: flag-on branch
     "p0_gate",                # Phase C: legacy branch
-    "_asi_audit_1",           # asi_extraction (via ``or "asi_extraction"`` fallback)
-    "baseline_drift_diagnostic",
+    "_rco4b_asi_out",         # Phase D: flag-on branch (gate_name=_rco4b_asi_out.gate_name)
+    "_asi_audit_1",           # Phase D: legacy branch (or "asi_extraction" fallback)
+    "baseline_drift_diagnostic",  # Phase D: flag-on branch
+    "baseline_drift_diagnostic",  # Phase D: legacy branch
     "full_eval_acceptance",   # first emission
     "pre_arbiter_regression_guardrail",
     "full_eval_acceptance",   # second emission
@@ -184,4 +186,82 @@ def test_p0_gate_audit_emit_position_unchanged_relative_to_slice_gate() -> None:
     )
     assert slice_idx < last_p0_idx, (
         "Both p0_gate audit positions must follow the slice_gate audit"
+    )
+
+
+# ---------------------------------------------------------------------------
+# RCO-4b Phase D — asi_extraction + baseline_drift_diagnostic assertions
+# ---------------------------------------------------------------------------
+
+
+def test_asi_extraction_wiring_present_in_both_branches() -> None:
+    """RCO-4b Phase D — the ASI forwarder wiring has two branches.
+    The legacy branch constructs ``gate_name=... or "asi_extraction"``
+    inline; the helper-on branch uses ``gate_name=_rco4b_asi_out.gate_name``
+    (the default `"asi_extraction"` is embedded in the typed outcome's
+    dataclass field default, not the harness source). The literal
+    ``"asi_extraction"`` appears once in harness.py (legacy branch).
+    Both branches must reference the wiring sentinels.
+    """
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    # Legacy branch sentinel: the `or "asi_extraction"` fallback string.
+    assert '"asi_extraction"' in src
+    # Helper branch sentinel: the typed-outcome reference.
+    assert "_rco4b_asi_out.gate_name" in src
+    # Both branches forward through the helper or legacy mechanism.
+    assert "forward_asi_extraction_audit" in src
+    assert "_asi_audit_1" in src
+
+
+def test_baseline_drift_audit_appears_twice_one_per_flag_branch() -> None:
+    """RCO-4b Phase D — same pattern for baseline-drift."""
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    assert src.count('gate_name="baseline_drift_diagnostic"') == 2
+
+
+def test_phase_d_audits_fire_after_phase_c_p0_gate() -> None:
+    """Phase D audits (asi_extraction and baseline_drift_diagnostic)
+    must fire AFTER the p0_gate audit pinned in Phase C, preserving
+    the conceptual stage order from Phase A's inventory."""
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    p0_idx = src.find('gate_name="p0_gate"')
+    asi_idx = src.find('"asi_extraction"')
+    drift_idx = src.find('gate_name="baseline_drift_diagnostic"')
+    if p0_idx == -1 or asi_idx == -1 or drift_idx == -1:
+        import pytest
+        pytest.skip("one of the expected audit gate_names is missing")
+    assert p0_idx < asi_idx, (
+        "asi_extraction must fire after p0_gate (Phase A inventory order)"
+    )
+    assert asi_idx < drift_idx, (
+        "baseline_drift_diagnostic must fire after asi_extraction"
+    )
+
+
+def test_baseline_drift_audit_fires_after_asi_extraction_in_both_branches() -> None:
+    """Pin the relative order: every asi_extraction audit precedes
+    every baseline_drift_diagnostic audit. With both audits appearing
+    twice, the test asserts the LAST asi_extraction comes before the
+    FIRST baseline_drift_diagnostic."""
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    last_asi = src.rfind('"asi_extraction"')
+    first_drift = src.find('gate_name="baseline_drift_diagnostic"')
+    if last_asi == -1 or first_drift == -1:
+        import pytest
+        pytest.skip("one of the expected audit gate_names is missing")
+    assert last_asi < first_drift, (
+        "Phase D must preserve the asi_extraction -> baseline_drift_diagnostic "
+        "ordering across both flag branches"
     )

@@ -126,6 +126,13 @@ The sequence-guard test at `tests/unit/test_rco4b_run_gate_checks_sequence_guard
 behind `GSO_GATE_CHECKS_ASI_EXTRACTION_PURE`. See
 `2026-05-12-rco-4b-phase-d-asi-extraction-and-baseline-drift-plan.md`.
 
+Note: the sequence-guard regex captures `_rco4b_asi_out` as the
+flag-on branch's wire identifier (from `gate_name=_rco4b_asi_out.gate_name`)
+and `_asi_audit_1` as the legacy branch's wire identifier (from
+`gate_name=_asi_audit_1.get("gate_name") or "asi_extraction"`). Both
+resolve to the literal `"asi_extraction"` at runtime; the dual entries
+in `_EXPECTED_ORDER` are intentional Phase D state.
+
 ### 6. baseline_drift_diagnostic
 
 **Inputs:**
