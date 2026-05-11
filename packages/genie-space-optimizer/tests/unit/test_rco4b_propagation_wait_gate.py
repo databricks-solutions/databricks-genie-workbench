@@ -159,7 +159,8 @@ def test_helper_is_pure_no_globals() -> None:
         expected_instruction_snippets=("foo bar",),
         has_dictionary_changes=False,
     )
-    fetcher = lambda: "lorem foo bar ipsum"
-    a = run_propagation_wait_gate(inp, sleep_fn=clock_a.sleep, fetch_text_fn=fetcher)
-    b = run_propagation_wait_gate(inp, sleep_fn=clock_b.sleep, fetch_text_fn=fetcher)
+    def _fetcher() -> str:
+        return "lorem foo bar ipsum"
+    a = run_propagation_wait_gate(inp, sleep_fn=clock_a.sleep, fetch_text_fn=_fetcher)
+    b = run_propagation_wait_gate(inp, sleep_fn=clock_b.sleep, fetch_text_fn=_fetcher)
     assert a == b
