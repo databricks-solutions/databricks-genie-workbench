@@ -13397,77 +13397,188 @@ def _run_gate_checks(
         mlflow.end_run()
     except Exception:
         pass
-    # Task 2: P0 gate is a legacy approval gate alongside the slice gate.
-    # The new strict full-eval acceptance policy supersedes both. P0
-    # only runs when ENABLE_LEGACY_SLICE_P0_GATES=True.
-    p0_benchmarks = (
-        filter_benchmarks_by_scope(benchmarks, "p0")
-        if ENABLE_LEGACY_SLICE_P0_GATES
-        else []
+    # RCO-4b Phase C — delegate P0-gate decisions to the pure helpers in
+    # stages.eval_gates when GSO_GATE_CHECKS_P0_PURE is truthy.
+    # Default-off keeps the legacy inline path byte-stable.
+    from genie_space_optimizer.common.config import (
+        gate_checks_p0_pure_enabled as _gate_checks_p0_pure_on,
     )
-    if not ENABLE_LEGACY_SLICE_P0_GATES:
-        print(
-            _section(f"P0 GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
-            + _kv(
-                "Reason",
-                "ENABLE_LEGACY_SLICE_P0_GATES=False — full-eval acceptance "
-                "is the only gate",
-            ) + "\n"
-            + _bar("-")
+    if _gate_checks_p0_pure_on():
+        from genie_space_optimizer.optimization.stages.eval_gates import (
+            decide_p0_gate_should_run as _rco4b_p0_should_run,
+            decide_p0_gate_post_eval as _rco4b_p0_post_eval,
         )
-    if p0_benchmarks:
-        _ensure_sql_context(spark, catalog, schema)
-        # Tier 4: v2 run name — ``<run_short>/iter_NN_p0_eval``.
-        from genie_space_optimizer.common.mlflow_names import (
-            default_tags as _v2_tags_p0,
-            p0_eval_run_name,
+        from genie_space_optimizer.optimization.stages.gate_types import (
+            P0GateInput as _RCO4bP0Input,
         )
-        p0_result = run_evaluation(
-            space_id, exp_name, iteration_counter, p0_benchmarks,
-            domain, prev_model_id, "p0",
-            predict_fn, scorers,
-            spark=spark, w=w, catalog=catalog, gold_schema=schema, uc_schema=uc_schema,
-            reference_sqls=reference_sqls if reference_sqls else None,
-            max_benchmark_count=max_benchmark_count,
-            run_name=p0_eval_run_name(run_id, iteration_counter),
-            extra_tags=_v2_tags_p0(
-                run_id, space_id=space_id, stage="p0_eval",
-                iteration=iteration_counter, ag_id=ag_id,
-            ),
+        # Pre-compute p0_benchmarks so the helper sees the real count
+        # (the legacy code does the same).
+        p0_benchmarks = (
+            filter_benchmarks_by_scope(benchmarks, "p0")
+            if ENABLE_LEGACY_SLICE_P0_GATES
+            else []
         )
-        try:
-            write_iteration(
-                spark, run_id, iteration_counter, p0_result,
-                catalog=catalog, schema=schema,
-                lever=int(lever_keys[0]) if lever_keys else 0,
-                eval_scope="p0", model_id=prev_model_id,
-            )
-        except Exception:
-            logger.debug("Failed to write P0 iteration", exc_info=True)
+        _rco4b_p0_inp = _RCO4bP0Input(
+            ag_id=str(ag_id),
+            run_id=str(run_id),
+            iteration=int(iteration_counter),
+            p0_benchmark_count=int(len(p0_benchmarks) if p0_benchmarks else 0),
+            legacy_gates_enabled=bool(ENABLE_LEGACY_SLICE_P0_GATES),
+        )
+        _rco4b_p0_pre = _rco4b_p0_should_run(_rco4b_p0_inp)
 
-        p0_failures = p0_result.get("failures", [])
-        if p0_failures:
-            print(
-                _section(f"P0 GATE [{ag_id}]: FAIL", "-") + "\n"
-                + _kv("P0 questions failing", len(p0_failures)) + "\n"
-                + _kv("Action", "ROLLBACK") + "\n"
-                + _bar("-")
-            )
-            _audit_emit(
-                stage_letter="K",
-                gate_name="p0_gate",
-                decision="rolled_back",
-                reason_detail=f"p0_gate: {len(p0_failures)} failures",
-                metrics={"p0_failures": len(p0_failures)},
-            )
-            _audit_persist()
-            return {"passed": False, "rollback_reason": f"p0_gate: {len(p0_failures)} failures", "failed_eval_result": p0_result}
+        if not _rco4b_p0_pre.should_run:
+            # Render the "legacy disabled" banner only — the
+            # ``p0_empty`` branch is silent in the legacy path, so
+            # the helper-on path is silent too.
+            if _rco4b_p0_pre.skip_reason == "legacy_gates_disabled":
+                print(
+                    _section(f"P0 GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
+                    + _kv(
+                        "Reason",
+                        "ENABLE_LEGACY_SLICE_P0_GATES=False — full-eval acceptance "
+                        "is the only gate",
+                    ) + "\n"
+                    + _bar("-")
+                )
+            # p0_empty: silent fall-through (matches legacy behavior).
         else:
+            _ensure_sql_context(spark, catalog, schema)
+            # Tier 4: v2 run name — ``<run_short>/iter_NN_p0_eval``.
+            from genie_space_optimizer.common.mlflow_names import (
+                default_tags as _v2_tags_p0,
+                p0_eval_run_name,
+            )
+            p0_result = run_evaluation(
+                space_id, exp_name, iteration_counter, p0_benchmarks,
+                domain, prev_model_id, "p0",
+                predict_fn, scorers,
+                spark=spark, w=w, catalog=catalog, gold_schema=schema, uc_schema=uc_schema,
+                reference_sqls=reference_sqls if reference_sqls else None,
+                max_benchmark_count=max_benchmark_count,
+                run_name=p0_eval_run_name(run_id, iteration_counter),
+                extra_tags=_v2_tags_p0(
+                    run_id, space_id=space_id, stage="p0_eval",
+                    iteration=iteration_counter, ag_id=ag_id,
+                ),
+            )
+            try:
+                write_iteration(
+                    spark, run_id, iteration_counter, p0_result,
+                    catalog=catalog, schema=schema,
+                    lever=int(lever_keys[0]) if lever_keys else 0,
+                    eval_scope="p0", model_id=prev_model_id,
+                )
+            except Exception:
+                logger.debug("Failed to write P0 iteration", exc_info=True)
+
+            p0_failures = p0_result.get("failures", [])
+            _rco4b_p0_post = _rco4b_p0_post_eval(
+                _rco4b_p0_inp,
+                p0_failures_count=int(len(p0_failures)),
+            )
+
+            if not _rco4b_p0_post.passed:
+                print(
+                    _section(f"P0 GATE [{ag_id}]: FAIL", "-") + "\n"
+                    + _kv("P0 questions failing", _rco4b_p0_post.failure_count) + "\n"
+                    + _kv("Action", "ROLLBACK") + "\n"
+                    + _bar("-")
+                )
+                _audit_emit(
+                    stage_letter="K",
+                    gate_name="p0_gate",
+                    decision="rolled_back",
+                    reason_detail=_rco4b_p0_post.rollback_reason or "p0_gate",
+                    metrics={"p0_failures": _rco4b_p0_post.failure_count},
+                )
+                _audit_persist()
+                return {
+                    "passed": False,
+                    "rollback_reason": _rco4b_p0_post.rollback_reason,
+                    "failed_eval_result": p0_result,
+                }
+            else:
+                print(
+                    _section(f"P0 GATE [{ag_id}]: PASS", "-") + "\n"
+                    + _kv("P0 benchmarks", len(p0_benchmarks)) + "\n"
+                    + _bar("-")
+                )
+    else:
+        # ─── Legacy path: preserved verbatim from the pre-Phase-C body.
+        # Do NOT modify; the parity test asserts this branch is
+        # byte-stable when the flag is off. ───
+        # Task 2: P0 gate is a legacy approval gate alongside the slice gate.
+        # The new strict full-eval acceptance policy supersedes both. P0
+        # only runs when ENABLE_LEGACY_SLICE_P0_GATES=True.
+        p0_benchmarks = (
+            filter_benchmarks_by_scope(benchmarks, "p0")
+            if ENABLE_LEGACY_SLICE_P0_GATES
+            else []
+        )
+        if not ENABLE_LEGACY_SLICE_P0_GATES:
             print(
-                _section(f"P0 GATE [{ag_id}]: PASS", "-") + "\n"
-                + _kv("P0 benchmarks", len(p0_benchmarks)) + "\n"
+                _section(f"P0 GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
+                + _kv(
+                    "Reason",
+                    "ENABLE_LEGACY_SLICE_P0_GATES=False — full-eval acceptance "
+                    "is the only gate",
+                ) + "\n"
                 + _bar("-")
             )
+        if p0_benchmarks:
+            _ensure_sql_context(spark, catalog, schema)
+            # Tier 4: v2 run name — ``<run_short>/iter_NN_p0_eval``.
+            from genie_space_optimizer.common.mlflow_names import (
+                default_tags as _v2_tags_p0,
+                p0_eval_run_name,
+            )
+            p0_result = run_evaluation(
+                space_id, exp_name, iteration_counter, p0_benchmarks,
+                domain, prev_model_id, "p0",
+                predict_fn, scorers,
+                spark=spark, w=w, catalog=catalog, gold_schema=schema, uc_schema=uc_schema,
+                reference_sqls=reference_sqls if reference_sqls else None,
+                max_benchmark_count=max_benchmark_count,
+                run_name=p0_eval_run_name(run_id, iteration_counter),
+                extra_tags=_v2_tags_p0(
+                    run_id, space_id=space_id, stage="p0_eval",
+                    iteration=iteration_counter, ag_id=ag_id,
+                ),
+            )
+            try:
+                write_iteration(
+                    spark, run_id, iteration_counter, p0_result,
+                    catalog=catalog, schema=schema,
+                    lever=int(lever_keys[0]) if lever_keys else 0,
+                    eval_scope="p0", model_id=prev_model_id,
+                )
+            except Exception:
+                logger.debug("Failed to write P0 iteration", exc_info=True)
+
+            p0_failures = p0_result.get("failures", [])
+            if p0_failures:
+                print(
+                    _section(f"P0 GATE [{ag_id}]: FAIL", "-") + "\n"
+                    + _kv("P0 questions failing", len(p0_failures)) + "\n"
+                    + _kv("Action", "ROLLBACK") + "\n"
+                    + _bar("-")
+                )
+                _audit_emit(
+                    stage_letter="K",
+                    gate_name="p0_gate",
+                    decision="rolled_back",
+                    reason_detail=f"p0_gate: {len(p0_failures)} failures",
+                    metrics={"p0_failures": len(p0_failures)},
+                )
+                _audit_persist()
+                return {"passed": False, "rollback_reason": f"p0_gate: {len(p0_failures)} failures", "failed_eval_result": p0_result}
+            else:
+                print(
+                    _section(f"P0 GATE [{ag_id}]: PASS", "-") + "\n"
+                    + _kv("P0 benchmarks", len(p0_benchmarks)) + "\n"
+                    + _bar("-")
+                )
 
     # ── Full evaluation ───────────────────────────────────────────────
     try:
