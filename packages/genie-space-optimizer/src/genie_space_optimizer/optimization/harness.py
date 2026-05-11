@@ -20871,73 +20871,97 @@ def _run_lever_loop(
                 )
                 _blast_kept: list[dict] = []
                 _blast_dropped: list[dict] = []
-                for _candidate in patches:
-                    _decision = patch_blast_radius_is_safe(
-                        _candidate,
-                        ag_target_qids=_blast_target_qids,
+                # RCO-4 Task 6 — delegate the per-candidate orchestration
+                # to ``stages.gates.run_blast_radius_production_gate`` when
+                # ``GSO_STAGE6_BLAST_RADIUS_PURE`` is truthy. Default-off
+                # keeps legacy callers byte-stable.
+                from genie_space_optimizer.common.config import (
+                    stage6_blast_radius_pure_enabled as _stage6_br_pure_on,
+                )
+                if _stage6_br_pure_on():
+                    from genie_space_optimizer.optimization.stages.gate_types import (
+                        BlastRadiusProductionInput as _RCO4_BRPInput,
+                    )
+                    from genie_space_optimizer.optimization.stages.gates import (
+                        run_blast_radius_production_gate as _rco4_run_br_prod,
+                    )
+                    _rco4_outcome = _rco4_run_br_prod(_RCO4_BRPInput(
+                        ag_id=str(ag_id),
+                        ag_target_qids=tuple(_blast_target_qids),
+                        live_hard_qids=tuple(_live_hard_qids_for_blast),
                         max_outside_target=0,
-                        live_hard_qids=_live_hard_qids_for_blast,
-                    )
-                    if not _decision["safe"]:
-                        _blast_dropped.append({
-                            "proposal_id": str(
-                                _candidate.get("proposal_id")
-                                or _candidate.get("id")
-                                or "?"
-                            ),
-                            "patch_type": str(
-                                _candidate.get("type")
-                                or _candidate.get("patch_type")
-                                or "?"
-                            ),
-                            "reason": _decision["reason"],
-                            "passing_dependents_outside_target": _decision.get(
-                                "passing_dependents_outside_target", []
-                            ),
-                            # Cycle 9 T5: surface the patch's target table
-                            # so record_blast_radius_drop can capture it
-                            # for cross-iteration forbid_tables.
-                            "target": str(
-                                _candidate.get("target")
-                                or _candidate.get("table")
-                                or ""
-                            ),
-                            # Cycle 9 W3: stash the source patch so the
-                            # narrow-replacement loop has the full dict
-                            # (where_predicate, qid_predicate_column, ...).
-                            "original_patch": _candidate,
-                        })
-                        continue
-                    # Task 2A — second classifier for broad instruction rewrites
-                    # that have no counterfactual dependents.
-                    _scope_decision = _instruction_scope_is_safe(
-                        _candidate,
-                        ag_target_qids=_blast_target_qids,
-                    )
-                    if not _scope_decision["safe"]:
-                        _blast_dropped.append({
-                            "proposal_id": str(
-                                _candidate.get("proposal_id")
-                                or _candidate.get("id")
-                                or "?"
-                            ),
-                            "patch_type": str(
-                                _candidate.get("type")
-                                or _candidate.get("patch_type")
-                                or "?"
-                            ),
-                            "reason": _scope_decision["reason"],
-                            "passing_dependents_outside_target": [],
-                            "target": str(
-                                _candidate.get("target")
-                                or _candidate.get("table")
-                                or ""
-                            ),
-                            # Cycle 9 W3: see comment above; same rationale.
-                            "original_patch": _candidate,
-                        })
-                        continue
-                    _blast_kept.append(_candidate)
+                        patches=tuple(patches),
+                    ))
+                    _blast_kept = list(_rco4_outcome.kept)
+                    _blast_dropped = list(_rco4_outcome.dropped)
+                else:
+                    for _candidate in patches:
+                        _decision = patch_blast_radius_is_safe(
+                            _candidate,
+                            ag_target_qids=_blast_target_qids,
+                            max_outside_target=0,
+                            live_hard_qids=_live_hard_qids_for_blast,
+                        )
+                        if not _decision["safe"]:
+                            _blast_dropped.append({
+                                "proposal_id": str(
+                                    _candidate.get("proposal_id")
+                                    or _candidate.get("id")
+                                    or "?"
+                                ),
+                                "patch_type": str(
+                                    _candidate.get("type")
+                                    or _candidate.get("patch_type")
+                                    or "?"
+                                ),
+                                "reason": _decision["reason"],
+                                "passing_dependents_outside_target": _decision.get(
+                                    "passing_dependents_outside_target", []
+                                ),
+                                # Cycle 9 T5: surface the patch's target table
+                                # so record_blast_radius_drop can capture it
+                                # for cross-iteration forbid_tables.
+                                "target": str(
+                                    _candidate.get("target")
+                                    or _candidate.get("table")
+                                    or ""
+                                ),
+                                # Cycle 9 W3: stash the source patch so the
+                                # narrow-replacement loop has the full dict
+                                # (where_predicate, qid_predicate_column, ...).
+                                "original_patch": _candidate,
+                            })
+                            continue
+                        # Task 2A — second classifier for broad instruction rewrites
+                        # that have no counterfactual dependents.
+                        _scope_decision = _instruction_scope_is_safe(
+                            _candidate,
+                            ag_target_qids=_blast_target_qids,
+                        )
+                        if not _scope_decision["safe"]:
+                            _blast_dropped.append({
+                                "proposal_id": str(
+                                    _candidate.get("proposal_id")
+                                    or _candidate.get("id")
+                                    or "?"
+                                ),
+                                "patch_type": str(
+                                    _candidate.get("type")
+                                    or _candidate.get("patch_type")
+                                    or "?"
+                                ),
+                                "reason": _scope_decision["reason"],
+                                "passing_dependents_outside_target": [],
+                                "target": str(
+                                    _candidate.get("target")
+                                    or _candidate.get("table")
+                                    or ""
+                                ),
+                                # Cycle 9 W3: see comment above; same rationale.
+                                "original_patch": _candidate,
+                            })
+                            continue
+                        _blast_kept.append(_candidate)
                 # Cycle 9 W3 / Cycle 10 W4.4: synthesize narrow-scope
                 # variants for any L6 patches dropped at HCRF and re-test
                 # through the same gate; appending survivors back to
