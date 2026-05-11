@@ -20,7 +20,7 @@ template. This module implements it.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from genie_space_optimizer.optimization.rca_decision_trace import (
     DecisionRecord,
@@ -244,3 +244,47 @@ def render_full_transcript(
 ) -> str:
     """Concatenate the run overview + every iteration's transcript."""
     return run_overview + "\n\n" + "\n\n".join(iteration_transcripts)
+
+
+def render_contract_health_section(
+    payload: Mapping[str, Any] | None,
+) -> str:
+    """RCO-2a — render the parsed ``GSO_CONTRACT_HEALTH_V1`` payload
+    into the operator transcript's ``Contract Health`` section.
+
+    When ``payload`` is None (marker not emitted), surface a stable
+    placeholder so the section is never missing from the transcript.
+    """
+    header = "### 13. Contract Health\n"
+    if not payload:
+        return (
+            header
+            + "- contract-health marker not emitted "
+            + "(GSO_CONTRACT_HEALTH_SUMMARY_V1 disabled or run aborted "
+            + "before end-of-loop)\n"
+        )
+    status = str(payload.get("merge_gate_status") or "unknown")
+    high = list(payload.get("high_tier_violations") or [])
+    medium = list(payload.get("medium_tier_violations") or [])
+    lines = [
+        header,
+        f"- merge_gate_status: {status}\n",
+        f"- phase_h_listing_status: {payload.get('phase_h_listing_status') or 'unknown'}\n",
+        f"- phase_h_validator_status: {payload.get('phase_h_validator_status') or 'unknown'}\n",
+        f"- bundle_status: {payload.get('bundle_status') or 'unknown'}\n",
+        f"- replay_is_valid: {payload.get('replay_is_valid')}\n",
+        f"- replay_violation_count: {payload.get('replay_violation_count') or 0}\n",
+    ]
+    if high:
+        lines.append(f"- HIGH-tier violations ({len(high)}):\n")
+        for v in high:
+            inv = str(v.get("invariant_id") or "?")
+            title = str(v.get("title") or "")
+            lines.append(f"  - {inv}: {title}\n")
+    if medium:
+        lines.append(f"- MEDIUM-tier violations ({len(medium)}):\n")
+        for v in medium:
+            inv = str(v.get("invariant_id") or "?")
+            title = str(v.get("title") or "")
+            lines.append(f"  - {inv}: {title}\n")
+    return "".join(lines)
