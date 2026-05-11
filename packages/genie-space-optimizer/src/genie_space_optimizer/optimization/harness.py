@@ -13728,21 +13728,53 @@ def _run_gate_checks(
     # ``run_evaluation`` stamped on the result dict. This makes a
     # zero-trace eval visible in the lever-loop decision audit instead
     # of silent.
-    _asi_audit_1 = full_result_1.get("asi_extraction_audit")
-    if isinstance(_asi_audit_1, dict):
-        _asi_metrics = _asi_audit_1.get("metrics_json")
-        if isinstance(_asi_metrics, str):
-            try:
-                _asi_metrics = json.loads(_asi_metrics)
-            except (TypeError, ValueError):
-                _asi_metrics = None
-        _audit_emit(
-            stage_letter=_asi_audit_1.get("stage_letter") or "C",
-            gate_name=_asi_audit_1.get("gate_name") or "asi_extraction",
-            decision=_asi_audit_1.get("decision") or "ok",
-            reason_code=_asi_audit_1.get("reason_code"),
-            metrics=_asi_metrics if isinstance(_asi_metrics, dict) else None,
+    # RCO-4b Phase D — delegate the forwarding decision to the pure
+    # helper in stages.eval_gates when GSO_GATE_CHECKS_ASI_EXTRACTION_PURE
+    # is truthy. Default-off keeps the legacy inline path byte-stable.
+    from genie_space_optimizer.common.config import (
+        gate_checks_asi_extraction_pure_enabled as _gate_checks_asi_pure_on,
+    )
+    if _gate_checks_asi_pure_on():
+        from genie_space_optimizer.optimization.stages.eval_gates import (
+            forward_asi_extraction_audit as _rco4b_forward_asi,
         )
+        from genie_space_optimizer.optimization.stages.gate_types import (
+            AsiExtractionInput as _RCO4bAsiInput,
+        )
+        _rco4b_asi_out = _rco4b_forward_asi(
+            _RCO4bAsiInput(
+                ag_id=str(ag_id),
+                iteration=int(iteration_counter),
+                raw_audit=full_result_1.get("asi_extraction_audit"),
+            )
+        )
+        if _rco4b_asi_out.should_emit:
+            _audit_emit(
+                stage_letter=_rco4b_asi_out.stage_letter,
+                gate_name=_rco4b_asi_out.gate_name,
+                decision=_rco4b_asi_out.decision,
+                reason_code=_rco4b_asi_out.reason_code,
+                metrics=dict(_rco4b_asi_out.metrics) if _rco4b_asi_out.metrics else None,
+            )
+    else:
+        # ─── Legacy path: preserved verbatim. Do NOT modify; the
+        # parity test asserts this branch is byte-stable when the
+        # flag is off. ───
+        _asi_audit_1 = full_result_1.get("asi_extraction_audit")
+        if isinstance(_asi_audit_1, dict):
+            _asi_metrics = _asi_audit_1.get("metrics_json")
+            if isinstance(_asi_metrics, str):
+                try:
+                    _asi_metrics = json.loads(_asi_metrics)
+                except (TypeError, ValueError):
+                    _asi_metrics = None
+            _audit_emit(
+                stage_letter=_asi_audit_1.get("stage_letter") or "C",
+                gate_name=_asi_audit_1.get("gate_name") or "asi_extraction",
+                decision=_asi_audit_1.get("decision") or "ok",
+                reason_code=_asi_audit_1.get("reason_code"),
+                metrics=_asi_metrics if isinstance(_asi_metrics, dict) else None,
+            )
 
     scores_1 = dict(full_result_1.get("scores", {}))
     accuracy_1 = full_result_1.get("overall_accuracy", 0.0)
