@@ -9,6 +9,7 @@ import type {
   EvalRun,
   EvalSummary,
   FeedbackEvent,
+  FeedbackTabResponse,
   HealthStatus,
   ResourceGraph,
   ResourceRollupItem,
@@ -106,6 +107,9 @@ export const getSpaceFeedback = (spaceId: string, days = 30, limit = 200) =>
   fetchJson<FeedbackEvent[]>(
     `/spaces/${spaceId}/feedback?days=${days}&limit=${limit}`,
   )
+
+export const getFeedback = (days = 7, limit = 500) =>
+  fetchJson<FeedbackTabResponse>(`/feedback?days=${days}&limit=${limit}`)
 
 // ── Resources ───────────────────────────────────────────────────────────────
 
