@@ -2383,6 +2383,123 @@ def lever6_force_llm_declined_record(
     )
 
 
+_PROPOSAL_STAGE_OBSERVED_CALL_SITES = frozenset({
+    "cluster_driven_synthesis",
+    "force_lever6",
+})
+
+_PROPOSAL_STAGE_OBSERVED_MATCH_AXES = frozenset({
+    "root_cause",
+    "cluster_signature",
+    "both",
+})
+
+
+def proposal_stage_forbidden_ag_observed_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+    call_site: str,
+    match_axis: str,
+    cluster_signature: str = "",
+    lever_set: tuple[int, ...] = (),
+) -> DecisionRecord:
+    """P-E2 — informational record emitted at sub-AG proposal generators
+    when the AG's collision pair matches the forbidden set at the
+    sub-AG site (i.e. it slipped past the iter-level guard at
+    ``harness.py:19752``).
+
+    This record is purely observational. The proposal call still
+    runs; behavior is not changed. The contract-health summary
+    aggregator (Task 8) counts these records by ``call_site`` so
+    operators can grep one number per run.
+
+    ``call_site`` is a closed vocabulary of two values:
+      - ``cluster_driven_synthesis`` — the call site at
+        ``harness.py:20342``
+        (``run_cluster_driven_synthesis_for_single_cluster``).
+      - ``force_lever6`` — the call site inside
+        ``_maybe_force_lever6_with_cache`` (which P-E1 wraps around
+        ``_force_lever6_proposal_for_ag``).
+
+    ``match_axis`` is a closed vocabulary of three values matching
+    the two axes of ``_collision_pair_matches``:
+      - ``root_cause`` — the legacy ``(root_cause, blame, lever_set)``
+        axis matched.
+      - ``cluster_signature`` — the new
+        ``(source_cluster_signature, lever_set)`` axis matched.
+      - ``both`` — both axes matched.
+
+    Decision type ``PROPOSAL_GENERATED`` with reason_code
+    ``proposal_stage_forbidden_ag_observed``. Outcome ``UNRESOLVED``
+    (the proposal call still runs and emits its own
+    success/decline/raised record — this one is auxiliary).
+    """
+    if str(call_site) not in _PROPOSAL_STAGE_OBSERVED_CALL_SITES:
+        raise ValueError(
+            f"proposal_stage_forbidden_ag_observed_record: "
+            f"call_site={call_site!r} not in "
+            f"{sorted(_PROPOSAL_STAGE_OBSERVED_CALL_SITES)}"
+        )
+    if str(match_axis) not in _PROPOSAL_STAGE_OBSERVED_MATCH_AXES:
+        raise ValueError(
+            f"proposal_stage_forbidden_ag_observed_record: "
+            f"match_axis={match_axis!r} not in "
+            f"{sorted(_PROPOSAL_STAGE_OBSERVED_MATCH_AXES)}"
+        )
+
+    sig = str(cluster_signature or "").strip()
+    levers = tuple(sorted({int(l) for l in (lever_set or ())}))
+    evidence_refs = tuple(
+        v for v in (
+            f"ag:{ag_id}" if ag_id else "",
+            f"cluster:{cluster_id}" if cluster_id else "",
+            f"signature:{sig}" if sig else "",
+            f"call_site:{call_site}",
+            f"match_axis:{match_axis}",
+        ) if v
+    )
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.UNRESOLVED,
+        reason_code=ReasonCode.PROPOSAL_STAGE_FORBIDDEN_AG_OBSERVED,
+        ag_id=str(ag_id),
+        cluster_id=str(cluster_id),
+        root_cause=str(root_cause),
+        evidence_refs=evidence_refs,
+        source_cluster_ids=(cluster_id,) if cluster_id else (),
+        gate="proposal_generation",
+        expected_effect=(
+            "Iter-level AG-selection guard would have rejected this "
+            "(root_cause/cluster_signature, lever_set) shape; sub-AG "
+            "proposal generator should not see it."
+        ),
+        observed_effect=(
+            f"Sub-AG generator {call_site!r} entered with a collision "
+            f"pair that matches the forbidden set on axis "
+            f"{match_axis!r}."
+        ),
+        next_action=(
+            "Informational. Count is aggregated into the run-end "
+            "contract-health summary "
+            "(proposal_stage_forbidden_ag_observed_count_by_call_site). "
+            "If counts are non-zero across multiple recent runs, draft "
+            "a behavioral P-E3 at the specific call_site."
+        ),
+        metrics={
+            "call_site": str(call_site),
+            "match_axis": str(match_axis),
+            "lever_set": list(levers),
+            "cluster_signature": sig,
+        },
+    )
+
+
 def lever6_force_raised_record(
     *,
     run_id: str,
