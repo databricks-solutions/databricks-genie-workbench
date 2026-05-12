@@ -23323,6 +23323,19 @@ def _run_lever_loop(
                     catalog=catalog,
                     schema=schema,
                 )
+                # Defect Plan 2 (2026-05-12) — seed the strategist's
+                # next attempt with the closed-loop next-action hint.
+                # ``_next_grounding_action_payload`` returns the
+                # ROTATE_PATCH_FAMILY decision for no_applied_patches
+                # (forced levers 5, 6 — see rca_next_action.py). Pre-
+                # Defect-2 this branch passed no extra kwarg, so the
+                # strategist saw the bare rollback_reason with no
+                # actionable next-step field.
+                _next_action_payload = _next_grounding_action_payload(
+                    rollback_reason=_apply_skip.reason_code,
+                    grounding_failure_category="",
+                    repeated_count=1,
+                )
                 reflection_buffer.append(_build_reflection_entry(
                     iteration=iteration_counter,
                     ag_id=ag_id,
@@ -23336,6 +23349,12 @@ def _run_lever_loop(
                     affected_question_ids=ag.get("affected_questions", []),
                     prev_failure_qids=prev_failure_qids,
                     new_failure_qids=prev_failure_qids,
+                    extra={
+                        "rca_execution": ag.get("_rca_execution", {}),
+                        "rca_next_action": _next_action_payload,
+                        "apply_failure_stage": "post_apply",
+                        "apply_failure_reason": _apply_skip.reason_code,
+                    },
                     **_ag_identity_kwargs,
                 ))
                 # Phase A — Replay-fixture capture: like the dead-on-arrival
