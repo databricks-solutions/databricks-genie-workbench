@@ -139,6 +139,27 @@ payload-level drift signals.
 
 **Source:** `generate_proposals_from_strategy` in [`optimization/optimizer.py`](../../src/genie_space_optimizer/optimization/optimizer.py).
 
+**Failure taxonomy (Plan P-F, 2026-05-12):**
+
+When Stage 5 (or the downstream patch-applier slice that closes the
+iteration) cannot produce or apply a patch, the harness now emits one
+typed `proposal_failure_decided` decision record + a paired
+`GSO_PROPOSAL_FAILURE_DECIDED_V1` marker. The closed-vocabulary record
+carries a `failure_mode` from `{proposal_generation_empty,
+lever6_force_llm_declined, no_causal_applyable_patch,
+all_selected_patches_dropped_by_applier, no_applied_patches}` and a
+typed next-action label from `{rotate_lever_family, narrow_ag_scope,
+mark_evidence_gap, block_ag_retry_by_cluster_signature,
+escalate_unsupported_repair_shape, request_evidence_gathering}`. A
+per-iteration coverage invariant
+(`proposal_failure_decided_coverage`) fires
+`GSO_INVARIANT_VIOLATION_V1` when an iteration ends with zero applied
+patches on a no-applied exit path AND no `proposal_failure_decided`
+record was emitted — so silent stalls become loud. Default-OFF behind
+`GSO_PROPOSAL_FAILURE_DECIDED`; the policy module is
+[`optimization/proposal_failure_policy.py`](../../src/genie_space_optimizer/optimization/proposal_failure_policy.py).
+See `2026-05-12-plan-p-f-proposal-failure-taxonomy-recovery-policy.md`.
+
 ## Stage 6 — Safety Gates
 
 **Plain language:** "Every patch has to earn its way in."
