@@ -1999,6 +1999,94 @@ def rca_regeneration_triggered_record(
     )
 
 
+def rca_classified_ungrounded_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    target_qids: tuple[str, ...],
+    ungrounded_reason: Any,
+    policy_max_attempts: int,
+) -> DecisionRecord:
+    """Plan P-D (2026-05-12) — emit once per ungrounded cluster per
+    iteration when the recovery policy classifies the reason.
+    Surfaced as ``DecisionType.RCA_FORMED + INFO`` so the operator
+    transcript records the typed cause before any retry decision is
+    visible.
+
+    ``policy_max_attempts == 0`` means the policy refused — the
+    next_action surfaces "policy refused" so a transcript reader
+    sees immediately that no driver call will follow.
+    """
+    refused = int(policy_max_attempts) == 0
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.RCA_FORMED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.RCA_CLASSIFIED_UNGROUNDED,
+        cluster_id=str(cluster_id or ""),
+        target_qids=tuple(target_qids or ()),
+        next_action=(
+            "Recovery policy refused regeneration for this typed "
+            "ungrounded reason; cluster will fall through to "
+            "Defect Plan 1 G1 cluster_blocked_no_rca."
+            if refused else
+            "Recovery policy permits up to "
+            f"{int(policy_max_attempts)} regeneration attempt(s) "
+            "for this typed ungrounded reason."
+        ),
+        metrics={
+            "ungrounded_reason": str(
+                getattr(ungrounded_reason, "value", ungrounded_reason)
+            ),
+            "policy_max_attempts": int(policy_max_attempts),
+        },
+    )
+
+
+def rca_regeneration_succeeded_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    rca_id: str,
+    target_qids: tuple[str, ...],
+    attempt_number: int,
+    attempted_evidence_sources: tuple[str, ...],
+    ungrounded_reason: Any,
+) -> DecisionRecord:
+    """Plan P-D (2026-05-12) — emit when a cluster-level regen
+    attempt produced a fit ``rca_card`` and the cluster avoids the
+    Defect Plan 1 G1 short-circuit.
+
+    Carries the typed ``ungrounded_reason`` that motivated the
+    attempt so the transcript shows the closed loop: classified
+    NO_FINDINGS → driver attempted → produced fit card.
+    """
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        decision_type=DecisionType.RCA_FORMED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.RCA_REGENERATION_SUCCEEDED,
+        cluster_id=str(cluster_id),
+        rca_id=str(rca_id),
+        target_qids=tuple(target_qids or ()),
+        next_action=(
+            "Cluster proceeds to AG-emit with regenerated RCA card "
+            "(Defect Plan 1 G1 grounding gate will not block)."
+        ),
+        metrics={
+            "attempt_number": int(attempt_number),
+            "attempted_evidence_sources": list(attempted_evidence_sources or ()),
+            "ungrounded_reason": str(
+                getattr(ungrounded_reason, "value", ungrounded_reason)
+            ),
+        },
+    )
+
+
 def rca_regeneration_exhausted_record(
     *,
     run_id: str,

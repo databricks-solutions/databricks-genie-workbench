@@ -709,3 +709,78 @@ def test_cluster_blocked_no_rca_record_handles_empty_optional_fields():
     # the existing DecisionRecord contract, not a defect-1 concern.
     assert "rca_id" not in payload
     assert "root_cause" not in payload
+
+
+def test_rca_classified_ungrounded_record_carries_typed_reason():
+    from genie_space_optimizer.optimization.decision_emitters import (
+        rca_classified_ungrounded_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionType, DecisionOutcome, ReasonCode, RcaUngroundedReason,
+    )
+
+    rec = rca_classified_ungrounded_record(
+        run_id="r",
+        iteration=1,
+        cluster_id="H001",
+        target_qids=("airline_gs_009",),
+        ungrounded_reason=RcaUngroundedReason.NO_FINDINGS,
+        policy_max_attempts=1,
+    )
+    assert rec.decision_type == DecisionType.RCA_FORMED
+    assert rec.outcome == DecisionOutcome.INFO
+    assert rec.reason_code == ReasonCode.RCA_CLASSIFIED_UNGROUNDED
+    payload = rec.to_dict()
+    assert payload["metrics"]["ungrounded_reason"] == "no_findings"
+    assert payload["metrics"]["policy_max_attempts"] == 1
+
+
+def test_rca_classified_ungrounded_record_handles_non_retryable_reason():
+    from genie_space_optimizer.optimization.decision_emitters import (
+        rca_classified_ungrounded_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    rec = rca_classified_ungrounded_record(
+        run_id="r",
+        iteration=1,
+        cluster_id="H001",
+        target_qids=("airline_gs_009",),
+        ungrounded_reason=RcaUngroundedReason.MISSING_TARGET_QIDS,
+        policy_max_attempts=0,
+    )
+    payload = rec.to_dict()
+    assert payload["metrics"]["ungrounded_reason"] == "missing_target_qids"
+    assert payload["metrics"]["policy_max_attempts"] == 0
+    assert "policy refused" in payload["next_action"].lower()
+
+
+def test_rca_regeneration_succeeded_record_produces_typed_record():
+    from genie_space_optimizer.optimization.decision_emitters import (
+        rca_regeneration_succeeded_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionType, DecisionOutcome, ReasonCode, RcaUngroundedReason,
+    )
+
+    rec = rca_regeneration_succeeded_record(
+        run_id="r",
+        iteration=2,
+        cluster_id="H001",
+        rca_id="rca-9af3",
+        target_qids=("airline_gs_009",),
+        attempt_number=1,
+        attempted_evidence_sources=("failure_buckets",),
+        ungrounded_reason=RcaUngroundedReason.NO_FINDINGS,
+    )
+    assert rec.decision_type == DecisionType.RCA_FORMED
+    assert rec.outcome == DecisionOutcome.INFO
+    assert rec.reason_code == ReasonCode.RCA_REGENERATION_SUCCEEDED
+    payload = rec.to_dict()
+    assert payload["metrics"]["attempt_number"] == 1
+    assert payload["metrics"]["attempted_evidence_sources"] == [
+        "failure_buckets",
+    ]
+    assert payload["metrics"]["ungrounded_reason"] == "no_findings"
