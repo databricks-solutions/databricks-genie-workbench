@@ -318,3 +318,156 @@ def classify_payload(
         first_failed_gate=_GATE_FOR_REASON.get(verdict.reason_code),
         policy_diagnostics=dict(verdict.policy_diagnostics),
     )
+
+
+def format_replay_classifier_decision(
+    *,
+    classification: ReplayClassification,
+    prediction: dict | None,
+) -> dict:
+    """Build the JSONL row written by the CLI per fixture.
+
+    Schema: ``{"event": "replay_classifier_decision", ...}``. The
+    ``match`` boolean is true when classification matches prediction
+    exactly. ``structured_mismatch`` is true when classification
+    differs from prediction AND ``first_failed_gate`` is non-None
+    (the spec's "mismatch identifies a missing tier" channel).
+    """
+    row: dict = {
+        "event": "replay_classifier_decision",
+        "fixture_id": classification.fixture_id,
+        "policy_name": classification.policy_name,
+        "payload_present": classification.payload_present,
+        "observed_accepted": classification.accepted,
+        "observed_reason_code": classification.reason_code,
+        "debt_qids": list(classification.debt_qids),
+        "first_failed_gate": classification.first_failed_gate,
+        "policy_diagnostics": classification.policy_diagnostics,
+    }
+    if prediction is None:
+        row["match"] = False
+        row["structured_mismatch"] = False
+        row["match_status"] = "no_prediction_registered"
+        return row
+
+    row["predicted_accepted"] = prediction.get("predicted_accepted")
+    row["predicted_reason_code"] = prediction.get("predicted_reason_code")
+    matched = (
+        bool(prediction["predicted_accepted"]) == bool(classification.accepted)
+        and prediction["predicted_reason_code"] == classification.reason_code
+        if prediction["predicted_accepted"] is not None
+        else (
+            classification.accepted is None
+            and prediction["predicted_reason_code"] == classification.reason_code
+        )
+    )
+    row["match"] = matched
+    row["structured_mismatch"] = (
+        not matched
+        and classification.payload_present
+        and classification.accepted is False
+        and classification.first_failed_gate is not None
+    )
+    if matched:
+        row["match_status"] = "exact_match"
+    elif row["structured_mismatch"]:
+        row["match_status"] = "mismatch_identifies_missing_tier"
+    else:
+        row["match_status"] = "unstructured_mismatch"
+    return row
+
+
+def _iter_fixture_paths(
+    fixtures_dir: pathlib.Path, predictions_path: pathlib.Path
+) -> Iterable[tuple[str, pathlib.Path]]:
+    raw = json.loads(predictions_path.read_text())
+    for prediction in raw["predictions"]:
+        fixture_id = str(prediction["fixture_id"])
+        yield fixture_id, fixtures_dir / f"{fixture_id}.json"
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m genie_space_optimizer.tools.policy_replay",
+        description=(
+            "Phase 0 offline acceptance-policy replay. Reads ReplayPayload "
+            "fixtures, classifies each under the pilot RegressionDebtPolicy, "
+            "compares to pre-registered predictions, and emits one "
+            "replay_classifier_decision JSON line per fixture to stdout."
+        ),
+    )
+    parser.add_argument(
+        "--fixtures-dir",
+        type=pathlib.Path,
+        required=True,
+        help="Directory containing <fixture_id>.json ReplayPayload fixtures",
+    )
+    parser.add_argument(
+        "--predictions",
+        type=pathlib.Path,
+        required=True,
+        help="Path to predictions.json file",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    raw = json.loads(args.predictions.read_text())
+    predictions_by_id = {
+        str(p["fixture_id"]): p for p in raw["predictions"]
+    }
+    from genie_space_optimizer.optimization.acceptance_policy import (
+        regression_debt_policy_pilot_default,
+    )
+    policy = regression_debt_policy_pilot_default()
+
+    matches = 0
+    structured_mismatches = 0
+    unstructured_mismatches = 0
+    for fixture_id, fixture_path in _iter_fixture_paths(
+        args.fixtures_dir, args.predictions
+    ):
+        if not fixture_path.exists():
+            row = {
+                "event": "replay_classifier_decision",
+                "fixture_id": fixture_id,
+                "match_status": "fixture_missing",
+                "fixture_path": str(fixture_path),
+            }
+            print(json.dumps(row))
+            unstructured_mismatches += 1
+            continue
+        payload = load_payload(fixture_path)
+        classification = classify_payload(
+            payload=payload,
+            policy=policy,
+            policy_name="regression_debt_policy_pilot_default",
+        )
+        row = format_replay_classifier_decision(
+            classification=classification,
+            prediction=predictions_by_id.get(fixture_id),
+        )
+        print(json.dumps(row))
+        if row["match"]:
+            matches += 1
+        elif row["structured_mismatch"]:
+            structured_mismatches += 1
+        else:
+            unstructured_mismatches += 1
+
+    summary = {
+        "event": "replay_classifier_summary",
+        "policy_name": "regression_debt_policy_pilot_default",
+        "matches": matches,
+        "structured_mismatches": structured_mismatches,
+        "unstructured_mismatches": unstructured_mismatches,
+        "pass_criterion_met": unstructured_mismatches == 0,
+    }
+    print(json.dumps(summary))
+    return 0 if summary["pass_criterion_met"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
