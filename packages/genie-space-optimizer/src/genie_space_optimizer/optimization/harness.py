@@ -26278,8 +26278,14 @@ def _run_lever_loop(
     # production posture is still warn-and-degrade. Wrapped in its own
     # try/except so a bug in the builder cannot break the harness's
     # return path.
+    #
+    # RCO-2b: capture the built summary so loop_out can carry it and
+    # the lever-loop notebook can call enforce_merge_gate(...) without
+    # re-parsing stdout. Default to None so the variable is defined
+    # even if the try block raises before the emission call.
+    _contract_health_summary = None
     try:
-        _emit_contract_health_summary(
+        _contract_health_summary = _emit_contract_health_summary(
             optimization_run_id=run_id,
             invariant_violations=locals().get("_invariant_violations") or (),
             phase_h_strict_validation=locals().get(
@@ -26341,6 +26347,17 @@ def _run_lever_loop(
         # ``phase_h_pretty_print_reason`` are stamped by
         # ``_build_loop_out_with_pretty_print`` below.
         "phase_h_upload_status": _phase_h_upload_status,
+        # RCO-2b: the typed contract-health summary, projected through
+        # to_json_dict() so the task-values JSON round trip is safe.
+        # ``enforce_merge_gate`` consumes this in
+        # ``jobs/run_lever_loop.py``. ``None`` when the RCO-2a emit
+        # path returned None (flag off, exception swallowed, or
+        # build_contract_health_summary raised).
+        "contract_health_summary": (
+            _contract_health_summary.to_json_dict()
+            if _contract_health_summary is not None
+            else None
+        ),
     }
     return _build_loop_out_with_pretty_print(
         loop_out_base=_loop_out_base,
