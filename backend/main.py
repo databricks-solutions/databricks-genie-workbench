@@ -71,6 +71,16 @@ from backend.routers.admin import router as admin_router
 from backend.routers.auth import router as auth_router
 from backend.routers.create import router as create_router
 from backend.routers.auto_optimize import router as auto_optimize_router
+from backend.watch.routers import (
+    watch_admin_router,
+    watch_cost_router,
+    watch_dashboards_router,
+    watch_evals_router,
+    watch_resources_router,
+    watch_settings_router,
+    watch_spaces_router,
+    watch_usage_router,
+)
 
 
 class OBOAuthMiddleware(BaseHTTPMiddleware):
@@ -200,6 +210,16 @@ app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(create_router)
 app.include_router(auto_optimize_router)
+
+# GenieWatch (observability) — all routes under /api/watch/*
+app.include_router(watch_spaces_router)
+app.include_router(watch_cost_router)
+app.include_router(watch_usage_router)
+app.include_router(watch_resources_router)
+app.include_router(watch_evals_router)
+app.include_router(watch_settings_router)
+app.include_router(watch_admin_router)
+app.include_router(watch_dashboards_router)
 
 # Serve static files from React build
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"

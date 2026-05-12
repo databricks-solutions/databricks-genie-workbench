@@ -388,6 +388,41 @@ fi
 
 echo "  ✓ Optimization job deployed: $JOB_ID"
 
+# ── GenieWatch executive overview dashboard ──────────────────────────────────
+# Resolve the bundle-managed Lakeview dashboard ID and GRANT CAN_RUN to the
+# app SP so it can mint scoped embed tokens for the cost dashboard. Both steps
+# are best-effort: if either fails, the Cost sub-tab simply hides the embedded
+# dashboard (the rest of the merged app keeps working).
+DASHBOARD_COST_ID=$(cd "$PROJECT_DIR" && databricks bundle summary -t app \
+    --var="catalog=$CATALOG" \
+    --var="warehouse_id=$WAREHOUSE_ID" \
+    --profile "$PROFILE" -o json 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    s = json.load(sys.stdin)
+    print(s['resources']['dashboards']['genie_spaces_overview']['id'])
+except Exception:
+    pass
+" 2>/dev/null) || true
+
+if [ -n "$DASHBOARD_COST_ID" ]; then
+    echo "  ✓ GenieWatch dashboard deployed: $DASHBOARD_COST_ID"
+    DASH_PAYLOAD=$(python3 -c "
+import json
+acl = [{'service_principal_name': '$SP_CLIENT_ID', 'permission_level': 'CAN_RUN'}]
+print(json.dumps({'access_control_list': acl}))
+")
+    if databricks api patch "/api/2.0/permissions/dashboards/$DASHBOARD_COST_ID" \
+        --profile "$PROFILE" --json "$DASH_PAYLOAD" >/dev/null 2>&1; then
+        echo "  ✓ Dashboard SP grant applied (CAN_RUN — required for embed-token mint)"
+    else
+        echo "  ⚠ Could not GRANT CAN_RUN on dashboard $DASHBOARD_COST_ID — embed token mint may fail"
+    fi
+else
+    echo "  ⚠ Could not resolve GenieWatch dashboard ID — Cost sub-tab embed will be hidden"
+fi
+
 # Grant job permissions (bundle manages run_as; API call sets ownership + SP access)
 PERM_PAYLOAD=$(python3 -c "
 import json
@@ -469,6 +504,13 @@ sed -i.bak "s|__MLFLOW_EXPERIMENT_ID__|$MLFLOW_EXPERIMENT_ID|" "$PATCHED_APP_YAM
 if [ -n "$JOB_ID" ]; then
     sed -i.bak "s|__GSO_JOB_ID__|$JOB_ID|" "$PATCHED_APP_YAML"
 fi
+# GenieWatch dashboard ID — leave the placeholder if we couldn't resolve one
+# (the backend treats an unset/placeholder value as "no embedded dashboard").
+if [ -n "$DASHBOARD_COST_ID" ]; then
+    sed -i.bak "s|__DASHBOARD_COST_ID__|$DASHBOARD_COST_ID|" "$PATCHED_APP_YAML"
+else
+    sed -i.bak "s|__DASHBOARD_COST_ID__||" "$PATCHED_APP_YAML"
+fi
 
 rm -f "${PATCHED_APP_YAML}.bak"
 
@@ -481,7 +523,7 @@ fi
 
 databricks workspace import "$WS_PATH/app.yaml" \
     --profile "$PROFILE" --file "$PATCHED_APP_YAML" --format AUTO --overwrite 2>/dev/null && \
-echo "  ✓ app.yaml patched (WAREHOUSE=$WAREHOUSE_ID, GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE, LLM_MODEL=$LLM_MODEL, MLFLOW=${MLFLOW_EXPERIMENT_ID:-<disabled>})" || \
+echo "  ✓ app.yaml patched (WAREHOUSE=$WAREHOUSE_ID, GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE, LLM_MODEL=$LLM_MODEL, MLFLOW=${MLFLOW_EXPERIMENT_ID:-<disabled>}, DASHBOARD_COST_ID=${DASHBOARD_COST_ID:-<none>})" || \
 echo "  ⚠ Could not patch app.yaml — config may not be set"
 
 # Sync _metadata.py — required at runtime for the genie_space_optimizer

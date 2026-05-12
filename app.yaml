@@ -97,6 +97,14 @@ env:
   - name: GSO_WAREHOUSE_ID
     valueFrom: sql-warehouse
 
+  # ---------------------------------------------------------------------------
+  # GenieWatch — embedded Cost Explorer Lakeview dashboard.
+  # The deploy script patches this with the dashboard ID after bundle deploy.
+  # Leave empty (or unset) to hide the embedded dashboard inside Admin > Cost.
+  # ---------------------------------------------------------------------------
+  - name: DASHBOARD_COST_ID
+    value: "__DASHBOARD_COST_ID__"
+
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------

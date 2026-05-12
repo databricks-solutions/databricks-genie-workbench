@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@databricks/aibi-client": "1.0.3-alpha.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "0.560.0",
@@ -19,6 +20,7 @@
     "react": "19.2.4",
     "react-diff-viewer-continued": "3.4.0",
     "react-dom": "19.2.4",
+    "react-force-graph-2d": "1.29.1",
     "react-markdown": "10.1.0",
     "recharts": "3.8.0",
     "remark-gfm": "4.0.1",

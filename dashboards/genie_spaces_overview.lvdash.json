@@ -1,0 +1,520 @@
+{
+  "datasets": [
+    {
+      "name": "spaces_summary",
+      "displayName": "Workspace summary",
+      "query": "WITH q AS ( SELECT query_source.genie_space_id AS space_id, executed_by, compute.warehouse_id AS wh, date_trunc('hour', start_time) AS hr, total_task_duration_ms AS task_ms FROM system.query.history WHERE query_source.genie_space_id IS NOT NULL AND start_time >= date_sub(current_date(), 7) AND total_task_duration_ms > 0 ), hr_total AS ( SELECT compute.warehouse_id AS wh, date_trunc('hour', start_time) AS hr, SUM(total_task_duration_ms) AS hr_task_ms FROM system.query.history WHERE start_time >= date_sub(current_date(), 7) AND total_task_duration_ms > 0 GROUP BY 1, 2 ), hr_cost AS ( SELECT u.usage_metadata.warehouse_id AS wh, date_trunc('hour', u.usage_start_time) AS hr, SUM(u.usage_quantity * COALESCE(p.pricing.default, 0)) AS hr_usd FROM system.billing.usage u LEFT JOIN system.billing.list_prices p ON u.sku_name = p.sku_name AND u.cloud = p.cloud AND u.usage_start_time >= p.price_start_time AND (p.price_end_time IS NULL OR u.usage_start_time < p.price_end_time) WHERE u.usage_metadata.warehouse_id IS NOT NULL AND u.usage_start_time >= date_sub(current_date(), 7) GROUP BY 1, 2 ), attributed AS ( SELECT q.space_id, q.executed_by, (q.task_ms / NULLIF(t.hr_task_ms, 0)) * COALESCE(c.hr_usd, 0) AS query_usd FROM q JOIN hr_total t USING (wh, hr) LEFT JOIN hr_cost c USING (wh, hr) ), totals AS ( SELECT COUNT(DISTINCT space_id) AS active_spaces, COUNT(*) AS total_queries, COUNT(DISTINCT executed_by) AS distinct_users, ROUND(SUM(query_usd), 2) AS approx_usd FROM attributed ), fb AS ( SELECT SUM(CASE WHEN request_params.feedback_rating = 'POSITIVE' THEN 1 ELSE 0 END) AS pos_feedback, SUM(CASE WHEN request_params.feedback_rating = 'NEGATIVE' THEN 1 ELSE 0 END) AS neg_feedback FROM system.access.audit WHERE service_name = 'aibiGenie' AND action_name = 'updateConversationMessageFeedback' AND event_time >= date_sub(current_date(), 7) ) SELECT t.active_spaces, t.total_queries, t.distinct_users, t.approx_usd, COALESCE(f.pos_feedback, 0) AS pos_feedback, COALESCE(f.neg_feedback, 0) AS neg_feedback FROM totals t CROSS JOIN fb f"
+    },
+    {
+      "name": "daily_volume",
+      "displayName": "Daily query volume",
+      "query": "SELECT date_trunc('day', start_time) AS day, COUNT(*) AS queries, COUNT(DISTINCT query_source.genie_space_id) AS active_spaces, COUNT(DISTINCT executed_by) AS distinct_users FROM system.query.history WHERE query_source.genie_space_id IS NOT NULL AND start_time >= date_sub(current_date(), 30) GROUP BY 1 ORDER BY 1"
+    },
+    {
+      "name": "top_spaces",
+      "displayName": "Top spaces by activity",
+      "query": "WITH q AS ( SELECT query_source.genie_space_id AS space_id, executed_by, compute.warehouse_id AS wh, date_trunc('hour', start_time) AS hr, total_task_duration_ms AS task_ms FROM system.query.history WHERE query_source.genie_space_id IS NOT NULL AND start_time >= date_sub(current_date(), 7) AND total_task_duration_ms > 0 ), hr_total AS ( SELECT compute.warehouse_id AS wh, date_trunc('hour', start_time) AS hr, SUM(total_task_duration_ms) AS hr_task_ms FROM system.query.history WHERE start_time >= date_sub(current_date(), 7) AND total_task_duration_ms > 0 GROUP BY 1, 2 ), hr_cost AS ( SELECT u.usage_metadata.warehouse_id AS wh, date_trunc('hour', u.usage_start_time) AS hr, SUM(u.usage_quantity * COALESCE(p.pricing.default, 0)) AS hr_usd FROM system.billing.usage u LEFT JOIN system.billing.list_prices p ON u.sku_name = p.sku_name AND u.cloud = p.cloud AND u.usage_start_time >= p.price_start_time AND (p.price_end_time IS NULL OR u.usage_start_time < p.price_end_time) WHERE u.usage_metadata.warehouse_id IS NOT NULL AND u.usage_start_time >= date_sub(current_date(), 7) GROUP BY 1, 2 ) SELECT q.space_id, COUNT(*) AS query_count, COUNT(DISTINCT q.executed_by) AS distinct_users, ROUND(SUM((q.task_ms / NULLIF(t.hr_task_ms, 0)) * COALESCE(c.hr_usd, 0)), 2) AS approx_usd FROM q JOIN hr_total t USING (wh, hr) LEFT JOIN hr_cost c USING (wh, hr) GROUP BY q.space_id ORDER BY query_count DESC LIMIT 25"
+    }
+  ],
+  "pages": [
+    {
+      "name": "main",
+      "displayName": "Genie Spaces Overview",
+      "layout": [
+        {
+          "widget": {
+            "name": "title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## GenieWatch \u2014 Genie Spaces Overview"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "subtitle",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Workspace-wide health for Genie Spaces over the last 7 days."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-active",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "spaces_summary",
+                  "fields": [
+                    {
+                      "name": "active_spaces",
+                      "expression": "`active_spaces`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "active_spaces",
+                  "displayName": "Active Spaces",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Active Genie Spaces (7d)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-queries",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "spaces_summary",
+                  "fields": [
+                    {
+                      "name": "total_queries",
+                      "expression": "`total_queries`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "total_queries",
+                  "displayName": "Total Queries",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total Queries (7d)"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-users",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "spaces_summary",
+                  "fields": [
+                    {
+                      "name": "distinct_users",
+                      "expression": "`distinct_users`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "distinct_users",
+                  "displayName": "Distinct Users",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Distinct Users (7d)"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-cost",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "spaces_summary",
+                  "fields": [
+                    {
+                      "name": "approx_usd",
+                      "expression": "`approx_usd`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "approx_usd",
+                  "displayName": "Approx Cost",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Approx Cost (7d)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-pos",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "spaces_summary",
+                  "fields": [
+                    {
+                      "name": "pos_feedback",
+                      "expression": "`pos_feedback`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "pos_feedback",
+                  "displayName": "Thumbs up",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Positive Feedback (7d)"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 5,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-neg",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "spaces_summary",
+                  "fields": [
+                    {
+                      "name": "neg_feedback",
+                      "expression": "`neg_feedback`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "neg_feedback",
+                  "displayName": "Thumbs down",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Negative Feedback (7d)"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 5,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "trends-header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Trends (last 30 days)"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "daily-volume-chart",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "daily_volume",
+                  "fields": [
+                    {
+                      "name": "day",
+                      "expression": "`day`"
+                    },
+                    {
+                      "name": "queries",
+                      "expression": "`queries`"
+                    },
+                    {
+                      "name": "active_spaces",
+                      "expression": "`active_spaces`"
+                    },
+                    {
+                      "name": "distinct_users",
+                      "expression": "`distinct_users`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "day",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Day"
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "queries",
+                      "displayName": "Queries"
+                    },
+                    {
+                      "fieldName": "active_spaces",
+                      "displayName": "Active spaces"
+                    },
+                    {
+                      "fieldName": "distinct_users",
+                      "displayName": "Distinct users"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily Genie activity"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 9,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "top-header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Top Spaces by Activity (7d)"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "top-spaces-table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "top_spaces",
+                  "fields": [
+                    {
+                      "name": "space_id",
+                      "expression": "`space_id`"
+                    },
+                    {
+                      "name": "query_count",
+                      "expression": "`query_count`"
+                    },
+                    {
+                      "name": "distinct_users",
+                      "expression": "`distinct_users`"
+                    },
+                    {
+                      "name": "approx_usd",
+                      "expression": "`approx_usd`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "space_id",
+                    "displayName": "Space"
+                  },
+                  {
+                    "fieldName": "query_count",
+                    "displayName": "Queries"
+                  },
+                  {
+                    "fieldName": "distinct_users",
+                    "displayName": "Users"
+                  },
+                  {
+                    "fieldName": "approx_usd",
+                    "displayName": "Approx USD"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Top spaces by query volume"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 15,
+            "width": 6,
+            "height": 6
+          }
+        }
+      ]
+    }
+  ]
+}

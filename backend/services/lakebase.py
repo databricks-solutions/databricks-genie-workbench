@@ -1,4 +1,9 @@
-"""Lakebase (PostgreSQL) persistence for Genie Space scan results."""
+"""Lakebase (PostgreSQL) persistence for Genie Workbench.
+
+Holds both the workbench's scan/star/optimization tables and the GenieWatch
+observability caches. Single asyncpg pool, single `genie.*` schema, single
+in-memory fallback. Watch tables are prefixed `watch_` to keep ownership clear.
+"""
 
 import asyncio
 import json
@@ -18,6 +23,13 @@ _memory_store: dict = {
     "stars": set(),   # set of starred space_ids
     "seen": set(),    # set of seen space_ids
     "optimization_runs": {},  # space_id -> latest optimization run dict
+    # ── GenieWatch caches (read-only observability surface) ──
+    "watch_space_cache": {},        # space_id -> dict
+    "watch_conversation_cache": {}, # (space_id, conversation_id) -> dict
+    "watch_message_cache": {},      # (space_id, conversation_id, message_id) -> dict
+    "watch_sync_watermark": {},     # resource -> dict
+    "watch_eval_mappings": {},      # space_id -> dict
+    "watch_daily_rollup": {},       # (space_id, day) -> dict
 }
 
 _pool = None
@@ -192,8 +204,83 @@ async def _ensure_schema():
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_optimization_runs_space_id ON genie.optimization_runs(space_id)"
             )
+
+            # ── GenieWatch tables (read-only observability) ──
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.watch_space_cache (
+                    space_id     VARCHAR(64) PRIMARY KEY,
+                    title        TEXT,
+                    owner_email  TEXT,
+                    description  TEXT,
+                    permissions  JSONB,
+                    last_seen_at TIMESTAMPTZ NOT NULL,
+                    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_watch_space_cache_owner ON genie.watch_space_cache(owner_email)"
+            )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.watch_conversation_cache (
+                    space_id        VARCHAR(64) NOT NULL,
+                    conversation_id VARCHAR(64) NOT NULL,
+                    user_email      TEXT,
+                    created_at      TIMESTAMPTZ,
+                    message_count   INT DEFAULT 0,
+                    last_message_at TIMESTAMPTZ,
+                    PRIMARY KEY (space_id, conversation_id)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_watch_conv_last ON genie.watch_conversation_cache(last_message_at DESC)"
+            )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.watch_message_cache (
+                    space_id        VARCHAR(64) NOT NULL,
+                    conversation_id VARCHAR(64) NOT NULL,
+                    message_id      VARCHAR(64) NOT NULL,
+                    user_email      TEXT,
+                    created_at      TIMESTAMPTZ,
+                    status          TEXT,
+                    has_sql         BOOLEAN,
+                    feedback_rating TEXT,
+                    PRIMARY KEY (space_id, conversation_id, message_id)
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.watch_sync_watermark (
+                    resource       VARCHAR(128) PRIMARY KEY,
+                    last_synced_at TIMESTAMPTZ NOT NULL,
+                    status         TEXT,
+                    error          TEXT
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.watch_eval_mappings (
+                    space_id      VARCHAR(64) PRIMARY KEY,
+                    experiment_id VARCHAR(64) NOT NULL,
+                    created_by    TEXT NOT NULL,
+                    created_at    TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.watch_daily_usage_rollup (
+                    space_id     VARCHAR(64) NOT NULL,
+                    day          DATE NOT NULL,
+                    queries      INT NOT NULL,
+                    approx_dbus  DOUBLE PRECISION,
+                    approx_usd   DOUBLE PRECISION,
+                    feedback_pos INT NOT NULL DEFAULT 0,
+                    feedback_neg INT NOT NULL DEFAULT 0,
+                    PRIMARY KEY (space_id, day)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_watch_rollup_day ON genie.watch_daily_usage_rollup(day DESC)"
+            )
         _lakebase_available = True
-        logger.info("Lakebase schema ready (4 tables)")
+        logger.info("Lakebase schema ready (4 workbench tables + 6 watch tables)")
     except Exception as e:
         logger.warning(f"Failed to ensure Lakebase schema: {e}. Falling back to in-memory storage.")
         _lakebase_available = False
@@ -587,3 +674,257 @@ async def get_latest_optimization_run(space_id: str) -> Optional[dict]:
             "accuracy": float(row["accuracy"]),
             "created_at": row["created_at"].isoformat(),
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# GenieWatch accessors — observability caches & user-set mappings.
+# Tables live in the same `genie` schema (prefixed `watch_`) so there's a
+# single Lakebase pool + single schema bootstrap.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def is_available() -> bool:
+    """Whether the Lakebase pool is currently usable."""
+    return _lakebase_available and _pool is not None
+
+
+async def watch_upsert_space(space: dict) -> None:
+    space_id = space["space_id"]
+    if not is_available():
+        _memory_store["watch_space_cache"][space_id] = {
+            **space,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO genie.watch_space_cache
+                (space_id, title, owner_email, description, permissions, last_seen_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+            ON CONFLICT (space_id) DO UPDATE SET
+                title        = EXCLUDED.title,
+                owner_email  = EXCLUDED.owner_email,
+                description  = EXCLUDED.description,
+                permissions  = EXCLUDED.permissions,
+                last_seen_at = NOW(),
+                updated_at   = NOW()
+        """,
+            space_id,
+            space.get("title"),
+            space.get("owner_email"),
+            space.get("description"),
+            json.dumps(space.get("permissions") or []),
+        )
+
+
+async def watch_list_cached_spaces() -> list[dict]:
+    await _maybe_retry_schema()
+    if not is_available():
+        return [
+            {**s, "permissions": s.get("permissions") or []}
+            for s in _memory_store["watch_space_cache"].values()
+        ]
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT space_id, title, owner_email, description, permissions,
+                   last_seen_at, updated_at
+            FROM genie.watch_space_cache
+            ORDER BY last_seen_at DESC
+        """)
+        return [
+            {
+                "space_id": r["space_id"],
+                "title": r["title"],
+                "owner_email": r["owner_email"],
+                "description": r["description"],
+                "permissions": json.loads(r["permissions"]) if r["permissions"] else [],
+                "last_seen_at": r["last_seen_at"].isoformat() if r["last_seen_at"] else None,
+                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            }
+            for r in rows
+        ]
+
+
+async def watch_upsert_conversation(conv: dict) -> None:
+    if not is_available():
+        key = (conv["space_id"], conv["conversation_id"])
+        _memory_store["watch_conversation_cache"][key] = conv
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO genie.watch_conversation_cache
+                (space_id, conversation_id, user_email, created_at, message_count, last_message_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (space_id, conversation_id) DO UPDATE SET
+                user_email      = EXCLUDED.user_email,
+                message_count   = EXCLUDED.message_count,
+                last_message_at = EXCLUDED.last_message_at
+        """,
+            conv["space_id"], conv["conversation_id"],
+            conv.get("user_email"),
+            conv.get("created_at"),
+            conv.get("message_count") or 0,
+            conv.get("last_message_at"),
+        )
+
+
+async def watch_list_conversations(space_id: str, limit: int = 100) -> list[dict]:
+    if not is_available():
+        out = [
+            c for k, c in _memory_store["watch_conversation_cache"].items()
+            if k[0] == space_id
+        ]
+        return sorted(out, key=lambda c: c.get("last_message_at") or "", reverse=True)[:limit]
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT conversation_id, user_email, created_at, message_count, last_message_at
+            FROM genie.watch_conversation_cache
+            WHERE space_id = $1
+            ORDER BY last_message_at DESC NULLS LAST
+            LIMIT $2
+        """, space_id, limit)
+        return [
+            {
+                "conversation_id": r["conversation_id"],
+                "user_email": r["user_email"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "message_count": r["message_count"],
+                "last_message_at": r["last_message_at"].isoformat() if r["last_message_at"] else None,
+            }
+            for r in rows
+        ]
+
+
+async def watch_upsert_message(msg: dict) -> None:
+    if not is_available():
+        key = (msg["space_id"], msg["conversation_id"], msg["message_id"])
+        _memory_store["watch_message_cache"][key] = msg
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO genie.watch_message_cache
+                (space_id, conversation_id, message_id, user_email, created_at, status, has_sql, feedback_rating)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (space_id, conversation_id, message_id) DO UPDATE SET
+                status          = EXCLUDED.status,
+                has_sql         = EXCLUDED.has_sql,
+                feedback_rating = EXCLUDED.feedback_rating
+        """,
+            msg["space_id"], msg["conversation_id"], msg["message_id"],
+            msg.get("user_email"),
+            msg.get("created_at"),
+            msg.get("status"),
+            msg.get("has_sql"),
+            msg.get("feedback_rating"),
+        )
+
+
+async def watch_get_watermark(resource: str) -> Optional[dict]:
+    if not is_available():
+        return _memory_store["watch_sync_watermark"].get(resource)
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT resource, last_synced_at, status, error FROM genie.watch_sync_watermark WHERE resource = $1",
+            resource,
+        )
+        if not row:
+            return None
+        return {
+            "resource": row["resource"],
+            "last_synced_at": row["last_synced_at"].isoformat() if row["last_synced_at"] else None,
+            "status": row["status"],
+            "error": row["error"],
+        }
+
+
+async def watch_set_watermark(resource: str, status: str, error: str | None = None) -> None:
+    if not is_available():
+        _memory_store["watch_sync_watermark"][resource] = {
+            "resource": resource,
+            "last_synced_at": datetime.utcnow().isoformat(),
+            "status": status,
+            "error": error,
+        }
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO genie.watch_sync_watermark (resource, last_synced_at, status, error)
+            VALUES ($1, NOW(), $2, $3)
+            ON CONFLICT (resource) DO UPDATE SET
+                last_synced_at = NOW(), status = EXCLUDED.status, error = EXCLUDED.error
+        """, resource, status, error)
+
+
+async def watch_get_eval_mapping(space_id: str) -> Optional[dict]:
+    if not is_available():
+        return _memory_store["watch_eval_mappings"].get(space_id)
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT space_id, experiment_id, created_by, created_at, updated_at "
+            "FROM genie.watch_eval_mappings WHERE space_id = $1",
+            space_id,
+        )
+        if not row:
+            return None
+        return {
+            "space_id": row["space_id"],
+            "experiment_id": row["experiment_id"],
+            "created_by": row["created_by"],
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+
+
+async def watch_upsert_eval_mapping(space_id: str, experiment_id: str, created_by: str) -> dict:
+    record = {
+        "space_id": space_id,
+        "experiment_id": experiment_id,
+        "created_by": created_by,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    if not is_available():
+        _memory_store["watch_eval_mappings"][space_id] = record
+        return record
+    async with _pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO genie.watch_eval_mappings (space_id, experiment_id, created_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (space_id) DO UPDATE SET
+                experiment_id = EXCLUDED.experiment_id,
+                updated_at    = NOW()
+        """, space_id, experiment_id, created_by)
+    return record
+
+
+async def watch_delete_eval_mapping(space_id: str) -> None:
+    if not is_available():
+        _memory_store["watch_eval_mappings"].pop(space_id, None)
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute("DELETE FROM genie.watch_eval_mappings WHERE space_id = $1", space_id)
+
+
+async def watch_upsert_daily_rollup(row: dict) -> None:
+    if not is_available():
+        _memory_store["watch_daily_rollup"][(row["space_id"], row["day"])] = row
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO genie.watch_daily_usage_rollup
+                (space_id, day, queries, approx_dbus, approx_usd, feedback_pos, feedback_neg)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (space_id, day) DO UPDATE SET
+                queries      = EXCLUDED.queries,
+                approx_dbus  = EXCLUDED.approx_dbus,
+                approx_usd   = EXCLUDED.approx_usd,
+                feedback_pos = EXCLUDED.feedback_pos,
+                feedback_neg = EXCLUDED.feedback_neg
+        """,
+            row["space_id"], row["day"],
+            row.get("queries") or 0,
+            row.get("approx_dbus"),
+            row.get("approx_usd"),
+            row.get("feedback_pos") or 0,
+            row.get("feedback_neg") or 0,
+        )

@@ -40,6 +40,26 @@ SP_SCHEMA_PRIVILEGES = {
     "MANAGE",
 }
 
+# GenieWatch (observability) — system table SELECTs the SP needs to power
+# cost / usage / feedback / lineage reads under /api/watch/*. Best-effort:
+# only a workspace admin can issue these grants, so failures degrade to a
+# warning rather than a hard exit (the merged app still works, just with
+# empty cost/usage panels for the SP-side queries).
+_WATCH_SYSTEM_GRANTS: list[tuple[str, str, str]] = [
+    # (securable_type, fully_qualified_name, privilege)
+    ("CATALOG", "system",                        "USE_CATALOG"),
+    ("SCHEMA",  "system.query",                  "USE_SCHEMA"),
+    ("SCHEMA",  "system.billing",                "USE_SCHEMA"),
+    ("SCHEMA",  "system.access",                 "USE_SCHEMA"),
+    ("TABLE",   "system.query.history",          "SELECT"),
+    ("TABLE",   "system.billing.usage",          "SELECT"),
+    ("TABLE",   "system.billing.list_prices",    "SELECT"),
+    ("TABLE",   "system.access.audit",           "SELECT"),
+    ("TABLE",   "system.access.table_lineage",   "SELECT"),
+    # workspaces_latest is optional / newer; absence is handled in code.
+    ("TABLE",   "system.access.workspaces_latest","SELECT"),
+]
+
 
 def _run(cmd: list[str]) -> str:
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -424,7 +444,46 @@ def main() -> int:
             )
 
     print(f"[grant-permissions] SP grants applied: principal={principal} on {schema_fqn}")
+
+    # GenieWatch system-table grants — best-effort. Only a workspace admin can
+    # issue these, so failures are warnings, not hard errors.
+    _grant_watch_system_tables(profile=args.profile, principal=principal)
+
     return 0
+
+
+def _grant_watch_system_tables(*, profile: str, principal: str) -> None:
+    """Grant SELECTs on `system.*` to the app SP so /api/watch/* SQL can run.
+
+    Idempotent (re-running is a no-op). Each grant is best-effort — a missing
+    table or a permission denial logs a warning and continues.
+    """
+    failures: list[str] = []
+    for securable_type, full_name, privilege in _WATCH_SYSTEM_GRANTS:
+        try:
+            _update_grants(
+                profile=profile,
+                securable_type=securable_type.lower(),
+                full_name=full_name,
+                principal=principal,
+                add=[privilege],
+            )
+            print(
+                f"[grant-permissions] GenieWatch grant: "
+                f"{privilege} on {securable_type} {full_name} -> {principal}"
+            )
+        except Exception as err:
+            msg = str(err)
+            failures.append(f"{securable_type} {full_name}: {msg.splitlines()[-1]}")
+    if failures:
+        print(
+            "[grant-permissions] WARNING: some GenieWatch system-table grants "
+            "could not be applied (a workspace admin must run these). The merged "
+            "app will work but cost / usage / lineage panels may be empty:",
+            file=sys.stderr,
+        )
+        for f in failures:
+            print(f"  - {f}", file=sys.stderr)
 
 
 if __name__ == "__main__":

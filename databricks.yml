@@ -18,6 +18,7 @@ sync:
   include:
     - .build
     - .build/**
+    - dashboards/**
     - packages/genie-space-optimizer/src/genie_space_optimizer/jobs
     - packages/genie-space-optimizer/src/genie_space_optimizer/jobs/**
     - packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py
@@ -46,6 +47,17 @@ artifacts:
 # Only the optimization job is managed by the bundle.
 # ---------------------------------------------------------------------------
 resources:
+  # GenieWatch executive overview Lakeview dashboard. Embedded inside the
+  # Admin > Cost sub-tab via DASHBOARD_COST_ID, which the deploy script
+  # extracts from bundle state and patches into app.yaml after `bundle deploy`.
+  dashboards:
+    genie_spaces_overview:
+      display_name: "Genie Workbench — Spaces Overview"
+      file_path: ./dashboards/genie_spaces_overview.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      parent_path: ${workspace.resource_path}/dashboards
+      embed_credentials: true
+
   jobs:
     gso-optimization-runner:
       name: "gso-optimization-job"
