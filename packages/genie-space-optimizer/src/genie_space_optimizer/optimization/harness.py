@@ -17840,6 +17840,16 @@ def _run_lever_loop(
             # entry so cross-iteration repeats (intentional) still flow.
             _iter_emitted_keys: set[tuple] = set()
 
+            # P-E1 — iteration-scoped Lever-6 decline memo. Maps
+            # ``_l6_decline_cache_key((_CollisionKeyPair, snippet_type))``
+            # → ``int`` (iteration of the live decline that populated
+            # the entry). Reset per iteration so each iteration's
+            # force-L6 path makes at most one LLM call per identity.
+            # Gated by ``GSO_L6_DECLINE_CACHE`` (default-on); when
+            # off the cache is allocated but never consulted →
+            # zero-behaviour-change for byte-stable replay.
+            _l6_decline_cache: dict[tuple, int] = {}
+
             # P3 task 4 — drain any structural-synthesis proposals queued
             # at the prior iteration's lever-5 drop site. Same-iteration
             # injection (below at the drop site) is the active path, so
