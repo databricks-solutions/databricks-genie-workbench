@@ -60,6 +60,16 @@ class DecisionType(str, Enum):
     # airline-trial defect where AG_DECOMPOSED_H001/H002 emitted on
     # iterations 1/3/5 and 2/4 despite rca_formed outcome=unresolved.
     CLUSTER_BLOCKED_NO_RCA = "cluster_blocked_no_rca"
+    # Plan P-G (2026-05-12): typed records that close the Stage 4
+    # "Strategist Context" persistence gap. Both runs ccf1d60d and
+    # 31ecd96f render Stage 4 as
+    # "(no decisions emitted for this stage in this iteration)" in every
+    # iteration. ASSEMBLED captures the typed StrategistContextOutput at
+    # the start of Stage 5; CONSUMED captures the actual context_json
+    # fed to the strategist LLM. Comparing hashes exposes drift between
+    # Stage 4 assembly and Stage 5 consumption.
+    STRATEGIST_CONTEXT_ASSEMBLED = "strategist_context_assembled"
+    STRATEGIST_CONTEXT_CONSUMED = "strategist_context_consumed"
 
 
 class DecisionOutcome(str, Enum):
@@ -205,6 +215,10 @@ class ReasonCode(str, Enum):
     MISSING_PRE_ROWS = "missing_pre_rows"
     STALE_OR_CANDIDATE_PRE_ROWS = "stale_or_candidate_pre_rows"
     ACCEPTED = "accepted"
+    # Plan P-G — Stage 4 boundary observability.
+    CONTEXT_ASSEMBLED = "context_assembled"
+    CONTEXT_CONSUMED_MATCHES_ASSEMBLED = "context_consumed_matches_assembled"
+    CONTEXT_CONSUMED_DRIFTED = "context_consumed_drifted"
 
 
 class RejectReason(str, Enum):
@@ -620,6 +634,8 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     DecisionType.CLUSTER_SELECTED: SECTION_RCA_CARDS,
     DecisionType.RCA_FORMED: SECTION_RCA_CARDS,
     DecisionType.STRATEGIST_AG_EMITTED: SECTION_AG_DECISIONS,
+    DecisionType.STRATEGIST_CONTEXT_ASSEMBLED: SECTION_AG_DECISIONS,
+    DecisionType.STRATEGIST_CONTEXT_CONSUMED: SECTION_AG_DECISIONS,
     DecisionType.PROPOSAL_GENERATED: SECTION_PROPOSAL_SURVIVAL,
     DecisionType.GATE_DECISION: SECTION_PROPOSAL_SURVIVAL,
     DecisionType.PATCH_APPLIED: SECTION_APPLIED_PATCHES,
