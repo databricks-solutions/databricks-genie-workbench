@@ -208,3 +208,93 @@ def test_emit_cluster_membership_events_suppresses_soft_when_flag_on(monkeypatch
         f"flag-on should suppress soft_signal for hard-clustered qid; "
         f"got {stages!r}"
     )
+
+
+# ── Defect Plan 3 (2026-05-12) — production producer default-on ─────
+
+
+def test_emit_cluster_membership_events_default_on_suppresses_soft_for_hard_qid(
+    monkeypatch,
+):
+    """Defect Plan 3 closure for the live producer surface: when
+    ``GSO_JOURNEY_PRODUCER_STRICT`` is unset, ``emit_cluster_membership_events``
+    must suppress the soft emit for any qid already emitted as
+    ``clustered`` in the hard pass.
+
+    This pins the production-side analogue of the replay-side
+    ``test_anchor_delenv_uses_default_and_clears_all_violations``
+    in tests/replay/test_replay_anchor_ccf1d60d_zero_violations.py.
+    """
+    monkeypatch.delenv("GSO_JOURNEY_PRODUCER_STRICT", raising=False)
+    from genie_space_optimizer.common import config
+
+    importlib.reload(config)
+    assert config.journey_producer_strict_enabled() is True, (
+        "Defect Plan 3 precondition: flag default must be ON"
+    )
+
+    captured: list[QuestionJourneyEvent] = []
+
+    def _emit(stage, **fields):
+        for q in fields.pop("question_ids", None) or []:
+            captured.append(
+                QuestionJourneyEvent(question_id=str(q), stage=stage, **fields)
+            )
+
+    emit_cluster_membership_events(
+        journey_emit=_emit,
+        hard_clusters=[
+            {"cluster_id": "H1", "root_cause": "rc1",
+             "question_ids": ["q_overlap", "q_pure_hard"]},
+        ],
+        soft_clusters=[
+            {"cluster_id": "S1", "root_cause": "rc2",
+             "question_ids": ["q_overlap", "q_pure_soft"]},
+        ],
+    )
+
+    overlap_stages = sorted(_stages_for_qid(captured, "q_overlap"))
+    assert overlap_stages == ["clustered"], (
+        f"Defect Plan 3: q_overlap must receive exactly one trunk "
+        f"event (clustered); got {overlap_stages}"
+    )
+    assert _stages_for_qid(captured, "q_pure_hard") == ["clustered"]
+    assert _stages_for_qid(captured, "q_pure_soft") == ["soft_signal"]
+
+
+def test_emit_cluster_membership_events_explicit_zero_preserves_legacy_dual_emit(
+    monkeypatch,
+):
+    """Legacy regression: with ``GSO_JOURNEY_PRODUCER_STRICT=0``
+    explicitly set, ``q_overlap`` receives BOTH trunk events.
+    Used by the legacy-anchor replay tests."""
+    monkeypatch.setenv("GSO_JOURNEY_PRODUCER_STRICT", "0")
+    from genie_space_optimizer.common import config
+
+    importlib.reload(config)
+    assert config.journey_producer_strict_enabled() is False
+
+    captured: list[QuestionJourneyEvent] = []
+
+    def _emit(stage, **fields):
+        for q in fields.pop("question_ids", None) or []:
+            captured.append(
+                QuestionJourneyEvent(question_id=str(q), stage=stage, **fields)
+            )
+
+    emit_cluster_membership_events(
+        journey_emit=_emit,
+        hard_clusters=[
+            {"cluster_id": "H1", "root_cause": "rc1",
+             "question_ids": ["q_overlap"]},
+        ],
+        soft_clusters=[
+            {"cluster_id": "S1", "root_cause": "rc2",
+             "question_ids": ["q_overlap"]},
+        ],
+    )
+
+    overlap_stages = sorted(_stages_for_qid(captured, "q_overlap"))
+    assert overlap_stages == ["clustered", "soft_signal"], (
+        f"legacy regime should emit both trunk events; got {overlap_stages}"
+    )
