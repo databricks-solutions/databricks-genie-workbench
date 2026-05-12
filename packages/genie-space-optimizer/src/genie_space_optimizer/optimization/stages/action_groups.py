@@ -439,6 +439,7 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
     defense-in-depth at the stage boundary.
     """
     from genie_space_optimizer.common.config import (
+        ag_emit_grounding_gate_enabled,
         bucket_driven_ag_selection_enabled,
         stage_handlers_chunk_b_enabled,
     )
@@ -466,6 +467,19 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
         )
     else:
         filtered_ags = sorted_action_groups
+
+    # Defect Plan 1 (2026-05-12) — grounding gate. When the flag is
+    # on AND inp.blocked_cluster_ids is non-empty, drop every AG whose
+    # source_cluster_ids intersect the blocked set. The harness has
+    # already emitted one CLUSTER_BLOCKED_NO_RCA decision record per
+    # blocked cluster, so the postmortem operator transcript shows why
+    # the AG was dropped.
+    if ag_emit_grounding_gate_enabled() and inp.blocked_cluster_ids:
+        blocked = set(inp.blocked_cluster_ids)
+        filtered_ags = tuple(
+            ag for ag in filtered_ags
+            if not (set(ag.get("source_cluster_ids") or []) & blocked)
+        )
 
     # Cycle 11 Task 13 — union cluster.recommended_levers into
     # strategist-emit AG lever_directives so the strategist path

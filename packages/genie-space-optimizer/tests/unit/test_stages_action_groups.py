@@ -127,3 +127,85 @@ def test_select_handles_empty_input() -> None:
     out = ags.select(ctx, inp)
     assert out.ags == ()
     assert captured == []
+
+
+def test_select_drops_ags_whose_source_clusters_are_blocked(monkeypatch):
+    """Defect Plan 1 G1 — when the grounding gate is on, AGs whose
+    source_cluster_ids intersect ``blocked_cluster_ids`` must not
+    appear in the returned slate."""
+    monkeypatch.setenv("GSO_AG_EMIT_GROUNDING_GATE", "1")
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        select,
+    )
+
+    inp = ActionGroupsInput(
+        action_groups=(
+            {
+                "id": "AG_H001",
+                "source_cluster_ids": ["H001"],
+                "affected_questions": ["gs_009"],
+            },
+            {
+                "id": "AG_H002",
+                "source_cluster_ids": ["H002"],
+                "affected_questions": ["gs_024"],
+            },
+            {
+                "id": "AG_H003",
+                "source_cluster_ids": ["H003", "H004"],
+                "affected_questions": ["gs_018"],
+            },
+        ),
+        blocked_cluster_ids=("H001", "H003"),
+    )
+    ctx = _stub_ctx()
+
+    slate = select(ctx, inp)
+
+    surviving_ids = {ag.get("id") for ag in slate.ags}
+    # AG_H001 → dropped (H001 is blocked).
+    # AG_H002 → survives.
+    # AG_H003 → dropped (H003 is blocked, even though H004 is not).
+    assert surviving_ids == {"AG_H002"}
+
+
+def test_select_keeps_all_ags_when_blocked_set_is_empty(monkeypatch):
+    """Backward compatibility — blocked_cluster_ids=() is byte-stable
+    with pre-defect-plan-1 callers."""
+    monkeypatch.setenv("GSO_AG_EMIT_GROUNDING_GATE", "1")
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        select,
+    )
+
+    inp = ActionGroupsInput(
+        action_groups=(
+            {"id": "AG1", "source_cluster_ids": ["H001"]},
+            {"id": "AG2", "source_cluster_ids": ["H002"]},
+        ),
+        blocked_cluster_ids=(),
+    )
+    ctx = _stub_ctx()
+
+    slate = select(ctx, inp)
+    assert {ag.get("id") for ag in slate.ags} == {"AG1", "AG2"}
+
+
+def test_select_keeps_all_ags_when_flag_off(monkeypatch):
+    """Replay byte-stability — GSO_AG_EMIT_GROUNDING_GATE=0 disables
+    the filter even when blocked_cluster_ids is non-empty."""
+    monkeypatch.setenv("GSO_AG_EMIT_GROUNDING_GATE", "0")
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        select,
+    )
+
+    inp = ActionGroupsInput(
+        action_groups=(
+            {"id": "AG_H001", "source_cluster_ids": ["H001"]},
+            {"id": "AG_H002", "source_cluster_ids": ["H002"]},
+        ),
+        blocked_cluster_ids=("H001",),
+    )
+    ctx = _stub_ctx()
+
+    slate = select(ctx, inp)
+    assert {ag.get("id") for ag in slate.ags} == {"AG_H001", "AG_H002"}
