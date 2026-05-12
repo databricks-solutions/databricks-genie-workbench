@@ -16823,6 +16823,15 @@ def _run_lever_loop(
     # ``docs/2026-05-12-merge-gate-risk-mitigations-plan.md``.
     _invariant_violations: list[dict] = []
 
+    # Plan P-D (2026-05-12) — per-run RCA Ungrounded Recovery
+    # Policy state holder. Both the cache and the policy are lazily
+    # instantiated by ``run_rca_recovery_for_iteration`` on the
+    # first ungrounded cluster encountered when the master flag is
+    # on. Survives across iterations within this run so a cluster
+    # exhausted on iter 1 short-circuits on iter 2 instead of
+    # re-burning its budget.
+    _rca_recovery_holder: dict = {}
+
     # Phase A — deterministic carrier for the most recent full-eval
     # result. Replaces opportunistic ``locals().get("full_result")``
     # reads in the eval-entry / post-eval / validator blocks below.
@@ -21575,6 +21584,49 @@ def _run_lever_loop(
                     )
                 else:
                     _chunk_b_forbidden_ags = ()
+
+                # Plan P-D (2026-05-12) — RCA Ungrounded Recovery
+                # Policy. Mutates ``clusters`` in place when regen
+                # succeeds so the Defect Plan 1 G1 prelude (below)
+                # operates on the post-policy view. ``findings_by_cluster_id``
+                # is passed empty because the harness does not yet
+                # accumulate per-cluster Stage 2 findings at this site;
+                # the classifier falls through to ``NO_FINDINGS`` (the
+                # retryable case) which matches today's behaviour for
+                # decomposed-AG clusters that arrive ungrounded.
+                try:
+                    _pd_records = run_rca_recovery_for_iteration(
+                        clusters=clusters or [],
+                        findings_by_cluster_id={},
+                        evidence_snapshot=metadata_snapshot or {},
+                        cache_holder=_rca_recovery_holder,
+                        run_id=run_id,
+                        iteration=iteration_counter,
+                        metadata_snapshot=metadata_snapshot,
+                        spark=spark,
+                    )
+                    if _pd_records:
+                        _current_iter_inputs.setdefault(
+                            "decision_records", []
+                        ).extend(_pd_records)
+                        for _pd_rec in _pd_records:
+                            try:
+                                _pd_key = _emit_idempotency_key(_pd_rec)
+                                if _pd_key in _iter_emitted_keys:
+                                    continue
+                                _iter_emitted_keys.add(_pd_key)
+                            except Exception:
+                                logger.debug(
+                                    "Plan P-D: per-record idempotency key "
+                                    "computation failed (non-fatal)",
+                                    exc_info=True,
+                                )
+                except Exception:
+                    logger.debug(
+                        "Plan P-D: RCA recovery wire site failed "
+                        "(non-fatal); falling through to grounding gate",
+                        exc_info=True,
+                    )
 
                 # Defect Plan 1 (2026-05-12) — grounding gate prelude.
                 # Emit one CLUSTER_BLOCKED_NO_RCA decision record per
