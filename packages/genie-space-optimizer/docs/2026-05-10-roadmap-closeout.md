@@ -109,11 +109,15 @@ The earlier closeout list was directionally right but stale in a few places. Thi
   Production posture remains warn-and-degrade. See
   ``2026-05-12-rco-2a-contract-health-marker-and-summary-plan.md``.
 
-- **RCO-2b — Production posture flip** — `deferred`.
-  Named blocker: **first trial run that emits ``GSO_CONTRACT_HEALTH_V1``
-  for ≥1 anchor, with the marker payload showing the expected
-  ``merge_gate_status`` for that anchor's known failure mode**. See
-  ``2026-05-12-rco-2b-deferral.md``.
+- **RCO-2b — Production posture flip** — ✅ landed (2026-05-13).
+  Named blocker cleared on the May-12 consolidating trial; two
+  captured ``GSO_CONTRACT_HEALTH_V1`` payloads validated the marker
+  emission pipeline. The merge-gate enforcement is now wired
+  (``enforce_merge_gate(loop_out)`` in ``run_lever_loop.py`` raises
+  ``MergeGateBlockedError`` on ``merge_gate_blocked``), and the
+  ``GSO_LOOP_INVARIANTS_STRICT=0`` setdefault override is removed.
+  See ``2026-05-13-rco-2b-merge-gate-enforcement-and-strict-mode-flip-plan.md``
+  and ``2026-05-12-rco-2b-deferral.md`` (Disposition section).
 
 **Why this exists:** The deterministic spine is only useful if a bad run cannot silently pass. Current code has invariant records and strict mode, but no `GSO_CONTRACT_HEALTH_V1` marker and the lever-loop job defaults strict invariants to warn-and-degrade.
 
@@ -231,7 +235,9 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 - `docs/2026-05-12-defect-ag-emit-blocks-ungrounded-rca.md` (NO_APPLIED_PATCHES; airline run).
 - `docs/2026-05-12-defect-forbidden-ag-admission-enforcement.md` (NO_ACCEPTED_PROGRESS; 7now run; contains the named RCO-6 `gs_021` carry-over fix).
 
-Deferred-RCO unblocking from this trial: RCO-2b ✅, RCO-3 ✅, RCO-4c ⚠️ partial, RCO-6 ❌ blocked on the second defect plan. Re-trial against the original F9/AIRLINE anchors expected after the defect plans land. Full disposition in `docs/2026-05-13-rco-4b-trial-runbook.md` "Trial disposition (2026-05-12)" section.
+Deferred-RCO unblocking from this trial: RCO-2b ✅ (landed 2026-05-13; see `docs/2026-05-13-rco-2b-merge-gate-enforcement-and-strict-mode-flip-plan.md`), RCO-3 ✅, RCO-4c ⚠️ partial, RCO-6 ❌ blocked on the second defect plan. Re-trial against the original F9/AIRLINE anchors expected after the defect plans land. Full disposition in `docs/2026-05-13-rco-4b-trial-runbook.md` "Trial disposition (2026-05-12)" section.
+
+- **RCO-2b (2026-05-13):** Production posture flipped. Merge gate raises ``MergeGateBlockedError`` on ``merge_gate_blocked``; ``GSO_LOOP_INVARIANTS_STRICT=0`` override removed from ``run_lever_loop.py``. Two captured trial payloads promoted to byte-stable fixtures under ``tests/unit/fixtures/rco2b/``.
 
 - **Bundle-status wiring fix (2026-05-12) — landed.** `contract_health.bundle_status` now reflects `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` and `GSO_BUNDLE_ASSEMBLY_FAILED_V1` markers emitted in the same run. Closes the contradiction surfaced by the May-12 trial (both runs reported `bundle_status="complete"` while `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` reported `missing_count=40`). Incidental win: `_phase_h_marker_payload` is now also visible to the relocated emission, so `phase_h_listing_status` / `phase_h_validator_status` will reflect actual Phase H state instead of always reporting `skipped`. See `docs/2026-05-12-bundle-status-wiring-fix-plan.md`.
 
@@ -438,8 +444,8 @@ These should wait until Cycle 16/17 finish because they overlap with the gate an
 ### Tier 3 — Keystone
 
 7. RCO-2: Contract health + merge gate keystone.
-   - RCO-2a (marker + summary half): ✅ closed-local pending corpus.
-   - RCO-2b (production posture flip): deferred — blocker is the first trial marker emission.
+   - RCO-2a (marker + summary half): ✅ landed (2026-05-12).
+   - RCO-2b (production posture flip): ✅ landed (2026-05-13) — named blocker cleared on the May-12 consolidating trial; merge-gate enforcement wired and STRICT=0 override removed.
 
 This should land after Cycle 17's I12 and RCO-1's bundle parity are available, because it consumes both.
 
