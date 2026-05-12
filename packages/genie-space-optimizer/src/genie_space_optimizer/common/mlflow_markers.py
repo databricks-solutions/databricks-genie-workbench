@@ -193,6 +193,53 @@ def narrow_skipped_no_original_patch_type_marker(
     )
 
 
+def proposal_stage_forbidden_ag_observed_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+    call_site: str,
+    match_axis: str,
+    cluster_signature: str = "",
+    lever_set: tuple[int, ...] = (),
+) -> str:
+    """P-E2 — single-line stdout marker emitted at sub-AG proposal
+    generators when the AG's collision pair matches the forbidden
+    set at the sub-AG site.
+
+    Schema (V1):
+      - ``call_site`` ∈ {cluster_driven_synthesis, force_lever6}
+      - ``match_axis`` ∈ {root_cause, cluster_signature, both}
+      - ``cluster_signature`` empty when the AG carries no signatures
+      - ``lever_set`` is the sorted unique lever set on the AG at the
+        time the sub-AG generator entered (may differ from the lever
+        set at iter-level AG selection because of RCA-execution lever
+        union at ``harness.py:20098``).
+
+    Observe-only — emission is purely additive; no behavior change.
+    The contract-health summary aggregator (Task 8) parses these
+    markers (and the matching decision record) to produce
+    ``proposal_stage_forbidden_ag_observed_count_by_call_site``.
+    """
+    payload = {
+        "optimization_run_id": str(optimization_run_id or ""),
+        "iteration": int(iteration),
+        "ag_id": str(ag_id or ""),
+        "cluster_id": str(cluster_id or ""),
+        "root_cause": str(root_cause or ""),
+        "call_site": str(call_site or ""),
+        "match_axis": str(match_axis or ""),
+        "cluster_signature": str(cluster_signature or ""),
+        "lever_set": sorted({int(l) for l in (lever_set or ())}),
+    }
+    return (
+        "GSO_PROPOSAL_STAGE_FORBIDDEN_AG_OBSERVED_V1 "
+        + json.dumps(payload, sort_keys=True)
+    )
+
+
 def narrow_replacement_synthesized_marker(
     *,
     run_id: str,

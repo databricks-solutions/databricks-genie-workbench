@@ -117,3 +117,58 @@ def test_record_factory_rejects_invalid_match_axis():
             root_cause="rc", call_site="force_lever6",
             match_axis="invalid_axis", cluster_signature="", lever_set=(),
         )
+
+
+def test_marker_versioned_json_shape():
+    """The marker must be a single-line ``MARKER_NAME_V1 {json}`` shape
+    matching the existing marker conventions (e.g. P-E1's
+    ``GSO_NARROW_SKIPPED_NO_ORIGINAL_PATCH_TYPE_V1``)."""
+    import json
+    from genie_space_optimizer.common.mlflow_markers import (
+        proposal_stage_forbidden_ag_observed_marker,
+    )
+    line = proposal_stage_forbidden_ag_observed_marker(
+        optimization_run_id="r1",
+        iteration=2,
+        ag_id="AG_X",
+        cluster_id="H004",
+        root_cause="missing_filter",
+        call_site="cluster_driven_synthesis",
+        match_axis="root_cause",
+        cluster_signature="sig_abc123",
+        lever_set=(5, 6),
+    )
+    prefix, payload = line.split(" ", 1)
+    assert prefix == "GSO_PROPOSAL_STAGE_FORBIDDEN_AG_OBSERVED_V1"
+    blob = json.loads(payload)
+    assert blob["optimization_run_id"] == "r1"
+    assert blob["iteration"] == 2
+    assert blob["ag_id"] == "AG_X"
+    assert blob["cluster_id"] == "H004"
+    assert blob["call_site"] == "cluster_driven_synthesis"
+    assert blob["match_axis"] == "root_cause"
+    assert blob["cluster_signature"] == "sig_abc123"
+    assert sorted(blob["lever_set"]) == [5, 6]
+
+
+def test_marker_omits_empty_cluster_signature():
+    """An empty ``cluster_signature`` must serialize as ``""`` so the
+    JSON shape stays stable; parsers should not see a missing key."""
+    import json
+    from genie_space_optimizer.common.mlflow_markers import (
+        proposal_stage_forbidden_ag_observed_marker,
+    )
+    line = proposal_stage_forbidden_ag_observed_marker(
+        optimization_run_id="r1",
+        iteration=2,
+        ag_id="AG_X",
+        cluster_id="H004",
+        root_cause="missing_filter",
+        call_site="force_lever6",
+        match_axis="root_cause",
+        cluster_signature="",
+        lever_set=(6,),
+    )
+    _, payload = line.split(" ", 1)
+    blob = json.loads(payload)
+    assert blob["cluster_signature"] == ""
