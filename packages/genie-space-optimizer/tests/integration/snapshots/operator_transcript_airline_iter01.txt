@@ -90,6 +90,7 @@ min_pre_arbiter_gain_pp : 2.0
 rca_id_by_cluster       : {C1='rca_001'}
 cluster_by_qid          : {airline_ticketing_and_fare_analysis_gs_024='C1'}
 thresholds_met          : True
+canonical_decisions_by_ag_id: {}
 ─ Output ────────────────────────────────────────────────────────────────
 outcomes_by_ag          : {AG_DECOMPOSED_H004=AgOutcomeRecord(ag_id='AG_DECOMPOSED_H004', outcome='rolled_back', reason_code='missing_pre_rows', target_qids=('airline_ticketing_and_fare_analysis_gs_024',), affected_qids=('airline_ticketing_and_fare_analysis_gs_024',), content_fingerprints=())}
 qid_resolutions         : {airline_ticketing_and_fare_analysis_gs_001='fail_to_pass', airline_ticketing_and_fare_analysis_gs_002='fail_to_pass', airline_ticketing_and_fare_analysis_gs_003='fail_to_pass', airline_ticketing_and_fare_analysis_gs_004='fail_to_pass', ... (1 more)}

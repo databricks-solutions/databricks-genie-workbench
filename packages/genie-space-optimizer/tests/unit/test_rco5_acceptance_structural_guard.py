@@ -76,38 +76,51 @@ def test_parsed_view_to_control_plane_is_importable() -> None:
 
 
 def test_control_plane_acceptance_is_canonical() -> None:
-    """``ControlPlaneAcceptance`` is the only Stage-9 acceptance class
-    named with the canonical suffix in ``optimization.control_plane``."""
+    """``ControlPlaneAcceptance`` is the only Stage-9 acceptance
+    *decision* class in ``optimization.control_plane``.
+
+    Plan P-C adds ``AcceptanceDecisionRendering`` — a pure view
+    derived from ``ControlPlaneAcceptance``, NOT a competing
+    decision type. The structural guard allows that one specific
+    sibling because it has a distinct role (rendering) and
+    explicitly does not duplicate the decision semantics.
+    """
     classes = _classes_in_module(
         "genie_space_optimizer.optimization.control_plane"
     )
     acceptance_classes = {c for c in classes if "Acceptance" in c}
-    assert acceptance_classes == {"ControlPlaneAcceptance"}, (
+    allowed = {"ControlPlaneAcceptance", "AcceptanceDecisionRendering"}
+    assert acceptance_classes == allowed, (
         "RCO-5 structural guard: ``optimization.control_plane`` should "
-        f"contain exactly one Acceptance class. Found: {acceptance_classes}"
+        f"contain exactly {sorted(allowed)} Acceptance classes. "
+        f"Found: {acceptance_classes}"
     )
 
 
 def test_no_acceptance_decision_class_anywhere() -> None:
     """Belt-and-suspenders: search the project for any other class
-    literally named ``AcceptanceDecision``. Production-code only —
-    tests and docs are allowed to mention the old name in transitional
-    comments.
+    literally named ``AcceptanceDecision`` (i.e. ``class
+    AcceptanceDecision`` followed by ``(``, ``:``, or whitespace).
+    Production-code only — tests and docs are allowed to mention
+    the old name in transitional comments.
 
-    This complements the per-module checks above by catching the case
-    where someone introduces a NEW module that defines its own
-    ``AcceptanceDecision``."""
+    Plan P-C — ``AcceptanceDecisionRendering`` is excluded because
+    it is a pure render-view, not a decision class (see
+    ``test_control_plane_acceptance_is_canonical``).
+    """
     import pathlib
+    import re
 
     src_root = (
         pathlib.Path(__file__).resolve().parents[2]
         / "src"
         / "genie_space_optimizer"
     )
+    pattern = re.compile(r"^class AcceptanceDecision[\s\(:]", re.MULTILINE)
     offenders: list[str] = []
     for py_file in src_root.rglob("*.py"):
         text = py_file.read_text()
-        if "class AcceptanceDecision" in text:
+        if pattern.search(text):
             offenders.append(str(py_file.relative_to(src_root)))
     assert offenders == [], (
         "RCO-5 structural guard: ``class AcceptanceDecision`` found in "
