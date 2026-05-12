@@ -1447,3 +1447,218 @@ def build_rca_card(
     """
     _ = cluster_id, qids, failure_buckets, asi_metadata
     return {"rca_id": ""}
+
+
+# ---- Plan P-D (2026-05-12) — RCA Ungrounded Recovery Policy ---------
+
+
+def regenerate_rca_if_policy_permits(
+    *,
+    cluster: dict,
+    findings: list,
+    evidence_snapshot: dict,
+    cache,
+    policy,
+    run_id: str,
+    iteration: int,
+    attempt_driver=None,
+    metadata_snapshot: dict | None = None,
+    spark=None,
+) -> list[dict]:
+    """Plan P-D (2026-05-12) — single-cluster RCA Ungrounded
+    Recovery Policy orchestrator.
+
+    Returns the list of decision-record payload dicts the caller
+    appends to ``_current_iter_inputs["decision_records"]``. See
+    the plan's "Recovery Policy Table" section for retryability per
+    reason and ``classify_rca_ungrounded`` for the typed taxonomy.
+
+    The ``attempt_driver`` parameter is the regen-attempt callable.
+    Tests inject lambdas; production wires
+    ``harness._regenerate_rca_for_cluster``. Signature:
+    ``attempt_driver(*, spark, run_id, cluster, metadata_snapshot)
+    -> {"rca_id": str, "attempted_sources": tuple[str, ...]}``.
+    """
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        classify_rca_ungrounded,
+    )
+    from genie_space_optimizer.optimization.decision_emitters import (
+        rca_classified_ungrounded_record,
+        rca_regeneration_triggered_record,
+        rca_regeneration_succeeded_record,
+        rca_regeneration_exhausted_record,
+    )
+
+    if not isinstance(cluster, dict):
+        return []
+    if bool(cluster.get("rca_card")):
+        return []
+
+    cluster_id = str(cluster.get("cluster_id") or "")
+    signature = str(
+        cluster.get("cluster_signature") or cluster_id or ""
+    )
+    if not signature:
+        return []
+
+    target_qids = tuple(
+        str(q) for q in (cluster.get("question_ids") or []) if q
+    )
+    reason = classify_rca_ungrounded(
+        cluster=cluster,
+        findings=findings or [],
+        evidence_snapshot=evidence_snapshot or {},
+    )
+    cap = policy.max_attempts(reason)
+
+    records: list[dict] = []
+    classified = rca_classified_ungrounded_record(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        cluster_id=cluster_id,
+        target_qids=target_qids,
+        ungrounded_reason=reason,
+        policy_max_attempts=cap,
+    )
+    records.append(classified.to_dict())
+
+    if not policy.permits(reason):
+        # Policy refused — record only the classification; G1 will
+        # short-circuit this cluster downstream as
+        # cluster_blocked_no_rca.
+        return records
+
+    if cache.has_success(signature, reason):
+        cached = cache.last_outcome_for(signature, reason)
+        cluster["rca_card"] = (
+            {"rca_id": cached.rca_id} if cached else False
+        )
+        succ = rca_regeneration_succeeded_record(
+            run_id=str(run_id),
+            iteration=int(iteration),
+            cluster_id=cluster_id,
+            rca_id=cached.rca_id if cached else "",
+            target_qids=target_qids,
+            attempt_number=cache.attempts_for(signature, reason),
+            attempted_evidence_sources=(
+                cached.attempted_sources if cached else ()
+            ),
+            ungrounded_reason=reason,
+        )
+        records.append(succ.to_dict())
+        return records
+
+    if cache.is_exhausted(signature, reason, policy=policy):
+        cached = cache.last_outcome_for(signature, reason)
+        exh = rca_regeneration_exhausted_record(
+            run_id=str(run_id),
+            iteration=int(iteration),
+            cluster_id=cluster_id,
+            attempted_evidence_sources=(
+                cached.attempted_sources if cached else ()
+            ),
+        )
+        records.append(exh.to_dict())
+        return records
+
+    trig = rca_regeneration_triggered_record(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        cluster_id=cluster_id,
+        target_qids=target_qids,
+    )
+    records.append(trig.to_dict())
+
+    if attempt_driver is None:
+        from genie_space_optimizer.optimization.harness import (
+            _regenerate_rca_for_cluster,
+        )
+        attempt_driver = _regenerate_rca_for_cluster
+
+    try:
+        outcome = attempt_driver(
+            spark=spark,
+            run_id=str(run_id),
+            cluster=cluster,
+            metadata_snapshot=metadata_snapshot or {},
+        ) or {}
+    except Exception:
+        outcome = {"rca_id": "", "attempted_sources": ()}
+
+    rca_id = str(outcome.get("rca_id") or "")
+    attempted_sources = tuple(
+        str(s) for s in (outcome.get("attempted_sources") or ())
+    )
+    entry = cache.record_attempt(
+        signature,
+        reason=reason,
+        rca_id=rca_id,
+        attempted_sources=attempted_sources,
+    )
+
+    if rca_id:
+        cluster["rca_card"] = {"rca_id": rca_id}
+        succ = rca_regeneration_succeeded_record(
+            run_id=str(run_id),
+            iteration=int(iteration),
+            cluster_id=cluster_id,
+            rca_id=rca_id,
+            target_qids=target_qids,
+            attempt_number=cache.attempts_for(signature, reason),
+            attempted_evidence_sources=entry.attempted_sources,
+            ungrounded_reason=reason,
+        )
+        records.append(succ.to_dict())
+        return records
+
+    if cache.is_exhausted(signature, reason, policy=policy):
+        exh = rca_regeneration_exhausted_record(
+            run_id=str(run_id),
+            iteration=int(iteration),
+            cluster_id=cluster_id,
+            attempted_evidence_sources=entry.attempted_sources,
+        )
+        records.append(exh.to_dict())
+
+    return records
+
+
+def regenerate_rca_for_clusters(
+    *,
+    clusters: list,
+    findings_by_cluster_id: dict,
+    evidence_snapshot: dict,
+    cache,
+    policy,
+    run_id: str,
+    iteration: int,
+    attempt_driver=None,
+    metadata_snapshot: dict | None = None,
+    spark=None,
+) -> list[dict]:
+    """Plan P-D (2026-05-12) — batch wrapper. Iterates clusters in
+    input order, looking up per-cluster findings via
+    ``findings_by_cluster_id[cluster_id]`` (defaults to ``[]``).
+
+    Returns the concatenated list of decision-record payloads in
+    iteration order.
+    """
+    out: list[dict] = []
+    for c in clusters or []:
+        cid = str((c or {}).get("cluster_id") or "")
+        cluster_findings = (findings_by_cluster_id or {}).get(cid) or []
+        out.extend(
+            regenerate_rca_if_policy_permits(
+                cluster=c,
+                findings=cluster_findings,
+                evidence_snapshot=evidence_snapshot,
+                cache=cache,
+                policy=policy,
+                run_id=run_id,
+                iteration=iteration,
+                attempt_driver=attempt_driver,
+                metadata_snapshot=metadata_snapshot,
+                spark=spark,
+            )
+        )
+    return out
