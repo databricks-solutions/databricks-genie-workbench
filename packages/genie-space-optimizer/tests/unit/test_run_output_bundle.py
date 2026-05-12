@@ -387,3 +387,17 @@ def test_build_manifest_databricks_ids_resolution_path_default_blank() -> None:
         missing_pieces=[],
     )
     assert out["databricks_ids_resolution_path"] == ""
+
+
+def test_databricks_ids_unresolved_missing_piece_kind_exists() -> None:
+    """P-B — postmortem skill needs a dedicated MissingPiece kind
+    for sentinel-bearing GSO_RUN_MANIFEST_V* markers so it can
+    surface the resolver gap in the evidence-bundle manifest."""
+    from genie_space_optimizer.tools.evidence_layout import (
+        MissingPieceKind,
+    )
+
+    assert (
+        MissingPieceKind.DATABRICKS_IDS_UNRESOLVED.value
+        == "DATABRICKS_IDS_UNRESOLVED"
+    )
