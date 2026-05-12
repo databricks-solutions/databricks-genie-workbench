@@ -386,3 +386,261 @@ def regression_debt_policy_from_config() -> RegressionDebtPolicy:
             base.cumulative_debt_max,
         ),
     )
+
+
+# ── Phase 1 Action 1.2: four-tier acceptance gate ─────────────────────
+#
+# The four-tier classifier consumes the canonical
+# ControlPlaneAcceptance and returns a typed TierVerdict. It is
+# additive: existing acceptance_policy callers ignore it; only the
+# new stages.acceptance.decide branch (gated on the four-tier flag)
+# routes acceptance through this function.
+
+from enum import Enum as _Enum
+
+
+class AcceptedClass(str, _Enum):
+    """Phase 1 Action 1.2 — four-tier acceptance vocabulary.
+
+    Used by ``classify_acceptance_tier`` to grade an acceptance
+    decision. The ``LOSS`` tier is the only one that maps to a
+    rollback under the legacy two-tier model (``rejected_*``);
+    ``DIAGNOSTIC_HOLD`` is also a rollback but emits richer
+    reflection input for the strategist.
+    """
+
+    STRICT_WIN = "strict_win"
+    NET_WIN_WITH_DEBT = "net_win_with_debt"
+    DIAGNOSTIC_HOLD = "diagnostic_hold"
+    LOSS = "loss"
+
+
+@dataclass(frozen=True)
+class TierAcceptancePolicy:
+    """Tunable bounds for the four-tier classifier.
+
+    Defaults match the Phase 1 spec's Action 1.2 worked example.
+    """
+
+    net_win_min_delta_pp: float = 3.0
+    net_win_max_unknown_to_hard: int = 1
+    net_win_fixes_minus_regressions_floor: int = 2
+    diagnostic_hold_min_delta_pp: float = 1.0
+
+
+def tier_acceptance_policy_pilot_default() -> TierAcceptancePolicy:
+    """Phase 1 Action 1.2 — default tier-acceptance policy."""
+    return TierAcceptancePolicy()
+
+
+def tier_acceptance_policy_from_config() -> TierAcceptancePolicy:
+    """Build a TierAcceptancePolicy from environment configuration."""
+    import os
+
+    base = tier_acceptance_policy_pilot_default()
+
+    def _float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return default
+
+    def _int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        stripped = raw.strip()
+        return int(stripped) if stripped.lstrip("-").isdigit() else default
+
+    return TierAcceptancePolicy(
+        net_win_min_delta_pp=_float(
+            "GSO_TIER_NET_WIN_MIN_DELTA_PP", base.net_win_min_delta_pp,
+        ),
+        net_win_max_unknown_to_hard=_int(
+            "GSO_TIER_NET_WIN_MAX_UNKNOWN_TO_HARD",
+            base.net_win_max_unknown_to_hard,
+        ),
+        net_win_fixes_minus_regressions_floor=_int(
+            "GSO_TIER_NET_WIN_FIXES_MINUS_REGRESSIONS_FLOOR",
+            base.net_win_fixes_minus_regressions_floor,
+        ),
+        diagnostic_hold_min_delta_pp=_float(
+            "GSO_TIER_DIAGNOSTIC_HOLD_MIN_DELTA_PP",
+            base.diagnostic_hold_min_delta_pp,
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class TierVerdict:
+    """Result of running ``classify_acceptance_tier``."""
+
+    accepted_class: AcceptedClass
+    accept: bool
+    debt_classification: dict
+    reflection_payload: dict
+
+
+def classify_acceptance_tier(
+    *,
+    decision,
+    policy: TierAcceptancePolicy,
+) -> TierVerdict:
+    """Phase 1 Action 1.2 — pure-function four-tier classifier.
+
+    Order of checks (first-match wins so the verdict is deterministic):
+
+      1. LOSS  if delta_pp <= 0 OR passing_to_hard non-empty OR
+                                       protected non-empty.
+      2. STRICT_WIN  if every target qid is fixed AND no
+                     out-of-target regressions of any flavour.
+      3. NET_WIN_WITH_DEBT  if delta_pp >= net_win_min_delta_pp AND
+                            passing_to_hard empty AND
+                            soft_to_hard empty AND
+                            unknown_to_hard count <= bound AND
+                            fixes_count >= regressions_count + floor.
+      4. DIAGNOSTIC_HOLD  if delta_pp >= diagnostic_hold_min_delta_pp AND
+                          target_not_fixed AND any net_win bound
+                          exceeded. Otherwise → LOSS.
+    """
+    delta_pp = float(decision.delta_pp or 0.0)
+    target_qids = tuple(decision.target_qids or ())
+    target_fixed = tuple(decision.target_fixed_qids or ())
+    target_still_hard = tuple(decision.target_still_hard_qids or ())
+    out_of_target = tuple(decision.out_of_target_regressed_qids or ())
+    passing_to_hard = tuple(decision.passing_to_hard_regressed_qids or ())
+    soft_to_hard = tuple(decision.soft_to_hard_regressed_qids or ())
+    unknown_to_hard = tuple(decision.unknown_to_hard_regressed_qids or ())
+    protected = tuple(decision.protected_regressed_qids or ())
+
+    fixes_count = len(target_fixed)
+    regressions_count = len(out_of_target)
+    target_fixed_set = set(target_fixed)
+    target_fully_fixed = bool(target_qids) and all(
+        q in target_fixed_set for q in target_qids
+    )
+
+    # 1. LOSS gate.
+    if delta_pp <= 0 or passing_to_hard or protected:
+        return TierVerdict(
+            accepted_class=AcceptedClass.LOSS,
+            accept=False,
+            debt_classification={},
+            reflection_payload={
+                "delta_pp": delta_pp,
+                "fixes_count": fixes_count,
+                "regressions_count": regressions_count,
+                "passing_to_hard": list(passing_to_hard),
+                "protected_regressed": list(protected),
+            },
+        )
+
+    # 2. STRICT_WIN
+    if target_fully_fixed and not out_of_target and not protected:
+        return TierVerdict(
+            accepted_class=AcceptedClass.STRICT_WIN,
+            accept=True,
+            debt_classification={},
+            reflection_payload={},
+        )
+
+    # 3. NET_WIN_WITH_DEBT predicate.
+    net_win_predicates = {
+        "delta_pp_ok": delta_pp >= float(policy.net_win_min_delta_pp),
+        "no_passing_to_hard": not passing_to_hard,
+        "no_soft_to_hard": not soft_to_hard,
+        "unknown_to_hard_within_bound": (
+            len(unknown_to_hard) <= int(policy.net_win_max_unknown_to_hard)
+        ),
+        "fixes_margin_ok": (
+            fixes_count
+            >= regressions_count
+            + int(policy.net_win_fixes_minus_regressions_floor)
+        ),
+    }
+    if all(net_win_predicates.values()):
+        debt = _build_debt_classification(
+            unknown_to_hard=unknown_to_hard,
+            soft_to_hard=soft_to_hard,
+            passing_to_hard=passing_to_hard,
+        )
+        return TierVerdict(
+            accepted_class=AcceptedClass.NET_WIN_WITH_DEBT,
+            accept=True,
+            debt_classification=debt,
+            reflection_payload={
+                "delta_pp": delta_pp,
+                "fixes_count": fixes_count,
+                "regressions_count": regressions_count,
+                "global_improvement_target_not_fixed": (
+                    not target_fully_fixed and bool(target_still_hard)
+                ),
+                "predicates": net_win_predicates,
+            },
+        )
+
+    # 4. DIAGNOSTIC_HOLD.
+    target_not_fixed = bool(target_qids) and not target_fully_fixed
+    diagnostic_hold_predicates = {
+        "delta_pp_ok": delta_pp >= float(policy.diagnostic_hold_min_delta_pp),
+        "target_not_fixed": target_not_fixed,
+        "net_win_bounds_exceeded": not all(net_win_predicates.values()),
+    }
+    if all(diagnostic_hold_predicates.values()):
+        debt = _build_debt_classification(
+            unknown_to_hard=unknown_to_hard,
+            soft_to_hard=soft_to_hard,
+            passing_to_hard=passing_to_hard,
+        )
+        return TierVerdict(
+            accepted_class=AcceptedClass.DIAGNOSTIC_HOLD,
+            accept=False,
+            debt_classification=debt,
+            reflection_payload={
+                "delta_pp": delta_pp,
+                "fixes_count": fixes_count,
+                "regressions_count": regressions_count,
+                "fixes_vs_regressions": (
+                    f"fixes={fixes_count}, "
+                    f"regressions={regressions_count}, "
+                    f"floor={int(policy.net_win_fixes_minus_regressions_floor)}"
+                ),
+                "tripped_net_win_bounds": [
+                    name for name, ok in net_win_predicates.items() if not ok
+                ],
+                "improvement_with_unbounded_debt": True,
+            },
+        )
+
+    # Fallthrough → LOSS.
+    return TierVerdict(
+        accepted_class=AcceptedClass.LOSS,
+        accept=False,
+        debt_classification={},
+        reflection_payload={
+            "delta_pp": delta_pp,
+            "fixes_count": fixes_count,
+            "regressions_count": regressions_count,
+            "diagnostic_hold_predicates": diagnostic_hold_predicates,
+        },
+    )
+
+
+def _build_debt_classification(
+    *,
+    unknown_to_hard,
+    soft_to_hard,
+    passing_to_hard,
+) -> dict:
+    """Compose the debt_classification dict for accept/diagnostic tiers."""
+    out: dict = {}
+    if unknown_to_hard:
+        out["unknown_to_hard"] = sorted(unknown_to_hard)
+    if soft_to_hard:
+        out["soft_to_hard"] = sorted(soft_to_hard)
+    if passing_to_hard:
+        out["passing_to_hard"] = sorted(passing_to_hard)
+    return out
