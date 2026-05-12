@@ -1463,25 +1463,103 @@ def build_rca_card(
     qids: tuple[str, ...],
     failure_buckets: dict | None = None,
     asi_metadata: dict | None = None,
+    generated_sql_by_qid: dict | None = None,
+    reference_sql_by_qid: dict | None = None,
+    metadata_snapshot: dict | None = None,
+    cluster: dict | None = None,
+    llm_caller=None,
 ) -> dict:
-    """Cycle 6 F-2 — single-cluster RCA regeneration entry point.
+    """Phase 1 Action 1.1 — deterministic-first RCA card builder.
 
-    Called by ``harness._regenerate_rca_for_cluster`` to attempt a
-    fresh RCA card from a single evidence pack (failure_buckets or
-    ASI). Returns ``{"rca_id": str}`` — empty string indicates the
-    pack produced no usable signal so the caller falls through to
-    the next source.
+    When ``GSO_RCA_CARD_BUILDER`` is OFF (default), behaviour is
+    byte-equivalent to the legacy stub: returns ``{"rca_id": ""}``.
 
-    The current minimal contract returns ``{"rca_id": ""}``: T3
-    regen never fires on the airline replay, so this stub keeps
-    byte-stability while making the helper testable via mock. Real
-    regen (LLM call against the cluster's qids and the supplied
-    evidence pack) is a follow-up — the function lives here so it
-    can be patched by tests today and replaced by a proper builder
-    once the L4-style regen path stabilises.
+    When the flag is ON, runs the deterministic mapper +
+    self-grounding check + optional LLM rationale normalization (when
+    ``GSO_RCA_CARD_LLM_NORMALIZATION`` is ALSO ON and ``llm_caller``
+    is supplied OR the default Databricks caller is wired). On
+    success:
+      * Returns ``{"rca_id": card.card_id}`` for byte-stable
+        downstream wiring (Plan P-D recovery loop expects this shape).
+      * Mutates ``cluster["rca_card_id"] = card.card_id`` and
+        ``cluster["rca_card"] = {"rca_id": card.card_id}`` so AG
+        selection sees a grounded card.
+      * Stores the structured card in
+        ``metadata_snapshot["_rca_card_store"]`` keyed by ``card_id``
+        so downstream proposal generation can read the
+        ``allowed_patch_families`` / ``forbidden_patch_families``
+        sets without a full re-derive.
+
+    On self-grounding failure: returns ``{"rca_id": ""}`` and records
+    a structured entry in
+    ``metadata_snapshot["_rca_card_self_check_failures"]`` so the
+    caller in ``regenerate_rca_if_policy_permits`` can emit the
+    ``rca_card_self_check_failed`` decision record (Task 1.1.10).
     """
-    _ = cluster_id, qids, failure_buckets, asi_metadata
-    return {"rca_id": ""}
+    from genie_space_optimizer.common.config import (
+        rca_card_builder_enabled,
+        rca_card_llm_normalization_enabled,
+    )
+
+    if not rca_card_builder_enabled():
+        # Legacy stub: preserves byte-stability for every replay
+        # fixture captured before Phase 1.
+        _ = cluster_id, qids, failure_buckets, asi_metadata
+        _ = generated_sql_by_qid, reference_sql_by_qid
+        _ = metadata_snapshot, cluster, llm_caller
+        return {"rca_id": ""}
+
+    from genie_space_optimizer.optimization.rca_card_builder import build_card
+
+    asi_by_qid = asi_metadata or {}
+    gen_sql = generated_sql_by_qid or {}
+    ref_sql = reference_sql_by_qid or {}
+
+    # LLM caller wiring. If the env flag is off, force-disable the
+    # normalizer regardless of what the harness passed.
+    effective_caller = (
+        llm_caller if (llm_caller and rca_card_llm_normalization_enabled()) else None
+    )
+
+    card, self_check_failure, llm_skip_reason = build_card(
+        cluster_id=str(cluster_id or ""),
+        qids=tuple(str(q) for q in qids or ()),
+        asi_by_qid=asi_by_qid,
+        generated_sql_by_qid=gen_sql,
+        reference_sql_by_qid=ref_sql,
+        llm_caller=effective_caller,
+    )
+
+    if card is None:
+        # Self-grounding failed; the caller emits
+        # rca_card_self_check_failed using `self_check_failure` as the
+        # typed reason.
+        if metadata_snapshot is not None:
+            failures = metadata_snapshot.setdefault(
+                "_rca_card_self_check_failures", []
+            )
+            failures.append({
+                "cluster_id": str(cluster_id or ""),
+                "qids": list(qids or ()),
+                "failure_reason": self_check_failure or "unknown",
+            })
+        return {"rca_id": ""}
+
+    if metadata_snapshot is not None:
+        store = metadata_snapshot.setdefault("_rca_card_store", {})
+        store[card.card_id] = card
+        if llm_skip_reason is not None:
+            skips = metadata_snapshot.setdefault("_rca_card_llm_skips", [])
+            skips.append({
+                "card_id": card.card_id,
+                "skip_reason": llm_skip_reason,
+            })
+
+    if cluster is not None:
+        cluster["rca_card_id"] = card.card_id
+        cluster["rca_card"] = {"rca_id": card.card_id}
+
+    return {"rca_id": card.card_id}
 
 
 # ---- Plan P-D (2026-05-12) — RCA Ungrounded Recovery Policy ---------
