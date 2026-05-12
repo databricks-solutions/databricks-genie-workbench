@@ -919,20 +919,23 @@ def _emit_contract_health_summary(
     bundle_assembly_failed,
     bundle_assembly_incomplete,
     replay_validation,
-) -> None:
-    """RCO-2a — emit ``GSO_CONTRACT_HEALTH_V1`` at end-of-run.
+):
+    """RCO-2a — emit ``GSO_CONTRACT_HEALTH_V1`` at end-of-run and
+    return the built ``ContractHealthSummary`` for in-process consumers
+    (Task 4 threads it onto ``loop_out``).
 
-    Pure I/O wrapper: builds the summary via the pure module, then
-    prints the marker line. Swallows all exceptions silently — a bug
-    here must never break the end-of-run path. RCO-2b will revisit
-    this when the production posture flips.
+    Pure I/O wrapper: builds the summary via the pure module, prints
+    the marker line, returns the summary. Swallows all exceptions
+    silently and returns ``None`` — a bug here must never break the
+    end-of-run path. RCO-2b's ``enforce_merge_gate`` treats ``None``
+    as 'no enforcement signal'.
     """
     try:
         from genie_space_optimizer.common.config import (
             gso_contract_health_summary_enabled,
         )
         if not gso_contract_health_summary_enabled():
-            return
+            return None
         from genie_space_optimizer.optimization.contract_health import (
             build_contract_health_summary,
         )
@@ -948,11 +951,13 @@ def _emit_contract_health_summary(
             replay_validation=replay_validation,
         )
         print(contract_health_summary_marker(summary))
+        return summary
     except Exception:
         logger.debug(
             "RCO-2a contract-health summary emission skipped",
             exc_info=True,
         )
+        return None
 
 
 def _run_iteration_invariants_and_append_records(
