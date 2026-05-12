@@ -180,6 +180,30 @@ def consume_capture_failures() -> list[dict]:
     return failures
 
 
+# Plan P-A — captured (iteration, stage_key) pairs for per-iteration
+# stages/index.json synthesis. Populated only when ``output.json``
+# was successfully logged for that iteration/stage; failed writes are
+# already tracked by ``_CAPTURE_FAILURES`` and must NOT appear here.
+_STAGE_CAPTURE_INDEX: dict[tuple[int, str], str] = {}
+
+
+def _record_stage_capture_success(
+    *, iteration: int, stage_key: str, artifact_path: str,
+) -> None:
+    """Record a successful ``output.json`` capture so the harness can
+    materialize a per-iter ``stages/index.json`` with the captured
+    stage keys for that iteration."""
+    _STAGE_CAPTURE_INDEX[(int(iteration), str(stage_key))] = str(artifact_path)
+
+
+def consume_stage_capture_index() -> dict[tuple[int, str], str]:
+    """Drain the per-(iter, stage_key) success index. Same drain
+    semantics as ``consume_capture_failures``."""
+    snapshot = dict(_STAGE_CAPTURE_INDEX)
+    _STAGE_CAPTURE_INDEX.clear()
+    return snapshot
+
+
 def _serialize_io(obj: Any) -> str:
     """Convert a dataclass instance (or plain dict / list) to a JSON string.
 
@@ -298,6 +322,14 @@ def wrap_with_io_capture(
                         else out
                     ),
                     artifact_file=paths["output"],
+                )
+                # Plan P-A — record the successful capture for the
+                # per-iter ``stages/index.json`` writer (drained by
+                # ``consume_stage_capture_index`` at run end).
+                _record_stage_capture_success(
+                    iteration=int(iteration),
+                    stage_key=stage_key,
+                    artifact_path=paths["output"],
                 )
             except Exception as exc:
                 logger.warning(
