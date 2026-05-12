@@ -52,7 +52,14 @@ def test_run_level_default_init_lives_near_replay_fixture_json() -> None:
 def test_run_replay_call_inside_phase_a_block() -> None:
     text = HARNESS.read_text(encoding="utf-8")
     serialize_anchor = "_replay_fixture_json = serialize_replay_fixture("
-    run_replay_call_anchor = "run_replay("
+    # Accept either bare ``run_replay(`` (the plan's literal name) or
+    # the prefixed alias ``_run_replay_for_validation(`` (the alias
+    # the harness uses to avoid any local-name clash). Either form
+    # confirms the call exists inside the Phase A try block.
+    run_replay_call_anchors = (
+        "_run_replay_for_validation(",
+        "run_replay(",
+    )
     phase_a_outer_except_anchor = (
         "        logger.warning(\n"
         '            "Phase A: replay-fixture export failed (non-fatal)",'
@@ -65,8 +72,11 @@ def test_run_replay_call_inside_phase_a_block() -> None:
     s_idx = text.find(serialize_anchor)
     e_idx = text.find(phase_a_outer_except_anchor)
 
-    rr_idx = text.find(run_replay_call_anchor, s_idx, e_idx)
-    assert rr_idx != -1, (
+    rr_indices = [
+        text.find(anchor, s_idx, e_idx)
+        for anchor in run_replay_call_anchors
+    ]
+    assert any(idx != -1 for idx in rr_indices), (
         "run_replay(...) call missing inside Phase A try block. "
         "Without it, _run_end_replay_validation stays None and "
         "GSO_CONTRACT_HEALTH_V1 cannot report replay violations."

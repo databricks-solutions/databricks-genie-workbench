@@ -25933,6 +25933,43 @@ def _run_lever_loop(
             iterations_data=list(_replay_fixture_iterations or []),
         )
 
+        # RCO-2a follow-up — validate the just-serialized fixture and
+        # surface ``{is_valid, violation_count}`` so the post-Phase-H
+        # ``_emit_contract_health_summary`` can populate
+        # ``GSO_CONTRACT_HEALTH_V1.replay_is_valid`` /
+        # ``.replay_violation_count`` correctly. Wrapped in its own
+        # inner try/except so a validator bug never breaks Phase A's
+        # stderr / MLflow emission below. On failure, the run-level
+        # default ``_run_end_replay_validation = None`` (set near the
+        # ``_replay_fixture_json`` init) survives, which the classifier
+        # treats as ``skipped``. See
+        # ``docs/2026-05-12-run-end-replay-validation-plan.md``.
+        try:
+            import json as _replay_validation_json
+            from genie_space_optimizer.optimization.lever_loop_replay import (
+                run_replay as _run_replay_for_validation,
+            )
+            _replay_fixture_for_validation = _replay_validation_json.loads(
+                _replay_fixture_json or '{"iterations": []}'
+            )
+            _replay_result_for_validation = _run_replay_for_validation(
+                _replay_fixture_for_validation
+            )
+            _run_end_replay_validation = {
+                "is_valid": bool(
+                    _replay_result_for_validation.validation.is_valid
+                ),
+                "violation_count": int(
+                    len(_replay_result_for_validation.validation.violations)
+                ),
+            }
+        except Exception:
+            logger.debug(
+                "RCO-2a follow-up: run-end replay validation failed "
+                "(non-fatal; _run_end_replay_validation stays None)",
+                exc_info=True,
+            )
+
         # Operator sanity-check log line: per-iteration counts so a real
         # run can be triaged without parsing the JSON body. If
         # ``iterations`` is 0 or any per-iter ``eval_rows`` is 0,
