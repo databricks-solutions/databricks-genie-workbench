@@ -1,0 +1,11 @@
+{
+  "optimization_run_id": "31ecd96f-5d56-4b5a-af8e-38e9e5c549af",
+  "invariant_violations": [],
+  "phase_h_strict_validation": null,
+  "bundle_assembly_failed": [],
+  "bundle_assembly_incomplete": null,
+  "replay_validation": {
+    "is_valid": true,
+    "violation_count": 0
+  }
+}

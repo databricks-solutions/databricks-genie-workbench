@@ -1,0 +1,11 @@
+{
+  "optimization_run_id": "31ecd96f-5d56-4b5a-af8e-38e9e5c549af",
+  "merge_gate_status": "warn",
+  "high_tier_violations": [],
+  "medium_tier_violations": [],
+  "phase_h_listing_status": "skipped",
+  "phase_h_validator_status": "skipped",
+  "bundle_status": "complete",
+  "replay_is_valid": true,
+  "replay_violation_count": 0
+}
