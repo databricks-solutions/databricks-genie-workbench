@@ -320,7 +320,21 @@ def check_i7_rca_grounding(evidence: Mapping[str, Any]) -> list[dict]:
     """I7 — every open hard cluster reaching AG-emit has either a fit
     RCA card or a typed cluster_blocked_no_rca decision record. Closes
     7NOW iter-1 where 4/5 hard clusters had no RCA card but the
-    strategist proceeded to AG-emit anyway."""
+    strategist proceeded to AG-emit anyway.
+
+    Detection-side guarantee landed by Cycle 17 (the invariant body
+    below). Production-side guarantee landed by Defect Plan 1
+    (2026-05-12) — ``harness.collect_blocked_clusters`` now emits one
+    ``DecisionType.CLUSTER_BLOCKED_NO_RCA`` record per ungrounded open
+    hard cluster at AG-emit time, and
+    ``stages.action_groups.select`` drops AGs whose
+    ``source_cluster_ids`` intersect the blocked set. With both halves
+    landed, a run that has any open hard cluster with ``rca_card=False``
+    at AG-emit time SHOULD have zero I7 violations because the green
+    branch (cluster present in ``blocked_clusters`` set) is now
+    reached in production. A surviving violation indicates either the
+    grounding-gate flag is off or the harness wiring failed before
+    record emission."""
     violations: list[dict] = []
     for it in evidence.get("iterations") or []:
         open_clusters = [str(c) for c in (it.get("open_hard_cluster_ids") or [])]
