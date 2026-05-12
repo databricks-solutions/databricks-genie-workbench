@@ -4414,6 +4414,114 @@ def _emit_force_l6_outcome(
         )
 
 
+def _emit_proposal_failure_decided(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    cluster_signature: str,
+    rca_id: str,
+    root_cause: str,
+    failure_mode: str,
+    lever_set: tuple,
+    tried_lever_families: tuple,
+    ag_source_cluster_count: int,
+    rca_card_grounded: bool,
+    prior_failure_count: int,
+    target_qids: tuple,
+    iter_inputs: dict,
+) -> None:
+    """Plan P-F (2026-05-12) — single harness entry point that
+    builds the ``ProposalFailureContext``, invokes the policy,
+    emits one ``DecisionType.PROPOSAL_FAILURE_DECIDED`` record into
+    ``iter_inputs["decision_records"]``, and prints one
+    ``GSO_PROPOSAL_FAILURE_DECIDED_V1`` marker into
+    ``iter_inputs["markers"]``.
+
+    Flag-off (``GSO_PROPOSAL_FAILURE_DECIDED=0`` / unset) is a hard
+    no-op so pre-P-F replay fixtures stay byte-stable.
+
+    Called from five harness sites:
+
+    * ``proposal_generation_empty``
+    * ``lever6_force_llm_declined`` (via ``_emit_force_l6_outcome``)
+    * ``no_causal_applyable_patch`` (previously silent)
+    * ``all_selected_patches_dropped_by_applier``
+    * ``no_applied_patches``
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            proposal_failure_decided_enabled,
+        )
+        if not proposal_failure_decided_enabled():
+            return
+    except Exception:
+        logger.debug(
+            "Plan P-F: flag accessor import failed (non-fatal)",
+            exc_info=True,
+        )
+        return
+
+    try:
+        from genie_space_optimizer.optimization.proposal_failure_policy import (
+            ProposalFailureContext,
+            decide_next_action,
+        )
+        from genie_space_optimizer.optimization.decision_emitters import (
+            proposal_failure_decided_record,
+        )
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            proposal_failure_decided_marker,
+        )
+    except Exception:
+        logger.debug(
+            "Plan P-F: emitter import failed (non-fatal)",
+            exc_info=True,
+        )
+        return
+
+    try:
+        ctx = ProposalFailureContext(
+            failure_mode=str(failure_mode),
+            ag_id=str(ag_id),
+            cluster_id=str(cluster_id or ""),
+            cluster_signature=str(cluster_signature or ""),
+            rca_id=str(rca_id or ""),
+            root_cause=str(root_cause or ""),
+            lever_set=tuple(int(L) for L in (lever_set or ())),
+            tried_lever_families=tuple(
+                int(L) for L in (tried_lever_families or ())
+            ),
+            ag_source_cluster_count=int(ag_source_cluster_count or 0),
+            rca_card_grounded=bool(rca_card_grounded),
+            prior_failure_count=int(prior_failure_count or 0),
+        )
+        decision = decide_next_action(ctx)
+        rec = proposal_failure_decided_record(
+            run_id=run_id,
+            iteration=iteration,
+            context=ctx,
+            decision=decision,
+            target_qids=tuple(str(q) for q in (target_qids or ()) if str(q)),
+        )
+        iter_inputs.setdefault("decision_records", []).append(rec.to_dict())
+        marker = proposal_failure_decided_marker(
+            ag_id=str(ag_id),
+            iteration=int(iteration),
+            failure_mode=str(failure_mode),
+            next_action=str(decision.next_action.value),
+            cluster_signature=str(cluster_signature or ""),
+            prior_failure_count=int(prior_failure_count or 0),
+        )
+        iter_inputs.setdefault("markers", []).append(marker)
+    except Exception:
+        logger.debug(
+            "Plan P-F: proposal_failure_decided emit failed (non-fatal)",
+            exc_info=True,
+        )
+
+
 def _emit_rca_ungrounded_records_for_unfit_clusters(
     *,
     run_id: str,
@@ -21204,6 +21312,64 @@ def _run_lever_loop(
                         _current_iter_inputs.setdefault(
                             "decision_records", []
                         ).append(_empty_rec.to_dict())
+                        # Plan P-F (2026-05-12) — taxonomy companion
+                        # to the C13 T6 PROPOSAL_GENERATION_EMPTY record.
+                        # Emits a typed PROPOSAL_FAILURE_DECIDED record
+                        # carrying one of six closed-vocabulary next-
+                        # action labels so postmortem can pivot on the
+                        # orchestration decision without parsing free-
+                        # form next_action text. Flag-gated; flag-off
+                        # is a hard no-op.
+                        try:
+                            _ag_signatures = tuple(
+                                str(s)
+                                for s in (
+                                    ag.get("source_cluster_signatures") or ()
+                                )
+                                if str(s)
+                            )
+                            _emit_proposal_failure_decided(
+                                run_id=run_id,
+                                iteration=iteration_counter,
+                                ag_id=str(ag_id),
+                                cluster_id=str(
+                                    (ag.get("source_cluster_ids") or [""])[0]
+                                    or ""
+                                ),
+                                cluster_signature=(
+                                    _ag_signatures[0] if _ag_signatures else ""
+                                ),
+                                rca_id="",
+                                root_cause=str(
+                                    _ag_identity_kwargs.get("root_cause") or ""
+                                ),
+                                failure_mode="proposal_generation_empty",
+                                lever_set=tuple(
+                                    int(lk) for lk in lever_keys
+                                ),
+                                tried_lever_families=tuple(
+                                    int(lk) for lk in lever_keys
+                                ),
+                                ag_source_cluster_count=len(
+                                    ag.get("source_cluster_ids") or ()
+                                ),
+                                rca_card_grounded=bool(
+                                    ag.get("rca_card_grounded", False)
+                                ),
+                                prior_failure_count=0,
+                                target_qids=tuple(
+                                    str(q) for q in (
+                                        ag.get("affected_questions") or ()
+                                    ) if str(q)
+                                ),
+                                iter_inputs=_current_iter_inputs,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Plan P-F: proposal_generation_empty "
+                                "taxonomy emit failed (non-fatal)",
+                                exc_info=True,
+                            )
                 except Exception:
                     logger.debug(
                         "Cycle 13 T6: proposal_generation_empty_record "
