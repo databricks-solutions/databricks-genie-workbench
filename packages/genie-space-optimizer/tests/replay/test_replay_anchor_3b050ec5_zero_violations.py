@@ -65,11 +65,19 @@ def test_anchor_fixture_loads(fixture):
 def test_anchor_flag_off_clears_clustered_to_already_passing(
     fixture, monkeypatch,
 ):
-    """With flag-off, T1's unconditional state-machine extension
-    eliminates the 10 × ``clustered → already_passing`` violations;
-    the 15 × ``clustered → soft_signal`` violations remain (T2 inactive).
+    """Defect Plan 3 — explicit legacy off-branch: with
+    ``GSO_JOURNEY_PRODUCER_STRICT=0`` set explicitly, T1's
+    unconditional state-machine extension still eliminates the
+    10 × ``clustered → already_passing`` violations; the 15 ×
+    ``clustered → soft_signal`` violations remain (T2 inactive).
+
+    The branch is pinned via explicit ``setenv=0`` because the
+    default is now ON (Defect Plan 3, 2026-05-12). Pre-Defect-3 this
+    test used ``monkeypatch.delenv`` which produced the same flag-
+    off semantics by accident-of-default; now it must be explicit
+    to remain a true legacy regression.
     """
-    monkeypatch.delenv("GSO_JOURNEY_PRODUCER_STRICT", raising=False)
+    monkeypatch.setenv("GSO_JOURNEY_PRODUCER_STRICT", "0")
     from genie_space_optimizer.common import config
 
     importlib.reload(config)
@@ -81,11 +89,11 @@ def test_anchor_flag_off_clears_clustered_to_already_passing(
         f"got {counts!r}"
     )
     assert counts.get("clustered -> soft_signal", 0) == 15, (
-        f"T2 flag-off should retain clustered → soft_signal × 15; "
+        f"explicit-off legacy branch should retain clustered → soft_signal × 15; "
         f"got {counts!r}"
     )
     assert sum(counts.values()) == 15, (
-        f"flag-off total expected 15; got {sum(counts.values())} "
+        f"explicit-off total expected 15; got {sum(counts.values())} "
         f"(transitions={counts!r})"
     )
 
