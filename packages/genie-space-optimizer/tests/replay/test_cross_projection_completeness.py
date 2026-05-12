@@ -254,6 +254,50 @@ def _build_full_iteration_fixture() -> dict:
                             "AG emission"
                         ),
                     },
+                    {
+                        # Plan P-G (2026-05-12): STRATEGIST_CONTEXT_ASSEMBLED —
+                        # iteration-level boundary record that captures the
+                        # typed StrategistContextOutput at the start of
+                        # Stage 5. Added here to satisfy the exhaustiveness
+                        # check in
+                        # test_replay_decision_records_cover_every_decision_type.
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "strategist_context_assembled",
+                        "outcome": "info",
+                        "reason_code": "context_assembled",
+                        "evidence_refs": ["stage:strategist_context"],
+                        "affected_qids": ["q_synth_hard"],
+                        "metrics": {
+                            "assembled_hash": "sha256:" + "0" * 64,
+                            "hard_failure_qid_count": 1,
+                            "rca_cards_grounded_only_count": 1,
+                            "rca_cards_ungrounded_count": 0,
+                            "top_level_fields": [
+                                "iteration",
+                                "rca_cards_grounded_only",
+                                "hard_failure_qids",
+                            ],
+                        },
+                    },
+                    {
+                        # Plan P-G (2026-05-12): STRATEGIST_CONTEXT_CONSUMED —
+                        # companion record at the strategist LLM-call
+                        # boundary; carries the consumed-vs-assembled drift
+                        # signals.
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "strategist_context_consumed",
+                        "outcome": "info",
+                        "reason_code": "context_consumed_matches_assembled",
+                        "evidence_refs": ["stage:action_group_selection"],
+                        "metrics": {
+                            "assembled_hash": "sha256:" + "0" * 64,
+                            "consumed_hash": "sha256:" + "0" * 64,
+                            "drift_detected": False,
+                            "keys_only_in_consumed": [],
+                            "keys_only_in_assembled": [],
+                            "keys_in_both": 0,
+                        },
+                    },
                 ],
             }
         ],
