@@ -303,3 +303,36 @@ def test_strategist_context_consumed_record_handles_empty_assembled_hash(
     assert record.metrics["keys_only_in_assembled"] == ()
     assert record.metrics["keys_only_in_consumed"] == ()
     assert record.metrics["keys_in_both"] == 0
+
+
+def test_assembled_and_consumed_records_pass_cross_checker() -> None:
+    """Boundary records carry no per-qid rca_id / target_qids by design;
+    the cross-checker MUST NOT flag them as wiring violations."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        strategist_context_assembled_record,
+        strategist_context_consumed_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        validate_decisions_against_journey,
+    )
+    from genie_space_optimizer.optimization.stages.strategist_context import (
+        StrategistContextOutput,
+    )
+
+    out = StrategistContextOutput(iteration=1, baseline_accuracy=0.0)
+    assembled = strategist_context_assembled_record(
+        run_id="r", iteration=1, assembled_output=out,
+    )
+    consumed = strategist_context_consumed_record(
+        run_id="r",
+        iteration=1,
+        consumed_payload={},
+        assembled_hash=assembled.metrics["assembled_hash"],
+    )
+
+    violations = validate_decisions_against_journey(
+        records=[assembled, consumed],
+        events=[],  # boundary records have no required journey stage
+    )
+
+    assert violations == [], violations

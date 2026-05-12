@@ -522,6 +522,16 @@ def validate_decisions_against_journey(
     Empty list = clean cross-check.
     """
     violations: list[str] = []
+    # Plan P-G — STRATEGIST_CONTEXT_ASSEMBLED and STRATEGIST_CONTEXT_CONSUMED
+    # are intentionally NOT in this set. They capture stage boundaries
+    # (the typed StrategistContextOutput produced and the dict actually
+    # fed to the LLM) rather than per-qid causal routing decisions, so
+    # they carry no rca_id / root_cause / target_qids. The cross-checker
+    # already accepts this because their decision_type is absent from
+    # both rca_required and stage_requirements; this comment locks
+    # the design intent so a future contributor does not "fix" the
+    # exemption by adding them and silently start violating the
+    # contract.
     rca_required = {
         DecisionType.CLUSTER_SELECTED,
         DecisionType.RCA_FORMED,
