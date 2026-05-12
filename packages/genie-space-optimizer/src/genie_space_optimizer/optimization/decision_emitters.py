@@ -2310,18 +2310,38 @@ def lever6_force_llm_declined_record(
     cluster_id: str,
     root_cause: str,
     target_qids: tuple = (),
+    cached: bool = False,
+    original_decline_iteration: int | None = None,
+    cluster_signature: str = "",
 ) -> DecisionRecord:
     """Cycle 10 W3 — Cycle 7 N3 force-L6 path: ``_generate_lever6_proposal``
     returned ``None`` (LLM declined / no synthesizable archetype).
+
+    P-E1 — extended with iteration-scoped cache provenance. When the
+    harness short-circuits a second force-L6 attempt for the same
+    ``(_CollisionKeyPair, snippet_type)``, ``cached=True`` and
+    ``original_decline_iteration`` records the iteration where the
+    live decline occurred. Dashboards and replay aggregators treat
+    cached and live declines identically — the cache provenance is
+    audit-only metadata under ``metrics``.
+
+    The optional ``cluster_signature`` is the canonical source-cluster
+    signature element of ``_CollisionKeyPair`` (see
+    ``harness._ag_collision_key_pair``). When supplied (and non-empty)
+    it is emitted as a ``signature:<cluster_signature>`` token in
+    ``evidence_refs`` so the I14 dedup invariant can group records by
+    cluster signature without re-deriving it from the AG payload.
 
     Decision type ``PROPOSAL_GENERATED`` with reason_code
     ``lever6_force_llm_declined``.
     """
     qids = tuple(str(q) for q in (target_qids or ()) if str(q))
+    sig = str(cluster_signature or "").strip()
     evidence_refs = tuple(
         v for v in (
             f"ag:{ag_id}" if ag_id else "",
             f"cluster:{cluster_id}" if cluster_id else "",
+            f"signature:{sig}" if sig else "",
         ) if v
     )
     return DecisionRecord(
@@ -2352,6 +2372,14 @@ def lever6_force_llm_declined_record(
             "decline rationale; consider widening the synthesizer "
             "archetype list."
         ),
+        metrics={
+            "cached": bool(cached),
+            "original_decline_iteration": (
+                int(original_decline_iteration)
+                if original_decline_iteration is not None
+                else None
+            ),
+        },
     )
 
 
