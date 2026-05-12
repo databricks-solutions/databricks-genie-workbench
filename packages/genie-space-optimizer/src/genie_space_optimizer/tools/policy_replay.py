@@ -142,3 +142,179 @@ def load_payload(path: pathlib.Path) -> ReplayPayload:
         reason_code_in_recorded_run=str(raw["reason_code_in_recorded_run"]),
         source_notes=str(raw.get("source_notes", "")),
     )
+
+
+from genie_space_optimizer.optimization.acceptance_policy import (
+    RegressionDebtPolicy,
+)
+from genie_space_optimizer.optimization.control_plane import (
+    ControlPlaneAcceptance,
+    DeltaState,
+    evaluate_regression_debt,
+)
+
+
+# Map evaluate_regression_debt's reason_code (when under_policy=False)
+# to the field name on RegressionDebtPolicy that gated the candidate.
+# This is the structured "missing tier identification" channel: a
+# mismatch between prediction and classification surfaces this field
+# so a designer can decide which threshold to relax or which new
+# tier to introduce.
+_GATE_FOR_REASON: dict[str, str] = {
+    "no_target_clusters_fixed": "min_target_clusters_fixed",
+    "aggregate_gain_below_floor": "min_aggregate_improvement_pp",
+    "threshold_pass_rate_below_floor": "min_threshold_pass_rate",
+    "debt_exceeds_per_iter_max": "max_debt_qids",
+    "debt_bucket_disallowed": "allowed_debt_buckets",
+    "cumulative_debt_cap_hit": "cumulative_debt_max",
+}
+
+
+@dataclass(frozen=True)
+class ReplayClassification:
+    """Result of running one ReplayPayload through one
+    RegressionDebtPolicy.
+
+    ``accepted=None`` and ``reason_code='no_payload'`` when the
+    payload has ``payload_present=False`` (the airline 31ecd96f
+    sentinel). ``first_failed_gate`` is non-None only when the
+    classifier rejected the candidate AND the rejection mapped to
+    a known policy gate; this is the structured handle the
+    prediction-comparison test uses to satisfy the spec's pass
+    criterion ("mismatch identifies a missing tier").
+    """
+    fixture_id: str
+    policy_name: str
+    payload_present: bool
+    accepted: bool | None
+    reason_code: str
+    debt_qids: tuple[str, ...]
+    first_failed_gate: str | None
+    policy_diagnostics: dict = field(default_factory=dict)
+
+
+def _synthesize_decision(payload: ReplayPayload) -> ControlPlaneAcceptance:
+    """Build a ControlPlaneAcceptance from a ReplayPayload.
+
+    The synthesized decision is constructed with ``accepted=False``
+    and ``reason_code='target_qids_not_improved'`` so that
+    ``evaluate_regression_debt`` is called with the canonical
+    "rejected legacy decision that may or may not be promotable to
+    accept-with-debt" shape — the same shape
+    ``decide_control_plane_acceptance`` synthesizes internally
+    before delegating to the debt evaluator (see control_plane.py
+    lines 1632–1660).
+    """
+    delta = round(
+        float(payload.candidate_post_arbiter)
+        - float(payload.baseline_post_arbiter),
+        1,
+    )
+    target_delta_states: tuple[tuple[str, str], ...] = ()
+    if payload.target_qids:
+        states: list[tuple[str, str]] = []
+        fixed_set = set(payload.target_fixed_qids)
+        still_set = set(payload.target_still_hard_qids)
+        for q in payload.target_qids:
+            if q in fixed_set:
+                states.append((q, DeltaState.FIXED.value))
+            elif q in still_set:
+                states.append((q, DeltaState.STILL_HARD.value))
+            else:
+                states.append((q, DeltaState.LOOKUP_FAILED.value))
+        target_delta_states = tuple(sorted(states))
+
+    return ControlPlaneAcceptance(
+        accepted=False,
+        reason_code="target_qids_not_improved",
+        baseline_accuracy=round(float(payload.baseline_post_arbiter), 1),
+        candidate_accuracy=round(float(payload.candidate_post_arbiter), 1),
+        delta_pp=delta,
+        target_qids=payload.target_qids,
+        target_fixed_qids=payload.target_fixed_qids,
+        target_still_hard_qids=payload.target_still_hard_qids,
+        out_of_target_regressed_qids=payload.out_of_target_regressed_qids,
+        regression_debt_qids=(),
+        protected_regressed_qids=(),
+        soft_to_hard_regressed_qids=payload.soft_to_hard_regressed_qids,
+        passing_to_hard_regressed_qids=payload.passing_to_hard_regressed_qids,
+        unknown_to_hard_regressed_qids=payload.unknown_to_hard_regressed_qids,
+        target_delta_states=target_delta_states,
+    )
+
+
+def classify_payload(
+    *,
+    payload: ReplayPayload,
+    policy: RegressionDebtPolicy,
+    policy_name: str,
+    cumulative_debt: int = 0,
+    threshold_pass_rate: float = 1.0,
+) -> ReplayClassification:
+    """Classify one ReplayPayload under one RegressionDebtPolicy.
+
+    Pure: no I/O, no globals. Reuses production
+    ``evaluate_regression_debt`` so the classification reflects
+    exactly what a Stage-9 acceptance call would do for the same
+    bucket lists.
+    """
+    if not payload.payload_present:
+        return ReplayClassification(
+            fixture_id=payload.fixture_id,
+            policy_name=policy_name,
+            payload_present=False,
+            accepted=None,
+            reason_code="no_payload",
+            debt_qids=(),
+            first_failed_gate=None,
+            policy_diagnostics={},
+        )
+
+    decision = _synthesize_decision(payload)
+    verdict = evaluate_regression_debt(
+        decision=decision,
+        policy=policy,
+        cumulative_debt=int(cumulative_debt),
+        threshold_pass_rate=float(threshold_pass_rate),
+    )
+
+    if verdict.under_policy and verdict.debt_qids:
+        return ReplayClassification(
+            fixture_id=payload.fixture_id,
+            policy_name=policy_name,
+            payload_present=True,
+            accepted=True,
+            reason_code="accepted_with_partial_harvest_debt",
+            debt_qids=verdict.debt_qids,
+            first_failed_gate=None,
+            policy_diagnostics=dict(verdict.policy_diagnostics),
+        )
+
+    if verdict.under_policy and not verdict.debt_qids:
+        # Verdict says "under policy but no debt to harvest". In
+        # production decide_control_plane_acceptance would keep the
+        # legacy `accepted` reason for this case (control_plane.py
+        # line 1859 onwards). For replay, surface as accepted with
+        # a distinct reason_code so the comparison test can tell the
+        # two branches apart.
+        return ReplayClassification(
+            fixture_id=payload.fixture_id,
+            policy_name=policy_name,
+            payload_present=True,
+            accepted=True,
+            reason_code="no_debt_to_harvest",
+            debt_qids=(),
+            first_failed_gate=None,
+            policy_diagnostics=dict(verdict.policy_diagnostics),
+        )
+
+    return ReplayClassification(
+        fixture_id=payload.fixture_id,
+        policy_name=policy_name,
+        payload_present=True,
+        accepted=False,
+        reason_code=verdict.reason_code,
+        debt_qids=verdict.debt_qids,
+        first_failed_gate=_GATE_FOR_REASON.get(verdict.reason_code),
+        policy_diagnostics=dict(verdict.policy_diagnostics),
+    )
