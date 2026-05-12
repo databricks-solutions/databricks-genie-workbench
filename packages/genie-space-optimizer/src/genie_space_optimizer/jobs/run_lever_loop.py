@@ -323,11 +323,18 @@ _warehouse_id = ctx["warehouse_id"].value or ""
 if _warehouse_id:
     _os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] = _warehouse_id
 
-# Cycle 11 — production defaults to warn-and-degrade for the loop
-# invariant suite (typed INVARIANT_VIOLATION records, no AssertionError
-# raise). CI / replay can override by setting
-# GSO_LOOP_INVARIANTS_STRICT=1 explicitly.
-_os.environ.setdefault("GSO_LOOP_INVARIANTS_STRICT", "0")
+# RCO-2b — production posture flipped 2026-05-13.
+#
+# Cycle 11 originally pinned ``GSO_LOOP_INVARIANTS_STRICT=0`` here to
+# default warn-and-degrade. With the contract-health merge gate
+# enforced (see ``enforce_merge_gate`` above), strict mode is now the
+# production posture: an invariant violation raises in-loop and the
+# merge gate blocks at end-of-run.
+#
+# ``loop_invariants_strict()`` already returns ``_flag_default_on(...)``
+# (default True); removing this setdefault is what flips production.
+# Emergency rollback: set ``GSO_LOOP_INVARIANTS_STRICT=0`` in the job
+# config (the helper still honors a falsy explicit override).
 
 baseline = get_baseline_eval_state(
     spark, run_id=run_id, catalog=catalog, schema=schema, dbutils=dbutils,
