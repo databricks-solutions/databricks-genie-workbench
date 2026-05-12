@@ -126,3 +126,20 @@ def test_emit_force_l6_outcome_fires_taxonomy_record_on_declined(
     assert failure_decided[0]["metrics"]["failure_mode"] == (
         "lever6_force_llm_declined"
     )
+
+
+def test_no_causal_applyable_patch_path_constants_resolve() -> None:
+    """Sanity check that the constants referenced by the wiring exist."""
+    from genie_space_optimizer.optimization.harness import (
+        _emit_proposal_failure_decided,
+    )
+    from genie_space_optimizer.common.config import (
+        no_causal_applyable_halt_enabled,
+    )
+    from genie_space_optimizer.optimization.proposal_failure_policy import (
+        ProposalFailureNextAction,
+    )
+
+    assert callable(_emit_proposal_failure_decided)
+    assert callable(no_causal_applyable_halt_enabled)
+    assert "narrow_ag_scope" in {a.value for a in ProposalFailureNextAction}

@@ -23545,6 +23545,63 @@ def _run_lever_loop(
                             ag.get("id") or ag.get("ag_id"),
                             len(_before_cap),
                         )
+                        # Plan P-F (2026-05-12) — replace the cycle-13
+                        # TODO audit emitter. The previous _audit_emit
+                        # referenced an inner closure that was removed,
+                        # leaving this branch silent. Now emits a typed
+                        # taxonomy record with a closed-vocabulary next-
+                        # action label so the operator transcript and
+                        # postmortem skills can pivot on the decision.
+                        try:
+                            _ag_signatures = tuple(
+                                str(s)
+                                for s in (
+                                    ag.get("source_cluster_signatures") or ()
+                                )
+                                if str(s)
+                            )
+                            _emit_proposal_failure_decided(
+                                run_id=run_id,
+                                iteration=iteration_counter,
+                                ag_id=str(ag.get("id") or ag.get("ag_id") or ""),
+                                cluster_id=str(
+                                    (ag.get("source_cluster_ids") or [""])[0]
+                                    or ""
+                                ),
+                                cluster_signature=(
+                                    _ag_signatures[0] if _ag_signatures else ""
+                                ),
+                                rca_id=str(ag.get("rca_id") or ""),
+                                root_cause=str(
+                                    _ag_identity_kwargs.get("root_cause") or ""
+                                ),
+                                failure_mode="no_causal_applyable_patch",
+                                lever_set=tuple(
+                                    int(lk) for lk in lever_keys
+                                ),
+                                tried_lever_families=tuple(
+                                    int(lk) for lk in lever_keys
+                                ),
+                                ag_source_cluster_count=len(
+                                    ag.get("source_cluster_ids") or ()
+                                ),
+                                rca_card_grounded=bool(
+                                    ag.get("rca_card_grounded", True)
+                                ),
+                                prior_failure_count=0,
+                                target_qids=tuple(
+                                    str(q) for q in (
+                                        ag.get("affected_questions") or ()
+                                    ) if str(q)
+                                ),
+                                iter_inputs=_current_iter_inputs,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Plan P-F: no_causal_applyable_patch "
+                                "taxonomy emit failed (non-fatal)",
+                                exc_info=True,
+                            )
                         patches = []
                         _patch_cap_decisions = []
                     else:
