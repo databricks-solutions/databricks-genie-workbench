@@ -413,6 +413,10 @@ _I9_CANONICAL_KEYS: tuple[str, ...] = (
     "unknown_to_hard_regressed_qids",
     "accidentally_improved_qids",
     "unresolved_target_debt_qids",
+    # Plan P-C addition — close the reason-detail render drift between
+    # the operator transcript's Acceptance / Rollback line and the
+    # GSO_FULL_EVAL_V1 marker payload (anchor: ccf1d60d iter 1).
+    "reason_detail",
 )
 
 

@@ -1106,3 +1106,63 @@ def test_run_invariants_includes_i12():
         f"I12 must be in run_invariants output; got: "
         f"{[v.get('invariant_id') for v in out]}"
     )
+
+
+def test_i9_detects_reason_code_drift():
+    """Plan P-C — the I9 invariant must flag a reason_code mismatch
+    between acceptance_decision and full_eval_marker payloads."""
+    from genie_space_optimizer.optimization.invariants import (
+        check_i9_acceptance_render_byte_equality,
+    )
+
+    evidence = {
+        "iterations": [{
+            "iteration": 1,
+            "acceptance_decision": {
+                "reason_code": "target_resolution_failed",
+                "target_still_hard_qids": ["gs_026"],
+                "out_of_target_regressed_qids": ["gs_012"],
+            },
+            "full_eval_marker": {
+                "reason_code": "target_qids_not_improved",
+                "target_still_hard_qids": ["gs_026"],
+                "out_of_target_regressed_qids": ["gs_012"],
+            },
+        }],
+    }
+    violations = check_i9_acceptance_render_byte_equality(evidence)
+    assert any(v.get("field") == "reason_code" for v in violations), (
+        f"I9 missed reason_code drift: {violations!r}"
+    )
+
+
+def test_i9_detects_reason_detail_drift():
+    from genie_space_optimizer.optimization.invariants import (
+        check_i9_acceptance_render_byte_equality,
+    )
+
+    evidence = {
+        "iterations": [{
+            "iteration": 1,
+            "acceptance_decision": {
+                "reason_code": "target_qids_not_improved",
+                "reason_detail": (
+                    "reason=target_qids_not_improved; "
+                    "target_still_hard_qids=(none)"
+                ),
+                "target_still_hard_qids": ["gs_026"],
+            },
+            "full_eval_marker": {
+                "reason_code": "target_qids_not_improved",
+                "reason_detail": (
+                    "reason=target_qids_not_improved; "
+                    "target_still_hard_qids=gs_026"
+                ),
+                "target_still_hard_qids": ["gs_026"],
+            },
+        }],
+    }
+    violations = check_i9_acceptance_render_byte_equality(evidence)
+    assert any(v.get("field") == "reason_detail" for v in violations), (
+        f"I9 missed reason_detail drift: {violations!r}"
+    )
