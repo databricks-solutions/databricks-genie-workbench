@@ -111,3 +111,61 @@ def test_builder_falls_back_to_legacy_stub_when_flag_off() -> None:
             failure_buckets={}, asi_metadata={},
         )
     assert out == {"rca_id": ""}
+
+
+def test_orchestrator_drains_self_check_failure_into_decision_record() -> None:
+    """When the builder rejects a card via self-grounding, the
+    orchestrator's records list must include a
+    rca_card_self_check_failed record."""
+    from genie_space_optimizer.optimization.rca import (
+        regenerate_rca_if_policy_permits,
+    )
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationCache,
+        RcaRegenerationPolicy,
+    )
+
+    cluster = {
+        "cluster_id": "cluster_2",
+        "cluster_signature": "cluster_2_sig",
+        "question_ids": ["gs_001"],
+        "rca_card": False,  # ungrounded
+    }
+
+    # Driver returns a fake outcome that triggers the legacy
+    # exhausted path, but the metadata_snapshot also carries a
+    # self-check failure that the orchestrator must drain.
+    def driver(*, spark, run_id, cluster, metadata_snapshot):
+        # Simulate the builder having written a self-check failure
+        # into metadata_snapshot during a prior call.
+        metadata_snapshot.setdefault(
+            "_rca_card_self_check_failures", []
+        ).append({
+            "cluster_id": "cluster_2",
+            "qids": ["gs_001"],
+            "failure_reason": "ungrounded_term",
+        })
+        return {"rca_id": "", "attempted_sources": ("failure_buckets",)}
+
+    cache = RcaRegenerationCache()
+    policy = RcaRegenerationPolicy.default()
+    metadata_snapshot: dict = {}
+
+    with patch.dict(os.environ, {"GSO_RCA_REGEN_RECOVERY_POLICY": "1"}, clear=True):
+        records = regenerate_rca_if_policy_permits(
+            cluster=cluster,
+            findings=[],
+            evidence_snapshot={},
+            cache=cache,
+            policy=policy,
+            run_id="r1",
+            iteration=1,
+            attempt_driver=driver,
+            metadata_snapshot=metadata_snapshot,
+        )
+
+    reason_codes = [r.get("reason_code") for r in records]
+    assert "rca_card_self_check_failed" in reason_codes, (
+        f"orchestrator must drain self-check failure into a DecisionRecord; "
+        f"saw reason_codes={reason_codes}"
+    )

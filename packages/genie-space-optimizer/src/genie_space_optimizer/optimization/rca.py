@@ -1688,12 +1688,19 @@ def regenerate_rca_if_policy_permits(
         )
         attempt_driver = _regenerate_rca_for_cluster
 
+    # Phase 1 Action 1.1 — pass the caller's snapshot dict directly so
+    # the builder's diagnostic stashes survive into the drain block at
+    # the bottom of this function. Using ``metadata_snapshot or {}``
+    # creates a fresh dict (since an empty dict is falsy), which would
+    # silently swallow any self-check failures the builder writes.
+    if metadata_snapshot is None:
+        metadata_snapshot = {}
     try:
         outcome = attempt_driver(
             spark=spark,
             run_id=str(run_id),
             cluster=cluster,
-            metadata_snapshot=metadata_snapshot or {},
+            metadata_snapshot=metadata_snapshot,
         ) or {}
     except Exception:
         outcome = {"rca_id": "", "attempted_sources": ()}
@@ -1732,6 +1739,44 @@ def regenerate_rca_if_policy_permits(
             attempted_evidence_sources=entry.attempted_sources,
         )
         records.append(exh.to_dict())
+
+    # Phase 1 Action 1.1 — drain diagnostic stashes from the builder
+    # into typed decision records. The builder writes these to
+    # metadata_snapshot when self-grounding fails or LLM normalization
+    # is skipped; the orchestrator owns emission so the records land
+    # in the same per-iteration list as the legacy
+    # rca_regeneration_* records.
+    snapshot = metadata_snapshot or {}
+    self_check_failures = snapshot.pop("_rca_card_self_check_failures", []) or []
+    for failure in self_check_failures:
+        from genie_space_optimizer.optimization.decision_emitters import (
+            rca_card_self_check_failed_record,
+        )
+        rec = rca_card_self_check_failed_record(
+            run_id=str(run_id),
+            iteration=int(iteration),
+            cluster_id=str(failure.get("cluster_id") or cluster_id),
+            target_qids=tuple(str(q) for q in (failure.get("qids") or target_qids)),
+            failure_reason=str(failure.get("failure_reason") or "unknown"),
+            ungrounded_terms=tuple(
+                str(t) for t in (failure.get("ungrounded_terms") or ())
+            ),
+        )
+        records.append(rec.to_dict())
+
+    llm_skips = snapshot.pop("_rca_card_llm_skips", []) or []
+    for skip in llm_skips:
+        from genie_space_optimizer.optimization.decision_emitters import (
+            rca_card_llm_skipped_record,
+        )
+        rec = rca_card_llm_skipped_record(
+            run_id=str(run_id),
+            iteration=int(iteration),
+            cluster_id=str(cluster_id),
+            card_id=str(skip.get("card_id") or ""),
+            skip_reason=str(skip.get("skip_reason") or "unknown"),
+        )
+        records.append(rec.to_dict())
 
     return records
 
