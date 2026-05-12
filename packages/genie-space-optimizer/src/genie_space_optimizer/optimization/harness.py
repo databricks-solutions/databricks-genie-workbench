@@ -11015,6 +11015,158 @@ def _ag_collision_key(
     )
 
 
+@dataclass(frozen=True)
+class _ForbiddenSetPair:
+    """Defect Plan 1 G2 — paired forbidden set.
+
+    ``by_root_cause`` is the legacy lookup keyed on
+    ``(root_cause, blame, frozenset(lever_set))`` for byte-stability
+    with pre-defect-plan-1 fixtures.
+
+    ``by_signature`` is the new lookup keyed on
+    ``(source_cluster_signature, frozenset(lever_set))`` — stable
+    across LLM-regenerated root_cause text.
+    """
+    by_root_cause: frozenset
+    by_signature: frozenset
+
+
+@dataclass(frozen=True)
+class _CollisionKeyPair:
+    """Defect Plan 1 G2 — paired collision-key candidate.
+
+    ``root_cause_key`` is the legacy single key (None when the AG
+    lacks enough identity to participate; the legacy code returned
+    None and the caller short-circuited).
+
+    ``signature_keys`` is a tuple of ``(signature, frozenset(
+    lever_set))`` — one per ``source_cluster_signature`` on the AG.
+    Empty tuple when the AG has no signatures.
+    """
+    root_cause_key: tuple | None
+    signature_keys: tuple
+
+
+def _compute_forbidden_ag_set_pair(
+    reflection_buffer: list[dict],
+) -> _ForbiddenSetPair:
+    """Defect Plan 1 G2 — broadened forbidden-set producer.
+
+    Pure function. Reads
+    :func:`forbidden_ag_admits_no_action_enabled` and
+    :func:`forbidden_ag_collision_by_cluster_signature_enabled` from
+    config (at the caller boundary for the legacy axis already; the
+    signature axis is gated by its own accessor).
+
+    Each admitted entry contributes:
+
+    * a tuple ``(root_cause, blame, frozenset(lever_set))`` to
+      ``by_root_cause`` (matches the legacy
+      :func:`_compute_forbidden_ag_set` output exactly).
+    * one tuple ``(signature, frozenset(lever_set))`` per
+      ``source_cluster_signature`` on the entry to ``by_signature``,
+      only when the new flag is on AND signatures are non-empty.
+
+    The same admission predicate (:func:`_reflection_admitted_to_forbidden_set`)
+    is consulted as before — this helper only widens the *output*
+    shape, not which entries are admitted. Replay byte-stability
+    against pre-defect-plan-1 fixtures is preserved when the new
+    flag is off (``by_signature`` becomes the empty frozenset).
+    """
+    from genie_space_optimizer.common.config import (
+        forbidden_ag_admits_no_action_enabled,
+        forbidden_ag_collision_by_cluster_signature_enabled,
+    )
+
+    admit_no_action = forbidden_ag_admits_no_action_enabled()
+    by_signature_on = forbidden_ag_collision_by_cluster_signature_enabled()
+
+    by_root_cause: set[tuple[str, Any, frozenset[int]]] = set()
+    by_signature: set[tuple[str, frozenset[int]]] = set()
+    for r in reflection_buffer:
+        if not _reflection_admitted_to_forbidden_set(
+            r, admit_no_action=admit_no_action
+        ):
+            continue
+        blame = _normalise_blame(r.get("blame_set"))
+        lever_set = r.get("lever_set") or []
+        lever_frozen = frozenset(int(l) for l in lever_set)
+        by_root_cause.add(
+            (r.get("root_cause") or "", blame, lever_frozen)
+        )
+        if by_signature_on:
+            for sig in (r.get("source_cluster_signatures") or []):
+                if not sig:
+                    continue
+                by_signature.add((str(sig), lever_frozen))
+    return _ForbiddenSetPair(
+        by_root_cause=frozenset(by_root_cause),
+        by_signature=frozenset(by_signature),
+    )
+
+
+def _ag_collision_key_pair(
+    ag: dict,
+    ag_root_cause: str,
+    ag_blame_set: Any,
+    lever_keys: list[str],
+) -> _CollisionKeyPair:
+    """Defect Plan 1 G2 — broadened collision-key candidate producer.
+
+    Pure function. Returns the legacy ``root_cause_key`` (None when
+    the AG lacks identity) AND one signature_key per
+    ``source_cluster_signature`` on the AG. The caller composes the
+    pair against a :class:`_ForbiddenSetPair` via
+    :func:`_collision_pair_matches`.
+    """
+    if not ag_root_cause or not lever_keys:
+        root_cause_key: tuple | None = None
+    else:
+        root_cause_key = (
+            ag_root_cause,
+            _normalise_blame(ag_blame_set),
+            frozenset(int(lk) for lk in lever_keys),
+        )
+
+    lever_frozen = (
+        frozenset(int(lk) for lk in lever_keys) if lever_keys else frozenset()
+    )
+    sigs = ag.get("source_cluster_signatures") or []
+    signature_keys = tuple(
+        (str(s), lever_frozen)
+        for s in sigs
+        if s
+    )
+    return _CollisionKeyPair(
+        root_cause_key=root_cause_key,
+        signature_keys=signature_keys,
+    )
+
+
+def _collision_pair_matches(
+    candidate: _CollisionKeyPair,
+    forbidden: _ForbiddenSetPair,
+) -> bool:
+    """Defect Plan 1 G2 — return True iff EITHER axis matches.
+
+    Pure function. Short-circuits on the legacy axis so the existing
+    code path's behaviour is preserved when the new signature axis is
+    empty (flag off).
+    """
+    if (
+        candidate.root_cause_key is not None
+        and candidate.root_cause_key in forbidden.by_root_cause
+    ):
+        return True
+    if not candidate.signature_keys:
+        return False
+    if not forbidden.by_signature:
+        return False
+    return any(
+        k in forbidden.by_signature for k in candidate.signature_keys
+    )
+
+
 def _filter_tried_clusters(
     clusters: list[dict],
     tried_root_causes: set[tuple],
