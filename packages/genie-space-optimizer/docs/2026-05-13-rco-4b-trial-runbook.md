@@ -176,6 +176,13 @@ contract; flips `GSO_JOURNEY_PRODUCER_STRICT` to default-ON. Re-trial
 readiness: Defect 1 + Defect 2 + Defect 3 + RCO-2b strict-mode flip +
 bundle-status micro-plan all landed 2026-05-12/13.
 
+**Run-end replay-fixture validation wired** — `docs/2026-05-12-run-end-replay-validation-plan.md`
+(landed 2026-05-12). `GSO_CONTRACT_HEALTH_V1` now reflects end-of-run
+replay-fixture validity (`is_valid` + `violation_count`) by inlining
+a `run_replay(serialized_fixture)` call inside the existing Phase A
+try block. Closes the last `read-locals-before-assigned` surface from
+the bundle-status wiring fix's out-of-scope table.
+
 **Deferred-RCO unblocking status:**
 
 | RCO | Status | Reason |

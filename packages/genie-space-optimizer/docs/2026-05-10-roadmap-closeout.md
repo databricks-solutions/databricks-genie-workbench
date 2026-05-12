@@ -252,6 +252,8 @@ Re-trial against F9-3b050ec5 + AIRLINE-clean is now unblocked (Defect 1 + Defect
 
 - **Bundle-status wiring fix (2026-05-12) — landed.** `contract_health.bundle_status` now reflects `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` and `GSO_BUNDLE_ASSEMBLY_FAILED_V1` markers emitted in the same run. Closes the contradiction surfaced by the May-12 trial (both runs reported `bundle_status="complete"` while `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` reported `missing_count=40`). Incidental win: `_phase_h_marker_payload` is now also visible to the relocated emission, so `phase_h_listing_status` / `phase_h_validator_status` will reflect actual Phase H state instead of always reporting `skipped`. See `docs/2026-05-12-bundle-status-wiring-fix-plan.md`.
 
+- **Run-end replay-fixture validation wired (2026-05-12) — landed.** The post-Phase-H `GSO_CONTRACT_HEALTH_V1` marker now reports `replay_is_valid` / `replay_violation_count` based on `run_replay(serialized_fixture)` inside the existing Phase A try block. Closes the last `read-locals-before-assigned` surface from the bundle-status wiring fix's out-of-scope table. RCO-6's journey-replay defect carve-out gets a stable end-of-run measurement to track regressions against. See `docs/2026-05-12-run-end-replay-validation-plan.md`.
+
 **Phase roadmap:** `docs/2026-05-12-rco-4b-phase-roadmap.md`.
 
 **Stage inventory:** `docs/2026-05-12-rco-4b-gate-stage-inventory.md`.
