@@ -2726,3 +2726,112 @@ def cluster_blocked_no_rca_record(
             "diagnostic-AG path before re-attempting AG emission"
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan P-G — Stage 4 strategist context boundary
+# ---------------------------------------------------------------------------
+
+
+def _canonical_sha256(payload: Any) -> str:
+    """SHA-256 of a canonical JSON projection of ``payload``.
+
+    Used by both ASSEMBLED and CONSUMED producers so the two hashes are
+    directly comparable for drift detection. Accepts either an object
+    with ``.to_json()`` (e.g. ``StrategistContextOutput``) or a plain
+    dict / list — falls back to ``json.dumps(sort_keys=True,
+    separators=(",", ":"), default=str)`` so a dataclass instance and a
+    dict with the same logical content produce identical hashes when
+    their fields agree.
+    """
+    import hashlib
+    import json as _json
+    if hasattr(payload, "to_json"):
+        intermediate = payload.to_json()
+    else:
+        intermediate = payload
+    text = _json.dumps(
+        intermediate, sort_keys=True, separators=(",", ":"), default=str,
+    )
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def strategist_context_assembled_record(
+    *,
+    run_id: str,
+    iteration: int,
+    assembled_output: Any,
+) -> DecisionRecord:
+    """Emit exactly one ``STRATEGIST_CONTEXT_ASSEMBLED`` record per iter.
+
+    ``assembled_output`` is the typed ``StrategistContextOutput`` returned
+    by ``stages.strategist_context.build_strategist_context``. The record
+    carries:
+
+    * ``metrics.assembled_hash``: canonical SHA-256 of the typed output
+      (used for drift detection vs ``STRATEGIST_CONTEXT_CONSUMED``).
+    * ``metrics.rca_cards_grounded_only_count`` / ``*_ungrounded_count``
+      so the operator transcript can show how many cards survived the
+      Stage 2 → Stage 4 grounded-only filter.
+    * ``affected_qids``: the union of hard-failure qids in the
+      assembled boundary so postmortem can correlate Stage 4 with the
+      iteration's failures.
+
+    This record is iteration-level (not per-qid). It is intentionally
+    NOT in ``validate_decisions_against_journey``'s ``rca_required``
+    set (see Task 5) because it captures a stage boundary, not an RCA
+    routing decision.
+    """
+    import dataclasses as _dc
+    hard_qids = tuple(
+        str(q) for q in getattr(assembled_output, "hard_failure_qids", ()) or ()
+    )
+    grounded = getattr(assembled_output, "rca_cards_grounded_only", ()) or ()
+    ungrounded_n = int(
+        getattr(assembled_output, "rca_cards_ungrounded_count", 0) or 0
+    )
+    assembled_hash = _canonical_sha256(assembled_output)
+    # Plan P-G: expose the typed-boundary's top-level field names so the
+    # CONSUMED producer (Task 4) can compute a structural diff against
+    # the dict actually fed to the LLM. Use dataclasses.fields when
+    # possible (deterministic, no Python dunder noise); fall back to a
+    # filtered ``dir()`` for non-dataclass inputs (test stubs).
+    if _dc.is_dataclass(assembled_output) and not isinstance(
+        assembled_output, type
+    ):
+        top_fields: tuple[str, ...] = tuple(
+            f.name for f in _dc.fields(assembled_output)
+        )
+    else:
+        top_fields = tuple(
+            sorted(
+                str(k) for k in dir(assembled_output)
+                if not str(k).startswith("_")
+            )
+        )
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        decision_type=DecisionType.STRATEGIST_CONTEXT_ASSEMBLED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.CONTEXT_ASSEMBLED,
+        evidence_refs=("stage:strategist_context",),
+        affected_qids=hard_qids,
+        expected_effect=(
+            f"Strategist LLM in iter {iteration} should receive "
+            f"{len(grounded)} grounded RCA card(s) and "
+            f"{len(hard_qids)} hard-failure qid(s)."
+        ),
+        next_action=(
+            "Compare assembled_hash to STRATEGIST_CONTEXT_CONSUMED "
+            "metrics.consumed_hash in the same iteration to verify "
+            "the Stage 4 boundary reached the LLM unchanged."
+        ),
+        metrics={
+            "assembled_hash": assembled_hash,
+            "hard_failure_qid_count": len(hard_qids),
+            "rca_cards_grounded_only_count": len(grounded),
+            "rca_cards_ungrounded_count": ungrounded_n,
+            "top_level_fields": top_fields,
+        },
+    )

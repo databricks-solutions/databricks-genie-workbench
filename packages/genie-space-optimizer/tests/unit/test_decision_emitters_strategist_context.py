@@ -90,3 +90,83 @@ def test_stage4_context_persistence_flag_falsy_values(
     for falsy in ("", "0", "false", "no", "off"):
         monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", falsy)
         assert stage4_context_persistence_enabled() is False, falsy
+
+
+def test_strategist_context_assembled_record_emits_one_with_hash() -> None:
+    """Producer emits exactly one ASSEMBLED record carrying the canonical
+    SHA-256 hash of StrategistContextOutput.to_json()."""
+    import hashlib
+    from genie_space_optimizer.optimization.decision_emitters import (
+        strategist_context_assembled_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionOutcome,
+        DecisionType,
+        ReasonCode,
+    )
+    from genie_space_optimizer.optimization.stages.strategist_context import (
+        StrategistContextOutput,
+    )
+
+    out = StrategistContextOutput(
+        iteration=2,
+        baseline_accuracy=0.5,
+        hard_failure_qids=("gs_009", "gs_024"),
+        clusters_by_qid={"gs_009": "H001", "gs_024": "H002"},
+        rca_cards_grounded_only=(
+            {"rca_id": "r1", "cluster_id": "H001", "grounding": "grounded"},
+        ),
+        rca_cards_ungrounded_count=1,
+    )
+    import json as _json
+    expected_hash = "sha256:" + hashlib.sha256(
+        _json.dumps(
+            out.to_json(),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    record = strategist_context_assembled_record(
+        run_id="run_abc", iteration=2, assembled_output=out,
+    )
+
+    assert record.decision_type == DecisionType.STRATEGIST_CONTEXT_ASSEMBLED
+    assert record.outcome == DecisionOutcome.INFO
+    assert record.reason_code == ReasonCode.CONTEXT_ASSEMBLED
+    assert record.iteration == 2
+    assert record.run_id == "run_abc"
+    assert record.metrics.get("assembled_hash") == expected_hash
+    assert record.metrics.get("rca_cards_grounded_only_count") == 1
+    assert record.metrics.get("rca_cards_ungrounded_count") == 1
+    assert record.metrics.get("hard_failure_qid_count") == 2
+    assert record.affected_qids == ("gs_009", "gs_024")
+    assert record.evidence_refs == ("stage:strategist_context",)
+    # Plan P-G: expose top-level typed-boundary fields so the CONSUMED
+    # producer can compute a structural diff without re-reading the JSON.
+    top_fields = record.metrics.get("top_level_fields")
+    assert isinstance(top_fields, tuple) and "rca_cards_grounded_only" in (
+        top_fields
+    )
+    assert "baseline_accuracy" in top_fields
+    assert "hard_failure_qids" in top_fields
+
+
+def test_strategist_context_assembled_record_hash_is_deterministic() -> None:
+    """Same StrategistContextOutput → same hash across calls."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        strategist_context_assembled_record,
+    )
+    from genie_space_optimizer.optimization.stages.strategist_context import (
+        StrategistContextOutput,
+    )
+
+    out = StrategistContextOutput(iteration=1, baseline_accuracy=0.5)
+    r1 = strategist_context_assembled_record(
+        run_id="r", iteration=1, assembled_output=out,
+    )
+    r2 = strategist_context_assembled_record(
+        run_id="r", iteration=1, assembled_output=out,
+    )
+    assert r1.metrics["assembled_hash"] == r2.metrics["assembled_hash"]
