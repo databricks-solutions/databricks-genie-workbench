@@ -174,19 +174,63 @@ def _from_dbutils_tags(tags: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _from_mlflow_tags(tags: dict[str, str]) -> dict[str, str]:
+    """Project MLflow auto-stamped Databricks tags directly onto
+    the three resolved-ID slots.
+
+    Tier 3a — fires whenever the platform stamped the tags on the
+    active MLflow run, even if the harness could not call
+    ``WorkspaceClient.jobs.get_run`` (no SDK / network).
+    """
+    return {
+        "databricks_job_id": str(tags.get("mlflow.databricks.jobID") or ""),
+        "databricks_parent_run_id": str(
+            tags.get("mlflow.databricks.jobRunID") or ""
+        ),
+        "lever_loop_task_run_id": str(
+            tags.get("mlflow.databricks.runID") or ""
+        ),
+    }
+
+
+def _from_jobs_snapshot(snapshot: "JobsRunSnapshot") -> dict[str, str]:
+    """Tier 3b — project the harness-resolved Jobs API snapshot.
+
+    The harness adapter orders ``task_run_ids`` so the lever-loop
+    task is first; the stage trusts that ordering and uses
+    ``task_run_ids[0]``.
+    """
+    task_run_id = ""
+    if snapshot.task_run_ids:
+        task_run_id = str(snapshot.task_run_ids[0] or "")
+    return {
+        "databricks_job_id": str(snapshot.job_id or ""),
+        "databricks_parent_run_id": str(snapshot.parent_run_id or ""),
+        "lever_loop_task_run_id": task_run_id,
+    }
+
+
 def resolve_run_manifest(ctx, inp: RunManifestInput) -> RunManifestOutput:
-    """Resolve Databricks IDs from env + optional dbutils tags.
+    """Resolve Databricks IDs from env + optional dbutils tags +
+    optional MLflow tags + optional pre-resolved Jobs API snapshot.
 
     Resolution order (first hit wins per field):
+
       1. env vars
       2. dbutils tags (if ``inp.dbutils_available``)
-      3. sentinel (``"unknown"``)
+      3a. MLflow auto-stamped Databricks tags (direct projection)
+      3b. Pre-resolved Jobs API snapshot (harness owns the SDK call;
+          stage receives the JSON-safe ``JobsRunSnapshot``)
+      4. sentinel (``"unknown"``)
+
+    The stage performs no I/O — every input is plain data, so the
+    whole resolution is JSON-replayable from a chunk-D fixture.
     """
     env_resolved = _from_env(inp.env or {})
+    final = dict(env_resolved)
 
     dbutils_attempted = False
     dbutils_succeeded = False
-    final = dict(env_resolved)
     if not all(final.values()) and inp.dbutils_available:
         dbutils_attempted = True
         tags_resolved = _from_dbutils_tags(inp.dbutils_tags or {})
@@ -195,11 +239,43 @@ def resolve_run_manifest(ctx, inp: RunManifestInput) -> RunManifestOutput:
                 final[k] = v
                 dbutils_succeeded = True
 
-    final = {k: (v or DATABRICKS_ID_SENTINEL) for k, v in final.items()}
-    fields_resolved = sum(1 for v in final.values() if v != DATABRICKS_ID_SENTINEL)
+    mlflow_succeeded = False
+    if not all(final.values()) and (inp.mlflow_run_tags or {}):
+        mlflow_resolved = _from_mlflow_tags(inp.mlflow_run_tags or {})
+        for k, v in mlflow_resolved.items():
+            if not final[k] and v:
+                final[k] = v
+                mlflow_succeeded = True
 
+    # ``jobs_api_attempted`` reflects a runtime fact only the
+    # harness knows: did we call ``WorkspaceClient.jobs.get_run``?
+    # The harness signals "yes" by passing a non-None snapshot
+    # (possibly with all-empty fields when the call returned an
+    # empty Run). ``None`` means "harness did not attempt the
+    # call" — no SDK / no seed / call raised pre-call.
+    jobs_api_attempted = inp.jobs_run_snapshot is not None
+    jobs_api_succeeded = False
+    if not all(final.values()) and jobs_api_attempted:
+        api_resolved = _from_jobs_snapshot(inp.jobs_run_snapshot)
+        for k, v in api_resolved.items():
+            if not final[k] and v:
+                final[k] = v
+                jobs_api_succeeded = True
+
+    final = {k: (v or DATABRICKS_ID_SENTINEL) for k, v in final.items()}
+    fields_resolved = sum(
+        1 for v in final.values() if v != DATABRICKS_ID_SENTINEL
+    )
+
+    tier3_succeeded = mlflow_succeeded or jobs_api_succeeded
     if all(env_resolved.values()):
         path = ResolutionPath.ENV
+    elif tier3_succeeded and (
+        any(env_resolved.values()) or dbutils_succeeded
+    ):
+        path = ResolutionPath.MIXED_JOBS_API
+    elif tier3_succeeded:
+        path = ResolutionPath.JOBS_API
     elif dbutils_succeeded and any(env_resolved.values()):
         path = ResolutionPath.MIXED
     elif dbutils_succeeded:
@@ -216,6 +292,8 @@ def resolve_run_manifest(ctx, inp: RunManifestInput) -> RunManifestOutput:
         fields_total=3,
         dbutils_attempted=dbutils_attempted,
         dbutils_succeeded=dbutils_succeeded,
+        jobs_api_attempted=jobs_api_attempted,
+        jobs_api_succeeded=jobs_api_succeeded,
     )
 
 
