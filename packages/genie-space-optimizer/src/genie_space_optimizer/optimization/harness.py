@@ -1154,6 +1154,7 @@ def _emit_contract_health_summary(
     bundle_assembly_failed,
     bundle_assembly_incomplete,
     replay_validation,
+    proposal_stage_forbidden_ag_observed_records=(),
 ):
     """RCO-2a — emit ``GSO_CONTRACT_HEALTH_V1`` at end-of-run and
     return the built ``ContractHealthSummary`` for in-process consumers
@@ -1184,6 +1185,9 @@ def _emit_contract_health_summary(
             bundle_assembly_failed=bundle_assembly_failed or (),
             bundle_assembly_incomplete=bundle_assembly_incomplete,
             replay_validation=replay_validation,
+            proposal_stage_forbidden_ag_observed_records=(
+                proposal_stage_forbidden_ag_observed_records or ()
+            ),
         )
         print(contract_health_summary_marker(summary))
         return summary
@@ -28375,6 +28379,34 @@ def _run_lever_loop(
     # re-parsing stdout. Default to None so the variable is defined
     # even if the try block raises before the emission call.
     _contract_health_summary = None
+    # P-E2 — collect observe-only records from all iterations so the
+    # contract-health summary's
+    # ``proposal_stage_forbidden_ag_observed_count_by_call_site`` is
+    # accurate. Records were appended to per-iteration
+    # ``_current_iter_inputs["decision_records"]`` and parsed into
+    # ``_iter_traces[i].decision_records``; flatten + filter here.
+    _p_e2_observe_records: list[dict] = []
+    try:
+        for _it_idx, _it_trace in (
+            locals().get("_iter_traces") or {}
+        ).items():
+            for _rec in getattr(_it_trace, "decision_records", ()) or ():
+                _rec_dict = (
+                    _rec.to_dict() if hasattr(_rec, "to_dict")
+                    else dict(_rec) if isinstance(_rec, dict)
+                    else None
+                )
+                if _rec_dict is None:
+                    continue
+                if str(_rec_dict.get("reason_code") or "") == (
+                    "proposal_stage_forbidden_ag_observed"
+                ):
+                    _p_e2_observe_records.append(_rec_dict)
+    except Exception:
+        logger.debug(
+            "P-E2 observe-record collection failed (non-fatal)",
+            exc_info=True,
+        )
     try:
         _contract_health_summary = _emit_contract_health_summary(
             optimization_run_id=run_id,
@@ -28389,6 +28421,9 @@ def _run_lever_loop(
                 locals().get("_bundle_assembly_incomplete_payloads") or ()
             ),
             replay_validation=locals().get("_run_end_replay_validation"),
+            proposal_stage_forbidden_ag_observed_records=tuple(
+                _p_e2_observe_records
+            ),
         )
     except Exception:
         logger.debug(

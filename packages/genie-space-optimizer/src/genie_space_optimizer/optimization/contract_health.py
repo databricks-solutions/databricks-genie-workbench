@@ -75,6 +75,15 @@ class ContractHealthSummary:
     bundle_status: str
     replay_is_valid: bool
     replay_violation_count: int
+    # P-E2 — observe-only leakage counts. Always carries both
+    # known call_site keys (zero when no records). Tuple-of-pairs
+    # rather than dict for hashable / frozen-dataclass compat.
+    proposal_stage_forbidden_ag_observed_count_by_call_site: tuple[
+        tuple[str, int], ...
+    ] = (
+        ("cluster_driven_synthesis", 0),
+        ("force_lever6", 0),
+    )
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -91,10 +100,24 @@ class ContractHealthSummary:
             "bundle_status": str(self.bundle_status),
             "replay_is_valid": bool(self.replay_is_valid),
             "replay_violation_count": int(self.replay_violation_count),
+            "proposal_stage_forbidden_ag_observed_count_by_call_site": [
+                [str(k), int(v)]
+                for k, v in
+                self.proposal_stage_forbidden_ag_observed_count_by_call_site
+            ],
         }
 
     @classmethod
     def from_json_dict(cls, blob: Mapping[str, Any]) -> "ContractHealthSummary":
+        raw_counts = blob.get(
+            "proposal_stage_forbidden_ag_observed_count_by_call_site"
+        ) or [
+            ["cluster_driven_synthesis", 0],
+            ["force_lever6", 0],
+        ]
+        counts = tuple(
+            (str(item[0]), int(item[1])) for item in raw_counts
+        )
         return cls(
             optimization_run_id=str(blob.get("optimization_run_id") or ""),
             merge_gate_status=MergeGateStatus(
@@ -111,6 +134,7 @@ class ContractHealthSummary:
             bundle_status=str(blob.get("bundle_status") or ""),
             replay_is_valid=bool(blob.get("replay_is_valid")),
             replay_violation_count=int(blob.get("replay_violation_count") or 0),
+            proposal_stage_forbidden_ag_observed_count_by_call_site=counts,
         )
 
 
@@ -136,6 +160,12 @@ def _classify_bundle(
     return "complete"
 
 
+_PROPOSAL_STAGE_OBSERVED_CALL_SITES: tuple[str, ...] = (
+    "cluster_driven_synthesis",
+    "force_lever6",
+)
+
+
 def build_contract_health_summary(
     *,
     optimization_run_id: str,
@@ -144,6 +174,9 @@ def build_contract_health_summary(
     bundle_assembly_failed: Sequence[Mapping[str, Any]],
     bundle_assembly_incomplete: Sequence[Mapping[str, Any]] | None,
     replay_validation: Mapping[str, Any] | None,
+    proposal_stage_forbidden_ag_observed_records: Sequence[
+        Mapping[str, Any]
+    ] = (),
 ) -> ContractHealthSummary:
     """Aggregate evidence into a typed contract-health summary.
 
@@ -198,6 +231,26 @@ def build_contract_health_summary(
     else:
         status = MergeGateStatus.HEALTHY
 
+    # P-E2 — aggregate observe-only leakage counts by call_site.
+    # Always seed both known keys at 0 so the merge-gate marker
+    # shape is byte-stable across runs (no missing keys).
+    leakage_counts: dict[str, int] = {
+        site: 0 for site in _PROPOSAL_STAGE_OBSERVED_CALL_SITES
+    }
+    for rec in proposal_stage_forbidden_ag_observed_records or ():
+        if str((rec or {}).get("reason_code") or "") != (
+            "proposal_stage_forbidden_ag_observed"
+        ):
+            continue
+        site = str(((rec or {}).get("metrics") or {}).get("call_site") or "")
+        if site in leakage_counts:
+            leakage_counts[site] += 1
+        # Unknown call_site → silently skipped (defense in depth).
+    leakage_tuple = tuple(
+        (site, leakage_counts[site])
+        for site in _PROPOSAL_STAGE_OBSERVED_CALL_SITES
+    )
+
     return ContractHealthSummary(
         optimization_run_id=str(optimization_run_id),
         merge_gate_status=status,
@@ -208,6 +261,7 @@ def build_contract_health_summary(
         bundle_status=bundle_status,
         replay_is_valid=replay_is_valid,
         replay_violation_count=replay_violation_count,
+        proposal_stage_forbidden_ag_observed_count_by_call_site=leakage_tuple,
     )
 
 
