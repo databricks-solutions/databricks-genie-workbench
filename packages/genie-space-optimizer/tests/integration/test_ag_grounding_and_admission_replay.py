@@ -282,3 +282,81 @@ def test_7now_replay_legacy_axis_alone_does_not_collide(monkeypatch):
 
     # Legacy axis alone misses → no collision → bug reproduced.
     assert _collision_pair_matches(candidate, pair) is False
+
+
+# ── Defect Plan 2 (2026-05-12) — airline no_applied_patches retirement ─
+
+
+def test_airline_iter3_retires_no_applied_patches_ag() -> None:
+    """Defect Plan 2 replay parity: a synthetic iter-1 reflection
+    with rollback_reason='no_applied_patches' and full identity
+    (root_cause + blame_set + lever_set + signatures) must enter
+    ``_compute_forbidden_ag_set`` so the iter-3 collision-guard would
+    reject the same AG family.
+
+    Pre-Defect-2: the iter-1 reflection had rollback_class='other' (the
+    classifier catch-all), so ``_compute_forbidden_ag_set`` returned an
+    empty set, the iter-3 ``_ag_collision_key`` lookup missed, and the
+    AG re-admitted on iterations 3 and 5. Verdict MERGE_GATE_GAP.
+
+    Post-Defect-2: iter-1 entry classifies as NO_ACTION, enters the
+    forbidden set via the default-ON GSO_FORBIDDEN_AG_ADMITS_NO_ACTION
+    flag, and iter-3's collision-key lookup matches. AG is filtered.
+
+    Note: this test does not need the May-12 captured replay fixture
+    because the per-iteration reflection_buffer is not surfaced in the
+    extracted replay JSON. The synthetic reflection here mirrors the
+    exact shape that ``_build_reflection_entry`` produces in the
+    no_applied_patches branch (harness.py); the unit-level
+    ``test_no_applied_recovery.py`` tests already pin the same shape.
+    """
+    from genie_space_optimizer.optimization.harness import (
+        _ag_collision_key,
+        _build_reflection_entry,
+        _compute_forbidden_ag_set,
+    )
+
+    # Iter-1 reflection: AG_DECOMPOSED_H001 for cluster gs_009,
+    # rollback_reason='no_applied_patches', full identity populated.
+    iter1_entry = _build_reflection_entry(
+        iteration=1,
+        ag_id="AG_DECOMPOSED_H001",
+        accepted=False,
+        levers=[1, 3],
+        target_objects=[],
+        prev_scores={"gs_009": 0.0},
+        new_scores={"gs_009": 0.0},
+        rollback_reason="no_applied_patches",
+        patches=[],
+        affected_question_ids=["gs_009"],
+        root_cause="wrong_aggregation",
+        blame_set=("gs_009",),
+        source_cluster_ids=["c001"],
+        source_cluster_signatures=["sig:c001:H001"],
+    )
+
+    forbidden = _compute_forbidden_ag_set([iter1_entry])
+    assert forbidden, (
+        "Defect Plan 2: forbidden set must be non-empty after admitting "
+        "the no_applied_patches reflection."
+    )
+
+    # Iter-3 candidate: same AG family with the same identity. The LLM
+    # may emit a slightly different root_cause text, but the strategist's
+    # AG carries the same `root_cause` and `lever_set` semantically.
+    iter3_ag = {
+        "ag_id": "AG_DECOMPOSED_H001",
+        "source_cluster_ids": ["c001"],
+        "source_cluster_signatures": ["sig:c001:H001"],
+    }
+    collision_key = _ag_collision_key(
+        iter3_ag,
+        "wrong_aggregation",
+        ("gs_009",),
+        ["1", "3"],
+    )
+    assert collision_key in forbidden, (
+        "Defect Plan 2: iter-3 AG_DECOMPOSED_H001 must collide with the "
+        "iter-1 forbidden-set entry. The collision-guard call site in "
+        "harness.py will then skip the AG."
+    )
