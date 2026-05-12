@@ -343,6 +343,9 @@ def _walk_audit_artifacts(
             if not (
                 artifact_path.startswith("phase_a/")
                 or artifact_path.startswith("phase_b/")
+                or artifact_path.startswith(
+                    "gso_postmortem_bundle/iterations/iter_"
+                )
             ):
                 continue
             dest = paths.mlflow_dir / sibling["run_id"]

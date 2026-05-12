@@ -528,3 +528,63 @@ def test_download_parent_bundle_records_missing_piece_on_failure(
     assert missing[0].kind == MissingPieceKind.MLFLOW_AUDIT_FAILED
     assert "parent bundle download failed" in missing[0].diagnosis
     assert "MLflow is down" in missing[0].diagnosis
+
+
+def test_walk_audit_artifacts_pulls_per_iter_bundle_paths(tmp_path) -> None:
+    """Plan P-A — the prefix filter must accept
+    ``gso_postmortem_bundle/iterations/iter_*`` paths so the postmortem
+    skill receives every per-iter rollup written by the harness's
+    terminate-path materializer."""
+    from genie_space_optimizer.tools.evidence_bundle import (
+        _walk_audit_artifacts,
+    )
+    from genie_space_optimizer.tools.evidence_layout import bundle_paths_for
+
+    paths = bundle_paths_for(root=tmp_path, optimization_run_id="opt1")
+    paths.evidence_dir.mkdir(parents=True, exist_ok=True)
+    paths.mlflow_dir.mkdir(parents=True, exist_ok=True)
+
+    pulled: list[tuple[str, str]] = []
+
+    class _StubMlflow:
+        def download_artifacts(
+            self, *, run_id: str, artifact_path: str, dest,
+        ):
+            pulled.append((run_id, artifact_path))
+            target = dest / artifact_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("{}")
+            return [target]
+
+    audit = {
+        "anchor_run_id": "anchor_xyz",
+        "sibling_runs": [
+            {
+                "run_id": "anchor_xyz",
+                "artifact_paths": [
+                    "phase_a/journey_validation/iter_1.json",
+                    "gso_postmortem_bundle/iterations/iter_01/summary.json",
+                    "gso_postmortem_bundle/iterations/iter_01/rca_ledger.json",
+                    "unrelated/path/to/skip.json",
+                ],
+            },
+        ],
+        "missing_per_iteration": [],
+    }
+
+    _walk_audit_artifacts(
+        audit=audit, mlflow_runner=_StubMlflow(), paths=paths,
+    )
+
+    pulled_paths = {p for _, p in pulled}
+    # Old-style legacy phase_a path still pulled.
+    assert "phase_a/journey_validation/iter_1.json" in pulled_paths
+    # Plan P-A — new per-iter bundle paths pulled.
+    assert (
+        "gso_postmortem_bundle/iterations/iter_01/summary.json" in pulled_paths
+    )
+    assert (
+        "gso_postmortem_bundle/iterations/iter_01/rca_ledger.json" in pulled_paths
+    )
+    # Unrelated paths skipped by the prefix filter.
+    assert "unrelated/path/to/skip.json" not in pulled_paths
