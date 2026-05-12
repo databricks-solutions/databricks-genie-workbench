@@ -242,6 +242,9 @@ from pyspark.sql import SparkSession
 
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
+from genie_space_optimizer.optimization.contract_health import (
+    enforce_merge_gate,
+)
 from genie_space_optimizer.optimization.evaluation import load_benchmarks_from_dataset
 from genie_space_optimizer.optimization.harness import _run_lever_loop
 
@@ -639,6 +642,15 @@ _log(
     iteration_counter=loop_out["iteration_counter"],
     debug_info=debug_info,
 )
+
+# RCO-2b — production posture flip. Task values are published above
+# so the failing run's debug payload survives for postmortem tooling;
+# enforce_merge_gate raises MergeGateBlockedError if the contract-
+# health summary reports merge_gate_blocked, which marks the
+# Databricks task failed and causes downstream finalize/deploy to
+# skip. Healthy / warn statuses fall through to the notebook.exit.
+enforce_merge_gate(loop_out)
+
 _banner("Task 4 Completed")
 dbutils.notebook.exit(json.dumps(debug_info, default=str))
 
