@@ -11957,6 +11957,30 @@ def _collision_pair_matches(
     )
 
 
+def _l6_decline_cache_key(
+    collision_pair,
+    *,
+    snippet_type: str | None,
+) -> tuple:
+    """P-E1 — produce a hashable cache key for the iteration-scoped
+    force-L6 decline memo.
+
+    Returns ``(root_cause_key | None, signature_keys (sorted),
+    snippet_type | None)``. ``root_cause_key`` and ``signature_keys``
+    come straight from :class:`_CollisionKeyPair` so the cache shares
+    AG-selection's identity — there is exactly one definition of
+    "same structural-repair shape" across the harness.
+
+    ``snippet_type=None`` represents "LLM returned None outright"
+    (no candidate of any shape). The narrow-replacement and explicit
+    L6 synthesis paths pass the actual ``snippet_type`` they would
+    have attempted, so the cache differentiates ``filter`` from
+    ``measure`` from ``expression`` declines per AG-identity.
+    """
+    sigs = tuple(sorted(collision_pair.signature_keys))
+    return (collision_pair.root_cause_key, sigs, snippet_type)
+
+
 def _filter_tried_clusters(
     clusters: list[dict],
     tried_root_causes: set[tuple],
