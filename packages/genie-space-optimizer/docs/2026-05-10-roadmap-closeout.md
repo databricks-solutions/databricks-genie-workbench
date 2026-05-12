@@ -245,7 +245,7 @@ Deferred-RCO unblocking from this trial: RCO-2b ✅ (landed 2026-05-13; see `doc
 |---|---|---|---|
 | Defect 1 — AG grounding + cluster-signature admission | `docs/2026-05-12-defect-ag-emit-grounding-and-forbidden-admission-plan.md` | Yes | ✅ Landed (2026-05-12) |
 | Defect 2 — Stable retry signature for no-progress iterations | `docs/2026-05-12-defect-no-applied-patches-retry-signature-plan.md` | Yes | ✅ Landed (2026-05-12) |
-| Defect 3 — RCO-6 carve-out (gs_021 clustered → soft_signal) | (not drafted yet) | No (blocks RCO-6, not the re-trial) | Pending |
+| Defect 3 — RCO-6 carve-out (gs_021 clustered → soft_signal) | `docs/2026-05-12-defect-gs021-journey-producer-strict-default-flip-plan.md` | No (blocks RCO-6, not the re-trial) | ✅ Landed (2026-05-12) |
 | Bundle-status wiring fix (micro-plan) | `docs/2026-05-12-bundle-status-wiring-fix-plan.md` | No (de-risks RCO-2b) | ✅ Landed (2026-05-12) |
 
 Re-trial against F9-3b050ec5 + AIRLINE-clean is now unblocked (Defect 1 + Defect 2 landed; bundle-status fix landed; RCO-2b strict-mode flip landed). Re-trial submission is the next operator action.

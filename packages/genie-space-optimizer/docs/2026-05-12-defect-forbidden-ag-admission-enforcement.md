@@ -18,6 +18,11 @@
 > The 7now-stub-5 item is closed by Defect Plan 1 G2 (cluster-signature
 > collision-key broadening). Only the RCO-6 carve-out items remain as
 > live work in this stub; track them in a future plan.
+>
+> **Supersession (Defect Plan 3, 2026-05-12)**: the gs_021 replay-
+> violation item (originally tracked under RCO-6) is **CLOSED** by
+> `docs/2026-05-12-defect-gs021-journey-producer-strict-default-flip-plan.md`.
+> The broader RCO-6 parity audit remains open as a separate work item.
 
 ## Verdict
 

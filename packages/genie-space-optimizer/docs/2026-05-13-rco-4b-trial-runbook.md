@@ -168,8 +168,13 @@ Two Databricks lever-loop runs were captured and post-mortem'd:
 **Defect Plan 2** — `docs/2026-05-12-defect-no-applied-patches-retry-signature-plan.md`
 closes the airline F6 leg (`skipped_no_applied_patches` retry loop). No new
 flags introduced; piggybacks on the default-ON `GSO_FORBIDDEN_AG_ADMITS_NO_ACTION`.
-Re-trial readiness: Defect 1 + Defect 2 + RCO-2b strict-mode flip + bundle-status
-micro-plan all landed 2026-05-12/13.
+
+**Defect Plan 3** — `docs/2026-05-12-defect-gs021-journey-producer-strict-default-flip-plan.md`
+closes the gs_021 `clustered → soft_signal` replay-violation leg of the
+ccf1d60d 7Now consolidating-trial run. No code change to producer or
+contract; flips `GSO_JOURNEY_PRODUCER_STRICT` to default-ON. Re-trial
+readiness: Defect 1 + Defect 2 + Defect 3 + RCO-2b strict-mode flip +
+bundle-status micro-plan all landed 2026-05-12/13.
 
 **Deferred-RCO unblocking status:**
 
@@ -178,7 +183,7 @@ micro-plan all landed 2026-05-12/13.
 | RCO-2b (strict-mode default-flip) | ✅ unblocked | `GSO_CONTRACT_HEALTH_V1` captured on both runs |
 | RCO-3 (pilot-gated default-flip) | ✅ unblocked | All nine helpers fired default-on without crash |
 | RCO-4c (alignment/cap/reflection carve-out) | ⚠️ partial | `decide_full_eval_acceptance` survived a real run (ccf1d60d); the airline run had all-skipped iterations |
-| RCO-6 (replay/journey parity) | ❌ blocked | `gs_021` Cycle-17 carry-over named in defect-forbidden-ag-admission-enforcement |
+| RCO-6 (replay/journey parity) | ⚠️ partial | gs_021 Cycle-17 carry-over closed by Defect Plan 3 (default-ON `GSO_JOURNEY_PRODUCER_STRICT`); broader parity audit deferred |
 
 **Re-trial expectation:** Defect Plans 1 + 2 have both landed
 (2026-05-12), plus the bundle-status wiring fix and RCO-2b strict-mode
