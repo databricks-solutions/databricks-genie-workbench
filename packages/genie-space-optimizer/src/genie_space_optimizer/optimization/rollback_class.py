@@ -162,14 +162,29 @@ def classify_rollback_reason(reason: str | None) -> RollbackClass:
         # content / infra budgets.
         return RollbackClass.OTHER
 
-    # Cycle 13: no_proposals and ag_collision_with_forbidden_set are
-    # reflection-axis classifications (the iteration produced no
-    # patch-applying action). They route to NO_ACTION so the
-    # forbidden-AG admission predicate can pick them up when
-    # GSO_FORBIDDEN_AG_ADMITS_NO_ACTION is enabled. Pre-C13 both
-    # classified as OTHER (no_proposals via this exact-match branch,
-    # ag_collision_with_forbidden_set via the default fall-through).
-    if lowered == "no_proposals" or lowered == "ag_collision_with_forbidden_set":
+    # Cycle 13 / Defect Plan 2 (2026-05-12) — reflection-axis
+    # classifications. The iteration produced no patch-applying action
+    # (no candidate state reached the gate). They route to NO_ACTION so
+    # the forbidden-AG admission predicate picks them up when
+    # GSO_FORBIDDEN_AG_ADMITS_NO_ACTION is enabled.
+    #
+    # Producers admitted on this axis:
+    #
+    # * ``no_proposals`` (Cycle 13) — strategist generated zero proposals.
+    # * ``ag_collision_with_forbidden_set`` (Cycle 13) — strategist re-
+    #   proposed a previously-rejected ``(root_cause, blame_set,
+    #   lever_set)`` tuple and the collision guard intercepted it.
+    # * ``no_applied_patches`` (Defect Plan 2) — proposals were generated
+    #   and grounded but ``apply_log.applied`` is empty (the applier
+    #   dropped every patch, typically via the blast-radius gate). Pre-
+    #   Defect-2 this fell to OTHER, leaving the airline reflection out
+    #   of the forbidden set and letting the same AG re-emit on the next
+    #   iteration. See run 31ecd96f-5d56-4b5a-af8e-38e9e5c549af.
+    if lowered in {
+        "no_proposals",
+        "ag_collision_with_forbidden_set",
+        "no_applied_patches",
+    }:
         return RollbackClass.NO_ACTION
 
     return RollbackClass.OTHER
