@@ -166,3 +166,182 @@ def test_emit_force_l6_outcome_default_cached_false(monkeypatch):
     assert declined[0]["metrics"]["cached"] is False
     refs = declined[0].get("evidence_refs") or ()
     assert not any(str(r).startswith("signature:") for r in refs)
+
+
+def test_force_l6_cache_hit_short_circuits_llm(monkeypatch):
+    """Two consecutive same-iteration force-L6 attempts for the same
+    (collision_pair, snippet_type) result in exactly ONE LLM call and
+    the second attempt emits lever6_force_llm_declined{cached=True}.
+    """
+    monkeypatch.setenv("GSO_L6_DECLINE_CACHE", "1")
+    monkeypatch.setenv("GSO_LEVER6_FORCE_TYPED_OUTCOMES", "1")
+    from genie_space_optimizer.optimization.harness import (
+        _ag_collision_key_pair,
+        _l6_decline_cache_key,
+        _maybe_force_lever6_with_cache,
+    )
+
+    iter_inputs = {"decision_records": [], "markers": []}
+    decline_cache: dict[tuple, int] = {}
+    llm_calls = {"n": 0}
+
+    def fake_force_lever6(*args, **kwargs) -> dict | None:
+        llm_calls["n"] += 1
+        return None  # simulate LLM decline
+
+    ag = {"id": "AG_X", "source_cluster_signatures": ["sig_A"]}
+    pair = _ag_collision_key_pair(
+        ag=ag, ag_root_cause="missing_filter",
+        ag_blame_set=["t.col"], lever_keys=["6"],
+    )
+
+    # First attempt: LLM is called, decline is cached.
+    result1 = _maybe_force_lever6_with_cache(
+        run_id="r1", iteration=2, ag_id="AG_X",
+        collision_pair=pair, snippet_type=None,
+        decline_cache=decline_cache,
+        iter_inputs=iter_inputs,
+        force_l6_call=fake_force_lever6,
+        cluster={"cluster_id": "H004", "root_cause": "missing_filter"},
+        target_qids=("gs_024",),
+        cluster_signature="sig_A",
+    )
+    assert result1 is None
+    assert llm_calls["n"] == 1
+    assert _l6_decline_cache_key(pair, snippet_type=None) in decline_cache
+
+    # Second attempt in the same iteration: cache hit, no LLM call.
+    result2 = _maybe_force_lever6_with_cache(
+        run_id="r1", iteration=2, ag_id="AG_X",
+        collision_pair=pair, snippet_type=None,
+        decline_cache=decline_cache,
+        iter_inputs=iter_inputs,
+        force_l6_call=fake_force_lever6,
+        cluster={"cluster_id": "H004", "root_cause": "missing_filter"},
+        target_qids=("gs_024",),
+        cluster_signature="sig_A",
+    )
+    assert result2 is None
+    assert llm_calls["n"] == 1  # unchanged — cache hit
+    declined = [
+        r for r in iter_inputs["decision_records"]
+        if r["reason_code"] == "lever6_force_llm_declined"
+    ]
+    # One live decline + one cached decline.
+    assert len(declined) == 2
+    assert any(r["metrics"]["cached"] is True for r in declined)
+    assert any(r["metrics"]["cached"] is False for r in declined)
+    # Both records must carry the cluster signature in evidence_refs so I14
+    # can group them.
+    assert all(
+        "signature:sig_A" in (r.get("evidence_refs") or ())
+        for r in declined
+    )
+
+
+def test_force_l6_cache_paranoia_guard_treats_stale_entry_as_miss(monkeypatch, caplog):
+    """P-E1 paranoia guard — if a cache entry's recorded iteration does
+    not match the current iteration, the helper logs a one-line warning
+    and treats the entry as a miss (i.e. it calls the LLM and overwrites
+    the entry).
+    """
+    monkeypatch.setenv("GSO_L6_DECLINE_CACHE", "1")
+    monkeypatch.setenv("GSO_LEVER6_FORCE_TYPED_OUTCOMES", "1")
+    import logging
+
+    from genie_space_optimizer.optimization.harness import (
+        _ag_collision_key_pair,
+        _l6_decline_cache_key,
+        _maybe_force_lever6_with_cache,
+    )
+
+    iter_inputs = {"decision_records": [], "markers": []}
+    llm_calls = {"n": 0}
+
+    def fake_force_lever6(*args, **kwargs) -> dict | None:
+        llm_calls["n"] += 1
+        return None
+
+    ag = {"id": "AG_X", "source_cluster_signatures": ["sig_A"]}
+    pair = _ag_collision_key_pair(
+        ag=ag, ag_root_cause="missing_filter",
+        ag_blame_set=["t.col"], lever_keys=["6"],
+    )
+    key = _l6_decline_cache_key(pair, snippet_type=None)
+    # Stale entry from a "prior" iteration — the harness's iteration
+    # reset failed to clear this. The guard must trip.
+    decline_cache: dict[tuple, int] = {key: 1}
+
+    caplog.set_level(logging.WARNING)
+    result = _maybe_force_lever6_with_cache(
+        run_id="r1", iteration=2, ag_id="AG_X",
+        collision_pair=pair, snippet_type=None,
+        decline_cache=decline_cache,
+        iter_inputs=iter_inputs,
+        force_l6_call=fake_force_lever6,
+        cluster={"cluster_id": "H004", "root_cause": "missing_filter"},
+        target_qids=(),
+        cluster_signature="sig_A",
+    )
+    assert result is None
+    assert llm_calls["n"] == 1, "stale entry must not short-circuit the LLM call"
+    # The stale entry is overwritten with the current iteration.
+    assert decline_cache[key] == 2
+    # Exactly one decline record (live) — no cached emission.
+    declined = [
+        r for r in iter_inputs["decision_records"]
+        if r["reason_code"] == "lever6_force_llm_declined"
+    ]
+    assert len(declined) == 1
+    assert declined[0]["metrics"]["cached"] is False
+    # The guard logged a single warning naming the stale iteration.
+    assert any(
+        "l6_decline_cache_stale_entry" in r.message for r in caplog.records
+    )
+
+
+def test_force_l6_cache_disabled_when_flag_off(monkeypatch):
+    monkeypatch.setenv("GSO_L6_DECLINE_CACHE", "0")
+    monkeypatch.setenv("GSO_LEVER6_FORCE_TYPED_OUTCOMES", "1")
+    from genie_space_optimizer.optimization.harness import (
+        _ag_collision_key_pair,
+        _maybe_force_lever6_with_cache,
+    )
+
+    iter_inputs = {"decision_records": [], "markers": []}
+    decline_cache: dict[tuple, int] = {}
+    llm_calls = {"n": 0}
+
+    def fake_force_lever6(*args, **kwargs) -> dict | None:
+        llm_calls["n"] += 1
+        return None
+
+    ag = {"id": "AG_X", "source_cluster_signatures": ["sig_A"]}
+    pair = _ag_collision_key_pair(
+        ag=ag, ag_root_cause="missing_filter",
+        ag_blame_set=["t.col"], lever_keys=["6"],
+    )
+
+    _maybe_force_lever6_with_cache(
+        run_id="r1", iteration=2, ag_id="AG_X",
+        collision_pair=pair, snippet_type=None,
+        decline_cache=decline_cache,
+        iter_inputs=iter_inputs,
+        force_l6_call=fake_force_lever6,
+        cluster={"cluster_id": "H004", "root_cause": "missing_filter"},
+        target_qids=(),
+        cluster_signature="sig_A",
+    )
+    _maybe_force_lever6_with_cache(
+        run_id="r1", iteration=2, ag_id="AG_X",
+        collision_pair=pair, snippet_type=None,
+        decline_cache=decline_cache,
+        iter_inputs=iter_inputs,
+        force_l6_call=fake_force_lever6,
+        cluster={"cluster_id": "H004", "root_cause": "missing_filter"},
+        target_qids=(),
+        cluster_signature="sig_A",
+    )
+    # With flag off, both calls hit the LLM.
+    assert llm_calls["n"] == 2
+    assert decline_cache == {}

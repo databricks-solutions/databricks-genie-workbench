@@ -4520,6 +4520,123 @@ def _emit_force_l6_outcome(
         )
 
 
+def _maybe_force_lever6_with_cache(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    collision_pair,
+    snippet_type: str | None,
+    decline_cache: dict,
+    iter_inputs: dict,
+    force_l6_call,
+    cluster: dict,
+    target_qids: tuple[str, ...],
+    cluster_signature: str = "",
+) -> dict | None:
+    """P-E1 — wrap the force-L6 LLM call with an iteration-scoped
+    decline cache.
+
+    Contract:
+      - Returns the proposal dict from ``force_l6_call(...)`` on a live
+        success, or ``None`` on live decline / cache hit / cache disabled
+        but live decline.
+      - On live decline, writes the cache entry keyed by
+        :func:`_l6_decline_cache_key` and emits the standard typed
+        outcome record + marker (via ``_emit_force_l6_outcome``) with
+        ``cached=False``.
+      - On cache hit, SKIPS the LLM call and emits the typed outcome
+        record + marker with ``cached=True`` and
+        ``original_decline_iteration`` set to the iteration that wrote
+        the entry.
+      - When ``l6_decline_cache_enabled()`` returns False, the cache is
+        bypassed end-to-end (legacy byte-stable path).
+      - Paranoia guard: ``_l6_decline_cache`` is reset alongside
+        ``_current_iter_inputs`` at the top of each iteration. A non-
+        empty entry whose stored iteration != current iteration is
+        therefore a structural bug. The helper logs a single
+        ``l6_decline_cache_stale_entry`` warning and treats the entry
+        as a miss (fail-open) rather than silently masking a real LLM
+        call as cached (fail-closed).
+
+    ``force_l6_call`` is a zero-arg callable that returns the proposal
+    or ``None`` (the production wiring closes over the existing
+    ``_force_lever6_proposal_for_ag`` keyword args).
+
+    ``cluster_signature`` is the canonical source-cluster signature
+    threaded through to the decline record's ``evidence_refs`` so the
+    I14 dedup invariant can group records by signature. When empty
+    (legacy callers), the signature evidence ref is omitted and the
+    record's ``evidence_refs`` stay byte-stable.
+    """
+    import logging
+
+    from genie_space_optimizer.common.config import (
+        l6_decline_cache_enabled,
+    )
+    cluster_id = str(cluster.get("cluster_id") or "")
+    root_cause = str(cluster.get("root_cause") or "")
+    sig = str(cluster_signature or "")
+    cache_on = l6_decline_cache_enabled()
+    log = logging.getLogger(__name__)
+
+    if cache_on:
+        key = _l6_decline_cache_key(collision_pair, snippet_type=snippet_type)
+        prior_iteration = decline_cache.get(key)
+        if prior_iteration is not None:
+            if int(prior_iteration) != int(iteration):
+                # Paranoia guard — stale entry from a previous
+                # iteration. Treat as a miss and overwrite below.
+                log.warning(
+                    "l6_decline_cache_stale_entry: ag_id=%s "
+                    "stored_iteration=%s current_iteration=%s "
+                    "cluster_signature=%s — treating as miss",
+                    ag_id, int(prior_iteration), int(iteration), sig,
+                )
+            else:
+                # Cache hit — short-circuit the LLM call.
+                _emit_force_l6_outcome(
+                    outcome="declined",
+                    run_id=run_id,
+                    iteration=iteration,
+                    ag_id=ag_id,
+                    cluster_id=cluster_id,
+                    root_cause=root_cause,
+                    target_qids=target_qids,
+                    exception_repr="",
+                    iter_inputs=iter_inputs,
+                    cached=True,
+                    original_decline_iteration=int(prior_iteration),
+                    cluster_signature=sig,
+                )
+                return None
+
+    # Live attempt.
+    proposal = force_l6_call()
+    if proposal is not None:
+        return proposal
+
+    # Live decline — emit + cache.
+    _emit_force_l6_outcome(
+        outcome="declined",
+        run_id=run_id,
+        iteration=iteration,
+        ag_id=ag_id,
+        cluster_id=cluster_id,
+        root_cause=root_cause,
+        target_qids=target_qids,
+        exception_repr="",
+        iter_inputs=iter_inputs,
+        cached=False,
+        original_decline_iteration=None,
+        cluster_signature=sig,
+    )
+    if cache_on:
+        key = _l6_decline_cache_key(collision_pair, snippet_type=snippet_type)
+        decline_cache[key] = int(iteration)
+    return None
+
+
 def _emit_proposal_failure_decided(
     *,
     run_id: str,
@@ -20865,8 +20982,9 @@ def _run_lever_loop(
                     _force_outcome = "ok"
                     _force_exception_repr = ""
                     _forced_l6 = None
-                    try:
-                        _forced_l6 = _force_lever6_proposal_for_ag(
+
+                    def _force_l6_call_for_this_ag():
+                        return _force_lever6_proposal_for_ag(
                             run_id=str(run_id),
                             iteration=int(iteration_counter),
                             ag_id=str(ag_id),
@@ -20886,6 +21004,39 @@ def _run_lever_loop(
                             gold_schema=schema,
                             warehouse_id=resolve_warehouse_id(""),
                             benchmarks=benchmarks,
+                        )
+
+                    # P-E1 — derive the source-cluster signature for the
+                    # decline record's evidence_refs (I14 grouping key).
+                    # Source of truth is the AG payload because
+                    # ``_ag_collision_key_pair`` (which forms the cache
+                    # key) also reads ``ag.source_cluster_signatures``.
+                    # Picking the sorted-first non-empty signature keeps
+                    # the record's grouping key consistent with the cache
+                    # key for the AG. Empty signature is fine; the record
+                    # factory omits the ``signature:`` token then.
+                    _force_signature = ""
+                    _ag_sigs = sorted(
+                        str(s).strip()
+                        for s in (ag.get("source_cluster_signatures") or ())
+                        if str(s).strip()
+                    )
+                    if _ag_sigs:
+                        _force_signature = _ag_sigs[0]
+
+                    try:
+                        _forced_l6 = _maybe_force_lever6_with_cache(
+                            run_id=str(run_id),
+                            iteration=int(iteration_counter),
+                            ag_id=str(ag_id),
+                            collision_pair=_collision_pair,
+                            snippet_type=None,
+                            decline_cache=_l6_decline_cache,
+                            iter_inputs=_current_iter_inputs,
+                            force_l6_call=_force_l6_call_for_this_ag,
+                            cluster=dict(_force_cluster),
+                            target_qids=_force_target_qids,
+                            cluster_signature=_force_signature,
                         )
                         if _forced_l6 is None:
                             _force_outcome = "declined"
@@ -20967,23 +21118,27 @@ def _run_lever_loop(
                             _force_cluster.get("root_cause", "?"),
                         )
                     else:
-                        # Cycle 10 W3.4 — typed outcome instead of silent
-                        # absorption when force-L6 declined or raised.
-                        _emit_force_l6_outcome(
-                            outcome=_force_outcome,
-                            run_id=str(run_id),
-                            iteration=int(iteration_counter),
-                            ag_id=str(ag_id),
-                            cluster_id=str(
-                                _force_cluster.get("cluster_id", "?")
-                            ),
-                            root_cause=str(
-                                _force_cluster.get("root_cause", "?")
-                            ),
-                            target_qids=_force_target_qids,
-                            exception_repr=_force_exception_repr,
-                            iter_inputs=_current_iter_inputs,
-                        )
+                        # P-E1 — declined emission is now owned by
+                        # ``_maybe_force_lever6_with_cache``. We only
+                        # emit here on the raised path; declined is a
+                        # no-op so cache + live emissions are not
+                        # duplicated.
+                        if _force_outcome == "raised":
+                            _emit_force_l6_outcome(
+                                outcome=_force_outcome,
+                                run_id=str(run_id),
+                                iteration=int(iteration_counter),
+                                ag_id=str(ag_id),
+                                cluster_id=str(
+                                    _force_cluster.get("cluster_id", "?")
+                                ),
+                                root_cause=str(
+                                    _force_cluster.get("root_cause", "?")
+                                ),
+                                target_qids=_force_target_qids,
+                                exception_repr=_force_exception_repr,
+                                iter_inputs=_current_iter_inputs,
+                            )
             except Exception as _forced_lever6_n3_exc:
                 try:
                     from genie_space_optimizer.common.config import (
