@@ -189,11 +189,13 @@ def test_bundle_jsons_compose_for_a_single_iteration_run() -> None:
     # Artifact index includes the per-iteration stage paths the
     # wrappers wrote in the previous tests.
     iter_paths = index["iterations"]["1"]
-    assert "03_cluster_formation" in iter_paths["stages"]
-    # C15 Phase 2: strategist_context at position 4 shifts applied_patches
-    # from position 07 to position 08.
-    assert "08_applied_patches" in iter_paths["stages"]
-    f3_paths = iter_paths["stages"]["03_cluster_formation"]
+    # P-A (2026-05-12): per-stage map moved to ``stage_artifacts``;
+    # ``stages_index`` is the leaf path. C15 Phase 2: strategist_context
+    # at position 4 shifts applied_patches from position 07 to 08.
+    assert iter_paths["stages_index"].endswith("/stages/index.json")
+    assert "03_cluster_formation" in iter_paths["stage_artifacts"]
+    assert "08_applied_patches" in iter_paths["stage_artifacts"]
+    f3_paths = iter_paths["stage_artifacts"]["03_cluster_formation"]
     assert f3_paths["input"] == stage_artifact_paths(1, "cluster_formation")["input"]
 
     # All three JSONs round-trip through json.dumps without raising.

@@ -31,9 +31,12 @@ def test_build_artifact_index_lists_all_iterations_and_stages() -> None:
     assert "iterations" in index
     assert len(index["iterations"]) == 2
     iter_1 = index["iterations"]["1"]
-    assert "stages" in iter_1
-    assert "01_evaluation_state" in iter_1["stages"]
-    assert "input" in iter_1["stages"]["01_evaluation_state"]
+    # P-A: directory-as-declared-path replaced by ``stages_index`` leaf;
+    # the per-stage map is still available under ``stage_artifacts``.
+    assert iter_1["stages_index"].endswith("/stages/index.json")
+    assert "stage_artifacts" in iter_1
+    assert "01_evaluation_state" in iter_1["stage_artifacts"]
+    assert "input" in iter_1["stage_artifacts"]["01_evaluation_state"]
 
 
 def test_build_run_summary_carries_baseline_and_terminal_state() -> None:

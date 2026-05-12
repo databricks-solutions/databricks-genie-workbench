@@ -237,7 +237,7 @@ def bundle_artifact_paths(*, iterations: list[int]) -> dict[str, Any]:
             "rca_ledger":          f"{prefix}/rca_ledger.json",
             "proposal_inventory":  f"{prefix}/proposal_inventory.json",
             "patch_survival":      f"{prefix}/patch_survival.json",
-            "stages":              f"{prefix}/stages",
+            "stages":              f"{prefix}/stages/index.json",
         }
     return paths
 

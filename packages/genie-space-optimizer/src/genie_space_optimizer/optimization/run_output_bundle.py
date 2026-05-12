@@ -140,6 +140,11 @@ def build_artifact_index(*, iterations: list[int]) -> dict[str, Any]:
     Includes per-stage paths so the gso-postmortem skill can
     deterministically reach every iteration's stage I/O without
     walking directories.
+
+    Plan P-A (2026-05-12): ``stages_index`` is a leaf path satisfying
+    the bundle contract; ``stage_artifacts`` is a structured map keyed
+    by ``NN_<stage_key>`` so the postmortem skill can still reach
+    every stage's input/output/decisions JSONs.
     """
     base = bundle_artifact_paths(iterations=iterations)
     flat: dict[str, Any] = {
@@ -160,11 +165,15 @@ def build_artifact_index(*, iterations: list[int]) -> dict[str, Any]:
             "operator_transcript": f"{prefix}/operator_transcript.md",
             "decision_trace":      f"{prefix}/decision_trace.json",
             "journey_validation":  f"{prefix}/journey_validation.json",
-            "stages": {},
+            "rca_ledger":          f"{prefix}/rca_ledger.json",
+            "proposal_inventory":  f"{prefix}/proposal_inventory.json",
+            "patch_survival":      f"{prefix}/patch_survival.json",
+            "stages_index":        f"{prefix}/stages/index.json",
+            "stage_artifacts":     {},
         }
         for entry in STAGES:
             stage_paths = stage_artifact_paths(iteration, entry.stage_key)
-            per_iter["stages"][_stage_dir_name_for(stage_paths)] = stage_paths
+            per_iter["stage_artifacts"][_stage_dir_name_for(stage_paths)] = stage_paths
         flat["iterations"][str(iteration)] = per_iter
     return flat
 
