@@ -170,3 +170,136 @@ def test_strategist_context_assembled_record_hash_is_deterministic() -> None:
         run_id="r", iteration=1, assembled_output=out,
     )
     assert r1.metrics["assembled_hash"] == r2.metrics["assembled_hash"]
+
+
+def test_strategist_context_consumed_record_matches_when_hashes_equal(
+) -> None:
+    """When assembled_hash == consumed_hash, the record reports MATCHES."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        strategist_context_consumed_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionOutcome,
+        DecisionType,
+        ReasonCode,
+    )
+
+    record = strategist_context_consumed_record(
+        run_id="r",
+        iteration=3,
+        consumed_payload={"a": 1, "b": [2, 3]},
+        assembled_hash="sha256:" + "a" * 64,  # arbitrary fixed value
+        assembled_top_level_fields=("a", "b"),
+    )
+    # Force a known-match by feeding the same canonical projection back.
+    same_hash_record = strategist_context_consumed_record(
+        run_id="r",
+        iteration=3,
+        consumed_payload={"a": 1, "b": [2, 3]},
+        assembled_hash=record.metrics["consumed_hash"],
+        assembled_top_level_fields=("a", "b"),
+    )
+
+    assert record.decision_type == DecisionType.STRATEGIST_CONTEXT_CONSUMED
+    assert record.outcome == DecisionOutcome.INFO
+    assert record.iteration == 3
+    assert same_hash_record.reason_code == (
+        ReasonCode.CONTEXT_CONSUMED_MATCHES_ASSEMBLED
+    )
+    assert same_hash_record.metrics["drift_detected"] is False
+    # Identical key sets → diff buckets are empty / count of both = 2.
+    assert same_hash_record.metrics["keys_only_in_consumed"] == ()
+    assert same_hash_record.metrics["keys_only_in_assembled"] == ()
+    assert same_hash_record.metrics["keys_in_both"] == 2
+
+
+def test_strategist_context_consumed_record_emits_structural_diff(
+) -> None:
+    """The structural key-set diff is computable from typed assembled
+    fields + consumed dict — even when the hashes alone don't tell us
+    *what* differed."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        strategist_context_consumed_record,
+    )
+
+    record = strategist_context_consumed_record(
+        run_id="r",
+        iteration=2,
+        consumed_payload={
+            "rca_cards_grounded_only": [],  # in both
+            "iq_scan_text": "blah",          # only in consumed
+            "suggestions_text": "x",         # only in consumed
+        },
+        assembled_hash="sha256:" + "9" * 64,
+        assembled_top_level_fields=(
+            "iteration", "rca_cards_grounded_only", "baseline_accuracy",
+        ),
+    )
+
+    keys_only_consumed = set(record.metrics["keys_only_in_consumed"])
+    keys_only_assembled = set(record.metrics["keys_only_in_assembled"])
+    assert keys_only_consumed == {"iq_scan_text", "suggestions_text"}
+    assert keys_only_assembled == {"iteration", "baseline_accuracy"}
+    assert record.metrics["keys_in_both"] == 1
+
+
+def test_strategist_context_consumed_record_flags_drift_when_hashes_differ(
+) -> None:
+    """When assembled_hash != consumed_hash, the record reports DRIFTED."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        strategist_context_consumed_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        ReasonCode,
+    )
+
+    record = strategist_context_consumed_record(
+        run_id="r",
+        iteration=3,
+        consumed_payload={"a": 1},
+        assembled_hash="sha256:" + "b" * 64,
+        assembled_top_level_fields=("a", "b"),
+    )
+
+    assert record.reason_code == ReasonCode.CONTEXT_CONSUMED_DRIFTED
+    assert record.metrics["drift_detected"] is True
+    assert record.metrics["assembled_hash"] == "sha256:" + "b" * 64
+    # consumed_hash is the canonical hash of the payload, distinct from
+    # the synthetic assembled_hash above.
+    assert record.metrics["consumed_hash"] != record.metrics["assembled_hash"]
+    # Structural drift: "b" is missing from the consumed dict.
+    assert tuple(record.metrics["keys_only_in_assembled"]) == ("b",)
+    assert tuple(record.metrics["keys_only_in_consumed"]) == ()
+
+
+def test_strategist_context_consumed_record_handles_empty_assembled_hash(
+) -> None:
+    """Empty assembled_hash (Chunk A flag off) ⇒ MATCHES suppressed; the
+    record still emits with drift_detected=False and a blank assembled
+    hash, so the postmortem can see Stage 5 boundary even when Stage 4
+    isn't computed."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        strategist_context_consumed_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        ReasonCode,
+    )
+
+    record = strategist_context_consumed_record(
+        run_id="r",
+        iteration=1,
+        consumed_payload={"x": 0},
+        assembled_hash="",
+        assembled_top_level_fields=(),
+    )
+
+    assert record.reason_code == ReasonCode.CONTEXT_CONSUMED_MATCHES_ASSEMBLED
+    assert record.metrics["drift_detected"] is False
+    assert record.metrics["assembled_hash"] == ""
+    assert record.metrics["consumed_hash"].startswith("sha256:")
+    # No assembled fields supplied → diff is "unknown" not "all drifted":
+    # both buckets are empty and keys_in_both=0 so the postmortem can
+    # tell this case apart from a real structural drift.
+    assert record.metrics["keys_only_in_assembled"] == ()
+    assert record.metrics["keys_only_in_consumed"] == ()
+    assert record.metrics["keys_in_both"] == 0

@@ -2835,3 +2835,96 @@ def strategist_context_assembled_record(
             "top_level_fields": top_fields,
         },
     )
+
+
+def strategist_context_consumed_record(
+    *,
+    run_id: str,
+    iteration: int,
+    consumed_payload: Any,
+    assembled_hash: str,
+    assembled_top_level_fields: tuple[str, ...] = (),
+) -> DecisionRecord:
+    """Emit one ``STRATEGIST_CONTEXT_CONSUMED`` record per iter.
+
+    ``consumed_payload`` is the dict that becomes the strategist LLM
+    prompt's ``context_json`` (i.e. the output of
+    ``optimizer._build_context_data`` after
+    ``_truncate_context_to_budget``). ``assembled_hash`` is the value
+    stamped on the matching ``STRATEGIST_CONTEXT_ASSEMBLED`` record.
+    ``assembled_top_level_fields`` is the corresponding
+    ``metrics.top_level_fields`` tuple from that ASSEMBLED record; it
+    drives the structural key-set diff (see metrics below).
+
+    The two hashes are not expected to match today — the consumed
+    boundary still routes through the legacy kwargs-soup in
+    ``_build_context_data``. Drift surfaces in
+    ``metrics.drift_detected`` (boolean), in
+    ``metrics.keys_only_in_consumed`` / ``metrics.keys_only_in_assembled``
+    (structural diff), and ultimately in the persisted
+    ``consumed.json`` artifact (Task 8). Subsequent Chunk-A phases will
+    narrow the diff; when the strategist prompt finally reads directly
+    from ``StrategistContextOutput``, all three signals converge.
+
+    Special case: when ``assembled_hash`` is the empty string (Chunk-A
+    flag off, ASSEMBLED record was not emitted), we report
+    ``CONTEXT_CONSUMED_MATCHES_ASSEMBLED`` with ``drift_detected=False``
+    and leave the structural-diff buckets empty so a missing assembled
+    record does not get misclassified as drift.
+    """
+    consumed_hash = _canonical_sha256(consumed_payload)
+    if not assembled_hash:
+        drift = False
+    else:
+        drift = consumed_hash != assembled_hash
+    reason = (
+        ReasonCode.CONTEXT_CONSUMED_DRIFTED if drift
+        else ReasonCode.CONTEXT_CONSUMED_MATCHES_ASSEMBLED
+    )
+    # Structural key-set diff. Only computed when both sides supply a
+    # comparable set: ``assembled_top_level_fields`` from the matching
+    # ASSEMBLED record AND a Mapping-typed ``consumed_payload``. When
+    # either side is empty/missing (e.g. Chunk-A flag off, no ASSEMBLED
+    # record), all three diff buckets remain empty so postmortem can
+    # tell "diff not applicable" apart from "all fields drifted".
+    keys_only_consumed: tuple[str, ...] = ()
+    keys_only_assembled: tuple[str, ...] = ()
+    keys_in_both: int = 0
+    if assembled_top_level_fields and isinstance(consumed_payload, Mapping):
+        consumed_keys = {str(k) for k in consumed_payload.keys()}
+        assembled_keys = {str(k) for k in assembled_top_level_fields}
+        keys_only_consumed = tuple(sorted(consumed_keys - assembled_keys))
+        keys_only_assembled = tuple(sorted(assembled_keys - consumed_keys))
+        keys_in_both = len(consumed_keys & assembled_keys)
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        decision_type=DecisionType.STRATEGIST_CONTEXT_CONSUMED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=reason,
+        evidence_refs=("stage:action_group_selection",),
+        expected_effect=(
+            "Strategist LLM should consume the exact typed boundary "
+            "produced by Stage 4."
+        ),
+        observed_effect=(
+            "consumed_hash differs from assembled_hash"
+            if drift else "consumed_hash matches assembled_hash"
+        ),
+        next_action=(
+            "Narrow _build_context_data toward StrategistContextOutput "
+            "until the two hashes converge. Diff "
+            "stages/04_strategist_context/{output,consumed}.json to "
+            "see which fields drifted."
+            if drift else
+            "No action — Stage 4 boundary reached the LLM unchanged."
+        ),
+        metrics={
+            "assembled_hash": str(assembled_hash or ""),
+            "consumed_hash": consumed_hash,
+            "drift_detected": bool(drift),
+            "keys_only_in_consumed": keys_only_consumed,
+            "keys_only_in_assembled": keys_only_assembled,
+            "keys_in_both": keys_in_both,
+        },
+    )
