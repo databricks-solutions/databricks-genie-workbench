@@ -1225,6 +1225,7 @@ def _run_iteration_invariants_and_append_records(
     current_iter_inputs: dict[str, Any],
     iter_producer_exceptions: dict | None = None,
     prior_iter_evidence: dict | None = None,
+    run_violations_accumulator: list[dict] | None = None,
 ) -> None:
     """Cycle 11 Task 12 — run the invariant suite and append typed
     ``INVARIANT_VIOLATION`` decision records to
@@ -1284,6 +1285,21 @@ def _run_iteration_invariants_and_append_records(
                 _iter_evidence
             )
         _violations = _invariants_mod.run_invariants(_iter_evidence)
+        if run_violations_accumulator is not None and _violations:
+            # Risk-3 mitigation — propagate violations to the run-level
+            # accumulator consumed by ``_emit_contract_health_summary``
+            # (``harness.py:26636``). Append BEFORE the strict-mode
+            # raise so the merge-gate input is populated even when
+            # the strict-mode AssertionError aborts the run.
+            for _v in _violations:
+                try:
+                    run_violations_accumulator.append(dict(_v))
+                except Exception:
+                    logger.debug(
+                        "Risk-3: run-level violation accumulator append "
+                        "failed (non-fatal)",
+                        exc_info=True,
+                    )
         if _violations and _inv_strict():
             raise AssertionError(
                 f"INVARIANT_VIOLATION (strict): {_violations}"
@@ -1329,6 +1345,7 @@ def _finalize_iteration_summary(
     run_id: str = "",
     iter_producer_exceptions: dict | None = None,
     prior_iter_evidence: dict | None = None,
+    run_violations_accumulator: list[dict] | None = None,
 ) -> None:
     """Overwrite the iteration's pre-stamped stub with rich data.
 
@@ -1352,6 +1369,7 @@ def _finalize_iteration_summary(
         current_iter_inputs=current_iter_inputs,
         iter_producer_exceptions=iter_producer_exceptions,
         prior_iter_evidence=prior_iter_evidence,
+        run_violations_accumulator=run_violations_accumulator,
     )
 
     # Phase H Fidelity Task 4: emit one typed learning / next-action
@@ -16713,6 +16731,16 @@ def _run_lever_loop(
     # ``docs/2026-05-12-run-end-replay-validation-plan.md``.
     _run_end_replay_validation: dict | None = None
 
+    # Risk-3 mitigation — run-level invariant violations accumulator.
+    # Populated by ``_run_iteration_invariants_and_append_records`` via
+    # the ``run_violations_accumulator`` kwarg threaded through every
+    # ``_finalize_iteration_summary`` call. Consumed at run-end by
+    # ``_emit_contract_health_summary`` (`harness.py:~27275`). Closes the
+    # silent gap where the contract-health summary always reported
+    # ``high_tier_violations=()``. See
+    # ``docs/2026-05-12-merge-gate-risk-mitigations-plan.md``.
+    _invariant_violations: list[dict] = []
+
     # Phase A — deterministic carrier for the most recent full-eval
     # result. Replaces opportunistic ``locals().get("full_result")``
     # reads in the eval-entry / post-eval / validator blocks below.
@@ -18315,6 +18343,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -19516,6 +19545,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -19700,6 +19730,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -21109,6 +21140,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -22248,6 +22280,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -23439,6 +23472,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -23551,6 +23585,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -23957,6 +23992,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -24299,6 +24335,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -25221,6 +25258,7 @@ def _run_lever_loop(
                         run_id=run_id,
                         iter_producer_exceptions=_iter_producer_exceptions,
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                 except Exception:
                     logger.debug(
@@ -26325,6 +26363,7 @@ def _run_lever_loop(
                     run_id=run_id,
                     iter_producer_exceptions=_iter_producer_exceptions,
                     prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                    run_violations_accumulator=_invariant_violations,
                 )
                 _last_iter_evidence_holder["prev"] = (
                     _current_iter_inputs.pop(
@@ -26404,6 +26443,7 @@ def _run_lever_loop(
                             "_iter_producer_exceptions"
                         ),
                         prior_iter_evidence=_last_iter_evidence_holder["prev"],
+                        run_violations_accumulator=_invariant_violations,
                     )
                     _last_iter_evidence_holder["prev"] = (
                         _f_cur.pop(
