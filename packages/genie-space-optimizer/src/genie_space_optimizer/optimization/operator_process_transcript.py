@@ -40,7 +40,17 @@ _STAGE_DECISION_TYPE_MAP: dict[str, tuple[DecisionType, ...]] = {
     "evaluation_state":         (DecisionType.EVAL_CLASSIFIED,),
     "rca_evidence":             (DecisionType.RCA_FORMED,),
     "cluster_formation":        (DecisionType.CLUSTER_SELECTED, DecisionType.RCA_FORMED),
-    "action_group_selection":   (DecisionType.STRATEGIST_AG_EMITTED,),
+    # Plan P-G — Stage 4 carries the ASSEMBLED boundary record; both
+    # evidence runs (ccf1d60d, 31ecd96f) rendered the placeholder for
+    # every iteration of every run because this entry was missing.
+    "strategist_context":       (DecisionType.STRATEGIST_CONTEXT_ASSEMBLED,),
+    # Plan P-G — Stage 5 also carries the CONSUMED boundary record so
+    # the operator can see drift between the typed Stage 4 boundary
+    # and what actually reached the strategist LLM.
+    "action_group_selection":   (
+        DecisionType.STRATEGIST_AG_EMITTED,
+        DecisionType.STRATEGIST_CONTEXT_CONSUMED,
+    ),
     "proposal_generation":      (DecisionType.PROPOSAL_GENERATED,),
     "safety_gates":             (DecisionType.GATE_DECISION,),
     "applied_patches":          (DecisionType.PATCH_APPLIED, DecisionType.PATCH_SKIPPED),
