@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { ArrowLeft, AlertCircle, ExternalLink, Info, RefreshCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -13,6 +12,9 @@ import type {
 import { formatDate, formatInt, formatMs, formatUsd, formatDay } from '@/watch/lib/format'
 import { useCachedFetch } from '@/watch/lib/cache'
 import { genieSpaceUrl } from '@/watch/lib/genie'
+import { Stat } from '@/watch/components/Stat'
+import { SimpleBars } from '@/watch/components/SimpleBars'
+import { LoadingCard } from '@/watch/components/LoadingCard'
 
 interface Props {
   spaceId: string
@@ -443,53 +445,5 @@ function EvalsTab({ spaceId, onOpenSettings }: { spaceId: string; onOpenSettings
   )
 }
 
-function LoadingCard() {
-  const [elapsed, setElapsed] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setElapsed(e => e + 1), 1000)
-    return () => clearInterval(id)
-  }, [])
-  return (
-    <Card className="p-6 text-center">
-      <p className="font-medium">Loading… ({elapsed}s)</p>
-      <p className="mt-2 text-xs text-muted">
-        First load runs a fresh system-table query (typically 30–60s on a busy warehouse).
-        Subsequent visits within 5 min are cached and load instantly.
-      </p>
-    </Card>
-  )
-}
 
-function Stat({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <Card className="p-4">
-      <p className="text-xs uppercase text-muted">{label}</p>
-      <p className="mt-1 text-2xl font-semibold">{value}</p>
-    </Card>
-  )
-}
 
-function SimpleBars({
-  data, formatY,
-}: { data: { x: string; y: number }[]; formatY?: (v: number) => string }) {
-  const max = Math.max(1, ...data.map(d => d.y))
-  return (
-    <div className="space-y-1">
-      {data.map((d, i) => (
-        <div key={i} className="flex items-center gap-2 text-xs">
-          <span className="w-16 shrink-0 text-muted">{d.x}</span>
-          <div className="h-3 flex-1 rounded bg-elevated">
-            <div
-              className="h-3 rounded bg-blue-500"
-              style={{ width: `${(d.y / max) * 100}%` }}
-            />
-          </div>
-          <span className="w-16 shrink-0 text-right tabular-nums">
-            {formatY ? formatY(d.y) : d.y.toLocaleString()}
-          </span>
-        </div>
-      ))}
-      {!data.length && <p className="text-xs text-muted">No data.</p>}
-    </div>
-  )
-}
