@@ -16,19 +16,31 @@ def test_emit_contract_health_summary_call_site_exists() -> None:
         "src/genie_space_optimizer/optimization/harness.py"
     ).read_text(encoding="utf-8")
     assert "_emit_contract_health_summary(" in harness
-    # The call site must follow convergence_marker so it fires on every
-    # run-end path (normal + plateau + divergence) within the same outer
-    # try/except block.
-    conv_idx = harness.find("print(convergence_marker(")
-    emit_idx = harness.find(
+    # After the 2026-05-12 wiring fix
+    # (docs/2026-05-12-bundle-status-wiring-fix-plan.md), the
+    # emission lives AFTER the Phase H bundle assembly block — not
+    # in the convergence try/except — so that locals().get(...) sees
+    # populated _bundle_assembly_{incomplete,failed}_payloads and a
+    # populated _phase_h_marker_payload. The anchor for the new
+    # position is the outer Phase H render-failed except clause.
+    render_failed_anchor = 'except Exception as _phase_h_render_exc:'
+    emit_anchor = (
         "_emit_contract_health_summary(\n            optimization_run_id=run_id"
     )
-    assert conv_idx != -1, "convergence_marker emission missing"
-    assert emit_idx != -1, "contract-health emission missing"
-    assert emit_idx > conv_idx, "contract-health must follow convergence"
-    # Within 5000 chars (same try/except block neighborhood). The
-    # convergence + V1 manifest + V2 manifest block is ~90 lines × ~55
-    # chars = ~5000 chars, so this bound keeps emission anchored to the
-    # convergence try/except rather than letting it drift to Phase H or
-    # beyond.
-    assert emit_idx - conv_idx < 5000
+    assert render_failed_anchor in harness, (
+        "Phase H render-failed anchor missing; harness layout drifted"
+    )
+    assert emit_anchor in harness, "contract-health emission missing"
+    render_idx = harness.find(render_failed_anchor)
+    emit_idx = harness.find(emit_anchor)
+    assert emit_idx > render_idx, (
+        "contract-health emission must follow the Phase H render-"
+        "failed except; the wiring fix has been reverted"
+    )
+    # Within 2000 chars of the render-failed except (it should be the
+    # very next try/except block after Phase H wraps up).
+    assert emit_idx - render_idx < 2000, (
+        f"contract-health emission is suspiciously far from the "
+        f"Phase H block ({emit_idx - render_idx} chars). It should "
+        f"be the next try/except after Phase H."
+    )
