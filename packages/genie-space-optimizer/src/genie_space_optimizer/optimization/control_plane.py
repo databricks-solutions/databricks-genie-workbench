@@ -1117,6 +1117,12 @@ def format_full_eval_marker_payload(
     ``acceptance_decision`` stage's reason_detail string, the
     Phase-H bundle writer) produces byte-equal output for the
     same decision.
+
+    Phase 1 Action 1.2 — when ``GSO_ACCEPTANCE_FOUR_TIER_GATE`` is on,
+    the harness passes ``accepted_label`` = the four-tier class value
+    (``strict_win`` | ``net_win_with_debt`` | ``diagnostic_hold`` |
+    ``loss``). When the flag is off, ``accepted_label`` retains the
+    legacy empty string (parser-stable for pre-Phase-1 fixtures).
     """
     rendering = render_acceptance_decision(
         decision,
