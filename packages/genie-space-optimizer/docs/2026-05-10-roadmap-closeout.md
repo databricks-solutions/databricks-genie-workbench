@@ -233,6 +233,8 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 Deferred-RCO unblocking from this trial: RCO-2b ✅, RCO-3 ✅, RCO-4c ⚠️ partial, RCO-6 ❌ blocked on the second defect plan. Re-trial against the original F9/AIRLINE anchors expected after the defect plans land. Full disposition in `docs/2026-05-13-rco-4b-trial-runbook.md` "Trial disposition (2026-05-12)" section.
 
+- **Bundle-status wiring fix (2026-05-12) — landed.** `contract_health.bundle_status` now reflects `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` and `GSO_BUNDLE_ASSEMBLY_FAILED_V1` markers emitted in the same run. Closes the contradiction surfaced by the May-12 trial (both runs reported `bundle_status="complete"` while `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` reported `missing_count=40`). Incidental win: `_phase_h_marker_payload` is now also visible to the relocated emission, so `phase_h_listing_status` / `phase_h_validator_status` will reflect actual Phase H state instead of always reporting `skipped`. See `docs/2026-05-12-bundle-status-wiring-fix-plan.md`.
+
 **Phase roadmap:** `docs/2026-05-12-rco-4b-phase-roadmap.md`.
 
 **Stage inventory:** `docs/2026-05-12-rco-4b-gate-stage-inventory.md`.

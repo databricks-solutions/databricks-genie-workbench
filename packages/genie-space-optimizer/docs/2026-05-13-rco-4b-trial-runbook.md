@@ -141,6 +141,11 @@ Two Databricks lever-loop runs were captured and post-mortem'd:
   missing. This is a Phase H output-contract gap, not a trial
   blocker, but it means the contract_health `bundle_status=complete`
   comes from a different source than the bundle-assembly markers.
+  **Update (2026-05-12):** the `contract_health.bundle_status="complete"`
+  half of this gap is fixed by
+  `docs/2026-05-12-bundle-status-wiring-fix-plan.md`. The Phase H
+  *per-iteration rollup* gap (missing_count=40) is independent and
+  tracked separately.
 - ⚠️ Databricks ID resolution in run manifest — both runs report
   `databricks_job_id=unknown`, `databricks_parent_run_id=unknown`,
   `lever_loop_task_run_id=unknown` despite the live Jobs API
