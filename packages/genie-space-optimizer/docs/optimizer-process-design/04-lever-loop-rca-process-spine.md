@@ -92,6 +92,32 @@ flowchart LR
 
 **Source:** `_call_llm_for_adaptive_strategy` in [`optimization/optimizer.py`](../../src/genie_space_optimizer/optimization/optimizer.py), informed by prior reflection entries.
 
+**Observability (Plan P-G, 2026-05-12):** When
+`GSO_STAGE_HANDLERS_CHUNK_A=1` and `GSO_STAGE4_CONTEXT_PERSISTENCE=1`,
+the strategist call site emits two typed records and persists two
+co-located JSON artifacts per iteration:
+
+- `STRATEGIST_CONTEXT_ASSEMBLED` — start of strategist call; carries
+  the canonical SHA-256 hash of the typed `StrategistContextOutput`,
+  the set of top-level boundary fields, and grounded/ungrounded
+  RCA-card counts. Full typed JSON persisted to
+  `gso_postmortem_bundle/iterations/iter_NN/stages/04_strategist_context/output.json`.
+- `STRATEGIST_CONTEXT_CONSUMED` — LLM-call boundary; carries the hash
+  of the dict actually fed to the prompt, a `drift_detected` boolean,
+  and a structural key-set diff (`keys_only_in_consumed`,
+  `keys_only_in_assembled`, `keys_in_both`). Full consumed dict
+  persisted to
+  `gso_postmortem_bundle/iterations/iter_NN/stages/04_strategist_context/consumed.json`
+  (sibling of `output.json`) so a postmortem reader can `diff` the two
+  files directly to verify *what* drifted, not just *whether* drift
+  occurred.
+
+Both runs `ccf1d60d` and `31ecd96f` rendered `(no decisions emitted
+for this stage in this iteration)` for the strategist-context boundary
+because no producer was wired; Plan P-G closes that gap and turns the
+boundary into a fully-auditable surface with hash + structural +
+payload-level drift signals.
+
 ## Stage 5 — Proposal Generation
 
 **Plain language:** "Translate the action group into concrete patch JSON."
