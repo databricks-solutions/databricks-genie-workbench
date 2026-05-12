@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "policy_name": "regression_debt_policy_pilot_default",
+  "frozen_at": "2026-05-12",
+  "predictions": [
+    {
+      "fixture_id": "ccf1d60d_iter1",
+      "predicted_accepted": true,
+      "predicted_reason_code": "accepted_with_partial_harvest_debt",
+      "rationale": "delta_pp +4.3, no previously-passing -> hard, 1 unknown -> hard within debt bound. Pre-registered as net_win_with_debt — accept with reflection."
+    },
+    {
+      "fixture_id": "31ecd96f_no_payload",
+      "predicted_accepted": null,
+      "predicted_reason_code": "no_payload",
+      "rationale": "No candidate ever built (acceptance_decision={}); classifier doesn't fire. Validates 31ecd96f as a different failure shape from ccf1d60d."
+    },
+    {
+      "fixture_id": "3b050ec5_iter1",
+      "predicted_accepted": true,
+      "predicted_reason_code": "accepted_with_partial_harvest_debt",
+      "rationale": "Best-effort prediction: same shape as ccf1d60d (positive net delta +8.1pp, target unchanged, captured rollback). Pre-registered as net_win_with_debt subject to actual debt bucket data being absent — if zero debt, expect no_debt_to_harvest instead."
+    }
+  ]
+}
