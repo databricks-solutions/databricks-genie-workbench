@@ -18971,6 +18971,17 @@ def _run_lever_loop(
                             prior_iteration_dropped_causal_patches=(
                                 _t2_drops_for_strategist
                             ),
+                            # Plan P-G — Stage 4 boundary observability:
+                            # route ASSEMBLED + CONSUMED records into the
+                            # iteration's decision_records stream and
+                            # persist the typed Stage 4 output JSON via
+                            # the existing Phase H MLflow anchor. Both
+                            # flags (CHUNK_A + STAGE4_CONTEXT_PERSISTENCE)
+                            # must be ON for the emit to happen.
+                            run_id=str(run_id or ""),
+                            iteration=int(iteration_counter or 0),
+                            decision_emit=_decision_emit,
+                            mlflow_anchor_run_id=_phase_h_anchor_run_id,
                         )
                         strategist_memo_cache[_memo_key] = copy.deepcopy(strategy)
                         strategy["_memoized"] = False
