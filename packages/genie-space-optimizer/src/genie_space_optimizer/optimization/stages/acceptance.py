@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from genie_space_optimizer.optimization.control_plane import (
+    ControlPlaneAcceptance,
     decide_control_plane_acceptance,
 )
 from genie_space_optimizer.optimization.decision_emitters import (
@@ -88,6 +89,18 @@ class AcceptanceInput(JsonRoundTrip):
     # the harness flips this to the actual thresholds state behind
     # ``GSO_TARGET_AWARE_ACCEPTANCE``.
     thresholds_met: bool = True
+    # Plan P-C — when populated, stages.acceptance.decide MUST reuse
+    # the supplied ControlPlaneAcceptance for the matching AG instead
+    # of re-running decide_control_plane_acceptance(...). Closes the
+    # reason-code drift between the harness's canonical decision and
+    # the Phase-H writer's recomputed decision (anchor: ccf1d60d
+    # iter 1, GSO_PHASE_H_ACCEPTANCE_DRIFT_V1).
+    #
+    # Empty dict (default) preserves the legacy recompute path for
+    # byte-stable replay of pre-P-C fixtures.
+    canonical_decisions_by_ag_id: dict[str, ControlPlaneAcceptance] = (
+        field(default_factory=dict)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +174,10 @@ def _decide_for_ag(
     ag: Mapping[str, Any],
     inp: AcceptanceInput,
 ):
+    ag_id = str(ag.get("id") or ag.get("ag_id") or "")
+    canonical = inp.canonical_decisions_by_ag_id.get(ag_id)
+    if canonical is not None:
+        return canonical
     target_qids = tuple(
         str(q) for q in (ag.get("target_qids") or ag.get("affected_questions") or [])
         if str(q)
