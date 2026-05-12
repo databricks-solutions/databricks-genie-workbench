@@ -6088,25 +6088,42 @@ def stage6_applyability_pure_enabled() -> bool:
 
 
 def journey_producer_strict_enabled() -> bool:
-    """Cycle 17 T2 — when on, the journey-event producers enforce
-    mutual exclusion between hard-cluster and soft-signal emit
-    passes. Specifically: ``_replay_iteration`` in
-    ``optimization/lever_loop_replay.py`` filters
-    ``soft -= hard_cluster_qids`` before emitting ``soft_signal``;
-    ``emit_cluster_membership_events`` in
+    """Cycle 17 T2 / Defect Plan 3 (2026-05-12) — when on, the
+    journey-event producers enforce mutual exclusion between
+    hard-cluster and soft-signal emit passes. Specifically:
+    ``_replay_iteration`` in ``optimization/lever_loop_replay.py``
+    filters ``soft -= hard_cluster_qids`` before emitting
+    ``soft_signal``; ``emit_cluster_membership_events`` in
     ``optimization/question_journey.py`` skips qids already emitted
     as ``clustered`` in its soft pass.
 
-    Default OFF. Flag-off path keeps current emit behaviour, so every
-    fixture committed before Cycle 17 replays byte-stable.
+    **Default ON as of Defect Plan 3 (2026-05-12).** Corpus evidence:
 
-    Anchor: ``runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097``
-    postmortem F9 — 15 × ``clustered -> soft_signal`` illegal trunk
-    transitions clear when this flag is on.
+    - 3b050ec5 anchor (Cycle 17): 15 × ``clustered -> soft_signal``
+      violations clear under ``=1``; pinned by
+      ``tests/replay/test_replay_anchor_3b050ec5_zero_violations.py``.
+    - ccf1d60d 7Now consolidating-trial run: 5 × ``clustered ->
+      soft_signal`` violations for ``gs_021`` clear under ``=1``;
+      pinned by ``tests/replay/test_replay_anchor_ccf1d60d_zero_violations.py``.
+    - In-tree fixture audit (Defect Plan 3 Task 1): every other
+      replay fixture is byte-stable across the flip (the producer
+      cannot increase violation counts under the flag, only suppress
+      redundant emits).
 
-    Enable with ``GSO_JOURNEY_PRODUCER_STRICT=1``.
+    Legacy regime escape hatch: set ``GSO_JOURNEY_PRODUCER_STRICT=0``
+    to restore the pre-Defect-Plan-3 emit behaviour. Used by
+    ``test_anchor_setenv_zero_preserves_legacy_violations`` and
+    ``test_anchor_flag_off_clears_clustered_to_already_passing``
+    (3b050ec5 anchor) to validate the legacy producer regime
+    remains testable.
+
+    Anchors:
+      * ``runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097``
+        (Cycle 17 anchor, 15 violations).
+      * ``runid_analysis/ccf1d60d-d686-467b-bafa-1640131b4393``
+        (Defect Plan 3 anchor, 5 violations for gs_021).
     """
-    return _flag_enabled("GSO_JOURNEY_PRODUCER_STRICT")
+    return _flag_default_on("GSO_JOURNEY_PRODUCER_STRICT")
 
 
 # ---------------------------------------------------------------------------
