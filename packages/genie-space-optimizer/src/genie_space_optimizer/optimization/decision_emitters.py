@@ -2594,6 +2594,113 @@ def narrow_replacement_branch_c_synthesized_record(
     )
 
 
+# ---------------------------------------------------------------------------
+# Plan P-F (2026-05-12) — Proposal Failure Taxonomy taxonomy record
+# ---------------------------------------------------------------------------
+
+
+def proposal_failure_decided_record(
+    *,
+    run_id: str,
+    iteration: int,
+    context: Any,  # ProposalFailureContext (lazy import to avoid cycles)
+    decision: Any,  # ProposalFailureDecision
+    target_qids: tuple[str, ...] = (),
+) -> DecisionRecord:
+    """Plan P-F — taxonomy companion to the existing proposal-phase
+    failure records (proposal_generation_empty_record,
+    lever6_force_llm_declined_record, ag_outcome_decision_record for
+    skipped_no_applied_patches, etc.).
+
+    Emits a ``DecisionType.PROPOSAL_FAILURE_DECIDED`` / ``INFO`` record
+    whose ``reason_code`` is one of six closed-vocabulary next-action
+    labels (see ``optimization.proposal_failure_policy``). Postmortems
+    pivot on this label without parsing free-form ``next_action`` text.
+
+    The caller (``harness.py``) builds the ``ProposalFailureContext``
+    from observable state at the failure site and invokes
+    ``decide_next_action`` to produce the ``ProposalFailureDecision``.
+    """
+    from genie_space_optimizer.optimization.proposal_failure_policy import (
+        ProposalFailureNextAction,
+    )
+
+    _NEXT_ACTION_TO_REASON_CODE = {
+        ProposalFailureNextAction.ROTATE_LEVER_FAMILY: (
+            ReasonCode.ROTATE_LEVER_FAMILY
+        ),
+        ProposalFailureNextAction.NARROW_AG_SCOPE: (
+            ReasonCode.NARROW_AG_SCOPE
+        ),
+        ProposalFailureNextAction.MARK_EVIDENCE_GAP: (
+            ReasonCode.MARK_EVIDENCE_GAP
+        ),
+        ProposalFailureNextAction.BLOCK_AG_RETRY_BY_CLUSTER_SIGNATURE: (
+            ReasonCode.BLOCK_AG_RETRY_BY_CLUSTER_SIGNATURE
+        ),
+        ProposalFailureNextAction.ESCALATE_UNSUPPORTED_REPAIR_SHAPE: (
+            ReasonCode.ESCALATE_UNSUPPORTED_REPAIR_SHAPE
+        ),
+        ProposalFailureNextAction.REQUEST_EVIDENCE_GATHERING: (
+            ReasonCode.REQUEST_EVIDENCE_GATHERING
+        ),
+    }
+
+    reason_code = _NEXT_ACTION_TO_REASON_CODE[decision.next_action]
+    qids = tuple(str(q) for q in (target_qids or ()) if str(q))
+    evidence_refs = tuple(
+        v for v in (
+            f"ag:{context.ag_id}" if context.ag_id else "",
+            f"cluster:{context.cluster_id}" if context.cluster_id else "",
+            f"rca:{context.rca_id}" if context.rca_id else "",
+            (
+                f"signature:{context.cluster_signature}"
+                if context.cluster_signature
+                else ""
+            ),
+        ) if v
+    )
+
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_FAILURE_DECIDED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=reason_code,
+        ag_id=str(context.ag_id or ""),
+        cluster_id=str(context.cluster_id or ""),
+        rca_id=str(context.rca_id or ""),
+        root_cause=str(context.root_cause or ""),
+        evidence_refs=evidence_refs,
+        affected_qids=qids,
+        target_qids=qids,
+        source_cluster_ids=(
+            (context.cluster_id,) if context.cluster_id else ()
+        ),
+        gate="proposal_failure_policy",
+        reason_detail=str(decision.rationale or ""),
+        expected_effect=(
+            f"Next iteration applies {decision.next_action.value} "
+            f"for AG {context.ag_id} on failure mode "
+            f"{context.failure_mode}."
+        ),
+        next_action=str(decision.next_action.value),
+        metrics={
+            "failure_mode": str(context.failure_mode),
+            "cluster_signature": str(context.cluster_signature),
+            "lever_set": list(int(L) for L in (context.lever_set or ())),
+            "tried_lever_families": list(
+                int(L) for L in (context.tried_lever_families or ())
+            ),
+            "ag_source_cluster_count": int(
+                context.ag_source_cluster_count or 0
+            ),
+            "rca_card_grounded": bool(context.rca_card_grounded),
+            "prior_failure_count": int(context.prior_failure_count or 0),
+        },
+    )
+
+
 def structural_causal_dropped_record(
     *,
     run_id: str,
