@@ -253,3 +253,152 @@ def test_execution_plan_lookup_recovers_qids_from_source_clusters_when_affected_
     assert target_qids_for_action_group_execution(ag, source_clusters) == ("q1",)
     assert required_levers_for_action_group(ag, plans, source_clusters=source_clusters) == (1, 5, 6)
     assert [p.rca_id for p in plans_for_action_group(ag, plans, source_clusters=source_clusters)] == ["rca_q1_topn"]
+
+
+# ---- Plan P-D — RcaRegenerationPolicy ----------------------------
+
+
+def test_policy_default_caps_match_table():
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationPolicy,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    policy = RcaRegenerationPolicy.default()
+    assert policy.max_attempts(RcaUngroundedReason.NO_PARENT_RCA) == 1
+    assert policy.max_attempts(RcaUngroundedReason.NO_FINDINGS) == 1
+    assert policy.max_attempts(RcaUngroundedReason.NO_TERM_OVERLAP) == 1
+    assert policy.max_attempts(RcaUngroundedReason.NO_CAUSAL_TARGET) == 1
+    assert policy.max_attempts(RcaUngroundedReason.MISSING_TARGET_QIDS) == 0
+    assert policy.max_attempts(RcaUngroundedReason.NO_EVIDENCE_AVAILABLE) == 0
+    assert policy.max_attempts(RcaUngroundedReason.UNKNOWN) == 0
+
+
+def test_policy_permits_only_when_max_attempts_positive():
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationPolicy,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    policy = RcaRegenerationPolicy.default()
+    assert policy.permits(RcaUngroundedReason.NO_FINDINGS) is True
+    assert policy.permits(RcaUngroundedReason.MISSING_TARGET_QIDS) is False
+    assert policy.permits(RcaUngroundedReason.UNKNOWN) is False
+
+
+def test_policy_from_overrides_clamps_to_zero_five():
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationPolicy,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    policy = RcaRegenerationPolicy.from_overrides({
+        RcaUngroundedReason.NO_FINDINGS: -3,
+        RcaUngroundedReason.NO_TERM_OVERLAP: 99,
+        RcaUngroundedReason.NO_PARENT_RCA: 2,
+    })
+    assert policy.max_attempts(RcaUngroundedReason.NO_FINDINGS) == 0
+    assert policy.max_attempts(RcaUngroundedReason.NO_TERM_OVERLAP) == 5
+    assert policy.max_attempts(RcaUngroundedReason.NO_PARENT_RCA) == 2
+    # Non-overridden reasons keep their defaults.
+    assert policy.max_attempts(RcaUngroundedReason.NO_CAUSAL_TARGET) == 1
+
+
+# ---- Plan P-D — RcaRegenerationCache -----------------------------
+
+
+def test_cache_starts_empty():
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationCache,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    cache = RcaRegenerationCache()
+    assert cache.attempts_for("sig-abc", RcaUngroundedReason.NO_FINDINGS) == 0
+    assert cache.last_outcome_for("sig-abc", RcaUngroundedReason.NO_FINDINGS) is None
+
+
+def test_cache_records_attempt_keyed_on_signature_and_reason():
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationCache,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    cache = RcaRegenerationCache()
+    cache.record_attempt(
+        signature="sig-abc",
+        reason=RcaUngroundedReason.NO_FINDINGS,
+        rca_id="",
+        attempted_sources=("failure_buckets",),
+    )
+    assert cache.attempts_for("sig-abc", RcaUngroundedReason.NO_FINDINGS) == 1
+    # Same signature, different reason: independent counter.
+    assert cache.attempts_for("sig-abc", RcaUngroundedReason.NO_TERM_OVERLAP) == 0
+
+
+def test_cache_has_success_per_reason():
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationCache,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    cache = RcaRegenerationCache()
+    cache.record_attempt(
+        "sig-y", reason=RcaUngroundedReason.NO_FINDINGS,
+        rca_id="rca-7af1", attempted_sources=("failure_buckets",),
+    )
+    assert cache.has_success("sig-y", RcaUngroundedReason.NO_FINDINGS) is True
+    assert cache.has_success("sig-y", RcaUngroundedReason.NO_TERM_OVERLAP) is False
+
+
+def test_cache_is_exhausted_consults_policy():
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationCache,
+        RcaRegenerationPolicy,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    cache = RcaRegenerationCache()
+    policy = RcaRegenerationPolicy.default()
+    # Default: NO_FINDINGS allows 1.
+    assert cache.is_exhausted(
+        "sig-x", RcaUngroundedReason.NO_FINDINGS, policy=policy,
+    ) is False
+    cache.record_attempt(
+        "sig-x", reason=RcaUngroundedReason.NO_FINDINGS,
+        rca_id="", attempted_sources=("failure_buckets", "asi"),
+    )
+    assert cache.is_exhausted(
+        "sig-x", RcaUngroundedReason.NO_FINDINGS, policy=policy,
+    ) is True
+
+
+def test_cache_is_exhausted_for_zero_cap_returns_true_immediately():
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationCache,
+        RcaRegenerationPolicy,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    cache = RcaRegenerationCache()
+    policy = RcaRegenerationPolicy.default()
+    # Default: MISSING_TARGET_QIDS allows 0 → exhausted on first call.
+    assert cache.is_exhausted(
+        "sig-z", RcaUngroundedReason.MISSING_TARGET_QIDS, policy=policy,
+    ) is True

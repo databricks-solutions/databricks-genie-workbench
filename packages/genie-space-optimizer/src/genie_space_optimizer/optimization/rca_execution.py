@@ -535,3 +535,143 @@ def build_observed_effects(
             judge_failure_delta=judge_delta,
         ))
     return effects
+
+
+# ---- Plan P-D (2026-05-12) — RCA Ungrounded Recovery Policy ---------
+
+
+@dataclass(frozen=True)
+class RcaRegenerationPolicy:
+    """Plan P-D (2026-05-12) — per-reason retry policy.
+
+    The defaults match the policy table in
+    ``2026-05-12-plan-p-d-rca-regeneration-recovery-loop.md``.
+    Construction is pure (no env reads); the harness wire site
+    obtains overrides via :func:`config.rca_regen_policy_overrides`
+    and passes them to :meth:`from_overrides`.
+
+    ``max_attempts(reason)`` returns ``0`` for non-retryable
+    categories — the orchestrator treats ``0`` as "do not call the
+    driver" so non-retryable shapes never burn LLM budget.
+    """
+
+    caps_by_reason: Mapping[Any, int]
+
+    @classmethod
+    def default(cls) -> "RcaRegenerationPolicy":
+        from genie_space_optimizer.optimization.rca_decision_trace import (
+            RcaUngroundedReason,
+        )
+
+        defaults = {
+            RcaUngroundedReason.NO_PARENT_RCA: 1,
+            RcaUngroundedReason.NO_FINDINGS: 1,
+            RcaUngroundedReason.NO_TERM_OVERLAP: 1,
+            RcaUngroundedReason.NO_CAUSAL_TARGET: 1,
+            RcaUngroundedReason.MISSING_TARGET_QIDS: 0,
+            RcaUngroundedReason.NO_EVIDENCE_AVAILABLE: 0,
+            RcaUngroundedReason.UNKNOWN: 0,
+        }
+        return cls(caps_by_reason=defaults)
+
+    @classmethod
+    def from_overrides(
+        cls, overrides: Mapping[Any, int],
+    ) -> "RcaRegenerationPolicy":
+        base = dict(cls.default().caps_by_reason)
+        for reason, value in (overrides or {}).items():
+            try:
+                v = int(value)
+            except (TypeError, ValueError):
+                continue
+            base[reason] = max(0, min(5, v))
+        return cls(caps_by_reason=base)
+
+    def max_attempts(self, reason: Any) -> int:
+        return int(self.caps_by_reason.get(reason, 0))
+
+    def permits(self, reason: Any) -> bool:
+        return self.max_attempts(reason) > 0
+
+
+@dataclass(frozen=True)
+class RcaRegenerationCacheEntry:
+    """Plan P-D (2026-05-12) — immutable record of one regeneration
+    attempt outcome.
+
+    ``rca_id`` is the empty string when the attempt produced no fit
+    card. A non-empty ``rca_id`` means the regen succeeded and the
+    orchestrator stamped it onto the cluster. ``attempted_sources``
+    is the in-order tuple returned by
+    :func:`harness._regenerate_rca_for_cluster`.
+    """
+
+    rca_id: str
+    attempted_sources: tuple[str, ...]
+
+
+class RcaRegenerationCache:
+    """Plan P-D (2026-05-12) — per-run RCA regeneration outcome
+    cache, keyed on ``(cluster_signature, RcaUngroundedReason)``.
+
+    Why include the reason in the key? A cluster classified
+    ``NO_FINDINGS`` on iter 1 may classify ``NO_TERM_OVERLAP`` on
+    iter 2 if Stage 2 has since produced findings that don't ground.
+    These are distinct retry budgets — the iter-1 attempt should not
+    block the iter-2 retry.
+
+    Why include the cluster signature? Same identity argument as
+    Defect Plan 1 G2 (the LLM may regenerate ``root_cause`` text
+    differently across iterations; the signature is stable by
+    construction).
+
+    Mutability: per-run mutable holder. Entries themselves are
+    frozen.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[
+            tuple[str, Any], list[RcaRegenerationCacheEntry]
+        ] = {}
+
+    def _key(self, signature: str, reason: Any) -> tuple[str, Any]:
+        return (str(signature), reason)
+
+    def attempts_for(self, signature: str, reason: Any) -> int:
+        return len(self._entries.get(self._key(signature, reason), ()))
+
+    def has_success(self, signature: str, reason: Any) -> bool:
+        last = self.last_outcome_for(signature, reason)
+        return bool(last and last.rca_id)
+
+    def last_outcome_for(
+        self, signature: str, reason: Any,
+    ) -> "RcaRegenerationCacheEntry | None":
+        entries = self._entries.get(self._key(signature, reason)) or []
+        return entries[-1] if entries else None
+
+    def is_exhausted(
+        self,
+        signature: str,
+        reason: Any,
+        *,
+        policy: RcaRegenerationPolicy,
+    ) -> bool:
+        return self.attempts_for(signature, reason) >= policy.max_attempts(reason)
+
+    def record_attempt(
+        self,
+        signature: str,
+        *,
+        reason: Any,
+        rca_id: str,
+        attempted_sources,
+    ) -> RcaRegenerationCacheEntry:
+        entry = RcaRegenerationCacheEntry(
+            rca_id=str(rca_id or ""),
+            attempted_sources=tuple(
+                str(s) for s in (attempted_sources or ())
+            ),
+        )
+        self._entries.setdefault(self._key(signature, reason), []).append(entry)
+        return entry
