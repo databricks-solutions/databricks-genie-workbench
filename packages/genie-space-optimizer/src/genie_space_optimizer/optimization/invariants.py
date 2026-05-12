@@ -33,6 +33,9 @@ Invariant IDs:
   I12 — replay validity (canonical HIGH-tier replay-validity invariant,
         Cycle 17 T3). Same predicate as I5; co-exists for tier-
         separation in C16-T4's contract-health summary.
+  I14 — P-E1 dedup: at most one live ``lever6_force_llm_declined``
+        per ``(iter, cluster_signature, root_cause)``; cached
+        records are unbounded.
 """
 
 from __future__ import annotations
@@ -769,7 +772,77 @@ def check_i12_replay_validity(evidence: Mapping[str, Any]) -> list[dict]:
     )]
 
 
-# All invariants (I1–I8 + I11 + I12 + I13) are now implemented and wired in run_invariants.
+def check_i14_l6_decline_dedup(evidence: Mapping[str, Any]) -> list[dict]:
+    """I14 — P-E1 observable-outcome dedup: at most one *live*
+    (``metrics.cached == False``) ``lever6_force_llm_declined``
+    decision record per ``(iteration, cluster_signature, root_cause)``
+    tuple.
+
+    This is the run-level guard for the iteration-scoped Lever-6
+    decline cache landed by P-E1. The cache itself (in
+    ``harness._maybe_force_lever6_with_cache``) is the production
+    dedup mechanism; this invariant enforces the observable property
+    independent of how the cache is wired, so a future regression
+    that bypasses the wrapper (e.g. a sibling proposal generator
+    emitting its own declined record, or the paranoia-guard taking
+    the fail-open path repeatedly) is caught at run end rather than
+    leaking redundant LLM-decline noise into dashboards.
+
+    The ``cluster_signature`` is extracted from the record's
+    ``evidence_refs`` (the ``signature:<sig>`` token written by
+    ``decision_emitters.lever6_force_llm_declined_record`` when the
+    P-E1 ``cluster_signature`` argument is supplied). Records without
+    a signature evidence ref are legacy / pre-P-E1 fixtures and are
+    silently skipped so this invariant stays back-compat.
+
+    Cached records (``metrics.cached == True``) are *unbounded* per
+    group — they are the intended dedup mechanism in action. Only
+    live declines are counted toward the violation threshold.
+    """
+    violations: list[dict] = []
+    for it in evidence.get("iterations") or []:
+        iteration = int(it.get("iteration") or 0)
+        groups: dict[tuple[str, str], int] = {}
+        for r in it.get("decision_records") or []:
+            if str(r.get("reason_code") or "") != "lever6_force_llm_declined":
+                continue
+            metrics = dict(r.get("metrics") or {})
+            if bool(metrics.get("cached")):
+                continue
+            sig = ""
+            for ref in (r.get("evidence_refs") or ()):
+                s = str(ref or "")
+                if s.startswith("signature:"):
+                    sig = s[len("signature:"):]
+                    break
+            if not sig:
+                # Legacy fixture without P-E1 evidence-ref extension —
+                # cannot be grouped, skip silently.
+                continue
+            root_cause = str(r.get("root_cause") or "")
+            key = (sig, root_cause)
+            groups[key] = groups.get(key, 0) + 1
+        for (sig, rc), count in sorted(groups.items()):
+            if count <= 1:
+                continue
+            violations.append(_violation(
+                invariant_id="I14",
+                title="lever6_force_llm_declined_dedup_violation",
+                detail=(
+                    f"iteration={iteration} cluster_signature={sig!r} "
+                    f"root_cause={rc!r} live_decline_count={count} "
+                    "(expected <= 1; cache should have short-circuited "
+                    "siblings)"
+                ),
+                iteration=iteration,
+                cluster_signature=sig,
+                root_cause=rc,
+                live_decline_count=count,
+            ))
+    return violations
+
+
+# All invariants (I1–I8 + I11 + I12 + I13 + I14) are now implemented and wired in run_invariants.
 
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
@@ -788,6 +861,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i10_applied_patch_id_injective,  # Cycle 15.1-T2
         check_i11_causal_continuity,  # Cycle 16 T5
         check_i13_target_delta_totality,  # Cycle 14-T0
+        check_i14_l6_decline_dedup,  # P-E1
         check_i12_replay_validity,  # Cycle 17 T3
     ):
         try:
