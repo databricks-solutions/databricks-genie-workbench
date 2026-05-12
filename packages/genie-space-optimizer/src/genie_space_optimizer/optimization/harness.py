@@ -20908,6 +20908,56 @@ def _run_lever_loop(
                                     break
                             if _drop_cluster is None:
                                 continue
+
+                            # P-E2 — observe-only: did the AG slip past
+                            # the iter-level guard at line 19752 and
+                            # arrive here with a now-forbidden identity?
+                            # The lever set may have expanded since AG
+                            # selection (RCA-execution union at line
+                            # 20098), so the collision pair is recomputed
+                            # with the latest lever_keys. No behavior
+                            # change — the synthesis call still runs.
+                            try:
+                                _p_e2_pair = _ag_collision_key_pair(
+                                    ag=ag,
+                                    ag_root_cause=str(_drop_root_cause or ""),
+                                    ag_blame_set=ag.get("blame_set"),
+                                    lever_keys=list(lever_keys),
+                                )
+                                _p_e2_forbidden = _compute_forbidden_ag_set_pair(
+                                    reflection_buffer
+                                )
+                                _p_e2_sigs = sorted(
+                                    str(s).strip()
+                                    for s in (ag.get("source_cluster_signatures") or ())
+                                    if str(s).strip()
+                                )
+                                _p_e2_sig = _p_e2_sigs[0] if _p_e2_sigs else ""
+                                _check_proposal_stage_forbidden_ag_leakage(
+                                    run_id=str(run_id),
+                                    iteration=int(iteration_counter),
+                                    ag_id=str(ag_id),
+                                    cluster_id=str(
+                                        _drop_cluster.get("cluster_id") or ""
+                                    ),
+                                    root_cause=str(_drop_root_cause or ""),
+                                    collision_pair=_p_e2_pair,
+                                    forbidden_pair=_p_e2_forbidden,
+                                    cluster_signature=_p_e2_sig,
+                                    lever_set=tuple(
+                                        int(lk) for lk in lever_keys
+                                    ),
+                                    call_site="cluster_driven_synthesis",
+                                    iter_inputs=_current_iter_inputs,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "P-E2 observe-only check raised at "
+                                    "cluster_driven_synthesis call site "
+                                    "(non-fatal)",
+                                    exc_info=True,
+                                )
+
                             _synth_result = run_cluster_driven_synthesis_for_single_cluster(
                                 _drop_cluster,
                                 metadata_snapshot,
