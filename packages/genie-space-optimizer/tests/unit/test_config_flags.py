@@ -163,3 +163,34 @@ def test_canonical_acceptance_render_disabled_via_env(monkeypatch):
         canonical_acceptance_render_enabled,
     )
     assert canonical_acceptance_render_enabled() is False
+
+
+# Phase 1 Action 1.1 — RCA card builder flags.
+
+
+def test_rca_card_builder_disabled_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_RCA_CARD_BUILDER", raising=False)
+    from genie_space_optimizer.common.config import rca_card_builder_enabled
+    assert rca_card_builder_enabled() is False
+
+
+def test_rca_card_builder_enabled_when_flag_on(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_RCA_CARD_BUILDER", "1")
+    from genie_space_optimizer.common.config import rca_card_builder_enabled
+    assert rca_card_builder_enabled() is True
+
+
+def test_rca_card_llm_normalization_disabled_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_RCA_CARD_LLM_NORMALIZATION", raising=False)
+    from genie_space_optimizer.common.config import (
+        rca_card_llm_normalization_enabled,
+    )
+    assert rca_card_llm_normalization_enabled() is False
+
+
+def test_rca_card_llm_normalization_enabled_when_flag_on(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_RCA_CARD_LLM_NORMALIZATION", "yes")
+    from genie_space_optimizer.common.config import (
+        rca_card_llm_normalization_enabled,
+    )
+    assert rca_card_llm_normalization_enabled() is True

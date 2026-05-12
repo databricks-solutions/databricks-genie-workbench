@@ -5374,6 +5374,35 @@ def partial_harvest_with_debt_enabled() -> bool:
     return _flag_enabled("GSO_PARTIAL_HARVEST_WITH_DEBT")
 
 
+def rca_card_builder_enabled() -> bool:
+    """Phase 1 Action 1.1 — when ON, ``build_rca_card`` runs the
+    deterministic-first evidence-grounded builder instead of returning
+    the legacy ``{"rca_id": ""}`` stub. Default OFF for the initial
+    pilot; flip default-on after one corpus pilot validates the
+    self-grounding-failure rate stays under 10%.
+
+    Enable with ``GSO_RCA_CARD_BUILDER=1``.
+    """
+    return _flag_enabled("GSO_RCA_CARD_BUILDER")
+
+
+def rca_card_llm_normalization_enabled() -> bool:
+    """Phase 1 Action 1.1 — when ON, the deterministic builder calls
+    the LLM once at low temperature to rewrite the deterministic
+    ``rationale`` field into readable English. The LLM cannot mutate
+    ``root_cause``, ``grounding_terms``, ``allowed_patch_families``,
+    or ``forbidden_patch_families``; any attempt is rejected and the
+    deterministic rationale is kept. LLM timeouts and exceptions are
+    caught — the builder still returns the card.
+
+    Default OFF (deterministic-only) so the initial pilot can verify
+    the deterministic mapper before adding LLM-induced variance.
+
+    Enable with ``GSO_RCA_CARD_LLM_NORMALIZATION=1``.
+    """
+    return _flag_enabled("GSO_RCA_CARD_LLM_NORMALIZATION")
+
+
 def patch_subset_isolation_enabled() -> bool:
     """Cycle 14B-T3 — when on, the harness invokes the patch-subset
     isolation orchestrator after a partial-harvest rejection. In
