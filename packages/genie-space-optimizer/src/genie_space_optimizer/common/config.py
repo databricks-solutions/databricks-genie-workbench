@@ -5558,6 +5558,67 @@ def ag_emit_grounding_gate_enabled() -> bool:
     return _flag_default_on("GSO_AG_EMIT_GROUNDING_GATE")
 
 
+def rca_regen_recovery_policy_enabled() -> bool:
+    """Plan P-D (2026-05-12) — RCA Ungrounded Recovery Policy
+    master gate.
+
+    When ON (default), the AG-emit prelude in ``_run_lever_loop``
+    iterates each open hard cluster whose ``rca_card`` is falsy,
+    classifies the ungrounded reason via
+    :func:`rca_groundedness.classify_rca_ungrounded`, consults
+    :class:`rca_execution.RcaRegenerationPolicy`, and runs the
+    regen driver only when the policy permits and the cache has
+    not exhausted attempts for ``(cluster_signature, reason)``.
+
+    Closes the airline-trial defect (run 31ecd96f) where
+    decomposed-AG clusters with ``rca_ungrounded`` arrived at
+    AG-emit on every iteration with zero regen attempts (the
+    existing T3 path is gated on AG provenance, not on grounding
+    state — see the plan's investigation section).
+
+    Default ON. Disable with ``GSO_RCA_REGEN_RECOVERY_POLICY=0``.
+    """
+    return _flag_default_on("GSO_RCA_REGEN_RECOVERY_POLICY")
+
+
+def rca_regen_policy_overrides() -> dict:
+    """Plan P-D (2026-05-12) — read the seven per-reason
+    ``GSO_RCA_REGEN_MAX_ATTEMPTS_<REASON>`` env vars and return a
+    typed dict suitable for
+    :meth:`rca_execution.RcaRegenerationPolicy.from_overrides`.
+
+    Returns an empty dict when no env vars are set (the policy
+    keeps its defaults). Garbage values (non-integers) are silently
+    skipped — the policy keeps the default for that reason.
+
+    Clamping to ``[0, 5]`` happens inside ``from_overrides``; this
+    accessor only does the env-read + integer parse.
+    """
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    var_by_reason = {
+        RcaUngroundedReason.NO_PARENT_RCA: "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_PARENT_RCA",
+        RcaUngroundedReason.NO_FINDINGS: "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_FINDINGS",
+        RcaUngroundedReason.NO_TERM_OVERLAP: "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_TERM_OVERLAP",
+        RcaUngroundedReason.NO_CAUSAL_TARGET: "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_CAUSAL_TARGET",
+        RcaUngroundedReason.MISSING_TARGET_QIDS: "GSO_RCA_REGEN_MAX_ATTEMPTS_MISSING_TARGET_QIDS",
+        RcaUngroundedReason.NO_EVIDENCE_AVAILABLE: "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_EVIDENCE_AVAILABLE",
+        RcaUngroundedReason.UNKNOWN: "GSO_RCA_REGEN_MAX_ATTEMPTS_UNKNOWN",
+    }
+    out: dict = {}
+    for reason, env in var_by_reason.items():
+        raw = (os.environ.get(env) or "").strip()
+        if not raw:
+            continue
+        try:
+            out[reason] = int(raw)
+        except ValueError:
+            continue
+    return out
+
+
 def forbidden_ag_collision_by_cluster_signature_enabled() -> bool:
     """Defect Plan 1 (2026-05-12) — broaden the forbidden-AG
     collision key to also key on ``source_cluster_signatures``, so

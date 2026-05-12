@@ -61,3 +61,71 @@ def test_forbidden_ag_collision_by_cluster_signature_disabled_when_falsy(
         assert forbidden_ag_collision_by_cluster_signature_enabled() is False, (
             f"falsy value {v!r} did not disable the flag"
         )
+
+
+def test_rca_regen_recovery_policy_enabled_defaults_to_true(monkeypatch):
+    monkeypatch.delenv("GSO_RCA_REGEN_RECOVERY_POLICY", raising=False)
+    from genie_space_optimizer.common.config import (
+        rca_regen_recovery_policy_enabled,
+    )
+
+    assert rca_regen_recovery_policy_enabled() is True
+
+
+def test_rca_regen_recovery_policy_disabled_when_falsy(monkeypatch):
+    from genie_space_optimizer.common.config import (
+        rca_regen_recovery_policy_enabled,
+    )
+
+    for v in ("0", "false", "FALSE", "off", "no"):
+        monkeypatch.setenv("GSO_RCA_REGEN_RECOVERY_POLICY", v)
+        assert rca_regen_recovery_policy_enabled() is False
+
+
+def test_rca_regen_policy_overrides_returns_empty_when_no_env(monkeypatch):
+    for var in (
+        "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_PARENT_RCA",
+        "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_FINDINGS",
+        "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_TERM_OVERLAP",
+        "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_CAUSAL_TARGET",
+        "GSO_RCA_REGEN_MAX_ATTEMPTS_MISSING_TARGET_QIDS",
+        "GSO_RCA_REGEN_MAX_ATTEMPTS_NO_EVIDENCE_AVAILABLE",
+        "GSO_RCA_REGEN_MAX_ATTEMPTS_UNKNOWN",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    from genie_space_optimizer.common.config import (
+        rca_regen_policy_overrides,
+    )
+
+    assert rca_regen_policy_overrides() == {}
+
+
+def test_rca_regen_policy_overrides_reads_env_per_reason(monkeypatch):
+    from genie_space_optimizer.common.config import (
+        rca_regen_policy_overrides,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    monkeypatch.setenv("GSO_RCA_REGEN_MAX_ATTEMPTS_NO_FINDINGS", "2")
+    monkeypatch.setenv("GSO_RCA_REGEN_MAX_ATTEMPTS_NO_PARENT_RCA", "0")
+    overrides = rca_regen_policy_overrides()
+    assert overrides[RcaUngroundedReason.NO_FINDINGS] == 2
+    assert overrides[RcaUngroundedReason.NO_PARENT_RCA] == 0
+    assert RcaUngroundedReason.NO_TERM_OVERLAP not in overrides
+
+
+def test_rca_regen_policy_overrides_skips_garbage(monkeypatch):
+    from genie_space_optimizer.common.config import (
+        rca_regen_policy_overrides,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    monkeypatch.setenv("GSO_RCA_REGEN_MAX_ATTEMPTS_NO_FINDINGS", "not-a-number")
+    monkeypatch.setenv("GSO_RCA_REGEN_MAX_ATTEMPTS_NO_TERM_OVERLAP", " 3 ")
+    overrides = rca_regen_policy_overrides()
+    assert RcaUngroundedReason.NO_FINDINGS not in overrides
+    assert overrides[RcaUngroundedReason.NO_TERM_OVERLAP] == 3
