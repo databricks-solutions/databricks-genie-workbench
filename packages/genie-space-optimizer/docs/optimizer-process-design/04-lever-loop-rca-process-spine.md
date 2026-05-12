@@ -118,6 +118,17 @@ because no producer was wired; Plan P-G closes that gap and turns the
 boundary into a fully-auditable surface with hash + structural +
 payload-level drift signals.
 
+**Source modules (Plan P-D, 2026-05-12):**
+
+- `optimization/rca.py` — `regenerate_rca_for_clusters` runs immediately before
+  the AG-emit prelude when `GSO_RCA_REGEN_RECOVERY_POLICY=1` (default). It
+  classifies the typed ungrounded reason, consults a per-reason policy, runs
+  the regen driver only when the policy permits, and on success mutates
+  `cluster["rca_card"]` so the Defect Plan 1 G1 grounding gate sees the
+  post-policy view. See
+  `2026-05-12-plan-p-d-rca-regeneration-recovery-loop.md` (specifically the
+  "Recovery Policy Table" section for retryability per reason).
+
 ## Stage 5 — Proposal Generation
 
 **Plain language:** "Translate the action group into concrete patch JSON."
