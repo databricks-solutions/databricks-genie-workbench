@@ -649,3 +649,63 @@ def test_ag_levers_unioned_record_shape():
     )
     d = rec.to_dict()
     assert d["reason_code"] == "ag_levers_unioned"
+
+
+def test_cluster_blocked_no_rca_record_produces_typed_record():
+    from genie_space_optimizer.optimization.decision_emitters import (
+        cluster_blocked_no_rca_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionType,
+        DecisionOutcome,
+        ReasonCode,
+    )
+
+    rec = cluster_blocked_no_rca_record(
+        run_id="run-123",
+        iteration=2,
+        cluster_id="H001",
+        rca_id="",
+        affected_qids=["airline_ticketing_and_fare_analysis_gs_009"],
+        root_cause="wrong_aggregation",
+    )
+
+    assert rec.decision_type == DecisionType.CLUSTER_BLOCKED_NO_RCA
+    assert rec.outcome == DecisionOutcome.SKIPPED
+    assert rec.reason_code == ReasonCode.RCA_UNGROUNDED
+    assert rec.iteration == 2
+    assert rec.run_id == "run-123"
+    payload = rec.to_dict()
+    assert payload["decision_type"] == "cluster_blocked_no_rca"
+    assert payload["cluster_id"] == "H001"
+    assert payload["root_cause"] == "wrong_aggregation"
+    assert payload["target_qids"] == [
+        "airline_ticketing_and_fare_analysis_gs_009"
+    ]
+
+
+def test_cluster_blocked_no_rca_record_handles_empty_optional_fields():
+    from genie_space_optimizer.optimization.decision_emitters import (
+        cluster_blocked_no_rca_record,
+    )
+
+    rec = cluster_blocked_no_rca_record(
+        run_id="run-x",
+        iteration=0,
+        cluster_id="H999",
+        rca_id=None,
+        affected_qids=None,
+        root_cause=None,
+    )
+
+    # Dataclass-level coercion (None -> ""): the to_dict shape drops
+    # empty strings, so check the field directly for the empty cases.
+    assert rec.cluster_id == "H999"
+    assert rec.rca_id == ""
+    assert rec.root_cause == ""
+    payload = rec.to_dict()
+    assert payload["cluster_id"] == "H999"
+    # rca_id / root_cause are omitted from to_dict when empty — that's
+    # the existing DecisionRecord contract, not a defect-1 concern.
+    assert "rca_id" not in payload
+    assert "root_cause" not in payload

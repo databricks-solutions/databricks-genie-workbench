@@ -2681,3 +2681,48 @@ def ag_levers_unioned_record(
             "levers_after": list(after),
         },
     )
+
+
+def cluster_blocked_no_rca_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    rca_id: str | None,
+    affected_qids: Sequence[str] | None,
+    root_cause: str | None,
+) -> DecisionRecord:
+    """Defect Plan 1 (2026-05-12) — emit a typed record when an open
+    hard cluster reaches AG-emit time with no fit RCA card.
+
+    Consumed by:
+
+    1. ``invariants.check_i7_rca_grounding`` — the green branch
+       (cluster present in ``blocked_clusters`` set) becomes
+       reachable in production once the harness wires this producer
+       (Task 4). Before this plan, I7 was detection-only.
+    2. ``stages.action_groups.select`` — the runtime gate (Task 6)
+       reads ``ActionGroupsInput.blocked_cluster_ids`` (Task 5) and
+       drops AGs whose ``source_cluster_ids`` intersect the blocked
+       set.
+
+    Pure function. The harness call site (Task 4) wraps the call in
+    the producer-exception try/except so any failure becomes a
+    typed ``PRODUCER_EXCEPTION`` record rather than a silent mute.
+    """
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.CLUSTER_BLOCKED_NO_RCA,
+        outcome=DecisionOutcome.SKIPPED,
+        reason_code=ReasonCode.RCA_UNGROUNDED,
+        cluster_id=str(cluster_id or ""),
+        rca_id=str(rca_id or ""),
+        ag_id="",
+        target_qids=tuple(str(q) for q in (affected_qids or []) if q),
+        root_cause=str(root_cause or ""),
+        next_action=(
+            "regenerate RCA evidence for this cluster or escalate to "
+            "diagnostic-AG path before re-attempting AG emission"
+        ),
+    )
