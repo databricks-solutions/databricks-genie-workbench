@@ -244,6 +244,24 @@ def parse_no_structural_candidate_marker(line: str) -> dict:
     }
 
 
+def parse_proposal_failure_decided_marker(line: str) -> dict:
+    """Plan P-F — parse ``GSO_PROPOSAL_FAILURE_DECIDED_V1 {json}``.
+
+    Returns ``{"ag_id", "iteration", "failure_mode", "next_action",
+    "cluster_signature", "prior_failure_count"}``. Raises
+    ``ValueError`` if the line does not match.
+    """
+    payload = _parse_named_marker(line, "GSO_PROPOSAL_FAILURE_DECIDED_V1")
+    return {
+        "ag_id": str(payload.get("ag_id") or ""),
+        "iteration": int(payload.get("iteration") or 0),
+        "failure_mode": str(payload.get("failure_mode") or ""),
+        "next_action": str(payload.get("next_action") or ""),
+        "cluster_signature": str(payload.get("cluster_signature") or ""),
+        "prior_failure_count": int(payload.get("prior_failure_count") or 0),
+    }
+
+
 def parse_iteration_budget_marker(line: str) -> dict:
     """Parse ``GSO_ITERATION_BUDGET_V1 {json}`` (Cycle 5 T1).
 

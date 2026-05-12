@@ -1002,6 +1002,36 @@ def proposal_generation_empty_marker(
     )
 
 
+def proposal_failure_decided_marker(
+    *,
+    ag_id: str,
+    iteration: int,
+    failure_mode: str,
+    next_action: str,
+    cluster_signature: str = "",
+    prior_failure_count: int = 0,
+) -> str:
+    """Plan P-F — stdout marker emitted alongside every
+    ``DecisionType.PROPOSAL_FAILURE_DECIDED`` record so postmortem
+    skills can scan stdout without rehydrating the trace JSON.
+
+    Schema: ``{"ag_id", "iteration", "failure_mode", "next_action",
+    "cluster_signature", "prior_failure_count"}``. Parsed by
+    ``tools.marker_parser.parse_proposal_failure_decided_marker``.
+    """
+    return marker_line(
+        "GSO_PROPOSAL_FAILURE_DECIDED_V1",
+        {
+            "ag_id": str(ag_id),
+            "iteration": int(iteration),
+            "failure_mode": str(failure_mode),
+            "next_action": str(next_action),
+            "cluster_signature": str(cluster_signature or ""),
+            "prior_failure_count": int(prior_failure_count or 0),
+        },
+    )
+
+
 def structural_gate_dropped_marker(
     *,
     ag_id: str,
