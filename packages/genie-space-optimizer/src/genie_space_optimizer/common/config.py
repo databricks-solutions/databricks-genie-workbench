@@ -5921,6 +5921,24 @@ def l6_decline_cache_enabled() -> bool:
     return _flag_default_on("GSO_L6_DECLINE_CACHE")
 
 
+def proposal_stage_forbidden_ag_observed_enabled() -> bool:
+    """P-E2 — observe-only measurement of forbidden-AG leakage past
+    the iter-level AG-selection collision guard at
+    ``harness.py:19752``. When True (default), the harness emits a
+    ``PROPOSAL_STAGE_FORBIDDEN_AG_OBSERVED`` decision record + marker
+    at the two sub-AG proposal generators (cluster-driven synthesis,
+    forced Lever-6) whenever the AG's collision pair matches the
+    forbidden set at the sub-AG site. *No behavior change.* The
+    proposal call still runs; the record is informational, and the
+    run-end contract-health summary aggregates the count by call
+    site so one number per run is greppable.
+
+    Default: ON. To freeze a run byte-stable against pre-P-E2
+    fixtures, set ``GSO_PROPOSAL_STAGE_FORBIDDEN_AG_OBSERVED=0``.
+    """
+    return _flag_default_on("GSO_PROPOSAL_STAGE_FORBIDDEN_AG_OBSERVED")
+
+
 def narrow_skipped_no_original_patch_type_enabled() -> bool:
     """P-E1 — emit ``narrow_skipped_no_original_patch_type`` instead of
     ``unrecognized_patch_type`` when ``narrow_replacement_diagnosis``
