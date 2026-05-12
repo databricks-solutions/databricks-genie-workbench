@@ -80,6 +80,41 @@ class RcaPatchTheme:
 
 
 @dataclass(frozen=True)
+class RCACard:
+    """Phase 1 Action 1.1 — per-cluster RCA contract that downstream
+    AG selection reads to decide which patch families are allowed
+    for the cluster.
+
+    Built deterministically by ``optimization.rca_card_builder.build_card``
+    from ASI metadata + generated SQL + reference SQL diff + UC lineage.
+    The shape is closed; the optional LLM normalization layer is only
+    permitted to rewrite the ``rationale`` field.
+
+    Self-grounding contract (enforced by the builder before this card
+    is returned):
+      * ``root_cause`` matches the cluster's dominant ASI failure
+        signal across the cluster's qids.
+      * Every entry in ``grounding_terms`` appears in at least one of:
+        ASI ``blame_set``, the generated SQL for any cluster qid, or
+        the reference SQL for any cluster qid.
+
+    A card that fails the self-grounding check is NEVER returned; the
+    builder emits ``RCA_CARD_SELF_CHECK_FAILED`` and returns ``None``
+    instead.
+    """
+
+    card_id: str
+    cluster_id: str
+    qids: tuple[str, ...]
+    root_cause: RcaKind
+    grounding_terms: frozenset[str]
+    intended_patch_shape: str
+    allowed_patch_families: frozenset[str]
+    forbidden_patch_families: frozenset[str]
+    rationale: str
+
+
+@dataclass(frozen=True)
 class ThemeConflict:
     left_rca_id: str
     right_rca_id: str
