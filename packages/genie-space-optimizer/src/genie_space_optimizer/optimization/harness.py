@@ -398,26 +398,36 @@ def _build_stage_ctx(
     )
 
 
-def _databricks_ids_from_env() -> dict[str, str]:
-    """Cycle 14-V T6 + Cycle 14-W T3 — resolve Databricks IDs from
-    notebook environment at run start.
+def _databricks_ids_from_env(
+    *, mlflow_run_id: str | None = None,
+) -> dict[str, str]:
+    """Cycle 14-V T6 + Cycle 14-W T3 + P-B Tier-3 — resolve
+    Databricks IDs from notebook environment at run start.
 
-    Reads the standard Databricks notebook env vars and falls
-    through to ``dbutils.notebook.entry_point``'s tag-resolver when
-    running inside a job context. Returns a dict with three keys;
-    each value is either the resolved ID (non-empty string) or the
-    literal sentinel ``"unknown"`` (NEVER blank/empty).
+    Resolution order (first hit wins per field):
+      1. env vars (``DATABRICKS_JOB_ID`` / ``DATABRICKS_RUN_ID`` /
+         ``DATABRICKS_JOB_RUN_ID`` / ``DATABRICKS_TASK_RUN_ID``).
+      2. dbutils tags
+         (``dbutils.notebook.entry_point.getDbutils().notebook()
+         .getContext().tags()``).
+      3. **P-B**: MLflow auto-stamped Databricks tags
+         (``mlflow.databricks.runID`` etc.) seed a
+         ``WorkspaceClient.jobs.get_run`` call that fills any
+         remaining blanks from the authoritative Jobs API
+         ``Run`` payload.
+      4. Sentinel ``"unknown"``.
 
-    Cycle 14-W T3: emits ``GSO_DATABRICKS_IDS_RESOLVED_V1`` recording
-    which resolution path fired (``env`` / ``dbutils`` / ``mixed``
-    / ``sentinel``). The trace exists because D-5 regressed in
-    C14-V — the resolver was reached, but the production code path
-    returned blank. The trace lets corpus measurement catch
-    function-reached-but-wrong-path failures.
+    Tier-3 fires when ``mlflow_run_id`` is supplied (the harness
+    passes ``mlflow_anchor_run_id`` from ``_run_lever_loop``) AND
+    the SDK is constructable AND a seed run_id is available.
+
+    Cycle 14-W T3: emits ``GSO_DATABRICKS_IDS_RESOLVED_V1``
+    recording which resolution path fired.
 
     Anchor evidence: 7Now run 338386531912450 F9 + airline run
     833709971504406 F8 (C14-V), 7Now run 960148942255012 F8 +
-    airline run 1105451933925748 F8 (C14-W regression).
+    airline run 1105451933925748 F8 (C14-W regression), May-12
+    runs 31ecd96f-… and ccf1d60d-… (P-B sentinel regression).
     """
     import os as _os_for_ids
 
@@ -473,6 +483,66 @@ def _databricks_ids_from_env() -> dict[str, str]:
             # through to sentinels below.
             pass
 
+    # P-B Tier-3a — MLflow auto-stamped Databricks tags filled
+    # directly. Tier-3b — pre-resolved Jobs API snapshot from the
+    # harness helper. Both tiers degrade gracefully when their
+    # inputs are absent.
+    mlflow_tags = _collect_mlflow_databricks_tags(
+        mlflow_run_id=mlflow_run_id,
+    )
+    mlflow_succeeded = False
+    if not all(out.values()) and any(mlflow_tags.values()):
+        mlflow_resolved = {
+            "databricks_job_id": str(
+                mlflow_tags.get("mlflow.databricks.jobID") or ""
+            ),
+            "databricks_parent_run_id": str(
+                mlflow_tags.get("mlflow.databricks.jobRunID") or ""
+            ),
+            "lever_loop_task_run_id": str(
+                mlflow_tags.get("mlflow.databricks.runID") or ""
+            ),
+        }
+        for k, v in mlflow_resolved.items():
+            if not out[k] and v:
+                out[k] = v
+                mlflow_succeeded = True
+
+    jobs_api_attempted = False
+    jobs_api_succeeded = False
+    if not all(out.values()):
+        # The dbutils-resolved view is what survived dbutils tag
+        # mapping (or empty if dbutils was unavailable).
+        dbutils_resolved = {
+            k: out[k] if out[k] != env_resolved[k] else ""
+            for k in env_resolved
+        }
+        snapshot = _resolve_jobs_run_snapshot(
+            mlflow_run_tags=mlflow_tags,
+            env_resolved=env_resolved,
+            dbutils_resolved=dbutils_resolved,
+        )
+        # ``None`` → harness did not attempt the call. A snapshot
+        # (possibly empty) → harness did attempt the call.
+        jobs_api_attempted = snapshot is not None
+        if snapshot is not None:
+            api_resolved = {
+                "databricks_job_id": str(snapshot.job_id or ""),
+                "databricks_parent_run_id": str(
+                    snapshot.parent_run_id or ""
+                ),
+                "lever_loop_task_run_id": (
+                    str(snapshot.task_run_ids[0])
+                    if snapshot.task_run_ids
+                    else ""
+                ),
+            }
+            for k, v in api_resolved.items():
+                if not out[k] and v:
+                    out[k] = v
+                    jobs_api_succeeded = True
+
+    tier3_succeeded = mlflow_succeeded or jobs_api_succeeded
     final = {k: (v or _DATABRICKS_ID_SENTINEL) for k, v in out.items()}
 
     # Cycle 14-W T3: emit the resolution-path trace so corpus
@@ -490,6 +560,12 @@ def _databricks_ids_from_env() -> dict[str, str]:
             )
             if all(env_resolved.values()):
                 path = "env"
+            elif tier3_succeeded and (
+                any(env_resolved.values()) or dbutils_succeeded
+            ):
+                path = "mixed_jobs_api"
+            elif tier3_succeeded:
+                path = "jobs_api"
             elif dbutils_succeeded and any(env_resolved.values()):
                 path = "mixed"
             elif dbutils_succeeded:
@@ -506,6 +582,8 @@ def _databricks_ids_from_env() -> dict[str, str]:
                 fields_total=len(final),
                 dbutils_attempted=dbutils_attempted,
                 dbutils_succeeded=dbutils_succeeded,
+                jobs_api_attempted=jobs_api_attempted,
+                jobs_api_succeeded=jobs_api_succeeded,
                 sample_field=sample_field,
                 sample_value="",  # never echo the value itself
             ))
@@ -15635,7 +15713,16 @@ def _run_lever_loop(
             except Exception:
                 logger.debug("run_manifest chunk-D trace marker skipped", exc_info=True)
         else:
-            _db_ids = _databricks_ids_from_env()
+            _legacy_mlflow_run_id: str | None = None
+            try:
+                _legacy_active_run = mlflow.active_run()
+                if _legacy_active_run is not None:
+                    _legacy_mlflow_run_id = str(_legacy_active_run.info.run_id)
+            except Exception:
+                _legacy_mlflow_run_id = None
+            _db_ids = _databricks_ids_from_env(
+                mlflow_run_id=_legacy_mlflow_run_id,
+            )
         _db_job_id = _db_ids["databricks_job_id"]
         _db_parent_run_id = _db_ids["databricks_parent_run_id"]
         _db_task_run_id = _db_ids["lever_loop_task_run_id"]
