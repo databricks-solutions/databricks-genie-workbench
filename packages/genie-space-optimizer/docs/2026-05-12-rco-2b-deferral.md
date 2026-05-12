@@ -2,10 +2,13 @@
 
 ## Status
 
-**Deferred.** The structural foundation lands in RCO-2a (see
+**✅ Landed (May 13, 2026).** The named blocker cleared on the May-12
+consolidating trial (two captured ``GSO_CONTRACT_HEALTH_V1`` payloads;
+see ``runid_analysis/31ecd96f-…`` and ``runid_analysis/ccf1d60d-…``).
+The production posture flip shipped in
+``2026-05-13-rco-2b-merge-gate-enforcement-and-strict-mode-flip-plan.md``.
+The structural foundation landed in RCO-2a (see
 ``2026-05-12-rco-2a-contract-health-marker-and-summary-plan.md``).
-RCO-2b ships the production posture flip once the named blocker
-clears.
 
 ## Named Blocker (entry criterion)
 
@@ -78,3 +81,26 @@ green-pass + one expected-block is the minimum target:
 
 A single trial submission covering both shapes is sufficient to
 clear the blocker.
+
+## Disposition (2026-05-13)
+
+The named blocker cleared on the May-12 consolidating trial. Two
+captured ``GSO_CONTRACT_HEALTH_V1`` payloads validated the marker
+emission pipeline end-to-end:
+
+| Captured anchor                                         | ``merge_gate_status`` | Driving evidence                                          |
+|---------------------------------------------------------|------------------------|-----------------------------------------------------------|
+| ``31ecd96f-5d56-4b5a-af8e-38e9e5c549af`` (airline)      | ``warn``               | ``phase_h_listing_status=skipped``, ``phase_h_validator_status=skipped`` |
+| ``ccf1d60d-d686-467b-bafa-1640131b4393`` (7now)         | ``warn``               | ``phase_h_listing_status=skipped``, ``phase_h_validator_status=skipped`` |
+
+The trial did NOT capture a ``MERGE_GATE_BLOCKED`` payload (the
+F9-3b050ec5 blocked anchor was deferred to a future re-trial gated on
+the two defect plans, ``2026-05-12-defect-ag-emit-blocks-ungrounded-rca.md``
+and ``2026-05-12-defect-forbidden-ag-admission-enforcement.md``). The
+RCO-2a ``blocked_anchor`` fixture (``tests/unit/fixtures/rco2a/blocked_anchor/``)
+provides the unit-fixture coverage of the blocked path.
+
+Both captured payloads were promoted to byte-stable parity fixtures
+under ``tests/unit/fixtures/rco2b/trial_airline_31ecd96f/`` and
+``tests/unit/fixtures/rco2b/trial_seven_now_ccf1d60d/``, asserted by
+``tests/unit/test_rco2b_trial_anchor_parity.py``.

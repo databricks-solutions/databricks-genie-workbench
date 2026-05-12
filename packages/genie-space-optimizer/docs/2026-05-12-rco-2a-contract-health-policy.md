@@ -2,11 +2,13 @@
 
 ## Status
 
-**Phase A (RCO-2a):** in-flight — ships marker, parser, summary, and
-merge-gate categories. Production posture remains warn-and-degrade.
+**Phase A (RCO-2a):** ✅ landed (May 12, 2026). Ships marker, parser,
+summary, and merge-gate categories.
 
-**Phase B (RCO-2b):** deferred — flips production posture once the first
-trial run emits ``GSO_CONTRACT_HEALTH_V1`` for ≥1 anchor.
+**Phase B (RCO-2b):** ✅ landed (May 13, 2026). The merge-gate
+production posture is now enforced; ``GSO_LOOP_INVARIANTS_STRICT=0``
+override is removed from the lever-loop notebook. See
+``2026-05-13-rco-2b-merge-gate-enforcement-and-strict-mode-flip-plan.md``.
 
 ## Severity Tiers (authoritative)
 
@@ -33,18 +35,27 @@ check raises) is classified MEDIUM in RCO-2a. RCO-2b may promote it.
 | ``WARN``              | MEDIUM-tier violations OR Phase H ``skipped`` OR ``incomplete`` |
 | ``MERGE_GATE_BLOCKED``| any HIGH-tier violation OR Phase H ``failed`` OR ``assembly_failed`` |
 
-## RCO-2a vs RCO-2b Boundary
+## RCO-2a vs RCO-2b Boundary (historical)
 
-RCO-2a wires the categories (the classifier returns the correct enum
-value for every input) but does NOT enforce them. The production job
-still returns success on ``MERGE_GATE_BLOCKED`` and
-``loop_invariants_strict()`` is still pinned to False via
+RCO-2a wired the merge-gate categories (the classifier returns the
+correct enum value for every input) but did NOT enforce them. The
+production job returned success on ``MERGE_GATE_BLOCKED`` and
+``loop_invariants_strict()`` was pinned to False via
 ``run_lever_loop.py:_os.environ.setdefault("GSO_LOOP_INVARIANTS_STRICT", "0")``.
 
-RCO-2b will (a) flip the job exit code on ``MERGE_GATE_BLOCKED`` and
-(b) decide whether ``loop_invariants_strict()`` should default to True
-in production. Both decisions are gated on the named trial blocker in
-``2026-05-12-rco-2b-deferral.md``.
+RCO-2b (landed 2026-05-13) flipped both:
+
+  - The job exit code on ``MERGE_GATE_BLOCKED`` is now non-zero
+    (``enforce_merge_gate(loop_out)`` raises ``MergeGateBlockedError``
+    before the final ``dbutils.notebook.exit(...)``).
+  - The ``setdefault("GSO_LOOP_INVARIANTS_STRICT", "0")`` override is
+    deleted, so ``loop_invariants_strict()`` returns its
+    ``_flag_default_on`` default (True) in production.
+
+Emergency rollback: set ``GSO_LOOP_INVARIANTS_STRICT=0`` in the job
+widget (the helper still honors a falsy explicit override). The
+merge-gate enforcement does not have a flag — to roll it back, revert
+the ``enforce_merge_gate(loop_out)`` call in ``run_lever_loop.py``.
 
 ## Evidence Sources Consumed
 
