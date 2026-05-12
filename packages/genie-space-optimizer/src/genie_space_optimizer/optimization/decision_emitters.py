@@ -2112,6 +2112,77 @@ def rca_regeneration_exhausted_record(
     )
 
 
+def rca_card_self_check_failed_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    target_qids: tuple[str, ...],
+    failure_reason: str,
+    ungrounded_terms: tuple[str, ...] = (),
+) -> DecisionRecord:
+    """Phase 1 Action 1.1 — emitted when the deterministic RCA card
+    builder's self-grounding check rejects the candidate card.
+
+    The cluster falls through to the existing
+    ``cluster_blocked_no_rca`` short-circuit so AG selection skips
+    it. ``failure_reason`` is one of:
+      * ``root_cause_disagrees_with_dominant_asi``
+      * ``ungrounded_term``  (in which case ``ungrounded_terms`` is
+        non-empty, sorted)
+    """
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.RCA_FORMED,
+        outcome=DecisionOutcome.UNRESOLVED,
+        reason_code=ReasonCode.RCA_CARD_SELF_CHECK_FAILED,
+        cluster_id=str(cluster_id or ""),
+        target_qids=tuple(target_qids or ()),
+        next_action=(
+            "Self-grounding check rejected the candidate RCA card; "
+            "cluster will fall through to cluster_blocked_no_rca."
+        ),
+        metrics={
+            "failure_reason": str(failure_reason or "unknown"),
+            "ungrounded_terms": list(ungrounded_terms or ()),
+        },
+    )
+
+
+def rca_card_llm_skipped_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    card_id: str,
+    skip_reason: str,
+) -> DecisionRecord:
+    """Phase 1 Action 1.1 — emitted when the optional LLM rationale
+    normalization step skipped (timed out, raised, returned empty,
+    or returned a response that exceeded the length guard).
+
+    The card is still returned with the deterministic rationale —
+    this record is observability-only.
+    """
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.RCA_FORMED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.RCA_CARD_LLM_SKIPPED,
+        cluster_id=str(cluster_id or ""),
+        next_action=(
+            "LLM rationale normalization skipped; card returned with "
+            "deterministic rationale."
+        ),
+        metrics={
+            "card_id": str(card_id or ""),
+            "skip_reason": str(skip_reason or "unknown"),
+        },
+    )
+
+
 def soft_cluster_drift_recovered_record(
     *,
     run_id: str,

@@ -119,3 +119,54 @@ def test_rca_formed_records_with_dataclass_findings_pipeline() -> None:
     assert len(records) == 1
     assert records[0].cluster_id == "H001"
     assert records[0].rca_id != ""
+
+
+def test_rca_card_self_check_failed_record_shape() -> None:
+    from genie_space_optimizer.optimization.decision_emitters import (
+        rca_card_self_check_failed_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionOutcome,
+        DecisionType,
+        ReasonCode,
+    )
+
+    rec = rca_card_self_check_failed_record(
+        run_id="r1",
+        iteration=1,
+        cluster_id="cluster_1",
+        target_qids=("gs_026",),
+        failure_reason="ungrounded_term",
+        ungrounded_terms=("foo", "bar"),
+    )
+    assert rec.decision_type == DecisionType.RCA_FORMED
+    assert rec.outcome == DecisionOutcome.UNRESOLVED
+    assert rec.reason_code == ReasonCode.RCA_CARD_SELF_CHECK_FAILED
+    assert rec.cluster_id == "cluster_1"
+    assert rec.target_qids == ("gs_026",)
+    assert rec.metrics["failure_reason"] == "ungrounded_term"
+    assert rec.metrics["ungrounded_terms"] == ["foo", "bar"]
+
+
+def test_rca_card_llm_skipped_record_shape() -> None:
+    from genie_space_optimizer.optimization.decision_emitters import (
+        rca_card_llm_skipped_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionOutcome,
+        DecisionType,
+        ReasonCode,
+    )
+
+    rec = rca_card_llm_skipped_record(
+        run_id="r1",
+        iteration=2,
+        cluster_id="cluster_1",
+        card_id="card_cluster_1_top_n_cardinality_collapse",
+        skip_reason="llm_call_failed",
+    )
+    assert rec.decision_type == DecisionType.RCA_FORMED
+    assert rec.outcome == DecisionOutcome.INFO
+    assert rec.reason_code == ReasonCode.RCA_CARD_LLM_SKIPPED
+    assert rec.metrics["skip_reason"] == "llm_call_failed"
+    assert rec.metrics["card_id"] == "card_cluster_1_top_n_cardinality_collapse"
