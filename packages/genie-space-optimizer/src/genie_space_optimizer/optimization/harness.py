@@ -15463,6 +15463,14 @@ def _run_gate_checks(
             "unresolved_target_debt_qids": list(
                 getattr(_control_plane_decision, "unresolved_target_debt_qids", ()) or ()
             ),
+            # Plan P-C — sibling typed instance so the per-iteration
+            # AcceptanceInput construction site can pass the canonical
+            # decision to stages.acceptance.decide via
+            # ``canonical_decisions_by_ag_id`` instead of letting it
+            # recompute. Eliminates reason-code drift between the
+            # canonical and Phase-H writer paths (anchor: ccf1d60d
+            # iter 1).
+            "_canonical": _control_plane_decision,
         },
     }
 
@@ -24505,6 +24513,38 @@ def _run_lever_loop(
                     or []
                 )
 
+                # Plan P-C — thread the canonical control-plane decision
+                # into AcceptanceInput so stages.acceptance.decide reuses
+                # it instead of recomputing the gate. Closes the
+                # reason-code drift documented in ccf1d60d iter 1
+                # (canonical=target_qids_not_improved vs phase_h=
+                # target_resolution_failed). Both flags (CHUNK_A +
+                # STAGE4_CONTEXT_PERSISTENCE) must be ON for the emit
+                # to happen. Empty dict on fallback preserves legacy
+                # recompute path for byte-stable replay.
+                _canonical_decisions_for_phase_h: dict[
+                    str, "ControlPlaneAcceptance"
+                ] = {}
+                try:
+                    _ag_id_for_canonical = str(
+                        (ag or {}).get("id") or (ag or {}).get("ag_id") or ""
+                    )
+                    _typed_canonical = (
+                        (gate_result or {})
+                        .get("acceptance_decision", {})
+                        .get("_canonical")
+                    )
+                    if _ag_id_for_canonical and _typed_canonical is not None:
+                        _canonical_decisions_for_phase_h[
+                            _ag_id_for_canonical
+                        ] = _typed_canonical
+                except Exception:
+                    logger.debug(
+                        "Plan P-C — failed to build canonical decisions "
+                        "dict; Phase-H writer will recompute (legacy "
+                        "fallback)",
+                        exc_info=True,
+                    )
                 try:
                     _accept_inp = _accept_stage.AcceptanceInput(
                         applied_entries_by_ag=_accept_applied_by_ag_t,
@@ -24522,6 +24562,9 @@ def _run_lever_loop(
                         min_pre_arbiter_gain_pp=2.0,
                         rca_id_by_cluster=dict(_iter_rca_id_by_cluster),
                         cluster_by_qid={},
+                        canonical_decisions_by_ag_id=(
+                            _canonical_decisions_for_phase_h
+                        ),
                     )
                 except Exception as _accept_inp_exc:
                     from genie_space_optimizer.optimization.stage_io_capture import (
