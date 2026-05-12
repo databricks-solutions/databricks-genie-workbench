@@ -1,0 +1,21 @@
+{
+  "fixture_id": "3b050ec5_iter1",
+  "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+  "iteration": 1,
+  "ag_id": "AG1",
+  "payload_present": true,
+  "baseline_post_arbiter": 78.3,
+  "candidate_post_arbiter": 86.4,
+  "baseline_pre_arbiter": 65.2,
+  "candidate_pre_arbiter": 65.2,
+  "target_qids": ["7now_delivery_analytics_space_gs_026"],
+  "target_fixed_qids": [],
+  "target_still_hard_qids": [],
+  "out_of_target_regressed_qids": [],
+  "soft_to_hard_regressed_qids": [],
+  "passing_to_hard_regressed_qids": [],
+  "unknown_to_hard_regressed_qids": [],
+  "accepted_in_recorded_run": false,
+  "reason_code_in_recorded_run": "target_qids_not_improved",
+  "source_notes": "Hand-curated from runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097/evidence/parsed_stdout_summary_960148942255012.json. Best-effort: the parsed summary lists baseline_post 78.3 -> candidate_post 86.4 (delta +8.1pp), target_qids carries the 7now_delivery_analytics_space prefix (shared benchmark carryover; not a parser cross-contamination). target_still_hard_qids=[] in the recorded run. The parsed_stdout summary did not enumerate out_of_target_regressed_qids for this iteration; conservatively recorded as empty so the classifier sees a clean +8.1pp gain with no debt and zero target fixes — exercises the 'attribution drift with no debt' path of the pilot policy."
+}
