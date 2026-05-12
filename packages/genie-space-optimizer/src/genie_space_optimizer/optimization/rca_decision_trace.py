@@ -205,6 +205,15 @@ class ReasonCode(str, Enum):
     # field outside `rationale`. The card is still returned with the
     # deterministic rationale.
     RCA_CARD_LLM_SKIPPED = "rca_card_llm_skipped"
+    # Phase 1 Action 1.2 — four-tier acceptance classifier reason codes.
+    # Each acceptance decision routes to exactly one tier; the
+    # `tier_classification_record` emitter writes a record with the
+    # corresponding code. The strategist consumes these to learn
+    # which trades the optimizer made.
+    TIER_STRICT_WIN = "tier_strict_win"
+    TIER_NET_WIN_WITH_DEBT = "tier_net_win_with_debt"
+    TIER_DIAGNOSTIC_HOLD = "tier_diagnostic_hold"
+    TIER_LOSS = "tier_loss"
     # Cycle 5 T5 — soft-cluster drift recovery: emitted when the
     # clusterer's soft pile carried a qid the current eval no longer
     # flags as judge-failing, and the harness recovered by dropping

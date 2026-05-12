@@ -5403,6 +5403,27 @@ def rca_card_llm_normalization_enabled() -> bool:
     return _flag_enabled("GSO_RCA_CARD_LLM_NORMALIZATION")
 
 
+def acceptance_four_tier_gate_enabled() -> bool:
+    """Phase 1 Action 1.2 — when ON, every Stage-9 acceptance
+    decision is additionally routed through
+    ``optimization.acceptance_policy.classify_acceptance_tier`` and
+    one of four tiers is recorded:
+
+      * ``tier_strict_win``       — accept (target fixed, no out-of-target hard regressions)
+      * ``tier_net_win_with_debt`` — accept (aggregate gain with bounded debt)
+      * ``tier_diagnostic_hold``  — rollback (improvement with unbounded debt; reflection emitted)
+      * ``tier_loss``             — rollback (no improvement OR protected/passing→hard regression)
+
+    Default OFF for the initial pilot. The four-tier verdict adds a
+    ``tier_classification`` decision record per AG and threads
+    ``accepted_class`` into the ``GSO_FULL_EVAL_V1`` marker payload
+    via the existing ``accepted_label`` slot.
+
+    Enable with ``GSO_ACCEPTANCE_FOUR_TIER_GATE=1``.
+    """
+    return _flag_enabled("GSO_ACCEPTANCE_FOUR_TIER_GATE")
+
+
 def patch_subset_isolation_enabled() -> bool:
     """Cycle 14B-T3 — when on, the harness invokes the patch-subset
     isolation orchestrator after a partial-harvest rejection. In

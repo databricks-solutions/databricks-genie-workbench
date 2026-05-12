@@ -64,3 +64,23 @@ def test_rca_card_self_check_failed_reason_code_present() -> None:
 def test_rca_card_llm_skipped_reason_code_present() -> None:
     from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
     assert ReasonCode.RCA_CARD_LLM_SKIPPED.value == "rca_card_llm_skipped"
+
+
+def test_tier_strict_win_reason_code_present() -> None:
+    from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
+    assert ReasonCode.TIER_STRICT_WIN.value == "tier_strict_win"
+
+
+def test_tier_net_win_with_debt_reason_code_present() -> None:
+    from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
+    assert ReasonCode.TIER_NET_WIN_WITH_DEBT.value == "tier_net_win_with_debt"
+
+
+def test_tier_diagnostic_hold_reason_code_present() -> None:
+    from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
+    assert ReasonCode.TIER_DIAGNOSTIC_HOLD.value == "tier_diagnostic_hold"
+
+
+def test_tier_loss_reason_code_present() -> None:
+    from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
+    assert ReasonCode.TIER_LOSS.value == "tier_loss"

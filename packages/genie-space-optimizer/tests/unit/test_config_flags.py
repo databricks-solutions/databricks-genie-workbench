@@ -194,3 +194,19 @@ def test_rca_card_llm_normalization_enabled_when_flag_on(monkeypatch) -> None:
         rca_card_llm_normalization_enabled,
     )
     assert rca_card_llm_normalization_enabled() is True
+
+
+def test_acceptance_four_tier_gate_disabled_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_ACCEPTANCE_FOUR_TIER_GATE", raising=False)
+    from genie_space_optimizer.common.config import (
+        acceptance_four_tier_gate_enabled,
+    )
+    assert acceptance_four_tier_gate_enabled() is False
+
+
+def test_acceptance_four_tier_gate_enabled_when_flag_on(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_ACCEPTANCE_FOUR_TIER_GATE", "1")
+    from genie_space_optimizer.common.config import (
+        acceptance_four_tier_gate_enabled,
+    )
+    assert acceptance_four_tier_gate_enabled() is True
