@@ -262,6 +262,37 @@ def decide(ctx, inp: AcceptanceInput) -> AgOutcome:
         if record is not None:
             ctx.decision_emit(record)
 
+        # Phase 1 Action 1.2 — additionally emit a tier_classification
+        # record when the four-tier gate is on. Pure-additive: the
+        # legacy ag_outcome_decision_record above is preserved so
+        # downstream Stage-9 readers that key on the existing
+        # reason_code vocabulary keep working.
+        from genie_space_optimizer.common.config import (
+            acceptance_four_tier_gate_enabled,
+        )
+
+        if acceptance_four_tier_gate_enabled():
+            from genie_space_optimizer.optimization.acceptance_policy import (
+                classify_acceptance_tier,
+                tier_acceptance_policy_from_config,
+            )
+            from genie_space_optimizer.optimization.decision_emitters import (
+                tier_classification_record,
+            )
+
+            tier_verdict = classify_acceptance_tier(
+                decision=decision,
+                policy=tier_acceptance_policy_from_config(),
+            )
+            tier_record = tier_classification_record(
+                run_id=ctx.run_id,
+                iteration=ctx.iteration,
+                ag_id=ag_id,
+                target_qids=target_qids,
+                verdict=tier_verdict,
+            )
+            ctx.decision_emit(tier_record)
+
     # QID_RESOLUTION emission per eval qid.
     eval_qids: list[str] = []
     seen: set[str] = set()
