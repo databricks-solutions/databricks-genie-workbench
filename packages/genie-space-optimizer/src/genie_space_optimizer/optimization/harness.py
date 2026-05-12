@@ -4377,6 +4377,33 @@ def _emit_force_l6_outcome(
             )
             iter_inputs.setdefault("decision_records", []).append(rec_a.to_dict())
             iter_inputs.setdefault("decision_records", []).append(rec_b.to_dict())
+            # Plan P-F (2026-05-12) — taxonomy companion. Flag-gated so
+            # GSO_LEVER6_FORCE_TYPED_OUTCOMES paths stay byte-stable
+            # when GSO_PROPOSAL_FAILURE_DECIDED is off.
+            try:
+                _emit_proposal_failure_decided(
+                    run_id=str(run_id),
+                    iteration=int(iteration),
+                    ag_id=str(ag_id),
+                    cluster_id=str(cluster_id or ""),
+                    cluster_signature="",
+                    rca_id="",
+                    root_cause=str(root_cause or ""),
+                    failure_mode="lever6_force_llm_declined",
+                    lever_set=(6,),
+                    tried_lever_families=(6,),
+                    ag_source_cluster_count=1,
+                    rca_card_grounded=True,
+                    prior_failure_count=0,
+                    target_qids=qids,
+                    iter_inputs=iter_inputs,
+                )
+            except Exception:
+                logger.debug(
+                    "Plan P-F: lever6_force_llm_declined taxonomy "
+                    "emit failed (non-fatal)",
+                    exc_info=True,
+                )
             try:
                 marker = lever6_force_llm_declined_marker(
                     run_id=run_id, iteration=iteration, ag_id=ag_id,

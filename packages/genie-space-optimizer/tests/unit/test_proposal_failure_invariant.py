@@ -90,3 +90,39 @@ def test_emit_proposal_failure_decided_helper_noop_when_flag_off(
 
     assert "decision_records" not in iter_inputs
     assert "markers" not in iter_inputs
+
+
+def test_emit_force_l6_outcome_fires_taxonomy_record_on_declined(
+    monkeypatch,
+) -> None:
+    """When _emit_force_l6_outcome is called with outcome='declined' AND
+    the flag is on, a PROPOSAL_FAILURE_DECIDED record is emitted."""
+    monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", "1")
+    monkeypatch.setenv("GSO_LEVER6_FORCE_TYPED_OUTCOMES", "1")
+
+    from genie_space_optimizer.optimization.harness import (
+        _emit_force_l6_outcome,
+    )
+
+    iter_inputs: dict = {}
+    _emit_force_l6_outcome(
+        outcome="declined",
+        run_id="run_y",
+        iteration=4,
+        ag_id="AG_FORCE",
+        cluster_id="C9",
+        root_cause="sql_shape",
+        target_qids=("q5",),
+        exception_repr="",
+        iter_inputs=iter_inputs,
+    )
+
+    records = iter_inputs.get("decision_records") or []
+    failure_decided = [
+        r for r in records
+        if r.get("decision_type") == "proposal_failure_decided"
+    ]
+    assert len(failure_decided) == 1
+    assert failure_decided[0]["metrics"]["failure_mode"] == (
+        "lever6_force_llm_declined"
+    )
