@@ -1,0 +1,33 @@
+{
+  "fixture_version": 1,
+  "source_run_id": "ccf1d60d-d686-467b-bafa-1640131b4393",
+  "source_iteration": 0,
+  "source_postmortem": "docs/runid_analysis/ccf1d60d-d686-467b-bafa-1640131b4393/postmortem.md (lines 81-119)",
+  "source_notes": [
+    "Hand-curated from postmortem F2/F3 narrative — gs_026 plural top-N collapse around zone_vp_name vs zone_combination.",
+    "ASI failure_type 'plural_top_n_collapse' maps to RcaKind.TOP_N_CARDINALITY_COLLAPSE per _safe_rca_kind line 273."
+  ],
+  "cluster_id": "cluster_gs026",
+  "qids": ["gs_026"],
+  "asi_by_qid": {
+    "gs_026": {
+      "failure_type": "plural_top_n_collapse",
+      "blame_set": ["zone_vp_name", "plural_top_n_collapse", "zone_combination"],
+      "wrong_clause": "TOP 1",
+      "counterfactual_fix": "Add ORDER BY zone_vp_name and explicit LIMIT N to preserve plural top-N cardinality; join mv_esr_dim_location for zone_vp_name instead of using zone_combination."
+    }
+  },
+  "generated_sql_by_qid": {
+    "gs_026": "SELECT TOP 1 zone_combination FROM mv_7now_store_sales WHERE region = 'all'"
+  },
+  "reference_sql_by_qid": {
+    "gs_026": "SELECT zone_vp_name, SUM(sales) AS total FROM mv_esr_dim_location l JOIN mv_7now_store_sales s ON l.store_id = s.store_id GROUP BY zone_vp_name ORDER BY total DESC LIMIT 5"
+  },
+  "expected_card": {
+    "root_cause": "top_n_cardinality_collapse",
+    "grounding_terms": ["plural_top_n_collapse", "zone_combination", "zone_vp_name"],
+    "intended_patch_shape": "enforce_explicit_top_n_cardinality",
+    "allowed_patch_families": ["cardinality_preserving_top_n_guidance"],
+    "forbidden_patch_families": ["avoid_unrequested_defensive_filters", "filter_logic_guidance"]
+  }
+}
