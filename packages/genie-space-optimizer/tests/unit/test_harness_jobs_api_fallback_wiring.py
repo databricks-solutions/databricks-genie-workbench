@@ -229,3 +229,69 @@ def test_resolve_jobs_run_snapshot_skipped_when_all_fields_already_filled(
         dbutils_resolved={"databricks_job_id": "", "databricks_parent_run_id": "", "lever_loop_task_run_id": ""},
     )
     assert snapshot is None
+
+
+# --- chunk-D wiring grep guards --------------------------------------
+
+
+def test_chunk_d_path_passes_mlflow_tags_and_jobs_run_snapshot() -> None:
+    """Source-level grep guard: the chunk-D adapter site at
+    ``harness.py:~15249`` must construct ``RunManifestInput`` with
+    ``mlflow_run_tags=`` and ``jobs_run_snapshot=`` kwargs. If a
+    refactor drops them, the resolver silently regresses to the
+    pre-P-B two-tier behaviour and we revert to ``unknown``.
+
+    Also asserts that the value passed for ``jobs_run_snapshot=``
+    is the harness-computed snapshot (``_rm_jobs_run_snapshot``) —
+    NOT a callable. The user-spec correction explicitly forbade
+    ``jobs_run_lookup: Callable`` on ``RunManifestInput``."""
+    import pathlib
+
+    text = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+
+    chunk_d_anchor = "_rm_stage.RunManifestInput("
+    assert chunk_d_anchor in text, (
+        "chunk-D RunManifestInput construction site not found"
+    )
+    chunk_d_idx = text.find(chunk_d_anchor)
+    # Look ahead 1500 chars for the kwargs.
+    window = text[chunk_d_idx : chunk_d_idx + 1500]
+    assert "mlflow_run_tags=" in window, (
+        "chunk-D adapter must pass mlflow_run_tags= into "
+        "RunManifestInput (P-B Tier-3)"
+    )
+    assert "jobs_run_snapshot=" in window, (
+        "chunk-D adapter must pass jobs_run_snapshot= into "
+        "RunManifestInput (P-B Tier-3)"
+    )
+    assert "jobs_run_lookup=" not in window, (
+        "chunk-D adapter must NOT pass a Callable jobs_run_lookup "
+        "(user-spec correction: snapshot must be JSON-safe)"
+    )
+
+
+def test_chunk_d_marker_emission_forwards_jobs_api_diagnostics() -> None:
+    """The ``databricks_ids_resolved_marker`` call inside the chunk-D
+    block must forward ``jobs_api_attempted=`` /
+    ``jobs_api_succeeded=`` from the stage output, otherwise
+    postmortems can't see whether Tier-3 fired in production."""
+    import pathlib
+
+    text = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+
+    emit_anchor = "print(_ids_resolved_marker("
+    assert emit_anchor in text
+    emit_idx = text.find(emit_anchor)
+    window = text[emit_idx : emit_idx + 1500]
+    assert "jobs_api_attempted=_rm_out.jobs_api_attempted" in window, (
+        "chunk-D marker emission must forward "
+        "jobs_api_attempted=_rm_out.jobs_api_attempted (P-B)"
+    )
+    assert "jobs_api_succeeded=_rm_out.jobs_api_succeeded" in window, (
+        "chunk-D marker emission must forward "
+        "jobs_api_succeeded=_rm_out.jobs_api_succeeded (P-B)"
+    )

@@ -15540,6 +15540,52 @@ def _run_lever_loop(
             except Exception:
                 pass
 
+            # P-B Tier-3 — MLflow tags + pre-resolved Jobs API
+            # snapshot. The harness performs the SDK call here so
+            # the pure stage receives only JSON-safe data (no
+            # callables crossing the stage boundary). Either input
+            # may be empty/None; the stage degrades gracefully to
+            # the prior tier's result.
+            _rm_env_resolved = {
+                "databricks_job_id": str(
+                    _os_rm.environ.get("DATABRICKS_JOB_ID") or ""
+                ),
+                "databricks_parent_run_id": str(
+                    _os_rm.environ.get("DATABRICKS_RUN_ID")
+                    or _os_rm.environ.get("DATABRICKS_JOB_RUN_ID")
+                    or ""
+                ),
+                "lever_loop_task_run_id": str(
+                    _os_rm.environ.get("DATABRICKS_TASK_RUN_ID") or ""
+                ),
+            }
+            _rm_dbutils_resolved = {
+                "databricks_job_id": str(_rm_dbutils_tags.get("jobId") or ""),
+                "databricks_parent_run_id": str(
+                    _rm_dbutils_tags.get("multitaskParentRunId")
+                    or _rm_dbutils_tags.get("jobRunId")
+                    or ""
+                ),
+                "lever_loop_task_run_id": str(
+                    _rm_dbutils_tags.get("runId") or ""
+                ),
+            }
+            _rm_mlflow_run_id: str | None = None
+            try:
+                _rm_active_run = mlflow.active_run()
+                if _rm_active_run is not None:
+                    _rm_mlflow_run_id = str(_rm_active_run.info.run_id)
+            except Exception:
+                _rm_mlflow_run_id = None
+            _rm_mlflow_tags = _collect_mlflow_databricks_tags(
+                mlflow_run_id=_rm_mlflow_run_id,
+            )
+            _rm_jobs_run_snapshot = _resolve_jobs_run_snapshot(
+                mlflow_run_tags=_rm_mlflow_tags,
+                env_resolved=_rm_env_resolved,
+                dbutils_resolved=_rm_dbutils_resolved,
+            )
+
             _rm_out = _rm_stage.execute(
                 ctx=None,
                 inp=_rm_stage.RunManifestInput(
@@ -15554,6 +15600,8 @@ def _run_lever_loop(
                     },
                     dbutils_available=_rm_dbutils_available,
                     dbutils_tags=_rm_dbutils_tags,
+                    mlflow_run_tags=_rm_mlflow_tags,
+                    jobs_run_snapshot=_rm_jobs_run_snapshot,
                 ),
             )
             _db_ids = {
@@ -15579,6 +15627,8 @@ def _run_lever_loop(
                     fields_total=_rm_out.fields_total,
                     dbutils_attempted=_rm_out.dbutils_attempted,
                     dbutils_succeeded=_rm_out.dbutils_succeeded,
+                    jobs_api_attempted=_rm_out.jobs_api_attempted,
+                    jobs_api_succeeded=_rm_out.jobs_api_succeeded,
                     sample_field=_rm_sample_field,
                     sample_value="",
                 ))
