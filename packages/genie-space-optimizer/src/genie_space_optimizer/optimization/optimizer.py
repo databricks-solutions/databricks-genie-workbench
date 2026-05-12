@@ -9581,6 +9581,96 @@ def _emit_strategist_context_records_for_test_harness(
     }
 
 
+def _emit_strategist_context_consumed_for_test_harness(
+    *,
+    consumed_payload: Any,
+    assembled_hash: str,
+    assembled_top_fields: tuple = (),
+    run_id: str,
+    iteration: int,
+    decision_emit: Any = None,
+    mlflow_anchor_run_id: str | None = None,
+) -> None:
+    """Plan P-G — emit STRATEGIST_CONTEXT_CONSUMED at the strategist
+    LLM-call boundary AND persist the consumed payload as
+    ``consumed.json`` under the Stage 4 artifact directory (co-located
+    with ``output.json`` from Task 7) so the two files can be diffed
+    directly to verify drift.
+
+    ``consumed_payload`` is the dict that becomes the LLM prompt's
+    context_json. ``assembled_hash`` and ``assembled_top_fields`` are
+    the values stamped on the matching ASSEMBLED record (empty when
+    Stage 4 emit was skipped).
+
+    Gated on GSO_STAGE4_CONTEXT_PERSISTENCE only — when off, the
+    function is a no-op so replay byte-stability is preserved. Unlike
+    the ASSEMBLED helper, this one runs even when
+    GSO_STAGE_HANDLERS_CHUNK_A is off, because the consumed boundary
+    is computable from the legacy kwargs-soup alone; the empty
+    assembled_hash branch in the producer reports
+    CONTEXT_CONSUMED_MATCHES_ASSEMBLED in that case.
+    """
+    from genie_space_optimizer.common.config import (
+        stage4_context_persistence_enabled,
+    )
+    if not stage4_context_persistence_enabled():
+        return
+    if decision_emit is None:
+        return
+    from genie_space_optimizer.optimization.decision_emitters import (
+        strategist_context_consumed_record,
+    )
+    try:
+        record = strategist_context_consumed_record(
+            run_id=str(run_id or ""),
+            iteration=int(iteration or 0),
+            consumed_payload=consumed_payload,
+            assembled_hash=str(assembled_hash or ""),
+            assembled_top_level_fields=tuple(assembled_top_fields or ()),
+        )
+        decision_emit(record)
+    except Exception:
+        logger.debug(
+            "Plan P-G: CONSUMED emit failed (non-fatal)",
+            exc_info=True,
+        )
+    # Persist the consumed payload under the Stage 4 artifact dir so a
+    # postmortem reader can diff stages/04_strategist_context/
+    # output.json vs consumed.json directly. The artifact lives under
+    # the Stage 4 directory (not Stage 5) because the two halves of
+    # the drift comparison belong together; placing them in different
+    # directories would force every diff tool to know the cross-stage
+    # mapping.
+    if mlflow_anchor_run_id:
+        try:
+            import json as _json_pg_consumed
+            from genie_space_optimizer.optimization.run_output_contract import (
+                stage_artifact_paths,
+            )
+            from genie_space_optimizer.optimization import (
+                stage_io_capture as _sio_consumed,
+            )
+            paths = stage_artifact_paths(
+                int(iteration or 0), "strategist_context",
+            )
+            # paths["output"] is "<...>/04_strategist_context/output.json";
+            # swap the filename to land consumed.json alongside it.
+            consumed_path = paths["output"].rsplit("/", 1)[0] + "/consumed.json"
+            _sio_consumed._log_text(
+                run_id=str(mlflow_anchor_run_id),
+                text=_json_pg_consumed.dumps(
+                    consumed_payload, sort_keys=True,
+                    separators=(",", ":"), default=str,
+                ),
+                artifact_file=consumed_path,
+            )
+        except Exception:
+            logger.debug(
+                "Plan P-G: consumed.json persistence failed (non-fatal)",
+                exc_info=True,
+            )
+
+
 def _call_llm_for_adaptive_strategy(
     clusters: list[dict],
     soft_signal_clusters: list[dict],
@@ -9787,6 +9877,21 @@ def _call_llm_for_adaptive_strategy(
     )
     context_data = _truncate_context_to_budget(context_data, _adaptive_context_budget_tokens())
     context_json = json.dumps(context_data, indent=2, default=str)
+
+    # Plan P-G: hash the dict that becomes the LLM prompt's context_json,
+    # emit STRATEGIST_CONTEXT_CONSUMED so drift against the matching
+    # ASSEMBLED record is observable in the operator transcript, and
+    # persist the consumed payload as consumed.json under the Stage 4
+    # artifact dir so postmortem can diff the two co-located JSONs.
+    _emit_strategist_context_consumed_for_test_harness(
+        consumed_payload=context_data,
+        assembled_hash=_assembled_hash,
+        assembled_top_fields=_assembled_top_fields,
+        run_id=str(run_id or ""),
+        iteration=int(iteration or 0),
+        decision_emit=decision_emit,
+        mlflow_anchor_run_id=mlflow_anchor_run_id,
+    )
 
     format_kwargs: dict[str, Any] = {
         "context_json": context_json,

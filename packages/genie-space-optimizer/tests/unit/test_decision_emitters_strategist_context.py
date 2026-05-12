@@ -457,3 +457,107 @@ def test_optimizer_persists_typed_output_to_mlflow_when_anchor_present(
     )
     # The text is the typed-output JSON, not the assembled hash.
     assert "rca_cards_grounded_only" in calls[0]["text"]
+
+
+def test_emit_consumed_record_helper_uses_assembled_hash_from_local_state(
+    monkeypatch,
+) -> None:
+    """The CONSUMED helper hashes the consumed payload and records drift
+    against the assembled_hash returned by Task 7's helper."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _emit_strategist_context_consumed_for_test_harness as _emit_consumed,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionType,
+        ReasonCode,
+    )
+
+    monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", "1")
+    captured: list = []
+
+    _emit_consumed(
+        consumed_payload={"a": 1, "b": [2, 3]},
+        assembled_hash="sha256:" + "f" * 64,  # known-mismatch
+        assembled_top_fields=("a", "b"),
+        run_id="r",
+        iteration=4,
+        decision_emit=captured.append,
+        mlflow_anchor_run_id=None,  # disables consumed.json persistence
+    )
+
+    assert len(captured) == 1
+    rec = captured[0]
+    assert rec.decision_type == DecisionType.STRATEGIST_CONTEXT_CONSUMED
+    assert rec.reason_code == ReasonCode.CONTEXT_CONSUMED_DRIFTED
+    assert rec.metrics["drift_detected"] is True
+
+
+def test_emit_consumed_record_helper_is_noop_when_flag_off(
+    monkeypatch,
+) -> None:
+    """Default-OFF: no record emitted regardless of payload."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _emit_strategist_context_consumed_for_test_harness as _emit_consumed,
+    )
+
+    monkeypatch.delenv("GSO_STAGE4_CONTEXT_PERSISTENCE", raising=False)
+    captured: list = []
+
+    _emit_consumed(
+        consumed_payload={"a": 1},
+        assembled_hash="",
+        assembled_top_fields=(),
+        run_id="r",
+        iteration=1,
+        decision_emit=captured.append,
+        mlflow_anchor_run_id=None,
+    )
+
+    assert captured == []
+
+
+def test_emit_consumed_record_helper_persists_consumed_json_when_anchor_present(
+    monkeypatch,
+) -> None:
+    """When mlflow_anchor_run_id is set, the consumed payload lands at
+    stages/04_strategist_context/consumed.json — co-located with
+    output.json so postmortem can diff the two files directly."""
+    monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", "1")
+
+    calls: list[dict] = []
+
+    def _fake_log_text(*, run_id, text, artifact_file):
+        calls.append({
+            "run_id": run_id, "text": text, "artifact_file": artifact_file,
+        })
+
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.stage_io_capture._log_text",
+        _fake_log_text,
+    )
+
+    from genie_space_optimizer.optimization.optimizer import (
+        _emit_strategist_context_consumed_for_test_harness as _emit_consumed,
+    )
+
+    _emit_consumed(
+        consumed_payload={"hard_failure_qids": ["gs_009"], "iq_scan_text": "x"},
+        assembled_hash="sha256:" + "0" * 64,
+        assembled_top_fields=("hard_failure_qids", "iteration"),
+        run_id="r",
+        iteration=4,
+        decision_emit=lambda r: None,
+        mlflow_anchor_run_id="anchor_42",
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["run_id"] == "anchor_42"
+    assert calls[0]["artifact_file"] == (
+        "gso_postmortem_bundle/iterations/iter_04/stages/"
+        "04_strategist_context/consumed.json"
+    )
+    # The persisted text is canonical JSON of the consumed dict.
+    import json as _json
+    parsed = _json.loads(calls[0]["text"])
+    assert parsed["hard_failure_qids"] == ["gs_009"]
+    assert parsed["iq_scan_text"] == "x"
