@@ -16219,6 +16219,15 @@ def _run_lever_loop(
     # upload block can reference it even if the inner serialization try
     # block raised. Default to empty JSON object.
     _replay_fixture_json: str = ""
+    # RCO-2a follow-up — run-level default for the end-of-run replay-
+    # validation evidence. Set to a real dict inside the Phase A try
+    # block once ``serialize_replay_fixture`` succeeds. Stays ``None``
+    # on a Phase-A failure so the post-Phase-H
+    # ``_emit_contract_health_summary`` falls back to the classifier's
+    # ``skipped`` interpretation (``replay_is_valid=True``,
+    # ``replay_violation_count=0``). See
+    # ``docs/2026-05-12-run-end-replay-validation-plan.md``.
+    _run_end_replay_validation: dict | None = None
 
     # Phase A — deterministic carrier for the most recent full-eval
     # result. Replaces opportunistic ``locals().get("full_result")``
