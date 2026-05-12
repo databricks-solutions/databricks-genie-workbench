@@ -234,6 +234,26 @@ def _build_full_iteration_fixture() -> dict:
                             "title": "phase_b.total_records below replay_fixture.records",
                         },
                     },
+                    {
+                        # Defect Plan 1 (2026-05-12): CLUSTER_BLOCKED_NO_RCA —
+                        # typed record emitted at AG-emit time when an open
+                        # hard cluster has rca_card=False. Added here to
+                        # satisfy the exhaustiveness check in
+                        # test_replay_decision_records_cover_every_decision_type.
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "cluster_blocked_no_rca",
+                        "outcome": "skipped",
+                        "reason_code": "rca_ungrounded",
+                        "cluster_id": "H_NO_RCA_synth",
+                        "evidence_refs": ["cluster:H_NO_RCA_synth"],
+                        "root_cause": "synthetic_no_rca_card",
+                        "target_qids": ["q_synth_blocked"],
+                        "next_action": (
+                            "regenerate RCA evidence for this cluster or "
+                            "escalate to diagnostic-AG path before re-attempting "
+                            "AG emission"
+                        ),
+                    },
                 ],
             }
         ],
