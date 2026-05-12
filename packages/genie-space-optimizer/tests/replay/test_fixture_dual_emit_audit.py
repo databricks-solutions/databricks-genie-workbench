@@ -55,12 +55,6 @@ def test_fixture_dual_emit_manifest_locked(fixture_path: pathlib.Path) -> None:
     non-empty set have the redundant soft emit suppressed (which
     cannot increase violation counts and may decrease them).
     """
-    if (
-        fixture_path.name == "run_ccf1d60d_7now.json"
-        and not fixture_path.exists()
-    ):
-        pytest.skip("ccf1d60d fixture captured in Task 2 of Defect Plan 3")
-
     fixture = json.loads(fixture_path.read_text())
     iters = fixture.get("iterations") or []
     seen: dict[int, list[str]] = {}
