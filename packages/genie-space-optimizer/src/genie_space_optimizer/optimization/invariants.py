@@ -37,6 +37,7 @@ Invariant IDs:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 
@@ -798,3 +799,67 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
                 detail=repr(exc)[:512],
             ))
     return violations
+
+
+# ---------------------------------------------------------------------------
+# Plan P-F (2026-05-12) — iteration-level coverage invariant
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProposalFailureCoverageResult:
+    """Outcome of ``check_proposal_failure_decided_coverage``."""
+
+    violated: bool
+    message: str
+
+
+_NO_APPLIED_EXIT_PATHS: frozenset[str] = frozenset({
+    "proposals_empty",
+    "skipped_no_applied_patches",
+    "no_causal_applyable_patch",
+    "dead_on_arrival",
+})
+
+
+def check_proposal_failure_decided_coverage(
+    iter_inputs: Mapping[str, Any],
+) -> ProposalFailureCoverageResult:
+    """Plan P-F (2026-05-12) — iteration-level coverage invariant.
+
+    For every iteration whose ``applied_patches_total == 0`` AND whose
+    ``exit_path`` is one of the no-applied exit paths, the iteration's
+    ``decision_records`` MUST carry at least one
+    ``decision_type == "proposal_failure_decided"`` record. Otherwise
+    the loop has stalled silently.
+
+    The invariant runs under the existing ``warn-and-degrade`` policy
+    (see ``GSO_LOOP_INVARIANTS_STRICT``); the harness emits
+    ``GSO_INVARIANT_VIOLATION_V1`` with
+    ``invariant_name="proposal_failure_decided_coverage"`` and
+    continues.
+    """
+    applied_total = int(iter_inputs.get("applied_patches_total") or 0)
+    if applied_total > 0:
+        return ProposalFailureCoverageResult(violated=False, message="")
+
+    exit_path = str(iter_inputs.get("exit_path") or "").strip()
+    if exit_path and exit_path not in _NO_APPLIED_EXIT_PATHS:
+        return ProposalFailureCoverageResult(violated=False, message="")
+
+    decision_records = iter_inputs.get("decision_records") or []
+    has_failure_decided = any(
+        str(rec.get("decision_type") or "") == "proposal_failure_decided"
+        for rec in decision_records
+    )
+    if has_failure_decided:
+        return ProposalFailureCoverageResult(violated=False, message="")
+
+    return ProposalFailureCoverageResult(
+        violated=True,
+        message=(
+            f"iteration applied_patches_total=0 exit_path={exit_path!r} "
+            f"but no proposal_failure_decided record present "
+            f"({len(decision_records)} decision_records seen)"
+        ),
+    )

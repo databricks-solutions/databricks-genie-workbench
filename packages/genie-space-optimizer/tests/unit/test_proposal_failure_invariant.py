@@ -198,3 +198,58 @@ def test_emit_helper_accepts_all_selected_dropped_failure_mode(monkeypatch) -> N
     assert iter_inputs2["decision_records"][0]["reason_code"] == (
         "rotate_lever_family"
     )
+
+
+def test_invariant_passes_when_iteration_has_failure_decided_record() -> None:
+    """Iteration with zero applied patches and one failure_decided record
+    satisfies the invariant."""
+    from genie_space_optimizer.optimization.invariants import (
+        check_proposal_failure_decided_coverage,
+    )
+
+    iter_inputs = {
+        "applied_patches_total": 0,
+        "exit_path": "proposals_empty",
+        "decision_records": [
+            {
+                "decision_type": "proposal_failure_decided",
+                "reason_code": "rotate_lever_family",
+            }
+        ],
+    }
+    result = check_proposal_failure_decided_coverage(iter_inputs)
+    assert result.violated is False
+
+
+def test_invariant_fails_when_iteration_has_zero_applied_and_no_failure_decided() -> None:
+    """Iteration with zero applied patches and zero failure_decided records
+    violates the invariant."""
+    from genie_space_optimizer.optimization.invariants import (
+        check_proposal_failure_decided_coverage,
+    )
+
+    iter_inputs = {
+        "applied_patches_total": 0,
+        "exit_path": "skipped_no_applied_patches",
+        "decision_records": [
+            {"decision_type": "acceptance_decided"},
+        ],
+    }
+    result = check_proposal_failure_decided_coverage(iter_inputs)
+    assert result.violated is True
+    assert "proposal_failure_decided" in result.message
+
+
+def test_invariant_skips_when_iteration_has_applied_patches() -> None:
+    """Iterations with applied patches are out of scope for the invariant."""
+    from genie_space_optimizer.optimization.invariants import (
+        check_proposal_failure_decided_coverage,
+    )
+
+    iter_inputs = {
+        "applied_patches_total": 2,
+        "exit_path": "accepted",
+        "decision_records": [],
+    }
+    result = check_proposal_failure_decided_coverage(iter_inputs)
+    assert result.violated is False
