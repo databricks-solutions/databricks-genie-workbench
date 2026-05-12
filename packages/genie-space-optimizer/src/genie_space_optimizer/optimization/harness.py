@@ -1829,6 +1829,151 @@ def _persist_iter_patch_survival_to_anchor(
         )
 
 
+def _materialize_per_iter_contract_paths(
+    *,
+    client: Any,
+    anchor_run_id: str,
+    iterations: list[int],
+    iter_summaries: dict[int, dict[str, Any]],
+    iter_decision_records: dict[int, list[dict[str, Any]]],
+    iter_journey_reports: dict[int, dict[str, Any] | None],
+    iter_rca_ledgers: dict[int, dict[str, Any] | None],
+    iter_proposal_inventories: dict[int, dict[str, Any] | None],
+    iter_transcripts: dict[int, str],
+    stage_capture_index: dict[tuple[int, str], str],
+    iter_invariant_violations: dict[int, tuple[dict, ...]],
+) -> dict[str, int]:
+    """Plan P-A — Write the 8 per-iteration contract paths for every
+    iteration in ``iterations``, regardless of exit_path.
+
+    Best-effort by contract: a single ``log_text`` failure does not
+    abort the writer; failed paths are returned in
+    ``failed_writes_count`` so the caller can stamp them on
+    ``manifest.missing_pieces``.
+
+    Mirrors the way ``_phase_b_accounting`` is unconditionally seeded
+    into every iteration's ``current_iter_inputs`` — every iteration in
+    ``iterations`` gets every contract file, even when the underlying
+    in-memory state is missing or empty.
+    """
+    import json as _json
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_iteration_decision_trace_payload,
+        build_iteration_journey_validation_payload,
+        build_iteration_proposal_inventory_payload,
+        build_iteration_rca_ledger_payload,
+        build_iteration_stage_index_payload,
+        build_iteration_summary_payload,
+    )
+    from genie_space_optimizer.optimization.run_output_contract import (
+        bundle_artifact_paths,
+    )
+    from genie_space_optimizer.optimization.patch_survival import (
+        aggregate_patch_survival_for_iteration,
+    )
+
+    declared = bundle_artifact_paths(iterations=list(iterations or []))
+    written = 0
+    failed = 0
+
+    def _log_one(path: str, text: str) -> None:
+        nonlocal written, failed
+        try:
+            client.log_text(
+                run_id=anchor_run_id, text=text, artifact_file=path,
+            )
+            written += 1
+        except Exception:
+            failed += 1
+            logger.debug(
+                "Plan P-A: per-iter log_text failed for %s", path,
+                exc_info=True,
+            )
+
+    captured_by_iter: dict[int, list[str]] = {}
+    for (it, key), _ in (stage_capture_index or {}).items():
+        captured_by_iter.setdefault(int(it), []).append(str(key))
+
+    for it in iterations or []:
+        per_iter = declared["iterations"][int(it)]
+
+        summary = build_iteration_summary_payload(
+            iteration=int(it),
+            iter_summary=iter_summaries.get(int(it)) or {},
+            invariant_violations=tuple(
+                iter_invariant_violations.get(int(it)) or ()
+            ),
+        )
+        _log_one(
+            per_iter["summary"],
+            _json.dumps(summary, sort_keys=True, indent=2),
+        )
+
+        decision_trace = build_iteration_decision_trace_payload(
+            iteration=int(it),
+            decision_records=list(iter_decision_records.get(int(it)) or []),
+        )
+        _log_one(
+            per_iter["decision_trace"],
+            _json.dumps(decision_trace, sort_keys=True, indent=2),
+        )
+
+        journey = build_iteration_journey_validation_payload(
+            iteration=int(it),
+            journey_report=iter_journey_reports.get(int(it)),
+        )
+        _log_one(
+            per_iter["journey_validation"],
+            _json.dumps(journey, sort_keys=True, indent=2),
+        )
+
+        rca = build_iteration_rca_ledger_payload(
+            iteration=int(it),
+            rca_ledger=iter_rca_ledgers.get(int(it)),
+        )
+        _log_one(
+            per_iter["rca_ledger"],
+            _json.dumps(rca, sort_keys=True, indent=2),
+        )
+
+        inventory = build_iteration_proposal_inventory_payload(
+            iteration=int(it),
+            proposal_inventory=iter_proposal_inventories.get(int(it)),
+        )
+        _log_one(
+            per_iter["proposal_inventory"],
+            _json.dumps(inventory, sort_keys=True, indent=2),
+        )
+
+        # P-A: unconditionally write patch_survival.json — even when
+        # the iteration produced no per-AG snapshots, the empty
+        # aggregate must still materialize so totality holds.
+        survival = aggregate_patch_survival_for_iteration(
+            iteration=int(it),
+            per_ag_snapshots=[],
+        )
+        _log_one(
+            per_iter["patch_survival"],
+            _json.dumps(survival, sort_keys=True, indent=2),
+        )
+
+        _log_one(
+            per_iter["operator_transcript"],
+            iter_transcripts.get(int(it)) or "",
+        )
+
+        stage_index = build_iteration_stage_index_payload(
+            iteration=int(it),
+            captured_stage_keys=tuple(captured_by_iter.get(int(it)) or ()),
+        )
+        _log_one(
+            per_iter["stages"],
+            _json.dumps(stage_index, sort_keys=True, indent=2),
+        )
+
+    return {"written": written, "failed_writes_count": failed}
+
+
 # ── Phase D.5 alternatives-capture helpers ────────────────────────────
 # Build the alternatives_by_id maps that the three trace-aware producers
 # (cluster_records, strategist_ag_records, proposal_generated_records)
