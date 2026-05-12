@@ -19078,28 +19078,43 @@ def _run_lever_loop(
                 "source_cluster_signatures": list(_ag_source_signatures),
             }
 
-            # Phase D2: collision guard. The strategist occasionally re-proposes
-            # a previously-rejected (root_cause, blame_set, lever_set) tuple
-            # despite the DO NOT RETRY hint in its prompt (see Q004 regression).
-            # When that happens, skip this AG rather than deploying the same
-            # patch again. The reflection entry is logged with rollback_class
-            # OTHER so this skip doesn't count against any budget — it's
-            # purely a routing correction.
-            _forbidden = _compute_forbidden_ag_set(reflection_buffer)
-            _collision_key = _ag_collision_key(
+            # Phase D2 collision guard, broadened by Defect Plan 1 G2
+            # (2026-05-12). The legacy axis (root_cause, blame,
+            # lever_set) is preserved verbatim; the new signature axis
+            # (source_cluster_signatures × lever_set) closes the
+            # 7now-trial defect where iterations 2-5 re-admitted the
+            # same AG family after the LLM regenerated root_cause text.
+            _forbidden_pair = _compute_forbidden_ag_set_pair(reflection_buffer)
+            _collision_pair = _ag_collision_key_pair(
                 ag, _ag_root_cause, _ag_blame_set, lever_keys,
             )
-            if _collision_key is not None and _collision_key in _forbidden:
-                _rc_k, _blame_k, _lever_k = _collision_key
+            if _collision_pair_matches(_collision_pair, _forbidden_pair):
+                # Derive the human-readable identity for the operator
+                # transcript — prefer the legacy root_cause/blame/lever
+                # when available, fall back to the signature axis.
+                if _collision_pair.root_cause_key is not None:
+                    _rc_k, _blame_k, _lever_k = _collision_pair.root_cause_key
+                    _collision_axis = "root_cause"
+                else:
+                    _rc_k = _ag_root_cause or "(empty)"
+                    _blame_k = _normalise_blame(_ag_blame_set)
+                    _lever_k = (
+                        frozenset(int(lk) for lk in lever_keys)
+                        if lever_keys
+                        else frozenset()
+                    )
+                    _collision_axis = "cluster_signature"
                 print(
                     _section(f"[{ag_id}] AG COLLISION — skipping", "!") + "\n"
                     + _kv("Root cause", _rc_k) + "\n"
                     + _kv("Blame", _blame_k) + "\n"
                     + _kv("Lever set", sorted(_lever_k)) + "\n"
+                    + _kv("Collision axis", _collision_axis) + "\n"
                     + _kv(
                         "Reason",
-                        "strategist re-proposed a (root_cause, blame, lever_set) "
-                        "tuple previously rolled back for content regression",
+                        "strategist re-proposed a (root_cause, blame, "
+                        "lever_set) tuple or a (cluster_signature, "
+                        "lever_set) tuple previously rolled back",
                     ) + "\n"
                     + _bar("!")
                 )

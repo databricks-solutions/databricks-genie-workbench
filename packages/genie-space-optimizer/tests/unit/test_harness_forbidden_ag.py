@@ -192,3 +192,37 @@ def test_signature_match_requires_lever_set_to_align():
     # frozenset of levers differs, so root_cause_key isn't in
     # forbidden_pair.by_root_cause either. Both axes correctly miss.
     assert _collision_pair_matches(candidate_pair, forbidden_pair) is False
+
+
+def test_legacy_axis_still_matches_when_signatures_absent(monkeypatch):
+    """Pre-existing behaviour — when AG has no source_cluster_signatures,
+    the legacy root_cause axis is the only collision path and must
+    still fire. Replay byte-stability for pre-defect-plan-1 fixtures.
+    """
+    monkeypatch.setenv("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION", "1")
+    monkeypatch.setenv("GSO_FORBIDDEN_AG_COLLISION_BY_CLUSTER_SIGNATURE", "1")
+
+    from genie_space_optimizer.optimization.harness import (
+        _ag_collision_key_pair,
+        _compute_forbidden_ag_set_pair,
+        _collision_pair_matches,
+    )
+
+    buf = [
+        _reflection_entry(
+            root_cause="A",
+            cluster_signature="sha1-026",
+            lever_set=[6],
+        ),
+    ]
+    forbidden = _compute_forbidden_ag_set_pair(buf)
+
+    # AG with NO source_cluster_signatures — must still collide via
+    # the legacy axis.
+    candidate = _ag_collision_key_pair(
+        {"id": "AG1"},
+        ag_root_cause="A",
+        ag_blame_set=("gs_026",),
+        lever_keys=["6"],
+    )
+    assert _collision_pair_matches(candidate, forbidden) is True
