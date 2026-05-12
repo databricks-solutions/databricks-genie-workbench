@@ -15546,6 +15546,14 @@ def _run_lever_loop(
     )
     _iter_traces: dict[int, _AnyPhaseH] = {}
     _iter_summaries: dict[int, dict[str, _AnyPhaseH]] = {}
+    # Plan P-A — per-iter accumulators feeding ``_materialize_per_iter_contract_paths``.
+    # All three are gracefully partial: an iteration that exits before the
+    # corresponding stage runs simply has no key. The writer renders an
+    # empty-but-well-formed payload for missing keys so contract totality
+    # holds regardless of exit_path.
+    _iter_rca_ledgers: dict[int, dict] = {}
+    _iter_proposal_inventories: dict[int, dict] = {}
+    _iter_journey_reports: dict[int, dict] = {}
     _hard_failures_for_overview: list[tuple[str, str, str]] = list(
         _baseline_overview_ev.get("hard_failures") or []
     )
@@ -17195,6 +17203,14 @@ def _run_lever_loop(
             clusters = _analysis["all_clusters"]
             soft_signal_clusters = _analysis["soft_signal_clusters"]
             rca_ledger = _analysis.get("rca_ledger") or {}
+            # Plan P-A — accumulate per-iter RCA ledger for terminate-path writer.
+            try:
+                _iter_rca_ledgers[int(iteration_counter)] = dict(rca_ledger or {})
+            except Exception:
+                logger.debug(
+                    "Plan P-A: _iter_rca_ledgers stamp failed (non-fatal)",
+                    exc_info=True,
+                )
             # Track H — same row source the soft pile was built from. Pinned
             # to the analyze-distribute return so the soft-cluster currency
             # check sees the exact rows the clusterer saw.
@@ -26637,6 +26653,52 @@ def _run_lever_loop(
                     ),
                     artifact_file=_paths["failure_buckets"],
                 )
+
+                # Plan P-A — materialize the 8 per-iter contract files
+                # for every iteration regardless of exit_path. Best-effort
+                # by contract; failed writes are logged via debug and do
+                # not block the parent bundle from landing. Invoked AFTER
+                # the parent-bundle uploads so a per-iter writer failure
+                # cannot block the parent bundle.
+                try:
+                    from genie_space_optimizer.optimization.stage_io_capture import (
+                        consume_stage_capture_index as _consume_stage_index,
+                    )
+                    _materialize_per_iter_contract_paths(
+                        client=_client_phase_h,
+                        anchor_run_id=_phase_h_anchor_run_id,
+                        iterations=list(_phase_h_iterations_completed or []),
+                        iter_summaries={
+                            i: dict(s)
+                            for i, s in (_iter_summaries or {}).items()
+                        },
+                        iter_decision_records={
+                            int(i): [
+                                rec.to_dict()
+                                for rec in (
+                                    getattr(_iter_traces.get(int(i)), "decision_records", ())
+                                    or ()
+                                )
+                                if hasattr(rec, "to_dict")
+                            ]
+                            for i in (_phase_h_iterations_completed or [])
+                            if _iter_traces.get(int(i)) is not None
+                        },
+                        iter_journey_reports=_iter_journey_reports,
+                        iter_rca_ledgers=_iter_rca_ledgers,
+                        iter_proposal_inventories=_iter_proposal_inventories,
+                        iter_transcripts={
+                            int(i): ""
+                            for i in (_phase_h_iterations_completed or [])
+                        },
+                        stage_capture_index=_consume_stage_index(),
+                        iter_invariant_violations={},
+                    )
+                except Exception:
+                    logger.debug(
+                        "Plan P-A per-iter materialization failed (non-fatal)",
+                        exc_info=True,
+                    )
 
                 print(_artifact_index_marker(
                     optimization_run_id=run_id,
