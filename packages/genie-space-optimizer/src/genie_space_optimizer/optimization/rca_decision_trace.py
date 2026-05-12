@@ -219,6 +219,13 @@ class ReasonCode(str, Enum):
     # current patch_type (e.g., add_sql_snippet_measure /
     # add_sql_snippet_expression lack a where_predicate to narrow).
     NARROW_NOT_APPLICABLE = "narrow_not_applicable"
+    # P-E1 — narrow-L6 replacement skipped because the dropped patch
+    # had no ``patch_type`` (typically a placeholder or pre-AG-emit
+    # shell). Distinguishes "no patch to narrow at all" from the
+    # generic ``unrecognized_patch_type`` symptom.
+    NARROW_SKIPPED_NO_ORIGINAL_PATCH_TYPE = (
+        "narrow_skipped_no_original_patch_type"
+    )
     # Cycle 16 T3 — Branch C survivor: an L6 expression / measure
     # dropped at blast-radius was replaced with one Lever-5
     # add_example_sql patch per resolvable target QID. Mirror of
