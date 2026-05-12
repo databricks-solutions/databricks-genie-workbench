@@ -6140,6 +6140,27 @@ def stage_handlers_chunk_d_enabled() -> bool:
     return _flag_enabled("GSO_STAGE_HANDLERS_CHUNK_D")
 
 
+def proposal_failure_decided_enabled() -> bool:
+    """Plan P-F (2026-05-12) — when truthy, the harness emits a
+    ``DecisionType.PROPOSAL_FAILURE_DECIDED`` record + a
+    ``GSO_PROPOSAL_FAILURE_DECIDED_V1`` stdout marker at every
+    proposal-phase failure site (``proposal_generation_empty``,
+    ``lever6_force_llm_declined``, ``no_causal_applyable_patch``,
+    ``all_selected_patches_dropped_by_applier``,
+    ``no_applied_patches``). The ``reason_code`` carries one of six
+    closed-vocabulary next-action labels (see
+    ``optimization/proposal_failure_policy.py``).
+
+    Default-OFF so replay byte-stability of pre-P-F fixtures is
+    preserved. Flipped on after the integration smoke test confirms
+    the iteration-level invariant is satisfied on both the ccf1d60d
+    and 31ecd96f replay corpora.
+
+    Evidence anchor:
+    runid_analysis/{ccf1d60d,31ecd96f}/postmortem.md."""
+    return _flag_enabled("GSO_PROPOSAL_FAILURE_DECIDED")
+
+
 def stage6_blast_radius_pure_enabled() -> bool:
     """RCO-4 Task 5 — when truthy, the harness's inline blast-radius
     gate firing delegates to

@@ -55,3 +55,33 @@ def test_type_to_section_includes_proposal_failure_decided() -> None:
         TYPE_TO_SECTION[DecisionType.PROPOSAL_FAILURE_DECIDED]
         == SECTION_PROPOSAL_SURVIVAL
     )
+
+
+def test_proposal_failure_decided_flag_default_off(monkeypatch) -> None:
+    """Default-OFF preserves replay byte-stability of pre-P-F fixtures."""
+    from genie_space_optimizer.common.config import (
+        proposal_failure_decided_enabled,
+    )
+
+    monkeypatch.delenv("GSO_PROPOSAL_FAILURE_DECIDED", raising=False)
+    assert proposal_failure_decided_enabled() is False
+
+
+def test_proposal_failure_decided_flag_truthy_values(monkeypatch) -> None:
+    from genie_space_optimizer.common.config import (
+        proposal_failure_decided_enabled,
+    )
+
+    for truthy in ("1", "true", "yes", "on", "TRUE"):
+        monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", truthy)
+        assert proposal_failure_decided_enabled() is True, truthy
+
+
+def test_proposal_failure_decided_flag_falsy_values(monkeypatch) -> None:
+    from genie_space_optimizer.common.config import (
+        proposal_failure_decided_enabled,
+    )
+
+    for falsy in ("", "0", "false", "no", "off"):
+        monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", falsy)
+        assert proposal_failure_decided_enabled() is False, falsy
