@@ -645,6 +645,12 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     # violation detail must be visible to the operator, so route to
     # SECTION_HARD_FAILURES where _format_record_line renders reason_detail.
     DecisionType.INVARIANT_VIOLATION: SECTION_HARD_FAILURES,
+    # Defect Plan 1 (2026-05-12) — CLUSTER_BLOCKED_NO_RCA fires when an
+    # open hard cluster reaches AG-emit time without a fit RCA card.
+    # It belongs alongside CLUSTER_SELECTED / RCA_FORMED in the
+    # RCA Cards section so the operator can see, per iteration, which
+    # clusters were grounded vs blocked.
+    DecisionType.CLUSTER_BLOCKED_NO_RCA: SECTION_RCA_CARDS,
 }
 
 

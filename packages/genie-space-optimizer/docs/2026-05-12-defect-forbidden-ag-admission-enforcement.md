@@ -1,8 +1,15 @@
 # Defect: Enforce forbidden/no-action AG admission + force materially different strategy after target_qids_not_improved
 
-> **Status:** stub. Surfaced by the RCO-4b consolidating-trial run
-> `ccf1d60d-d686-467b-bafa-1640131b4393` (May 12, 2026). Task
-> breakdown to be filled in.
+> **Status:** PARTIALLY SUPERSEDED by
+> `docs/2026-05-12-defect-ag-emit-grounding-and-forbidden-admission-plan.md`
+> (2026-05-12). Items 1 (forbidden-AG admission), 5 (zero-proposal
+> retry signature deferred to Defect Plan 2), and 7-8 (orthogonal
+> gaps) are covered. Items 2-4 (target_qids_not_improved →
+> patch-family change requirement; gs_026 structural repair;
+> gs_012 regression-aware collateral constraints) are LLM/prompt-domain
+> work out of roadmap-closeout scope. Item 6 (gs_021 clustered →
+> soft_signal replay parity) is the named RCO-6 blocker and remains
+> pending its own defect plan.
 
 ## Verdict
 

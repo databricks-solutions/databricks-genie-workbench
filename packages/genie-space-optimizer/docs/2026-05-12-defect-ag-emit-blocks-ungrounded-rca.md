@@ -1,8 +1,14 @@
 # Defect: AG emission must block on ungrounded RCA + skipped_no_applied_patches must update retry memory
 
-> **Status:** stub. Surfaced by the RCO-4b consolidating-trial run
-> `31ecd96f-5d56-4b5a-af8e-38e9e5c549af` (May 12, 2026). Task
-> breakdown to be filled in.
+> **Status:** SUPERSEDED by
+> `docs/2026-05-12-defect-ag-emit-grounding-and-forbidden-admission-plan.md`
+> (2026-05-12). All seven items in the "Recommended next steps"
+> section below are addressed by that plan (items 1, 4, 5) or
+> consciously deferred to Defect Plan 2 (item 6 — Phase H totality)
+> and the bundle-status wiring fix (item 7 in spirit). Items 2-3
+> (structural SQL repairs for gs_009 / gs_024) are LLM/prompt-domain
+> work explicitly out of roadmap-closeout scope per
+> `docs/2026-05-10-roadmap-closeout.md`.
 
 ## Verdict
 
