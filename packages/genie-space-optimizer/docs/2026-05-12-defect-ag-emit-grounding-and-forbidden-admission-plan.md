@@ -2345,3 +2345,5 @@ Two execution options:
 **2. Inline Execution** — execute tasks in this session using `superpowers:executing-plans`, batch execution with checkpoints. Slower wall-clock but a single review surface.
 
 Which approach?
+
+**Downstream consumer:** P-E1 ([`2026-05-12-plan-p-e1-l6-decline-cache-and-narrow-guard-plan.md`](2026-05-12-plan-p-e1-l6-decline-cache-and-narrow-guard-plan.md)) reuses `_ag_collision_key_pair` as the cache-key shape for its iteration-scoped Lever-6 decline cache, so "L6 declined this shape" and "AG selection considers this shape forbidden next iteration" share the same canonical identity. Invariant `I14` enforces the observable dedup property at run end.

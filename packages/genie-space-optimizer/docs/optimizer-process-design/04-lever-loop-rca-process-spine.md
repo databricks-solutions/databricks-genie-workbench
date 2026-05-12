@@ -160,6 +160,8 @@ record was emitted — so silent stalls become loud. Default-OFF behind
 [`optimization/proposal_failure_policy.py`](../../src/genie_space_optimizer/optimization/proposal_failure_policy.py).
 See `2026-05-12-plan-p-f-proposal-failure-taxonomy-recovery-policy.md`.
 
+**P-E1 — iteration-scoped decline cache (2026-05-12).** Within a single iteration, the harness short-circuits redundant force-Lever-6 LLM calls for structurally equivalent repair shapes via `harness._maybe_force_lever6_with_cache`. The cache key is `(_ag_collision_key_pair, snippet_type)` — the same canonical identity used by the forbidden-AG set, so "L6 declined this shape" and "AG selection considers this shape forbidden next iteration" cannot drift. Cache hits emit `lever6_force_llm_declined` with `metrics.cached=True` and `metrics.original_decline_iteration` set to the iteration that wrote the entry. The cache is reset at iteration entry alongside `_current_iter_inputs`; a stale cross-iteration entry trips the paranoia guard, logs `l6_decline_cache_stale_entry`, and treats the entry as a miss (fail-open). The observable dedup property — at most one *live* `lever6_force_llm_declined` per `(iter, cluster_signature, root_cause)` — is enforced at run end by invariant `I14`. P-E1 also replaces the misleading `unrecognized_patch_type` reason for `narrow_replacement_diagnosis` empty-`patch_type` inputs with a dedicated `narrow_skipped_no_original_patch_type` reason code + marker. See `docs/2026-05-12-plan-p-e1-l6-decline-cache-and-narrow-guard-plan.md`.
+
 ## Stage 6 — Safety Gates
 
 **Plain language:** "Every patch has to earn its way in."
