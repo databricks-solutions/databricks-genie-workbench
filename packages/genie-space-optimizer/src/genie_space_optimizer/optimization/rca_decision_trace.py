@@ -86,6 +86,40 @@ class DecisionOutcome(str, Enum):
     FAILED = "failed"
 
 
+class RcaUngroundedReason(str, Enum):
+    """Plan P-D (2026-05-12) — typed taxonomy of why a cluster's
+    ``rca_card`` arrived falsy at AG-emit. Distinct from
+    :class:`ReasonCode` because the values are classifier-only and
+    do not need to be carried in every ``DecisionRecord``.
+
+    See ``2026-05-12-plan-p-d-rca-regeneration-recovery-loop.md``
+    section "Recovery Policy Table" for per-reason retryability.
+
+    Members (the policy table is keyed on these):
+
+    * ``NO_PARENT_RCA`` — cluster has no ``rca_id`` (today's T3
+      coverage-gap case).
+    * ``NO_FINDINGS`` — RCA stage produced no ``RcaFinding`` for
+      the cluster.
+    * ``NO_TERM_OVERLAP`` — findings exist with overlapping qids
+      but no grounding-term overlap (the proper
+      ``ReasonCode.RCA_UNGROUNDED`` shape).
+    * ``NO_CAUSAL_TARGET`` — findings exist but no qid overlap.
+    * ``MISSING_TARGET_QIDS`` — cluster has no qids (contract bug).
+    * ``NO_EVIDENCE_AVAILABLE`` — both ``failure_buckets`` and
+      ``asi_metadata`` are empty for every cluster qid.
+    * ``UNKNOWN`` — classifier fell through (defensive default).
+    """
+
+    NO_PARENT_RCA = "no_parent_rca"
+    NO_FINDINGS = "no_findings"
+    NO_TERM_OVERLAP = "no_term_overlap"
+    NO_CAUSAL_TARGET = "no_causal_target"
+    MISSING_TARGET_QIDS = "missing_target_qids"
+    NO_EVIDENCE_AVAILABLE = "no_evidence_available"
+    UNKNOWN = "unknown"
+
+
 class ReasonCode(str, Enum):
     NONE = "none"
     ALREADY_PASSING = "already_passing"
@@ -136,7 +170,19 @@ class ReasonCode(str, Enum):
     # rca_cards_present[c]=False enters the regeneration step;
     # ``RCA_REGENERATION_EXHAUSTED`` fires when regeneration cannot
     # produce a grounded card and the AG is retired.
+    #
+    # Plan P-D (2026-05-12) — RCA Ungrounded Recovery Policy:
+    # ``RCA_CLASSIFIED_UNGROUNDED`` fires once per cluster per
+    # iteration when the policy step classifies the ungrounded
+    # reason (so the operator transcript surfaces the typed cause
+    # before any retry decision is made).
+    # ``RCA_REGENERATION_SUCCEEDED`` fires when a cluster-level
+    # regen attempt produced a fit ``rca_card`` and the cluster
+    # avoids the Defect Plan 1 G1 ``cluster_blocked_no_rca``
+    # short-circuit.
     RCA_REGENERATION_TRIGGERED = "rca_regeneration_triggered"
+    RCA_CLASSIFIED_UNGROUNDED = "rca_classified_ungrounded"
+    RCA_REGENERATION_SUCCEEDED = "rca_regeneration_succeeded"
     RCA_REGENERATION_EXHAUSTED = "rca_regeneration_exhausted"
     # Cycle 5 T5 — soft-cluster drift recovery: emitted when the
     # clusterer's soft pile carried a qid the current eval no longer
