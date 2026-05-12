@@ -138,9 +138,15 @@ def test_accessors_use_flag_default_on_helper():
 
 
 def test_lever_loop_strict_default_unchanged():
-    """The lever-loop job must still default ``GSO_LOOP_INVARIANTS_STRICT``
-    to '0'. RCO-2b will flip this; before RCO-2b ships, the trial must
-    run under the same posture as production."""
+    """RCO-2b shipped 2026-05-13 and removed the
+    ``_os.environ.setdefault("GSO_LOOP_INVARIANTS_STRICT", "0")``
+    override. This guard now asserts the override is GONE — re-adding
+    it would silently revert RCO-2b's production posture flip.
+
+    (Original name retained for `test_*_unchanged` continuity; the
+    "unchanged" refers to the accessor-level ``loop_invariants_strict()``
+    helper, not the job-level override.)
+    """
     from pathlib import Path
 
     job_src = (
@@ -152,9 +158,10 @@ def test_lever_loop_strict_default_unchanged():
     ).read_text()
     assert (
         '_os.environ.setdefault("GSO_LOOP_INVARIANTS_STRICT", "0")'
-        in job_src
+        not in job_src
     ), (
-        "RCO-2a structural guard violated: lever-loop job no longer "
-        "defaults strict mode to '0'. RCO-2b must flip this — but "
-        "only after the trial captures the marker payload."
+        "RCO-2b removed this override on 2026-05-13. Re-adding it "
+        "silently reverts production posture to warn-and-degrade. For "
+        "rollback, set GSO_LOOP_INVARIANTS_STRICT=0 in the job widget "
+        "instead — the accessor still honors a falsy explicit override."
     )
