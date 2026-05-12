@@ -226,7 +226,12 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 **Trial runbook (long-lived):** `docs/2026-05-13-rco-4b-trial-runbook.md`.
 
-**Trial status:** not yet submitted.
+**Trial status:** submitted 2026-05-12 against two substitute anchors (`airline_trial_2026_05_12_31ecd96f`, `seven_now_trial_2026_05_12_ccf1d60d`); F9-3b050ec5 / AIRLINE-clean not yet captured. Postflight test passes 8/8 against both runs. Marker infrastructure validated. Two MERGE_GATE_GAP defects surfaced (orthogonal to RCO-4b extraction work):
+
+- `docs/2026-05-12-defect-ag-emit-blocks-ungrounded-rca.md` (NO_APPLIED_PATCHES; airline run).
+- `docs/2026-05-12-defect-forbidden-ag-admission-enforcement.md` (NO_ACCEPTED_PROGRESS; 7now run; contains the named RCO-6 `gs_021` carry-over fix).
+
+Deferred-RCO unblocking from this trial: RCO-2b ✅, RCO-3 ✅, RCO-4c ⚠️ partial, RCO-6 ❌ blocked on the second defect plan. Re-trial against the original F9/AIRLINE anchors expected after the defect plans land. Full disposition in `docs/2026-05-13-rco-4b-trial-runbook.md` "Trial disposition (2026-05-12)" section.
 
 **Phase roadmap:** `docs/2026-05-12-rco-4b-phase-roadmap.md`.
 

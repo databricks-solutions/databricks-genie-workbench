@@ -102,3 +102,68 @@ evidence. File a defect plan against the failing surface.
 | Date | Operator | Preflight test count | Defense-in-depth suite | Result |
 |---|---|---|---|---|
 | 2026-05-11 | prashanth.subrahmanyam | 57 (9 default-ON + 45 falsy-rollback + 1 harness-import + 1 `_flag_default_on` grep + 1 strict-default unchanged) | 360 RCO unit tests (`test_rco4b_*`, `test_rco4_*`, `test_rco5_*`, `test_rco7_*`, `test_rco8_*`, `test_rco2a_*`); 4693 unit+integration passes, 4 pre-existing failures unrelated to the flip (`test_skill_parser_handoff` x2; `test_evidence_bundle_smoke` + `test_mlflow_smoke_one_iteration` show same failures on pre-flip HEAD) | All green; trial is submittable. |
+
+## Trial disposition (2026-05-12)
+
+Two Databricks lever-loop runs were captured and post-mortem'd:
+
+| opt_run_id | space / domain | merge_gate_status | bundle_status | replay | Optimizer verdict |
+|---|---|---|---|---|---|
+| `31ecd96f-5d56-4b5a-af8e-38e9e5c549af` | airline_ticketing_and_fare_analysis (`01f143df...`) | `warn` (phase_h skipped) | `complete` | `is_valid=true`, 0 violations | `MERGE_GATE_GAP / NO_APPLIED_PATCHES` |
+| `ccf1d60d-d686-467b-bafa-1640131b4393` | `7now_delivery_analytics_space` (`01f128ae...`) | `warn` (phase_h skipped) | `complete` | `is_valid=false`, 5 Cycle-17 carry-over violations for `gs_021` | `MERGE_GATE_GAP / NO_ACCEPTED_PROGRESS` |
+
+**Postflight test:** 8/8 pass against each run (anchors
+`airline_trial_2026_05_12_31ecd96f` and
+`seven_now_trial_2026_05_12_ccf1d60d` in
+`tests/integration/fixtures/rco4b_trial/expected_outcomes.json`).
+
+**What the trial validated (infrastructure):**
+
+- ✅ All four keystone end-of-run markers emit and are
+  parser-roundtripable (`GSO_RUN_MANIFEST_V1` start + end,
+  `GSO_CONVERGENCE_V1`, `GSO_CONTRACT_HEALTH_V1`).
+- ✅ `ContractHealthSummary` payload roundtrips cleanly via
+  `from_json_dict`.
+- ✅ RCO-2a `MergeGateStatus` classifier correctly emits `warn` when
+  `phase_h_listing_status=skipped` and `phase_h_validator_status=skipped`.
+- ✅ All nine default-on RCO-4 / RCO-4b pure helpers fired without
+  crash on real Databricks workspace runs.
+- ✅ Marker emission ordering is stdout-observable and stable.
+
+**What the trial did NOT validate (deferred):**
+
+- ❌ The original `f9_3b050ec5` blocked-anchor outcome — no captured
+  evidence yet.
+- ❌ The original `airline_clean` healthy-anchor outcome — no
+  captured evidence yet.
+- ⚠️ Phase H bundle totality — `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1`
+  fires on both runs (`missing_count=40`). Per-iteration rollups are
+  missing. This is a Phase H output-contract gap, not a trial
+  blocker, but it means the contract_health `bundle_status=complete`
+  comes from a different source than the bundle-assembly markers.
+- ⚠️ Databricks ID resolution in run manifest — both runs report
+  `databricks_job_id=unknown`, `databricks_parent_run_id=unknown`,
+  `lever_loop_task_run_id=unknown` despite the live Jobs API
+  resolving all three.
+
+**Defects surfaced (separate plans):**
+
+- `docs/2026-05-12-defect-ag-emit-blocks-ungrounded-rca.md` — driven
+  by run 31ecd96f.
+- `docs/2026-05-12-defect-forbidden-ag-admission-enforcement.md` —
+  driven by run ccf1d60d. Includes the named-RCO-6 blocker fix
+  (`clustered → soft_signal` for `gs_021`).
+
+**Deferred-RCO unblocking status:**
+
+| RCO | Status | Reason |
+|---|---|---|
+| RCO-2b (strict-mode default-flip) | ✅ unblocked | `GSO_CONTRACT_HEALTH_V1` captured on both runs |
+| RCO-3 (pilot-gated default-flip) | ✅ unblocked | All nine helpers fired default-on without crash |
+| RCO-4c (alignment/cap/reflection carve-out) | ⚠️ partial | `decide_full_eval_acceptance` survived a real run (ccf1d60d); the airline run had all-skipped iterations |
+| RCO-6 (replay/journey parity) | ❌ blocked | `gs_021` Cycle-17 carry-over named in defect-forbidden-ag-admission-enforcement |
+
+**Re-trial expectation:** Re-run against F9-3b050ec5 + AIRLINE-clean
+once the two defect plans land. The captured runs and the
+`f9_3b050ec5` / `airline_clean` future-target anchors remain in
+`expected_outcomes.json` side by side.
