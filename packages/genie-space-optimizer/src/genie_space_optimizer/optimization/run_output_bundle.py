@@ -455,3 +455,193 @@ def aggregate_per_iteration_artifacts(
             continue
         aggregated.append(entry)
     return aggregated
+
+
+# ---------------------------------------------------------------------------
+# Plan P-A (2026-05-12) — per-iteration artifact builders
+#
+# Six pure builders consumed by ``_materialize_per_iter_contract_paths``
+# (harness.py) to write the eight per-iter contract paths for every
+# iteration in ``_phase_h_iterations_completed``, regardless of
+# ``exit_path``. Each builder is dict-in, dict-out, no I/O. Missing
+# in-memory state is gracefully tolerated — the file always materializes
+# with an empty-but-well-formed payload so the assembler completeness
+# check reports ``complete=True`` even on skipped iterations.
+# ---------------------------------------------------------------------------
+
+
+def build_iteration_summary_payload(
+    *,
+    iteration: int,
+    iter_summary: dict[str, Any],
+    invariant_violations: tuple[dict, ...] = (),
+) -> dict[str, Any]:
+    """Plan P-A — Build the per-iteration ``summary.json`` payload.
+
+    Mirrors the in-memory ``iter_summary`` dict produced by
+    ``_build_iteration_summary_dict`` (harness.py) so postmortem
+    skills can read a single per-iter file with the same fields the
+    aggregate operator transcript renders. ``invariant_violations``
+    are projected as a list so the per-iter file is the single source
+    of truth for "what went wrong in iteration N" — independent of
+    the run-level aggregation.
+    """
+    safe_summary = dict(iter_summary or {})
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration": int(iteration),
+        "exit_path": str(safe_summary.get("exit_path") or "in_progress"),
+        "accepted_count": int(safe_summary.get("accepted_count") or 0),
+        "rolled_back_count": int(safe_summary.get("rolled_back_count") or 0),
+        "skipped_count": int(safe_summary.get("skipped_count") or 0),
+        "gate_drop_count": int(safe_summary.get("gate_drop_count") or 0),
+        "decision_record_count": int(
+            safe_summary.get("decision_record_count") or 0
+        ),
+        "journey_violation_count": int(
+            safe_summary.get("journey_violation_count") or 0
+        ),
+        "iteration_accuracy": safe_summary.get("iteration_accuracy"),
+        "invariant_violations": [
+            dict(v) for v in (invariant_violations or ())
+        ],
+    }
+
+
+def build_iteration_decision_trace_payload(
+    *,
+    iteration: int,
+    decision_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Plan P-A — Build the per-iteration ``decision_trace.json`` payload.
+
+    The harness terminate path provides ``decision_records`` as the
+    list of ``DecisionRecord.to_dict()`` outputs from the iteration's
+    ``OptimizationTrace.decision_records`` tuple. Skipped iterations
+    contribute an empty list rather than no file — the file always
+    exists so postmortem skills can iterate ``iter_NN`` without
+    branching on exit_path.
+    """
+    safe = list(decision_records or [])
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration": int(iteration),
+        "record_count": len(safe),
+        "records": safe,
+    }
+
+
+def build_iteration_journey_validation_payload(
+    *,
+    iteration: int,
+    journey_report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Plan P-A — Build the per-iteration ``journey_validation.json``
+    payload. ``journey_report`` is the dict produced by
+    ``JourneyValidationReport.to_dict()`` for the iteration, or
+    ``None`` when the iteration exited before journey validation ran.
+
+    ``is_valid`` is always derived from ``violations`` so a producer
+    bug in one cannot let the other drift.
+    """
+    safe = dict(journey_report or {})
+    violations = list(safe.get("violations") or [])
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration": int(iteration),
+        "is_valid": len(violations) == 0,
+        "violation_count": len(violations),
+        "violations": violations,
+        "bucket_assignments": dict(safe.get("bucket_assignments") or {}),
+    }
+
+
+def build_iteration_rca_ledger_payload(
+    *,
+    iteration: int,
+    rca_ledger: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Plan P-A — Build the per-iteration ``rca_ledger.json`` payload.
+
+    ``rca_ledger`` is the dict produced by
+    ``regression_mining.build_rca_ledger`` and stamped on
+    ``metadata_snapshot["_rca_ledger"]`` during the iteration. When
+    the iteration exits before RCA evidence runs, the dict is None
+    and the builder produces an empty-but-well-formed payload so
+    postmortem totality holds.
+    """
+    safe = dict(rca_ledger or {})
+    themes = list(safe.get("themes") or [])
+    conflicts = list(safe.get("conflicts") or [])
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration": int(iteration),
+        "theme_count": len(themes),
+        "conflict_count": len(conflicts),
+        "themes": themes,
+        "conflicts": conflicts,
+        "cards_by_cluster": dict(safe.get("cards_by_cluster") or {}),
+    }
+
+
+def build_iteration_proposal_inventory_payload(
+    *,
+    iteration: int,
+    proposal_inventory: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Plan P-A — Build the per-iteration ``proposal_inventory.json``
+    payload. ``proposal_inventory`` is the dict stamped on
+    ``current_iter_inputs["proposal_inventory"]`` by the proposal
+    stage; missing for iterations that exited at strategy_zero_ags
+    or earlier.
+
+    ``disposition_counts`` is derived from ``proposals[*].disposition``
+    so a postmortem can read a single number per disposition without
+    walking the full proposal list.
+    """
+    safe = dict(proposal_inventory or {})
+    proposals = list(safe.get("proposals") or [])
+    counts: dict[str, int] = {}
+    for p in proposals:
+        if not isinstance(p, dict):
+            continue
+        d = str(p.get("disposition") or "unknown")
+        counts[d] = counts.get(d, 0) + 1
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration": int(iteration),
+        "proposal_count": len(proposals),
+        "disposition_counts": counts,
+        "proposals": proposals,
+        "by_ag": dict(safe.get("by_ag") or {}),
+    }
+
+
+def build_iteration_stage_index_payload(
+    *,
+    iteration: int,
+    captured_stage_keys: tuple[str, ...] | list[str],
+) -> dict[str, Any]:
+    """Plan P-A — Build the per-iteration ``stages/index.json`` leaf.
+
+    Replaces the contract's directory-as-declared-path entry
+    (``f"{prefix}/stages"``) with a real leaf file so
+    ``assembler_completeness_check`` can satisfy it via MLflow listing.
+
+    ``captured_stage_keys`` is provided by ``stage_io_capture
+    .consume_stage_capture_index()``; the builder cross-references
+    against ``PROCESS_STAGE_ORDER`` to compute the ``skipped`` set
+    so postmortem can see at a glance how far the iteration got
+    before exiting.
+    """
+    captured = sorted({str(k) for k in (captured_stage_keys or ())})
+    declared = [s.key for s in PROCESS_STAGE_ORDER]
+    captured_set = set(captured)
+    skipped = [s for s in declared if s not in captured_set]
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration": int(iteration),
+        "captured_count": len(captured),
+        "captured": captured,
+        "skipped": skipped,
+    }
