@@ -236,3 +236,34 @@ class MergeGateBlockedError(Exception):
             f"high_tier_violations={self.high_tier_violation_count} "
             f"optimization_run_id={self.optimization_run_id}"
         )
+
+
+def enforce_merge_gate(loop_out: Mapping[str, Any]) -> None:
+    """RCO-2b — raise ``MergeGateBlockedError`` iff the lever-loop's
+    contract-health summary reports ``merge_gate_blocked``.
+
+    Called by ``jobs/run_lever_loop.py`` between task-values publishing
+    and ``dbutils.notebook.exit(...)``. Task values are published first
+    so postmortem tooling can read the failing run's debug payload;
+    the raise marks the Databricks task as failed so downstream
+    ``finalize`` / ``deploy`` tasks skip.
+
+    Missing / ``None`` / empty ``contract_health_summary`` is a no-op:
+    RCO-2a's emit path is fail-soft (swallows all exceptions). RCO-2b
+    only enforces on a known-blocked payload, never on absence — a
+    silently-skipped emit must not block the run.
+    """
+    payload = (loop_out or {}).get("contract_health_summary")
+    if not payload:
+        return
+    if not isinstance(payload, Mapping):
+        return
+    status = str(payload.get("merge_gate_status") or "")
+    if status != MergeGateStatus.MERGE_GATE_BLOCKED.value:
+        return
+    high_tier = payload.get("high_tier_violations") or ()
+    raise MergeGateBlockedError(
+        merge_gate_status=status,
+        high_tier_violation_count=len(list(high_tier)),
+        optimization_run_id=str(payload.get("optimization_run_id") or ""),
+    )
