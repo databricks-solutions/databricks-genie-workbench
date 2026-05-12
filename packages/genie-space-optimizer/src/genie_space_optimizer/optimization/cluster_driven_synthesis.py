@@ -1287,6 +1287,21 @@ def narrow_replacement_diagnosis(
             "original_patch_type": ptype,
         }
     if ptype not in _FILTER_PATCH_TYPES:
+        # P-E1 — distinguish the "no patch_type at all" subcase from
+        # genuinely unrecognized patch types. The legacy
+        # ``unrecognized_patch_type`` reason was misleading whenever
+        # the orchestrator handed us a placeholder patch with no
+        # ``patch_type`` field set.
+        if not ptype:
+            from genie_space_optimizer.common.config import (
+                narrow_skipped_no_original_patch_type_enabled,
+            )
+            if narrow_skipped_no_original_patch_type_enabled():
+                return {
+                    "applicable": False,
+                    "reason": "narrow_skipped_no_original_patch_type",
+                    "original_patch_type": ptype,
+                }
         return {
             "applicable": False,
             "reason": "unrecognized_patch_type",
