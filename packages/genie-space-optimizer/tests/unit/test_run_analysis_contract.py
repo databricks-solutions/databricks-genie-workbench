@@ -585,3 +585,51 @@ def test_bundle_assembly_incomplete_marker_handles_empty_missing_lists() -> None
     assert payload["missing_count"] == 0
     assert payload["parent_level_missing"] == []
     assert payload["unmigrated_per_iteration_missing"] == []
+
+
+# ── P-B T5 — databricks_ids_resolved_marker Tier-3 kwargs ────────────
+
+
+def test_databricks_ids_resolved_marker_carries_jobs_api_fields() -> None:
+    """Marker round-trip pins the additive Tier-3 kwargs so
+    postmortem parsers see whether Jobs-API fallback fired."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        databricks_ids_resolved_marker,
+    )
+
+    line = databricks_ids_resolved_marker(
+        resolution_path="jobs_api",
+        fields_resolved=3,
+        fields_total=3,
+        dbutils_attempted=True,
+        dbutils_succeeded=False,
+        jobs_api_attempted=True,
+        jobs_api_succeeded=True,
+        sample_field="",
+        sample_value="",
+    )
+
+    assert line.startswith("GSO_DATABRICKS_IDS_RESOLVED_V1 ")
+    payload = json.loads(line.split(" ", 1)[1])
+    assert payload["resolution_path"] == "jobs_api"
+    assert payload["jobs_api_attempted"] is True
+    assert payload["jobs_api_succeeded"] is True
+
+
+def test_databricks_ids_resolved_marker_jobs_api_fields_default_false() -> None:
+    """Existing call sites that omit the new kwargs still produce
+    a parseable marker with ``jobs_api_attempted=false``."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        databricks_ids_resolved_marker,
+    )
+
+    line = databricks_ids_resolved_marker(
+        resolution_path="env",
+        fields_resolved=3,
+        fields_total=3,
+        dbutils_attempted=False,
+        dbutils_succeeded=False,
+    )
+    payload = json.loads(line.split(" ", 1)[1])
+    assert payload["jobs_api_attempted"] is False
+    assert payload["jobs_api_succeeded"] is False

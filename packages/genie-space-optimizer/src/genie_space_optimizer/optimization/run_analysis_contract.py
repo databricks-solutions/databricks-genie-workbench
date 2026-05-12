@@ -524,18 +524,21 @@ def databricks_ids_resolved_marker(
     fields_total: int,
     dbutils_attempted: bool,
     dbutils_succeeded: bool,
+    jobs_api_attempted: bool = False,
+    jobs_api_succeeded: bool = False,
     sample_field: str = "",
     sample_value: str = "",
 ) -> str:
-    """Cycle 14-W T3 — resolution-path tracing for
-    ``_databricks_ids_from_env``.
+    """Cycle 14-W T3 + P-B Tier-3 — resolution-path tracing for
+    ``_databricks_ids_from_env`` / ``stages.run_manifest``.
 
     ``resolution_path`` ∈ {``env``, ``dbutils``, ``mixed``,
-    ``sentinel``}. The marker exists so corpus measurement can
-    catch the regression where the resolver is reached but its
-    internal path returns blank (D-5 was a regression of C14-V T6
-    because the unit test exercised the API but not the production
-    Databricks Jobs runtime).
+    ``jobs_api``, ``mixed_jobs_api``, ``sentinel``}.
+
+    ``jobs_api_attempted`` / ``jobs_api_succeeded`` (P-B) record
+    whether the Tier-3 Jobs-API fallback fired and whether it
+    populated any ID. Defaults are False so existing call sites
+    (which predate Tier-3) keep emitting valid markers.
     """
     return marker_line(
         "GSO_DATABRICKS_IDS_RESOLVED_V1",
@@ -545,6 +548,8 @@ def databricks_ids_resolved_marker(
             "fields_total": int(fields_total),
             "dbutils_attempted": bool(dbutils_attempted),
             "dbutils_succeeded": bool(dbutils_succeeded),
+            "jobs_api_attempted": bool(jobs_api_attempted),
+            "jobs_api_succeeded": bool(jobs_api_succeeded),
             "sample_field": str(sample_field or ""),
             "sample_value": str(sample_value or ""),
         },
