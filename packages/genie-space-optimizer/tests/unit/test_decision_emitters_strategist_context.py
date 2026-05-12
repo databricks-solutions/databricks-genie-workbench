@@ -336,3 +336,124 @@ def test_assembled_and_consumed_records_pass_cross_checker() -> None:
     )
 
     assert violations == [], violations
+
+
+def test_optimizer_emits_assembled_record_when_flag_on(monkeypatch) -> None:
+    """When GSO_STAGE_HANDLERS_CHUNK_A=1 AND GSO_STAGE4_CONTEXT_PERSISTENCE=1,
+    calling the strategist's Stage-4 emit helper from optimizer.py routes
+    one ASSEMBLED record through the supplied decision_emit callback."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _emit_strategist_context_records_for_test_harness as _emit_helper,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionType,
+    )
+
+    monkeypatch.setenv("GSO_STAGE_HANDLERS_CHUNK_A", "1")
+    monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", "1")
+    captured: list = []
+
+    result = _emit_helper(
+        clusters=[
+            {
+                "cluster_id": "H001",
+                "question_ids": ["gs_009"],
+                "rca_id": "r1",
+                "grounding": "grounded",
+            },
+        ],
+        reflection_buffer=[],
+        metadata_snapshot={"_baseline_accuracy": 0.5},
+        run_id="run_x",
+        iteration=2,
+        decision_emit=captured.append,
+        mlflow_anchor_run_id=None,  # disables MLflow log; emit still fires
+    )
+
+    types = [r.decision_type for r in captured]
+    assert DecisionType.STRATEGIST_CONTEXT_ASSEMBLED in types
+    assembled = next(
+        r for r in captured
+        if r.decision_type == DecisionType.STRATEGIST_CONTEXT_ASSEMBLED
+    )
+    assert assembled.run_id == "run_x"
+    assert assembled.iteration == 2
+    assert assembled.metrics["assembled_hash"].startswith("sha256:")
+    # The helper returns the (hash, fields) pair so the CONSUMED helper
+    # (Task 8) can pass the structural-diff inputs into its producer.
+    assert isinstance(result, dict)
+    assert result["assembled_hash"].startswith("sha256:")
+    assert "hard_failure_qids" in result["top_level_fields"]
+
+
+def test_optimizer_skips_assembled_emit_when_flag_off(monkeypatch) -> None:
+    """Flag default-OFF preserves replay byte stability — no emit."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _emit_strategist_context_records_for_test_harness as _emit_helper,
+    )
+
+    monkeypatch.setenv("GSO_STAGE_HANDLERS_CHUNK_A", "1")
+    monkeypatch.delenv("GSO_STAGE4_CONTEXT_PERSISTENCE", raising=False)
+    captured: list = []
+
+    result = _emit_helper(
+        clusters=[],
+        reflection_buffer=[],
+        metadata_snapshot={},
+        run_id="run_x",
+        iteration=1,
+        decision_emit=captured.append,
+        mlflow_anchor_run_id=None,
+    )
+
+    assert captured == []
+    # No-op result is shaped identically so the caller does not need to
+    # branch on whether the flag was on.
+    assert result == {"assembled_hash": "", "top_level_fields": ()}
+
+
+def test_optimizer_persists_typed_output_to_mlflow_when_anchor_present(
+    monkeypatch,
+) -> None:
+    """When mlflow_anchor_run_id is set, the typed boundary is log_text'd
+    to gso_postmortem_bundle/iterations/iter_NN/stages/04_strategist_context/
+    output.json. Tests monkeypatch the shim, not MlflowClient."""
+    monkeypatch.setenv("GSO_STAGE_HANDLERS_CHUNK_A", "1")
+    monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", "1")
+
+    calls: list[dict] = []
+
+    def _fake_log_text(*, run_id, text, artifact_file):
+        calls.append({
+            "run_id": run_id, "text": text, "artifact_file": artifact_file,
+        })
+
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.stage_io_capture._log_text",
+        _fake_log_text,
+    )
+
+    from genie_space_optimizer.optimization.optimizer import (
+        _emit_strategist_context_records_for_test_harness as _emit_helper,
+    )
+
+    _emit_helper(
+        clusters=[
+            {"cluster_id": "H001", "question_ids": ["q1"], "grounding": "grounded"},
+        ],
+        reflection_buffer=[],
+        metadata_snapshot={},
+        run_id="run_x",
+        iteration=3,
+        decision_emit=lambda r: None,
+        mlflow_anchor_run_id="anchor_42",
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["run_id"] == "anchor_42"
+    assert calls[0]["artifact_file"] == (
+        "gso_postmortem_bundle/iterations/iter_03/stages/"
+        "04_strategist_context/output.json"
+    )
+    # The text is the typed-output JSON, not the assembled hash.
+    assert "rca_cards_grounded_only" in calls[0]["text"]

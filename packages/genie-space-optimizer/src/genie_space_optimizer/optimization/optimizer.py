@@ -9467,6 +9467,120 @@ def _call_llm_for_strategy(
 # ── Adaptive Strategist (single-call, one AG per iteration) ─────────────
 
 
+def _emit_strategist_context_records_for_test_harness(
+    *,
+    clusters: list[dict],
+    reflection_buffer: list[dict],
+    metadata_snapshot: dict,
+    run_id: str,
+    iteration: int,
+    decision_emit: Any = None,
+    mlflow_anchor_run_id: str | None = None,
+) -> dict:
+    """Plan P-G helper: compute Stage 4 typed boundary, emit
+    STRATEGIST_CONTEXT_ASSEMBLED if both gating flags are on, persist
+    the typed output JSON via MLflow log_text when an anchor is
+    supplied. Returns a dict ``{"assembled_hash": str,
+    "top_level_fields": tuple[str, ...]}`` so the caller can pass both
+    structural-diff inputs to the CONSUMED emit at the LLM-call
+    boundary. When the flags are off (or any internal step fails),
+    returns the no-op shape ``{"assembled_hash": "",
+    "top_level_fields": ()}`` so the caller does not need to branch on
+    whether the helper ran.
+
+    Public-but-underscored so the unit tests can exercise the helper
+    without spinning up the full strategist call. Naming mirrors
+    existing test-harness conventions in this module.
+    """
+    _NOOP: dict = {"assembled_hash": "", "top_level_fields": ()}
+    from genie_space_optimizer.common.config import (
+        stage_handlers_chunk_a_enabled,
+        stage4_context_persistence_enabled,
+    )
+    if not stage_handlers_chunk_a_enabled():
+        return _NOOP
+    if not stage4_context_persistence_enabled():
+        return _NOOP
+    from genie_space_optimizer.optimization.stages import (
+        strategist_context as _sc_stage,
+    )
+    _sc_clusters_by_qid: dict[str, str] = {}
+    _sc_rca_cards: list[dict] = []
+    for _c in (clusters or []):
+        _cid = str(_c.get("cluster_id") or "")
+        for _q in (_c.get("question_ids") or []):
+            _sc_clusters_by_qid[str(_q)] = _cid
+        if _c.get("rca_id") or _c.get("grounding"):
+            _sc_rca_cards.append({
+                "rca_id": str(_c.get("rca_id") or ""),
+                "cluster_id": _cid,
+                "grounding": str(_c.get("grounding") or "grounded"),
+                "evidence_qids": list(_c.get("question_ids") or []),
+            })
+    _hard_qids = tuple(
+        str(q) for c in (clusters or [])
+        for q in (c.get("question_ids") or [])
+    )
+    _sc_inp = _sc_stage.StrategistContextInput(
+        hard_failure_qids=_hard_qids,
+        clusters_by_qid=_sc_clusters_by_qid,
+        rca_cards=tuple(_sc_rca_cards),
+        reflection_buffer=tuple(reflection_buffer or []),
+        baseline_accuracy=float(
+            metadata_snapshot.get("_baseline_accuracy") or 0.0
+        ),
+        iteration=int(iteration or 0),
+    )
+    _sc_out = _sc_stage.execute(ctx=None, inp=_sc_inp)
+    from genie_space_optimizer.optimization.decision_emitters import (
+        strategist_context_assembled_record,
+    )
+    record = strategist_context_assembled_record(
+        run_id=run_id, iteration=iteration, assembled_output=_sc_out,
+    )
+    if decision_emit is not None:
+        try:
+            decision_emit(record)
+        except Exception:
+            logger.debug(
+                "Plan P-G: decision_emit raised (non-fatal)",
+                exc_info=True,
+            )
+    if mlflow_anchor_run_id:
+        try:
+            import json as _json_pg
+            from genie_space_optimizer.optimization.run_output_contract import (
+                stage_artifact_paths,
+            )
+            from genie_space_optimizer.optimization import (
+                stage_io_capture as _sio,
+            )
+            paths = stage_artifact_paths(
+                int(iteration or 0), "strategist_context",
+            )
+            _sio._log_text(
+                run_id=str(mlflow_anchor_run_id),
+                text=_json_pg.dumps(
+                    _sc_out.to_json(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ),
+                artifact_file=paths["output"],
+            )
+        except Exception:
+            logger.debug(
+                "Plan P-G: typed-output persistence failed (non-fatal)",
+                exc_info=True,
+            )
+    return {
+        "assembled_hash": str(record.metrics.get("assembled_hash") or ""),
+        "top_level_fields": tuple(
+            record.metrics.get("top_level_fields") or ()
+        ),
+    }
+
+
 def _call_llm_for_adaptive_strategy(
     clusters: list[dict],
     soft_signal_clusters: list[dict],
@@ -9485,6 +9599,13 @@ def _call_llm_for_adaptive_strategy(
     max_ag_patches: int | None = None,
     intent_collisions: list[dict] | None = None,
     prior_iteration_dropped_causal_patches: list | tuple | None = None,
+    # Plan P-G: Stage 4 boundary observability. All four kwargs default
+    # to "no-op" so existing callers (replay fixtures, legacy paths)
+    # remain byte-stable.
+    run_id: str = "",
+    iteration: int = 0,
+    decision_emit: "Callable[[Any], None] | None" = None,
+    mlflow_anchor_run_id: str | None = None,
 ) -> dict:
     """Single-call strategist that produces exactly ONE action group.
 
@@ -9619,49 +9740,35 @@ def _call_llm_for_adaptive_strategy(
     # Future phases will refactor the strategist prompt to consume
     # rca_cards_grounded_only from the typed output directly.
     # Default-off guarantees legacy byte-stability.
+    # C15 Phase 2 Task 2.7 + Plan P-G (2026-05-12) — when
+    # GSO_STAGE_HANDLERS_CHUNK_A is on, compute the typed
+    # StrategistContextOutput. When GSO_STAGE4_CONTEXT_PERSISTENCE is
+    # additionally on, route the output through the Plan P-G emit
+    # helper so the assembled boundary is observable in the trace and
+    # the typed JSON lands in
+    # gso_postmortem_bundle/iterations/iter_NN/stages/04_strategist_context/output.json.
+    # Default-off guarantees legacy byte-stability for replay fixtures.
+    _assembled_hash: str = ""
+    _assembled_top_fields: tuple[str, ...] = ()
     try:
-        from genie_space_optimizer.common.config import (
-            stage_handlers_chunk_a_enabled as _chunk_a_on,
+        _sc_state = _emit_strategist_context_records_for_test_harness(
+            clusters=clusters or [],
+            reflection_buffer=reflection_buffer or [],
+            metadata_snapshot=metadata_snapshot or {},
+            run_id=str(run_id or ""),
+            iteration=int(iteration or 0),
+            decision_emit=decision_emit,
+            mlflow_anchor_run_id=mlflow_anchor_run_id,
         )
-        if _chunk_a_on():
-            from genie_space_optimizer.optimization.stages import (
-                strategist_context as _sc_stage,
-            )
-            # Extract cluster → qid mapping and rca cards from the
-            # clusters list for the StrategistContextInput boundary.
-            _sc_clusters_by_qid: dict[str, str] = {}
-            _sc_rca_cards: list[dict] = []
-            for _c in (clusters or []):
-                _cid = str(_c.get("cluster_id") or "")
-                for _q in (_c.get("question_ids") or []):
-                    _sc_clusters_by_qid[str(_q)] = _cid
-                # Include any inline rca evidence the cluster carries.
-                if _c.get("rca_id") or _c.get("grounding"):
-                    _sc_rca_cards.append({
-                        "rca_id": str(_c.get("rca_id") or ""),
-                        "cluster_id": _cid,
-                        "grounding": str(_c.get("grounding") or "grounded"),
-                        "evidence_qids": list(_c.get("question_ids") or []),
-                    })
-            _hard_qids = tuple(
-                str(q) for c in (clusters or [])
-                for q in (c.get("question_ids") or [])
-            )
-            _sc_inp = _sc_stage.StrategistContextInput(
-                hard_failure_qids=_hard_qids,
-                clusters_by_qid=_sc_clusters_by_qid,
-                rca_cards=tuple(_sc_rca_cards),
-                reflection_buffer=tuple(reflection_buffer or []),
-                baseline_accuracy=float(
-                    metadata_snapshot.get("_baseline_accuracy") or 0.0
-                ),
-            )
-            _sc_out = _sc_stage.execute(ctx=None, inp=_sc_inp)
-            # rca_cards_grounded_only is available for future prompt wiring.
-            # rca_cards_ungrounded_count surfaces dropped cards for audit.
-            del _sc_out  # consumed by future phases; suppress unused-var lint
+        _assembled_hash = str(_sc_state.get("assembled_hash") or "")
+        _assembled_top_fields = tuple(
+            _sc_state.get("top_level_fields") or ()
+        )
     except Exception:
-        pass  # observability-only; never interrupt the strategist flow
+        logger.debug(
+            "Plan P-G: Stage 4 boundary emit failed (non-fatal)",
+            exc_info=True,
+        )
 
     context_data = _build_context_data(
         clusters=clusters,
