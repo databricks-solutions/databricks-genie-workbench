@@ -46,7 +46,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 from collections import Counter
 
+import mlflow
+
 from databricks.sdk import WorkspaceClient
+
+from genie_space_optimizer._workspace_client import make_workspace_client
 
 from genie_space_optimizer.common.config import (
     APPLY_MODE,
@@ -210,6 +214,151 @@ _DATABRICKS_ID_KEYS: tuple[str, ...] = (
     "lever_loop_task_run_id",
 )
 _DATABRICKS_ID_SENTINEL: str = "unknown"
+
+
+# ── Cycle P-B Task 6 — MLflow + Jobs-API adapters for Tier-3 ────────
+
+_MLFLOW_DATABRICKS_TAG_KEYS: tuple[str, ...] = (
+    "mlflow.databricks.jobID",
+    "mlflow.databricks.jobRunID",
+    "mlflow.databricks.runID",
+)
+
+# Order matters: prefer the task run ID (most specific) so the Jobs
+# API call returns the right Run snapshot first try.
+_MLFLOW_TAG_SEED_KEYS: tuple[str, ...] = (
+    "mlflow.databricks.runID",
+    "mlflow.databricks.jobRunID",
+)
+
+
+def _collect_mlflow_databricks_tags(
+    *, mlflow_run_id: str | None,
+) -> dict[str, str]:
+    """Return the three Databricks-platform-stamped MLflow tags
+    for the active run as a ``{key: value}`` dict.
+
+    Defaults every key to ``""`` when MLflow is unavailable, the
+    run is missing, or the tag is not present. Never raises —
+    Tier-3 must degrade gracefully to Tier-2/Tier-1/sentinel.
+    """
+    blanks = {key: "" for key in _MLFLOW_DATABRICKS_TAG_KEYS}
+    if not mlflow_run_id:
+        return blanks
+    try:
+        run = mlflow.get_run(mlflow_run_id)
+        tags = dict(run.data.tags or {})
+    except Exception:
+        return blanks
+    return {
+        key: str(tags.get(key) or "")
+        for key in _MLFLOW_DATABRICKS_TAG_KEYS
+    }
+
+
+def _select_jobs_api_seed(
+    *,
+    mlflow_run_tags: dict[str, str],
+    env_resolved: dict[str, str],
+    dbutils_resolved: dict[str, str],
+) -> str:
+    """Pick the first non-empty run_id we have to seed
+    ``jobs.get_run``. Order: MLflow task run ID, MLflow parent run
+    ID, env/dbutils parent run ID, env/dbutils task run ID.
+    Returns ``""`` when no seed is available."""
+    for key in _MLFLOW_TAG_SEED_KEYS:
+        value = str(mlflow_run_tags.get(key) or "").strip()
+        if value:
+            return value
+    for partial in (env_resolved, dbutils_resolved):
+        for field_name in ("databricks_parent_run_id", "lever_loop_task_run_id"):
+            value = str(partial.get(field_name) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _resolve_jobs_run_snapshot(
+    *,
+    mlflow_run_tags: dict[str, str],
+    env_resolved: dict[str, str],
+    dbutils_resolved: dict[str, str],
+):
+    """Tier-3b — perform the ``WorkspaceClient.jobs.get_run`` call
+    inside the harness and return a JSON-safe ``JobsRunSnapshot``.
+
+    Return-value contract (used by the pure stage):
+
+    * ``None`` — harness did NOT attempt the call. Either no seed
+      run_id was available, all three IDs were already filled by
+      earlier tiers, or ``make_workspace_client()`` failed
+      (e.g. local pytest with no Databricks profile). The stage
+      records ``jobs_api_attempted=False``.
+    * ``JobsRunSnapshot(...)`` — harness attempted the call. The
+      snapshot may be fully populated, partial, or all-empty (when
+      the SDK call raised, the ``except`` branch returns an empty
+      snapshot rather than ``None`` so the diagnostic is honest).
+      The stage records ``jobs_api_attempted=True``; succeeded
+      depends on whether any field is non-empty.
+
+    ``task_run_ids`` is ordered so the lever-loop task is first
+    (the pure stage uses ``[0]`` as the resolved
+    ``lever_loop_task_run_id``).
+    """
+    from genie_space_optimizer.optimization.stages.run_manifest import (
+        JobsRunSnapshot,
+    )
+
+    if all(env_resolved.get(k) or dbutils_resolved.get(k) for k in (
+        "databricks_job_id",
+        "databricks_parent_run_id",
+        "lever_loop_task_run_id",
+    )):
+        return None
+
+    seed = _select_jobs_api_seed(
+        mlflow_run_tags=mlflow_run_tags,
+        env_resolved=env_resolved,
+        dbutils_resolved=dbutils_resolved,
+    )
+    if not seed:
+        return None
+
+    try:
+        ws = make_workspace_client()
+    except Exception:
+        return None
+
+    try:
+        seed_int = int(seed)
+    except ValueError:
+        return None
+
+    try:
+        run = ws.jobs.get_run(run_id=seed_int)
+    except Exception:
+        # Honest diagnostic: harness DID attempt the call. Empty
+        # snapshot tells the stage to record
+        # ``jobs_api_attempted=True, jobs_api_succeeded=False``.
+        return JobsRunSnapshot()
+
+    tasks = list(getattr(run, "tasks", None) or [])
+
+    def _task_sort_key(task) -> int:
+        task_key = str(getattr(task, "task_key", "") or "")
+        return 0 if task_key == "lever_loop" else 1
+
+    tasks.sort(key=_task_sort_key)
+    task_run_ids = tuple(
+        str(getattr(t, "run_id", "") or "")
+        for t in tasks
+        if getattr(t, "run_id", None) is not None
+    )
+    return JobsRunSnapshot(
+        job_id=str(getattr(run, "job_id", "") or ""),
+        parent_run_id=str(getattr(run, "run_id", "") or ""),
+        task_run_ids=task_run_ids,
+    )
 
 
 def _build_stage_ctx(
