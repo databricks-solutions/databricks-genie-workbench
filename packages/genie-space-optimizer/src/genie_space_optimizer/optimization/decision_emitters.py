@@ -2183,6 +2183,79 @@ def rca_card_llm_skipped_record(
     )
 
 
+def tier_classification_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    target_qids: tuple[str, ...],
+    verdict,  # acceptance_policy.TierVerdict, typed loosely
+) -> DecisionRecord:
+    """Phase 1 Action 1.2 — emit one ACCEPTANCE_DECIDED record per AG
+    with the four-tier classification.
+
+    The outcome and reason_code map from ``verdict.accepted_class``:
+      * STRICT_WIN          → ACCEPTED   + TIER_STRICT_WIN
+      * NET_WIN_WITH_DEBT   → ACCEPTED   + TIER_NET_WIN_WITH_DEBT
+      * DIAGNOSTIC_HOLD     → ROLLED_BACK + TIER_DIAGNOSTIC_HOLD
+      * LOSS                → ROLLED_BACK + TIER_LOSS
+    """
+    cls = getattr(verdict, "accepted_class", None)
+    cls_value = getattr(cls, "value", str(cls or ""))
+
+    outcome_by_class = {
+        "strict_win": DecisionOutcome.ACCEPTED,
+        "net_win_with_debt": DecisionOutcome.ACCEPTED,
+        "diagnostic_hold": DecisionOutcome.ROLLED_BACK,
+        "loss": DecisionOutcome.ROLLED_BACK,
+    }
+    reason_by_class = {
+        "strict_win": ReasonCode.TIER_STRICT_WIN,
+        "net_win_with_debt": ReasonCode.TIER_NET_WIN_WITH_DEBT,
+        "diagnostic_hold": ReasonCode.TIER_DIAGNOSTIC_HOLD,
+        "loss": ReasonCode.TIER_LOSS,
+    }
+    next_action_by_class = {
+        "strict_win": (
+            "Target fixed with no out-of-target regressions; "
+            "accept the candidate."
+        ),
+        "net_win_with_debt": (
+            "Aggregate improvement with bounded out-of-target debt; "
+            "accept the candidate. Reflection emits the debt buckets "
+            "so the strategist learns the trade."
+        ),
+        "diagnostic_hold": (
+            "Aggregate improvement but target not fixed AND debt "
+            "exceeds net-win bounds. Rollback the candidate; emit "
+            "reflection so the strategist sees fixes-vs-regressions "
+            "trace and tripped bounds."
+        ),
+        "loss": (
+            "No improvement OR previously-passing/protected QID "
+            "regressed; rollback the candidate."
+        ),
+    }
+
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.ACCEPTANCE_DECIDED,
+        outcome=outcome_by_class.get(cls_value, DecisionOutcome.INFO),
+        reason_code=reason_by_class.get(cls_value, ReasonCode.NONE),
+        ag_id=str(ag_id or ""),
+        target_qids=tuple(target_qids or ()),
+        next_action=next_action_by_class.get(
+            cls_value, "Tier classifier returned an unknown class."
+        ),
+        metrics={
+            "accepted_class": cls_value,
+            "debt_classification": dict(getattr(verdict, "debt_classification", {}) or {}),
+            "reflection": dict(getattr(verdict, "reflection_payload", {}) or {}),
+        },
+    )
+
+
 def soft_cluster_drift_recovered_record(
     *,
     run_id: str,
