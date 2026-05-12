@@ -345,3 +345,44 @@ def test_force_l6_cache_disabled_when_flag_off(monkeypatch):
     # With flag off, both calls hit the LLM.
     assert llm_calls["n"] == 2
     assert decline_cache == {}
+
+
+def test_decision_trace_registers_new_reason_code():
+    """P-E1 adds NARROW_SKIPPED_NO_ORIGINAL_PATCH_TYPE to the
+    ReasonCode enum. Decision-trace consumers iterate the enum
+    explicitly; if any consumer relies on a frozen enum size, this
+    pin catches the drift.
+    """
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        ReasonCode,
+    )
+    members = {rc.value for rc in ReasonCode}
+    assert "narrow_skipped_no_original_patch_type" in members
+    # Spot-check we did not accidentally remove neighbours.
+    assert "narrow_not_applicable" in members
+    assert "unrecognized_patch_type" not in members  # never was an enum
+    assert "lever6_force_llm_declined" in members
+
+
+def test_cache_key_is_stable_across_blame_set_orderings():
+    """``_normalise_blame`` already canonicalises the blame_set inside
+    ``_ag_collision_key_pair``. Pin that two equivalent AGs (same
+    blame set, different list order) yield the SAME cache key.
+    """
+    from genie_space_optimizer.optimization.harness import (
+        _ag_collision_key_pair,
+        _l6_decline_cache_key,
+    )
+    ag = {"id": "AG_X", "source_cluster_signatures": ["sig_A"]}
+    pair_a = _ag_collision_key_pair(
+        ag=ag, ag_root_cause="missing_filter",
+        ag_blame_set=["t.col_a", "t.col_b"], lever_keys=["6"],
+    )
+    pair_b = _ag_collision_key_pair(
+        ag=ag, ag_root_cause="missing_filter",
+        ag_blame_set=["t.col_b", "t.col_a"], lever_keys=["6"],
+    )
+    assert (
+        _l6_decline_cache_key(pair_a, snippet_type=None)
+        == _l6_decline_cache_key(pair_b, snippet_type=None)
+    )
