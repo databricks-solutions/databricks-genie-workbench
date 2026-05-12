@@ -1195,6 +1195,29 @@ def _emit_contract_health_summary(
         return None
 
 
+def _should_terminate_on_collision_saturation(
+    *,
+    consecutive_skips: int,
+    threshold: int,
+) -> bool:
+    """Risk-1 mitigation — early termination predicate for the
+    lever loop when the forbidden-AG collision guard fires on
+    consecutive iterations.
+
+    ``threshold=0`` disables the guard (preserves replay byte-stability
+    for pre-Risk-1 fixtures). Default production threshold is 2: one
+    initial collision plus one re-collision proves that the strategist
+    cannot escape the forbidden set on this corpus, so the remaining
+    iteration budget is wasted.
+
+    Pure. No side effects. Tested by
+    ``tests/unit/test_harness_forbidden_saturation_termination.py``.
+    """
+    if threshold <= 0:
+        return False
+    return int(consecutive_skips) >= int(threshold)
+
+
 def _run_iteration_invariants_and_append_records(
     *,
     run_id: str,
@@ -16863,7 +16886,27 @@ def _run_lever_loop(
     # so the next finalize call can read it.
     _last_iter_evidence_holder: dict = {"prev": None}
 
+    # Risk-1 mitigation — consecutive AG-collision skip counter. The
+    # ``ag_identity_skip`` exit path inside the body increments this
+    # counter and sets ``_was_collision_skip_this_iter=True`` before
+    # ``continue``; every other iteration-exit path leaves the flag
+    # False, so the top-of-iter reset below clears the counter on the
+    # next iteration. When the counter reaches the threshold the loop
+    # breaks with ``reason=no_more_high_confidence_interventions``.
+    # ``threshold=0`` disables the guard (legacy replay byte-stability).
+    _COLLISION_SATURATION_THRESHOLD: int = 2
+    _consecutive_collision_skips: int = 0
+    _was_collision_skip_this_iter: bool = False
+
     for _iter_num in range(1, max_iterations + 1):
+        # Risk-1 mitigation — clear the consecutive counter if the
+        # previous iteration did NOT take the collision-skip path.
+        # The collision-skip path sets the flag True before ``continue``,
+        # so this branch leaves the counter intact for back-to-back
+        # collisions.
+        if not _was_collision_skip_this_iter:
+            _consecutive_collision_skips = 0
+        _was_collision_skip_this_iter = False
         try:
             # ── Exit checks ──────────────────────────────────────────────
             from genie_space_optimizer.optimization.acceptance_policy import (
@@ -19668,6 +19711,38 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Risk-1 mitigation — record this iter as a collision
+                # skip and bump the consecutive counter. The next loop
+                # iteration's top-of-body reset will see the flag and
+                # leave the counter intact.
+                _was_collision_skip_this_iter = True
+                _consecutive_collision_skips += 1
+                if _should_terminate_on_collision_saturation(
+                    consecutive_skips=_consecutive_collision_skips,
+                    threshold=_COLLISION_SATURATION_THRESHOLD,
+                ):
+                    logger.info(
+                        "Risk-1: forbidden-set saturation detected "
+                        "(consecutive_collision_skips=%d threshold=%d) — "
+                        "terminating lever loop with "
+                        "reason=no_more_high_confidence_interventions",
+                        _consecutive_collision_skips,
+                        _COLLISION_SATURATION_THRESHOLD,
+                    )
+                    print(
+                        _section(
+                            f"FORBIDDEN-SET SATURATED — terminating loop "
+                            f"(consecutive_collision_skips="
+                            f"{_consecutive_collision_skips})",
+                            "!",
+                        ) + "\n"
+                        + _kv(
+                            "Reason",
+                            "no_more_high_confidence_interventions",
+                        ) + "\n"
+                        + _bar("!")
+                    )
+                    break
                 continue
 
             _ag_cluster_info["rationale"] = ag.get("rationale", strategy.get("rationale", "") if strategy else "")
