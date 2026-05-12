@@ -4533,6 +4533,7 @@ def _maybe_force_lever6_with_cache(
     cluster: dict,
     target_qids: tuple[str, ...],
     cluster_signature: str = "",
+    forbidden_pair=None,
 ) -> dict | None:
     """P-E1 — wrap the force-L6 LLM call with an iteration-scoped
     decline cache.
@@ -4579,6 +4580,44 @@ def _maybe_force_lever6_with_cache(
     sig = str(cluster_signature or "")
     cache_on = l6_decline_cache_enabled()
     log = logging.getLogger(__name__)
+
+    # P-E2 — observe-only forbidden-AG leakage check. Runs before
+    # any cache probe or LLM call. Never blocks; emits an
+    # informational record + marker when the collision pair
+    # matches the forbidden set at this sub-AG site. The caller
+    # is responsible for passing a non-None forbidden_pair; when
+    # omitted (None), the check is a no-op (back-compat with
+    # P-E1's call-site that did not yet pass this argument).
+    if forbidden_pair is not None and collision_pair is not None:
+        try:
+            if collision_pair.signature_keys:
+                _lever_set = tuple(sorted(int(l) for l in
+                    next(iter(collision_pair.signature_keys))[1]))
+            elif collision_pair.root_cause_key is not None:
+                _lever_set = tuple(sorted(int(l) for l in
+                    collision_pair.root_cause_key[2]))
+            else:
+                _lever_set = ()
+            _check_proposal_stage_forbidden_ag_leakage(
+                run_id=run_id,
+                iteration=iteration,
+                ag_id=ag_id,
+                cluster_id=cluster_id,
+                root_cause=root_cause,
+                collision_pair=collision_pair,
+                forbidden_pair=forbidden_pair,
+                cluster_signature=sig,
+                lever_set=_lever_set,
+                call_site="force_lever6",
+                iter_inputs=iter_inputs,
+            )
+        except Exception:
+            log.warning(
+                "P-E2 observe-only check raised inside "
+                "_maybe_force_lever6_with_cache (non-fatal); "
+                "ag_id=%s",
+                ag_id, exc_info=True,
+            )
 
     if cache_on:
         key = _l6_decline_cache_key(collision_pair, snippet_type=snippet_type)
@@ -21216,6 +21255,7 @@ def _run_lever_loop(
                             cluster=dict(_force_cluster),
                             target_qids=_force_target_qids,
                             cluster_signature=_force_signature,
+                            forbidden_pair=_forbidden_pair,
                         )
                         if _forced_l6 is None:
                             _force_outcome = "declined"
