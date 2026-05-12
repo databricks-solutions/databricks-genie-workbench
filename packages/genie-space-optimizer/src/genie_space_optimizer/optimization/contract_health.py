@@ -209,3 +209,30 @@ def build_contract_health_summary(
         replay_is_valid=replay_is_valid,
         replay_violation_count=replay_violation_count,
     )
+
+
+class MergeGateBlockedError(Exception):
+    """RCO-2b — raised by ``enforce_merge_gate`` when the contract-health
+    summary reports ``merge_gate_blocked``.
+
+    Carries the structured fields a postmortem analyzer cares about
+    (status, HIGH-tier violation count, optimization run id) so the
+    surfaced error message in Databricks job-run logs is self-describing
+    without needing to re-parse stdout.
+    """
+
+    def __init__(
+        self,
+        *,
+        merge_gate_status: str,
+        high_tier_violation_count: int,
+        optimization_run_id: str,
+    ) -> None:
+        self.merge_gate_status = str(merge_gate_status)
+        self.high_tier_violation_count = int(high_tier_violation_count)
+        self.optimization_run_id = str(optimization_run_id)
+        super().__init__(
+            f"merge_gate_status={self.merge_gate_status} "
+            f"high_tier_violations={self.high_tier_violation_count} "
+            f"optimization_run_id={self.optimization_run_id}"
+        )
