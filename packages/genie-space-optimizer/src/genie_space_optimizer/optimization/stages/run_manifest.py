@@ -34,7 +34,44 @@ class ResolutionPath(StrEnum):
     ENV = "env"
     DBUTILS = "dbutils"
     MIXED = "mixed"
+    JOBS_API = "jobs_api"
+    MIXED_JOBS_API = "mixed_jobs_api"
     SENTINEL = "sentinel"
+
+
+@dataclass(frozen=True, slots=True)
+class JobsRunSnapshot(JsonRoundTrip):
+    """Tier-3 — JSON-safe projection of ``WorkspaceClient.jobs.get_run``.
+
+    Wraps the subset of the SDK ``Run`` object the resolver actually
+    uses, so the pure stage never depends on the SDK type and the
+    whole ``RunManifestInput`` keeps round-tripping cleanly through
+    JSON fixtures (which a ``Callable`` field would break).
+
+    Field semantics match the Jobs API ``Run`` object:
+
+    - ``job_id`` — parent job ID (``Run.job_id``).
+    - ``parent_run_id`` — multitask parent run ID (``Run.run_id``).
+    - ``task_run_ids`` — the ``run_id`` of every task in
+      ``Run.tasks``. The harness adapter orders this tuple so the
+      lever-loop task is first (``task_key == "lever_loop"``); the
+      stage trusts that ordering and uses ``task_run_ids[0]`` as
+      the resolved ``lever_loop_task_run_id``.
+    """
+
+    job_id: str = ""
+    parent_run_id: str = ""
+    task_run_ids: tuple[str, ...] = ()
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "JobsRunSnapshot":
+        return cls(
+            job_id=str(payload.get("job_id", "")),
+            parent_run_id=str(payload.get("parent_run_id", "")),
+            task_run_ids=tuple(
+                str(v) for v in (payload.get("task_run_ids") or [])
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +83,21 @@ class RunManifestInput(JsonRoundTrip):
     DBUtils client; when True, the resolver attempts the dbutils
     fallback path. When False (CI / local), the resolver short-circuits
     to env-only / sentinel.
+
+    Tier-3 (MLflow + Jobs evidence) fields:
+      * ``mlflow_run_tags`` — auto-stamped Databricks tags from the
+        active MLflow run (``mlflow.databricks.jobID`` /
+        ``mlflow.databricks.jobRunID`` / ``mlflow.databricks.runID``).
+        Pre-collected by the harness so the pure stage stays
+        MLflow-free. Empty dict when MLflow is unavailable.
+      * ``jobs_run_snapshot`` — pre-resolved JSON-safe projection
+        of ``WorkspaceClient.jobs.get_run(...)``. The harness owns
+        the SDK call (and its exception handling). ``None`` means
+        "the harness did not call the Jobs API" (no SDK, no seed,
+        or the call raised pre-call). A non-``None`` snapshot — even
+        with all-empty fields — means "the harness called the Jobs
+        API"; the stage uses that as the ``jobs_api_attempted``
+        signal.
     """
 
     env: dict[str, str] = field(default_factory=dict)
@@ -55,6 +107,22 @@ class RunManifestInput(JsonRoundTrip):
     # ``dbutils.notebook.entry_point.getDbutils()...``. Tests pass a
     # plain dict.
     dbutils_tags: dict[str, str] = field(default_factory=dict)
+    mlflow_run_tags: dict[str, str] = field(default_factory=dict)
+    jobs_run_snapshot: JobsRunSnapshot | None = None
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "RunManifestInput":
+        snap_payload = payload.get("jobs_run_snapshot")
+        snap: JobsRunSnapshot | None = None
+        if isinstance(snap_payload, dict):
+            snap = JobsRunSnapshot.from_json(snap_payload)
+        return cls(
+            env=dict(payload.get("env") or {}),
+            dbutils_available=bool(payload.get("dbutils_available", False)),
+            dbutils_tags=dict(payload.get("dbutils_tags") or {}),
+            mlflow_run_tags=dict(payload.get("mlflow_run_tags") or {}),
+            jobs_run_snapshot=snap,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +135,8 @@ class RunManifestOutput(JsonRoundTrip):
     fields_total: int = 3
     dbutils_attempted: bool = False
     dbutils_succeeded: bool = False
+    jobs_api_attempted: bool = False
+    jobs_api_succeeded: bool = False
 
     @classmethod
     def from_json(cls, payload: dict) -> "RunManifestOutput":
@@ -79,6 +149,8 @@ class RunManifestOutput(JsonRoundTrip):
             fields_total=int(payload.get("fields_total", 3)),
             dbutils_attempted=bool(payload.get("dbutils_attempted", False)),
             dbutils_succeeded=bool(payload.get("dbutils_succeeded", False)),
+            jobs_api_attempted=bool(payload.get("jobs_api_attempted", False)),
+            jobs_api_succeeded=bool(payload.get("jobs_api_succeeded", False)),
         )
 
 
