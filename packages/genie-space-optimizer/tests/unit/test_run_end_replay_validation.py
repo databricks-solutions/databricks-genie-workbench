@@ -90,3 +90,89 @@ def test_violating_fixture_produces_is_valid_false_with_count(monkeypatch) -> No
     result = _validate_fixture_dict({"fixture_id": "test_dirty", "iterations": []})
 
     assert result == {"is_valid": False, "violation_count": 3}, result
+
+
+def test_replay_validation_drives_correct_marker_fields(monkeypatch) -> None:
+    """End-to-end: a {is_valid: False, violation_count: 7} bridge dict
+    flows through _emit_contract_health_summary → parsed marker so
+    GSO_CONTRACT_HEALTH_V1 reports the right replay fields and
+    merge_gate_status escalates to 'warn' per contract_health policy.
+    """
+
+    monkeypatch.delenv("GSO_CONTRACT_HEALTH_SUMMARY_V1", raising=False)
+
+    from genie_space_optimizer.optimization.harness import (
+        _emit_contract_health_summary,
+    )
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    bridge_dict = {"is_valid": False, "violation_count": 7}
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        _emit_contract_health_summary(
+            optimization_run_id="run-replay-1",
+            invariant_violations=[],
+            phase_h_strict_validation={
+                "listing_status": "ok",
+                "validator_status": "ok",
+            },
+            bundle_assembly_failed=(),
+            bundle_assembly_incomplete=None,
+            replay_validation=bridge_dict,
+        )
+    out = buf.getvalue()
+
+    parsed = parse_markers(out)
+    health = parsed.contract_health
+    assert health is not None, (
+        "GSO_CONTRACT_HEALTH_V1 marker missing from stdout"
+    )
+    assert health.get("replay_is_valid") is False, (
+        f"replay_is_valid should be False; got {health.get('replay_is_valid')!r}"
+    )
+    assert health.get("replay_violation_count") == 7, (
+        f"replay_violation_count should be 7; got "
+        f"{health.get('replay_violation_count')!r}"
+    )
+    assert health.get("merge_gate_status") == "warn", (
+        "invalid replay must promote merge_gate_status to 'warn' per "
+        "contract_health policy (replay-invalidity is non-blocking)"
+    )
+
+
+def test_replay_validation_none_falls_back_to_skipped(monkeypatch) -> None:
+    """When _run_end_replay_validation is None (Phase A failure path),
+    the classifier reports replay_is_valid=True and
+    replay_violation_count=0 (the 'skipped' fallback). merge_gate_status
+    stays 'healthy' so a Phase-A failure cannot silently flip the
+    merge gate."""
+
+    monkeypatch.delenv("GSO_CONTRACT_HEALTH_SUMMARY_V1", raising=False)
+
+    from genie_space_optimizer.optimization.harness import (
+        _emit_contract_health_summary,
+    )
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        _emit_contract_health_summary(
+            optimization_run_id="run-replay-none",
+            invariant_violations=[],
+            phase_h_strict_validation={
+                "listing_status": "ok",
+                "validator_status": "ok",
+            },
+            bundle_assembly_failed=(),
+            bundle_assembly_incomplete=None,
+            replay_validation=None,
+        )
+    out = buf.getvalue()
+
+    parsed = parse_markers(out)
+    health = parsed.contract_health
+    assert health is not None
+    assert health.get("replay_is_valid") is True
+    assert health.get("replay_violation_count") == 0
+    assert health.get("merge_gate_status") == "healthy"
