@@ -85,13 +85,33 @@ def expected_outcome(anchor_name) -> Mapping[str, Any]:
 
 @pytest.fixture(scope="module")
 def stdout_text(evidence_dir) -> str:
-    candidates = sorted(evidence_dir.glob("stdout*.txt"))
-    if not candidates:
-        pytest.fail(
-            f"no stdout*.txt under {evidence_dir} — evidence-bundle "
-            f"did not capture the lever-loop stdout"
-        )
-    return candidates[0].read_text()
+    """Locate the captured stdout. The evidence-bundle CLI writes
+    two candidate files:
+
+      * ``lever_loop_stdout.txt`` — sometimes empty on Databricks
+        runs where the job's stdout sink wasn't materialized
+      * ``lever_loop_latest_export_run_<task_run_id>_text.txt`` —
+        the decoded notebook export, which always contains the
+        full transcript including end-of-run markers
+
+    Prefer the latter when present and non-empty. Fall back to
+    any non-empty ``stdout*.txt``. Skip if both are missing or empty.
+    """
+    export = sorted(evidence_dir.glob("lever_loop_latest_export_run_*_text.txt"))
+    for path in export:
+        text = path.read_text()
+        if text.strip():
+            return text
+    for path in sorted(evidence_dir.glob("stdout*.txt")) + sorted(
+        evidence_dir.glob("lever_loop_stdout.txt")
+    ):
+        text = path.read_text()
+        if text.strip():
+            return text
+    pytest.fail(
+        f"no non-empty stdout transcript under {evidence_dir} — "
+        f"evidence-bundle did not capture the lever-loop stdout"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -176,36 +196,57 @@ def test_run_manifest_and_convergence_markers_present(marker_log):
     )
 
 
-def test_run_gate_checks_audit_sequence(stdout_text):
-    """The six new gate-stage sentinels must fire in the same order
-    pinned by ``tests/unit/test_rco4b_run_gate_checks_sequence_guard.py``.
+def test_keystone_marker_emission_order(stdout_text):
+    """The four keystone end-of-run markers must fire in the order:
 
-    Encoded as substring positions in stdout. We assert relative
-    ordering (not absolute counts) because the trial may run multiple
-    iterations.
+      GSO_RUN_MANIFEST_V1 (event=start)
+        < GSO_CONVERGENCE_V1
+        < GSO_RUN_MANIFEST_V1 (event=end)
+        < GSO_CONTRACT_HEALTH_V1
+
+    This is the stdout-observable invariant that proves the
+    end-of-run emission pipeline ran to completion. The per-stage
+    ``gate_name="..."`` sentinels live in the persisted decision-trace
+    JSON (Phase H bundle), not stdout, so they are pinned by the
+    source-level guard in ``tests/unit/test_rco4b_run_gate_checks_sequence_guard.py``,
+    not here.
     """
-    sentinels = (
-        'gate_name="propagation_wait"',
-        'gate_name="slice_gate"',
-        'gate_name="p0_gate"',
-        'gate_name="asi_extraction"',
-        'gate_name="baseline_drift_diagnostic"',
-        'gate_name="full_eval_acceptance"',
+    manifest_start_pos = stdout_text.find('GSO_RUN_MANIFEST_V1 {"databricks_job_id"')
+    while manifest_start_pos != -1:
+        line_end = stdout_text.find("\n", manifest_start_pos)
+        line = stdout_text[manifest_start_pos:line_end if line_end > 0 else len(stdout_text)]
+        if '"event":"start"' in line:
+            break
+        manifest_start_pos = stdout_text.find(
+            'GSO_RUN_MANIFEST_V1 {"databricks_job_id"', manifest_start_pos + 1
+        )
+    assert manifest_start_pos >= 0, (
+        "GSO_RUN_MANIFEST_V1 event=start not found in captured stdout"
     )
-    seen_at = [
-        stdout_text.find(s)
-        for s in sentinels
-    ]
-    for sentinel, pos in zip(sentinels, seen_at):
-        assert pos >= 0, (
-            f"sentinel {sentinel!r} not found in captured stdout — "
-            f"gate-stage extraction did not fire"
-        )
-    for prev_idx in range(len(seen_at) - 1):
-        assert seen_at[prev_idx] < seen_at[prev_idx + 1], (
-            f"sentinel order violated: {sentinels[prev_idx]!r} "
-            f"appears after {sentinels[prev_idx + 1]!r}"
-        )
+
+    convergence_pos = stdout_text.find("GSO_CONVERGENCE_V1 ")
+    assert convergence_pos >= 0, (
+        "GSO_CONVERGENCE_V1 not found in captured stdout — lever-loop "
+        "did not reach end-of-run"
+    )
+
+    manifest_end_pos = stdout_text.find('"event":"end"', convergence_pos)
+    assert manifest_end_pos >= 0, (
+        "GSO_RUN_MANIFEST_V1 event=end not found after convergence — "
+        "end-of-run emission did not fire"
+    )
+
+    contract_health_pos = stdout_text.find("GSO_CONTRACT_HEALTH_V1 ")
+    assert contract_health_pos >= 0, (
+        "GSO_CONTRACT_HEALTH_V1 not found in captured stdout — "
+        "RCO-2a keystone marker did not fire"
+    )
+
+    assert manifest_start_pos < convergence_pos < manifest_end_pos < contract_health_pos, (
+        f"end-of-run marker order violated: start={manifest_start_pos}, "
+        f"convergence={convergence_pos}, end={manifest_end_pos}, "
+        f"contract_health={contract_health_pos}"
+    )
 
 
 def test_replay_violation_count_within_expected(

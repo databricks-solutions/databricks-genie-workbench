@@ -6,7 +6,7 @@
       "expected_high_tier_min_count": 1,
       "expected_bundle_status_in": ["complete", "incomplete"],
       "expected_replay_violation_min_count": 0,
-      "notes": "F9 anchor; 25 illegal trunk transitions per the Cycle 17 anchor regression test. I12 is the driver; bundle may or may not be complete (the blocker is invariant-driven)."
+      "notes": "F9 anchor; 25 illegal trunk transitions per the Cycle 17 anchor regression test. I12 is the driver; bundle may or may not be complete (the blocker is invariant-driven). FUTURE TARGET — no captured evidence yet."
     },
     "airline_clean": {
       "expected_merge_gate_status": "healthy",
@@ -14,7 +14,23 @@
       "expected_high_tier_min_count": 0,
       "expected_bundle_status_in": ["complete"],
       "expected_replay_violation_max_count": 0,
-      "notes": "Airline green-path anchor; no HIGH-tier invariants, complete bundle, zero replay violations."
+      "notes": "Airline green-path anchor; no HIGH-tier invariants, complete bundle, zero replay violations. FUTURE TARGET — no captured evidence yet."
+    },
+    "airline_trial_2026_05_12_31ecd96f": {
+      "expected_merge_gate_status": "warn",
+      "expected_high_tier_invariant_ids": [],
+      "expected_high_tier_min_count": 0,
+      "expected_bundle_status_in": ["complete"],
+      "expected_replay_violation_max_count": 0,
+      "notes": "May-12 consolidating-trial run against airline_ticketing_and_fare_analysis space 01f143dfbeec15a3a0e87ced8662f4ed (opt_run_id 31ecd96f-5d56-4b5a-af8e-38e9e5c549af). merge_gate_status=warn is driven by phase_h_listing_status=skipped + phase_h_validator_status=skipped — the RCO-2a structural classifier working correctly. Optimizer outcome was MERGE_GATE_GAP / NO_APPLIED_PATCHES; see docs/2026-05-12-defect-ag-emit-blocks-ungrounded-rca.md."
+    },
+    "seven_now_trial_2026_05_12_ccf1d60d": {
+      "expected_merge_gate_status": "warn",
+      "expected_high_tier_invariant_ids": [],
+      "expected_high_tier_min_count": 0,
+      "expected_bundle_status_in": ["complete"],
+      "expected_replay_violation_min_count": 0,
+      "notes": "May-12 consolidating-trial run against 7now_delivery_analytics_space 01f128aea2c210559cffb663d9c58282 (opt_run_id ccf1d60d-d686-467b-bafa-1640131b4393). merge_gate_status=warn driven by phase_h_status=skipped. Optimizer outcome was MERGE_GATE_GAP / NO_ACCEPTED_PROGRESS; iteration-1 rollback was correct (target gs_026 stayed hard, gs_012 regressed). See docs/2026-05-12-defect-forbidden-ag-admission-enforcement.md. Replay carries 5 Cycle-17 clustered->soft_signal violations for gs_021 (not RCO-4b-driven; RCO-6 input)."
     }
   }
 }
