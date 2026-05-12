@@ -22,7 +22,7 @@ proposal paths, which previously had no consolidated emit site.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
 
@@ -186,3 +186,108 @@ def is_rca_grounded(
                 str(_attr(finding, "rca_id", "") or ""),
             )
     return GroundednessVerdict(False, ReasonCode.RCA_UNGROUNDED, "")
+
+
+# ---- Plan P-D (2026-05-12) — RCA Ungrounded Recovery Policy ---------
+
+
+def _evidence_present_for_qids(
+    qids: Sequence[str],
+    evidence_snapshot: Mapping[str, Any],
+) -> bool:
+    """Plan P-D — return True iff at least one of the cluster's
+    qids has a non-empty entry in either evidence pack
+    (``_failure_buckets`` or ``_asi_metadata``).
+
+    The keys mirror what :func:`harness._regenerate_rca_for_cluster`
+    pulls out of the metadata snapshot.
+    """
+    fb = (evidence_snapshot or {}).get("_failure_buckets") or {}
+    asi = (evidence_snapshot or {}).get("_asi_metadata") or {}
+    for q in qids or ():
+        if fb.get(str(q)) or asi.get(str(q)):
+            return True
+    return False
+
+
+def classify_rca_ungrounded(
+    *,
+    cluster: Mapping[str, Any],
+    findings: Sequence[Any],
+    evidence_snapshot: Mapping[str, Any],
+) -> "RcaUngroundedReason":
+    """Plan P-D (2026-05-12) — classify *why* a cluster's
+    ``rca_card`` is falsy at AG-emit.
+
+    Decision tree (priority order matters — first match wins):
+
+    1. ``not cluster.get("rca_id")`` → ``NO_PARENT_RCA``
+       (preserves the existing T3 trigger label)
+    2. cluster has no qids → ``MISSING_TARGET_QIDS``
+       (contract bug — escalate, not retry)
+    3. neither evidence pack has any entry for any cluster qid →
+       ``NO_EVIDENCE_AVAILABLE`` (driver would no-op)
+    4. ``findings`` empty → ``NO_FINDINGS``
+       (broader evidence pack may help)
+    5. some finding overlaps qids but no grounding-term overlap →
+       ``NO_TERM_OVERLAP``
+    6. no finding overlaps qids → ``NO_CAUSAL_TARGET``
+    7. else → ``UNKNOWN`` (defensive)
+
+    The classifier is pure: no Spark, Databricks, MLflow, LLM, or
+    flag reads. Tests inject the cluster + findings + evidence
+    snapshot directly. Production calls supply the snapshot via the
+    Stage 2 metadata accumulator already present in
+    ``_run_lever_loop``.
+    """
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    if not cluster:
+        return RcaUngroundedReason.UNKNOWN
+
+    # If the cluster is already grounded the caller should not be
+    # calling the classifier; defensively return UNKNOWN rather than
+    # mis-classify a grounded cluster as ungrounded.
+    if bool(cluster.get("rca_card")):
+        return RcaUngroundedReason.UNKNOWN
+
+    if not str(cluster.get("rca_id") or ""):
+        return RcaUngroundedReason.NO_PARENT_RCA
+
+    qids = tuple(
+        str(q) for q in (cluster.get("question_ids") or []) if q
+    )
+    if not qids:
+        return RcaUngroundedReason.MISSING_TARGET_QIDS
+
+    if not _evidence_present_for_qids(qids, evidence_snapshot or {}):
+        return RcaUngroundedReason.NO_EVIDENCE_AVAILABLE
+
+    if not findings:
+        return RcaUngroundedReason.NO_FINDINGS
+
+    qid_set = set(qids)
+    candidates = [
+        f for f in findings
+        if {str(q) for q in (_attr(f, "target_qids", ()) or ())}
+        & qid_set
+    ]
+    if not candidates:
+        return RcaUngroundedReason.NO_CAUSAL_TARGET
+
+    target_terms_for_cluster = tuple(
+        s.lower()
+        for s in (
+            str(cluster.get("root_cause") or ""),
+            *(str(q) for q in qids),
+        )
+        if s
+    )
+    for finding in candidates:
+        if _has_term_overlap(target_terms_for_cluster, _finding_terms(finding)):
+            # Cluster IS grounded — caller should not be here. Fall
+            # through to UNKNOWN so the orchestrator skips regen.
+            return RcaUngroundedReason.UNKNOWN
+    return RcaUngroundedReason.NO_TERM_OVERLAP

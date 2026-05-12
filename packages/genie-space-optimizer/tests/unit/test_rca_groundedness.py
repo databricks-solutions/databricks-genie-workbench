@@ -145,3 +145,170 @@ def test_no_findings_at_all_is_rca_ungrounded_for_any_target() -> None:
         assert verdict.accepted is False
         assert verdict.reason_code == ReasonCode.RCA_UNGROUNDED
         assert verdict.finding_id == ""
+
+
+# ---- Plan P-D — classify_rca_ungrounded -----------------------------
+
+
+def _cluster(
+    cluster_id="H001",
+    qids=("airline_gs_009",),
+    rca_id="rca-stage2-card",
+    rca_card=False,
+):
+    return {
+        "cluster_id": cluster_id,
+        "rca_id": rca_id,
+        "rca_card": rca_card,
+        "base_question_ids": list(qids),
+        "question_ids": list(qids),
+        "affected_questions": list(qids),
+    }
+
+
+def _evidence(
+    failure_buckets=None,
+    asi_metadata=None,
+):
+    return {
+        "_failure_buckets": failure_buckets or {},
+        "_asi_metadata": asi_metadata or {},
+    }
+
+
+def test_classify_returns_no_parent_rca_when_cluster_has_no_rca_id():
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        classify_rca_ungrounded,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    c = _cluster(rca_id="")
+    assert classify_rca_ungrounded(
+        cluster=c, findings=[], evidence_snapshot=_evidence(),
+    ) == RcaUngroundedReason.NO_PARENT_RCA
+
+
+def test_classify_returns_missing_target_qids_when_cluster_has_no_qids():
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        classify_rca_ungrounded,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    c = _cluster(qids=())
+    assert classify_rca_ungrounded(
+        cluster=c, findings=[], evidence_snapshot=_evidence(),
+    ) == RcaUngroundedReason.MISSING_TARGET_QIDS
+
+
+def test_classify_returns_no_evidence_available_when_both_packs_empty():
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        classify_rca_ungrounded,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    c = _cluster()
+    assert classify_rca_ungrounded(
+        cluster=c, findings=[], evidence_snapshot=_evidence(),
+    ) == RcaUngroundedReason.NO_EVIDENCE_AVAILABLE
+
+
+def test_classify_returns_no_findings_when_evidence_present_but_findings_empty():
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        classify_rca_ungrounded,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    c = _cluster()
+    snapshot = _evidence(
+        failure_buckets={"airline_gs_009": {"bucket": "wrong_aggregation"}},
+    )
+    assert classify_rca_ungrounded(
+        cluster=c, findings=[], evidence_snapshot=snapshot,
+    ) == RcaUngroundedReason.NO_FINDINGS
+
+
+def test_classify_returns_no_causal_target_when_findings_target_other_qids():
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        classify_rca_ungrounded,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    c = _cluster()
+    finding = {
+        "rca_id": "f1",
+        "target_qids": ("some_other_qid",),
+        "grounding_terms": ("orders",),
+    }
+    snapshot = _evidence(
+        failure_buckets={"airline_gs_009": {"bucket": "wrong_aggregation"}},
+    )
+    assert classify_rca_ungrounded(
+        cluster=c, findings=[finding], evidence_snapshot=snapshot,
+    ) == RcaUngroundedReason.NO_CAUSAL_TARGET
+
+
+def test_classify_returns_no_term_overlap_when_qids_overlap_but_terms_dont():
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        classify_rca_ungrounded,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    c = _cluster()
+    finding = {
+        "rca_id": "f1",
+        "target_qids": ("airline_gs_009",),
+        "grounding_terms": (),
+        "blame_set": (),
+    }
+    snapshot = _evidence(
+        failure_buckets={"airline_gs_009": {"bucket": "wrong_aggregation"}},
+    )
+    assert classify_rca_ungrounded(
+        cluster=c, findings=[finding], evidence_snapshot=snapshot,
+    ) == RcaUngroundedReason.NO_TERM_OVERLAP
+
+
+def test_classify_returns_unknown_when_no_other_predicate_matches():
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        classify_rca_ungrounded,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    # All inputs grounded — caller should not be calling the
+    # classifier in this state, but the classifier must still
+    # return a typed value rather than raise.
+    c = _cluster(rca_card={"sections": [{}]})
+    assert classify_rca_ungrounded(
+        cluster=c, findings=[], evidence_snapshot=_evidence(),
+    ) == RcaUngroundedReason.UNKNOWN
+
+
+def test_classify_priority_no_parent_rca_beats_missing_qids():
+    """When both upstream causes apply, NO_PARENT_RCA wins because
+    it is the historical T3 path and existing operator transcripts
+    already surface that label."""
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        classify_rca_ungrounded,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        RcaUngroundedReason,
+    )
+
+    c = _cluster(rca_id="", qids=())
+    assert classify_rca_ungrounded(
+        cluster=c, findings=[], evidence_snapshot=_evidence(),
+    ) == RcaUngroundedReason.NO_PARENT_RCA
