@@ -4553,6 +4553,88 @@ def _regenerate_rca_for_cluster(
     return {"rca_id": "", "attempted_sources": tuple(attempted)}
 
 
+def run_rca_recovery_for_iteration(
+    *,
+    clusters: list,
+    findings_by_cluster_id: dict,
+    evidence_snapshot: dict,
+    cache_holder: dict,
+    run_id: str,
+    iteration: int,
+    attempt_driver=None,
+    metadata_snapshot: dict | None = None,
+    spark=None,
+) -> list[dict]:
+    """Plan P-D (2026-05-12) — per-iteration entry point for the
+    RCA Ungrounded Recovery Policy. Called from the AG-emit prelude
+    in :func:`_run_lever_loop` immediately before Defect Plan 1
+    G1's ``collect_blocked_clusters`` runs, so G1 sees the
+    post-policy ``clusters`` view.
+
+    Lifecycle:
+
+    * Master flag off (``GSO_RCA_REGEN_RECOVERY_POLICY=0``) → no-op,
+      returns ``[]``, does not allocate the cache or policy.
+      Byte-stable with pre-P-D fixtures.
+    * First call this run → instantiates
+      :class:`RcaRegenerationPolicy` from default + env overrides
+      and an empty :class:`RcaRegenerationCache`. Stashes both on
+      ``cache_holder`` (the per-run dict from ``_run_lever_loop``).
+    * Subsequent calls → reuses both objects from ``cache_holder``.
+
+    Returns the list of decision-record payload dicts the caller
+    extends into ``_current_iter_inputs["decision_records"]``.
+    Orchestration faults are caught and logged here; returns the
+    partial record list collected before the fault.
+    """
+    from genie_space_optimizer.common.config import (
+        rca_regen_recovery_policy_enabled,
+        rca_regen_policy_overrides,
+    )
+    from genie_space_optimizer.optimization.rca import (
+        regenerate_rca_for_clusters,
+    )
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationCache,
+        RcaRegenerationPolicy,
+    )
+
+    if not rca_regen_recovery_policy_enabled():
+        return []
+
+    cache = cache_holder.get("rca_regen_cache")
+    if not isinstance(cache, RcaRegenerationCache):
+        cache = RcaRegenerationCache()
+        cache_holder["rca_regen_cache"] = cache
+    policy = cache_holder.get("rca_regen_policy")
+    if not isinstance(policy, RcaRegenerationPolicy):
+        policy = RcaRegenerationPolicy.from_overrides(
+            rca_regen_policy_overrides()
+        )
+        cache_holder["rca_regen_policy"] = policy
+
+    try:
+        return regenerate_rca_for_clusters(
+            clusters=clusters,
+            findings_by_cluster_id=findings_by_cluster_id or {},
+            evidence_snapshot=evidence_snapshot or {},
+            cache=cache,
+            policy=policy,
+            run_id=str(run_id),
+            iteration=int(iteration),
+            attempt_driver=attempt_driver,
+            metadata_snapshot=metadata_snapshot,
+            spark=spark,
+        )
+    except Exception:
+        logger.debug(
+            "Plan P-D: RCA recovery policy failed (non-fatal); "
+            "proceeding with unmodified clusters",
+            exc_info=True,
+        )
+        return []
+
+
 def _classify_iteration_no_op_cause(
     records: list[dict] | None,
 ) -> str:
