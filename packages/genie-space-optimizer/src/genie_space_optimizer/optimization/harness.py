@@ -25722,26 +25722,6 @@ def _run_lever_loop(
                 ))
             except Exception:
                 logger.debug("GSO run manifest V2 (end) emission skipped", exc_info=True)
-        # RCO-2a Task 9 — emit end-of-run contract-health summary.
-        # Pure observability; production posture remains warn-and-degrade.
-        # The RCO-2b flip will consume this marker's payload as evidence.
-        # Evidence variables that aren't accumulated as locals at this
-        # scope are passed as None / () — the builder treats missing
-        # evidence as "skipped"/"complete" per the policy doc.
-        _emit_contract_health_summary(
-            optimization_run_id=run_id,
-            invariant_violations=locals().get("_invariant_violations") or (),
-            phase_h_strict_validation=locals().get(
-                "_phase_h_marker_payload"
-            ),
-            bundle_assembly_failed=tuple(
-                locals().get("_bundle_assembly_failed_payloads") or ()
-            ),
-            bundle_assembly_incomplete=locals().get(
-                "_bundle_assembly_incomplete_payloads"
-            ),
-            replay_validation=locals().get("_run_end_replay_validation"),
-        )
     except Exception:
         logger.debug("GSO convergence/end marker skipped", exc_info=True)
 
@@ -25962,6 +25942,14 @@ def _run_lever_loop(
             iterations=_phase_h_iterations_completed,
         )
         _phase_h_artifact_index_path = _paths["artifact_index"]
+
+        # Wiring fix (2026-05-12): the contract-health summary marker
+        # (relocated below the Phase H block) reads these two lists via
+        # locals().get(...). They MUST be initialised before any code
+        # path that could reach the relocated emission, including the
+        # skipped-no-anchor branch and the outer render-failed except.
+        _bundle_assembly_incomplete_payloads: list[dict] = []
+        _bundle_assembly_failed_payloads: list[dict] = []
 
         # Upload path — only runs when a stable anchor is available.
         # On upload failure we emit GSO_BUNDLE_ASSEMBLY_FAILED_V1 but
@@ -26203,17 +26191,23 @@ def _run_lever_loop(
                 )
                 if not _completeness["complete"]:
                     try:
-                        print(_incomplete_marker(
-                            optimization_run_id=run_id,
-                            parent_bundle_run_id=_phase_h_anchor_run_id,
-                            total_declared=_completeness["total_declared"],
-                            total_materialized=_completeness["total_materialized"],
-                            missing_count=_completeness["missing_count"],
-                            parent_level_missing=_completeness["parent_level_missing"],
-                            unmigrated_per_iteration_missing=(
-                                _completeness["unmigrated_per_iteration_missing"]
-                            ),
-                        ))
+                        _incomplete_payload = {
+                            "optimization_run_id": run_id,
+                            "parent_bundle_run_id": _phase_h_anchor_run_id,
+                            "total_declared": _completeness["total_declared"],
+                            "total_materialized": _completeness["total_materialized"],
+                            "missing_count": _completeness["missing_count"],
+                            "parent_level_missing": _completeness[
+                                "parent_level_missing"
+                            ],
+                            "unmigrated_per_iteration_missing": _completeness[
+                                "unmigrated_per_iteration_missing"
+                            ],
+                        }
+                        _bundle_assembly_incomplete_payloads.append(
+                            _incomplete_payload
+                        )
+                        print(_incomplete_marker(**_incomplete_payload))
                     except Exception:
                         logger.debug(
                             "Phase H assembler-incomplete marker emission skipped",
@@ -26230,11 +26224,17 @@ def _run_lever_loop(
                     "still available via loop_out['pretty_print_transcript']",
                     exc_info=True,
                 )
+                _upload_failed_payload = {
+                    "optimization_run_id": run_id,
+                    "parent_bundle_run_id": _phase_h_anchor_run_id,
+                    "error_type": type(_phase_h_upload_exc).__name__,
+                    "error_message": str(_phase_h_upload_exc),
+                }
+                _bundle_assembly_failed_payloads.append(
+                    _upload_failed_payload
+                )
                 print(_bundle_assembly_failed_marker(
-                    optimization_run_id=run_id,
-                    parent_bundle_run_id=_phase_h_anchor_run_id,
-                    error_type=type(_phase_h_upload_exc).__name__,
-                    error_message=str(_phase_h_upload_exc),
+                    **_upload_failed_payload
                 ))
                 _phase_h_upload_status = "upload_failed"
         else:
@@ -26248,14 +26248,51 @@ def _run_lever_loop(
             "pretty-print will be unavailable for this run",
             exc_info=True,
         )
-        print(_bundle_assembly_failed_marker(
-            optimization_run_id=run_id,
-            parent_bundle_run_id=_phase_h_anchor_run_id,
-            error_type=type(_phase_h_render_exc).__name__,
-            error_message=str(_phase_h_render_exc),
-        ))
+        _render_failed_payload = {
+            "optimization_run_id": run_id,
+            "parent_bundle_run_id": _phase_h_anchor_run_id,
+            "error_type": type(_phase_h_render_exc).__name__,
+            "error_message": str(_phase_h_render_exc),
+        }
+        # The render-failed branch may fire before the inner try
+        # initialised the payload list. Initialise it here if absent
+        # so the relocated emission sees a real list.
+        if "_bundle_assembly_failed_payloads" not in locals():
+            _bundle_assembly_failed_payloads: list[dict] = []
+        _bundle_assembly_failed_payloads.append(_render_failed_payload)
+        if "_bundle_assembly_incomplete_payloads" not in locals():
+            _bundle_assembly_incomplete_payloads: list[dict] = []
+        print(_bundle_assembly_failed_marker(**_render_failed_payload))
         _full_transcript = None
         _phase_h_upload_status = "render_failed"
+
+    # Wiring fix (2026-05-12): RCO-2a contract-health summary emission,
+    # relocated here from the convergence try/except so it can read
+    # the Phase H strict-validation payload AND the bundle-assembly
+    # payload lists AFTER they've been populated. Pure observability;
+    # production posture is still warn-and-degrade. Wrapped in its own
+    # try/except so a bug in the builder cannot break the harness's
+    # return path.
+    try:
+        _emit_contract_health_summary(
+            optimization_run_id=run_id,
+            invariant_violations=locals().get("_invariant_violations") or (),
+            phase_h_strict_validation=locals().get(
+                "_phase_h_marker_payload"
+            ),
+            bundle_assembly_failed=tuple(
+                locals().get("_bundle_assembly_failed_payloads") or ()
+            ),
+            bundle_assembly_incomplete=tuple(
+                locals().get("_bundle_assembly_incomplete_payloads") or ()
+            ),
+            replay_validation=locals().get("_run_end_replay_validation"),
+        )
+    except Exception:
+        logger.debug(
+            "GSO contract-health summary emission skipped (post-Phase-H)",
+            exc_info=True,
+        )
 
     _loop_out_base = {
         "scores": best_scores,
