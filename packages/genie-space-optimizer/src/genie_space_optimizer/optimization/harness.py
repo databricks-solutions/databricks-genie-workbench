@@ -20723,6 +20723,38 @@ def _run_lever_loop(
                 else:
                     _chunk_b_forbidden_ags = ()
 
+                # Defect Plan 1 (2026-05-12) — grounding gate prelude.
+                # Emit one CLUSTER_BLOCKED_NO_RCA decision record per
+                # open hard cluster whose rca_card is falsy, accumulate
+                # blocked_cluster_ids, plumb into ActionGroupsInput.
+                # Wrapped in producer-exception try/except so a record
+                # construction fault becomes a typed PRODUCER_EXCEPTION
+                # rather than a silent mute.
+                _blocked_cluster_ids_tuple: tuple[str, ...] = ()
+                try:
+                    from genie_space_optimizer.common.config import (
+                        ag_emit_grounding_gate_enabled,
+                    )
+                    if ag_emit_grounding_gate_enabled():
+                        _grounding_result = collect_blocked_clusters(
+                            clusters or [],
+                            run_id=run_id,
+                            iteration=iteration_counter,
+                        )
+                        _blocked_cluster_ids_tuple = tuple(
+                            _grounding_result.blocked_cluster_ids
+                        )
+                        if _grounding_result.records_payload:
+                            _current_iter_inputs.setdefault(
+                                "decision_records", []
+                            ).extend(_grounding_result.records_payload)
+                except Exception:
+                    logger.debug(
+                        "Defect Plan 1: grounding gate prelude failed "
+                        "(non-fatal); skipping AG filter for this iteration",
+                        exc_info=True,
+                    )
+
                 _ags_inp = _ags_stage.ActionGroupsInput(
                     action_groups=tuple([ag]),
                     source_clusters_by_id={
@@ -20749,6 +20781,8 @@ def _run_lever_loop(
                     # C15 Phase 3 — typed forbidden-AG set for admission trace.
                     # Empty tuple when chunk_b flag is off (byte-stable).
                     forbidden_ags=_chunk_b_forbidden_ags,
+                    # Defect Plan 1 — grounding-gate cluster blocklist.
+                    blocked_cluster_ids=_blocked_cluster_ids_tuple,
                 )
                 # Phase F+H Commit B11: wrap F4 with stage_io_capture
                 # decorator. Replay-byte-stable — wrap_with_io_capture
