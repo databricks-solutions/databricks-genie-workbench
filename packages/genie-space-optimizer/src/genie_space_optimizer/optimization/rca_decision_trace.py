@@ -70,6 +70,15 @@ class DecisionType(str, Enum):
     # Stage 4 assembly and Stage 5 consumption.
     STRATEGIST_CONTEXT_ASSEMBLED = "strategist_context_assembled"
     STRATEGIST_CONTEXT_CONSUMED = "strategist_context_consumed"
+    # Plan P-F (2026-05-12): typed taxonomy record emitted alongside
+    # the existing proposal-failure DecisionRecords (e.g.
+    # proposal_generation_empty_record). Carries one of six closed-
+    # vocabulary next-action labels in reason_code so postmortems and
+    # dashboards can pivot on the orchestration decision without
+    # parsing free-form next_action text. Producer:
+    # decision_emitters.proposal_failure_decided_record. Policy:
+    # optimization.proposal_failure_policy.decide_next_action.
+    PROPOSAL_FAILURE_DECIDED = "proposal_failure_decided"
 
 
 class DecisionOutcome(str, Enum):
@@ -265,6 +274,21 @@ class ReasonCode(str, Enum):
     CONTEXT_ASSEMBLED = "context_assembled"
     CONTEXT_CONSUMED_MATCHES_ASSEMBLED = "context_consumed_matches_assembled"
     CONTEXT_CONSUMED_DRIFTED = "context_consumed_drifted"
+    # Plan P-F — closed-vocabulary next-action labels emitted on
+    # DecisionType.PROPOSAL_FAILURE_DECIDED. Each label maps a
+    # proposal-phase failure mode to a deterministic orchestration
+    # decision; the next iteration consumes this label via the
+    # strategist's reflection buffer + forbidden-set computation.
+    ROTATE_LEVER_FAMILY = "rotate_lever_family"
+    NARROW_AG_SCOPE = "narrow_ag_scope"
+    MARK_EVIDENCE_GAP = "mark_evidence_gap"
+    BLOCK_AG_RETRY_BY_CLUSTER_SIGNATURE = (
+        "block_ag_retry_by_cluster_signature"
+    )
+    ESCALATE_UNSUPPORTED_REPAIR_SHAPE = (
+        "escalate_unsupported_repair_shape"
+    )
+    REQUEST_EVIDENCE_GATHERING = "request_evidence_gathering"
 
 
 class RejectReason(str, Enum):
@@ -693,6 +717,11 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     DecisionType.STRATEGIST_CONTEXT_ASSEMBLED: SECTION_AG_DECISIONS,
     DecisionType.STRATEGIST_CONTEXT_CONSUMED: SECTION_AG_DECISIONS,
     DecisionType.PROPOSAL_GENERATED: SECTION_PROPOSAL_SURVIVAL,
+    # Plan P-F — taxonomy companion to PROPOSAL_GENERATED. Lives in
+    # the same transcript section so the operator sees the failure
+    # record + the typed next-action label adjacent in Stage 6
+    # (Proposal Generation).
+    DecisionType.PROPOSAL_FAILURE_DECIDED: SECTION_PROPOSAL_SURVIVAL,
     DecisionType.GATE_DECISION: SECTION_PROPOSAL_SURVIVAL,
     DecisionType.PATCH_APPLIED: SECTION_APPLIED_PATCHES,
     DecisionType.PATCH_SKIPPED: SECTION_APPLIED_PATCHES,
