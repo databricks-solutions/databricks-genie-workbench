@@ -244,11 +244,11 @@ Deferred-RCO unblocking from this trial: RCO-2b ✅ (landed 2026-05-13; see `doc
 | Defect plan | Plan file | Trial-blocking | Status |
 |---|---|---|---|
 | Defect 1 — AG grounding + cluster-signature admission | `docs/2026-05-12-defect-ag-emit-grounding-and-forbidden-admission-plan.md` | Yes | ✅ Landed (2026-05-12) |
-| Defect 2 — Stable retry signature for no-progress iterations | (not drafted yet) | Yes | Pending |
+| Defect 2 — Stable retry signature for no-progress iterations | `docs/2026-05-12-defect-no-applied-patches-retry-signature-plan.md` | Yes | ✅ Landed (2026-05-12) |
 | Defect 3 — RCO-6 carve-out (gs_021 clustered → soft_signal) | (not drafted yet) | No (blocks RCO-6, not the re-trial) | Pending |
 | Bundle-status wiring fix (micro-plan) | `docs/2026-05-12-bundle-status-wiring-fix-plan.md` | No (de-risks RCO-2b) | ✅ Landed (2026-05-12) |
 
-Re-trial against F9-3b050ec5 + AIRLINE-clean fires when Defect 2 lands.
+Re-trial against F9-3b050ec5 + AIRLINE-clean is now unblocked (Defect 1 + Defect 2 landed; bundle-status fix landed; RCO-2b strict-mode flip landed). Re-trial submission is the next operator action.
 
 - **Bundle-status wiring fix (2026-05-12) — landed.** `contract_health.bundle_status` now reflects `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` and `GSO_BUNDLE_ASSEMBLY_FAILED_V1` markers emitted in the same run. Closes the contradiction surfaced by the May-12 trial (both runs reported `bundle_status="complete"` while `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` reported `missing_count=40`). Incidental win: `_phase_h_marker_payload` is now also visible to the relocated emission, so `phase_h_listing_status` / `phase_h_validator_status` will reflect actual Phase H state instead of always reporting `skipped`. See `docs/2026-05-12-bundle-status-wiring-fix-plan.md`.
 

@@ -10,6 +10,14 @@
 > work out of roadmap-closeout scope. Item 6 (gs_021 clustered →
 > soft_signal replay parity) is the named RCO-6 blocker and remains
 > pending its own defect plan.
+>
+> **Supersession (Defect Plan 2, 2026-05-12)**: the airline-stub-4 item
+> ("airline iterations 1/3/5 emit AG_DECOMPOSED_H001 with no_applied_patches
+> and never enter forbidden set") is **SUPERSEDED** by
+> `docs/2026-05-12-defect-no-applied-patches-retry-signature-plan.md`.
+> The 7now-stub-5 item is closed by Defect Plan 1 G2 (cluster-signature
+> collision-key broadening). Only the RCO-6 carve-out items remain as
+> live work in this stub; track them in a future plan.
 
 ## Verdict
 

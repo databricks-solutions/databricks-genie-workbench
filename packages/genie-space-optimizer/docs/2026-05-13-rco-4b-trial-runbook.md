@@ -154,10 +154,22 @@ Two Databricks lever-loop runs were captured and post-mortem'd:
 **Defects surfaced (separate plans):**
 
 - `docs/2026-05-12-defect-ag-emit-blocks-ungrounded-rca.md` — driven
-  by run 31ecd96f.
+  by run 31ecd96f. **SUPERSEDED** by Defect Plan 1
+  (`docs/2026-05-12-defect-ag-emit-grounding-and-forbidden-admission-plan.md`),
+  landed 2026-05-12.
 - `docs/2026-05-12-defect-forbidden-ag-admission-enforcement.md` —
   driven by run ccf1d60d. Includes the named-RCO-6 blocker fix
-  (`clustered → soft_signal` for `gs_021`).
+  (`clustered → soft_signal` for `gs_021`). PARTIALLY SUPERSEDED:
+  items 1, 5 → Defect Plan 1; airline-stub-4 → Defect Plan 2
+  (`docs/2026-05-12-defect-no-applied-patches-retry-signature-plan.md`,
+  landed 2026-05-12). Only the RCO-6 carve-out (item 6) remains
+  pending its own defect plan.
+
+**Defect Plan 2** — `docs/2026-05-12-defect-no-applied-patches-retry-signature-plan.md`
+closes the airline F6 leg (`skipped_no_applied_patches` retry loop). No new
+flags introduced; piggybacks on the default-ON `GSO_FORBIDDEN_AG_ADMITS_NO_ACTION`.
+Re-trial readiness: Defect 1 + Defect 2 + RCO-2b strict-mode flip + bundle-status
+micro-plan all landed 2026-05-12/13.
 
 **Deferred-RCO unblocking status:**
 
@@ -168,7 +180,9 @@ Two Databricks lever-loop runs were captured and post-mortem'd:
 | RCO-4c (alignment/cap/reflection carve-out) | ⚠️ partial | `decide_full_eval_acceptance` survived a real run (ccf1d60d); the airline run had all-skipped iterations |
 | RCO-6 (replay/journey parity) | ❌ blocked | `gs_021` Cycle-17 carry-over named in defect-forbidden-ag-admission-enforcement |
 
-**Re-trial expectation:** Re-run against F9-3b050ec5 + AIRLINE-clean
-once the two defect plans land. The captured runs and the
-`f9_3b050ec5` / `airline_clean` future-target anchors remain in
-`expected_outcomes.json` side by side.
+**Re-trial expectation:** Defect Plans 1 + 2 have both landed
+(2026-05-12), plus the bundle-status wiring fix and RCO-2b strict-mode
+flip. Re-run against F9-3b050ec5 + AIRLINE-clean is now unblocked.
+The captured runs and the `f9_3b050ec5` / `airline_clean`
+future-target anchors remain in `expected_outcomes.json` side by side
+so the re-trial postflight can validate either anchor as captured.
