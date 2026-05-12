@@ -922,18 +922,37 @@ def _fmt_qids(qids: Iterable[str]) -> str:
 def format_control_plane_acceptance_detail(
     decision: ControlPlaneAcceptance,
 ) -> str:
-    """Return a compact operator-facing reason for control-plane rejection."""
+    """Plan P-C — operator-facing one-line summary of an acceptance
+    decision. Derives bucket lists from ``render_acceptance_decision``
+    so this string is byte-equivalent to the lists in the
+    ``GSO_FULL_EVAL_V1`` marker payload for the same decision.
+
+    Closes the body-list drift seen in ccf1d60d iter 1 where the
+    transcript rendered ``target_still_hard_qids=(none)`` while the
+    marker payload had ``target_still_hard_qids=[gs_026]``.
+    """
+    rendering = render_acceptance_decision(
+        decision,
+        ag_id="",
+        iteration=0,
+        accepted_label="",
+    )
     return (
-        f"reason={decision.reason_code}; "
-        f"target_qids={_fmt_qids(decision.target_qids)}; "
-        f"target_fixed_qids={_fmt_qids(decision.target_fixed_qids)}; "
-        f"target_still_hard_qids={_fmt_qids(decision.target_still_hard_qids)}; "
-        f"out_of_target_regressed_qids={_fmt_qids(decision.out_of_target_regressed_qids)}; "
-        f"regression_debt_qids={_fmt_qids(decision.regression_debt_qids)}; "
-        f"protected_regressed_qids={_fmt_qids(decision.protected_regressed_qids)}; "
-        f"soft_to_hard_regressed_qids={_fmt_qids(decision.soft_to_hard_regressed_qids)}; "
-        f"passing_to_hard_regressed_qids={_fmt_qids(decision.passing_to_hard_regressed_qids)}; "
-        f"unknown_to_hard_regressed_qids={_fmt_qids(decision.unknown_to_hard_regressed_qids)}"
+        f"reason={rendering.reason_code}; "
+        f"target_qids={_fmt_qids(rendering.target_qids)}; "
+        f"target_fixed_qids={_fmt_qids(rendering.target_fixed_qids)}; "
+        f"target_still_hard_qids={_fmt_qids(rendering.target_still_hard_qids)}; "
+        f"out_of_target_regressed_qids="
+        f"{_fmt_qids(rendering.out_of_target_regressed_qids)}; "
+        f"regression_debt_qids={_fmt_qids(rendering.regression_debt_qids)}; "
+        f"protected_regressed_qids="
+        f"{_fmt_qids(decision.protected_regressed_qids)}; "
+        f"soft_to_hard_regressed_qids="
+        f"{_fmt_qids(rendering.soft_to_hard_regressed_qids)}; "
+        f"passing_to_hard_regressed_qids="
+        f"{_fmt_qids(rendering.passing_to_hard_regressed_qids)}; "
+        f"unknown_to_hard_regressed_qids="
+        f"{_fmt_qids(rendering.unknown_to_hard_regressed_qids)}"
     )
 
 
