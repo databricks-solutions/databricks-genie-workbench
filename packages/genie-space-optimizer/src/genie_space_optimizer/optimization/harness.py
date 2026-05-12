@@ -10114,6 +10114,14 @@ def _format_rollback_reflection(
         "rejected_missing_causal_target": "no_causal_target",
         "missing_pre_rows": "gate_baseline_missing",
         "stale_or_candidate_pre_rows": "gate_baseline_stale",
+        # Defect Plan 2 (2026-05-12) — canonicalise the no-applied-
+        # patches label so the strategist's reflection-text routes
+        # through the lookup table rather than the else-branch split-
+        # on-colon fallback. Joins ``no_proposals`` and
+        # ``ag_collision_with_forbidden_set`` on the NO_ACTION
+        # admission axis (see ``classify_rollback_reason`` in
+        # rollback_class.py).
+        "no_applied_patches": "no_applied_patches",
     }
     if control_plane_reason in label_map:
         label = label_map[control_plane_reason]

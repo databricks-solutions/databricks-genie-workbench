@@ -56,3 +56,27 @@ def test_unknown_no_applied_variant_still_returns_other() -> None:
         classify_rollback_reason("no-applied-patches")
         is RollbackClass.OTHER
     )
+
+
+# ── Defect Plan 2 — reflection-text label ────────────────────────────
+
+
+def test_format_rollback_reflection_labels_no_applied_patches() -> None:
+    """Defense-in-depth: the label_map must contain no_applied_patches
+    so the canonical label is locked via the lookup table, not via the
+    else-branch split-on-colon fallback. This protects against future
+    label-format drift (e.g. if the else-branch is ever generalised to
+    'Skipped' for non-rollback reasons)."""
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness._format_rollback_reflection)
+
+    # Heuristic: the label_map literal must mention the new key.
+    # We avoid importing the dict because it is a local variable
+    # inside the function body.
+    assert '"no_applied_patches": "no_applied_patches"' in src, (
+        "label_map must include no_applied_patches as an explicit "
+        "canonical-label entry"
+    )
