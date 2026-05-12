@@ -5907,6 +5907,34 @@ def l6_narrow_replacement_patch_aware_enabled() -> bool:
     return _flag_default_on("GSO_L6_NARROW_REPLACEMENT_PATCH_AWARE")
 
 
+def l6_decline_cache_enabled() -> bool:
+    """P-E1 — iteration-scoped memo for Cycle 7 N3 force-L6 declines.
+
+    When on, the second and subsequent attempts in the same iteration
+    that match a previously-declined ``(_CollisionKeyPair, snippet_type)``
+    short-circuit the LLM call and re-emit
+    ``lever6_force_llm_declined`` with ``cached=True``. Default-on;
+    set ``GSO_L6_DECLINE_CACHE=0`` to preserve the legacy
+    one-attempt-per-AG behaviour (byte-stable replay against historical
+    fixtures).
+    """
+    return _flag_default_on("GSO_L6_DECLINE_CACHE")
+
+
+def narrow_skipped_no_original_patch_type_enabled() -> bool:
+    """P-E1 — emit ``narrow_skipped_no_original_patch_type`` instead of
+    ``unrecognized_patch_type`` when ``narrow_replacement_diagnosis``
+    receives an original_patch with an empty ``patch_type``.
+
+    Default-on; set
+    ``GSO_NARROW_SKIPPED_NO_ORIGINAL_PATCH_TYPE=0`` to preserve the
+    legacy reason-code surface for replay against fixtures recorded
+    before P-E1 (every fixture that contains
+    ``"original_patch_type=; reason=unrecognized_patch_type"``).
+    """
+    return _flag_default_on("GSO_NARROW_SKIPPED_NO_ORIGINAL_PATCH_TYPE")
+
+
 def l6_narrow_replacement_for_expression_enabled() -> bool:
     """P0: extend narrow L6 replacement to add_sql_snippet_expression
     and add_sql_snippet_measure patch types via question-scoped CASE
