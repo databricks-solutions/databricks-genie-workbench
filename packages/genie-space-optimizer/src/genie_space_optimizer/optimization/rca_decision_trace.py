@@ -226,6 +226,10 @@ class ReasonCode(str, Enum):
     NARROW_SKIPPED_NO_ORIGINAL_PATCH_TYPE = (
         "narrow_skipped_no_original_patch_type"
     )
+    # P-E2 — observe-only signal emitted at sub-AG proposal generators
+    # (cluster-driven synthesis, forced Lever-6) when the AG's collision
+    # pair matches the forbidden set. Informational; never a failure.
+    PROPOSAL_STAGE_FORBIDDEN_AG_OBSERVED = "proposal_stage_forbidden_ag_observed"
     # Cycle 16 T3 — Branch C survivor: an L6 expression / measure
     # dropped at blast-radius was replaced with one Lever-5
     # add_example_sql patch per resolvable target QID. Mirror of
