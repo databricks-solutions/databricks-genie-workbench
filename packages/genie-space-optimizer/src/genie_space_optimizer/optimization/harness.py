@@ -10838,6 +10838,80 @@ def _reflection_admitted_to_forbidden_set(
     return True
 
 
+@dataclass(frozen=True)
+class _BlockedClustersResult:
+    """Defect Plan 1 — pure result of :func:`collect_blocked_clusters`.
+
+    ``blocked_cluster_ids`` is the list passed into
+    :class:`ActionGroupsInput.blocked_cluster_ids` so
+    :func:`stages.action_groups.select` can filter AGs whose
+    ``source_cluster_ids`` intersect this set.
+
+    ``records_payload`` is a list of ``dict`` (not ``DecisionRecord``)
+    so it can be appended to ``_current_iter_inputs["decision_records"]``
+    without an additional conversion (mirrors the existing
+    decision-emitter wiring throughout ``harness.py``).
+    """
+
+    blocked_cluster_ids: list[str]
+    records_payload: list[dict]
+
+
+def collect_blocked_clusters(
+    clusters: list[dict],
+    *,
+    run_id: str = "",
+    iteration: int = 0,
+) -> _BlockedClustersResult:
+    """Defect Plan 1 (2026-05-12) — scan ``clusters`` for entries
+    whose ``rca_card`` is falsy and produce a paired result of
+    blocked-cluster ids and typed ``CLUSTER_BLOCKED_NO_RCA``
+    decision records.
+
+    Pure function (no I/O, no flag reads). The caller is the
+    AG-emit prelude in ``_run_lever_loop`` (this plan's Task 7 wire
+    site). The caller decides whether to plumb the result based on
+    ``ag_emit_grounding_gate_enabled()`` — when off, the result is
+    discarded and behaviour is byte-stable with pre-defect-plan-1
+    runs.
+
+    A cluster is considered "ungrounded" when:
+
+    * It has a non-empty ``cluster_id`` (entries without an id are
+      skipped — they cannot be referenced from
+      ``source_cluster_ids`` anyway).
+    * ``bool(c.get("rca_card"))`` is False. This matches the
+      existing ``rca_cards_present`` projection in the harness
+      AG-emit prelude which uses the same predicate.
+    """
+    from genie_space_optimizer.optimization.decision_emitters import (
+        cluster_blocked_no_rca_record,
+    )
+
+    blocked_ids: list[str] = []
+    payloads: list[dict] = []
+    for c in clusters or []:
+        cid = str((c or {}).get("cluster_id") or "")
+        if not cid:
+            continue
+        if bool((c or {}).get("rca_card")):
+            continue
+        rec = cluster_blocked_no_rca_record(
+            run_id=run_id,
+            iteration=iteration,
+            cluster_id=cid,
+            rca_id=str((c or {}).get("rca_id") or ""),
+            affected_qids=list((c or {}).get("base_question_ids") or []),
+            root_cause=str((c or {}).get("root_cause") or ""),
+        )
+        blocked_ids.append(cid)
+        payloads.append(rec.to_dict())
+    return _BlockedClustersResult(
+        blocked_cluster_ids=blocked_ids,
+        records_payload=payloads,
+    )
+
+
 def _compute_forbidden_ag_set(
     reflection_buffer: list[dict],
 ) -> set[tuple[str, Any, frozenset[int]]]:
