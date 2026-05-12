@@ -1089,132 +1089,61 @@ def format_full_eval_marker_payload(
     iteration: int,
     accepted_label: str,
 ) -> dict:
-    """Cycle 14-T2 — canonical render of one AG's full-eval outcome.
+    """Cycle 14-T2 / Plan P-C — canonical render of one AG's
+    full-eval outcome.
 
-    Returns a JSON-serialisable dict consumed by:
-      - ``GSO_FULL_EVAL_V1`` typed stdout marker
-        (``run_analysis_contract.full_eval_marker``).
-      - ``acceptance_decided`` ``DecisionRecord`` (decision_emitters
-        ``ag_outcome_decision_record``).
-      - ``FULL EVAL [...]`` human-readable print block (harness).
-      - Phase B / Phase H rendered transcript (via the
-        ``DecisionRecord`` above).
-
-    Behind ``GSO_CANONICAL_ACCEPTANCE_RENDER`` (default on); on
-    flag-off each surface continues to use its legacy renderer for
-    byte-stable replay of pre-T2 fixtures.
-
-    Cycle 14-V Task 3: when ``decision.target_delta_states`` is
-    populated, the rendered ``target_fixed_qids`` /
-    ``target_still_hard_qids`` are derived from it as the single
-    canonical source. This eliminates the contradiction surfaced by
-    7Now anchor 338386531912450 where ``gs_026`` simultaneously
-    rendered as ``soft_to_hard`` (in delta_states) AND
-    ``target_still_hard_qids``. Target QIDs are also subtracted
-    from ``unknown_to_hard_regressed_qids`` because
-    ``target_delta_states`` is exhaustive over targets — closes the
-    airline anchor 833709971504406 ``gs_016`` mis-classification.
-
-    Pre-T0 fixtures with empty ``target_delta_states`` fall through
-    to legacy fields verbatim for back-compat.
+    Now a thin adapter over ``render_acceptance_decision``; all
+    bucket-derivation logic lives in the pure renderer so every
+    surface (this marker, the operator-transcript
+    ``acceptance_decision`` stage's reason_detail string, the
+    Phase-H bundle writer) produces byte-equal output for the
+    same decision.
     """
-    delta_states_pairs = tuple(decision.target_delta_states or ())
-    delta_states_list = [[str(qid), str(state)] for qid, state in delta_states_pairs]
-
-    if delta_states_pairs:
-        # Cycle 14-V T3: single source of truth.
-        derived_fixed = tuple(
-            str(q) for q, s in delta_states_pairs
-            if str(s) == DeltaState.FIXED.value
-        )
-        derived_still_hard = tuple(
-            str(q) for q, s in delta_states_pairs
-            if str(s) == DeltaState.STILL_HARD.value
-        )
-        # Cycle 14-W T1: derive target_soft_passing_qids from
-        # target_delta_states so SOFT_PASSING targets have a
-        # first-class bucket field rather than being silently
-        # absent from every legacy bucket.
-        derived_soft_passing = tuple(
-            str(q) for q, s in delta_states_pairs
-            if str(s) == DeltaState.SOFT_PASSING.value
-        )
-        target_fixed_qids = derived_fixed
-        target_still_hard_qids = derived_still_hard
-        target_soft_passing_qids = derived_soft_passing
-
-        # Subtract target QIDs from the unknown_to_hard bucket
-        # because target QIDs are exhaustively classified by
-        # target_delta_states.
-        target_qid_set = {str(q) for q, _ in delta_states_pairs}
-        unknown_to_hard_qids = tuple(
-            str(q) for q in (decision.unknown_to_hard_regressed_qids or ())
-            if str(q) not in target_qid_set
-        )
-    else:
-        # Pre-T0 back-compat: legacy fields verbatim.
-        target_fixed_qids = tuple(
-            str(q) for q in (decision.target_fixed_qids or ())
-        )
-        target_still_hard_qids = tuple(
-            str(q) for q in (decision.target_still_hard_qids or ())
-        )
-        # Cycle 14-W T1: legacy fixtures don't carry a
-        # target_soft_passing_qids field; default to empty so the
-        # payload key is always present.
-        target_soft_passing_qids = tuple(
-            str(q)
-            for q in (getattr(decision, "target_soft_passing_qids", ()) or ())
-        )
-        unknown_to_hard_qids = tuple(
-            str(q) for q in (decision.unknown_to_hard_regressed_qids or ())
-        )
+    rendering = render_acceptance_decision(
+        decision,
+        ag_id=ag_id,
+        iteration=iteration,
+        accepted_label=accepted_label,
+    )
 
     payload = {
-        "iteration": int(iteration),
-        "ag_id": str(ag_id),
-        "accepted": bool(decision.accepted),
-        "reason_code": str(decision.reason_code or ""),
-        "accepted_label": str(accepted_label),
-        "baseline_accuracy": float(decision.baseline_accuracy),
-        "candidate_accuracy": float(decision.candidate_accuracy),
-        "delta_pp": float(decision.delta_pp),
-        "target_qids": [str(q) for q in (decision.target_qids or ())],
-        "target_fixed_qids": list(target_fixed_qids),
-        "target_still_hard_qids": list(target_still_hard_qids),
-        "target_soft_passing_qids": list(target_soft_passing_qids),
-        "target_delta_states": delta_states_list,
-        "out_of_target_regressed_qids": [
-            str(q) for q in (decision.out_of_target_regressed_qids or ())
+        "iteration": rendering.iteration,
+        "ag_id": rendering.ag_id,
+        "accepted": rendering.accepted,
+        "reason_code": rendering.reason_code,
+        "accepted_label": rendering.accepted_label,
+        "baseline_accuracy": rendering.baseline_accuracy,
+        "candidate_accuracy": rendering.candidate_accuracy,
+        "delta_pp": rendering.delta_pp,
+        "target_qids": list(rendering.target_qids),
+        "target_fixed_qids": list(rendering.target_fixed_qids),
+        "target_still_hard_qids": list(rendering.target_still_hard_qids),
+        "target_soft_passing_qids": list(rendering.target_soft_passing_qids),
+        "target_delta_states": [
+            [q, s] for q, s in rendering.target_delta_states
         ],
-        "regression_debt_qids": [
-            str(q) for q in (decision.regression_debt_qids or ())
-        ],
-        "soft_to_hard_regressed_qids": [
-            str(q) for q in (decision.soft_to_hard_regressed_qids or ())
-        ],
-        "passing_to_hard_regressed_qids": [
-            str(q) for q in (decision.passing_to_hard_regressed_qids or ())
-        ],
-        "unknown_to_hard_regressed_qids": list(unknown_to_hard_qids),
-        "accidentally_improved_qids": [
-            str(q)
-            for q in (
-                getattr(decision, "accidentally_improved_qids", ()) or ()
-            )
-        ],
-        "unresolved_target_debt_qids": [
-            str(q)
-            for q in (
-                getattr(decision, "unresolved_target_debt_qids", ()) or ()
-            )
-        ],
-        "existing_hard_still_hard_outside_target_qids": [
-            str(q)
-            for q in (
-                getattr(decision, "existing_hard_still_hard_outside_target_qids", ()) or ()
-            )
-        ],
+        "out_of_target_regressed_qids": list(
+            rendering.out_of_target_regressed_qids
+        ),
+        "regression_debt_qids": list(rendering.regression_debt_qids),
+        "soft_to_hard_regressed_qids": list(
+            rendering.soft_to_hard_regressed_qids
+        ),
+        "passing_to_hard_regressed_qids": list(
+            rendering.passing_to_hard_regressed_qids
+        ),
+        "unknown_to_hard_regressed_qids": list(
+            rendering.unknown_to_hard_regressed_qids
+        ),
+        "accidentally_improved_qids": list(
+            rendering.accidentally_improved_qids
+        ),
+        "unresolved_target_debt_qids": list(
+            rendering.unresolved_target_debt_qids
+        ),
+        "existing_hard_still_hard_outside_target_qids": list(
+            rendering.existing_hard_still_hard_outside_target_qids
+        ),
         "reason_detail": format_control_plane_acceptance_detail(decision),
     }
 
