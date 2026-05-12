@@ -510,6 +510,41 @@ def build_bundle(
             )
         )
 
+    _DATABRICKS_ID_FIELDS = (
+        "databricks_job_id",
+        "databricks_parent_run_id",
+        "lever_loop_task_run_id",
+    )
+    _manifest_marker = markers.run_manifest_v2 or markers.run_manifest
+    if _manifest_marker is not None:
+        _sentinel_fields = [
+            field
+            for field in _DATABRICKS_ID_FIELDS
+            if str(_manifest_marker.get(field, "")) == "unknown"
+        ]
+        if _sentinel_fields:
+            missing.append(
+                MissingPiece(
+                    kind=MissingPieceKind.DATABRICKS_IDS_UNRESOLVED,
+                    iteration=None,
+                    diagnosis=(
+                        "GSO_RUN_MANIFEST resolver returned the literal "
+                        f"sentinel 'unknown' for: {', '.join(_sentinel_fields)}. "
+                        "All three Tier-1/Tier-2/Tier-3 paths failed."
+                    ),
+                    suggested_action=(
+                        "Inspect GSO_DATABRICKS_IDS_RESOLVED_V1 in markers.json: "
+                        "verify dbutils_attempted/succeeded and "
+                        "jobs_api_attempted/succeeded. If jobs_api_attempted=false, "
+                        "the active MLflow run did not carry a "
+                        "mlflow.databricks.runID tag — check the lever-loop notebook "
+                        "is actually inside a Databricks Jobs task. If "
+                        "jobs_api_succeeded=false, the WorkspaceClient call returned "
+                        "an empty Run snapshot — check SP permissions on the job."
+                    ),
+                )
+            )
+
     fixture = extract_replay_fixture(stdout_text)
     if fixture is not None:
         paths.replay_fixture.write_text(json.dumps(fixture, indent=2, sort_keys=True))
