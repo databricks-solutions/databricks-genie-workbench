@@ -5532,6 +5532,60 @@ def forbidden_ag_admits_no_action_enabled() -> bool:
     return _flag_default_on("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION")
 
 
+def ag_emit_grounding_gate_enabled() -> bool:
+    """Defect Plan 1 (2026-05-12) — runtime gate that blocks AG
+    emission for open hard clusters whose ``rca_card`` is falsy.
+
+    When ON (default), the harness emits one
+    ``DecisionType.CLUSTER_BLOCKED_NO_RCA`` record per ungrounded
+    open hard cluster at AG-emit time and ``stages.action_groups.
+    select`` drops every AG whose ``source_cluster_ids`` intersects
+    the blocked set. Closes the airline-trial defect where
+    ``AG_DECOMPOSED_H001`` for ``gs_009`` and ``AG_DECOMPOSED_H002``
+    for ``gs_024`` continued to emit despite ``rca_formed
+    outcome=unresolved reason=rca_ungrounded`` on every iteration.
+
+    Detection-side guarantee: ``invariants.check_i7_rca_grounding``
+    will return zero violations on runs where this flag is ON and
+    every ungrounded cluster has the matching block record. The I7
+    green-when-block-record-emitted test
+    (``tests/unit/test_invariants.py``) already pins the consumer
+    behavior.
+
+    Default ON. Disable with ``GSO_AG_EMIT_GROUNDING_GATE=0`` for
+    replay byte-stability against pre-defect-plan-1 fixtures.
+    """
+    return _flag_default_on("GSO_AG_EMIT_GROUNDING_GATE")
+
+
+def forbidden_ag_collision_by_cluster_signature_enabled() -> bool:
+    """Defect Plan 1 (2026-05-12) — broaden the forbidden-AG
+    collision key to also key on ``source_cluster_signatures``, so
+    the strategist cannot re-admit an AG family on iteration N+1
+    just because the LLM regenerated the same cluster's
+    ``root_cause`` with slightly different text.
+
+    Before this flag, ``_compute_forbidden_ag_set`` returns
+    ``set[tuple[root_cause, blame, frozenset(lever_set)]]`` and
+    ``_ag_collision_key`` looks up the same tuple. The 7now-trial
+    run ccf1d60d showed five iterations of the same AG family slip
+    through because iteration N+1's LLM-regenerated ``root_cause``
+    string did not byte-equal iteration N's, even though both AGs
+    targeted the same cluster.
+
+    When this flag is ON (default), the forbidden set carries a
+    second axis keyed on ``(source_cluster_signature, frozenset(
+    lever_set))`` where the signature is the clusterer-derived
+    sha1 (stable across iterations by construction). Collision
+    matches on EITHER axis.
+
+    Default ON. Disable with
+    ``GSO_FORBIDDEN_AG_COLLISION_BY_CLUSTER_SIGNATURE=0`` for
+    replay byte-stability against pre-defect-plan-1 fixtures.
+    """
+    return _flag_default_on("GSO_FORBIDDEN_AG_COLLISION_BY_CLUSTER_SIGNATURE")
+
+
 def bucket_driven_ag_selection_enabled() -> bool:
     """Task C — strategist consumes prior-iteration failure buckets:
     ``MODEL_CEILING`` qids drop from targets; clusters whose qids are
