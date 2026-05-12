@@ -7,7 +7,7 @@ shadow workbench types (e.g. `WatchSpaceSummary` vs workbench's own).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -96,6 +96,10 @@ class FeedbackEvent(BaseModel):
     comment: Optional[str] = None
     message_id: Optional[str] = None
     conversation_id: Optional[str] = None
+    # Populated by the all-spaces feedback endpoint. Single-space callers
+    # (e.g. /spaces/{id}/feedback) leave these as None.
+    space_id: Optional[str] = None
+    space_title: Optional[str] = None
 
 
 class FeedbackSummary(BaseModel):
@@ -131,6 +135,41 @@ class TopQuery(BaseModel):
     total_duration_ms: Optional[int] = None
     execution_status: Optional[str] = None
     statement_text: Optional[str] = None
+
+
+# ─── Feedback tab (workspace-wide aggregation) ────────────────────────────
+
+
+class FeedbackTabSummary(BaseModel):
+    positive: int = 0
+    negative: int = 0
+    total: int = 0
+    neg_rate_pct: float = 0.0
+
+
+class FeedbackTrendPoint(BaseModel):
+    day: date
+    positive: int = 0
+    negative: int = 0
+
+
+class FeedbackSpaceRow(BaseModel):
+    space_id: str
+    title: Optional[str] = None
+    owner_email: Optional[str] = None
+    positive: int = 0
+    negative: int = 0
+    total: int = 0
+    neg_rate_pct: float = 0.0
+    last_feedback_at: Optional[datetime] = None
+
+
+class FeedbackTabResponse(BaseModel):
+    days: int
+    summary: FeedbackTabSummary
+    trend: list[FeedbackTrendPoint] = Field(default_factory=list)
+    per_space: list[FeedbackSpaceRow] = Field(default_factory=list)
+    events: list[FeedbackEvent] = Field(default_factory=list)
 
 
 # ─── Resources ────────────────────────────────────────────────────────────

@@ -76,6 +76,7 @@ from backend.watch.routers import (
     watch_cost_router,
     watch_dashboards_router,
     watch_evals_router,
+    watch_feedback_router,
     watch_resources_router,
     watch_settings_router,
     watch_spaces_router,
@@ -215,6 +216,7 @@ app.include_router(auto_optimize_router)
 app.include_router(watch_spaces_router)
 app.include_router(watch_cost_router)
 app.include_router(watch_usage_router)
+app.include_router(watch_feedback_router)
 app.include_router(watch_resources_router)
 app.include_router(watch_evals_router)
 app.include_router(watch_settings_router)
