@@ -52,6 +52,14 @@ class DecisionType(str, Enum):
     # or end-of-run. The harness logs these typed records when running in
     # warn-and-degrade mode (GSO_LOOP_INVARIANTS_STRICT=0); strict mode raises.
     INVARIANT_VIOLATION = "invariant_violation"
+    # Defect Plan 1 (2026-05-12): typed record emitted at AG-emit time
+    # when an open hard cluster has rca_card=False. Consumed by
+    # check_i7_rca_grounding (already wired) AND by the runtime gate
+    # in stages.action_groups.select that drops AGs whose
+    # source_cluster_ids intersect the blocked set. Closes the
+    # airline-trial defect where AG_DECOMPOSED_H001/H002 emitted on
+    # iterations 1/3/5 and 2/4 despite rca_formed outcome=unresolved.
+    CLUSTER_BLOCKED_NO_RCA = "cluster_blocked_no_rca"
 
 
 class DecisionOutcome(str, Enum):

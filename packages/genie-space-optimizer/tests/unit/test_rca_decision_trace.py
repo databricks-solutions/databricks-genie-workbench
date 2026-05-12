@@ -157,3 +157,14 @@ def test_reason_code_ag_levers_unioned_membership():
         ReasonCode,
     )
     assert ReasonCode.AG_LEVERS_UNIONED.value == "ag_levers_unioned"
+
+
+def test_cluster_blocked_no_rca_decision_type_exists():
+    from genie_space_optimizer.optimization.rca_decision_trace import DecisionType
+    assert DecisionType.CLUSTER_BLOCKED_NO_RCA.value == "cluster_blocked_no_rca"
+
+
+def test_cluster_blocked_no_rca_is_recognized_decision_type():
+    from genie_space_optimizer.optimization.rca_decision_trace import DecisionType
+    members = {m.value for m in DecisionType}
+    assert "cluster_blocked_no_rca" in members
