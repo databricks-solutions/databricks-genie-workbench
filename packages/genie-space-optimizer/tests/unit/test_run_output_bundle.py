@@ -345,3 +345,45 @@ def test_aggregate_per_iteration_artifacts_skips_none_returns() -> None:
 
     assert len(out) == 2
     assert {entry["iteration"] for entry in out} == {1, 3}
+
+
+# ── P-B Task 9 — databricks_ids_resolution_path on parent manifest ───
+
+
+def test_build_manifest_persists_databricks_ids_resolution_path() -> None:
+    """The parent bundle manifest must record the resolver path
+    so postmortem readers can answer "why is this ID blank?"
+    without re-parsing markers.json."""
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_manifest,
+    )
+
+    out = build_manifest(
+        optimization_run_id="opt-1",
+        databricks_job_id="123",
+        databricks_parent_run_id="456",
+        lever_loop_task_run_id="789",
+        iterations=[1, 2],
+        missing_pieces=[],
+        databricks_ids_resolution_path="jobs_api",
+    )
+    assert out["databricks_ids_resolution_path"] == "jobs_api"
+
+
+def test_build_manifest_databricks_ids_resolution_path_default_blank() -> None:
+    """Existing callers that omit the kwarg get an empty string —
+    explicit "we don't know which path fired" rather than
+    accidentally claiming env-resolution."""
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_manifest,
+    )
+
+    out = build_manifest(
+        optimization_run_id="opt-1",
+        databricks_job_id="",
+        databricks_parent_run_id="",
+        lever_loop_task_run_id="",
+        iterations=[],
+        missing_pieces=[],
+    )
+    assert out["databricks_ids_resolution_path"] == ""

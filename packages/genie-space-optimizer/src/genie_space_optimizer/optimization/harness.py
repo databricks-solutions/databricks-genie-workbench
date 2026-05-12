@@ -15726,6 +15726,12 @@ def _run_lever_loop(
         _db_job_id = _db_ids["databricks_job_id"]
         _db_parent_run_id = _db_ids["databricks_parent_run_id"]
         _db_task_run_id = _db_ids["lever_loop_task_run_id"]
+        # P-B — also capture the resolver path for the parent bundle
+        # manifest so postmortems see which tier produced the IDs.
+        try:
+            _db_ids_resolution_path = str(_rm_out.resolution_path)  # type: ignore[name-defined]
+        except NameError:
+            _db_ids_resolution_path = ""
         print(run_manifest_marker(
             optimization_run_id=run_id,
             databricks_job_id=_db_job_id,
@@ -26656,6 +26662,7 @@ def _run_lever_loop(
             lever_loop_task_run_id=_db_task_run_id,
             iterations=_phase_h_iterations_completed,
             missing_pieces=_missing_pieces,
+            databricks_ids_resolution_path=_db_ids_resolution_path,
         )
         _artifact_index = _build_artifact_index(
             iterations=_phase_h_iterations_completed,

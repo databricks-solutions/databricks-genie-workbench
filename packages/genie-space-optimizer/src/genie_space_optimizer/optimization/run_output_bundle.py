@@ -104,14 +104,23 @@ def build_manifest(
     lever_loop_task_run_id: str,
     iterations: list[int],
     missing_pieces: list[dict[str, Any]],
+    databricks_ids_resolution_path: str = "",
 ) -> dict[str, Any]:
-    """Build manifest.json for the parent bundle."""
+    """Build manifest.json for the parent bundle.
+
+    ``databricks_ids_resolution_path`` (P-B) records which resolver
+    tier produced the IDs (``env`` / ``dbutils`` / ``mixed`` /
+    ``jobs_api`` / ``mixed_jobs_api`` / ``sentinel`` / ``""``). The
+    empty default applies to legacy callers — ``""`` is "I don't
+    know" rather than implying any particular tier.
+    """
     return {
         "schema_version": SCHEMA_VERSION,
         "optimization_run_id": optimization_run_id,
         "databricks_job_id": databricks_job_id,
         "databricks_parent_run_id": databricks_parent_run_id,
         "lever_loop_task_run_id": lever_loop_task_run_id,
+        "databricks_ids_resolution_path": databricks_ids_resolution_path,
         "iteration_count": len(iterations),
         "iterations": list(iterations),
         "missing_pieces": missing_pieces,
