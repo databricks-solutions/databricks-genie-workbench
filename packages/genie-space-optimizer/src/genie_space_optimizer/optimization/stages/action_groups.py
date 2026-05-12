@@ -176,6 +176,14 @@ class ActionGroupsInput(JsonRoundTrip):
     C15 Phase 3: ``forbidden_ags`` carries the typed forbidden-AG set so
     select() can produce a per-candidate AdmissionTrace when
     ``stage_handlers_chunk_b_enabled()`` is on.
+
+    Defect Plan 1 (2026-05-12): ``blocked_cluster_ids`` carries the set
+    of cluster ids that the AG-emit prelude
+    (``harness.collect_blocked_clusters``) marked as ungrounded. When
+    non-empty AND ``ag_emit_grounding_gate_enabled()`` is True,
+    ``select()`` drops every AG whose ``source_cluster_ids``
+    intersects this set. Empty tuple preserves pre-defect-plan-1
+    byte-stability.
     """
 
     action_groups: tuple[Mapping[str, Any], ...]
@@ -204,6 +212,10 @@ class ActionGroupsInput(JsonRoundTrip):
     # _compute_forbidden_ag_set. Empty unless stage_handlers_chunk_b_enabled().
     # When non-empty, select() records an AdmissionTrace per candidate.
     forbidden_ags: tuple[ForbiddenAG, ...] = ()
+    # Defect Plan 1 (2026-05-12) — cluster ids with rca_card=False at
+    # AG-emit time. select() drops AGs whose source_cluster_ids
+    # intersect this set when ag_emit_grounding_gate_enabled().
+    blocked_cluster_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_json(cls, payload: dict) -> "ActionGroupsInput":
@@ -228,6 +240,9 @@ class ActionGroupsInput(JsonRoundTrip):
             ForbiddenAG.from_json(f)
             for f in (payload.get("forbidden_ags") or [])
         )
+        blocked = tuple(
+            str(c) for c in (payload.get("blocked_cluster_ids") or [])
+        )
         return cls(
             action_groups=ags,
             source_clusters_by_id=src,
@@ -236,6 +251,7 @@ class ActionGroupsInput(JsonRoundTrip):
             prior_buckets_by_qid=buckets,
             prior_iteration_dropped_causal_patches=dropped,
             forbidden_ags=forbidden,
+            blocked_cluster_ids=blocked,
         )
 
 

@@ -123,3 +123,38 @@ def test_select_admission_trace_empty_when_no_forbidden_ags(monkeypatch) -> None
     )
     out = select(ctx=_MinimalCtx(), inp=inp)
     assert out.admission_trace == ()
+
+
+def test_action_groups_input_carries_blocked_cluster_ids():
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        ActionGroupsInput,
+    )
+
+    inp = ActionGroupsInput(
+        action_groups=(),
+        blocked_cluster_ids=("H001", "H003"),
+    )
+    assert inp.blocked_cluster_ids == ("H001", "H003")
+
+
+def test_action_groups_input_blocked_cluster_ids_defaults_to_empty():
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        ActionGroupsInput,
+    )
+
+    inp = ActionGroupsInput(action_groups=())
+    assert inp.blocked_cluster_ids == ()
+
+
+def test_action_groups_input_blocked_cluster_ids_round_trips():
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        ActionGroupsInput,
+    )
+
+    src = ActionGroupsInput(
+        action_groups=(),
+        blocked_cluster_ids=("H001", "H002"),
+    )
+    payload = src.to_json()
+    rt = ActionGroupsInput.from_json(payload)
+    assert rt.blocked_cluster_ids == ("H001", "H002")
