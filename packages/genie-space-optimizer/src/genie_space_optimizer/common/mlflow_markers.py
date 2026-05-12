@@ -168,6 +168,31 @@ def narrow_not_applicable_marker(
     return "GSO_NARROW_NOT_APPLICABLE_V1 " + json.dumps(payload, sort_keys=True)
 
 
+def narrow_skipped_no_original_patch_type_marker(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+) -> str:
+    """P-E1 — narrow-L6 replacement skipped because the original
+    patch had no patch_type. Replaces the misleading
+    ``unrecognized_patch_type`` marker for this exact case.
+    """
+    payload = {
+        "run_id": str(run_id),
+        "iteration": int(iteration),
+        "ag_id": str(ag_id),
+        "cluster_id": str(cluster_id),
+        "root_cause": str(root_cause),
+    }
+    return (
+        "GSO_NARROW_SKIPPED_NO_ORIGINAL_PATCH_TYPE_V1 "
+        + json.dumps(payload, sort_keys=True)
+    )
+
+
 def narrow_replacement_synthesized_marker(
     *,
     run_id: str,

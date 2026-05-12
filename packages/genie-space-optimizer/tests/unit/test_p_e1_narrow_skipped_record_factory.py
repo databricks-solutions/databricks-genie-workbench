@@ -37,3 +37,26 @@ def test_record_factory_to_dict_round_trip():
     )
     d = rec.to_dict()
     assert d["reason_code"] == "narrow_skipped_no_original_patch_type"
+
+
+def test_marker_string_shape_is_versioned_json():
+    import json
+    from genie_space_optimizer.common.mlflow_markers import (
+        narrow_skipped_no_original_patch_type_marker,
+    )
+    s = narrow_skipped_no_original_patch_type_marker(
+        run_id="r1",
+        iteration=2,
+        ag_id="AG_X",
+        cluster_id="H004",
+        root_cause="missing_filter",
+    )
+    assert s.startswith("GSO_NARROW_SKIPPED_NO_ORIGINAL_PATCH_TYPE_V1 ")
+    payload = json.loads(s.split(" ", 1)[1])
+    assert payload == {
+        "run_id": "r1",
+        "iteration": 2,
+        "ag_id": "AG_X",
+        "cluster_id": "H004",
+        "root_cause": "missing_filter",
+    }
