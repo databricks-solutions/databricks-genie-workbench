@@ -14,6 +14,7 @@ def test_missing_piece_kind_values_pinned():
         "PHASE_B_ARTIFACT_MISSING_ON_ANCHOR",
         "REPLAY_FIXTURE_NOT_IN_STDOUT",
         "OPTIMIZATION_RUN_ID_UNRESOLVED",
+        "DATABRICKS_IDS_UNRESOLVED",
         "BACKFILL_FAILED",
     }
     actual = {k.name for k in MissingPieceKind}

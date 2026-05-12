@@ -149,6 +149,8 @@ exception               : (none)
 env                     : {DATABRICKS_JOB_ID='REDACTED_JOB_ID', DATABRICKS_RUN_ID='REDACTED_RUN_ID', DATABRICKS_TASK_RUN_ID='REDACTED_TASK_RUN_ID'}
 dbutils_available       : False
 dbutils_tags            : {}
+mlflow_run_tags         : {}
+jobs_run_snapshot       : (none)
 ─ Output ────────────────────────────────────────────────────────────────
 databricks_job_id       : 'REDACTED_JOB_ID'
 databricks_parent_run_id: 'REDACTED_RUN_ID'
@@ -158,6 +160,8 @@ fields_resolved         : 3
 fields_total            : 3
 dbutils_attempted       : False
 dbutils_succeeded       : False
+jobs_api_attempted      : False
+jobs_api_succeeded      : False
 
 ### 14. Contract Health
 

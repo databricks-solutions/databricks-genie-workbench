@@ -104,6 +104,7 @@ def test_missing_piece_kind_is_closed_enum() -> None:
         "PHASE_B_ARTIFACT_MISSING_ON_ANCHOR",
         "REPLAY_FIXTURE_NOT_IN_STDOUT",
         "OPTIMIZATION_RUN_ID_UNRESOLVED",
+        "DATABRICKS_IDS_UNRESOLVED",
         "BACKFILL_FAILED",
     }
     assert {m.name for m in MissingPieceKind} == expected
