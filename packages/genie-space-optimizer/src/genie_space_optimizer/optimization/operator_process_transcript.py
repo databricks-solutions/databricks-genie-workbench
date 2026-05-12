@@ -51,7 +51,13 @@ _STAGE_DECISION_TYPE_MAP: dict[str, tuple[DecisionType, ...]] = {
         DecisionType.STRATEGIST_AG_EMITTED,
         DecisionType.STRATEGIST_CONTEXT_CONSUMED,
     ),
-    "proposal_generation":      (DecisionType.PROPOSAL_GENERATED,),
+    # Plan P-F — taxonomy companion to PROPOSAL_GENERATED so Stage 6
+    # transcript renders the failure record and the typed next-action
+    # label (rotate_lever_family / narrow_ag_scope / etc.) adjacent.
+    "proposal_generation":      (
+        DecisionType.PROPOSAL_GENERATED,
+        DecisionType.PROPOSAL_FAILURE_DECIDED,
+    ),
     "safety_gates":             (DecisionType.GATE_DECISION,),
     "applied_patches":          (DecisionType.PATCH_APPLIED, DecisionType.PATCH_SKIPPED),
     "post_patch_evaluation":    (DecisionType.EVAL_CLASSIFIED,),
