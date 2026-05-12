@@ -709,6 +709,14 @@ def _emit_phase_h_acceptance_drift_if_any(
     ``outcome`` or ``reason_code``. Silent on clean runs and when
     the observability flag is off.
 
+    Plan P-C expectation: SHOULD be zero on every production run
+    after Plan P-C lands (the canonical decision is now threaded
+    through ``AcceptanceInput.canonical_decisions_by_ag_id`` so the
+    Phase-H writer reuses rather than recomputes). This call is
+    KEPT ACTIVE as defense-in-depth until the corpus proves
+    silence — see ``phase_h_acceptance_drift_marker`` docstring
+    for the demotion criterion.
+
     Anchor: airline run 1105451933925748 F8 — production-wiring fix
     for D-6 (G-4 hardening delta).
     """

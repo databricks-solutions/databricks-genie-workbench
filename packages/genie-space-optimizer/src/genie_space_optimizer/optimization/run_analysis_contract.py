@@ -665,8 +665,31 @@ def phase_h_acceptance_drift_marker(
     phase_h_outcome: str,
     phase_h_reason_code: str,
 ) -> str:
-    """Cycle 14-W T6 — alarm: Phase H acceptance writer disagrees
-    with the canonical ``ControlPlaneAcceptance`` decision.
+    """Plan P-C — runtime shadow marker. SHOULD be zero on every
+    production run after Plan P-C lands.
+
+    Plan P-C unified the canonical and Phase-H acceptance render
+    paths around one ``ControlPlaneAcceptance`` instance and one
+    pure renderer (``render_acceptance_decision``). With both paths
+    consuming the same decision, this drift detector should never
+    fire on a healthy production run.
+
+    Runtime emission is deliberately KEPT ACTIVE as defense-in-depth.
+    The runtime path will only be demoted (or silenced) after the
+    corpus proves silence across at least one full deployed cycle
+    — concretely, zero firings across N>=10 consecutive production
+    runs spanning at least one calendar week. Until that bar is
+    cleared, treat any firing as a HIGH-tier contract-health
+    violation requiring a postmortem and an entry in the
+    runid_analysis/ tree.
+
+    Replay-test equivalence: ``check_i9_acceptance_render_byte_equality``
+    asserts byte-equal rendering between ``acceptance_decision`` and
+    ``full_eval_marker`` per iteration; this is the test-side
+    counterpart of the runtime shadow.
+
+    Cycle 14-W T6 origin: alarm fired when Phase H acceptance writer
+    disagreed with the canonical ``ControlPlaneAcceptance`` decision.
     """
     return marker_line(
         "GSO_PHASE_H_ACCEPTANCE_DRIFT_V1",

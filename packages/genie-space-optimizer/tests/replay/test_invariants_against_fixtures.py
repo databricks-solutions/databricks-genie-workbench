@@ -528,3 +528,29 @@ def test_invariants_fire_on_run_809960554692716_pre_projection_fixture(
         "Expected I3 (acceptance buckets) or I7 (RCA grounding) to "
         f"fire on {fixture_name}; got {sorted(by_id)}"
     )
+
+
+def test_ccf1d60d_no_phase_h_acceptance_drift_after_plan_p_c():
+    """Plan P-C closeout — replay the ccf1d60d evidence; the I9
+    invariant must report zero reason_code / reason_detail / bucket
+    drift between acceptance_decision and full_eval_marker per
+    iteration. This is the test-side counterpart of the runtime
+    GSO_PHASE_H_ACCEPTANCE_DRIFT_V1 shadow marker."""
+    import json
+    from pathlib import Path
+
+    from genie_space_optimizer.optimization.invariants import (
+        check_i9_acceptance_render_byte_equality,
+    )
+
+    fixture_path = (
+        Path(__file__).parent / "fixtures" / "run_ccf1d60d_7now.json"
+    )
+    with open(fixture_path) as f:
+        evidence = json.load(f)
+
+    violations = check_i9_acceptance_render_byte_equality(evidence)
+    assert violations == [], (
+        f"Plan P-C regression — drift returned on ccf1d60d replay: "
+        f"{violations!r}"
+    )
