@@ -109,6 +109,29 @@ def next_action_for_rejection(
             reason=reason,
         )
 
+    # Defect Plan 2 (2026-05-12) — closed-loop mapping for the
+    # ``no_applied_patches`` rejection. Producer: harness.py
+    # when ``_should_skip_eval_for_patch_bundle(stage="post_apply")``
+    # returns ``reason_code="no_applied_patches"`` (i.e. the applier
+    # dropped every grounded patch, typically via the blast-radius
+    # gate). Pre-Defect-2 this fell to ``RcaNextAction.NONE`` because
+    # no branch matched and the strategist had no closed-loop hint
+    # for the next attempt.
+    #
+    # Forced levers (5, 6) target snippet and synthesis families —
+    # the most common blast-radius victim is rewrite/instruction
+    # patches (lever 1/3), so the closed loop must switch away from
+    # them. The reflection's ``rollback_class=NO_ACTION`` (Task 1)
+    # already retires the AG identity in the forbidden set; this
+    # branch only seeds the strategist's NEXT attempt with a
+    # deterministic non-rewrite family.
+    if reason == "no_applied_patches":
+        return RcaNextActionDecision(
+            RcaNextAction.ROTATE_PATCH_FAMILY,
+            forced_levers=(5, 6),
+            reason=reason,
+        )
+
     if reason in {"judge_unreliable", "benchmark_broken", "unpatchable_with_six_levers"}:
         return RcaNextActionDecision(
             RcaNextAction.TERMINATE,
