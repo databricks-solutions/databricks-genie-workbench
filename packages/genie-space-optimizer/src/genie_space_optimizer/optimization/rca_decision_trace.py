@@ -193,6 +193,18 @@ class ReasonCode(str, Enum):
     RCA_CLASSIFIED_UNGROUNDED = "rca_classified_ungrounded"
     RCA_REGENERATION_SUCCEEDED = "rca_regeneration_succeeded"
     RCA_REGENERATION_EXHAUSTED = "rca_regeneration_exhausted"
+    # Phase 1 Action 1.1 — evidence-first RCA card builder. Emitted
+    # when the deterministic builder's self-grounding check fails
+    # (root_cause does not match the cluster's dominant ASI signal,
+    # OR a grounding term cannot be located in ASI blame, generated
+    # SQL, or reference SQL). The builder returns None and the AG
+    # selection path treats the cluster as still-ungrounded.
+    RCA_CARD_SELF_CHECK_FAILED = "rca_card_self_check_failed"
+    # Phase 1 Action 1.1 — emitted when the optional LLM rationale
+    # normalization step times out, raises, or attempts to mutate a
+    # field outside `rationale`. The card is still returned with the
+    # deterministic rationale.
+    RCA_CARD_LLM_SKIPPED = "rca_card_llm_skipped"
     # Cycle 5 T5 — soft-cluster drift recovery: emitted when the
     # clusterer's soft pile carried a qid the current eval no longer
     # flags as judge-failing, and the harness recovered by dropping

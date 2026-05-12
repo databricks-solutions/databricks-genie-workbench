@@ -54,3 +54,13 @@ def test_rca_classified_ungrounded_reason_code_exists():
     from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
 
     assert ReasonCode.RCA_CLASSIFIED_UNGROUNDED.value == "rca_classified_ungrounded"
+
+
+def test_rca_card_self_check_failed_reason_code_present() -> None:
+    from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
+    assert ReasonCode.RCA_CARD_SELF_CHECK_FAILED.value == "rca_card_self_check_failed"
+
+
+def test_rca_card_llm_skipped_reason_code_present() -> None:
+    from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
+    assert ReasonCode.RCA_CARD_LLM_SKIPPED.value == "rca_card_llm_skipped"
