@@ -253,3 +253,59 @@ def test_invariant_skips_when_iteration_has_applied_patches() -> None:
     }
     result = check_proposal_failure_decided_coverage(iter_inputs)
     assert result.violated is False
+
+
+def test_harness_emits_invariant_marker_when_coverage_violated(
+    monkeypatch,
+) -> None:
+    """When the coverage invariant fails and the flag is on, the harness
+    emits a GSO_INVARIANT_VIOLATION_V1 marker with the typed
+    invariant_name."""
+    monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", "1")
+
+    from genie_space_optimizer.optimization.harness import (
+        _check_and_emit_proposal_failure_coverage,
+    )
+
+    iter_inputs = {
+        "applied_patches_total": 0,
+        "exit_path": "proposals_empty",
+        "decision_records": [],
+    }
+    markers: list[str] = []
+    iter_inputs["markers"] = markers
+
+    _check_and_emit_proposal_failure_coverage(
+        run_id="run_q",
+        iteration=2,
+        iter_inputs=iter_inputs,
+    )
+
+    assert any(
+        m.startswith("GSO_INVARIANT_VIOLATION_V1 ")
+        and "proposal_failure_decided_coverage" in m
+        for m in markers
+    )
+
+
+def test_harness_skips_invariant_marker_when_flag_off(monkeypatch) -> None:
+    """Flag-off path emits nothing — replay byte-stability."""
+    monkeypatch.delenv("GSO_PROPOSAL_FAILURE_DECIDED", raising=False)
+
+    from genie_space_optimizer.optimization.harness import (
+        _check_and_emit_proposal_failure_coverage,
+    )
+
+    iter_inputs = {
+        "applied_patches_total": 0,
+        "exit_path": "proposals_empty",
+        "decision_records": [],
+        "markers": [],
+    }
+    _check_and_emit_proposal_failure_coverage(
+        run_id="run_q",
+        iteration=2,
+        iter_inputs=iter_inputs,
+    )
+
+    assert iter_inputs["markers"] == []

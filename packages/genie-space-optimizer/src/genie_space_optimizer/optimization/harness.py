@@ -4549,6 +4549,81 @@ def _emit_proposal_failure_decided(
         )
 
 
+def _check_and_emit_proposal_failure_coverage(
+    *,
+    run_id: str,
+    iteration: int,
+    iter_inputs: dict,
+) -> None:
+    """Plan P-F (2026-05-12) — per-iteration coverage invariant.
+
+    Called from the per-iteration finalize path *after* every emit site
+    has had a chance to fire. When the iteration has zero applied
+    patches on a no-applied exit path AND no
+    ``proposal_failure_decided`` record was emitted, prints a
+    ``GSO_INVARIANT_VIOLATION_V1`` marker with
+    ``invariant_name="proposal_failure_decided_coverage"`` and the
+    iteration's ``exit_path`` + record count in the payload.
+
+    Flag-off (``GSO_PROPOSAL_FAILURE_DECIDED=0``) is a hard no-op so
+    the invariant cannot fail on pre-P-F replay fixtures.
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            proposal_failure_decided_enabled,
+        )
+        if not proposal_failure_decided_enabled():
+            return
+    except Exception:
+        logger.debug(
+            "Plan P-F: invariant flag accessor import failed (non-fatal)",
+            exc_info=True,
+        )
+        return
+
+    try:
+        from genie_space_optimizer.optimization.invariants import (
+            check_proposal_failure_decided_coverage,
+        )
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            gso_invariant_violation_marker,
+        )
+    except Exception:
+        logger.debug(
+            "Plan P-F: invariant module import failed (non-fatal)",
+            exc_info=True,
+        )
+        return
+
+    try:
+        result = check_proposal_failure_decided_coverage(iter_inputs)
+        if not result.violated:
+            return
+        marker = gso_invariant_violation_marker(
+            optimization_run_id=str(run_id),
+            iteration=int(iteration),
+            invariant_name="proposal_failure_decided_coverage",
+            degradation="warn",
+            payload={
+                "exit_path": str(iter_inputs.get("exit_path") or ""),
+                "decision_records_total": len(
+                    iter_inputs.get("decision_records") or []
+                ),
+                "message": result.message,
+            },
+        )
+        iter_inputs.setdefault("markers", []).append(marker)
+        logger.warning(
+            "Plan P-F coverage invariant violated: %s",
+            result.message,
+        )
+    except Exception:
+        logger.debug(
+            "Plan P-F: invariant check failed (non-fatal)",
+            exc_info=True,
+        )
+
+
 def _emit_rca_ungrounded_records_for_unfit_clusters(
     *,
     run_id: str,
@@ -21404,6 +21479,16 @@ def _run_lever_loop(
                         exc_info=True,
                     )
                 _render_current_journey()
+                # Plan P-F T12 — stamp exit_path on iter_inputs so the
+                # coverage invariant can resolve it from the per-iteration
+                # bag, then run the helper before finalize. Flag-off path
+                # is a hard no-op inside the helper.
+                _current_iter_inputs["exit_path"] = "proposals_empty"
+                _check_and_emit_proposal_failure_coverage(
+                    run_id=run_id,
+                    iteration=int(iteration_counter),
+                    iter_inputs=_current_iter_inputs,
+                )
                 try:
                     _phase_h_a, _phase_h_r, _phase_h_s, _phase_h_g = (
                         _compute_iteration_counters(_current_iter_inputs)
@@ -24456,6 +24541,16 @@ def _run_lever_loop(
                         exc_info=True,
                     )
                 _render_current_journey()
+                # Plan P-F T12 — stamp exit_path on iter_inputs so the
+                # coverage invariant can resolve it from the per-iteration
+                # bag, then run the helper before finalize. Flag-off path
+                # is a hard no-op inside the helper.
+                _current_iter_inputs["exit_path"] = "skipped_no_applied_patches"
+                _check_and_emit_proposal_failure_coverage(
+                    run_id=run_id,
+                    iteration=int(iteration_counter),
+                    iter_inputs=_current_iter_inputs,
+                )
                 try:
                     _phase_h_a, _phase_h_r, _phase_h_s, _phase_h_g = (
                         _compute_iteration_counters(_current_iter_inputs)
