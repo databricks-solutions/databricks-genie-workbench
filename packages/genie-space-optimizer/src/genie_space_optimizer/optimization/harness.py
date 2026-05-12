@@ -3542,6 +3542,118 @@ def _branch_c_qid_to_question_text(
     return out
 
 
+def _emit_narrow_replacement_diagnostic_for_test(
+    *,
+    diag: dict,
+    run_id,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    ag_root_cause: str,
+    iter_inputs: dict,
+) -> None:
+    """P-E1 — single entry point for emitting a typed record + marker
+    when ``narrow_replacement_diagnosis`` returns ``applicable=False``.
+
+    Routes the new ``narrow_skipped_no_original_patch_type`` reason to
+    its dedicated record + marker, and preserves the legacy
+    ``narrow_not_applicable`` path for every other inapplicable
+    reason. Exposed at module scope so the unit test can exercise the
+    emit shape without a full harness invocation.
+
+    Default-on for the new reason via
+    :func:`narrow_skipped_no_original_patch_type_enabled`; the legacy
+    path's gating by :func:`l6_narrow_replacement_patch_aware_enabled`
+    is preserved for byte-stable replay.
+    """
+    if iter_inputs is None:
+        return
+    reason = str(diag.get("reason") or "")
+    original_ptype = str(diag.get("original_patch_type") or "")
+    try:
+        from genie_space_optimizer.common.config import (
+            l6_narrow_replacement_patch_aware_enabled,
+            narrow_skipped_no_original_patch_type_enabled,
+        )
+        if (
+            reason == "narrow_skipped_no_original_patch_type"
+            and narrow_skipped_no_original_patch_type_enabled()
+        ):
+            from genie_space_optimizer.optimization.decision_emitters import (
+                narrow_skipped_no_original_patch_type_record,
+            )
+            from genie_space_optimizer.common.mlflow_markers import (
+                narrow_skipped_no_original_patch_type_marker,
+            )
+            rec = narrow_skipped_no_original_patch_type_record(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                ag_id=str(ag_id),
+                cluster_id=str(cluster_id),
+                root_cause=str(ag_root_cause or ""),
+            )
+            iter_inputs.setdefault(
+                "decision_records", []
+            ).append(rec.to_dict())
+            try:
+                marker = narrow_skipped_no_original_patch_type_marker(
+                    run_id=str(run_id),
+                    iteration=int(iteration),
+                    ag_id=str(ag_id),
+                    cluster_id=str(cluster_id),
+                    root_cause=str(ag_root_cause or ""),
+                )
+                iter_inputs.setdefault("markers", []).append(marker)
+            except Exception:
+                logger.debug(
+                    "P-E1: narrow_skipped marker emit failed (non-fatal)",
+                    exc_info=True,
+                )
+            return
+        # Legacy path (unchanged from Cycle 10 W4.4).
+        if l6_narrow_replacement_patch_aware_enabled():
+            from genie_space_optimizer.optimization.decision_emitters import (
+                narrow_not_applicable_record,
+            )
+            from genie_space_optimizer.common.mlflow_markers import (
+                narrow_not_applicable_marker,
+            )
+            rec = narrow_not_applicable_record(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                ag_id=str(ag_id),
+                cluster_id=str(cluster_id),
+                root_cause=str(ag_root_cause or ""),
+                original_patch_type=original_ptype,
+                reason=reason,
+            )
+            iter_inputs.setdefault(
+                "decision_records", []
+            ).append(rec.to_dict())
+            try:
+                marker = narrow_not_applicable_marker(
+                    run_id=str(run_id),
+                    iteration=int(iteration),
+                    ag_id=str(ag_id),
+                    cluster_id=str(cluster_id),
+                    root_cause=str(ag_root_cause or ""),
+                    original_patch_type=original_ptype,
+                    reason=reason,
+                )
+                iter_inputs.setdefault("markers", []).append(marker)
+            except Exception:
+                logger.debug(
+                    "Cycle 10 W4.4: narrow_not_applicable marker emit "
+                    "failed (non-fatal)",
+                    exc_info=True,
+                )
+    except Exception:
+        logger.debug(
+            "P-E1: narrow_replacement diagnostic emit failed (non-fatal)",
+            exc_info=True,
+        )
+
+
 def _run_narrow_l6_replacement_loop(
     *,
     blast_dropped: list[dict],
@@ -3704,63 +3816,20 @@ def _run_narrow_l6_replacement_loop(
             root_cause=str(ag_root_cause or ""),
         )
         if narrow is None:
-            # Cycle 10 W4.4 — emit a typed NARROW_NOT_APPLICABLE
-            # record + marker so the harness's L5 fallback decision
-            # is observable in the trace.
-            if iter_inputs is not None:
-                try:
-                    from genie_space_optimizer.common.config import (
-                        l6_narrow_replacement_patch_aware_enabled,
-                    )
-                    if l6_narrow_replacement_patch_aware_enabled():
-                        if not diag.get("applicable"):
-                            from genie_space_optimizer.optimization.decision_emitters import (
-                                narrow_not_applicable_record,
-                            )
-                            from genie_space_optimizer.common.mlflow_markers import (
-                                narrow_not_applicable_marker,
-                            )
-                            _nna = narrow_not_applicable_record(
-                                run_id=str(run_id),
-                                iteration=int(iteration),
-                                ag_id=str(ag_id),
-                                cluster_id=str(cluster_id),
-                                root_cause=str(ag_root_cause or ""),
-                                original_patch_type=str(
-                                    diag["original_patch_type"]
-                                ),
-                                reason=str(diag["reason"]),
-                            )
-                            iter_inputs.setdefault(
-                                "decision_records", []
-                            ).append(_nna.to_dict())
-                            try:
-                                _marker = narrow_not_applicable_marker(
-                                    run_id=str(run_id),
-                                    iteration=int(iteration),
-                                    ag_id=str(ag_id),
-                                    cluster_id=str(cluster_id),
-                                    root_cause=str(ag_root_cause or ""),
-                                    original_patch_type=str(
-                                        diag["original_patch_type"]
-                                    ),
-                                    reason=str(diag["reason"]),
-                                )
-                                iter_inputs.setdefault(
-                                    "markers", []
-                                ).append(_marker)
-                            except Exception:
-                                logger.debug(
-                                    "Cycle 10 W4.4: narrow_not_applicable "
-                                    "marker emit failed (non-fatal)",
-                                    exc_info=True,
-                                )
-                except Exception:
-                    logger.debug(
-                        "Cycle 10 W4.4: narrow_not_applicable emit "
-                        "failed (non-fatal)",
-                        exc_info=True,
-                    )
+            # P-E1 / Cycle 10 W4.4 — emit a typed record + marker.
+            # Distinguishes ``narrow_skipped_no_original_patch_type``
+            # (empty original patch_type) from the legacy
+            # ``narrow_not_applicable`` cases.
+            if not diag.get("applicable"):
+                _emit_narrow_replacement_diagnostic_for_test(
+                    diag=diag,
+                    run_id=run_id,
+                    iteration=iteration,
+                    ag_id=ag_id,
+                    cluster_id=cluster_id,
+                    ag_root_cause=ag_root_cause,
+                    iter_inputs=iter_inputs,
+                )
             continue
         try:
             retest = patch_blast_radius_is_safe(
