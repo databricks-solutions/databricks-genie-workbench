@@ -54,3 +54,39 @@ def test_type_to_section_includes_new_decision_types() -> None:
 
     assert DecisionType.STRATEGIST_CONTEXT_ASSEMBLED in TYPE_TO_SECTION
     assert DecisionType.STRATEGIST_CONTEXT_CONSUMED in TYPE_TO_SECTION
+
+
+def test_stage4_context_persistence_flag_default_off(
+    monkeypatch,
+) -> None:
+    """Default-OFF preserves byte-stable replay."""
+    from genie_space_optimizer.common.config import (
+        stage4_context_persistence_enabled,
+    )
+
+    monkeypatch.delenv("GSO_STAGE4_CONTEXT_PERSISTENCE", raising=False)
+    assert stage4_context_persistence_enabled() is False
+
+
+def test_stage4_context_persistence_flag_truthy_values(
+    monkeypatch,
+) -> None:
+    from genie_space_optimizer.common.config import (
+        stage4_context_persistence_enabled,
+    )
+
+    for truthy in ("1", "true", "yes", "on", "TRUE"):
+        monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", truthy)
+        assert stage4_context_persistence_enabled() is True, truthy
+
+
+def test_stage4_context_persistence_flag_falsy_values(
+    monkeypatch,
+) -> None:
+    from genie_space_optimizer.common.config import (
+        stage4_context_persistence_enabled,
+    )
+
+    for falsy in ("", "0", "false", "no", "off"):
+        monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", falsy)
+        assert stage4_context_persistence_enabled() is False, falsy

@@ -6039,6 +6039,24 @@ def stage_handlers_chunk_a_enabled() -> bool:
     return _flag_enabled("GSO_STAGE_HANDLERS_CHUNK_A")
 
 
+def stage4_context_persistence_enabled() -> bool:
+    """Plan P-G (2026-05-12) — when truthy, the strategist call site
+    emits ``STRATEGIST_CONTEXT_ASSEMBLED`` + ``STRATEGIST_CONTEXT_CONSUMED``
+    decision records and persists the typed ``StrategistContextOutput``
+    boundary JSON to
+    ``gso_postmortem_bundle/iterations/iter_NN/stages/04_strategist_context/output.json``.
+
+    Default-OFF so replay byte-stability is preserved; flipped on after
+    the producers + transcript mapping land (Task 6) and integration
+    smoke runs verify the artifact persistence path.
+
+    Evidence anchor:
+    runid_analysis/{ccf1d60d,31ecd96f}/evidence/gso_postmortem_bundle/operator_transcript.md
+    — Stage 4 renders the placeholder in every iter of both runs because
+    today nothing emits a record from the strategist_context boundary."""
+    return _flag_enabled("GSO_STAGE4_CONTEXT_PERSISTENCE")
+
+
 def stage_handlers_chunk_b_enabled() -> bool:
     """Cycle 15 Phase 3: route Chunk B (strategist output → AG selection)
     through typed stage handlers."""
