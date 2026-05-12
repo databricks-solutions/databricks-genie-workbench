@@ -1,0 +1,10 @@
+{
+  "fixture_version": 1,
+  "predictions": {
+    "ccf1d60d_iter1": {
+      "expected_accepted_class": "diagnostic_hold",
+      "expected_accept": false,
+      "rationale": "delta_pp=+4.3 ≥ 1.0 ✓; passing_to_hard empty ✓; soft_to_hard empty ✓; unknown_to_hard count=1 ≤ 1 ✓; fixes_count=0 < regressions_count(1)+2=3 ✗ → fails net_win_with_debt; diagnostic_hold predicates: delta_pp ≥ 1.0 ✓; target_not_fixed (gs_026 still hard) ✓; net_win_bounds_exceeded ✓ → diagnostic_hold."
+    }
+  }
+}
