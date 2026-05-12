@@ -2456,6 +2456,61 @@ def narrow_not_applicable_record(
     )
 
 
+def narrow_skipped_no_original_patch_type_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+) -> DecisionRecord:
+    """P-E1 — narrow-L6 replacement skipped because the original
+    patch carries an empty ``patch_type`` (so there is nothing to
+    narrow). Decision type ``PROPOSAL_GENERATED`` with reason_code
+    ``narrow_skipped_no_original_patch_type``.
+
+    Replaces the misleading ``unrecognized_patch_type`` reason that
+    historical fixtures recorded for this exact case (every fixture
+    containing ``"original_patch_type=; reason=unrecognized_patch_type"``).
+    """
+    evidence_refs = tuple(
+        v for v in (
+            f"ag:{ag_id}" if ag_id else "",
+            f"cluster:{cluster_id}" if cluster_id else "",
+        ) if v
+    )
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.UNRESOLVED,
+        reason_code=ReasonCode.NARROW_SKIPPED_NO_ORIGINAL_PATCH_TYPE,
+        ag_id=str(ag_id),
+        cluster_id=str(cluster_id),
+        root_cause=str(root_cause),
+        evidence_refs=evidence_refs,
+        source_cluster_ids=(cluster_id,) if cluster_id else (),
+        gate="proposal_generation",
+        reason_detail=(
+            "original_patch_type=; "
+            "reason=narrow_skipped_no_original_patch_type"
+        ),
+        expected_effect=(
+            "Narrow-L6 replacement would substitute a question-scoped "
+            "variant for the dropped L6 patch."
+        ),
+        observed_effect=(
+            "Dropped patch has no original patch_type; narrow "
+            "replacement is not applicable by construction."
+        ),
+        next_action=(
+            "Inspect why a patch with empty patch_type reached the "
+            "narrow-replacement orchestrator; usually indicates an "
+            "upstream proposal-shaping bug."
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class NarrowReplacementSynthesizedRecord:
     decision_type: str
