@@ -55,11 +55,14 @@ def _stages_for_qid(events: list[QuestionJourneyEvent], qid: str) -> list[str]:
 
 
 def test_replay_iteration_emits_both_when_flag_off(monkeypatch):
-    """Flag-off: current behaviour preserved — `soft_signal` and
+    """Flag-off: legacy behaviour preserved — `soft_signal` and
     `clustered` are both emitted for `q_overlap`. Byte-stability on
     pre-Cycle-17 fixtures depends on this branch.
+
+    Defect Plan 3 (2026-05-12) flipped the default to ON. This test
+    pins the legacy-off regime via explicit ``setenv=0``.
     """
-    monkeypatch.delenv("GSO_JOURNEY_PRODUCER_STRICT", raising=False)
+    monkeypatch.setenv("GSO_JOURNEY_PRODUCER_STRICT", "0")
     from genie_space_optimizer.common import config
 
     importlib.reload(config)
@@ -142,10 +145,13 @@ def test_replay_iteration_keeps_already_passing_under_flag_on(monkeypatch):
 
 
 def test_emit_cluster_membership_events_emits_both_when_flag_off(monkeypatch):
-    """Flag-off: existing behaviour — a qid declared in both
+    """Flag-off: legacy behaviour — a qid declared in both
     hard_clusters and soft_clusters receives both events.
+
+    Defect Plan 3 (2026-05-12) flipped the default to ON. This test
+    pins the legacy-off regime via explicit ``setenv=0``.
     """
-    monkeypatch.delenv("GSO_JOURNEY_PRODUCER_STRICT", raising=False)
+    monkeypatch.setenv("GSO_JOURNEY_PRODUCER_STRICT", "0")
     from genie_space_optimizer.common import config
 
     importlib.reload(config)
