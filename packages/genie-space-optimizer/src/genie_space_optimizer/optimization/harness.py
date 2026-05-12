@@ -24233,6 +24233,57 @@ def _run_lever_loop(
                     pending_action_groups = _survivors
                     if not pending_action_groups:
                         pending_strategy = None
+                    # Plan P-F (2026-05-12) — taxonomy companion to the
+                    # deterministic-rejection print.
+                    try:
+                        _ag_signatures = tuple(
+                            str(s)
+                            for s in (
+                                ag.get("source_cluster_signatures") or ()
+                            )
+                            if str(s)
+                        )
+                        _emit_proposal_failure_decided(
+                            run_id=run_id,
+                            iteration=iteration_counter,
+                            ag_id=str(ag_id),
+                            cluster_id=str(
+                                (ag.get("source_cluster_ids") or [""])[0] or ""
+                            ),
+                            cluster_signature=(
+                                _ag_signatures[0] if _ag_signatures else ""
+                            ),
+                            rca_id=str(ag.get("rca_id") or ""),
+                            root_cause=str(
+                                _ag_identity_kwargs.get("root_cause") or ""
+                            ),
+                            failure_mode=(
+                                "all_selected_patches_dropped_by_applier"
+                            ),
+                            lever_set=tuple(int(lk) for lk in lever_keys),
+                            tried_lever_families=tuple(
+                                int(lk) for lk in lever_keys
+                            ),
+                            ag_source_cluster_count=len(
+                                ag.get("source_cluster_ids") or ()
+                            ),
+                            rca_card_grounded=bool(
+                                ag.get("rca_card_grounded", True)
+                            ),
+                            prior_failure_count=0,
+                            target_qids=tuple(
+                                str(q) for q in (
+                                    ag.get("affected_questions") or ()
+                                ) if str(q)
+                            ),
+                            iter_inputs=_current_iter_inputs,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Plan P-F: all_selected_patches_dropped_by_applier "
+                            "taxonomy emit failed (non-fatal)",
+                            exc_info=True,
+                        )
                 logger.warning(
                     "[%s] Skipping acceptance eval: %s",
                     ag_id,
@@ -24355,6 +24406,55 @@ def _run_lever_loop(
                         exc_info=True,
                     )
                 _phase_b_emit_ag_outcome_record(ag, "skipped_no_applied_patches")
+                # Plan P-F (2026-05-12) — taxonomy companion to the
+                # skipped_no_applied_patches outcome record.
+                try:
+                    _ag_signatures = tuple(
+                        str(s)
+                        for s in (
+                            ag.get("source_cluster_signatures") or ()
+                        )
+                        if str(s)
+                    )
+                    _emit_proposal_failure_decided(
+                        run_id=run_id,
+                        iteration=iteration_counter,
+                        ag_id=str(ag_id),
+                        cluster_id=str(
+                            (ag.get("source_cluster_ids") or [""])[0] or ""
+                        ),
+                        cluster_signature=(
+                            _ag_signatures[0] if _ag_signatures else ""
+                        ),
+                        rca_id=str(ag.get("rca_id") or ""),
+                        root_cause=str(
+                            _ag_identity_kwargs.get("root_cause") or ""
+                        ),
+                        failure_mode="no_applied_patches",
+                        lever_set=tuple(int(lk) for lk in lever_keys),
+                        tried_lever_families=tuple(
+                            int(lk) for lk in lever_keys
+                        ),
+                        ag_source_cluster_count=len(
+                            ag.get("source_cluster_ids") or ()
+                        ),
+                        rca_card_grounded=bool(
+                            ag.get("rca_card_grounded", True)
+                        ),
+                        prior_failure_count=0,
+                        target_qids=tuple(
+                            str(q) for q in (
+                                ag.get("affected_questions") or ()
+                            ) if str(q)
+                        ),
+                        iter_inputs=_current_iter_inputs,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Plan P-F: no_applied_patches taxonomy emit "
+                        "failed (non-fatal)",
+                        exc_info=True,
+                    )
                 _render_current_journey()
                 try:
                     _phase_h_a, _phase_h_r, _phase_h_s, _phase_h_g = (

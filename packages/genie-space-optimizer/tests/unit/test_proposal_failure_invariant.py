@@ -143,3 +143,58 @@ def test_no_causal_applyable_patch_path_constants_resolve() -> None:
     assert callable(_emit_proposal_failure_decided)
     assert callable(no_causal_applyable_halt_enabled)
     assert "narrow_ag_scope" in {a.value for a in ProposalFailureNextAction}
+
+
+def test_emit_helper_accepts_all_selected_dropped_failure_mode(monkeypatch) -> None:
+    """Verify the helper accepts the two new failure modes and the
+    correct next-action emerges on a multi-cluster AG."""
+    monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", "1")
+
+    from genie_space_optimizer.optimization.harness import (
+        _emit_proposal_failure_decided,
+    )
+
+    iter_inputs: dict = {}
+    _emit_proposal_failure_decided(
+        run_id="run_z",
+        iteration=5,
+        ag_id="AG_MULTI",
+        cluster_id="C10",
+        cluster_signature="sig:multi",
+        rca_id="rca_z",
+        root_cause="anything",
+        failure_mode="all_selected_patches_dropped_by_applier",
+        lever_set=(1, 5),
+        tried_lever_families=(1,),
+        ag_source_cluster_count=3,
+        rca_card_grounded=True,
+        prior_failure_count=0,
+        target_qids=("q1",),
+        iter_inputs=iter_inputs,
+    )
+
+    records = iter_inputs["decision_records"]
+    assert len(records) == 1
+    assert records[0]["reason_code"] == "narrow_ag_scope"
+
+    iter_inputs2: dict = {}
+    _emit_proposal_failure_decided(
+        run_id="run_z",
+        iteration=5,
+        ag_id="AG_NO_APPLIED",
+        cluster_id="C11",
+        cluster_signature="sig:noapp",
+        rca_id="rca_z2",
+        root_cause="anything",
+        failure_mode="no_applied_patches",
+        lever_set=(1, 5, 6),
+        tried_lever_families=(1,),
+        ag_source_cluster_count=1,
+        rca_card_grounded=True,
+        prior_failure_count=0,
+        target_qids=(),
+        iter_inputs=iter_inputs2,
+    )
+    assert iter_inputs2["decision_records"][0]["reason_code"] == (
+        "rotate_lever_family"
+    )
