@@ -4637,6 +4637,135 @@ def _maybe_force_lever6_with_cache(
     return None
 
 
+_PROPOSAL_STAGE_OBSERVED_CALL_SITES_HARNESS = frozenset({
+    "cluster_driven_synthesis",
+    "force_lever6",
+})
+
+
+def _check_proposal_stage_forbidden_ag_leakage(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+    collision_pair,
+    forbidden_pair,
+    cluster_signature: str,
+    lever_set: tuple[int, ...],
+    call_site: str,
+    iter_inputs: dict,
+) -> str | None:
+    """P-E2 — observe-only: emit a record + marker when the AG's
+    collision pair matches the forbidden set at a sub-AG proposal
+    generator (cluster-driven synthesis or forced Lever-6).
+
+    Reuses :func:`_compute_forbidden_ag_set_pair` semantics via the
+    ``forbidden_pair`` argument (computed by the caller, typically
+    once per AG iteration) and :func:`_collision_pair_matches` shape
+    via the ``collision_pair`` argument. **No behavior change** —
+    the proposal call still runs after this returns.
+
+    Returns:
+      - The match axis (``"root_cause"`` | ``"cluster_signature"`` |
+        ``"both"``) when a match is detected; ``None`` otherwise.
+      - ``None`` when ``proposal_stage_forbidden_ag_observed_enabled()``
+        is False (byte-stable with pre-P-E2 fixtures).
+      - ``None`` when either side of the pair is empty (nothing to
+        match against).
+
+    ``call_site`` must be in the closed vocabulary
+    ``{cluster_driven_synthesis, force_lever6}``; ValueError on typo.
+
+    The helper appends one record to
+    ``iter_inputs["decision_records"]`` and one marker line to
+    ``iter_inputs["markers"]`` (also prints the marker to stdout for
+    log scraping, matching the convention used by other observe
+    markers).
+    """
+    if str(call_site) not in _PROPOSAL_STAGE_OBSERVED_CALL_SITES_HARNESS:
+        raise ValueError(
+            f"_check_proposal_stage_forbidden_ag_leakage: "
+            f"call_site={call_site!r} not in "
+            f"{sorted(_PROPOSAL_STAGE_OBSERVED_CALL_SITES_HARNESS)}"
+        )
+
+    from genie_space_optimizer.common.config import (
+        proposal_stage_forbidden_ag_observed_enabled,
+    )
+    if not proposal_stage_forbidden_ag_observed_enabled():
+        return None
+
+    if collision_pair is None:
+        return None
+
+    # Cheap empty-pair short-circuit — avoids the per-axis frozenset
+    # membership probes when there's nothing to match.
+    has_rc_candidate = collision_pair.root_cause_key is not None
+    has_sig_candidate = bool(collision_pair.signature_keys)
+    has_forbidden = bool(
+        forbidden_pair.by_root_cause or forbidden_pair.by_signature
+    )
+    if not has_forbidden or (not has_rc_candidate and not has_sig_candidate):
+        return None
+
+    rc_match = (
+        has_rc_candidate
+        and collision_pair.root_cause_key in forbidden_pair.by_root_cause
+    )
+    sig_match = any(
+        s in forbidden_pair.by_signature
+        for s in collision_pair.signature_keys
+    )
+
+    if not rc_match and not sig_match:
+        return None
+
+    if rc_match and sig_match:
+        axis = "both"
+    elif rc_match:
+        axis = "root_cause"
+    else:
+        axis = "cluster_signature"
+
+    from genie_space_optimizer.optimization.decision_emitters import (
+        proposal_stage_forbidden_ag_observed_record,
+    )
+    from genie_space_optimizer.common.mlflow_markers import (
+        proposal_stage_forbidden_ag_observed_marker,
+    )
+
+    rec = proposal_stage_forbidden_ag_observed_record(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        ag_id=str(ag_id),
+        cluster_id=str(cluster_id),
+        root_cause=str(root_cause),
+        call_site=str(call_site),
+        match_axis=axis,
+        cluster_signature=str(cluster_signature or ""),
+        lever_set=tuple(int(l) for l in (lever_set or ())),
+    )
+    iter_inputs.setdefault("decision_records", []).append(rec.to_dict())
+
+    marker = proposal_stage_forbidden_ag_observed_marker(
+        optimization_run_id=str(run_id),
+        iteration=int(iteration),
+        ag_id=str(ag_id),
+        cluster_id=str(cluster_id),
+        root_cause=str(root_cause),
+        call_site=str(call_site),
+        match_axis=axis,
+        cluster_signature=str(cluster_signature or ""),
+        lever_set=tuple(int(l) for l in (lever_set or ())),
+    )
+    iter_inputs.setdefault("markers", []).append(marker)
+    print(marker, flush=True)
+
+    return axis
+
+
 def _emit_proposal_failure_decided(
     *,
     run_id: str,
