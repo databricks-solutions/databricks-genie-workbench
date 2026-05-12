@@ -937,6 +937,151 @@ def format_control_plane_acceptance_detail(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class AcceptanceDecisionRendering:
+    """Plan P-C — canonical view of one acceptance decision.
+
+    SINGLE source of truth consumed by every render surface that
+    presents an acceptance decision to a human or downstream tool:
+
+      - ``format_full_eval_marker_payload`` (drives ``GSO_FULL_EVAL_V1``)
+      - ``format_control_plane_acceptance_detail`` (drives
+        ``DecisionRecord.reason_detail`` for ``acceptance_decided`` and
+        therefore the Acceptance / Rollback line in the operator
+        transcript's ``acceptance_decision`` stage)
+      - Phase-H acceptance bundle writer (``stages/acceptance.py``)
+
+    The rendering is derived from ``ControlPlaneAcceptance`` exactly
+    once. All bucket lists are sourced from
+    ``decision.target_delta_states`` when populated (the canonical
+    target-state machine introduced in Cycle 14-V T3); pre-T0
+    fixtures with empty ``target_delta_states`` fall back to the
+    legacy tuple fields verbatim for byte-stable replay.
+    """
+
+    iteration: int
+    ag_id: str
+    accepted: bool
+    reason_code: str
+    accepted_label: str
+    baseline_accuracy: float
+    candidate_accuracy: float
+    delta_pp: float
+    target_qids: tuple[str, ...]
+    target_fixed_qids: tuple[str, ...]
+    target_still_hard_qids: tuple[str, ...]
+    target_soft_passing_qids: tuple[str, ...]
+    target_delta_states: tuple[tuple[str, str], ...]
+    out_of_target_regressed_qids: tuple[str, ...]
+    regression_debt_qids: tuple[str, ...]
+    soft_to_hard_regressed_qids: tuple[str, ...]
+    passing_to_hard_regressed_qids: tuple[str, ...]
+    unknown_to_hard_regressed_qids: tuple[str, ...]
+    accidentally_improved_qids: tuple[str, ...]
+    unresolved_target_debt_qids: tuple[str, ...]
+    existing_hard_still_hard_outside_target_qids: tuple[str, ...]
+
+
+def render_acceptance_decision(
+    decision: ControlPlaneAcceptance,
+    *,
+    ag_id: str,
+    iteration: int,
+    accepted_label: str,
+) -> AcceptanceDecisionRendering:
+    """Plan P-C — pure render of one acceptance decision.
+
+    Pure: same input → byte-equal output, no I/O, no global state.
+    """
+    delta_states_pairs = tuple(decision.target_delta_states or ())
+
+    if delta_states_pairs:
+        derived_fixed = tuple(
+            str(q) for q, s in delta_states_pairs
+            if str(s) == DeltaState.FIXED.value
+        )
+        derived_still_hard = tuple(
+            str(q) for q, s in delta_states_pairs
+            if str(s) == DeltaState.STILL_HARD.value
+        )
+        derived_soft_passing = tuple(
+            str(q) for q, s in delta_states_pairs
+            if str(s) == DeltaState.SOFT_PASSING.value
+        )
+        target_qid_set = {str(q) for q, _ in delta_states_pairs}
+        unknown_to_hard_qids = tuple(
+            str(q) for q in (decision.unknown_to_hard_regressed_qids or ())
+            if str(q) not in target_qid_set
+        )
+    else:
+        derived_fixed = tuple(
+            str(q) for q in (decision.target_fixed_qids or ())
+        )
+        derived_still_hard = tuple(
+            str(q) for q in (decision.target_still_hard_qids or ())
+        )
+        derived_soft_passing = tuple(
+            str(q)
+            for q in (getattr(decision, "target_soft_passing_qids", ()) or ())
+        )
+        unknown_to_hard_qids = tuple(
+            str(q) for q in (decision.unknown_to_hard_regressed_qids or ())
+        )
+
+    return AcceptanceDecisionRendering(
+        iteration=int(iteration),
+        ag_id=str(ag_id),
+        accepted=bool(decision.accepted),
+        reason_code=str(decision.reason_code or ""),
+        accepted_label=str(accepted_label),
+        baseline_accuracy=float(decision.baseline_accuracy),
+        candidate_accuracy=float(decision.candidate_accuracy),
+        delta_pp=float(decision.delta_pp),
+        target_qids=tuple(str(q) for q in (decision.target_qids or ())),
+        target_fixed_qids=derived_fixed,
+        target_still_hard_qids=derived_still_hard,
+        target_soft_passing_qids=derived_soft_passing,
+        target_delta_states=tuple(
+            (str(q), str(s)) for q, s in delta_states_pairs
+        ),
+        out_of_target_regressed_qids=tuple(
+            str(q) for q in (decision.out_of_target_regressed_qids or ())
+        ),
+        regression_debt_qids=tuple(
+            str(q) for q in (decision.regression_debt_qids or ())
+        ),
+        soft_to_hard_regressed_qids=tuple(
+            str(q) for q in (decision.soft_to_hard_regressed_qids or ())
+        ),
+        passing_to_hard_regressed_qids=tuple(
+            str(q) for q in (decision.passing_to_hard_regressed_qids or ())
+        ),
+        unknown_to_hard_regressed_qids=unknown_to_hard_qids,
+        accidentally_improved_qids=tuple(
+            str(q)
+            for q in (
+                getattr(decision, "accidentally_improved_qids", ()) or ()
+            )
+        ),
+        unresolved_target_debt_qids=tuple(
+            str(q)
+            for q in (
+                getattr(decision, "unresolved_target_debt_qids", ()) or ()
+            )
+        ),
+        existing_hard_still_hard_outside_target_qids=tuple(
+            str(q)
+            for q in (
+                getattr(
+                    decision,
+                    "existing_hard_still_hard_outside_target_qids",
+                    (),
+                ) or ()
+            )
+        ),
+    )
+
+
 def format_full_eval_marker_payload(
     decision: ControlPlaneAcceptance,
     *,
