@@ -4401,6 +4401,9 @@ def _emit_force_l6_outcome(
     target_qids,
     exception_repr: str,
     iter_inputs: dict,
+    cached: bool = False,
+    original_decline_iteration: int | None = None,
+    cluster_signature: str = "",
 ) -> None:
     """Cycle 10 W3.4 — record typed outcomes for the Cycle 7 N3
     force-Lever-6 path. Emits two records when ``outcome="declined"``
@@ -4438,6 +4441,13 @@ def _emit_force_l6_outcome(
                 run_id=run_id, iteration=iteration, ag_id=ag_id,
                 cluster_id=cluster_id, root_cause=root_cause,
                 target_qids=qids,
+                cached=bool(cached),
+                original_decline_iteration=(
+                    int(original_decline_iteration)
+                    if original_decline_iteration is not None
+                    else None
+                ),
+                cluster_signature=str(cluster_signature or ""),
             )
             rec_b = proposal_generation_empty_record(
                 run_id=run_id, iteration=iteration, ag_id=ag_id,

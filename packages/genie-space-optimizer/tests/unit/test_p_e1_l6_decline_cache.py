@@ -116,3 +116,53 @@ def test_cache_key_shape_uses_collision_pair_plus_snippet_type():
     assert key_none != key_filter
     # The key must be hashable so it can index the cache dict.
     {key_filter, key_measure, key_none}
+
+
+def test_emit_force_l6_outcome_propagates_cached_to_record(monkeypatch):
+    monkeypatch.setenv("GSO_LEVER6_FORCE_TYPED_OUTCOMES", "1")
+    from genie_space_optimizer.optimization.harness import (
+        _emit_force_l6_outcome,
+    )
+    iter_inputs = {"decision_records": [], "markers": []}
+    _emit_force_l6_outcome(
+        outcome="declined",
+        run_id="r1", iteration=2, ag_id="AG_X",
+        cluster_id="H004", root_cause="missing_filter",
+        target_qids=("gs_024",),
+        exception_repr="",
+        iter_inputs=iter_inputs,
+        cached=True,
+        original_decline_iteration=2,
+        cluster_signature="sig_abc123",
+    )
+    declined = [
+        r for r in iter_inputs["decision_records"]
+        if r["reason_code"] == "lever6_force_llm_declined"
+    ]
+    assert len(declined) == 1
+    assert declined[0]["metrics"]["cached"] is True
+    assert declined[0]["metrics"]["original_decline_iteration"] == 2
+    assert "signature:sig_abc123" in (declined[0].get("evidence_refs") or ())
+
+
+def test_emit_force_l6_outcome_default_cached_false(monkeypatch):
+    monkeypatch.setenv("GSO_LEVER6_FORCE_TYPED_OUTCOMES", "1")
+    from genie_space_optimizer.optimization.harness import (
+        _emit_force_l6_outcome,
+    )
+    iter_inputs = {"decision_records": [], "markers": []}
+    _emit_force_l6_outcome(
+        outcome="declined",
+        run_id="r1", iteration=2, ag_id="AG_X",
+        cluster_id="H004", root_cause="missing_filter",
+        target_qids=(), exception_repr="",
+        iter_inputs=iter_inputs,
+    )
+    declined = [
+        r for r in iter_inputs["decision_records"]
+        if r["reason_code"] == "lever6_force_llm_declined"
+    ]
+    assert len(declined) == 1
+    assert declined[0]["metrics"]["cached"] is False
+    refs = declined[0].get("evidence_refs") or ()
+    assert not any(str(r).startswith("signature:") for r in refs)
