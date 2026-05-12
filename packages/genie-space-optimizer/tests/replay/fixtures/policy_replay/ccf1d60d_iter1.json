@@ -1,0 +1,21 @@
+{
+  "fixture_id": "ccf1d60d_iter1",
+  "run_id": "ccf1d60d-d686-467b-bafa-1640131b4393",
+  "iteration": 1,
+  "ag_id": "AG1",
+  "payload_present": true,
+  "baseline_post_arbiter": 87.0,
+  "candidate_post_arbiter": 91.3,
+  "baseline_pre_arbiter": 56.5,
+  "candidate_pre_arbiter": 65.2,
+  "target_qids": ["7now_delivery_analytics_space_gs_026"],
+  "target_fixed_qids": [],
+  "target_still_hard_qids": ["7now_delivery_analytics_space_gs_026"],
+  "out_of_target_regressed_qids": ["7now_delivery_analytics_space_gs_012"],
+  "soft_to_hard_regressed_qids": [],
+  "passing_to_hard_regressed_qids": [],
+  "unknown_to_hard_regressed_qids": ["7now_delivery_analytics_space_gs_012"],
+  "accepted_in_recorded_run": false,
+  "reason_code_in_recorded_run": "target_qids_not_improved",
+  "source_notes": "Hand-curated from runid_analysis/ccf1d60d-d686-467b-bafa-1640131b4393/evidence/parsed_stdout_summary_318760998419002.json. The parsed_stdout summary has a parser quirk where target_still_hard_qids was concatenated with out_of_target_regressed_qids into a single string ('7now_delivery_analytics_space_gs_026; out_of_target_regressed_qids=7now_delivery_analytics_space_gs_012; regression_debt_qids=(none'). Disambiguated using postmortem.md line 22: target gs_026 stayed hard; gs_012 regressed out of target. unknown_to_hard set per postmortem note that gs_012 'regressed out of target' with no documented prior status — conservatively bucketed as unknown_to_hard for replay (matches ControlPlaneAcceptance partition logic when pre-row is missing). Pre-arbiter values from evaluation_summary.1."
+}
