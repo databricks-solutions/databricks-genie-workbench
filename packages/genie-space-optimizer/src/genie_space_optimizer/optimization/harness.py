@@ -19885,6 +19885,47 @@ def _run_lever_loop(
                                 _planner_summary.get("skipped_no_card"),
                                 _propagation,
                             )
+
+                            # Phase 2 Action 2.5 Tier 1 — emit one
+                            # unmatched_pattern_record for every cluster
+                            # the planner did not classify. Pure data
+                            # emission; no decisions taken.
+                            try:
+                                from genie_space_optimizer.common.config import (
+                                    archetype_learning_enabled as _al_enabled,
+                                )
+                                if _al_enabled():
+                                    from genie_space_optimizer.optimization.archetype_learning import (
+                                        emit_unmatched_pattern_records_for_unmatched_clusters as _emit_tier1,
+                                    )
+                                    from genie_space_optimizer.optimization.decision_emitters import (
+                                        unmatched_pattern_record_emitted_record as _unmatched_rec,
+                                    )
+                                    _tier1_records = _emit_tier1(
+                                        run_id=run_id, clusters=clusters,
+                                    )
+                                    for _r in _tier1_records:
+                                        decision_records.append(_unmatched_rec(
+                                            run_id=run_id,
+                                            iteration=iteration_counter,
+                                            cluster_id=_r.cluster_id,
+                                            signature_hash=_r.signature_hash,
+                                            root_cause_label=_r.root_cause_label,
+                                            grounding_terms=tuple(sorted(_r.grounding_terms)),
+                                            target_qids=_r.qids,
+                                        ))
+                                    if _tier1_records:
+                                        logger.info(
+                                            "ARCHETYPE LEARNING TIER1: iter=%s "
+                                            "unmatched_records=%s",
+                                            iteration_counter,
+                                            len(_tier1_records),
+                                        )
+                            except Exception:
+                                logger.debug(
+                                    "Section E Tier 1 wiring failed (non-fatal)",
+                                    exc_info=True,
+                                )
                     except Exception:
                         logger.debug(
                             "Repair Planner wiring failed (non-fatal)",

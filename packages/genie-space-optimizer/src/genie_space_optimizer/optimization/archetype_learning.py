@@ -394,3 +394,37 @@ def record_provisional_archetype_trial_outcome(
         state.provisional_archetypes[idx] = updated
         return updated
     return None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.5 Tier 1 wiring helper.
+# ---------------------------------------------------------------------------
+
+
+def emit_unmatched_pattern_records_for_unmatched_clusters(
+    *,
+    run_id: str,
+    clusters: list[dict],
+) -> list[UnmatchedPatternRecord]:
+    """Walk ``clusters`` and emit one Tier 1 record for every cluster
+    that (a) has an ``rca_card`` AND (b) has no ``_repair_kit`` (i.e.
+    the planner returned no archetype match for it).
+
+    Returns the list of emitted records so the caller can also push
+    decision records onto its iteration's ``decision_records`` buffer.
+    """
+    from genie_space_optimizer.optimization.rca import RCACard
+
+    out: list[UnmatchedPatternRecord] = []
+    for cluster in clusters or []:
+        card = cluster.get("rca_card")
+        if not isinstance(card, RCACard):
+            continue
+        if cluster.get("_repair_kit") is not None:
+            continue
+        out.append(
+            emit_unmatched_pattern_record(
+                run_id=run_id, card=card, cluster=cluster,
+            )
+        )
+    return out
