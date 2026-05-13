@@ -32,6 +32,7 @@ import mlflow
 import pandas as pd
 from mlflow.entities import AssessmentSource, Feedback, SpanType
 from mlflow.genai.scorers import scorer
+from mlflow.tracking import MlflowClient
 
 from genie_space_optimizer.optimization.genie_eval_taxonomy import (
     format_genie_eval_summary,
@@ -96,6 +97,7 @@ from genie_space_optimizer.common.genie_client import (
     run_genie_query,
     sanitize_sql,
 )
+from genie_space_optimizer.common.mlflow_names import evaluation_child_run_name
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -6383,6 +6385,114 @@ def _patch_mlflow_harness_none_trace() -> None:
     _HARNESS_PATCHED = True
     if patched:
         logger.info("Patched MLflow None-trace safety: %s", ", ".join(patched))
+
+
+def _coerce_mlflow_metric(value: Any) -> float | None:
+    """Return a finite float for MLflow metric logging, or None to skip."""
+    if value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    metric_value = float(value)
+    if not math.isfinite(metric_value):
+        return None
+    return metric_value
+
+
+def annotate_mlflow_evaluation_run(
+    eval_result: Any,
+    canonical_name: str,
+    tags: dict[str, Any] | None,
+    metrics: dict[str, Any] | None,
+) -> str:
+    """Annotate the MLflow evaluation run created by mlflow.genai.evaluate().
+
+    MLflow creates this run internally and gives it an adjective/noun name
+    unless we rename it after the call returns. This helper is best-effort:
+    annotation must never fail the optimization run.
+    """
+    eval_run_id = str(getattr(eval_result, "run_id", "") or "").strip()
+    if not eval_run_id:
+        logger.debug(
+            "mlflow.genai.evaluate result did not expose run_id; "
+            "skipping evaluation-run annotation",
+        )
+        return ""
+
+    tag_payload: dict[str, str] = {}
+    if canonical_name:
+        tag_payload["mlflow.runName"] = str(canonical_name)
+    for key, value in (tags or {}).items():
+        if value is None:
+            continue
+        tag_payload[str(key)] = str(value)
+
+    metric_payload: dict[str, float] = {}
+    for key, value in (metrics or {}).items():
+        metric_value = _coerce_mlflow_metric(value)
+        if metric_value is not None:
+            metric_payload[str(key)] = metric_value
+
+    try:
+        client = MlflowClient()
+        for key, value in tag_payload.items():
+            client.set_tag(eval_run_id, key, value)
+        for key, value in metric_payload.items():
+            client.log_metric(eval_run_id, key, value)
+    except Exception:
+        logger.debug(
+            "Failed to annotate MLflow evaluation run %s",
+            eval_run_id,
+            exc_info=True,
+        )
+        return ""
+
+    return eval_run_id
+
+
+def _evaluation_run_ids(eval_result: Any) -> list[str]:
+    """Return deduplicated MLflow evaluation run IDs carried by eval_result."""
+    run_ids: list[str] = []
+    primary = str(getattr(eval_result, "run_id", "") or "").strip()
+    if primary:
+        run_ids.append(primary)
+    for run_id in getattr(eval_result, "evaluation_run_ids", []) or []:
+        run_id_str = str(run_id or "").strip()
+        if run_id_str:
+            run_ids.append(run_id_str)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for run_id in run_ids:
+        if run_id in seen:
+            continue
+        seen.add(run_id)
+        deduped.append(run_id)
+    return deduped
+
+
+def _annotate_mlflow_evaluation_runs(
+    eval_result: Any,
+    *,
+    parent_run_name: str,
+    tags: dict[str, Any] | None,
+    metrics: dict[str, Any] | None,
+) -> list[str]:
+    """Annotate one normal eval run or all row runs from sequential fallback."""
+    run_ids = _evaluation_run_ids(eval_result)
+    annotated: list[str] = []
+    multiple = len(run_ids) > 1
+    for idx, run_id in enumerate(run_ids, start=1):
+        detail = "mlflow_eval" if not multiple else f"mlflow_eval_row_{idx:03d}"
+        annotated_id = annotate_mlflow_evaluation_run(
+            SimpleNamespace(run_id=run_id),
+            canonical_name=evaluation_child_run_name(parent_run_name, detail=detail),
+            tags=tags,
+            metrics=metrics,
+        )
+        if annotated_id:
+            annotated.append(annotated_id)
+    return annotated
 
 
 def _run_evaluate_with_retries(
