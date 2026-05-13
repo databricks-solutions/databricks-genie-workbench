@@ -72,7 +72,9 @@ def test_decide_does_not_emit_tier_record_when_flag_off() -> None:
     )
     ctx = _CtxRecorder()
 
-    with patch.dict(os.environ, {}, clear=True):
+    # GSO_ACCEPTANCE_FOUR_TIER_GATE is default-ON, so operators who
+    # want the legacy path explicitly set it to 0.
+    with patch.dict(os.environ, {"GSO_ACCEPTANCE_FOUR_TIER_GATE": "0"}, clear=True):
         decide(ctx, inp)
 
     reason_codes = [
@@ -143,9 +145,14 @@ def test_tier_record_omits_soft_signal_pass_rate_when_observability_flag_off() -
     )
     ctx = _CtxRecorder()
 
+    # Observability flag is default-ON; an operator who wants the
+    # metric omitted sets it to "0" explicitly.
     with patch.dict(
         os.environ,
-        {"GSO_ACCEPTANCE_FOUR_TIER_GATE": "1"},
+        {
+            "GSO_ACCEPTANCE_FOUR_TIER_GATE": "1",
+            "GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY": "0",
+        },
         clear=True,
     ):
         decide(ctx, inp)

@@ -168,8 +168,15 @@ def test_canonical_acceptance_render_disabled_via_env(monkeypatch):
 # Phase 1 Action 1.1 — RCA card builder flags.
 
 
-def test_rca_card_builder_disabled_by_default(monkeypatch) -> None:
+def test_rca_card_builder_enabled_by_default(monkeypatch) -> None:
     monkeypatch.delenv("GSO_RCA_CARD_BUILDER", raising=False)
+    from genie_space_optimizer.common.config import rca_card_builder_enabled
+    # Default-ON: GSO operational flags are on by default so callers don't need to set env vars.
+    assert rca_card_builder_enabled() is True
+
+
+def test_rca_card_builder_off_when_env_falsy(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_RCA_CARD_BUILDER", "0")
     from genie_space_optimizer.common.config import rca_card_builder_enabled
     assert rca_card_builder_enabled() is False
 
@@ -196,8 +203,17 @@ def test_rca_card_llm_normalization_enabled_when_flag_on(monkeypatch) -> None:
     assert rca_card_llm_normalization_enabled() is True
 
 
-def test_acceptance_four_tier_gate_disabled_by_default(monkeypatch) -> None:
+def test_acceptance_four_tier_gate_enabled_by_default(monkeypatch) -> None:
     monkeypatch.delenv("GSO_ACCEPTANCE_FOUR_TIER_GATE", raising=False)
+    from genie_space_optimizer.common.config import (
+        acceptance_four_tier_gate_enabled,
+    )
+    # Default-ON: GSO operational flags are on by default.
+    assert acceptance_four_tier_gate_enabled() is True
+
+
+def test_acceptance_four_tier_gate_off_when_env_falsy(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_ACCEPTANCE_FOUR_TIER_GATE", "0")
     from genie_space_optimizer.common.config import (
         acceptance_four_tier_gate_enabled,
     )
@@ -213,8 +229,15 @@ def test_acceptance_four_tier_gate_enabled_when_flag_on(monkeypatch) -> None:
 
 
 # Phase 2 Section A — Repair Planner
-def test_repair_planner_enabled_default_off(monkeypatch) -> None:
+def test_repair_planner_enabled_default_on(monkeypatch) -> None:
     monkeypatch.delenv("GSO_REPAIR_PLANNER", raising=False)
+    from genie_space_optimizer.common.config import repair_planner_enabled
+    # Default-ON: GSO operational flags are on by default so callers don't need to set env vars.
+    assert repair_planner_enabled() is True
+
+
+def test_repair_planner_enabled_off_when_env_falsy(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_REPAIR_PLANNER", "0")
     from genie_space_optimizer.common.config import repair_planner_enabled
     assert repair_planner_enabled() is False
 
@@ -250,8 +273,15 @@ def test_propagation_root_cause_unknown_for_invalid_value(monkeypatch) -> None:
 
 
 # Phase 2 Section B — Kit-aware patch cap
-def test_kit_aware_patch_cap_enabled_default_off(monkeypatch) -> None:
+def test_kit_aware_patch_cap_enabled_default_on(monkeypatch) -> None:
     monkeypatch.delenv("GSO_KIT_AWARE_PATCH_CAP", raising=False)
+    from genie_space_optimizer.common.config import kit_aware_patch_cap_enabled
+    # Default-ON: GSO operational flags are on by default so callers don't need to set env vars.
+    assert kit_aware_patch_cap_enabled() is True
+
+
+def test_kit_aware_patch_cap_enabled_off_when_env_falsy(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_KIT_AWARE_PATCH_CAP", "0")
     from genie_space_optimizer.common.config import kit_aware_patch_cap_enabled
     assert kit_aware_patch_cap_enabled() is False
 
@@ -269,8 +299,15 @@ def test_co_beneficiary_downgrade_threshold_default(monkeypatch) -> None:
 
 
 # Phase 2 Section C — Hub-table scoped variants
-def test_hub_table_scoped_variants_enabled_default_off(monkeypatch) -> None:
+def test_hub_table_scoped_variants_enabled_default_on(monkeypatch) -> None:
     monkeypatch.delenv("GSO_HUB_TABLE_SCOPED_VARIANTS", raising=False)
+    from genie_space_optimizer.common.config import hub_table_scoped_variants_enabled
+    # Default-ON: GSO operational flags are on by default so callers don't need to set env vars.
+    assert hub_table_scoped_variants_enabled() is True
+
+
+def test_hub_table_scoped_variants_enabled_off_when_env_falsy(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_HUB_TABLE_SCOPED_VARIANTS", "0")
     from genie_space_optimizer.common.config import hub_table_scoped_variants_enabled
     assert hub_table_scoped_variants_enabled() is False
 
@@ -282,15 +319,29 @@ def test_hub_table_dependents_threshold_default(monkeypatch) -> None:
 
 
 # Phase 2 Section D — Strategist coverage re-call
-def test_strategist_coverage_recall_enabled_default_off(monkeypatch) -> None:
+def test_strategist_coverage_recall_enabled_default_on(monkeypatch) -> None:
     monkeypatch.delenv("GSO_STRATEGIST_COVERAGE_RECALL", raising=False)
+    from genie_space_optimizer.common.config import strategist_coverage_recall_enabled
+    # Default-ON: GSO operational flags are on by default so callers don't need to set env vars.
+    assert strategist_coverage_recall_enabled() is True
+
+
+def test_strategist_coverage_recall_enabled_off_when_env_falsy(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_STRATEGIST_COVERAGE_RECALL", "0")
     from genie_space_optimizer.common.config import strategist_coverage_recall_enabled
     assert strategist_coverage_recall_enabled() is False
 
 
 # Phase 2 Section E — Archetype learning
-def test_archetype_learning_enabled_default_off(monkeypatch) -> None:
+def test_archetype_learning_enabled_default_on(monkeypatch) -> None:
     monkeypatch.delenv("GSO_ARCHETYPE_LEARNING", raising=False)
+    from genie_space_optimizer.common.config import archetype_learning_enabled
+    # Default-ON: GSO operational flags are on by default so callers don't need to set env vars.
+    assert archetype_learning_enabled() is True
+
+
+def test_archetype_learning_enabled_off_when_env_falsy(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_ARCHETYPE_LEARNING", "0")
     from genie_space_optimizer.common.config import archetype_learning_enabled
     assert archetype_learning_enabled() is False
 

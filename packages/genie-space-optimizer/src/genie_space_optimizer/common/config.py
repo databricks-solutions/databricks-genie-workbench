@@ -5383,7 +5383,7 @@ def rca_card_builder_enabled() -> bool:
 
     Enable with ``GSO_RCA_CARD_BUILDER=1``.
     """
-    return _flag_enabled("GSO_RCA_CARD_BUILDER")
+    return _flag_default_on("GSO_RCA_CARD_BUILDER")
 
 
 def rca_card_llm_normalization_enabled() -> bool:
@@ -5419,7 +5419,7 @@ def tier_gate_soft_signal_observability_enabled() -> bool:
 
     Default OFF. Enable with ``GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY=1``.
     """
-    return _flag_enabled("GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY")
+    return _flag_default_on("GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY")
 
 
 def rca_card_soft_evidence_enabled() -> bool:
@@ -5436,7 +5436,7 @@ def rca_card_soft_evidence_enabled() -> bool:
 
     Default OFF. Enable with ``GSO_RCA_CARD_SOFT_EVIDENCE=1``.
     """
-    return _flag_enabled("GSO_RCA_CARD_SOFT_EVIDENCE")
+    return _flag_default_on("GSO_RCA_CARD_SOFT_EVIDENCE")
 
 
 def acceptance_four_tier_gate_enabled() -> bool:
@@ -5457,7 +5457,7 @@ def acceptance_four_tier_gate_enabled() -> bool:
 
     Enable with ``GSO_ACCEPTANCE_FOUR_TIER_GATE=1``.
     """
-    return _flag_enabled("GSO_ACCEPTANCE_FOUR_TIER_GATE")
+    return _flag_default_on("GSO_ACCEPTANCE_FOUR_TIER_GATE")
 
 
 def patch_subset_isolation_enabled() -> bool:
@@ -6467,13 +6467,13 @@ def propagation_root_cause() -> str:
 # Section A — Repair Planner
 def repair_planner_enabled() -> bool:
     """Phase 2 Action 2.1 — Repair Planner master gate. Default OFF."""
-    return _flag_enabled("GSO_REPAIR_PLANNER")
+    return _flag_default_on("GSO_REPAIR_PLANNER")
 
 
 # Section B — Kit-aware patch cap
 def kit_aware_patch_cap_enabled() -> bool:
     """Phase 2 Action 2.2 — Kit-aware patch cap master gate. Default OFF."""
-    return _flag_enabled("GSO_KIT_AWARE_PATCH_CAP")
+    return _flag_default_on("GSO_KIT_AWARE_PATCH_CAP")
 
 
 def kit_passing_dependents_threshold() -> int:
@@ -6495,7 +6495,7 @@ def co_beneficiary_downgrade_threshold() -> int:
 # Section C — Hub-table scoped variants
 def hub_table_scoped_variants_enabled() -> bool:
     """Phase 2 Action 2.3 — Hub-table scoped variants master gate. Default OFF."""
-    return _flag_enabled("GSO_HUB_TABLE_SCOPED_VARIANTS")
+    return _flag_default_on("GSO_HUB_TABLE_SCOPED_VARIANTS")
 
 
 def hub_table_dependents_threshold() -> int:
@@ -6509,13 +6509,13 @@ def hub_table_dependents_threshold() -> int:
 # Section D — Strategist coverage re-call
 def strategist_coverage_recall_enabled() -> bool:
     """Phase 2 Action 2.4 — Strategist coverage re-call master gate. Default OFF."""
-    return _flag_enabled("GSO_STRATEGIST_COVERAGE_RECALL")
+    return _flag_default_on("GSO_STRATEGIST_COVERAGE_RECALL")
 
 
 # Section E — In-loop archetype learning
 def archetype_learning_enabled() -> bool:
     """Phase 2 Action 2.5 — Archetype learning master gate. Default OFF."""
-    return _flag_enabled("GSO_ARCHETYPE_LEARNING")
+    return _flag_default_on("GSO_ARCHETYPE_LEARNING")
 
 
 def provisional_synthesis_llm_enabled() -> bool:

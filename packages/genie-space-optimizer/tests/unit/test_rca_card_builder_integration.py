@@ -102,10 +102,12 @@ def test_builder_returns_empty_when_self_grounding_fails(monkeypatch) -> None:
 
 
 def test_builder_falls_back_to_legacy_stub_when_flag_off() -> None:
-    """Byte-stable: with the flag OFF, the new signature still works
-    AND returns ``{"rca_id": ""}`` like the original stub. This
-    guards every existing replay fixture."""
-    with patch.dict(os.environ, {}, clear=True):
+    """Byte-stable: when the operator explicitly turns the flag OFF
+    (``GSO_RCA_CARD_BUILDER=0``), the new signature still works AND
+    returns ``{"rca_id": ""}`` like the original stub. This guards
+    every existing replay fixture for operators who need to disable
+    the feature."""
+    with patch.dict(os.environ, {"GSO_RCA_CARD_BUILDER": "0"}, clear=True):
         out = build_rca_card(
             cluster_id="c", qids=(),
             failure_buckets={}, asi_metadata={},
