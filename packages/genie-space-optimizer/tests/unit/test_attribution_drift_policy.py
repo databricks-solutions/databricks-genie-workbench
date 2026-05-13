@@ -105,3 +105,26 @@ def test_attribution_drift_policy_validation_rejects_negative_floor() -> None:
             min_threshold_pass_rate=0.95,
             cumulative_debt_max=3,
         )
+
+
+def test_attribution_drift_with_debt_flag_defaults_off(monkeypatch) -> None:
+    """The new flag is default-OFF. Phase 0.2 must validate offline
+    before this flips. Mirrors the existing GSO_PARTIAL_HARVEST_WITH_DEBT
+    default-OFF convention (config.py:5361)."""
+    monkeypatch.delenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", raising=False)
+
+    from genie_space_optimizer.common.config import (
+        attribution_drift_with_debt_enabled,
+    )
+
+    assert attribution_drift_with_debt_enabled() is False
+
+
+def test_attribution_drift_with_debt_flag_truthy_env_enables(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "1")
+
+    from genie_space_optimizer.common.config import (
+        attribution_drift_with_debt_enabled,
+    )
+
+    assert attribution_drift_with_debt_enabled() is True

@@ -5497,6 +5497,26 @@ def patch_subset_isolation_live_enabled() -> bool:
     return _flag_enabled("GSO_PATCH_SUBSET_ISOLATION_LIVE")
 
 
+def attribution_drift_with_debt_enabled() -> bool:
+    """Phase 1 (2026-05-13) — when truthy, ``decide_control_plane_acceptance``
+    runs the attribution-drift-with-debt branch after the existing
+    partial-harvest branch. The branch flips the rejection reason to
+    ``accepted_with_attribution_drift_and_debt`` when the new policy
+    (``attribution_drift_policy_pilot_default``) is satisfied:
+    ``min_target_clusters_fixed=0``, ``min_aggregate_improvement_pp=4.0``,
+    debt buckets ``{SOFT_TO_HARD, LOOKUP_FAILED}``.
+
+    Default-OFF. Phase 0.2 (offline replay under the new policy) must
+    return ``pass_criterion_met=true`` before this flips.
+
+    Enable with ``GSO_ATTRIBUTION_DRIFT_WITH_DEBT=1``.
+
+    Evidence anchor:
+    docs/2026-05-13-acceptance-gate-redesign-design-record.md
+    """
+    return _flag_enabled("GSO_ATTRIBUTION_DRIFT_WITH_DEBT")
+
+
 def phase_b_aggregator_in_finalize_enabled() -> bool:
     """Cycle 14-T1 — when on, ``_finalize_iteration_summary`` invokes
     ``record_phase_b_iter_accounting`` so producer exceptions earlier
