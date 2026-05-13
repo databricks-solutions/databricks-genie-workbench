@@ -19803,6 +19803,94 @@ def _run_lever_loop(
                     action_groups = _sort_ags_rco7_site1(
                         strategy.get("action_groups", [])
                     )
+                    # Phase 2 Action 2.1 — Repair Planner. When the flag is
+                    # on, classify each cluster's RCACard into a named repair
+                    # archetype and stamp ``_repair_kit`` on the cluster dict.
+                    # Default OFF; the strategist-coverage path below is
+                    # unchanged when the flag is OFF.
+                    try:
+                        from genie_space_optimizer.common.config import (
+                            propagation_root_cause as _propagation_root_cause,
+                            repair_planner_enabled as _repair_planner_enabled,
+                        )
+                        if _repair_planner_enabled():
+                            from genie_space_optimizer.optimization.repair_planner import (
+                                apply_repair_planner_to_clusters as _apply_planner,
+                            )
+                            from genie_space_optimizer.optimization.decision_emitters import (
+                                cluster_archetype_classified_record as _arche_classified,
+                                repair_planner_no_archetype_match_record as _arche_nomatch,
+                                repair_plan_propagation_guarded_record as _arche_guarded,
+                            )
+
+                            _propagation = _propagation_root_cause()
+                            _planner_summary = _apply_planner(
+                                clusters=clusters,
+                                propagation_root_cause=_propagation,
+                            )
+                            for _c in clusters or []:
+                                _kit = _c.get("_repair_kit")
+                                if _kit is None:
+                                    _card = _c.get("rca_card")
+                                    if _card is None:
+                                        continue
+                                    decision_records.append(_arche_nomatch(
+                                        run_id=run_id,
+                                        iteration=iteration_counter,
+                                        cluster_id=str(_c.get("cluster_id") or ""),
+                                        card_id=str(getattr(_card, "card_id", "") or ""),
+                                        root_cause=str(getattr(_card, "root_cause", "") or ""),
+                                        target_qids=tuple(
+                                            str(q) for q in (_c.get("question_ids") or []) if str(q)
+                                        ),
+                                    ))
+                                    continue
+                                decision_records.append(_arche_classified(
+                                    run_id=run_id,
+                                    iteration=iteration_counter,
+                                    cluster_id=str(_c.get("cluster_id") or ""),
+                                    card_id=str(_kit.get("card_id") or ""),
+                                    archetype_name=str(_kit.get("repair_archetype") or ""),
+                                    priority_step=str(_kit.get("priority_step") or ""),
+                                    target_qids=tuple(_kit.get("target_qids") or ()),
+                                    propagation_root_cause=_propagation,
+                                ))
+                                if _propagation in (
+                                    "instruction_insufficient_force",
+                                    "instruction_not_scoped_to_qid",
+                                    "propagation_lag",
+                                ):
+                                    _guard_action = (
+                                        "require_narrow_l6_snippet"
+                                        if _propagation == "instruction_insufficient_force"
+                                        else "promote_to_repair_kit"
+                                        if _propagation == "instruction_not_scoped_to_qid"
+                                        else "insert_propagation_verification"
+                                    )
+                                    decision_records.append(_arche_guarded(
+                                        run_id=run_id,
+                                        iteration=iteration_counter,
+                                        cluster_id=str(_c.get("cluster_id") or ""),
+                                        archetype_name=str(_kit.get("repair_archetype") or ""),
+                                        propagation_root_cause=_propagation,
+                                        guard_action=_guard_action,
+                                        target_qids=tuple(_kit.get("target_qids") or ()),
+                                    ))
+                            logger.info(
+                                "REPAIR PLANNER: iter=%s classified=%s no_match=%s no_card=%s "
+                                "propagation=%s",
+                                iteration_counter,
+                                _planner_summary.get("classified"),
+                                _planner_summary.get("no_archetype_match"),
+                                _planner_summary.get("skipped_no_card"),
+                                _propagation,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Repair Planner wiring failed (non-fatal)",
+                            exc_info=True,
+                        )
+
                     # Task 8 — strategist coverage enforcement. Any patchable
                     # hard cluster the LLM dropped gets a deterministic
                     # diagnostic AG so the loop attempts it before declaring
