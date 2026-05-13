@@ -267,6 +267,36 @@ actions read this plan's closed vocabulary. Phase 2 is a separate plan.
 **Enforcement (raise/block) deferred** to a follow-up plan after one trial
 confirms zero false positives on the corpus.
 
+**2026-05-13 Phase 3 followup — precise L6 attribution (lever-loop-free):**
+
+Closes the executor's documented structural uncertainty from Phase 3 Task 8.
+The shipped Task 8 wiring used conservative-zero values for
+`force_llm_declined` / `applyability_drop_count` / `collateral_drop_count`
+because the named `optimizer._*` accumulators do not exist in the codebase.
+That made the classifier emit `NO_STRUCTURAL_CANDIDATE` for every
+zero-proposal L6 lever — including the AG2 case where the L6 force-LLM
+declined.
+
+- One pure helper `reconcile_outcome_from_records` in `directive_outcome.py`
+  reads the canonical `lever6_force_llm_declined` signal from
+  `iter_inputs["decision_records"]` and upgrades the classifier's
+  `NO_STRUCTURAL_CANDIDATE` to `FORCE_LLM_DECLINED` when the
+  `(ag_id, iteration)` matches.
+- Harness wiring runs reconciliation after the per-lever loop and before
+  the `GSO_DIRECTIVE_OUTCOME_V1` marker emits. Pure, observability-only.
+- Real L5 `structural_gate_drop_count` is now sourced from
+  `optimizer.get_lever5_gate_drops()` (informational; does not change
+  classification).
+- 13 new tests (10 helper unit + 3 production-path integration).
+
+**Still deferred** (separate follow-up plan):
+- Per-cap-loop applyability/collateral attribution. The cap loop pools
+  proposals across levers and per-drop records do not carry an
+  `originating_lever_key` tag today. Precise attribution there requires
+  stamping `_originating_lever_key` on each proposal inside
+  `generate_proposals_from_strategy` and reading the stamp at the cap-loop
+  drop-record build site. Producer-side refactor, larger scope.
+
 **2026-05-13 B2 — DecisionRecord invariant input shape (lever-loop-free defect fix):**
 
 Closes 18 medium-tier `I_CHECK_FAILED` violations on 2314bb2c iter 1 where
