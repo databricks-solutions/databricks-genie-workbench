@@ -122,7 +122,7 @@ def test_serialize_replay_fixture_attribution_drift_with_dataclass_records() -> 
     record = DecisionRecord(
         run_id="2314bb2c",
         iteration=1,
-        decision_type=DecisionType.CONTROL_PLANE_ACCEPTANCE,
+        decision_type=DecisionType.ACCEPTANCE_DECIDED,
         outcome=DecisionOutcome.ACCEPTED,
         reason_code=ReasonCode.NONE,
         ag_id="AG1",
@@ -138,6 +138,6 @@ def test_serialize_replay_fixture_attribution_drift_with_dataclass_records() -> 
     assert len(fixture["iterations"]) == 1
     assert len(fixture["iterations"][0]["decision_records"]) == 1
     rec = fixture["iterations"][0]["decision_records"][0]
-    assert rec["decision_type"] == "control_plane_acceptance"
+    assert rec["decision_type"] == "acceptance_decided"
     assert rec["ag_id"] == "AG1"
     assert rec["reason_code"] == "none"
