@@ -246,6 +246,59 @@ def detect_pattern_candidates(
 # ---------------------------------------------------------------------------
 
 
+_PROVISIONAL_ARCHETYPE_REQUIRED_KEYS: tuple[str, ...] = (
+    "name",
+    "applicable_rca_kinds",
+    "required_grounding_tokens",
+    "evidence_predicates",
+    "default_priority_step",
+    "expected_causal_effect_template",
+    "rationale",
+)
+
+
+def _build_provisional_synthesis_prompt(
+    *,
+    candidate: PatternCandidate,
+    counterfactual_examples: tuple[dict, ...],
+) -> str:
+    """Constrained prompt: enumerate the candidate's converging
+    counterfactual fixes and ask for one RepairArchetype synthesis or
+    a structured decline. Single-shot."""
+    grounding = ", ".join(sorted(candidate.grounding_terms))
+    if counterfactual_examples:
+        cf_lines = "\n".join(
+            f"- qid={c.get('qid')} fix={c.get('counterfactual_fix')}"
+            for c in counterfactual_examples
+        )
+    else:
+        cf_lines = "(no per-qid counterfactuals supplied)"
+    return (
+        "You are synthesising one provisional repair archetype from "
+        "evidence — a group of failed clusters with a shared shape.\n\n"
+        f"Cluster shape (signature {candidate.signature_hash}):\n"
+        f"  root_cause: {candidate.root_cause_label}\n"
+        f"  grounding_terms: {{{grounding}}}\n"
+        f"  intended_patch_shape: {candidate.intended_patch_shape}\n"
+        f"  question_intent: {candidate.asi_question_intent}\n"
+        f"  member_count: {candidate.member_count}\n\n"
+        f"Converging counterfactual fixes (from ASI):\n{cf_lines}\n\n"
+        "Output JSON with EXACTLY these keys:\n"
+        '  name (str, snake_case, suffix "_provisional"),\n'
+        '  applicable_rca_kinds (list[str], RcaKind names),\n'
+        '  required_grounding_tokens (list[str]),\n'
+        '  evidence_predicates (list[str]),\n'
+        '  default_priority_step (one of: semantic_clarification, '
+        'scoped_instruction, repair_kit, non_verbatim_example_pattern, '
+        'narrow_l6_snippet),\n'
+        '  expected_causal_effect_template (str),\n'
+        '  rationale (str)\n\n'
+        "If the counterfactuals do not converge on a single repair "
+        'shape, output {"declined": true} instead. Do not invent '
+        "fixes that are not supported by the counterfactual evidence."
+    )
+
+
 def _call_llm_for_provisional_archetype_synthesis(
     *,
     candidate: PatternCandidate,
@@ -258,15 +311,49 @@ def _call_llm_for_provisional_archetype_synthesis(
     Returns the parsed JSON payload (a ``dict``) on success, or
     ``None`` on decline / parse failure / LLM error.
 
-    Production implementation will issue the real LLM call via the
-    project's chat-completions client and parse a constrained JSON
-    response. The stub here returns ``None`` so the Tier 3 pipeline
-    short-circuits to "synthesis declined" when the harness invokes
-    it in production WITHOUT a custom LLM hook. Tests patch this
-    function directly on the module to supply deterministic payloads.
+    Delegates to ``optimizer._traced_llm_call`` (the same retry-aware
+    MLflow-traced wrapper the strategist uses) with
+    ``response_validator=_extract_json`` so non-JSON / refusal
+    responses are retried up to the configured max before bailing.
+
+    Returns ``None`` when:
+      * the underlying LLM call raises after exhausting retries,
+      * the parsed payload is not a dict,
+      * the payload carries ``"declined": true``,
+      * any of the seven required keys is absent.
+
+    Tests patch this function directly on the ``archetype_learning``
+    module to supply deterministic payloads without touching the
+    real LLM client.
     """
-    del candidate, counterfactual_examples, w
-    return None
+    from genie_space_optimizer.optimization.evaluation import _extract_json
+    from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+
+    prompt = _build_provisional_synthesis_prompt(
+        candidate=candidate,
+        counterfactual_examples=counterfactual_examples,
+    )
+    try:
+        raw_text, _response = _traced_llm_call(
+            w,
+            "",  # no system message
+            prompt,
+            span_name="archetype_learning.synthesize_provisional",
+            max_tokens=900,
+            temperature=0.0,
+            response_validator=_extract_json,
+        )
+    except Exception:
+        return None
+
+    parsed = _extract_json(raw_text)
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("declined") is True:
+        return None
+    if not all(k in parsed for k in _PROVISIONAL_ARCHETYPE_REQUIRED_KEYS):
+        return None
+    return parsed
 
 
 def synthesize_provisional_archetype(

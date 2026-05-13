@@ -132,3 +132,101 @@ def test_synthesize_honours_per_iteration_cap(monkeypatch) -> None:
     assert first is not None
     assert second is None  # cap reached
     assert get_state("run_T3e").synthesis_calls_this_iteration == 1
+
+
+def test_call_llm_helper_invokes_traced_llm_call_and_parses_payload(monkeypatch) -> None:
+    """The Tier 3 helper must delegate to optimizer._traced_llm_call,
+    parse the response via evaluation._extract_json, and return the
+    parsed dict when it carries all required keys."""
+    from unittest.mock import MagicMock, patch
+
+    from genie_space_optimizer.optimization import archetype_learning as al
+
+    fake_payload = {
+        "name": "x_provisional",
+        "applicable_rca_kinds": ["SYNONYM_OR_ENTITY_MATCH_MISSING"],
+        "required_grounding_tokens": ["snack_brand"],
+        "evidence_predicates": [],
+        "default_priority_step": "repair_kit",
+        "expected_causal_effect_template": "x",
+        "rationale": "x",
+    }
+    import json as _json
+    raw_text = _json.dumps(fake_payload)
+
+    def _fake_traced_llm_call(*args, **kwargs):
+        return raw_text, MagicMock()
+
+    with patch(
+        "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+        side_effect=_fake_traced_llm_call,
+    ):
+        out = al._call_llm_for_provisional_archetype_synthesis(
+            candidate=_candidate(),
+            counterfactual_examples=(),
+            w=None,
+        )
+    assert out == fake_payload
+
+
+def test_call_llm_helper_returns_none_when_llm_declines() -> None:
+    """A declined response (``{"declined": true}``) translates to None."""
+    from unittest.mock import MagicMock, patch
+
+    from genie_space_optimizer.optimization import archetype_learning as al
+
+    def _fake_traced_llm_call(*args, **kwargs):
+        return '{"declined": true}', MagicMock()
+
+    with patch(
+        "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+        side_effect=_fake_traced_llm_call,
+    ):
+        out = al._call_llm_for_provisional_archetype_synthesis(
+            candidate=_candidate(),
+        )
+    assert out is None
+
+
+def test_call_llm_helper_returns_none_when_payload_missing_required_keys() -> None:
+    """Payloads missing any of the seven required keys return None so
+    Tier 3 surfaces a synthesis_declined record rather than building a
+    half-formed provisional."""
+    from unittest.mock import MagicMock, patch
+
+    from genie_space_optimizer.optimization import archetype_learning as al
+
+    incomplete_payload = '{"name": "x", "rationale": "missing keys"}'
+
+    def _fake_traced_llm_call(*args, **kwargs):
+        return incomplete_payload, MagicMock()
+
+    with patch(
+        "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+        side_effect=_fake_traced_llm_call,
+    ):
+        out = al._call_llm_for_provisional_archetype_synthesis(
+            candidate=_candidate(),
+        )
+    assert out is None
+
+
+def test_call_llm_helper_returns_none_on_llm_exception() -> None:
+    """Any exception from the underlying LLM call short-circuits to
+    None — the synthesis-declined path handles the failure cleanly
+    without bubbling exceptions up through the iteration loop."""
+    from unittest.mock import patch
+
+    from genie_space_optimizer.optimization import archetype_learning as al
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("simulated LLM 503")
+
+    with patch(
+        "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+        side_effect=_raise,
+    ):
+        out = al._call_llm_for_provisional_archetype_synthesis(
+            candidate=_candidate(),
+        )
+    assert out is None
