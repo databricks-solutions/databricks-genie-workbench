@@ -9,6 +9,8 @@ import type {
   EvalRun,
   EvalSummary,
   FeedbackEvent,
+  FeedbackMessageComment,
+  FeedbackTabResponse,
   HealthStatus,
   ResourceGraph,
   ResourceRollupItem,
@@ -105,6 +107,20 @@ export const getSpaceUsage = (spaceId: string, days = 30) =>
 export const getSpaceFeedback = (spaceId: string, days = 30, limit = 200) =>
   fetchJson<FeedbackEvent[]>(
     `/spaces/${spaceId}/feedback?days=${days}&limit=${limit}`,
+  )
+
+export const getFeedback = (days = 7, limit = 500) =>
+  fetchJson<FeedbackTabResponse>(`/feedback?days=${days}&limit=${limit}`)
+
+export const getFeedbackComments = (
+  spaceId: string,
+  conversationId: string,
+  messageId: string,
+) =>
+  fetchJson<FeedbackMessageComment[]>(
+    `/feedback/comments?space_id=${encodeURIComponent(spaceId)}` +
+      `&conversation_id=${encodeURIComponent(conversationId)}` +
+      `&message_id=${encodeURIComponent(messageId)}`,
   )
 
 // ── Resources ───────────────────────────────────────────────────────────────

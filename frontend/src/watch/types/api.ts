@@ -65,6 +65,9 @@ export interface FeedbackEvent {
   comment: string | null
   message_id: string | null
   conversation_id: string | null
+  // Populated by the all-spaces feedback endpoint. Null for single-space callers.
+  space_id: string | null
+  space_title: string | null
 }
 
 export interface FeedbackSummary {
@@ -183,4 +186,45 @@ export interface HealthStatus {
   warehouse_id: string | null
   dashboard_cost_id: string | null
   workspace_host: string | null
+}
+
+// ── Feedback tab (workspace-wide aggregation) ───────────────────────────────
+
+export interface FeedbackTabSummary {
+  positive: number
+  negative: number
+  total: number
+  neg_rate_pct: number
+}
+
+export interface FeedbackTrendPoint {
+  day: string
+  positive: number
+  negative: number
+}
+
+export interface FeedbackSpaceRow {
+  space_id: string
+  title: string | null
+  owner_email: string | null
+  positive: number
+  negative: number
+  total: number
+  neg_rate_pct: number
+  last_feedback_at: string | null
+}
+
+export interface FeedbackTabResponse {
+  days: number
+  summary: FeedbackTabSummary
+  trend: FeedbackTrendPoint[]
+  per_space: FeedbackSpaceRow[]
+  events: FeedbackEvent[]
+}
+
+export interface FeedbackMessageComment {
+  message_comment_id: string
+  content: string
+  created_at: string
+  user_id: number | null
 }

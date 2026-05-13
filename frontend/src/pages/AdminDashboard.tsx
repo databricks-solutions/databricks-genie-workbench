@@ -5,7 +5,7 @@
 import { Suspense, lazy, useEffect, useState } from "react"
 import {
   TrendingUp, TrendingDown, AlertTriangle, Award, BarChart2, RefreshCw,
-  LayoutGrid, DollarSign, Database, Settings as SettingsIcon,
+  LayoutGrid, DollarSign, Database, Settings as SettingsIcon, MessageSquare,
 } from "lucide-react"
 import { getAdminDashboard, getLeaderboard, getAlerts } from "@/lib/api"
 import { getScoreColor, MATURITY_COLORS } from "@/lib/utils"
@@ -23,8 +23,10 @@ const WatchResourceRollup = lazy(() =>
   import("@/watch/pages/ResourceRollup").then(m => ({ default: m.ResourceRollup })))
 const WatchSettings = lazy(() =>
   import("@/watch/pages/Settings").then(m => ({ default: m.Settings })))
+const WatchFeedback = lazy(() =>
+  import("@/watch/pages/Feedback").then(m => ({ default: m.Feedback })))
 
-type AdminSubTab = "overview" | "spaces" | "cost" | "resources" | "settings"
+type AdminSubTab = "overview" | "spaces" | "cost" | "feedback" | "resources" | "settings"
 
 interface AdminDashboardProps {
   onSelectSpace?: (spaceId: string, displayName: string) => void
@@ -52,6 +54,7 @@ const SUB_TABS: { id: AdminSubTab; label: string; icon: React.ReactNode }[] = [
   { id: "overview",  label: "Overview",  icon: <BarChart2 className="w-4 h-4" /> },
   { id: "spaces",    label: "Spaces",    icon: <LayoutGrid className="w-4 h-4" /> },
   { id: "cost",      label: "Cost",      icon: <DollarSign className="w-4 h-4" /> },
+  { id: "feedback",  label: "Feedback",  icon: <MessageSquare className="w-4 h-4" /> },
   { id: "resources", label: "Resources", icon: <Database className="w-4 h-4" /> },
   { id: "settings",  label: "Settings",  icon: <SettingsIcon className="w-4 h-4" /> },
 ]
@@ -285,6 +288,12 @@ export function AdminDashboard({ onSelectSpace, initialSubTab }: AdminDashboardP
       {subTab === "cost" && (
         <Suspense fallback={<SubTabFallback />}>
           <WatchCostExplorer onOpenSpace={(sid) => { setSubTab("spaces"); setWatchDrillId(sid) }} />
+        </Suspense>
+      )}
+
+      {subTab === "feedback" && (
+        <Suspense fallback={<SubTabFallback />}>
+          <WatchFeedback onOpenSpace={(sid) => { setSubTab("spaces"); setWatchDrillId(sid) }} />
         </Suspense>
       )}
 
