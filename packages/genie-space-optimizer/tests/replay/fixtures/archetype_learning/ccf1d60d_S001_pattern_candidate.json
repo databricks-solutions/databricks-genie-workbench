@@ -1,0 +1,62 @@
+{
+  "fixture_name": "ccf1d60d_S001_pattern_candidate",
+  "run_id": "ccf1d60d-d686-467b-bafa-1640131b4393-replay",
+  "iteration": 1,
+  "unmatched_clusters": [
+    {
+      "cluster_id": "S001_q01",
+      "rca_card": {
+        "card_id": "card_S001_q01",
+        "cluster_id": "S001_q01",
+        "qids": ["gs_002"],
+        "root_cause": "SYNONYM_OR_ENTITY_MATCH_MISSING",
+        "grounding_terms": ["snack_brand"],
+        "intended_patch_shape": "entity_disambiguation",
+        "allowed_patch_families": [],
+        "forbidden_patch_families": [],
+        "rationale": "wrong column for snack brand axis"
+      },
+      "asi_question_intent": "single",
+      "question_ids": ["gs_002"]
+    },
+    {
+      "cluster_id": "S001_q02",
+      "rca_card": {
+        "card_id": "card_S001_q02",
+        "cluster_id": "S001_q02",
+        "qids": ["gs_004"],
+        "root_cause": "SYNONYM_OR_ENTITY_MATCH_MISSING",
+        "grounding_terms": ["snack_brand"],
+        "intended_patch_shape": "entity_disambiguation",
+        "allowed_patch_families": [],
+        "forbidden_patch_families": [],
+        "rationale": "wrong column for snack brand axis"
+      },
+      "asi_question_intent": "single",
+      "question_ids": ["gs_004"]
+    },
+    {
+      "cluster_id": "S001_q03",
+      "rca_card": {
+        "card_id": "card_S001_q03",
+        "cluster_id": "S001_q03",
+        "qids": ["gs_010"],
+        "root_cause": "SYNONYM_OR_ENTITY_MATCH_MISSING",
+        "grounding_terms": ["snack_brand"],
+        "intended_patch_shape": "entity_disambiguation",
+        "allowed_patch_families": [],
+        "forbidden_patch_families": [],
+        "rationale": "wrong column for snack brand axis"
+      },
+      "asi_question_intent": "single",
+      "question_ids": ["gs_010"]
+    }
+  ],
+  "expected_pattern_candidate": {
+    "member_count": 3,
+    "member_cluster_ids_set": ["S001_q01", "S001_q02", "S001_q03"],
+    "union_qids_set": ["gs_002", "gs_004", "gs_010"],
+    "root_cause_label": "SYNONYM_OR_ENTITY_MATCH_MISSING",
+    "intended_patch_shape": "entity_disambiguation"
+  }
+}
