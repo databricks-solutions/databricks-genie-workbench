@@ -1073,6 +1073,41 @@ def no_structural_candidate_marker(
     )
 
 
+def replay_fixture_empty_marker(
+    *,
+    optimization_run_id: str,
+    iterations_data_count: int,
+    fixture_iterations_count: int,
+    iterations_with_zero_eval_rows: tuple[int, ...] = (),
+) -> str:
+    """B5 (2026-05-13) — diagnostic marker for empty replay fixture.
+
+    Emitted at end-of-run when serialization succeeded (so the resilience
+    wrapper in ``_build_fixture`` did not silently drop everything) but
+    the resulting fixture is semantically empty: either ``iterations`` is
+    empty, or one or more iterations have zero ``eval_rows``. Both shapes
+    block replay-fixture intake.
+
+    Single-line ``GSO_REPLAY_FIXTURE_EMPTY_V1 <json>`` format consistent
+    with other GSO markers. Postmortem skill greps for this marker to
+    flag empty-fixture runs without re-parsing the whole stderr stream.
+
+    Anchor:
+    docs/runid_analysis/2314bb2c-95a1-4d60-8226-09e5155aee2a/postmortem.md F8
+    """
+    import json as _json
+
+    payload = {
+        "optimization_run_id": str(optimization_run_id or ""),
+        "iterations_data_count": int(iterations_data_count or 0),
+        "fixture_iterations_count": int(fixture_iterations_count or 0),
+        "iterations_with_zero_eval_rows": list(iterations_with_zero_eval_rows),
+    }
+    return "GSO_REPLAY_FIXTURE_EMPTY_V1 " + _json.dumps(
+        payload, sort_keys=True
+    )
+
+
 def directive_outcome_marker(
     *,
     optimization_run_id: str,
