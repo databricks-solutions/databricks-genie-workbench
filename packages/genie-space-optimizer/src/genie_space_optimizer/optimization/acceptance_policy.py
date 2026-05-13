@@ -644,3 +644,43 @@ def _build_debt_classification(
     if passing_to_hard:
         out["passing_to_hard"] = sorted(passing_to_hard)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 Addendum — observability-only soft-signal pass rate.
+# ---------------------------------------------------------------------------
+
+
+def compute_soft_signal_pass_rate(eval_rows: list[dict]) -> float:
+    """Phase 1 Addendum — observability-only soft-signal pass rate.
+
+    Computed as ``passes / total`` across every (qid, soft-signal)
+    pair in ``eval_rows``. Returns ``0.0`` when no soft-signal
+    results exist (caller treats this as "no evidence", not as a
+    failing rate).
+
+    **Important:** This is **not** an input to ``classify_acceptance_tier``.
+    The four-tier gate is intentionally hard-correctness-only. Surfacing
+    this rate on ``tier_classification_record.metric_payload`` is
+    observability so postmortems can correlate accuracy moves with
+    judge-score moves; it does not gate accept/reject decisions.
+
+    If the gate accepted/rejected on this signal, the optimizer would
+    learn to chase judge scores instead of fixing real failures. The
+    classifier's signature does not accept any soft-signal parameter,
+    and an anti-gaming invariant test (T A1.2.A.2) enforces this
+    contract.
+    """
+    total = 0
+    passes = 0
+    for row in eval_rows or ():
+        results = (row or {}).get("soft_signal_results") or {}
+        if not isinstance(results, dict):
+            continue
+        for verdict in results.values():
+            total += 1
+            if str(verdict).lower() == "pass":
+                passes += 1
+    if total == 0:
+        return 0.0
+    return passes / total
