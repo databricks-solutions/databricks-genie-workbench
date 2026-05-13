@@ -179,6 +179,37 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 - There is no default-off behavior flag remaining for already-shipped spine work unless it has a named owner and a future removal date.
 - The iteration ledger states why each default flip is safe.
 
+**2026-05-13 default-on flip (lever-loop-free):**
+
+Three observability-only feature flags landed default-OFF and were silent on
+the 2314bb2c trial despite their code being deployed. Flipped to default-ON
+via `2026-05-13-feature-flag-default-on-flip-and-phase-h-canonical-consumer-wiring-plan.md`:
+
+- `GSO_PROPOSAL_FAILURE_DECIDED` — Plan P-F producers + iteration coverage invariant.
+- `GSO_STAGE4_CONTEXT_PERSISTENCE` — Plan P-G strategist boundary persistence.
+- `GSO_PATCH_SUBSET_ISOLATION` — Cycle 14B-T3 diagnostic-only attribution marker.
+
+Each flip preserves a `GSO_*=0` rollback escape hatch (per the canonical
+`_flag_default_on` pattern). Out of scope for that plan (deferred to a
+post-Phase-0 evidence-bound follow-up):
+
+- `GSO_PARTIAL_HARVEST_WITH_DEBT` — adds new acceptance branch.
+- `GSO_PATCH_SUBSET_ISOLATION_LIVE` — performs live re-eval.
+- `GSO_L6_NARROW_REPLACEMENT_BRANCH_C` — synthesizes new L5 patches.
+
+**2026-05-13 Phase H canonical-consumer cleanup:**
+
+- `GSO_PHASE_H_CANONICAL_CONSUMER` accessor removed — orphan with zero
+  production call sites since C15 Phase 1 Task 1.10 deleted the legacy
+  parallel writer. The drift detectors (`detect_phase_h_acceptance_drift`,
+  `detect_phase_h_journey_drift`) remain wired and gated by
+  `GSO_PHASE_H_DRIFT_OBSERVE`.
+- F5 contract bug fixed: the acceptance-path `acceptance_decision` dict in
+  `harness.py:16382` now carries an explicit `"accepted": True` field
+  (parity with the rejection-path builder at `:16189`). This removes the
+  false-positive `GSO_PHASE_H_ACCEPTANCE_DRIFT_V1` markers observed on
+  every accepted iteration of the 2314bb2c trial.
+
 ### RCO-4 — Stage-6 Gate Pure-Helper Extraction
 
 **Status:** closed-local pending corpus — three of six conceptual gates extracted into pure helpers in ``optimization/stages/gates.py`` (``run_blast_radius_production_gate``, ``resolve_narrow_replacement``, ``run_applyability_gate``) behind default-off flags ``GSO_STAGE6_BLAST_RADIUS_PURE`` / ``GSO_STAGE6_NARROW_REPL_PURE`` / ``GSO_STAGE6_APPLYABILITY_PURE``. The remaining three (alignment / reflection / cap) are deferred to RCO-4b with named blockers documented in ``docs/2026-05-11-rco-4-deferred-gates.md`` and a full gate-to-code mapping in ``docs/2026-05-11-rco-4-gate-inventory.md``. Production firing order pinned by ``tests/unit/test_rco4_sequencing_grep_guard.py``. Parity fixtures under ``tests/unit/fixtures/rco4/``. Corpus confirmation + simultaneous flag flip pending the next airline + 7Now run (the flag flip belongs in RCO-3's pilot batch).
