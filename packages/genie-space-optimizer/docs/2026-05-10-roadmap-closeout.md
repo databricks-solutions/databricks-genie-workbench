@@ -267,6 +267,28 @@ actions read this plan's closed vocabulary. Phase 2 is a separate plan.
 **Enforcement (raise/block) deferred** to a follow-up plan after one trial
 confirms zero false positives on the corpus.
 
+**2026-05-13 B2 — DecisionRecord invariant input shape (lever-loop-free defect fix):**
+
+Closes 18 medium-tier `I_CHECK_FAILED` violations on 2314bb2c iter 1 where
+`check_i7_rca_grounding` and `check_i14_l6_decline_dedup` raised
+`AttributeError("'DecisionRecord' object has no attribute 'get'")` because
+some emit sites append the dataclass directly to
+`current_iter_inputs["decision_records"]` while invariants assume Mapping.
+
+- One pure helper `_record_to_mapping` in `invariant_projection.py`
+  normalizes any record (dataclass with `to_dict()`, Mapping, or other) to
+  a dict; non-coercible entries are dropped silently.
+- One wire-site change in `_project_iteration` so every record reaches the
+  invariants as a dict.
+- No invariant body changes. No producer-side changes. Strictly additive
+  defense at the projection boundary.
+- 16 new tests (8 helper + 5 projection + 3 integration) including a
+  2314bb2c-shaped end-to-end assertion that `I_CHECK_FAILED` count is zero.
+
+**Companion:** `2026-05-13-b5-replay-fixture-attribution-drift-emission-plan.md`
+addresses the related dataclass-vs-dict mismatch in the replay-fixture
+serializer.
+
 ### RCO-4 — Stage-6 Gate Pure-Helper Extraction
 
 **Status:** closed-local pending corpus — three of six conceptual gates extracted into pure helpers in ``optimization/stages/gates.py`` (``run_blast_radius_production_gate``, ``resolve_narrow_replacement``, ``run_applyability_gate``) behind default-off flags ``GSO_STAGE6_BLAST_RADIUS_PURE`` / ``GSO_STAGE6_NARROW_REPL_PURE`` / ``GSO_STAGE6_APPLYABILITY_PURE``. The remaining three (alignment / reflection / cap) are deferred to RCO-4b with named blockers documented in ``docs/2026-05-11-rco-4-deferred-gates.md`` and a full gate-to-code mapping in ``docs/2026-05-11-rco-4-gate-inventory.md``. Production firing order pinned by ``tests/unit/test_rco4_sequencing_grep_guard.py``. Parity fixtures under ``tests/unit/fixtures/rco4/``. Corpus confirmation + simultaneous flag flip pending the next airline + 7Now run (the flag flip belongs in RCO-3's pilot batch).
