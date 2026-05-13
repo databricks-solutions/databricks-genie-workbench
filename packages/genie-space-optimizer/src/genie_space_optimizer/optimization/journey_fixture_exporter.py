@@ -92,6 +92,44 @@ def _strip_dict(d: dict, allowed: tuple[str, ...]) -> dict:
     return {k: d[k] for k in allowed if k in d}
 
 
+def _coerce_record_to_dict(record: Any) -> dict | None:
+    """B5 (2026-05-13) — coerce a decision-record entry to a plain dict.
+
+    Mirrors ``invariant_projection._record_to_mapping`` (B2). Branches:
+
+    1. Already a Mapping → ``dict(record)``.
+    2. Exposes a callable ``to_dict()`` (the ``DecisionRecord`` contract at
+       ``rca_decision_trace.py:476``) → invoke and coerce; if ``to_dict()``
+       raises or returns a non-Mapping, return ``None`` so the caller drops
+       the record.
+    3. Anything else → return ``None``.
+
+    Closes the 2314bb2c empty-fixture failure where a ``DecisionRecord``
+    dataclass in ``iterations_data[i]["decision_records"]`` made
+    ``_strip_dict``'s ``k in d`` check raise ``TypeError: argument of
+    type 'DecisionRecord' is not iterable``, which the harness's outer
+    try-except swallowed silently and produced an empty
+    ``replay_fixture.json``.
+
+    Evidence anchor:
+    docs/runid_analysis/2314bb2c-95a1-4d60-8226-09e5155aee2a/postmortem.md F8
+    """
+    from collections.abc import Mapping as _Mapping
+
+    if isinstance(record, _Mapping):
+        return dict(record)
+    to_dict_attr = getattr(record, "to_dict", None)
+    if callable(to_dict_attr):
+        try:
+            result = to_dict_attr()
+        except Exception:
+            return None
+        if isinstance(result, _Mapping):
+            return dict(result)
+        return None
+    return None
+
+
 def _strip_iteration(it: dict[str, Any]) -> dict[str, Any]:
     out = _strip_dict(it, _ALLOWED_ITERATION_KEYS)
     if "eval_rows" in out:
@@ -124,10 +162,17 @@ def _strip_iteration(it: dict[str, Any]) -> dict[str, Any]:
             ],
         }
     if "decision_records" in out:
-        out["decision_records"] = [
-            _strip_dict(r, _ALLOWED_DECISION_RECORD_KEYS)
-            for r in (out.get("decision_records") or [])
-        ]
+        # B5 (2026-05-13) — coerce each record to a dict before _strip_dict.
+        # Drops non-coercible entries (strings, ints, dataclasses without
+        # to_dict). Without this, a stray DecisionRecord dataclass made
+        # ``k in d`` raise TypeError and the outer try-except swallowed
+        # the whole iteration's serialization.
+        _coerced: list[dict] = []
+        for r in (out.get("decision_records") or []):
+            d = _coerce_record_to_dict(r)
+            if d is not None:
+                _coerced.append(_strip_dict(d, _ALLOWED_DECISION_RECORD_KEYS))
+        out["decision_records"] = _coerced
     return out
 
 
