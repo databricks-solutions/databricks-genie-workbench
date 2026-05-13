@@ -64,6 +64,28 @@ def record_phase_b_iter_accounting(
     iter_record_count = len(iter_records_dicts)
     accumulators.setdefault("iter_record_counts", []).append(iter_record_count)
 
+    # Phase 3 T3.2.10 — count NEAR_MISS_AG_SHAPE_REPEATED reason codes
+    # so the postmortem can see how often the AG-shape gate caught the
+    # strategist proposing the same archetype/scope it tried before.
+    try:
+        _repeated_count = 0
+        for _rec in iter_records_dicts:
+            if not isinstance(_rec, dict):
+                continue
+            if str(_rec.get("reason_code") or "") == "near_miss_ag_shape_repeated":
+                _repeated_count += 1
+        if _repeated_count:
+            accumulators["near_miss_reflection_repeated_ag_shape_count"] = (
+                int(accumulators.get(
+                    "near_miss_reflection_repeated_ag_shape_count", 0
+                ) or 0) + _repeated_count
+            )
+    except Exception:
+        logger.debug(
+            "Phase B near-miss repeated-shape counter skipped",
+            exc_info=True,
+        )
+
     if iter_record_count == 0:
         no_rec_reason = classify_no_records_reason(
             iteration_inputs=current_iter_inputs or {},

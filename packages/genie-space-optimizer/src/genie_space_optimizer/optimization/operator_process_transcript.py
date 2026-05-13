@@ -262,6 +262,62 @@ def render_full_transcript(
     return run_overview + "\n\n" + "\n\n".join(iteration_transcripts)
 
 
+def render_soft_signal_trend_report(report: Any) -> str:
+    """Phase 3 T3.3.3.5 — render the end-of-run SoftSignalTrendReport
+    into a transcript section.
+
+    Soft signals never enter the strategist as targets (anti-gaming
+    contract); this section is operator-only. If an unmatched
+    root-cause keeps repeating across runs, that's a benchmark or
+    judge-tuning conversation, not an optimizer iteration.
+
+    When ``report`` is None or has zero soft clusters, returns a short
+    placeholder so the section stays present and visibly intentional.
+    """
+    header = (
+        "## Soft Signal Trend (operator-only; not a gate input)\n"
+    )
+    if report is None:
+        return header + "- soft-signal trend report not built\n"
+    total = int(getattr(report, "total_soft_clusters", 0) or 0)
+    matched = int(getattr(report, "matched_count", 0) or 0)
+    unmatched = int(getattr(report, "unmatched_count", 0) or 0)
+    if total == 0:
+        return header + "- no soft signal clusters observed in this run\n"
+    lines: list[str] = [
+        header,
+        f"- total_soft_clusters: {total}\n",
+        f"- matched_against_hard_evidence: {matched}\n",
+        f"- unmatched: {unmatched}\n",
+    ]
+    by_root = tuple(getattr(report, "count_by_root_cause", ()) or ())
+    if by_root:
+        lines.append("- unmatched_count_by_root_cause:\n")
+        for kind, count in by_root:
+            lines.append(f"  - {kind}: {count}\n")
+    unmatched_clusters = tuple(
+        getattr(report, "unmatched_clusters", ()) or ()
+    )
+    if unmatched_clusters:
+        lines.append("- representative unmatched clusters:\n")
+        for u in unmatched_clusters[:10]:
+            cid = str(getattr(u, "cluster_id", "") or "")
+            rc = getattr(u, "dominant_root_cause", None)
+            rc_val = (
+                getattr(rc, "value", None) if rc is not None else None
+            ) or str(rc or "")
+            qc = int(getattr(u, "qid_count", 0) or 0)
+            top = tuple(getattr(u, "top_blame_terms", ()) or ())
+            cf = str(getattr(u, "representative_counterfactual", "") or "")
+            lines.append(
+                f"  - {cid}: root={rc_val} qid_count={qc} "
+                f"top_terms={list(top[:3])}"
+                + (f" cf=\"{cf[:80]}\"" if cf else "")
+                + "\n"
+            )
+    return "".join(lines)
+
+
 def render_contract_health_section(
     payload: Mapping[str, Any] | None,
 ) -> str:

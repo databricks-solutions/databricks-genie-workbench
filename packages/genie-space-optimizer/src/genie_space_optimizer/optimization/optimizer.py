@@ -7318,6 +7318,92 @@ def format_prior_dropped_causal_patches_text(
     return "\n".join(lines)
 
 
+def _format_iteration_feedback_block(iteration_feedback: Any) -> str:
+    """Phase 3 T3.1.6 — render IterationFeedback as a strategist-prompt
+    block.
+
+    The block surfaces the prior iteration's four-tier acceptance class,
+    which targets were fixed vs. still hard, the regression-debt
+    classification, the AG shapes already tried per target, and any
+    near-miss reflections that point the strategist at an explicit next
+    action (e.g. "different repair archetype" for NET_WIN_WITH_DEBT or
+    "either" for DIAGNOSTIC_HOLD).
+
+    Returns "" when the packet is missing/empty so the caller can skip
+    the prepend without a special case.
+    """
+    if iteration_feedback is None:
+        return ""
+    lines: list[str] = [
+        "PRIOR ITERATION FEEDBACK — read before proposing the next "
+        "ActionGroup. The prior iteration's outcome and which "
+        "AG-shapes were tried are listed below; do not repeat a "
+        "(repair_archetype, target_scope) shape that already failed:",
+    ]
+    try:
+        acc_class = str(
+            getattr(iteration_feedback, "acceptance_class", "") or ""
+        )
+        delta_pp = float(
+            getattr(iteration_feedback, "delta_pp", 0.0) or 0.0
+        )
+        accept = bool(getattr(iteration_feedback, "accept", False))
+        lines.append(
+            f"  - acceptance_class={acc_class} accept={accept} "
+            f"delta_pp={delta_pp:+.2f}"
+        )
+        targets = tuple(
+            getattr(iteration_feedback, "target_qids", ()) or ()
+        )
+        fixed = tuple(
+            getattr(iteration_feedback, "target_fixed_qids", ()) or ()
+        )
+        still_hard = tuple(
+            getattr(iteration_feedback, "target_still_hard_qids", ()) or ()
+        )
+        lines.append(
+            f"  - targets={list(targets)} fixed={list(fixed)} "
+            f"still_hard={list(still_hard)}"
+        )
+        debt = str(
+            getattr(iteration_feedback, "regression_debt_classification", "")
+            or ""
+        )
+        if debt:
+            lines.append(f"  - regression_debt={debt}")
+        tried = (
+            getattr(iteration_feedback, "tried_ag_shapes_by_target", {}) or {}
+        )
+        if tried:
+            lines.append("  - tried AG shapes (do not repeat):")
+            for qid in sorted(tried.keys()):
+                shapes = tried.get(qid) or ()
+                shape_strs = [
+                    f"({s.repair_archetype}, {s.target_scope})"
+                    if hasattr(s, "repair_archetype")
+                    else str(s)
+                    for s in shapes
+                ]
+                lines.append(f"      {qid}: {shape_strs}")
+        reflections = (
+            getattr(iteration_feedback, "near_miss_reflections", ()) or ()
+        )
+        if reflections:
+            lines.append("  - near-miss reflections from prior iteration:")
+            for r in reflections:
+                kind = getattr(r, "kind", "")
+                req = getattr(r, "required_next_iter_change", "")
+                arch = getattr(r, "prior_repair_archetype", "")
+                scope = getattr(r, "prior_target_scope", "")
+                lines.append(
+                    f"      kind={kind} required_change={req} "
+                    f"prior=({arch}, {scope})"
+                )
+    except Exception:
+        return ""
+    return "\n".join(lines)
+
+
 def format_strategist_ranking_text(
     priority_ranking: list[dict],
     *,
@@ -9696,6 +9782,10 @@ def _call_llm_for_adaptive_strategy(
     iteration: int = 0,
     decision_emit: "Callable[[Any], None] | None" = None,
     mlflow_anchor_run_id: str | None = None,
+    # Phase 3 T3.1.6: prior-iteration feedback packet built by
+    # ``build_iteration_feedback``. ``None`` means "no prior iteration"
+    # or "iteration feedback flag disabled" — both legacy-safe.
+    iteration_feedback: "Any | None" = None,
 ) -> dict:
     """Single-call strategist that produces exactly ONE action group.
 
@@ -9925,6 +10015,24 @@ def _call_llm_for_adaptive_strategy(
         )
     else:
         prompt = budget_text + "\n\n" + intent_collision_text + "\n" + prompt
+
+    # Phase 3 T3.1.6 — render prior-iteration feedback as a block the
+    # strategist can read BEFORE the cluster narrative. The packet is
+    # built by ``build_iteration_feedback`` and includes the four-tier
+    # acceptance class, target-qid resolution (fixed vs still-hard),
+    # regression-debt classification, prior tried AG-shapes per target,
+    # and any near-miss reflections from the prior iteration.
+    if iteration_feedback is not None:
+        try:
+            _feedback_text = _format_iteration_feedback_block(iteration_feedback)
+        except Exception:
+            logger.debug(
+                "Phase 3: iteration-feedback block render skipped (non-fatal)",
+                exc_info=True,
+            )
+            _feedback_text = ""
+        if _feedback_text:
+            prompt = _feedback_text + "\n\n" + prompt
 
     _W = 78
     _iter_label = len(reflection_buffer) + 1

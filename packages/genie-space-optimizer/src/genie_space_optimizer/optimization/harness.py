@@ -1496,6 +1496,151 @@ def _finalize_iteration_summary(
             exc_info=True,
         )
 
+    # Phase 3 Action 3.1 / 3.2 — build the typed IterationFeedback
+    # carry-over and stash it on iter_summaries so the next iteration's
+    # strategist call can read it via _prior_iteration_feedback. Also
+    # build near-miss reflections for DIAGNOSTIC_HOLD / NET_WIN_WITH_DEBT
+    # outcomes — these flow through the same IterationFeedback object
+    # the strategist sees inline in its prompt. Both behaviours sit
+    # behind their own default-ON flags so operators don't need env
+    # vars.
+    try:
+        from genie_space_optimizer.common.config import (
+            iteration_feedback_enabled as _iter_fb_enabled,
+            near_miss_reflection_enabled as _near_miss_enabled,
+        )
+        if _iter_fb_enabled():
+            _canonical_decision = current_iter_inputs.get("_canonical_decision_for_feedback")
+            _tier_verdict = current_iter_inputs.get("_tier_verdict_for_feedback")
+            _attempted_shapes = current_iter_inputs.get(
+                "_attempted_ag_shapes_by_target",
+            ) or {}
+            # Locate the prior iteration's feedback (chronologically the
+            # highest iteration < current iteration).
+            _prior_fb = None
+            for _i in sorted(iter_summaries.keys()):
+                if _i >= int(iteration):
+                    break
+                _candidate_fb = (iter_summaries.get(_i) or {}).get(
+                    "iteration_feedback",
+                )
+                if _candidate_fb is not None:
+                    _prior_fb = _candidate_fb
+            # Build near-miss reflections from the canonical decision
+            # when the outcome falls into the near-miss tiers.
+            _reflections: tuple = ()
+            if (
+                _near_miss_enabled()
+                and _canonical_decision is not None
+                and _tier_verdict is not None
+            ):
+                from genie_space_optimizer.optimization.acceptance_policy import (
+                    AcceptedClass,
+                )
+                from genie_space_optimizer.optimization.near_miss_reflection import (
+                    build_diagnostic_hold_reflection,
+                    build_net_win_with_debt_reflection,
+                )
+                from genie_space_optimizer.optimization.decision_emitters import (
+                    near_miss_reflection_record,
+                )
+
+                _cls = getattr(_tier_verdict, "accepted_class", None)
+                _prior_shape = current_iter_inputs.get(
+                    "_prior_ag_shape_for_feedback",
+                )
+                _prior_directives = current_iter_inputs.get(
+                    "_prior_lever_directives_for_feedback",
+                ) or ()
+                _target_qids = tuple(
+                    getattr(_canonical_decision, "target_qids", ()) or ()
+                )
+                _debt: dict[str, list[str]] = {}
+                if getattr(_canonical_decision, "passing_to_hard_regressed_qids", ()):
+                    _debt["passing_to_hard"] = list(
+                        _canonical_decision.passing_to_hard_regressed_qids
+                    )
+                if getattr(_canonical_decision, "soft_to_hard_regressed_qids", ()):
+                    _debt["soft_to_hard"] = list(
+                        _canonical_decision.soft_to_hard_regressed_qids
+                    )
+                if getattr(_canonical_decision, "unknown_to_hard_regressed_qids", ()):
+                    _debt["unknown_to_hard"] = list(
+                        _canonical_decision.unknown_to_hard_regressed_qids
+                    )
+                if getattr(_canonical_decision, "protected_regressed_qids", ()):
+                    _debt["protected"] = list(
+                        _canonical_decision.protected_regressed_qids
+                    )
+
+                _reflection = None
+                if _cls == AcceptedClass.NET_WIN_WITH_DEBT and _prior_shape is not None:
+                    _reflection = build_net_win_with_debt_reflection(
+                        iteration=int(iteration),
+                        target_qids=_target_qids,
+                        prior_ag_shape=_prior_shape,
+                        prior_lever_directives=tuple(_prior_directives),
+                        regression_debt=_debt,
+                    )
+                elif _cls == AcceptedClass.DIAGNOSTIC_HOLD and _prior_shape is not None:
+                    _reflection = build_diagnostic_hold_reflection(
+                        iteration=int(iteration),
+                        target_qids=_target_qids,
+                        prior_ag_shape=_prior_shape,
+                        prior_lever_directives=tuple(_prior_directives),
+                        regression_debt=_debt,
+                    )
+                if _reflection is not None:
+                    _reflections = (_reflection,)
+                    current_iter_inputs.setdefault(
+                        "decision_records", [],
+                    ).append(near_miss_reflection_record(
+                        run_id=str(run_id or ""),
+                        iteration=int(iteration),
+                        kind=_reflection.kind,
+                        target_qids=_reflection.target_qids,
+                        required_next_iter_change=_reflection.required_next_iter_change,
+                        prior_repair_archetype=_reflection.prior_ag_shape.repair_archetype,
+                        prior_target_scope=_reflection.prior_ag_shape.target_scope.value,
+                    ))
+
+            if _canonical_decision is not None and _tier_verdict is not None:
+                from genie_space_optimizer.optimization.iteration_feedback import (
+                    build_iteration_feedback,
+                )
+                from genie_space_optimizer.optimization.decision_emitters import (
+                    iteration_feedback_built_record,
+                )
+
+                _iter_fb = build_iteration_feedback(
+                    iteration=int(iteration),
+                    decision=_canonical_decision,
+                    verdict=_tier_verdict,
+                    attempted_ag_shapes_by_target=_attempted_shapes,
+                    near_miss_reflections=_reflections,
+                    prior_iteration_feedback=_prior_fb,
+                )
+                iter_summaries[iteration]["iteration_feedback"] = _iter_fb
+                current_iter_inputs.setdefault(
+                    "decision_records", [],
+                ).append(iteration_feedback_built_record(
+                    run_id=str(run_id or ""),
+                    iteration=int(iteration),
+                    acceptance_class=getattr(
+                        _iter_fb.acceptance_class, "value", str(_iter_fb.acceptance_class),
+                    ),
+                    target_qids=_iter_fb.target_qids,
+                    reflection_count=len(_iter_fb.near_miss_reflections),
+                    tried_shape_count=sum(
+                        len(shapes) for shapes in _iter_fb.tried_ag_shapes_by_target.values()
+                    ),
+                ))
+    except Exception:
+        logger.debug(
+            "Phase 3 IterationFeedback wiring failed (non-fatal)",
+            exc_info=True,
+        )
+
     # Cycle 11 Task 12 / Bug B fix — mark this iteration as finalized so
     # the outer ``try/finally`` guard around the iteration body in
     # ``_run_lever_loop`` does not double-finalize on a normal exit
@@ -5079,6 +5224,7 @@ def _regenerate_rca_for_cluster(
     run_id: str,
     cluster: dict,
     metadata_snapshot: dict,
+    soft_clusters: list | None = None,
 ) -> dict:
     """Cycle 5 T3 / Cycle 6 F-2 — re-invoke RCA on a single cluster
     with broader evidence after the diagnostic-AG path flagged it as
@@ -5094,6 +5240,11 @@ def _regenerate_rca_for_cluster(
     ``rca_regeneration_exhausted`` record reflects what was actually
     tried (run 833969815458299 emitted ``attempted_evidence_sources=[]``
     which is wrong — both packs were available).
+
+    Phase 3 T3.3.1.1 — threads ``soft_clusters`` + ``metadata_snapshot``
+    + ``cluster`` through to ``build_rca_card`` so the Phase 1 Addendum
+    soft-evidence matcher (gated by ``GSO_RCA_CARD_SOFT_EVIDENCE``)
+    sees the same evidence in real runs that the unit tests exercise.
     """
     from genie_space_optimizer.optimization.rca import build_rca_card
 
@@ -5102,12 +5253,25 @@ def _regenerate_rca_for_cluster(
     qids = tuple(str(q) for q in (cluster.get("target_qids") or ()))
     attempted: list[str] = []
 
+    # Phase 3 T3.3.1.1 — fall back to ``metadata_snapshot["_soft_clusters"]``
+    # when the caller did not pass ``soft_clusters`` explicitly. The
+    # harness lever-loop site stashes the active soft_signal_clusters
+    # there right before calling run_rca_recovery_for_iteration so the
+    # attempt-driver contract stays unchanged.
+    if soft_clusters is None and isinstance(metadata_snapshot, dict):
+        _ms_soft = metadata_snapshot.get("_soft_clusters")
+        if isinstance(_ms_soft, list):
+            soft_clusters = _ms_soft
+
     attempted.append("failure_buckets")
     card = build_rca_card(
         cluster_id=cluster_id,
         qids=qids,
         failure_buckets=metadata_snapshot.get("_failure_buckets") or {},
         asi_metadata={},
+        metadata_snapshot=metadata_snapshot,
+        cluster=cluster,
+        soft_clusters=soft_clusters,
     )
     if card and str(card.get("rca_id") or ""):
         return {
@@ -5121,6 +5285,9 @@ def _regenerate_rca_for_cluster(
         qids=qids,
         failure_buckets=metadata_snapshot.get("_failure_buckets") or {},
         asi_metadata=metadata_snapshot.get("_asi_metadata") or {},
+        metadata_snapshot=metadata_snapshot,
+        cluster=cluster,
+        soft_clusters=soft_clusters,
     )
     if card and str(card.get("rca_id") or ""):
         return {
@@ -16805,6 +16972,15 @@ def _run_lever_loop(
     _phase_b_producer_exceptions: dict[str, int] = {}
     _phase_b_target_qids_missing_count: int = 0
     _phase_b_total_violations: int = 0
+    _phase_b_near_miss_repeated_ag_shape_count: int = 0
+
+    # Phase 3 T3.3.3.4 — run-level accumulators for the end-of-run
+    # SoftSignalTrendReport. ``_soft_clusters_seen_run`` collects every
+    # soft cluster the harness ever saw (deduped by cluster_id);
+    # ``_matched_soft_qids_run`` is the union of qids that ever appeared
+    # under any hard cluster's ``rca_card_supporting_soft_evidence``.
+    _soft_clusters_seen_run: dict[str, dict] = {}
+    _matched_soft_qids_run: set[str] = set()
 
     # Cycle 14-W hardening (G-3 / D-7) — count successful
     # ``GSO_ITERATION_SUMMARY_V1`` emissions so the terminate path
@@ -16827,6 +17003,9 @@ def _run_lever_loop(
         "no_records_iterations": _phase_b_no_records_iterations,
         "artifact_paths": _phase_b_artifact_paths,
         "total_violations": _phase_b_total_violations,
+        "near_miss_reflection_repeated_ag_shape_count": (
+            _phase_b_near_miss_repeated_ag_shape_count
+        ),
         "_contract_version": _PHASE_B_CONTRACT_VERSION,
         "_seen_iter_ids": set(),
     }
@@ -18284,6 +18463,20 @@ def _run_lever_loop(
             )
             clusters = _analysis["all_clusters"]
             soft_signal_clusters = _analysis["soft_signal_clusters"]
+            # Phase 3 T3.3.3.4 — accumulate every soft cluster the harness
+            # ever sees so the end-of-run trend report can classify each
+            # one as matched (any qid appeared under a hard cluster's
+            # ``rca_card_supporting_soft_evidence``) or unmatched.
+            try:
+                for _sc in soft_signal_clusters or []:
+                    _scid = str(_sc.get("cluster_id") or "")
+                    if _scid and _scid not in _soft_clusters_seen_run:
+                        _soft_clusters_seen_run[_scid] = _sc
+            except Exception:
+                logger.debug(
+                    "Phase 3: soft-cluster seen accumulator update skipped",
+                    exc_info=True,
+                )
             rca_ledger = _analysis.get("rca_ledger") or {}
             # Plan P-A — accumulate per-iter RCA ledger for terminate-path writer.
             try:
@@ -19741,6 +19934,33 @@ def _run_lever_loop(
                             if causal_drop_feedback_to_strategist_enabled()
                             else None
                         )
+                        # Phase 3 T3.1.6 — thread the prior iteration's
+                        # feedback packet (built by build_iteration_feedback)
+                        # into the strategist call so the prompt can render
+                        # the PRIOR ITERATION FEEDBACK block before the
+                        # cluster narrative. ``None`` when iteration_feedback
+                        # is disabled or this is the first iteration.
+                        _prior_iteration_feedback_for_strategist = None
+                        try:
+                            from genie_space_optimizer.common.config import (
+                                iteration_feedback_enabled as _iter_fb_enabled,
+                            )
+                            if _iter_fb_enabled():
+                                _prior_iter = int(iteration_counter or 0) - 1
+                                if _prior_iter >= 0:
+                                    _prior_summary = (
+                                        _iter_summaries.get(_prior_iter) or {}
+                                    )
+                                    _prior_iteration_feedback_for_strategist = (
+                                        _prior_summary.get("iteration_feedback")
+                                    )
+                        except Exception:
+                            logger.debug(
+                                "Phase 3: iteration-feedback lookup skipped",
+                                exc_info=True,
+                            )
+                            _prior_iteration_feedback_for_strategist = None
+
                         strategy = _call_llm_for_adaptive_strategy(
                             clusters=_strategy_hard_clusters,
                             soft_signal_clusters=_strategy_soft_clusters,
@@ -19773,6 +19993,9 @@ def _run_lever_loop(
                             iteration=int(iteration_counter or 0),
                             decision_emit=_decision_emit,
                             mlflow_anchor_run_id=_phase_h_anchor_run_id,
+                            iteration_feedback=(
+                                _prior_iteration_feedback_for_strategist
+                            ),
                         )
                         strategist_memo_cache[_memo_key] = copy.deepcopy(strategy)
                         strategy["_memoized"] = False
@@ -19803,6 +20026,115 @@ def _run_lever_loop(
                     action_groups = _sort_ags_rco7_site1(
                         strategy.get("action_groups", [])
                     )
+
+                    # Phase 3 Action 3.2 — AG-shape-differs gate.
+                    # Computes (repair_archetype, target_scope) for each
+                    # AG and compares against the per-target history
+                    # accumulated from prior iterations'
+                    # IterationFeedback. Emits NEAR_MISS_AG_SHAPE_DIFFERS
+                    # / NEAR_MISS_AG_SHAPE_REPEATED records; when the
+                    # strict-drop flag is on, drops repeated-shape AGs
+                    # before any downstream stages process them.
+                    try:
+                        from genie_space_optimizer.common.config import (
+                            near_miss_reflection_enabled as _nm_enabled,
+                            near_miss_reflection_strict_drop_enabled as _nm_strict_drop,
+                        )
+                        if _nm_enabled() and action_groups:
+                            from genie_space_optimizer.optimization.near_miss_reflection import (
+                                assert_ag_shape_differs_from_priors,
+                                compute_ag_shape_signature,
+                            )
+                            from genie_space_optimizer.optimization.decision_emitters import (
+                                near_miss_ag_shape_decision_record,
+                            )
+
+                            # Build per-cluster repair-kit lookup so the
+                            # shape can read repair_archetype.
+                            _kit_lookup: dict[str, dict] = {}
+                            for _c in clusters or []:
+                                _cid = str(_c.get("primary_cluster_id") or _c.get("cluster_id") or "")
+                                _kit = _c.get("_repair_kit")
+                                if _cid and isinstance(_kit, dict):
+                                    _kit_lookup[_cid] = _kit
+
+                            # Gather priors from earlier iterations'
+                            # iteration_feedback objects.
+                            _all_priors_by_target: dict[tuple[str, ...], list] = {}
+                            for _i in sorted(_iter_summaries.keys()):
+                                if int(_i) >= int(iteration_counter or 0):
+                                    continue
+                                _prior_fb = (_iter_summaries.get(_i) or {}).get(
+                                    "iteration_feedback",
+                                )
+                                if _prior_fb is None:
+                                    continue
+                                for _key, _shapes in (
+                                    _prior_fb.tried_ag_shapes_by_target or {}
+                                ).items():
+                                    _all_priors_by_target.setdefault(_key, []).extend(_shapes)
+
+                            _attempted_by_target: dict[tuple[str, ...], list] = {}
+                            _survivors: list = []
+                            _strict = _nm_strict_drop()
+                            for _ag in action_groups:
+                                _shape = compute_ag_shape_signature(
+                                    _ag, clusters or [], _kit_lookup,
+                                )
+                                _target_key = _shape.target_qids
+                                _prior_shapes = tuple(
+                                    _all_priors_by_target.get(_target_key, ())
+                                )
+                                _result = assert_ag_shape_differs_from_priors(
+                                    candidate_shape=_shape,
+                                    prior_shapes=_prior_shapes,
+                                    required_next_iter_change="either",
+                                )
+                                _ag_id_for_gate = str(
+                                    _ag.get("id") or _ag.get("ag_id") or ""
+                                )
+                                _matched = _result.matched_prior_shape
+                                _current_iter_inputs.setdefault(
+                                    "decision_records", [],
+                                ).append(near_miss_ag_shape_decision_record(
+                                    run_id=str(run_id or ""),
+                                    iteration=int(iteration_counter or 0),
+                                    ag_id=_ag_id_for_gate,
+                                    differs=bool(_result.differs),
+                                    target_qids=_shape.target_qids,
+                                    candidate_archetype=_shape.repair_archetype,
+                                    candidate_scope=_shape.target_scope.value,
+                                    matched_prior_archetype=(
+                                        _matched.repair_archetype if _matched else ""
+                                    ),
+                                    matched_prior_scope=(
+                                        _matched.target_scope.value if _matched else ""
+                                    ),
+                                ))
+                                _attempted_by_target.setdefault(_target_key, []).append(_shape)
+                                if _result.differs or not _strict:
+                                    _survivors.append(_ag)
+                                else:
+                                    logger.info(
+                                        "Phase 3 AG-shape gate dropped AG %s "
+                                        "(strict mode): candidate=(%s, %s) "
+                                        "matches prior=(%s, %s)",
+                                        _ag_id_for_gate,
+                                        _shape.repair_archetype,
+                                        _shape.target_scope.value,
+                                        _matched.repair_archetype if _matched else "",
+                                        _matched.target_scope.value if _matched else "",
+                                    )
+                            action_groups = _survivors
+                            _current_iter_inputs["_attempted_ag_shapes_by_target"] = {
+                                k: tuple(v) for k, v in _attempted_by_target.items()
+                            }
+                    except Exception:
+                        logger.debug(
+                            "Phase 3 AG-shape gate wiring failed (non-fatal)",
+                            exc_info=True,
+                        )
+
                     # Phase 2 Action 2.5 Tiers 2-3 — at the start of each
                     # iteration (>= 2), detect pattern candidates from
                     # accumulated Tier 1 records and optionally synthesise
@@ -22653,6 +22985,21 @@ def _run_lever_loop(
                 # the classifier falls through to ``NO_FINDINGS`` (the
                 # retryable case) which matches today's behaviour for
                 # decomposed-AG clusters that arrive ungrounded.
+                # Phase 3 T3.3.1.1 — stash soft_signal_clusters on the
+                # metadata_snapshot so ``_regenerate_rca_for_cluster`` can
+                # thread them into ``build_rca_card`` for the Phase 1
+                # Addendum soft-evidence matcher (flag-gated downstream).
+                try:
+                    if isinstance(metadata_snapshot, dict):
+                        metadata_snapshot["_soft_clusters"] = list(
+                            soft_signal_clusters or []
+                        )
+                except Exception:
+                    logger.debug(
+                        "Phase 3: soft_clusters stash for RCA recovery skipped",
+                        exc_info=True,
+                    )
+
                 try:
                     _pd_records = run_rca_recovery_for_iteration(
                         clusters=clusters or [],
@@ -24582,33 +24929,58 @@ def _run_lever_loop(
                             passing_dependents_threshold=_kit_pd_threshold(),
                             co_beneficiary_downgrade_threshold=_kit_co_threshold(),
                         )
-                        # Phase 1 Addendum × Phase 2 Section B bridge: lift
+                        # Phase 3 Action 3.3.2 — lift
                         # cluster["rca_card_supporting_soft_evidence"] (set by
                         # build_rca_card when GSO_RCA_CARD_SOFT_EVIDENCE=1)
-                        # into the kit-keyed dict the wrapper consumes. When
-                        # the Phase 1 Addendum flag is OFF (default), no
-                        # cluster carries the field, the helper returns {},
-                        # and we keep the dict as None so the wrapper's
-                        # co-beneficiary downgrade stays a no-op and replay
-                        # byte-stability holds.
+                        # into the kit-keyed dict the wrapper consumes. The
+                        # join key is cluster["_repair_kit"]["kit_id"] (set
+                        # by apply_repair_planner_to_clusters), so a kit
+                        # shared by multiple clusters naturally unions soft
+                        # evidence from all of them.
                         _soft_evidence_matched_qids_by_kit = None
                         try:
                             from genie_space_optimizer.common.config import (
                                 rca_card_soft_evidence_enabled as _soft_ev_enabled,
                             )
                             if _soft_ev_enabled():
-                                from genie_space_optimizer.optimization.kit_safety import (
-                                    build_soft_evidence_lookup_by_kit as _build_soft_lookup,
+                                from genie_space_optimizer.optimization.soft_evidence_lift import (
+                                    lift_soft_evidence_to_kit_lookup as _lift_soft,
                                 )
-                                _soft_lookup = _build_soft_lookup(
-                                    clusters=clusters, patches=_before_cap,
+                                from genie_space_optimizer.optimization.decision_emitters import (
+                                    soft_evidence_lifted_record as _soft_lifted_rec,
                                 )
-                                _soft_evidence_matched_qids_by_kit = (
-                                    _soft_lookup or None
-                                )
+                                _soft_lookup = _lift_soft(clusters)
+                                if _soft_lookup:
+                                    _soft_evidence_matched_qids_by_kit = _soft_lookup
+                                    _soft_qid_total = len({
+                                        q for qids in _soft_lookup.values()
+                                        for q in qids
+                                    })
+                                    _current_iter_inputs.setdefault(
+                                        "decision_records", [],
+                                    ).append(_soft_lifted_rec(
+                                        run_id=run_id,
+                                        iteration=iteration_counter,
+                                        kit_count=len(_soft_lookup),
+                                        soft_qid_count=_soft_qid_total,
+                                    ))
+                                    # Phase 3 T3.3.3.4 — feed the run-level
+                                    # matched-soft-qids set so the end-of-run
+                                    # SoftSignalTrendReport can classify each
+                                    # soft cluster as matched vs unmatched.
+                                    try:
+                                        for _qids in _soft_lookup.values():
+                                            for _q in _qids:
+                                                _matched_soft_qids_run.add(str(_q))
+                                    except Exception:
+                                        logger.debug(
+                                            "Phase 3: soft-qid run accumulator "
+                                            "update skipped (non-fatal)",
+                                            exc_info=True,
+                                        )
                         except Exception:
                             logger.debug(
-                                "Phase 1 Addendum soft-evidence wiring failed "
+                                "Phase 3 soft-evidence lift wiring failed "
                                 "(non-fatal)",
                                 exc_info=True,
                             )
@@ -28505,6 +28877,76 @@ def _run_lever_loop(
             run_overview=_run_overview,
             iteration_transcripts=_iter_transcripts,
         )
+
+        # Phase 3 T3.3.3.4 + T3.3.3.5 — build the end-of-run
+        # SoftSignalTrendReport and append the operator-only section
+        # to the transcript. Soft signals are observability-only and
+        # are NEVER strategist input (anti-gaming contract); this
+        # section is for operator triage of recurring unmatched
+        # root causes. Gated by GSO_SOFT_SIGNAL_TREND_REPORT
+        # (default ON).
+        try:
+            from genie_space_optimizer.common.config import (
+                soft_signal_trend_report_enabled as _trend_enabled,
+            )
+            if _trend_enabled():
+                from genie_space_optimizer.optimization.soft_trend_report import (
+                    build_soft_signal_trend_report,
+                )
+                from genie_space_optimizer.optimization.operator_process_transcript import (
+                    render_soft_signal_trend_report,
+                )
+                from genie_space_optimizer.optimization.decision_emitters import (
+                    soft_signal_trend_report_record,
+                )
+                _trend_report = build_soft_signal_trend_report(
+                    soft_clusters_seen=list(
+                        _soft_clusters_seen_run.values()
+                    ),
+                    matched_soft_qids_across_run=set(
+                        _matched_soft_qids_run
+                    ),
+                )
+                _full_transcript = (
+                    _full_transcript
+                    + "\n\n"
+                    + render_soft_signal_trend_report(_trend_report)
+                )
+                # Emit the trend report as a typed decision record so the
+                # postmortem analyzer can spot recurring unmatched root
+                # causes without rescanning the transcript.
+                try:
+                    _top_unmatched_root = ""
+                    _by_root = _trend_report.count_by_root_cause or ()
+                    if _by_root:
+                        _top_unmatched_root = str(_by_root[0][0])
+                    _trend_rec = soft_signal_trend_report_record(
+                        run_id=str(run_id or ""),
+                        iteration=int(iteration_counter or 0),
+                        total_soft_clusters=int(
+                            _trend_report.total_soft_clusters
+                        ),
+                        matched_count=int(_trend_report.matched_count),
+                        unmatched_count=int(_trend_report.unmatched_count),
+                        top_unmatched_root_cause=_top_unmatched_root,
+                    )
+                    import json as _json_trend
+                    print(
+                        "GSO_SOFT_SIGNAL_TREND_REPORT_V1 "
+                        + _json_trend.dumps(
+                            _trend_rec.to_dict(), sort_keys=True,
+                        )
+                    )
+                except Exception:
+                    logger.debug(
+                        "Phase 3: soft-signal trend record emission skipped",
+                        exc_info=True,
+                    )
+        except Exception:
+            logger.debug(
+                "Phase 3: end-of-run soft-signal trend report build skipped",
+                exc_info=True,
+            )
 
         _paths = _bundle_artifact_paths(
             iterations=_phase_h_iterations_completed,
