@@ -41,7 +41,14 @@ class AgOutcomeRecord(JsonRoundTrip):
     """Per-AG acceptance outcome record."""
 
     ag_id: str
-    outcome: str  # "accepted" | "accepted_with_regression_debt" | "accepted_with_attribution_drift" | "rolled_back"
+    outcome: str
+    # Closed vocabulary (2026-05-13 update — Phase 1 acceptance-tier redesign):
+    #   "accepted"
+    #   "accepted_with_regression_debt"          (existing, no flag)
+    #   "accepted_with_attribution_drift"        (existing, zero debt)
+    #   "accepted_with_partial_harvest_debt"     (GSO_PARTIAL_HARVEST_WITH_DEBT)
+    #   "accepted_with_attribution_drift_and_debt" (GSO_ATTRIBUTION_DRIFT_WITH_DEBT)
+    #   "rolled_back"
     reason_code: str
     target_qids: tuple[str, ...] = ()
     affected_qids: tuple[str, ...] = ()
