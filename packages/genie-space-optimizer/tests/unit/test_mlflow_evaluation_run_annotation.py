@@ -174,3 +174,38 @@ def test_annotate_mlflow_evaluation_runs_mirrors_headline_metrics(monkeypatch):
     assert ("eval-main-1", "pre_arbiter_accuracy", 66.67) in client.metrics
     assert ("eval-main-1", "evaluated_count", 24.0) in client.metrics
     assert ("eval-main-1", "excluded_count", 0.0) in client.metrics
+
+
+def test_annotate_mlflow_evaluation_runs_mirrors_repeatability_metrics(monkeypatch):
+    client = _FakeMlflowClient()
+    monkeypatch.setattr(evaluation, "MlflowClient", lambda: client)
+
+    annotated = evaluation._annotate_mlflow_evaluation_runs(
+        SimpleNamespace(run_id="eval-repeat-1"),
+        parent_run_name="iter_03 / finalize / repeat_pass_1 / run_abcd1234",
+        tags={
+            "genie.run_id": "opt-123",
+            "genie.stage": "finalize",
+            "genie.iteration": "03",
+            "evaluation_type": "repeatability",
+        },
+        metrics={
+            "repeatability_pct": 100.0,
+            "repeatability_scorer_pct": 87.5,
+            "repeatability_execution_pct": 100.0,
+            "repeatability_structural_pct": 100.0,
+            "repeatability_exact_pct": 62.5,
+            "total_questions": 8,
+            "evaluated_count": 8,
+        },
+    )
+
+    assert annotated == ["eval-repeat-1"]
+    assert (
+        "eval-repeat-1",
+        "mlflow.runName",
+        "iter_03 / finalize / repeat_pass_1 / mlflow_eval / run_abcd1234",
+    ) in client.tags
+    assert ("eval-repeat-1", "repeatability_pct", 100.0) in client.metrics
+    assert ("eval-repeat-1", "repeatability_exact_pct", 62.5) in client.metrics
+    assert ("eval-repeat-1", "evaluated_count", 8.0) in client.metrics

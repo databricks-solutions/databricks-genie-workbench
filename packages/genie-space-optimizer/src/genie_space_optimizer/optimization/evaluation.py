@@ -8911,12 +8911,21 @@ def run_repeatability_evaluation(
             repeatability_pct,
         )
 
+        repeatability_run_metrics: dict[str, float] = {
+            "repeatability_pct": float(repeatability_pct),
+            "repeatability_scorer_pct": float(_scorer_repeatability_pct),
+            "repeatability_execution_pct": float(repeatability_execution_pct),
+            "repeatability_structural_pct": float(repeatability_structural_pct),
+            "repeatability_exact_pct": float(repeatability_exact_pct),
+            "total_questions": float(len(benchmarks)),
+            "evaluated_count": float(len(rows_for_output) or len(benchmarks)),
+        }
         mlflow.log_metrics({
-            "repeatability_pct": repeatability_pct,
-            "repeatability_scorer_pct": _scorer_repeatability_pct,
-            "repeatability_execution_pct": repeatability_execution_pct,
-            "repeatability_structural_pct": repeatability_structural_pct,
-            "repeatability_exact_pct": repeatability_exact_pct,
+            "repeatability_pct": repeatability_run_metrics["repeatability_pct"],
+            "repeatability_scorer_pct": repeatability_run_metrics["repeatability_scorer_pct"],
+            "repeatability_execution_pct": repeatability_run_metrics["repeatability_execution_pct"],
+            "repeatability_structural_pct": repeatability_run_metrics["repeatability_structural_pct"],
+            "repeatability_exact_pct": repeatability_run_metrics["repeatability_exact_pct"],
         })
         mlflow.set_tags(
             {
@@ -8925,6 +8934,20 @@ def run_repeatability_evaluation(
                 "repeatability_execution_pct": f"{repeatability_execution_pct:.1f}",
                 "iteration": str(iteration),
             }
+        )
+        repeatability_eval_tags: dict[str, Any] = {
+            **{str(k): str(v) for k, v in (extra_tags or {}).items()},
+            "genie.run_role": "mlflow_genai_evaluation",
+            "evaluation_type": "repeatability",
+            "repeatability_pct": f"{repeatability_pct:.1f}",
+            "repeatability_execution_pct": f"{repeatability_execution_pct:.1f}",
+            "iteration": str(iteration),
+        }
+        _annotate_mlflow_evaluation_runs(
+            eval_result,
+            parent_run_name=run_name,
+            tags=repeatability_eval_tags,
+            metrics=repeatability_run_metrics,
         )
 
     logger.info(
