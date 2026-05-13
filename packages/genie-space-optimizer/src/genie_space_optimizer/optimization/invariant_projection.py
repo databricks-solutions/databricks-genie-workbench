@@ -47,6 +47,42 @@ def _coerce_str_list(value: Any) -> list[str]:
     return out
 
 
+def _record_to_mapping(record: Any) -> dict[str, Any] | None:
+    """B2 (2026-05-13) — normalize a decision record to a plain dict.
+
+    Branch order (each branch mutually exclusive with the next):
+
+    1. Already a Mapping (dict / MappingProxyType / etc.) → ``dict(record)``.
+    2. Exposes a callable ``to_dict()`` (the ``DecisionRecord`` dataclass
+       contract at ``rca_decision_trace.py:476``) → invoke and coerce.
+       If ``to_dict()`` raises or returns a non-Mapping, return ``None``
+       so the caller drops the record (defensive — a buggy dataclass must
+       not propagate to invariants).
+    3. Anything else → return ``None``.
+
+    Closes 18 medium-tier ``I_CHECK_FAILED`` violations from 2314bb2c
+    where ``check_i7_rca_grounding`` and ``check_i14_l6_decline_dedup``
+    raised ``AttributeError("'DecisionRecord' object has no attribute
+    'get'")`` because some emit sites append the dataclass directly to
+    ``current_iter_inputs["decision_records"]``.
+
+    Evidence anchor:
+    docs/runid_analysis/2314bb2c-95a1-4d60-8226-09e5155aee2a/postmortem.md F7
+    """
+    if isinstance(record, Mapping):
+        return dict(record)
+    to_dict_attr = getattr(record, "to_dict", None)
+    if callable(to_dict_attr):
+        try:
+            result = to_dict_attr()
+        except Exception:
+            return None
+        if isinstance(result, Mapping):
+            return dict(result)
+        return None
+    return None
+
+
 def _project_clusters(
     current_iter_inputs: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
