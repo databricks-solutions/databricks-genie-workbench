@@ -937,3 +937,84 @@ def check_proposal_failure_decided_coverage(
             f"({len(decision_records)} decision_records seen)"
         ),
     )
+
+
+@dataclass(frozen=True)
+class DirectiveOutcomeCoverageResult:
+    """Outcome of ``check_directive_outcome_coverage``."""
+
+    violated: bool
+    message: str
+    offending_ag_ids: tuple[str, ...] = ()
+    offending_lever_keys_by_ag: tuple[tuple[str, tuple[int, ...]], ...] = ()
+
+
+def check_directive_outcome_coverage(
+    iter_inputs: Mapping[str, Any],
+) -> DirectiveOutcomeCoverageResult:
+    """Phase 3 (2026-05-13) — per-AG-per-lever-directive coverage invariant.
+
+    For every AG with ``ag.lever_directives`` non-empty in this iteration,
+    every ``lever_key`` in the directive dict MUST appear as a key in the
+    iteration's ``directive_outcomes`` ledger
+    (``iter_inputs["directive_outcomes_by_ag"][ag_id].outcomes_by_lever``).
+    Otherwise the AG silently lost a directive — the 2314bb2c AG2 budget-burn
+    pattern.
+
+    Runs under warn-and-degrade: the harness emits
+    ``GSO_INVARIANT_VIOLATION_V1`` with
+    ``invariant_name="directive_outcome_coverage"`` and continues.
+
+    Expected ``iter_inputs`` shape::
+
+        {
+          "action_groups": [
+            {"id": "AG1", "lever_directives": {"5": {...}, "6": {...}}},
+            ...
+          ],
+          "directive_outcomes_by_ag": {
+            "AG1": AgDirectiveLedger(
+              outcomes_by_lever={5: ..., 6: ...}
+            ),
+            ...
+          },
+        }
+    """
+    action_groups = iter_inputs.get("action_groups") or []
+    outcomes_by_ag = iter_inputs.get("directive_outcomes_by_ag") or {}
+
+    offending: list[tuple[str, tuple[int, ...]]] = []
+    for ag in action_groups:
+        ag_id = str(ag.get("id") or ag.get("ag_id") or "")
+        if not ag_id:
+            continue
+        directives = ag.get("lever_directives") or {}
+        if not directives:
+            continue
+        ledger = outcomes_by_ag.get(ag_id)
+        if ledger is None:
+            offending.append(
+                (ag_id, tuple(sorted(int(k) for k in directives.keys())))
+            )
+            continue
+        # AgDirectiveLedger.outcomes_by_lever is dict[int, DirectiveOutcomeCode].
+        present_keys = set(getattr(ledger, "outcomes_by_lever", {}).keys())
+        expected_keys = set(int(k) for k in directives.keys())
+        missing = sorted(expected_keys - present_keys)
+        if missing:
+            offending.append((ag_id, tuple(missing)))
+
+    if not offending:
+        return DirectiveOutcomeCoverageResult(violated=False, message="")
+
+    offending_ag_ids = tuple(ag_id for ag_id, _ in offending)
+    return DirectiveOutcomeCoverageResult(
+        violated=True,
+        message=(
+            f"directive_outcome_coverage: {len(offending)} AG(s) carried "
+            f"lever_directives without a matching outcome ledger entry — "
+            f"silent budget burn"
+        ),
+        offending_ag_ids=offending_ag_ids,
+        offending_lever_keys_by_ag=tuple(offending),
+    )
