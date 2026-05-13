@@ -6395,3 +6395,117 @@ def gso_contract_health_summary_enabled() -> bool:
     Disable via ``GSO_CONTRACT_HEALTH_SUMMARY_V1=0``.
     """
     return _flag_default_on("GSO_CONTRACT_HEALTH_SUMMARY_V1")
+
+
+# ── Phase 2 — Substantive Optimizer Changes ──────────────────────────────────
+
+_PROPAGATION_ROOT_CAUSE_ALLOWED: frozenset[str] = frozenset({
+    "propagation_lag",
+    "instruction_not_scoped_to_qid",
+    "instruction_insufficient_force",
+    "eval_cache_stale",
+    "unknown",
+})
+
+
+def propagation_root_cause() -> str:
+    """Phase 1 Action 1.3 — frozen propagation root cause.
+
+    Returns one of the values recorded in
+    ``docs/2026-05-12-phase-1-action-1-3-propagation-diagnostic-results.md``
+    (``propagation_lag``, ``instruction_not_scoped_to_qid``,
+    ``instruction_insufficient_force``, ``eval_cache_stale``) or
+    ``"unknown"`` when the env var is unset or carries an invalid
+    value.
+
+    Section A's ``select_priority_step`` reads this to decide whether
+    ``plural_top_n_collapse`` repairs need an L6 snippet companion or
+    a propagation verification step before eval.
+    """
+    raw = (os.environ.get("GSO_PROPAGATION_ROOT_CAUSE") or "").strip().lower()
+    if raw in _PROPAGATION_ROOT_CAUSE_ALLOWED:
+        return raw
+    return "unknown"
+
+
+# Section A — Repair Planner
+def repair_planner_enabled() -> bool:
+    """Phase 2 Action 2.1 — Repair Planner master gate. Default OFF."""
+    return _flag_enabled("GSO_REPAIR_PLANNER")
+
+
+# Section B — Kit-aware patch cap
+def kit_aware_patch_cap_enabled() -> bool:
+    """Phase 2 Action 2.2 — Kit-aware patch cap master gate. Default OFF."""
+    return _flag_enabled("GSO_KIT_AWARE_PATCH_CAP")
+
+
+def kit_passing_dependents_threshold() -> int:
+    """Phase 2 Action 2.2 — kit-level passing-dependents safety threshold."""
+    raw = (os.environ.get("GSO_KIT_PASSING_DEPENDENTS_THRESHOLD") or "").strip()
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    return 15
+
+
+def co_beneficiary_downgrade_threshold() -> int:
+    """Phase 2 Action 2.2 — co-beneficiary count threshold for risk downgrade."""
+    raw = (os.environ.get("GSO_CO_BENEFICIARY_DOWNGRADE_THRESHOLD") or "").strip()
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    return 5
+
+
+# Section C — Hub-table scoped variants
+def hub_table_scoped_variants_enabled() -> bool:
+    """Phase 2 Action 2.3 — Hub-table scoped variants master gate. Default OFF."""
+    return _flag_enabled("GSO_HUB_TABLE_SCOPED_VARIANTS")
+
+
+def hub_table_dependents_threshold() -> int:
+    """Phase 2 Action 2.3 — passing-dependents threshold for hub table classification."""
+    raw = (os.environ.get("GSO_HUB_TABLE_DEPENDENTS_THRESHOLD") or "").strip()
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    return 5
+
+
+# Section D — Strategist coverage re-call
+def strategist_coverage_recall_enabled() -> bool:
+    """Phase 2 Action 2.4 — Strategist coverage re-call master gate. Default OFF."""
+    return _flag_enabled("GSO_STRATEGIST_COVERAGE_RECALL")
+
+
+# Section E — In-loop archetype learning
+def archetype_learning_enabled() -> bool:
+    """Phase 2 Action 2.5 — Archetype learning master gate. Default OFF."""
+    return _flag_enabled("GSO_ARCHETYPE_LEARNING")
+
+
+def provisional_synthesis_llm_enabled() -> bool:
+    """Phase 2 Action 2.5 — Provisional archetype LLM synthesis. Default OFF."""
+    return _flag_enabled("GSO_PROVISIONAL_SYNTHESIS_LLM")
+
+
+def pattern_candidate_member_threshold() -> int:
+    """Phase 2 Action 2.5 — minimum unmatched-pattern members to form a PatternCandidate."""
+    raw = (os.environ.get("GSO_PATTERN_CANDIDATE_MEMBER_THRESHOLD") or "").strip()
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    return 3
+
+
+def provisional_synthesis_max_per_iteration() -> int:
+    """Phase 2 Action 2.5 — cap on provisional archetype synthesis LLM calls per iteration."""
+    raw = (os.environ.get("GSO_PROVISIONAL_SYNTHESIS_MAX_PER_ITERATION") or "").strip()
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    return 3
+
+
+def provisional_archetype_trial_max_per_iteration() -> int:
+    """Phase 2 Action 2.5 — cap on provisional archetype trials per iteration."""
+    raw = (os.environ.get("GSO_PROVISIONAL_ARCHETYPE_TRIAL_MAX_PER_ITERATION") or "").strip()
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    return 1

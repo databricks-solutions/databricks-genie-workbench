@@ -210,3 +210,98 @@ def test_acceptance_four_tier_gate_enabled_when_flag_on(monkeypatch) -> None:
         acceptance_four_tier_gate_enabled,
     )
     assert acceptance_four_tier_gate_enabled() is True
+
+
+# Phase 2 Section A — Repair Planner
+def test_repair_planner_enabled_default_off(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_REPAIR_PLANNER", raising=False)
+    from genie_space_optimizer.common.config import repair_planner_enabled
+    assert repair_planner_enabled() is False
+
+
+def test_repair_planner_enabled_when_flag_on(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_REPAIR_PLANNER", "1")
+    from genie_space_optimizer.common.config import repair_planner_enabled
+    assert repair_planner_enabled() is True
+
+
+def test_propagation_root_cause_default_unknown(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_PROPAGATION_ROOT_CAUSE", raising=False)
+    from genie_space_optimizer.common.config import propagation_root_cause
+    assert propagation_root_cause() == "unknown"
+
+
+def test_propagation_root_cause_reads_env_value(monkeypatch) -> None:
+    from genie_space_optimizer.common.config import propagation_root_cause
+    for value in (
+        "propagation_lag",
+        "instruction_not_scoped_to_qid",
+        "instruction_insufficient_force",
+        "eval_cache_stale",
+    ):
+        monkeypatch.setenv("GSO_PROPAGATION_ROOT_CAUSE", value)
+        assert propagation_root_cause() == value
+
+
+def test_propagation_root_cause_unknown_for_invalid_value(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_PROPAGATION_ROOT_CAUSE", "garbage_value")
+    from genie_space_optimizer.common.config import propagation_root_cause
+    assert propagation_root_cause() == "unknown"
+
+
+# Phase 2 Section B — Kit-aware patch cap
+def test_kit_aware_patch_cap_enabled_default_off(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_KIT_AWARE_PATCH_CAP", raising=False)
+    from genie_space_optimizer.common.config import kit_aware_patch_cap_enabled
+    assert kit_aware_patch_cap_enabled() is False
+
+
+def test_kit_passing_dependents_threshold_default(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_KIT_PASSING_DEPENDENTS_THRESHOLD", raising=False)
+    from genie_space_optimizer.common.config import kit_passing_dependents_threshold
+    assert kit_passing_dependents_threshold() == 15
+
+
+def test_co_beneficiary_downgrade_threshold_default(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_CO_BENEFICIARY_DOWNGRADE_THRESHOLD", raising=False)
+    from genie_space_optimizer.common.config import co_beneficiary_downgrade_threshold
+    assert co_beneficiary_downgrade_threshold() == 5
+
+
+# Phase 2 Section C — Hub-table scoped variants
+def test_hub_table_scoped_variants_enabled_default_off(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_HUB_TABLE_SCOPED_VARIANTS", raising=False)
+    from genie_space_optimizer.common.config import hub_table_scoped_variants_enabled
+    assert hub_table_scoped_variants_enabled() is False
+
+
+def test_hub_table_dependents_threshold_default(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_HUB_TABLE_DEPENDENTS_THRESHOLD", raising=False)
+    from genie_space_optimizer.common.config import hub_table_dependents_threshold
+    assert hub_table_dependents_threshold() == 5
+
+
+# Phase 2 Section D — Strategist coverage re-call
+def test_strategist_coverage_recall_enabled_default_off(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_STRATEGIST_COVERAGE_RECALL", raising=False)
+    from genie_space_optimizer.common.config import strategist_coverage_recall_enabled
+    assert strategist_coverage_recall_enabled() is False
+
+
+# Phase 2 Section E — Archetype learning
+def test_archetype_learning_enabled_default_off(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_ARCHETYPE_LEARNING", raising=False)
+    from genie_space_optimizer.common.config import archetype_learning_enabled
+    assert archetype_learning_enabled() is False
+
+
+def test_pattern_candidate_member_threshold_default(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_PATTERN_CANDIDATE_MEMBER_THRESHOLD", raising=False)
+    from genie_space_optimizer.common.config import pattern_candidate_member_threshold
+    assert pattern_candidate_member_threshold() == 3
+
+
+def test_provisional_synthesis_max_per_iteration_default(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_PROVISIONAL_SYNTHESIS_MAX_PER_ITERATION", raising=False)
+    from genie_space_optimizer.common.config import provisional_synthesis_max_per_iteration
+    assert provisional_synthesis_max_per_iteration() == 3
