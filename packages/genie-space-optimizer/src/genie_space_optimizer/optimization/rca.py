@@ -112,6 +112,44 @@ class RCACard:
     allowed_patch_families: frozenset[str]
     forbidden_patch_families: frozenset[str]
     rationale: str
+    # Phase 1 Addendum — soft-cluster evidence supporting this hard
+    # cluster's RCA. Empty tuple for byte-stability when the
+    # ``GSO_RCA_CARD_SOFT_EVIDENCE`` flag is OFF (default). Phase 2
+    # Section B's wrapper reads this to populate
+    # ``soft_evidence_matched_qids_by_kit`` for the kit-safety
+    # downgrade. Soft signals are evidence and risk-reducing context
+    # only — never repair targets. The strategist input remains
+    # structurally hard-clusters-only.
+    supporting_soft_evidence: tuple["SoftEvidenceMatch", ...] = ()
+
+
+@dataclass(frozen=True)
+class SoftEvidenceMatch:
+    """Phase 1 Addendum — one soft-cluster qid's evidence link to a
+    hard cluster's RCA card.
+
+    A hard cluster's ``RCACard.supporting_soft_evidence`` is a tuple of
+    these records. The matcher
+    (:func:`optimization.rca_card_builder.match_soft_evidence`)
+    populates them deterministically from soft-cluster ASI metadata
+    when:
+
+      1. The soft cluster's ``dominant_root_cause`` is in the same
+         family as the hard cluster's.
+      2. AND at least one of (shared_blame, matching_counterfactual,
+         matching_wrong_clause).
+
+    ``match_kind`` is the typed evidence label (one of the three).
+    ``evidence_token`` is the specific shared token / column / predicate
+    that triggered the match (used for postmortem aggregation and the
+    rationale in the strategist input).
+    """
+
+    soft_qid: str
+    soft_cluster_id: str
+    match_kind: str  # shared_blame | matching_counterfactual | matching_wrong_clause
+    evidence_token: str
+    soft_counterfactual: str
 
 
 @dataclass(frozen=True)
