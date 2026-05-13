@@ -169,3 +169,106 @@ def test_orchestrator_drains_self_check_failure_into_decision_record() -> None:
         f"orchestrator must drain self-check failure into a DecisionRecord; "
         f"saw reason_codes={reason_codes}"
     )
+
+
+def test_builder_populates_supporting_soft_evidence_when_flag_on() -> None:
+    """Phase 1 Addendum — when ``GSO_RCA_CARD_SOFT_EVIDENCE=1`` and
+    soft_clusters are passed in, the resulting RCA card carries
+    matched soft evidence and the cluster object is augmented with
+    ``rca_card_supporting_soft_evidence`` for Phase 2 to lift."""
+    from genie_space_optimizer.optimization.rca import RcaKind
+
+    cluster = {"primary_cluster_id": "h002", "target_qids": ("gs_021",)}
+    metadata_snapshot: dict = {"_rca_card_store": {}}
+    pack = {
+        "asi_metadata": {
+            "gs_021": {
+                "failure_type": "missing_filter",
+                "blame_set": ["time_window", "time_window = mtd"],
+                "counterfactual_fix": "Add filter WHERE f.time_window = mtd",
+                "wrong_clause": "WHERE",
+            },
+        },
+        "generated_sql_by_qid": {
+            "gs_021": "SELECT SUM(amount) FROM mv_7now_fact_sales"
+        },
+        "reference_sql_by_qid": {
+            "gs_021": (
+                "SELECT SUM(amount) FROM mv_7now_fact_sales "
+                "WHERE time_window = 'mtd'"
+            ),
+        },
+    }
+    soft_clusters = [
+        {
+            "cluster_id": "S001",
+            "dominant_root_cause": RcaKind.FILTER_LOGIC_MISMATCH,
+            "asi_by_qid": {
+                f"gs_{i:03d}": {
+                    "failure_type": "missing_filter",
+                    "blame_set": [],
+                    "counterfactual_fix": "Add filter on time_window",
+                    "wrong_clause": "WHERE",
+                }
+                for i in range(1, 12)  # 11 soft qids — mirrors ccf1d60d S001
+            },
+        },
+    ]
+    with patch.dict(
+        os.environ,
+        {"GSO_RCA_CARD_BUILDER": "1", "GSO_RCA_CARD_SOFT_EVIDENCE": "1"},
+        clear=True,
+    ):
+        out = build_rca_card(
+            cluster_id="h002",
+            qids=("gs_021",),
+            failure_buckets={},
+            asi_metadata=pack["asi_metadata"],
+            generated_sql_by_qid=pack["generated_sql_by_qid"],
+            reference_sql_by_qid=pack["reference_sql_by_qid"],
+            metadata_snapshot=metadata_snapshot,
+            cluster=cluster,
+            soft_clusters=soft_clusters,
+        )
+
+    assert out.get("rca_id")
+    card = metadata_snapshot["_rca_card_store"][out["rca_id"]]
+    assert len(card.supporting_soft_evidence) == 11
+    cluster_soft = cluster.get("rca_card_supporting_soft_evidence") or []
+    assert {entry["soft_qid"] for entry in cluster_soft} == {
+        f"gs_{i:03d}" for i in range(1, 12)
+    }
+
+
+def test_builder_ignores_soft_clusters_when_flag_off() -> None:
+    """Phase 1 Addendum — flag OFF → soft_clusters argument accepted
+    but ignored; supporting_soft_evidence stays empty; cluster mutation
+    omits the soft-evidence list. Replay byte-stability holds."""
+    cluster = {"primary_cluster_id": "h002", "target_qids": ("gs_021",)}
+    metadata_snapshot: dict = {"_rca_card_store": {}}
+    pack = {
+        "asi_metadata": {
+            "gs_021": {
+                "failure_type": "missing_filter",
+                "blame_set": ["x"],
+            },
+        },
+        "generated_sql_by_qid": {"gs_021": "SELECT * FROM t WHERE x"},
+        "reference_sql_by_qid": {"gs_021": "SELECT * FROM t WHERE x"},
+    }
+    with patch.dict(os.environ, {"GSO_RCA_CARD_BUILDER": "1"}, clear=True):
+        out = build_rca_card(
+            cluster_id="h002",
+            qids=("gs_021",),
+            failure_buckets={},
+            asi_metadata=pack["asi_metadata"],
+            generated_sql_by_qid=pack["generated_sql_by_qid"],
+            reference_sql_by_qid=pack["reference_sql_by_qid"],
+            metadata_snapshot=metadata_snapshot,
+            cluster=cluster,
+            soft_clusters=[{"cluster_id": "S999", "dominant_root_cause": "ignored"}],
+        )
+    if out.get("rca_id"):
+        card = metadata_snapshot["_rca_card_store"][out["rca_id"]]
+        assert card.supporting_soft_evidence == ()
+    assert "rca_card_supporting_soft_evidence" not in cluster

@@ -5403,6 +5403,23 @@ def rca_card_llm_normalization_enabled() -> bool:
     return _flag_enabled("GSO_RCA_CARD_LLM_NORMALIZATION")
 
 
+def rca_card_soft_evidence_enabled() -> bool:
+    """Phase 1 Addendum — soft-evidence wiring on the RCA card builder.
+
+    When ON, ``build_rca_card`` accepts ``soft_clusters`` and:
+      * populates ``RCACard.supporting_soft_evidence`` via the
+        deterministic ``match_soft_evidence`` helper;
+      * extends the self-grounding check to accept soft-cluster ASI
+        blame and counterfactual text as additional grounding sources;
+      * augments the cluster object with
+        ``rca_card_supporting_soft_evidence`` for Phase 2 Section B's
+        harness to lift into ``soft_evidence_matched_qids_by_kit``.
+
+    Default OFF. Enable with ``GSO_RCA_CARD_SOFT_EVIDENCE=1``.
+    """
+    return _flag_enabled("GSO_RCA_CARD_SOFT_EVIDENCE")
+
+
 def acceptance_four_tier_gate_enabled() -> bool:
     """Phase 1 Action 1.2 — when ON, every Stage-9 acceptance
     decision is additionally routed through

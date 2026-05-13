@@ -1506,6 +1506,7 @@ def build_rca_card(
     metadata_snapshot: dict | None = None,
     cluster: dict | None = None,
     llm_caller=None,
+    soft_clusters: list | None = None,  # Phase 1 Addendum
 ) -> dict:
     """Phase 1 Action 1.1 — deterministic-first RCA card builder.
 
@@ -1537,6 +1538,7 @@ def build_rca_card(
     from genie_space_optimizer.common.config import (
         rca_card_builder_enabled,
         rca_card_llm_normalization_enabled,
+        rca_card_soft_evidence_enabled,
     )
 
     if not rca_card_builder_enabled():
@@ -1544,7 +1546,7 @@ def build_rca_card(
         # fixture captured before Phase 1.
         _ = cluster_id, qids, failure_buckets, asi_metadata
         _ = generated_sql_by_qid, reference_sql_by_qid
-        _ = metadata_snapshot, cluster, llm_caller
+        _ = metadata_snapshot, cluster, llm_caller, soft_clusters
         return {"rca_id": ""}
 
     from genie_space_optimizer.optimization.rca_card_builder import build_card
@@ -1552,6 +1554,12 @@ def build_rca_card(
     asi_by_qid = asi_metadata or {}
     gen_sql = generated_sql_by_qid or {}
     ref_sql = reference_sql_by_qid or {}
+    # Phase 1 Addendum — soft_clusters is opt-in via env flag. With the
+    # flag OFF, anything passed by the caller is silently dropped so
+    # existing replay fixtures stay byte-identical.
+    effective_soft = (
+        list(soft_clusters or []) if rca_card_soft_evidence_enabled() else []
+    )
 
     # LLM caller wiring. If the env flag is off, force-disable the
     # normalizer regardless of what the harness passed.
@@ -1565,6 +1573,7 @@ def build_rca_card(
         asi_by_qid=asi_by_qid,
         generated_sql_by_qid=gen_sql,
         reference_sql_by_qid=ref_sql,
+        soft_clusters=effective_soft,
         llm_caller=effective_caller,
     )
 
@@ -1596,6 +1605,24 @@ def build_rca_card(
     if cluster is not None:
         cluster["rca_card_id"] = card.card_id
         cluster["rca_card"] = {"rca_id": card.card_id}
+        # Phase 1 Addendum — surface matched soft evidence on the
+        # cluster so Phase 2 Section B's harness (Task 2.2.8) can lift
+        # it into ``soft_evidence_matched_qids_by_kit`` without
+        # re-reading the metadata snapshot. Only emitted when the flag
+        # is ON AND the matcher actually matched some soft evidence;
+        # never present otherwise (replay byte-stability for every
+        # existing fixture).
+        if rca_card_soft_evidence_enabled() and card.supporting_soft_evidence:
+            cluster["rca_card_supporting_soft_evidence"] = [
+                {
+                    "soft_qid": m.soft_qid,
+                    "soft_cluster_id": m.soft_cluster_id,
+                    "match_kind": m.match_kind,
+                    "evidence_token": m.evidence_token,
+                    "soft_counterfactual": m.soft_counterfactual,
+                }
+                for m in card.supporting_soft_evidence
+            ]
 
     return {"rca_id": card.card_id}
 

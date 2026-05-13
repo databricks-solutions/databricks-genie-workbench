@@ -322,6 +322,7 @@ def build_card(
     asi_by_qid: Mapping[str, dict],
     generated_sql_by_qid: Mapping[str, str],
     reference_sql_by_qid: Mapping[str, str],
+    soft_clusters: "Sequence[dict] | None" = None,
     llm_caller: Optional[Callable[[str], str]] = None,
 ) -> tuple[Optional[_RCACard], Optional[str], Optional[str]]:
     """End-to-end deterministic-first card build.
@@ -344,6 +345,19 @@ def build_card(
     shape = intended_patch_shape_for_root_cause(root_cause)
     allowed, forbidden = allowed_and_forbidden_patch_families(root_cause)
 
+    # Phase 1 Addendum — match soft-cluster evidence when supplied.
+    # Empty tuple when ``soft_clusters`` is None / () so existing
+    # callers are byte-stable. The matcher is pure-deterministic;
+    # the cluster mutation in build_rca_card stores the matches on
+    # the cluster object for Phase 2 Section B's harness.
+    soft_matches: tuple[_SoftEvidenceMatch, ...] = ()
+    if soft_clusters:
+        soft_matches = match_soft_evidence(
+            hard_root_cause=root_cause,
+            hard_asi_by_qid=asi_by_qid,
+            soft_clusters=tuple(soft_clusters),
+        )
+
     # Build the candidate card with a deterministic rationale.
     rationale = _deterministic_rationale(root_cause, grounding, shape)
     card = _RCACard(
@@ -356,6 +370,7 @@ def build_card(
         allowed_patch_families=allowed,
         forbidden_patch_families=forbidden,
         rationale=rationale,
+        supporting_soft_evidence=soft_matches,
     )
 
     check = self_grounding_check(
@@ -364,6 +379,7 @@ def build_card(
         asi_by_qid=asi_by_qid,
         generated_sql_by_qid=generated_sql_by_qid,
         reference_sql_by_qid=reference_sql_by_qid,
+        soft_grounding_sources=tuple(soft_clusters) if soft_clusters else (),
     )
     if not check.ok:
         return None, check.failure_reason, None
