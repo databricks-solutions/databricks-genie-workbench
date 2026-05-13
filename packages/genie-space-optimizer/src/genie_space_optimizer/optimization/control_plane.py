@@ -1388,6 +1388,12 @@ def decide_control_plane_acceptance(
         >= policy.min_target_clusters_fixed targets AND cleared the
         policy's aggregate-gain / threshold / bucket / cumulative
         gates with bounded debt. Behind GSO_PARTIAL_HARVEST_WITH_DEBT.
+      accepted_with_attribution_drift_and_debt — Phase 1 (2026-05-13):
+        candidate fixed zero targets but moved aggregate >= 4.0pp,
+        admitted bounded SOFT_TO_HARD or LOOKUP_FAILED debt under
+        ``attribution_drift_policy_pilot_default``. Behind
+        ``GSO_ATTRIBUTION_DRIFT_WITH_DEBT``. Distinct from
+        ``accepted_with_attribution_drift`` which has zero debt.
       out_of_target_hard_regression     — at least one prior-passing qid went hard
       rejected_unbounded_collateral     — collateral exceeds debt budget
       accepted                          — net causal win, no collateral regressions
@@ -1668,6 +1674,49 @@ def decide_control_plane_acceptance(
             reason = "accepted_with_partial_harvest_debt"
             accepted = True
             out_of_target_regressed = verdict.debt_qids
+
+    # Phase 1 (2026-05-13): attribution-drift acceptance tier. Fires
+    # when the existing partial-harvest branch rejected and the new
+    # policy admits the candidate (target unfixed + bounded debt +
+    # lower aggregate floor + broader bucket admission). Design
+    # rationale: docs/2026-05-13-acceptance-gate-redesign-design-record.md.
+    from genie_space_optimizer.common.config import (
+        attribution_drift_with_debt_enabled,
+    )
+
+    if not accepted and attribution_drift_with_debt_enabled():
+        from genie_space_optimizer.optimization.acceptance_policy import (
+            attribution_drift_policy_from_config,
+        )
+
+        synthetic_drift = ControlPlaneAcceptance(
+            accepted=False,
+            reason_code=reason,
+            baseline_accuracy=round(float(baseline_accuracy), 1),
+            candidate_accuracy=round(float(candidate_accuracy), 1),
+            delta_pp=delta,
+            target_qids=targets,
+            target_fixed_qids=target_fixed,
+            target_still_hard_qids=target_still,
+            out_of_target_regressed_qids=out_of_target_regressed,
+            regression_debt_qids=(),
+            protected_regressed_qids=protected_regressed,
+            soft_to_hard_regressed_qids=soft_to_hard,
+            passing_to_hard_regressed_qids=passing_to_hard,
+            unknown_to_hard_regressed_qids=unknown_to_hard,
+            target_delta_states=target_delta_states_tuple,
+            existing_hard_still_hard_outside_target_qids=existing_hard_still_hard_outside_target,
+        )
+        drift_verdict = evaluate_regression_debt(
+            decision=synthetic_drift,
+            policy=attribution_drift_policy_from_config(),
+            cumulative_debt=int(cumulative_debt),
+            threshold_pass_rate=float(threshold_pass_rate),
+        )
+        if drift_verdict.under_policy and drift_verdict.debt_qids:
+            reason = "accepted_with_attribution_drift_and_debt"
+            accepted = True
+            out_of_target_regressed = drift_verdict.debt_qids
 
     regression_debt_qids = (
         out_of_target_regressed if accepted and out_of_target_regressed else ()
