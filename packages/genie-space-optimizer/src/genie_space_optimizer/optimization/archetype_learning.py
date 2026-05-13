@@ -428,3 +428,53 @@ def emit_unmatched_pattern_records_for_unmatched_clusters(
             )
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.5 — Tiers 2-3 iteration-prelude driver.
+# ---------------------------------------------------------------------------
+
+
+def run_iteration_prelude_tiers_2_to_3(
+    *,
+    run_id: str,
+    iteration: int,
+    w=None,
+) -> tuple[tuple[ProvisionalArchetype, ...], tuple[PatternCandidate, ...]]:
+    """Run Tier 2 detection + Tier 3 synthesis at the start of an
+    iteration. Returns ``(new_provisionals, candidates)`` so the caller
+    can emit decision records for both.
+
+    Honours ``provisional_synthesis_max_per_iteration()`` — synthesis
+    stops once the cap is reached.
+
+    Excludes signatures already covered by an in-flight provisional
+    archetype (states ``provisional``, ``confirmed_in_run``,
+    ``failed_in_run``).
+    """
+    from genie_space_optimizer.common.config import archetype_learning_enabled
+    from genie_space_optimizer.optimization.archetype_learning_state import (
+        get_state,
+        reset_iteration_counters,
+    )
+
+    if not archetype_learning_enabled():
+        return (), ()
+
+    reset_iteration_counters(run_id)
+    state = get_state(run_id)
+    excluded = frozenset(p.signature_hash for p in state.provisional_archetypes)
+    candidates = detect_pattern_candidates(
+        records=state.unmatched_pattern_records,
+        exclude_signature_hashes=excluded,
+    )
+    new_provisionals: list[ProvisionalArchetype] = []
+    for c in candidates:
+        pa = synthesize_provisional_archetype(
+            run_id=run_id, candidate=c, iteration=iteration,
+            counterfactual_examples=(),
+            w=w,
+        )
+        if pa is not None:
+            new_provisionals.append(pa)
+    return tuple(new_provisionals), candidates

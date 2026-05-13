@@ -66,3 +66,62 @@ def test_tier1_helper_skips_clusters_with_a_repair_kit() -> None:
         run_id="run_W2", clusters=clusters,
     )
     assert out == []
+
+
+def test_run_tiers_2_to_3_returns_empty_when_below_threshold(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_ARCHETYPE_LEARNING", "1")
+    monkeypatch.setenv("GSO_PATTERN_CANDIDATE_MEMBER_THRESHOLD", "5")  # raise above seed count
+    from genie_space_optimizer.optimization.archetype_learning import (
+        emit_unmatched_pattern_record,
+        run_iteration_prelude_tiers_2_to_3,
+    )
+    from genie_space_optimizer.optimization.archetype_learning_state import reset_state
+
+    reset_state("run_W3")
+    for cid in ("C1", "C2"):
+        emit_unmatched_pattern_record(
+            run_id="run_W3", card=_card(cid),
+            cluster={"cluster_id": cid, "asi_question_intent": "single",
+                     "question_ids": [f"gs_{cid}"]},
+        )
+    new_provisionals, candidates = run_iteration_prelude_tiers_2_to_3(
+        run_id="run_W3", iteration=2, w=None,
+    )
+    assert new_provisionals == ()
+    assert candidates == ()
+
+
+def test_run_tiers_2_to_3_emits_provisional_when_tiers_2_3_succeed(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_ARCHETYPE_LEARNING", "1")
+    monkeypatch.setenv("GSO_PROVISIONAL_SYNTHESIS_LLM", "1")
+    monkeypatch.setenv("GSO_PATTERN_CANDIDATE_MEMBER_THRESHOLD", "3")
+    from unittest.mock import patch
+
+    from genie_space_optimizer.optimization import archetype_learning as al
+    from genie_space_optimizer.optimization.archetype_learning_state import reset_state
+
+    reset_state("run_W4")
+    for cid in ("C1", "C2", "C3"):
+        al.emit_unmatched_pattern_record(
+            run_id="run_W4", card=_card(cid),
+            cluster={"cluster_id": cid, "asi_question_intent": "single",
+                     "question_ids": [f"gs_{cid}"]},
+        )
+
+    fake_payload = {
+        "name": "x_provisional",
+        "applicable_rca_kinds": ["SYNONYM_OR_ENTITY_MATCH_MISSING"],
+        "required_grounding_tokens": ["snack_brand"],
+        "evidence_predicates": [],
+        "default_priority_step": "repair_kit",
+        "expected_causal_effect_template": "x",
+        "rationale": "x",
+    }
+    with patch.object(al, "_call_llm_for_provisional_archetype_synthesis",
+                      return_value=fake_payload):
+        new_provisionals, candidates = al.run_iteration_prelude_tiers_2_to_3(
+            run_id="run_W4", iteration=2, w=None,
+        )
+    assert len(candidates) == 1
+    assert len(new_provisionals) == 1
+    assert new_provisionals[0].lifecycle_state == "provisional"

@@ -19803,6 +19803,83 @@ def _run_lever_loop(
                     action_groups = _sort_ags_rco7_site1(
                         strategy.get("action_groups", [])
                     )
+                    # Phase 2 Action 2.5 Tiers 2-3 — at the start of each
+                    # iteration (>= 2), detect pattern candidates from
+                    # accumulated Tier 1 records and optionally synthesise
+                    # provisional archetypes. The resulting provisional
+                    # list is passed into apply_repair_planner_to_clusters
+                    # via additional_archetypes so the planner classifies
+                    # against the union of canonical + provisional.
+                    _provisional_archetypes_for_iteration: tuple = ()
+                    if int(iteration_counter or 0) >= 2:
+                        try:
+                            from genie_space_optimizer.common.config import (
+                                archetype_learning_enabled as _al_enabled2,
+                            )
+                            if _al_enabled2():
+                                from genie_space_optimizer.optimization.archetype_learning import (
+                                    run_iteration_prelude_tiers_2_to_3 as _run_prelude,
+                                )
+                                from genie_space_optimizer.optimization.decision_emitters import (
+                                    pattern_candidate_detected_record as _pc_rec,
+                                    provisional_archetype_synthesis_declined_record as _pa_declined_rec,
+                                    provisional_archetype_synthesized_record as _pa_rec,
+                                )
+                                _new_pas, _cands = _run_prelude(
+                                    run_id=run_id,
+                                    iteration=iteration_counter,
+                                    w=w,
+                                )
+                                _provisional_archetypes_for_iteration = _new_pas
+                                for _c in _cands:
+                                    decision_records.append(_pc_rec(
+                                        run_id=run_id,
+                                        iteration=iteration_counter,
+                                        signature_hash=_c.signature_hash,
+                                        member_count=_c.member_count,
+                                        member_cluster_ids=_c.member_cluster_ids,
+                                        union_qids=_c.union_qids,
+                                        root_cause_label=_c.root_cause_label,
+                                    ))
+                                for _pa in _new_pas:
+                                    decision_records.append(_pa_rec(
+                                        run_id=run_id,
+                                        iteration=iteration_counter,
+                                        signature_hash=_pa.signature_hash,
+                                        archetype_name=_pa.name,
+                                        default_priority_step=_pa.default_priority_step,
+                                        applicable_rca_kinds=tuple(
+                                            k.name for k in _pa.applicable_rca_kinds
+                                        ),
+                                        target_qids=(),
+                                    ))
+                                _synthesised_sigs = {
+                                    p.signature_hash for p in _new_pas
+                                }
+                                for _c in _cands:
+                                    if _c.signature_hash in _synthesised_sigs:
+                                        continue
+                                    decision_records.append(_pa_declined_rec(
+                                        run_id=run_id,
+                                        iteration=iteration_counter,
+                                        signature_hash=_c.signature_hash,
+                                        decline_reason=(
+                                            "synthesis_cap_reached_or_llm_declined"
+                                        ),
+                                    ))
+                                logger.info(
+                                    "ARCHETYPE LEARNING TIERS 2-3: iter=%s "
+                                    "candidates=%s synthesised=%s",
+                                    iteration_counter,
+                                    len(_cands),
+                                    len(_new_pas),
+                                )
+                        except Exception:
+                            logger.debug(
+                                "Section E Tiers 2-3 wiring failed (non-fatal)",
+                                exc_info=True,
+                            )
+
                     # Phase 2 Action 2.1 — Repair Planner. When the flag is
                     # on, classify each cluster's RCACard into a named repair
                     # archetype and stamp ``_repair_kit`` on the cluster dict.
@@ -19827,6 +19904,10 @@ def _run_lever_loop(
                             _planner_summary = _apply_planner(
                                 clusters=clusters,
                                 propagation_root_cause=_propagation,
+                                additional_archetypes=tuple(
+                                    p.to_repair_archetype()
+                                    for p in _provisional_archetypes_for_iteration
+                                ),
                             )
                             for _c in clusters or []:
                                 _kit = _c.get("_repair_kit")
