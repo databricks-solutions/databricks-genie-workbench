@@ -13,6 +13,7 @@ from genie_space_optimizer.common.mlflow_names import (
     default_tags,
     deploy_run_name,
     enrichment_run_name,
+    evaluation_child_run_name,
     finalize_run_name,
     full_eval_run_name,
     iteration_outcome_run_name,
@@ -67,6 +68,32 @@ def test_full_eval_run_name_pass_index():
     assert (
         full_eval_run_name(_RUN_ID, 2, pass_index=2)
         == f"iter_02 / full_eval / pass_2_confirm / {_RUN}"
+    )
+
+
+def test_evaluation_child_run_name_inserts_detail_before_run_segment():
+    assert (
+        evaluation_child_run_name(
+            f"iter_02 / full_eval / pass_1 / {_RUN}",
+        )
+        == f"iter_02 / full_eval / pass_1 / mlflow_eval / {_RUN}"
+    )
+
+
+def test_evaluation_child_run_name_accepts_custom_detail():
+    assert (
+        evaluation_child_run_name(
+            f"iter_02 / full_eval / pass_1 / {_RUN}",
+            detail="mlflow_eval_row_002",
+        )
+        == f"iter_02 / full_eval / pass_1 / mlflow_eval_row_002 / {_RUN}"
+    )
+
+
+def test_evaluation_child_run_name_handles_legacy_parent_names():
+    assert (
+        evaluation_child_run_name("genie_eval_iter0_20260513")
+        == "genie_eval_iter0_20260513 / mlflow_eval"
     )
 
 

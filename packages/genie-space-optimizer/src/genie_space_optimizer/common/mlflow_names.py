@@ -75,6 +75,27 @@ def full_eval_run_name(
     return _with_retry(_v3(iteration, "full_eval", detail, run_id=run_id), retry)
 
 
+def evaluation_child_run_name(
+    parent_run_name: str,
+    *,
+    detail: str = "mlflow_eval",
+) -> str:
+    """Return a v3-compatible name for MLflow-created evaluation runs.
+
+    ``mlflow.genai.evaluate()`` creates its own evaluation run. We derive
+    that run's visible name from the canonical wrapper run while keeping
+    ``run_xxxxxxxx`` as the final segment for visual grouping and joins.
+    """
+    base = str(parent_run_name or "").strip()
+    child_detail = str(detail or "mlflow_eval").strip() or "mlflow_eval"
+    if not base:
+        return child_detail
+    parts = base.split(" / ")
+    if parts and parts[-1].startswith("run_"):
+        return " / ".join([*parts[:-1], child_detail, parts[-1]])
+    return f"{base} / {child_detail}"
+
+
 def finalize_run_name(
     run_id: str,
     *,
