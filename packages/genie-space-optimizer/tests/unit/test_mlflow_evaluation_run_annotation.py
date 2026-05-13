@@ -102,3 +102,37 @@ def test_annotate_mlflow_evaluation_runs_deduplicates_and_names_rows(monkeypatch
         "iter_02 / full_eval / pass_1 / mlflow_eval_row_001 / run_abcd1234",
         "iter_02 / full_eval / pass_1 / mlflow_eval_row_002 / run_abcd1234",
     ]
+
+
+def test_sequential_fallback_preserves_row_evaluation_run_ids(monkeypatch):
+    call_count = {"n": 0}
+
+    def fake_evaluate(**_kwargs):
+        call_count["n"] += 1
+        return SimpleNamespace(
+            run_id=f"eval-row-{call_count['n']}",
+            metrics={"result_correctness/mean": 1.0},
+            tables={
+                "eval_results": pd.DataFrame(
+                    [{"inputs/question_id": f"q{call_count['n']}", "trace_id": f"t{call_count['n']}"}],
+                ),
+            },
+        )
+
+    monkeypatch.setattr(evaluation.mlflow.genai, "evaluate", fake_evaluate, raising=False)
+    monkeypatch.setattr(evaluation, "_patch_mlflow_harness_none_trace", lambda: None)
+
+    result = evaluation._run_evaluate_sequential_fallback(
+        evaluate_kwargs={
+            "data": pd.DataFrame(
+                [
+                    {"inputs": {"question_id": "q1"}},
+                    {"inputs": {"question_id": "q2"}},
+                ],
+            ),
+            "scorers": [],
+        },
+    )
+
+    assert result.evaluation_run_ids == ["eval-row-1", "eval-row-2"]
+    assert call_count["n"] == 2

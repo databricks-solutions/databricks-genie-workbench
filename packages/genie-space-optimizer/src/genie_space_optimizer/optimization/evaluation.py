@@ -6625,6 +6625,7 @@ def _run_evaluate_sequential_fallback(
 
     metrics_accumulator: dict[str, list[float]] = {}
     row_tables: list[pd.DataFrame] = []
+    evaluation_run_ids: list[str] = []
     skipped_count = 0
     total_rows = len(data)
 
@@ -6658,6 +6659,10 @@ def _run_evaluate_sequential_fallback(
                 eval_table = row_result.tables.get("eval_results")
                 if isinstance(eval_table, pd.DataFrame):
                     row_tables.append(eval_table)
+
+            row_eval_run_id = str(getattr(row_result, "run_id", "") or "").strip()
+            if row_eval_run_id:
+                evaluation_run_ids.append(row_eval_run_id)
     finally:
         if previous_workers is None:
             os.environ.pop("MLFLOW_GENAI_EVAL_MAX_WORKERS", None)
@@ -6687,6 +6692,7 @@ def _run_evaluate_sequential_fallback(
         metrics=metrics,
         tables={"eval_results": merged_eval_results},
         skipped_count=skipped_count,
+        evaluation_run_ids=evaluation_run_ids,
     )
 
 
