@@ -130,3 +130,87 @@ def classify_lever_proposal_outcome(
         return DirectiveOutcomeCode.PROPOSAL_EMITTED
 
     return DirectiveOutcomeCode.NO_STRUCTURAL_CANDIDATE
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 follow-up (2026-05-13) — precise attribution reconciliation.
+# ---------------------------------------------------------------------------
+#
+# The Phase 3 plan's Task 8 wiring used conservative-zero values for
+# ``force_llm_declined`` / ``applyability_drop_count`` / ``collateral_drop_count``
+# because the named ``optimizer._*`` accumulators do not exist in the
+# codebase. That made the classifier emit ``NO_STRUCTURAL_CANDIDATE`` for
+# every zero-proposal L6 lever — including the AG2 case where the L6
+# force-LLM declined (the actual 2314bb2c failure shape).
+#
+# This helper closes the L6-decline gap by reading the canonical signal
+# the harness ALREADY emits — a ``DecisionRecord`` with
+# ``reason_code=LEVER6_FORCE_LLM_DECLINED`` in ``iter_inputs["decision_records"]``
+# — and upgrading a ``NO_STRUCTURAL_CANDIDATE`` outcome to ``FORCE_LLM_DECLINED``
+# when the (ag_id, iteration) matches.
+#
+# Per-cap-loop applyability/collateral attribution is a separate, larger
+# follow-up because the cap loop pools proposals across levers and per-drop
+# records do not carry an ``originating_lever_key`` tag.
+
+
+_L6_FORCE_LLM_DECLINED_REASON: str = "lever6_force_llm_declined"
+
+
+def reconcile_outcome_from_records(
+    *,
+    classifier_outcome: DirectiveOutcomeCode,
+    lever_key: int,
+    ag_id: str,
+    iteration: int,
+    decision_records,
+) -> DirectiveOutcomeCode:
+    """Refine a classifier outcome using observable decision_records.
+
+    Branch order (each branch mutually exclusive with the next):
+
+    1. ``classifier_outcome != NO_STRUCTURAL_CANDIDATE`` → pass through.
+       Only the zero-proposal default-fallback is refinable; once the
+       classifier has positive evidence (proposals emitted, force-LLM
+       known, drops counted), the classifier output stands.
+    2. ``lever_key == 6`` AND ``decision_records`` contains an entry with
+       ``reason_code == "lever6_force_llm_declined"`` whose ``ag_id`` and
+       ``iteration`` match → ``FORCE_LLM_DECLINED``.
+    3. Otherwise → pass through unchanged.
+
+    Pure, never raises. ``decision_records`` may be ``None`` or contain
+    non-Mapping garbage entries; both shapes are handled defensively.
+
+    Evidence anchor:
+    docs/runid_analysis/2314bb2c-95a1-4d60-8226-09e5155aee2a/postmortem.md
+    docs/2026-05-13-phase-3-directive-to-proposal-obligation-plan.md
+    """
+    if classifier_outcome != DirectiveOutcomeCode.NO_STRUCTURAL_CANDIDATE:
+        return classifier_outcome
+    if int(lever_key) != 6:
+        return classifier_outcome
+    if not decision_records:
+        return classifier_outcome
+
+    target_ag_id = str(ag_id)
+    target_iteration = int(iteration)
+
+    for record in decision_records:
+        if not isinstance(record, dict):
+            continue
+        reason = str(record.get("reason_code") or "")
+        if reason != _L6_FORCE_LLM_DECLINED_REASON:
+            continue
+        if str(record.get("ag_id") or "") != target_ag_id:
+            continue
+        # ``iteration`` may be int (in-memory) or str (post JSON round-trip).
+        rec_iter_raw = record.get("iteration")
+        try:
+            rec_iter = int(rec_iter_raw)
+        except (TypeError, ValueError):
+            continue
+        if rec_iter != target_iteration:
+            continue
+        return DirectiveOutcomeCode.FORCE_LLM_DECLINED
+
+    return classifier_outcome
