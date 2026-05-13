@@ -214,6 +214,33 @@ class ReasonCode(str, Enum):
     TIER_NET_WIN_WITH_DEBT = "tier_net_win_with_debt"
     TIER_DIAGNOSTIC_HOLD = "tier_diagnostic_hold"
     TIER_LOSS = "tier_loss"
+    # Phase 2 Action 2.1 — Repair Planner reason codes. Emitted when
+    # the planner classifies a cluster into a named archetype, fails
+    # to match any archetype, or applies a propagation-guard upgrade
+    # to the priority step.
+    CLUSTER_ARCHETYPE_CLASSIFIED = "cluster_archetype_classified"
+    REPAIR_PLANNER_NO_ARCHETYPE_MATCH = "repair_planner_no_archetype_match"
+    REPAIR_PLAN_PROPAGATION_GUARDED = "repair_plan_propagation_guarded"
+    # Phase 2 Action 2.2 — Kit-aware patch cap reason codes.
+    KIT_SAFETY_SUMMARY_BUILT = "kit_safety_summary_built"
+    KIT_LEVEL_GATE_REJECTED = "kit_level_gate_rejected"
+    REPAIR_KIT_NO_SAFE_VARIANT_AVAILABLE = "repair_kit_no_safe_variant_available"
+    KIT_ATOMICITY_VIOLATION = "kit_atomicity_violation"
+    # Phase 2 Action 2.3 — Hub-table scoped variants reason codes.
+    HUB_TABLE_SCOPED_VARIANT_GENERATED = "hub_table_scoped_variant_generated"
+    HUB_TABLE_NO_SCOPED_VARIANT_AVAILABLE = "hub_table_no_scoped_variant_available"
+    KIT_RISK_DOWNGRADED_BY_SCOPED_VARIANT = "kit_risk_downgraded_by_scoped_variant"
+    # Phase 2 Action 2.4 — Strategist coverage re-call reason codes.
+    STRATEGIST_COVERAGE_RECALL_INVOKED = "strategist_coverage_recall_invoked"
+    STRATEGIST_COVERAGE_RECALL_RESULT = "strategist_coverage_recall_result"
+    # Phase 2 Action 2.5 — In-loop archetype learning reason codes.
+    UNMATCHED_PATTERN_RECORD_EMITTED = "unmatched_pattern_record_emitted"
+    PATTERN_CANDIDATE_DETECTED = "pattern_candidate_detected"
+    PROVISIONAL_ARCHETYPE_SYNTHESIZED = "provisional_archetype_synthesized"
+    PROVISIONAL_ARCHETYPE_SYNTHESIS_DECLINED = "provisional_archetype_synthesis_declined"
+    PROVISIONAL_ARCHETYPE_TRIAL_OUTCOME = "provisional_archetype_trial_outcome"
+    CONFIRMED_IN_RUN_ARCHETYPE_PROMOTED = "confirmed_in_run_archetype_promoted"
+    CROSS_RUN_PROMOTION_CANDIDATE_RECORDED = "cross_run_promotion_candidate_recorded"
     # Cycle 5 T5 — soft-cluster drift recovery: emitted when the
     # clusterer's soft pile carried a qid the current eval no longer
     # flags as judge-failing, and the harness recovered by dropping
