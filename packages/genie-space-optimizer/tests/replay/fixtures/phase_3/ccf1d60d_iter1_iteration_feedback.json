@@ -1,0 +1,13 @@
+{
+  "iteration": 1,
+  "acceptance_class": "diagnostic_hold",
+  "accept": false,
+  "delta_pp": 4.3,
+  "target_qids": ["gs_026"],
+  "target_fixed_qids": [],
+  "target_still_hard_qids": ["gs_026"],
+  "regression_debt_classification": {
+    "unknown_to_hard": ["gs_012"]
+  },
+  "near_miss_reflection_kinds": ["diagnostic_hold"]
+}

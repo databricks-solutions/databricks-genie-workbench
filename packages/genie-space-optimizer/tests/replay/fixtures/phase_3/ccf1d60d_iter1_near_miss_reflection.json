@@ -1,0 +1,7 @@
+{
+  "kind": "diagnostic_hold",
+  "iteration": 1,
+  "target_qids": ["gs_026"],
+  "regression_debt": {"unknown_to_hard": ["gs_012"]},
+  "required_next_iter_change": "either"
+}

@@ -1,0 +1,8 @@
+{
+  "total_soft_clusters_min": 1,
+  "matched_clusters_must_include": ["S001"],
+  "unmatched_clusters_must_not_include": ["S001"],
+  "count_by_root_cause_includes_at_least": [
+    ["filter_logic_mismatch", 0]
+  ]
+}
