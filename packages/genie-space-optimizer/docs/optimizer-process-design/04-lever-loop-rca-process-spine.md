@@ -155,7 +155,12 @@ per-iteration coverage invariant
 (`proposal_failure_decided_coverage`) fires
 `GSO_INVARIANT_VIOLATION_V1` when an iteration ends with zero applied
 patches on a no-applied exit path AND no `proposal_failure_decided`
-record was emitted — so silent stalls become loud. Default-OFF behind
+record was emitted — so silent stalls become loud. The invariant is
+wired centrally into `_finalize_iteration_summary` (Plan P-F T12), so
+every no-applied exit path participates — not just `proposals_empty`
+and `skipped_no_applied_patches` — and the violation marker is also
+printed to stdout so the postmortem marker parser sees it.
+Default-OFF behind
 `GSO_PROPOSAL_FAILURE_DECIDED`; the policy module is
 [`optimization/proposal_failure_policy.py`](../../src/genie_space_optimizer/optimization/proposal_failure_policy.py).
 See `2026-05-12-plan-p-f-proposal-failure-taxonomy-recovery-policy.md`.
