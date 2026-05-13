@@ -5468,11 +5468,18 @@ def patch_subset_isolation_enabled() -> bool:
     ``GSO_PATCH_ISOLATION_DIAGNOSTIC_V1`` marker but does not
     perform a live re-eval.
 
-    Default OFF.
+    Default-ON (2026-05-13 default-on flip plan). Diagnostic mode
+    is observability-only: it produces attribution evidence without
+    changing the accept/rollback verdict. The LIVE sibling flag
+    ``GSO_PATCH_SUBSET_ISOLATION_LIVE`` remains default-OFF because
+    it performs a behavior-changing live re-eval and is out of scope
+    for this plan.
 
-    Enable with ``GSO_PATCH_SUBSET_ISOLATION=1``.
+    Rollback escape hatch: ``GSO_PATCH_SUBSET_ISOLATION=0`` restores
+    the silent default-OFF path (no orchestrator invocation, no
+    diagnostic marker).
     """
-    return _flag_enabled("GSO_PATCH_SUBSET_ISOLATION")
+    return _flag_default_on("GSO_PATCH_SUBSET_ISOLATION")
 
 
 def patch_subset_isolation_live_enabled() -> bool:
@@ -6239,15 +6246,18 @@ def stage4_context_persistence_enabled() -> bool:
     boundary JSON to
     ``gso_postmortem_bundle/iterations/iter_NN/stages/04_strategist_context/output.json``.
 
-    Default-OFF so replay byte-stability is preserved; flipped on after
-    the producers + transcript mapping land (Task 6) and integration
-    smoke runs verify the artifact persistence path.
+    Default-ON (2026-05-13 default-on flip plan). The 2314bb2c trial
+    confirmed Stage 4 still renders the placeholder in every iteration
+    because the producers fire only when this flag is on. Flip is
+    observability-only: it adds two decision records + the boundary
+    JSON without altering strategist output or downstream stages.
+
+    Rollback escape hatch: ``GSO_STAGE4_CONTEXT_PERSISTENCE=0`` restores
+    the legacy silent path (placeholder remains, JSON not written).
 
     Evidence anchor:
-    runid_analysis/{ccf1d60d,31ecd96f}/evidence/gso_postmortem_bundle/operator_transcript.md
-    — Stage 4 renders the placeholder in every iter of both runs because
-    today nothing emits a record from the strategist_context boundary."""
-    return _flag_enabled("GSO_STAGE4_CONTEXT_PERSISTENCE")
+    runid_analysis/{ccf1d60d,31ecd96f,2314bb2c}/evidence/gso_postmortem_bundle/operator_transcript.md"""
+    return _flag_default_on("GSO_STAGE4_CONTEXT_PERSISTENCE")
 
 
 def stage_handlers_chunk_b_enabled() -> bool:
@@ -6283,14 +6293,20 @@ def proposal_failure_decided_enabled() -> bool:
     closed-vocabulary next-action labels (see
     ``optimization/proposal_failure_policy.py``).
 
-    Default-OFF so replay byte-stability of pre-P-F fixtures is
-    preserved. Flipped on after the integration smoke test confirms
-    the iteration-level invariant is satisfied on both the ccf1d60d
-    and 31ecd96f replay corpora.
+    Default-ON (2026-05-13 default-on flip plan). The 2314bb2c
+    trial validated that the producers + the iteration-level
+    coverage invariant are wired correctly; running default-OFF
+    silenced the marker on every iteration despite the code being
+    deployed. Flip is observability-only: the marker provides
+    proposal-phase failure attribution but does not alter the
+    accept/rollback verdict.
+
+    Rollback escape hatch: ``GSO_PROPOSAL_FAILURE_DECIDED=0``
+    restores the silent default-OFF path.
 
     Evidence anchor:
-    runid_analysis/{ccf1d60d,31ecd96f}/postmortem.md."""
-    return _flag_enabled("GSO_PROPOSAL_FAILURE_DECIDED")
+    runid_analysis/{ccf1d60d,31ecd96f,2314bb2c}/postmortem.md."""
+    return _flag_default_on("GSO_PROPOSAL_FAILURE_DECIDED")
 
 
 def stage6_blast_radius_pure_enabled() -> bool:
