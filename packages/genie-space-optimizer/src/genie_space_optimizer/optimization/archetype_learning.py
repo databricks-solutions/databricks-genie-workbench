@@ -175,3 +175,67 @@ def emit_unmatched_pattern_record(
     )
     get_state(run_id).unmatched_pattern_records.append(rec)
     return rec
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.5 Tier 2 — pattern-candidate detection.
+# ---------------------------------------------------------------------------
+
+from collections import defaultdict
+from typing import Iterable
+
+
+def detect_pattern_candidates(
+    *,
+    records: Iterable[UnmatchedPatternRecord],
+    exclude_signature_hashes: frozenset[str] = frozenset(),
+) -> tuple[PatternCandidate, ...]:
+    """Tier 2: group records by signature; emit a PatternCandidate for
+    every signature whose member count meets the configured threshold
+    AND whose signature is not in ``exclude_signature_hashes``.
+
+    The exclusion set is the union of ``signature_hash`` values
+    already attached to provisional archetypes (states ``provisional``,
+    ``confirmed_in_run``, ``failed_in_run``) — we do not re-detect
+    a pattern for which we already have a provisional in flight.
+
+    Output is sorted by ``member_count`` descending, then by
+    ``signature_hash`` ascending for deterministic tie-break.
+    """
+    from genie_space_optimizer.common.config import (
+        pattern_candidate_member_threshold,
+    )
+
+    threshold = pattern_candidate_member_threshold()
+    grouped: dict[str, list[UnmatchedPatternRecord]] = defaultdict(list)
+    for r in records:
+        if r.signature_hash in exclude_signature_hashes:
+            continue
+        grouped[r.signature_hash].append(r)
+
+    out: list[PatternCandidate] = []
+    for sig, members in grouped.items():
+        if len(members) < threshold:
+            continue
+        union_qids: list[str] = []
+        seen: set[str] = set()
+        for m in members:
+            for q in m.qids:
+                if q not in seen:
+                    seen.add(q)
+                    union_qids.append(q)
+        head = members[0]
+        out.append(
+            PatternCandidate(
+                signature_hash=sig,
+                member_cluster_ids=tuple(m.cluster_id for m in members),
+                union_qids=tuple(union_qids),
+                root_cause_label=head.root_cause_label,
+                grounding_terms=head.grounding_terms,
+                intended_patch_shape=head.intended_patch_shape,
+                asi_question_intent=head.asi_question_intent,
+                member_count=len(members),
+            )
+        )
+    out.sort(key=lambda c: (-c.member_count, c.signature_hash))
+    return tuple(out)
