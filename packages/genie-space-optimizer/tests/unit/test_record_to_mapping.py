@@ -34,7 +34,7 @@ def test_record_to_mapping_decisionrecord_dataclass_uses_to_dict() -> None:
         run_id="r-123",
         iteration=1,
         decision_type=DecisionType.PATCH_APPLIED,
-        outcome=DecisionOutcome.SUCCESS,
+        outcome=DecisionOutcome.APPLIED,
         reason_code=ReasonCode.NONE,
         ag_id="AG1",
     )
