@@ -28775,6 +28775,7 @@ def _run_lever_loop(
         # run can be triaged without parsing the JSON body. If
         # ``iterations`` is 0 or any per-iter ``eval_rows`` is 0,
         # extraction should be paused and the run triaged.
+        _replay_fixture_summary = None
         try:
             import json as _summary_json
             _replay_fixture_summary = summarize_replay_fixture(
@@ -28789,6 +28790,52 @@ def _run_lever_loop(
         except Exception:
             logger.debug(
                 "Phase A: replay fixture summary log failed (non-fatal)",
+                exc_info=True,
+            )
+
+        # B5 (2026-05-13) — diagnostic marker when the fixture is empty
+        # despite a non-empty iterations_data. Fires on either shape:
+        #   1. iterations_data had entries but the serializer's per-iter
+        #      resilience dropped them all (so fixture_iterations=0).
+        #   2. fixture has iterations but >=1 has zero eval_rows (the
+        #      no-applied-totality gap from postmortem F6).
+        # The marker is single-line and consumed by the postmortem skill
+        # without re-parsing the JSON body.
+        try:
+            from genie_space_optimizer.optimization.run_analysis_contract import (
+                replay_fixture_empty_marker,
+            )
+            _iter_data_count = len(_replay_fixture_iterations or [])
+            _fixture_iter_count = 0
+            _zero_eval_rows: list[int] = []
+            if _replay_fixture_summary is not None:
+                _fixture_iter_count = int(
+                    _replay_fixture_summary.get("iterations") or 0
+                )
+                for _per in (
+                    _replay_fixture_summary.get("per_iter") or []
+                ):
+                    if int(_per.get("eval_rows") or 0) == 0:
+                        _zero_eval_rows.append(
+                            int(_per.get("iteration") or 0)
+                        )
+            _is_empty = (
+                _iter_data_count > 0
+                and (
+                    _fixture_iter_count == 0
+                    or len(_zero_eval_rows) > 0
+                )
+            )
+            if _is_empty:
+                print(replay_fixture_empty_marker(
+                    optimization_run_id=str(run_id or ""),
+                    iterations_data_count=_iter_data_count,
+                    fixture_iterations_count=_fixture_iter_count,
+                    iterations_with_zero_eval_rows=tuple(_zero_eval_rows),
+                ), flush=True)
+        except Exception:
+            logger.debug(
+                "B5: replay_fixture_empty_marker emit failed (non-fatal)",
                 exc_info=True,
             )
 
