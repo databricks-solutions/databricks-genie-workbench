@@ -5592,16 +5592,6 @@ def iteration_summary_totality_enabled() -> bool:
     return _flag_default_on("GSO_ITERATION_SUMMARY_TOTALITY")
 
 
-def phase_h_canonical_consumer_enabled() -> bool:
-    """Cycle 14-W T6 — when on (default), Phase H acceptance writer
-    + journey validator are routed through the canonical decision
-    surface (and a drift alarm fires on disagreement).
-
-    Default ON. Disable with ``GSO_PHASE_H_CANONICAL_CONSUMER=0``.
-    """
-    return _flag_default_on("GSO_PHASE_H_CANONICAL_CONSUMER")
-
-
 def forbidden_ag_admits_no_action_enabled() -> bool:
     """Cycle 13 / Cycle 14-W T4 — when on, ``_compute_forbidden_ag_set``
     admits reflections classified as ``RollbackClass.NO_ACTION``
