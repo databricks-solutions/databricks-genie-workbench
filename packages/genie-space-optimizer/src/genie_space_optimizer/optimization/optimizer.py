@@ -16016,3 +16016,79 @@ def validate_patch_set(
                 errors.append(f"Patch {i}: column '{tgt_col}' not found in metadata")
 
     return (len(errors) == 0, errors)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.4 — Strategist coverage recall (focused second call).
+# ---------------------------------------------------------------------------
+
+
+def build_strategy_recall_addendum(
+    *,
+    uncovered_cluster_ids: tuple[str, ...],
+) -> str:
+    """Phase 2 Action 2.4 — build the strategist-recall addendum text
+    that prepends the focused second call's prompt.
+
+    Raises ``ValueError`` when called with zero uncovered clusters
+    (caller bug — there is nothing to recall for).
+    """
+    if not uncovered_cluster_ids:
+        raise ValueError(
+            "build_strategy_recall_addendum: uncovered_cluster_ids must be non-empty"
+        )
+    ids_str = ", ".join(str(c) for c in uncovered_cluster_ids)
+    return (
+        "STRATEGIST RECALL: You previously emitted no AG for the following "
+        f"hard clusters: [{ids_str}]. Each cluster has structured RCA "
+        "evidence and at least one ASI counterfactual fix. For EACH cluster "
+        "in this recall, you MUST emit one of:\n"
+        "  (a) an action_group containing at least one applyable patch with "
+        "a target_qids set covering the cluster's qids, OR\n"
+        "  (b) a brief explanation in the cluster's `recall_skip_reason` "
+        "field stating why no patch is applyable.\n"
+        "Do NOT silently omit a cluster — every uncovered cluster MUST be "
+        "addressed."
+    )
+
+
+def call_llm_for_strategy_focused(
+    clusters: list[dict],
+    *,
+    uncovered_cluster_ids: tuple[str, ...],
+    soft_signal_clusters: list[dict],
+    metadata_snapshot: dict,
+    w: "WorkspaceClient | None" = None,
+) -> dict:
+    """Phase 2 Action 2.4 — focused second strategist call.
+
+    Delegates to ``_call_llm_for_strategy`` with two adjustments:
+    1. ``clusters`` is filtered to only the uncovered subset.
+    2. The strategist prompt is prepended with the recall addendum
+       (via the metadata_snapshot's ``_strategist_recall_addendum`` key
+       which the underlying strategist's prompt builder reads).
+
+    Returns the strategy dict produced by the underlying strategist
+    (same shape — has ``action_groups``, etc.).
+    """
+    uncovered_set = {str(c) for c in uncovered_cluster_ids if str(c)}
+    focused_clusters = [
+        dict(c)
+        for c in clusters
+        if str(c.get("cluster_id") or "") in uncovered_set
+    ]
+    if not focused_clusters:
+        return {"action_groups": [], "rationale": "no eligible uncovered clusters"}
+
+    addendum = build_strategy_recall_addendum(
+        uncovered_cluster_ids=uncovered_cluster_ids,
+    )
+    enriched_metadata = dict(metadata_snapshot or {})
+    enriched_metadata["_strategist_recall_addendum"] = addendum
+
+    return _call_llm_for_strategy(
+        focused_clusters,
+        list(soft_signal_clusters or []),
+        enriched_metadata,
+        w,
+    )
