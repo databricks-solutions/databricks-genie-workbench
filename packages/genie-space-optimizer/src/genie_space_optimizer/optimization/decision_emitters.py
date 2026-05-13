@@ -3585,3 +3585,143 @@ def repair_plan_propagation_guarded_record(
             f"propagation_root_cause={propagation_root_cause}."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.2 — Section B kit-safety emitters.
+# ---------------------------------------------------------------------------
+
+
+def kit_safety_summary_built_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    kit_id: str,
+    repair_archetype: str,
+    target_qids: tuple[str, ...],
+    risk_class: str,
+    union_passing_dependents_count: int,
+) -> DecisionRecord:
+    """Phase 2 Action 2.2 — emitted once per kit when the kit-level
+    summary is computed. Carries kit identity, risk class, and
+    union_passing_dependents count for postmortem aggregation."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.GATE_DECISION,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.KIT_SAFETY_SUMMARY_BUILT,
+        ag_id=str(ag_id or ""),
+        evidence_refs=(f"kit:{kit_id}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"Kit {kit_id} archetype={repair_archetype} risk_class={risk_class}"
+            f" union_passing_dependents_count={union_passing_dependents_count}."
+        ),
+        next_action="Run kit-level gate.",
+    )
+
+
+def kit_level_gate_rejected_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    kit_id: str,
+    rejection_reason: str,
+    target_qids: tuple[str, ...],
+    risk_class: str,
+) -> DecisionRecord:
+    """Phase 2 Action 2.2 — emitted when the kit-level gate rejects a
+    kit. The wrapper requests a smaller kit from the planner; if no
+    smaller kit can satisfy the effect, REPAIR_KIT_NO_SAFE_VARIANT_AVAILABLE
+    is emitted next."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.GATE_DECISION,
+        outcome=DecisionOutcome.DROPPED,
+        reason_code=ReasonCode.KIT_LEVEL_GATE_REJECTED,
+        ag_id=str(ag_id or ""),
+        evidence_refs=(f"kit:{kit_id}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"Kit {kit_id} risk_class={risk_class} rejected by kit-level gate."
+        ),
+        next_action=(
+            f"Reason: {rejection_reason}. Request smaller kit from planner "
+            f"(bounded retries)."
+        ),
+    )
+
+
+def repair_kit_no_safe_variant_available_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    repair_archetype: str,
+    attempts: int,
+    target_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Phase 2 Action 2.2 — emitted when bounded retries of the kit
+    replan path failed to find a safe variant. The cluster falls to the
+    diagnostic AG path."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.GATE_DECISION,
+        outcome=DecisionOutcome.SKIPPED,
+        reason_code=ReasonCode.REPAIR_KIT_NO_SAFE_VARIANT_AVAILABLE,
+        ag_id=str(ag_id or ""),
+        cluster_id=str(cluster_id or ""),
+        evidence_refs=(f"archetype:{repair_archetype}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"Cluster {cluster_id} archetype={repair_archetype}: kit replan "
+            f"exhausted; no safe variant available."
+        ),
+        next_action=(
+            f"attempts={attempts}. Fall through to diagnostic AG path."
+        ),
+    )
+
+
+def kit_atomicity_violation_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    kit_id: str,
+    kept_count: int,
+    total_count: int,
+    target_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Phase 2 Action 2.2 — emitted when the legacy patch-cap kept a
+    fragment of a kit (kept < total). The kit-aware wrapper rejects the
+    fragmented selection and asks for a replan; this record documents
+    the fragmentation for postmortem aggregation."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.GATE_DECISION,
+        outcome=DecisionOutcome.DROPPED,
+        reason_code=ReasonCode.KIT_ATOMICITY_VIOLATION,
+        ag_id=str(ag_id or ""),
+        evidence_refs=(f"kit:{kit_id}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"Kit {kit_id}: kept={kept_count} total={total_count}; "
+            f"partial-kit selection violates atomicity."
+        ),
+        next_action=(
+            "Reject fragmented selection; request smaller kit with same "
+            "expected_causal_effect."
+        ),
+    )
