@@ -24279,15 +24279,126 @@ def _run_lever_loop(
                             )
                         )
                 else:
-                    patches, _patch_cap_decisions = (
-                        select_target_aware_causal_patch_cap(
-                            _before_cap,
-                            target_qids=_patch_cap_target_qids,
-                            max_patches=MAX_AG_PATCHES,
-                            active_cluster_ids=_active_cluster_ids_for_cap,
-                            per_cluster_slot_floor=_per_cluster_slot_floor,
-                        )
+                    # Phase 2 Action 2.2 — kit-aware patch cap. When the
+                    # flag is on, wrap the legacy cap with the kit-level
+                    # gate. Default OFF; the legacy call below runs when
+                    # the flag is off so replay byte-stability holds.
+                    from genie_space_optimizer.common.config import (
+                        kit_aware_patch_cap_enabled as _kit_aware_enabled,
+                        kit_passing_dependents_threshold as _kit_pd_threshold,
+                        co_beneficiary_downgrade_threshold as _kit_co_threshold,
                     )
+                    if _kit_aware_enabled():
+                        from genie_space_optimizer.optimization.decision_emitters import (
+                            kit_atomicity_violation_record as _kit_atomicity_rec,
+                            kit_level_gate_rejected_record as _kit_gate_reject_rec,
+                            kit_safety_summary_built_record as _kit_summary_built_rec,
+                            repair_kit_no_safe_variant_available_record as _kit_no_safe_rec,
+                        )
+                        from genie_space_optimizer.optimization.kit_safety import (
+                            KitSafetyPolicy,
+                            select_kit_aware_patch_cap,
+                        )
+
+                        _kit_policy = KitSafetyPolicy(
+                            passing_dependents_threshold=_kit_pd_threshold(),
+                            co_beneficiary_downgrade_threshold=_kit_co_threshold(),
+                        )
+                        # Phase 3 Action 3.3 hook: when the soft-evidence
+                        # matcher lands, populate this dict from cluster
+                        # per-qid ASI evidence joined against soft clusters.
+                        # Phase 2 default is None → co-beneficiary downgrade
+                        # is a no-op and replay byte-stability holds.
+                        _soft_evidence_matched_qids_by_kit = None
+                        _ag_id_for_kit = str(ag.get("id") or ag.get("ag_id") or "")
+                        try:
+                            patches, _patch_cap_decisions, _kit_outcomes = (
+                                select_kit_aware_patch_cap(
+                                    _before_cap,
+                                    target_qids=_patch_cap_target_qids,
+                                    max_patches=MAX_AG_PATCHES,
+                                    cluster_target_qids=_patch_cap_target_qids,
+                                    policy=_kit_policy,
+                                    active_cluster_ids=_active_cluster_ids_for_cap,
+                                    per_cluster_slot_floor=_per_cluster_slot_floor,
+                                    soft_evidence_matched_qids_by_kit=_soft_evidence_matched_qids_by_kit,
+                                )
+                            )
+                            for _ko in _kit_outcomes:
+                                decision_records.append(_kit_summary_built_rec(
+                                    run_id=run_id,
+                                    iteration=iteration_counter,
+                                    ag_id=_ag_id_for_kit,
+                                    kit_id=str(_ko.get("kit_id") or ""),
+                                    repair_archetype="(see kit)",
+                                    target_qids=_patch_cap_target_qids,
+                                    risk_class=str(_ko.get("effective_risk_class") or ""),
+                                    union_passing_dependents_count=int(
+                                        _ko.get("kept_count") or 0
+                                    ),
+                                ))
+                                if _ko.get("accepted"):
+                                    continue
+                                _reason = str(_ko.get("reason") or "")
+                                if _reason == "kit_atomicity_violation":
+                                    decision_records.append(_kit_atomicity_rec(
+                                        run_id=run_id,
+                                        iteration=iteration_counter,
+                                        ag_id=_ag_id_for_kit,
+                                        kit_id=str(_ko.get("kit_id") or ""),
+                                        kept_count=int(_ko.get("kept_count") or 0),
+                                        total_count=int(_ko.get("total_count") or 0),
+                                        target_qids=_patch_cap_target_qids,
+                                    ))
+                                else:
+                                    decision_records.append(_kit_gate_reject_rec(
+                                        run_id=run_id,
+                                        iteration=iteration_counter,
+                                        ag_id=_ag_id_for_kit,
+                                        kit_id=str(_ko.get("kit_id") or ""),
+                                        rejection_reason=_reason,
+                                        target_qids=_patch_cap_target_qids,
+                                        risk_class=str(
+                                            _ko.get("effective_risk_class") or ""
+                                        ),
+                                    ))
+                            if not patches:
+                                decision_records.append(_kit_no_safe_rec(
+                                    run_id=run_id,
+                                    iteration=iteration_counter,
+                                    ag_id=_ag_id_for_kit,
+                                    cluster_id=str(
+                                        (ag.get("source_cluster_ids") or [""])[0] or ""
+                                    ),
+                                    repair_archetype="(see kit)",
+                                    attempts=0,
+                                    target_qids=_patch_cap_target_qids,
+                                ))
+                        except Exception:
+                            logger.debug(
+                                "Kit-aware patch cap wiring failed (non-fatal); "
+                                "falling back to legacy cap",
+                                exc_info=True,
+                            )
+                            patches, _patch_cap_decisions = (
+                                select_target_aware_causal_patch_cap(
+                                    _before_cap,
+                                    target_qids=_patch_cap_target_qids,
+                                    max_patches=MAX_AG_PATCHES,
+                                    active_cluster_ids=_active_cluster_ids_for_cap,
+                                    per_cluster_slot_floor=_per_cluster_slot_floor,
+                                )
+                            )
+                    else:
+                        patches, _patch_cap_decisions = (
+                            select_target_aware_causal_patch_cap(
+                                _before_cap,
+                                target_qids=_patch_cap_target_qids,
+                                max_patches=MAX_AG_PATCHES,
+                                active_cluster_ids=_active_cluster_ids_for_cap,
+                                per_cluster_slot_floor=_per_cluster_slot_floor,
+                            )
+                        )
                 _selected_ids = {
                     str(p.get("proposal_id") or p.get("id") or "")
                     for p in patches
