@@ -24582,12 +24582,36 @@ def _run_lever_loop(
                             passing_dependents_threshold=_kit_pd_threshold(),
                             co_beneficiary_downgrade_threshold=_kit_co_threshold(),
                         )
-                        # Phase 3 Action 3.3 hook: when the soft-evidence
-                        # matcher lands, populate this dict from cluster
-                        # per-qid ASI evidence joined against soft clusters.
-                        # Phase 2 default is None → co-beneficiary downgrade
-                        # is a no-op and replay byte-stability holds.
+                        # Phase 1 Addendum × Phase 2 Section B bridge: lift
+                        # cluster["rca_card_supporting_soft_evidence"] (set by
+                        # build_rca_card when GSO_RCA_CARD_SOFT_EVIDENCE=1)
+                        # into the kit-keyed dict the wrapper consumes. When
+                        # the Phase 1 Addendum flag is OFF (default), no
+                        # cluster carries the field, the helper returns {},
+                        # and we keep the dict as None so the wrapper's
+                        # co-beneficiary downgrade stays a no-op and replay
+                        # byte-stability holds.
                         _soft_evidence_matched_qids_by_kit = None
+                        try:
+                            from genie_space_optimizer.common.config import (
+                                rca_card_soft_evidence_enabled as _soft_ev_enabled,
+                            )
+                            if _soft_ev_enabled():
+                                from genie_space_optimizer.optimization.kit_safety import (
+                                    build_soft_evidence_lookup_by_kit as _build_soft_lookup,
+                                )
+                                _soft_lookup = _build_soft_lookup(
+                                    clusters=clusters, patches=_before_cap,
+                                )
+                                _soft_evidence_matched_qids_by_kit = (
+                                    _soft_lookup or None
+                                )
+                        except Exception:
+                            logger.debug(
+                                "Phase 1 Addendum soft-evidence wiring failed "
+                                "(non-fatal)",
+                                exc_info=True,
+                            )
                         _ag_id_for_kit = str(ag.get("id") or ag.get("ag_id") or "")
                         try:
                             patches, _patch_cap_decisions, _kit_outcomes = (

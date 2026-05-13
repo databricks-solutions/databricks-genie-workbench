@@ -445,3 +445,64 @@ def select_kit_aware_patch_cap(
         selected.extend(kit.patches)
 
     return selected, legacy_decisions, kit_outcomes
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 Addendum × Phase 2 Section B bridge.
+# ---------------------------------------------------------------------------
+
+
+def build_soft_evidence_lookup_by_kit(
+    *,
+    clusters: list[dict],
+    patches: list[dict],
+) -> dict[str, tuple[str, ...]]:
+    """Phase 1 Addendum × Phase 2 Section B bridge.
+
+    Joins each kit (computed deterministically from ``patches`` via
+    ``group_patches_into_kits``) against the cluster object's
+    ``rca_card_supporting_soft_evidence`` field (populated by Phase 1
+    Addendum's ``build_rca_card`` when ``GSO_RCA_CARD_SOFT_EVIDENCE=1``).
+    Returns ``{kit_id: tuple[str, ...]}`` ready to feed into
+    ``select_kit_aware_patch_cap``'s ``soft_evidence_matched_qids_by_kit``
+    parameter — the key set is identical to what
+    ``group_patches_into_kits`` would compute downstream, so the
+    wrapper's ``soft_lookup.get(kit.kit_id, ())`` succeeds when there
+    is matched evidence.
+
+    Pure function. Match strategy: a kit is paired with the first
+    cluster whose ``question_ids`` contains the kit's first target qid.
+    A kit with no target_qids OR no matching cluster OR an empty
+    ``rca_card_supporting_soft_evidence`` list is omitted from the
+    returned dict — passing the resulting dict directly to the wrapper
+    means absent kits get ``()`` co-beneficiaries (default behaviour).
+    """
+    from genie_space_optimizer.optimization.repair_kit import (
+        group_patches_into_kits,
+    )
+
+    # Index clusters by every qid they own so a kit's first target qid
+    # finds its owning cluster in one lookup.
+    cluster_by_qid: dict[str, dict] = {}
+    for cluster in clusters or ():
+        for qid in (cluster.get("question_ids") or ()):
+            cluster_by_qid[str(qid)] = cluster
+
+    out: dict[str, tuple[str, ...]] = {}
+    for kit in group_patches_into_kits(patches or ()):
+        if not kit.target_qids:
+            continue
+        owner = cluster_by_qid.get(str(kit.target_qids[0]))
+        if owner is None:
+            continue
+        soft_entries = owner.get("rca_card_supporting_soft_evidence") or ()
+        if not soft_entries:
+            continue
+        soft_qids = tuple(
+            str(entry.get("soft_qid"))
+            for entry in soft_entries
+            if isinstance(entry, dict) and entry.get("soft_qid")
+        )
+        if soft_qids:
+            out[kit.kit_id] = soft_qids
+    return out
