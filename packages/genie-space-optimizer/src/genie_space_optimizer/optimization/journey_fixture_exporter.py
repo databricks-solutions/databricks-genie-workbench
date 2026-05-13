@@ -181,9 +181,27 @@ def _build_fixture(
     fixture_id: str,
     iterations_data: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """B5 (2026-05-13) — per-iteration resilience.
+
+    One malformed iteration must not bring down the whole serialization.
+    The healthy path is unchanged: every iteration's strip output is
+    appended in order. The failure path: a strip raise is caught,
+    logged, and the iteration is skipped — the rest still serialize.
+    """
+    import logging as _logging
+    _stripped: list[dict[str, Any]] = []
+    for it in (iterations_data or []):
+        try:
+            _stripped.append(_strip_iteration(it))
+        except Exception:
+            _logging.getLogger(__name__).warning(
+                "Phase A: skipping malformed iteration during strip "
+                "(non-fatal)",
+                exc_info=True,
+            )
     return {
         "fixture_id": str(fixture_id),
-        "iterations": [_strip_iteration(it) for it in (iterations_data or [])],
+        "iterations": _stripped,
     }
 
 
