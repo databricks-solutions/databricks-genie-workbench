@@ -172,6 +172,15 @@ class FeedbackTabResponse(BaseModel):
     events: list[FeedbackEvent] = Field(default_factory=list)
 
 
+class FeedbackMessageComment(BaseModel):
+    """A user-typed comment attached to a Genie message. Sourced lazily from
+    the Genie Conversation API when a user expands a feedback event."""
+    message_comment_id: str
+    content: str
+    created_at: datetime
+    user_id: Optional[int] = None
+
+
 # ─── Resources ────────────────────────────────────────────────────────────
 
 

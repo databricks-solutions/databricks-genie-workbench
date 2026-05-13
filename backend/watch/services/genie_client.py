@@ -201,3 +201,33 @@ def list_space_permissions(genie_space_id: str) -> dict:
                     path=f"/api/2.0/permissions/genie/{genie_space_id}",
                 )
         raise
+
+
+def list_message_comments(
+    space_id: str, conversation_id: str, message_id: str
+) -> list[dict]:
+    """Fetch user-typed comments attached to a Genie message.
+
+    Used by the Feedback tab to surface free-text feedback that audit logs
+    don't carry (audit only logs IDs, not content). Returns the raw
+    `comments` array from the Genie API; the router dedupes / filters empty
+    content / sorts.
+    """
+    if not (space_id and conversation_id and message_id):
+        raise ValueError("space_id, conversation_id, and message_id are required")
+    path = (
+        f"/api/2.0/genie/spaces/{space_id}"
+        f"/conversations/{conversation_id}"
+        f"/messages/{message_id}/comments"
+    )
+    client = get_workspace_client()
+    try:
+        resp = client.api_client.do(method="GET", path=path)
+        return resp.get("comments", []) or []
+    except Exception as e:
+        if _is_scope_error(e):
+            sp = get_service_principal_client()
+            if sp is not client:
+                resp = sp.api_client.do(method="GET", path=path)
+                return resp.get("comments", []) or []
+        raise

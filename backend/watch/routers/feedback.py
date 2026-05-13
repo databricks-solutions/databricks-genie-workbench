@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
@@ -22,11 +23,18 @@ from backend.services import lakebase
 from backend.watch._validators import validate_days
 from backend.watch.models import (
     FeedbackEvent,
+    FeedbackMessageComment,
     FeedbackSpaceRow,
     FeedbackTabResponse,
     FeedbackTabSummary,
     FeedbackTrendPoint,
 )
+
+# Hard cap on number of comments returned per message. The Genie API
+# occasionally returns near-duplicate comments (we've observed the same
+# content recorded with ~ms-apart timestamps); we dedupe in-router but
+# also limit total just in case.
+COMMENTS_MAX_PER_MESSAGE = 20
 from backend.watch.services import genie_client, system_tables
 
 logger = logging.getLogger(__name__)
@@ -184,3 +192,62 @@ async def get_feedback(
         per_space=per_space,
         events=events,
     ).model_dump(mode="json")
+
+
+# 32-char lowercase hex — same shape as validate_space_id, reused here for
+# conversation_id and message_id.
+_HEX_32_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _validate_hex_id(value: str, name: str) -> str:
+    v = (value or "").strip().lower()
+    if not _HEX_32_RE.match(v):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Invalid {name}: {value!r}")
+    return v
+
+
+@router.get("/feedback/comments")
+async def get_feedback_comments(
+    space_id: str = Query(...),
+    conversation_id: str = Query(...),
+    message_id: str = Query(...),
+) -> list[dict]:
+    """Lazy fetch of user-typed comments for a single Genie message.
+
+    Called when a user expands an event card in the Feedback tab.
+    Returns deduplicated, non-empty comments sorted oldest-first.
+    """
+    sid = _validate_hex_id(space_id, "space_id")
+    cid = _validate_hex_id(conversation_id, "conversation_id")
+    mid = _validate_hex_id(message_id, "message_id")
+
+    raw = await asyncio.to_thread(
+        _safe, genie_client.list_message_comments, sid, cid, mid
+    )
+
+    seen_content: set[str] = set()
+    out: list[FeedbackMessageComment] = []
+    for c in raw:
+        if len(out) >= COMMENTS_MAX_PER_MESSAGE:
+            break
+        content = (c.get("content") or "").strip()
+        if not content or content in seen_content:
+            continue
+        seen_content.add(content)
+        ts = c.get("created_timestamp")
+        if ts:
+            try:
+                created_at = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc)
+            except (TypeError, ValueError):
+                created_at = datetime.now(tz=timezone.utc)
+        else:
+            created_at = datetime.now(tz=timezone.utc)
+        out.append(FeedbackMessageComment(
+            message_comment_id=c.get("message_comment_id") or "",
+            content=content,
+            created_at=created_at,
+            user_id=c.get("user_id"),
+        ))
+    out.sort(key=lambda c: c.created_at)
+    return [c.model_dump(mode="json") for c in out]

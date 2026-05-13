@@ -221,3 +221,10 @@ export interface FeedbackTabResponse {
   per_space: FeedbackSpaceRow[]
   events: FeedbackEvent[]
 }
+
+export interface FeedbackMessageComment {
+  message_comment_id: string
+  content: string
+  created_at: string
+  user_id: number | null
+}

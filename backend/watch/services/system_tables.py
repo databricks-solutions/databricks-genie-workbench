@@ -440,12 +440,21 @@ def top_expensive_queries(space_id: str, days: int = 7, limit: int = 20) -> list
 
 
 # ─── Feedback ─────────────────────────────────────────────────────────────
+#
+# The audit log stores `feedback_rating` as 'THUMBS_UP' / 'THUMBS_DOWN'.
+# All feedback queries normalize these to 'POSITIVE' / 'NEGATIVE' so callers
+# (routers, summary aggregations, frontend filters) can use a single
+# canonical vocabulary.
 
 _FEEDBACK_PER_SPACE_SQL = """
 SELECT event_time,
        user_identity.email AS user_email,
        request_params.space_id AS space_id,
-       request_params.feedback_rating AS rating,
+       CASE
+         WHEN request_params.feedback_rating = 'THUMBS_UP'   THEN 'POSITIVE'
+         WHEN request_params.feedback_rating = 'THUMBS_DOWN' THEN 'NEGATIVE'
+         ELSE request_params.feedback_rating
+       END AS rating,
        request_params.comment AS comment,
        request_params.message_id AS message_id,
        request_params.conversation_id AS conversation_id
@@ -469,8 +478,8 @@ def feedback_per_space(space_id: str, days: int = 30, limit: int = 200) -> list[
 
 _FEEDBACK_SUMMARY_SQL = """
 SELECT request_params.space_id AS space_id,
-       SUM(CASE WHEN request_params.feedback_rating = 'POSITIVE' THEN 1 ELSE 0 END) AS pos,
-       SUM(CASE WHEN request_params.feedback_rating = 'NEGATIVE' THEN 1 ELSE 0 END) AS neg,
+       SUM(CASE WHEN request_params.feedback_rating = 'THUMBS_UP'   THEN 1 ELSE 0 END) AS pos,
+       SUM(CASE WHEN request_params.feedback_rating = 'THUMBS_DOWN' THEN 1 ELSE 0 END) AS neg,
        COUNT(*) AS total
 FROM system.access.audit
 WHERE service_name = 'aibiGenie'
@@ -489,7 +498,11 @@ _FEEDBACK_EVENTS_ALL_SQL = """
 SELECT event_time,
        user_identity.email AS user_email,
        request_params.space_id AS space_id,
-       request_params.feedback_rating AS rating,
+       CASE
+         WHEN request_params.feedback_rating = 'THUMBS_UP'   THEN 'POSITIVE'
+         WHEN request_params.feedback_rating = 'THUMBS_DOWN' THEN 'NEGATIVE'
+         ELSE request_params.feedback_rating
+       END AS rating,
        request_params.comment AS comment,
        request_params.message_id AS message_id,
        request_params.conversation_id AS conversation_id
