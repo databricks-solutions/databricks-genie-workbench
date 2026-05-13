@@ -210,6 +210,39 @@ post-Phase-0 evidence-bound follow-up):
   false-positive `GSO_PHASE_H_ACCEPTANCE_DRIFT_V1` markers observed on
   every accepted iteration of the 2314bb2c trial.
 
+**2026-05-13 Phase 1 — acceptance gate redesign (lever-loop-free):**
+
+Phase 0 surfaced four design questions about the partial-harvest acceptance
+tier (`2026-05-12-phase-0-offline-acceptance-policy-replay-results.md:45-49`).
+The Phase 1 plan
+(`2026-05-13-acceptance-gate-redesign-phase-1-plan.md`) lands a sibling
+acceptance tier — `accepted_with_attribution_drift_and_debt` — gated by
+the new `GSO_ATTRIBUTION_DRIFT_WITH_DEBT` flag (default-OFF).
+
+- Design decisions locked in `2026-05-13-acceptance-gate-redesign-design-record.md`.
+- New policy factory `attribution_drift_policy_pilot_default()` with
+  `min_target_clusters_fixed=0`, `min_aggregate_improvement_pp=4.0`, and
+  debt buckets `{SOFT_TO_HARD, LOOKUP_FAILED}`.
+- New branch in `decide_control_plane_acceptance` after the existing
+  partial-harvest branch.
+- `policy_replay` CLI extended with `--policy-name` argument + registry.
+- Phase 0.2 replay produces 3/3 exact matches against the captured fixtures
+  (see `2026-05-12-phase-0-offline-acceptance-policy-replay-results.md`
+  Phase 0.2 section).
+
+**Remaining work to flip the new flag default-on:**
+
+1. One lever-loop trial with `GSO_ATTRIBUTION_DRIFT_WITH_DEBT=1` against a
+   ccf1d60d-shaped anchor — confirm the new reason code appears in the FULL
+   EVAL banner and `GSO_FULL_EVAL_V1` marker.
+2. Replay-parity check against captured fixtures (RCO-6 input).
+3. Follow-up plan flipping the accessor body to `_flag_default_on`.
+
+`GSO_PARTIAL_HARVEST_WITH_DEBT` remains deferred — Phase 0 showed it is
+mis-shaped for the corpus; the partial-harvest tier needs its own pilot
+policy update before flipping. The attribution-drift tier does not change
+that conclusion; it is a sibling, not a substitute.
+
 ### RCO-4 — Stage-6 Gate Pure-Helper Extraction
 
 **Status:** closed-local pending corpus — three of six conceptual gates extracted into pure helpers in ``optimization/stages/gates.py`` (``run_blast_radius_production_gate``, ``resolve_narrow_replacement``, ``run_applyability_gate``) behind default-off flags ``GSO_STAGE6_BLAST_RADIUS_PURE`` / ``GSO_STAGE6_NARROW_REPL_PURE`` / ``GSO_STAGE6_APPLYABILITY_PURE``. The remaining three (alignment / reflection / cap) are deferred to RCO-4b with named blockers documented in ``docs/2026-05-11-rco-4-deferred-gates.md`` and a full gate-to-code mapping in ``docs/2026-05-11-rco-4-gate-inventory.md``. Production firing order pinned by ``tests/unit/test_rco4_sequencing_grep_guard.py``. Parity fixtures under ``tests/unit/fixtures/rco4/``. Corpus confirmation + simultaneous flag flip pending the next airline + 7Now run (the flag flip belongs in RCO-3's pilot batch).
