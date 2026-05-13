@@ -1395,6 +1395,11 @@ def _finalize_iteration_summary(
             iteration=int(iteration),
             iter_inputs=current_iter_inputs,
         )
+        _check_and_emit_directive_outcome_coverage(
+            run_id=str(run_id),
+            iteration=int(iteration),
+            iter_inputs=current_iter_inputs,
+        )
     except Exception:
         logger.debug(
             "Plan P-F T12: centralized invariant wiring failed (non-fatal)",
@@ -5174,6 +5179,80 @@ def _check_and_emit_proposal_failure_coverage(
     except Exception:
         logger.debug(
             "Plan P-F: invariant check failed (non-fatal)",
+            exc_info=True,
+        )
+
+
+def _check_and_emit_directive_outcome_coverage(
+    *,
+    run_id: str,
+    iteration: int,
+    iter_inputs: dict,
+) -> None:
+    """Phase 3 (2026-05-13) — per-AG-per-lever-directive coverage invariant.
+
+    Mirrors ``_check_and_emit_proposal_failure_coverage`` (line 5090).
+    Flag-off is a hard no-op so replay byte-stability is preserved.
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            directive_outcome_coverage_enabled,
+        )
+        if not directive_outcome_coverage_enabled():
+            return
+    except Exception:
+        logger.debug(
+            "Phase 3: flag accessor import failed (non-fatal)",
+            exc_info=True,
+        )
+        return
+
+    try:
+        from genie_space_optimizer.optimization.invariants import (
+            check_directive_outcome_coverage,
+        )
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            gso_invariant_violation_marker,
+        )
+    except Exception:
+        logger.debug(
+            "Phase 3: invariant module import failed (non-fatal)",
+            exc_info=True,
+        )
+        return
+
+    try:
+        result = check_directive_outcome_coverage(iter_inputs)
+    except Exception:
+        logger.debug(
+            "Phase 3: directive_outcome_coverage check raised "
+            "(non-fatal)",
+            exc_info=True,
+        )
+        return
+
+    if not result.violated:
+        return
+
+    try:
+        payload = {
+            "offending_ag_ids": list(result.offending_ag_ids),
+            "offending_lever_keys_by_ag": [
+                {"ag_id": ag_id, "missing_levers": list(missing)}
+                for ag_id, missing in result.offending_lever_keys_by_ag
+            ],
+        }
+        print(gso_invariant_violation_marker(
+            optimization_run_id=str(run_id or ""),
+            iteration=int(iteration),
+            invariant_name="directive_outcome_coverage",
+            offending_qids=None,
+            degradation=result.message,
+            payload=payload,
+        ), flush=True)
+    except Exception:
+        logger.debug(
+            "Phase 3: invariant violation marker emit failed (non-fatal)",
             exc_info=True,
         )
 
