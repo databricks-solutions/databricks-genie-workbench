@@ -19946,12 +19946,92 @@ def _run_lever_loop(
                                     "Failed to log strategist coverage gap diagnostic",
                                     exc_info=True,
                                 )
-                            logger.warning(
-                                "Strategist did not cover %d patchable hard cluster(s); "
-                                "appending diagnostic AGs: %s",
-                                len(_uncovered),
-                                [c.get("cluster_id") for c in _uncovered],
-                            )
+                            # Phase 2 Action 2.4 — focused strategist
+                            # coverage re-call. When the flag is on AND
+                            # uncovered clusters have at least one ASI
+                            # counterfactual fix, make a focused second
+                            # call before falling to diagnostic AGs.
+                            try:
+                                from genie_space_optimizer.common.config import (
+                                    strategist_coverage_recall_enabled as _recall_enabled,
+                                )
+                                if _recall_enabled():
+                                    from genie_space_optimizer.optimization.decision_emitters import (
+                                        strategist_coverage_recall_invoked_record as _recall_invoked_rec,
+                                        strategist_coverage_recall_result_record as _recall_result_rec,
+                                    )
+                                    from genie_space_optimizer.optimization.optimizer import (
+                                        call_llm_for_strategy_focused as _call_focused,
+                                    )
+
+                                    _eligible = [
+                                        _c for _c in _uncovered
+                                        if any(
+                                            str(f).strip()
+                                            for f in (
+                                                _c.get("asi_counterfactual_fixes") or []
+                                            )
+                                        )
+                                    ]
+                                    _eligible_ids = tuple(
+                                        str(_c.get("cluster_id") or "")
+                                        for _c in _eligible
+                                        if _c.get("cluster_id")
+                                    )
+                                    if _eligible_ids:
+                                        decision_records.append(_recall_invoked_rec(
+                                            run_id=run_id,
+                                            iteration=iteration_counter,
+                                            uncovered_cluster_ids=_eligible_ids,
+                                            eligible_cluster_count=len(_eligible),
+                                        ))
+                                        _recall_strategy: dict = {}
+                                        _recall_succeeded = False
+                                        try:
+                                            _recall_strategy = _call_focused(
+                                                clusters=clusters,
+                                                uncovered_cluster_ids=_eligible_ids,
+                                                soft_signal_clusters=soft_signal_clusters,
+                                                metadata_snapshot=metadata_snapshot,
+                                                w=w,
+                                            )
+                                            _recall_succeeded = bool(
+                                                (_recall_strategy or {}).get("action_groups")
+                                            )
+                                        except Exception:
+                                            logger.exception(
+                                                "Strategist coverage recall failed",
+                                            )
+                                        _recall_ags = list(
+                                            (_recall_strategy or {}).get("action_groups") or []
+                                        )
+                                        decision_records.append(_recall_result_rec(
+                                            run_id=run_id,
+                                            iteration=iteration_counter,
+                                            uncovered_cluster_ids=_eligible_ids,
+                                            recall_returned_ag_count=len(_recall_ags),
+                                            recall_succeeded=_recall_succeeded,
+                                        ))
+                                        if _recall_succeeded:
+                                            action_groups = _sort_ags_rco7_site1(
+                                                list(action_groups) + _recall_ags
+                                            )
+                                            _uncovered = uncovered_patchable_clusters(
+                                                clusters,
+                                                action_groups,
+                                            )
+                            except Exception:
+                                logger.debug(
+                                    "Strategist coverage recall wiring failed (non-fatal)",
+                                    exc_info=True,
+                                )
+                            if _uncovered:
+                                logger.warning(
+                                    "Strategist did not cover %d patchable hard cluster(s); "
+                                    "appending diagnostic AGs: %s",
+                                    len(_uncovered),
+                                    [c.get("cluster_id") for c in _uncovered],
+                                )
                             from genie_space_optimizer.optimization.control_plane import (
                                 compute_ag_stable_signature,
                             )
