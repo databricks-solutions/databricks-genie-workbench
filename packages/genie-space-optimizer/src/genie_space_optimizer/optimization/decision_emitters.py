@@ -3832,3 +3832,75 @@ def kit_risk_downgraded_by_scoped_variant_record(
         ),
         next_action="Kit clears the kit-level gate at the downgraded risk class.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.4 — Section D strategist-recall emitters.
+# ---------------------------------------------------------------------------
+
+
+def strategist_coverage_recall_invoked_record(
+    *,
+    run_id: str,
+    iteration: int,
+    uncovered_cluster_ids: tuple[str, ...],
+    eligible_cluster_count: int,
+) -> DecisionRecord:
+    """Phase 2 Action 2.4 — emitted just before the focused second
+    strategist call. Documents the uncovered clusters that motivated
+    the recall."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.STRATEGIST_AG_EMITTED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.STRATEGIST_COVERAGE_RECALL_INVOKED,
+        evidence_refs=tuple(
+            f"uncovered:{cid}" for cid in uncovered_cluster_ids
+        ) or ("(no uncovered ids)",),
+        affected_qids=(),
+        target_qids=(),
+        expected_effect=(
+            f"Coverage recall invoked: {eligible_cluster_count} eligible "
+            "uncovered cluster(s)."
+        ),
+        next_action=(
+            f"Make focused second strategist call for clusters "
+            f"{list(uncovered_cluster_ids)}; each must emit an AG or "
+            "explain why none is patchable."
+        ),
+    )
+
+
+def strategist_coverage_recall_result_record(
+    *,
+    run_id: str,
+    iteration: int,
+    uncovered_cluster_ids: tuple[str, ...],
+    recall_returned_ag_count: int,
+    recall_succeeded: bool,
+) -> DecisionRecord:
+    """Phase 2 Action 2.4 — emitted after the focused second strategist
+    call returns. Documents how many AGs the recall produced and
+    whether the call succeeded (LLM error or empty payload → False)."""
+    outcome = DecisionOutcome.INFO if recall_succeeded else DecisionOutcome.SKIPPED
+    status = "succeeded" if recall_succeeded else "failed"
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.STRATEGIST_AG_EMITTED,
+        outcome=outcome,
+        reason_code=ReasonCode.STRATEGIST_COVERAGE_RECALL_RESULT,
+        evidence_refs=tuple(
+            f"uncovered:{cid}" for cid in uncovered_cluster_ids
+        ) or ("(no uncovered ids)",),
+        affected_qids=(),
+        target_qids=(),
+        expected_effect=(
+            f"Coverage recall {status}; ag_count={recall_returned_ag_count}."
+        ),
+        next_action=(
+            "Returned AGs are folded into the iteration's AG list; "
+            "any cluster still uncovered falls to the diagnostic AG path."
+        ),
+    )
