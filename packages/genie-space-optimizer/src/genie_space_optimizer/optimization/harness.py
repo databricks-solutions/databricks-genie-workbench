@@ -21571,6 +21571,22 @@ def _run_lever_loop(
             for lever_key in lever_keys:
                 lever_int = int(lever_key)
                 levers_attempted.append(lever_int)
+                # Phase 3 followup (2026-05-13): real pre-call snapshot for
+                # L5 structural-gate drops. The optimizer._LEVER5_GATE_DROPS
+                # buffer at optimizer.py:8007 is populated in-place by
+                # generate_proposals_from_strategy's gate. A before/after
+                # snapshot diff gives per-lever drop counts (informational
+                # — does not change classification). The other counters
+                # remain conservative-zero — those drop classes happen in
+                # the cap loop and require an originating-lever tag on the
+                # proposal (deferred to a separate follow-up plan).
+                try:
+                    from genie_space_optimizer.optimization.optimizer import (
+                        get_lever5_gate_drops as _get_l5_drops_pre,
+                    )
+                    _pre_struct_drops = len(_get_l5_drops_pre())
+                except Exception:
+                    _pre_struct_drops = 0
                 lever_proposals = generate_proposals_from_strategy(
                     strategy=strategy,
                     action_group=ag,
@@ -21604,10 +21620,24 @@ def _run_lever_loop(
                             LeverProposalSnapshot,
                             classify_lever_proposal_outcome,
                         )
+                        # Phase 3 followup (2026-05-13): post-call snapshot
+                        # of L5 structural-gate drops. The diff is the per-
+                        # lever drop count (informational — surfaced on the
+                        # GSO_DIRECTIVE_OUTCOME_V1 marker, not used by the
+                        # classifier branch order today).
+                        try:
+                            from genie_space_optimizer.optimization.optimizer import (
+                                get_lever5_gate_drops as _get_l5_drops_post,
+                            )
+                            _post_struct = len(_get_l5_drops_post())
+                        except Exception:
+                            _post_struct = _pre_struct_drops
                         _snapshot = LeverProposalSnapshot(
                             lever_key=lever_int,
                             proposals_emitted_count=len(lever_proposals),
-                            structural_gate_drop_count=0,
+                            structural_gate_drop_count=max(
+                                0, _post_struct - _pre_struct_drops
+                            ),
                             applyability_drop_count=0,
                             collateral_drop_count=0,
                             force_llm_declined=False,
