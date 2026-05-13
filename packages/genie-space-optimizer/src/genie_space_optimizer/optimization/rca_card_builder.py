@@ -213,18 +213,26 @@ def self_grounding_check(
     asi_by_qid: Mapping[str, dict],
     generated_sql_by_qid: Mapping[str, str],
     reference_sql_by_qid: Mapping[str, str],
+    soft_grounding_sources: "Sequence[dict] | None" = None,
 ) -> SelfGroundingResult:
-    """Deterministic self-grounding check.
+    """Deterministic self-grounding check (Phase 1 Action 1.1 + Addendum).
 
     Two conditions must hold:
       1. ``proposed_root_cause == dominant_root_cause(asi_by_qid)``.
+         The dominant-root-cause check uses **hard cluster ASI only**.
+         Soft sources are evidence, not authority.
       2. Every ``term`` in ``proposed_grounding_terms`` appears in at
          least one of:
            * the union of ``blame_set`` across qids in ``asi_by_qid``;
            * any value of ``generated_sql_by_qid``;
-           * any value of ``reference_sql_by_qid``.
-         Match is case-insensitive substring (terms are typically
-         column / table identifiers or short failure-type strings).
+           * any value of ``reference_sql_by_qid``;
+           * (Phase 1 Addendum) the union of ``blame_set`` AND
+             ``counterfactual_fix`` text across qids in any
+             ``soft_grounding_sources[i]["asi_by_qid"]``.
+
+    Adding soft sources strengthens the check (more sources can
+    ground) without weakening it — the term still has to appear in
+    at least one source. Match is case-insensitive substring.
     """
     dominant = dominant_root_cause(asi_by_qid)
     if proposed_root_cause != dominant:
@@ -246,12 +254,32 @@ def self_grounding_check(
         if s
     )
 
+    # Phase 1 Addendum — soft-cluster ASI blame + counterfactual text as
+    # additional grounding corpus. Empty when caller passes None / ()
+    # (default), so existing call sites are byte-stable.
+    soft_corpus_parts: list[str] = []
+    for src in soft_grounding_sources or ():
+        if not isinstance(src, dict):
+            continue
+        for soft_meta in (src.get("asi_by_qid") or {}).values():
+            if not isinstance(soft_meta, dict):
+                continue
+            for entry in soft_meta.get("blame_set") or ():
+                if isinstance(entry, str) and entry:
+                    soft_corpus_parts.append(entry.lower())
+            cf = str(soft_meta.get("counterfactual_fix") or "")
+            if cf:
+                soft_corpus_parts.append(cf.lower())
+    soft_corpus_lower = " ".join(soft_corpus_parts)
+
     ungrounded: list[str] = []
     for term in proposed_grounding_terms:
         term_l = term.lower()
         if term_l in blame_terms:
             continue
         if term_l in sql_corpus_lower:
+            continue
+        if soft_corpus_lower and term_l in soft_corpus_lower:
             continue
         ungrounded.append(term)
 
