@@ -214,6 +214,15 @@ class ReasonCode(str, Enum):
     TIER_NET_WIN_WITH_DEBT = "tier_net_win_with_debt"
     TIER_DIAGNOSTIC_HOLD = "tier_diagnostic_hold"
     TIER_LOSS = "tier_loss"
+    # ── Phase 3 Action 3.1: canonical iteration-feedback object ───────
+    ITERATION_FEEDBACK_BUILT = "iteration_feedback_built"
+    # ── Phase 3 Action 3.2: near-miss reflection + AG-shape gate ──────
+    NEAR_MISS_REFLECTION_EMITTED = "near_miss_reflection_emitted"
+    NEAR_MISS_AG_SHAPE_REPEATED = "near_miss_ag_shape_repeated"
+    NEAR_MISS_AG_SHAPE_DIFFERS = "near_miss_ag_shape_differs"
+    # ── Phase 3 Action 3.3: soft-evidence lift + soft-signal trend ────
+    SOFT_EVIDENCE_LIFTED_TO_KIT = "soft_evidence_lifted_to_kit"
+    SOFT_SIGNAL_TREND_REPORT = "soft_signal_trend_report"
     # Phase 2 Action 2.1 — Repair Planner reason codes. Emitted when
     # the planner classifies a cluster into a named archetype, fails
     # to match any archetype, or applies a propagation-guard upgrade

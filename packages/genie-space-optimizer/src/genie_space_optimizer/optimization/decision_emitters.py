@@ -4157,3 +4157,187 @@ def cross_run_promotion_candidate_recorded_record(
             f"{archetype_name!r} into REPAIR_ARCHETYPES."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Strategy Intelligence record factories.
+# ---------------------------------------------------------------------------
+
+
+def iteration_feedback_built_record(
+    *,
+    run_id: str,
+    iteration: int,
+    acceptance_class: str,
+    target_qids: tuple[str, ...],
+    reflection_count: int,
+    tried_shape_count: int,
+) -> DecisionRecord:
+    """Phase 3 Action 3.1 — emitted once per iteration when the harness
+    builds the typed IterationFeedback carry-over. Carries the acceptance
+    class label, target qids, and shape/reflection counts so the
+    operator transcript can render a one-line summary."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.ACCEPTANCE_DECIDED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.ITERATION_FEEDBACK_BUILT,
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"acceptance_class={acceptance_class} reflections={reflection_count} "
+            f"tried_shapes={tried_shape_count}"
+        ),
+        next_action=(
+            "Threaded into the next iteration's strategist call via "
+            "_call_llm_for_adaptive_strategy(iteration_feedback=...)."
+        ),
+    )
+
+
+def near_miss_reflection_record(
+    *,
+    run_id: str,
+    iteration: int,
+    kind: str,
+    target_qids: tuple[str, ...],
+    required_next_iter_change: str,
+    prior_repair_archetype: str,
+    prior_target_scope: str,
+) -> DecisionRecord:
+    """Phase 3 Action 3.2 — emitted when a typed NearMissReflection is
+    built (diagnostic_hold or net_win_with_debt). The strategist sees
+    the reflection_text inline; this record captures the structural
+    summary for postmortem aggregation."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.ACCEPTANCE_DECIDED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.NEAR_MISS_REFLECTION_EMITTED,
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"kind={kind} prior_archetype={prior_repair_archetype} "
+            f"prior_scope={prior_target_scope}"
+        ),
+        next_action=(
+            f"required_next_iter_change={required_next_iter_change}. "
+            "Strategist must change repair_archetype OR target_scope "
+            "on the next attempt against this target."
+        ),
+    )
+
+
+def near_miss_ag_shape_decision_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    differs: bool,
+    target_qids: tuple[str, ...],
+    candidate_archetype: str,
+    candidate_scope: str,
+    matched_prior_archetype: str = "",
+    matched_prior_scope: str = "",
+) -> DecisionRecord:
+    """Phase 3 Action 3.2 — emitted by the harness pre-strategy gate.
+
+    * ``differs=True`` → ``NEAR_MISS_AG_SHAPE_DIFFERS`` (AG allowed).
+    * ``differs=False`` → ``NEAR_MISS_AG_SHAPE_REPEATED`` (AG would
+      repeat a prior shape; the strict-drop flag decides whether to
+      drop or just log).
+    """
+    reason = (
+        ReasonCode.NEAR_MISS_AG_SHAPE_DIFFERS
+        if differs
+        else ReasonCode.NEAR_MISS_AG_SHAPE_REPEATED
+    )
+    outcome = DecisionOutcome.INFO if differs else DecisionOutcome.DROPPED
+    next_action = (
+        "AG shape is novel for this target; proceed to strategy."
+        if differs else
+        (
+            f"AG shape repeats prior attempt "
+            f"({matched_prior_archetype}, {matched_prior_scope}); "
+            "strategist must change repair_archetype OR target_scope."
+        )
+    )
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.STRATEGIST_AG_EMITTED,
+        outcome=outcome,
+        reason_code=reason,
+        ag_id=str(ag_id or ""),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"candidate=({candidate_archetype}, {candidate_scope})"
+        ),
+        next_action=next_action,
+    )
+
+
+def soft_evidence_lifted_record(
+    *,
+    run_id: str,
+    iteration: int,
+    kit_count: int,
+    soft_qid_count: int,
+) -> DecisionRecord:
+    """Phase 3 Action 3.3.2 — emitted once per iteration when the
+    harness lifts cluster["rca_card_supporting_soft_evidence"] into the
+    soft_evidence_matched_qids_by_kit dict the kit-aware patch cap
+    consumes. ``kit_count`` is the number of kits with at least one
+    soft qid; ``soft_qid_count`` is the deduplicated total across all
+    of them."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.GATE_DECISION,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.SOFT_EVIDENCE_LIFTED_TO_KIT,
+        expected_effect=(
+            f"kits_with_soft_evidence={kit_count} "
+            f"soft_qid_count_total={soft_qid_count}"
+        ),
+        next_action=(
+            "Threaded into select_kit_aware_patch_cap as "
+            "soft_evidence_matched_qids_by_kit; kit-safety gate "
+            "applies the co-beneficiary risk downgrade where the "
+            "threshold is met."
+        ),
+    )
+
+
+def soft_signal_trend_report_record(
+    *,
+    run_id: str,
+    iteration: int,
+    total_soft_clusters: int,
+    matched_count: int,
+    unmatched_count: int,
+    top_unmatched_root_cause: str,
+) -> DecisionRecord:
+    """Phase 3 Action 3.3.3 — emitted once at run close. Carries the
+    aggregate counts for postmortem trend reporting; the full
+    SoftSignalTrendReport object lives on the run summary."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.AG_RETIRED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.SOFT_SIGNAL_TREND_REPORT,
+        expected_effect=(
+            f"total_soft_clusters={total_soft_clusters} "
+            f"matched={matched_count} unmatched={unmatched_count} "
+            f"top_unmatched_root_cause={top_unmatched_root_cause}"
+        ),
+        next_action=(
+            "Operator-only trend; soft signals never enter strategist "
+            "input as targets. Surface in run-overview markdown for "
+            "operator triage."
+        ),
+    )

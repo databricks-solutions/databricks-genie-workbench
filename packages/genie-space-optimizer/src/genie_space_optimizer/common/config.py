@@ -6545,3 +6545,68 @@ def provisional_archetype_trial_max_per_iteration() -> int:
     if raw.lstrip("-").isdigit():
         return int(raw)
     return 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Strategy Intelligence flags.
+# ---------------------------------------------------------------------------
+
+
+def iteration_feedback_enabled() -> bool:
+    """Phase 3 Action 3.1 — canonical IterationFeedback carry-over.
+
+    When ON, the harness builds a typed ``IterationFeedback`` at the
+    end of each iteration in ``_finalize_iteration_summary`` and
+    threads it into the next iteration's strategist call via the new
+    ``iteration_feedback`` kwarg on ``_call_llm_for_adaptive_strategy``.
+    The legacy ``reflection_buffer`` and ``verdict_history`` channels
+    remain populated.
+
+    Default ON. Disable with ``GSO_ITERATION_FEEDBACK=0``.
+    """
+    return _flag_default_on("GSO_ITERATION_FEEDBACK")
+
+
+def near_miss_reflection_enabled() -> bool:
+    """Phase 3 Action 3.2 — near-miss reflection emission for
+    ``diagnostic_hold`` and ``net_win_with_debt`` outcomes.
+
+    When ON, the harness builds typed ``NearMissReflection`` payloads
+    in ``_finalize_iteration_summary`` and stamps them on the
+    ``IterationFeedback`` carry-over. The strategist prompt receives
+    them inline under a "Prior near-miss reflections" block.
+
+    Default ON. Disable with ``GSO_NEAR_MISS_REFLECTION=0``.
+    """
+    return _flag_default_on("GSO_NEAR_MISS_REFLECTION")
+
+
+def near_miss_reflection_strict_drop_enabled() -> bool:
+    """Phase 3 Action 3.2 — strict AG-shape-repeat enforcement.
+
+    When ON, the harness pre-strategy gate DROPS any AG whose
+    ``AGShapeSignature`` repeats a prior attempt for the same target
+    (in addition to emitting ``NEAR_MISS_AG_SHAPE_REPEATED``). When
+    OFF, the gate emits the record but lets the AG through — useful
+    for observability-only rollouts before behaviour changes.
+
+    Default OFF (observability-first); operators flip to ON once the
+    near-miss telemetry shows the gate is rejecting only truly
+    repeated shapes.
+    """
+    return _flag_enabled("GSO_NEAR_MISS_REFLECTION_STRICT_DROP")
+
+
+def soft_signal_trend_report_enabled() -> bool:
+    """Phase 3 Action 3.3.3 — end-of-run soft-signal trend report.
+
+    When ON, the harness aggregates soft clusters whose evidence
+    did NOT match any hard cluster across the run and emits a
+    ``SOFT_SIGNAL_TREND_REPORT`` decision record + renders an
+    operator-only "Soft Signal Trend" section in the run-overview
+    markdown. Soft clusters never enter the strategist's input as
+    targets — the report is purely operator visibility.
+
+    Default ON. Disable with ``GSO_SOFT_SIGNAL_TREND_REPORT=0``.
+    """
+    return _flag_default_on("GSO_SOFT_SIGNAL_TREND_REPORT")
