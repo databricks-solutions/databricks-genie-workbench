@@ -1376,6 +1376,31 @@ def _finalize_iteration_summary(
         run_violations_accumulator=run_violations_accumulator,
     )
 
+    # Plan P-F T12 — centralized coverage-invariant check. Stamp the
+    # caller-supplied ``exit_path`` onto the per-iteration bag so the
+    # invariant can resolve it without re-threading the kwarg through
+    # every helper, then run the invariant. Helper is a hard no-op
+    # when GSO_PROPOSAL_FAILURE_DECIDED=0 OR the exit path is not in
+    # the no-applied frozenset, so this is safe to call from every
+    # iteration regardless of outcome. Idempotent with the legacy
+    # exit-path-specific call sites at 22600 and 25926 because the
+    # invariant either fires once (caller emitted, central no-op) or
+    # the central emit dedupes with the legacy emit on (invariant_name,
+    # iteration) at the postmortem layer.
+    try:
+        if exit_path:
+            current_iter_inputs["exit_path"] = str(exit_path)
+        _check_and_emit_proposal_failure_coverage(
+            run_id=str(run_id),
+            iteration=int(iteration),
+            iter_inputs=current_iter_inputs,
+        )
+    except Exception:
+        logger.debug(
+            "Plan P-F T12: centralized invariant wiring failed (non-fatal)",
+            exc_info=True,
+        )
+
     # Phase H Fidelity Task 4: emit one typed learning / next-action
     # record per iteration finalise so the operator transcript Stage 10
     # always carries the iteration outcome (proposals_empty,
@@ -5126,6 +5151,22 @@ def _check_and_emit_proposal_failure_coverage(
             },
         )
         iter_inputs.setdefault("markers", []).append(marker)
+        # Plan P-F T12 — also print the marker to stdout so the
+        # postmortem analyzer's marker parser sees it. The in-memory
+        # ``markers`` list is for per-iteration carry-through; stdout
+        # is the canonical sink (databricks jobs export-run captures
+        # it). Idempotency: the per-iteration invariant runs once per
+        # finalize call and the marker text is deterministic, so a
+        # double-call from a legacy exit-path emit + the central
+        # finalize emit produces two identical lines, which the parser
+        # dedupes by ``(invariant_name, iteration)``.
+        try:
+            print(marker)
+        except Exception:
+            logger.debug(
+                "Plan P-F: invariant marker stdout emit failed",
+                exc_info=True,
+            )
         logger.warning(
             "Plan P-F coverage invariant violated: %s",
             result.message,
