@@ -16379,7 +16379,15 @@ def _run_gate_checks(
         "_suppressed_qids": _suppressed_qids,
         # Task 9 — surface acceptance tiering so the loop can carry debt
         # forward without re-running ``decide_control_plane_acceptance``.
+        # 2026-05-13 F5 fix: carry the explicit ``accepted`` boolean
+        # (the rejection-path builder at line ~16189 already does this).
+        # The Phase H acceptance-drift caller at line ~26733 reads
+        # ``_canonical_dict.get("accepted", False)`` — without this
+        # field, the default False produced a false-positive
+        # ``GSO_PHASE_H_ACCEPTANCE_DRIFT_V1`` marker on every accepted
+        # iteration (witnessed on 2314bb2c iter 1).
         "acceptance_decision": {
+            "accepted": True,
             "reason": _control_plane_decision.reason_code,
             "target_qids": list(_control_plane_decision.target_qids),
             "target_fixed_qids": list(_control_plane_decision.target_fixed_qids),
