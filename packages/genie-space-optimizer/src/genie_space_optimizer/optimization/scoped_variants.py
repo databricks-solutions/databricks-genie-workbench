@@ -87,3 +87,44 @@ def generate_scoped_variant(
     variant["scoped_to_qids"] = tuple(sorted(target_set))
     variant["passing_dependents"] = scoped_dependents
     return variant
+
+
+def apply_scoped_variants_to_proposals(
+    proposals: list[dict],
+    *,
+    target_qids: tuple[str, ...],
+    threshold: int,
+) -> tuple[list[dict], dict[str, int]]:
+    """Walk ``proposals``, generate scoped siblings for hub-table
+    proposals, and return the combined list with a count summary.
+
+    Returns ``(combined_proposals, summary_counts)`` where
+    ``summary_counts`` has keys ``scoped_variants_generated``,
+    ``no_scoped_variant_available``, and
+    ``non_hub_proposals_passed_through``.
+
+    The original proposal is always retained — the gate decides which
+    sibling survives.
+    """
+    out: list[dict] = []
+    scoped_count = 0
+    no_variant_count = 0
+    pass_through_count = 0
+    for p in proposals or []:
+        out.append(p)
+        if not is_hub_table_patch(p, threshold=threshold):
+            pass_through_count += 1
+            continue
+        variant = generate_scoped_variant(
+            p, target_qids=target_qids, threshold=threshold,
+        )
+        if variant is None:
+            no_variant_count += 1
+            continue
+        out.append(variant)
+        scoped_count += 1
+    return out, {
+        "scoped_variants_generated": scoped_count,
+        "no_scoped_variant_available": no_variant_count,
+        "non_hub_proposals_passed_through": pass_through_count,
+    }
