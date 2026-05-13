@@ -239,3 +239,99 @@ def detect_pattern_candidates(
         )
     out.sort(key=lambda c: (-c.member_count, c.signature_hash))
     return tuple(out)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.5 Tier 3 — provisional-archetype synthesis (capped LLM).
+# ---------------------------------------------------------------------------
+
+
+def _call_llm_for_provisional_archetype_synthesis(
+    *,
+    candidate: PatternCandidate,
+    counterfactual_examples: tuple[dict, ...] = (),
+    w=None,
+) -> dict | None:
+    """Phase 2 Action 2.5 — single capped LLM call that proposes a
+    provisional archetype synthesised from a PatternCandidate.
+
+    Returns the parsed JSON payload (a ``dict``) on success, or
+    ``None`` on decline / parse failure / LLM error.
+
+    Production implementation will issue the real LLM call via the
+    project's chat-completions client and parse a constrained JSON
+    response. The stub here returns ``None`` so the Tier 3 pipeline
+    short-circuits to "synthesis declined" when the harness invokes
+    it in production WITHOUT a custom LLM hook. Tests patch this
+    function directly on the module to supply deterministic payloads.
+    """
+    del candidate, counterfactual_examples, w
+    return None
+
+
+def synthesize_provisional_archetype(
+    *,
+    run_id: str,
+    candidate: PatternCandidate,
+    iteration: int,
+    counterfactual_examples: tuple[dict, ...] = (),
+    w=None,
+) -> "ProvisionalArchetype | None":
+    """Tier 3: optionally call the LLM and convert its payload into a
+    :class:`ProvisionalArchetype`.
+
+    Returns ``None`` when:
+      * the master flag (``GSO_ARCHETYPE_LEARNING``) is OFF, or
+      * the LLM sub-flag (``GSO_PROVISIONAL_SYNTHESIS_LLM``) is OFF, or
+      * the per-iteration cap is reached, or
+      * the LLM declines / returns an unparseable payload.
+
+    Side-effects: appends to ``run_state.provisional_archetypes`` on
+    success, and increments ``run_state.synthesis_calls_this_iteration``
+    on every actual LLM invocation (not on flag-skip paths).
+    """
+    from genie_space_optimizer.common.config import (
+        archetype_learning_enabled,
+        provisional_synthesis_llm_enabled,
+        provisional_synthesis_max_per_iteration,
+    )
+    from genie_space_optimizer.optimization.archetype_learning_state import (
+        get_state,
+    )
+
+    if not archetype_learning_enabled():
+        return None
+    if not provisional_synthesis_llm_enabled():
+        return None
+    state = get_state(run_id)
+    if state.synthesis_calls_this_iteration >= provisional_synthesis_max_per_iteration():
+        return None
+
+    state.synthesis_calls_this_iteration += 1
+    payload = _call_llm_for_provisional_archetype_synthesis(
+        candidate=candidate,
+        counterfactual_examples=counterfactual_examples,
+        w=w,
+    )
+    if payload is None:
+        return None
+
+    try:
+        rca_kinds = frozenset({RcaKind[k] for k in payload["applicable_rca_kinds"]})
+    except (KeyError, TypeError):
+        return None
+    pa = ProvisionalArchetype(
+        name=str(payload["name"]),
+        applicable_rca_kinds=rca_kinds,
+        required_grounding_tokens=frozenset(payload.get("required_grounding_tokens") or ()),
+        evidence_predicates=frozenset(payload.get("evidence_predicates") or ()),
+        default_priority_step=str(payload["default_priority_step"]),
+        expected_causal_effect_template=str(payload["expected_causal_effect_template"]),
+        rationale=str(payload["rationale"]),
+        provenance="provisional_archetype",
+        lifecycle_state="provisional",
+        signature_hash=candidate.signature_hash,
+        synthesis_iteration=iteration,
+    )
+    state.provisional_archetypes.append(pa)
+    return pa
