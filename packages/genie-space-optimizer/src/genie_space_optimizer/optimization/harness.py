@@ -21457,6 +21457,38 @@ def _run_lever_loop(
             _survival_applyable: list[dict] = []
             _survival_capped: list[dict] = []
             all_proposals: list[dict] = []
+            # Phase 3 (2026-05-13): per-AG directive ledger. One entry per
+            # lever_key in ag.lever_directives; populated as each lever loop
+            # iteration finishes; emitted as GSO_DIRECTIVE_OUTCOME_V1 at AG
+            # exit; threaded into _current_iter_inputs for the coverage
+            # invariant. Default-on observability; flag-off rollback is a
+            # hard no-op (ledger stays None).
+            _directive_outcome_ledger = None
+            try:
+                from genie_space_optimizer.common.config import (
+                    directive_outcome_coverage_enabled as _doc_enabled,
+                )
+                if _doc_enabled():
+                    from genie_space_optimizer.optimization.directive_outcome import (
+                        AgDirectiveLedger,
+                    )
+                    _directive_keys = tuple(
+                        sorted(
+                            int(k)
+                            for k in (ag.get("lever_directives") or {}).keys()
+                            if str(k).strip().lstrip("-").isdigit()
+                        )
+                    )
+                    _directive_outcome_ledger = AgDirectiveLedger(
+                        ag_id=str(ag_id),
+                        iteration=int(iteration_counter),
+                        directives_present=_directive_keys,
+                    )
+            except Exception:
+                logger.debug(
+                    "Phase 3: directive ledger init failed (non-fatal)",
+                    exc_info=True,
+                )
             for lever_key in lever_keys:
                 lever_int = int(lever_key)
                 levers_attempted.append(lever_int)
@@ -21480,6 +21512,38 @@ def _run_lever_loop(
                 )
                 all_proposals.extend(lever_proposals)
 
+                # Phase 3: classify outcome for this lever and record it.
+                # Conservative-zero on drop counters that don't exist as
+                # named accumulators today: classifier falls through to
+                # NO_STRUCTURAL_CANDIDATE for zero-proposal levers, which
+                # is the correct outcome for the 2314bb2c AG2 shape.
+                if _directive_outcome_ledger is not None and (
+                    lever_int in _directive_outcome_ledger.directives_present
+                ):
+                    try:
+                        from genie_space_optimizer.optimization.directive_outcome import (
+                            LeverProposalSnapshot,
+                            classify_lever_proposal_outcome,
+                        )
+                        _snapshot = LeverProposalSnapshot(
+                            lever_key=lever_int,
+                            proposals_emitted_count=len(lever_proposals),
+                            structural_gate_drop_count=0,
+                            applyability_drop_count=0,
+                            collateral_drop_count=0,
+                            force_llm_declined=False,
+                        )
+                        _outcome = classify_lever_proposal_outcome(_snapshot)
+                        _directive_outcome_ledger.outcomes_by_lever[
+                            lever_int
+                        ] = _outcome
+                    except Exception:
+                        logger.debug(
+                            "Phase 3: directive outcome classify failed "
+                            "(non-fatal)",
+                            exc_info=True,
+                        )
+
             # P4 task 5 — stdout marker when an AG produced zero proposals.
             # Distinct from STRUCTURAL_GATE_DROPPED (proposal existed but
             # was dropped) and NO_STRUCTURAL_CANDIDATE (synthesis attempted
@@ -21501,6 +21565,29 @@ def _run_lever_loop(
                 except Exception:
                     logger.debug(
                         "P4: proposal_generation_empty_marker emit failed (non-fatal)",
+                        exc_info=True,
+                    )
+
+            # Phase 3 (2026-05-13): emit per-AG directive outcome marker +
+            # thread the ledger into _current_iter_inputs for the coverage
+            # invariant.
+            if _directive_outcome_ledger is not None:
+                try:
+                    from genie_space_optimizer.optimization.run_analysis_contract import (
+                        directive_outcome_marker,
+                    )
+                    print(directive_outcome_marker(
+                        optimization_run_id=str(run_id or ""),
+                        ledger=_directive_outcome_ledger,
+                    ), flush=True)
+                    _iter_outcomes = _current_iter_inputs.setdefault(
+                        "directive_outcomes_by_ag", {}
+                    )
+                    _iter_outcomes[str(ag_id)] = _directive_outcome_ledger
+                except Exception:
+                    logger.debug(
+                        "Phase 3: directive_outcome_marker emit failed "
+                        "(non-fatal)",
                         exc_info=True,
                     )
 
