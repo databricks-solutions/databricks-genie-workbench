@@ -146,12 +146,23 @@ def load_payload(path: pathlib.Path) -> ReplayPayload:
 
 from genie_space_optimizer.optimization.acceptance_policy import (
     RegressionDebtPolicy,
+    attribution_drift_policy_pilot_default,
+    regression_debt_policy_pilot_default,
 )
 from genie_space_optimizer.optimization.control_plane import (
     ControlPlaneAcceptance,
     DeltaState,
     evaluate_regression_debt,
 )
+
+
+# Phase 1 (2026-05-13): policy registry for offline replay. Adding
+# a new pilot policy means adding one entry here + writing a predictions
+# file. The CLI's --policy-name argument is restricted to this set.
+_POLICY_REGISTRY: dict[str, "callable[[], RegressionDebtPolicy]"] = {
+    "regression_debt_policy_pilot_default": regression_debt_policy_pilot_default,
+    "attribution_drift_policy_pilot_default": attribution_drift_policy_pilot_default,
+}
 
 
 # Map evaluate_regression_debt's reason_code (when under_policy=False)
@@ -390,10 +401,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m genie_space_optimizer.tools.policy_replay",
         description=(
-            "Phase 0 offline acceptance-policy replay. Reads ReplayPayload "
-            "fixtures, classifies each under the pilot RegressionDebtPolicy, "
-            "compares to pre-registered predictions, and emits one "
-            "replay_classifier_decision JSON line per fixture to stdout."
+            "Offline acceptance-policy replay. Reads ReplayPayload fixtures, "
+            "classifies each under the named RegressionDebtPolicy, compares "
+            "to pre-registered predictions, and emits one "
+            "replay_classifier_decision JSON line per fixture to stdout. "
+            "Default policy preserves the Phase 0.1 behavior."
         ),
     )
     parser.add_argument(
@@ -408,6 +420,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         required=True,
         help="Path to predictions.json file",
     )
+    parser.add_argument(
+        "--policy-name",
+        type=str,
+        choices=sorted(_POLICY_REGISTRY.keys()),
+        default="regression_debt_policy_pilot_default",
+        help=(
+            "Policy factory to use from the registry. "
+            "Default preserves Phase 0.1 behavior."
+        ),
+    )
     return parser
 
 
@@ -418,10 +440,8 @@ def main(argv: list[str] | None = None) -> int:
     predictions_by_id = {
         str(p["fixture_id"]): p for p in raw["predictions"]
     }
-    from genie_space_optimizer.optimization.acceptance_policy import (
-        regression_debt_policy_pilot_default,
-    )
-    policy = regression_debt_policy_pilot_default()
+    policy_factory = _POLICY_REGISTRY[args.policy_name]
+    policy = policy_factory()
 
     matches = 0
     structured_mismatches = 0
@@ -433,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
             row = {
                 "event": "replay_classifier_decision",
                 "fixture_id": fixture_id,
+                "policy_name": args.policy_name,
                 "match_status": "fixture_missing",
                 "fixture_path": str(fixture_path),
             }
@@ -443,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
         classification = classify_payload(
             payload=payload,
             policy=policy,
-            policy_name="regression_debt_policy_pilot_default",
+            policy_name=args.policy_name,
         )
         row = format_replay_classifier_decision(
             classification=classification,
@@ -459,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = {
         "event": "replay_classifier_summary",
-        "policy_name": "regression_debt_policy_pilot_default",
+        "policy_name": args.policy_name,
         "matches": matches,
         "structured_mismatches": structured_mismatches,
         "unstructured_mismatches": unstructured_mismatches,
