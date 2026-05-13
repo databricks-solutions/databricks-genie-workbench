@@ -199,3 +199,105 @@ def build_kit_safety_summary(
         co_beneficiary_qids=tuple(sorted(co_set)),
         scoped_alternative_available=_scoped_alternative_available(kit),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.2 — Kit-level gate.
+# ---------------------------------------------------------------------------
+
+
+_RISK_TIERS = ("low", "medium", "high")
+
+
+def _downgrade_risk(risk: str) -> str:
+    """Drop one tier (high → medium → low; low stays low)."""
+    if risk not in _RISK_TIERS:
+        return risk
+    idx = _RISK_TIERS.index(risk)
+    return _RISK_TIERS[max(0, idx - 1)]
+
+
+@dataclass(frozen=True)
+class KitSafetyPolicy:
+    passing_dependents_threshold: int = 15
+    co_beneficiary_downgrade_threshold: int = 5  # Phase 2 Action 2.2 default; tunable via GSO_KIT_CO_BENEFICIARY_DOWNGRADE_THRESHOLD
+
+
+@dataclass(frozen=True)
+class KitGateDecision:
+    accepted: bool
+    reason: str
+    effective_risk_class: str  # may differ from summary.risk_class when scoped alt is available OR co-beneficiaries clear the threshold
+    co_beneficiary_count: int = 0  # informational — populated for postmortem aggregation
+
+
+def kit_level_gate(
+    *,
+    kit: RepairKit,
+    summary: KitSafetySummary,
+    policy: KitSafetyPolicy,
+    cluster_target_qids: tuple[str, ...],
+) -> KitGateDecision:
+    """Pure function: decide whether the kit clears the kit-level gate.
+
+    Reject when ANY of:
+    1. ``kit.target_qids`` shares no element with ``cluster_target_qids``
+       (the kit's expected effect doesn't touch any cluster qid).
+    2. ``summary.union_passing_dependents`` count > ``policy.passing_dependents_threshold``.
+    3. ``effective_risk_class == 'high'`` after both downgrades are applied.
+
+    On acceptance, ``effective_risk_class`` reflects two independent
+    downgrades, each applied at most once:
+
+    * **Co-beneficiary downgrade** — when
+      ``len(summary.co_beneficiary_qids) >= policy.co_beneficiary_downgrade_threshold``
+      (default 5), drop one tier. Rationale: a patch with broad
+      shared-evidence support is structurally safer than a 1-qid
+      patch — it's more likely to fix root cause than to over-fit a
+      single failure. Co-beneficiaries are evidence (Phase 3 Action 3.3
+      populates them); this is risk-reducing context, NOT a target.
+    * **Scoped-variant downgrade** — when ``summary.scoped_alternative_available``
+      is ``True``, drop one tier. Section C wires this.
+
+    Both downgrades floor at ``low``. The co-beneficiary downgrade is
+    applied first so the scoped-variant downgrade can compose on top
+    when both apply.
+    """
+    target_set = {str(q) for q in kit.target_qids if str(q)}
+    cluster_set = {str(q) for q in cluster_target_qids if str(q)}
+    if cluster_set and not (target_set & cluster_set):
+        return KitGateDecision(
+            accepted=False,
+            reason="expected_effect_misses_target_qids",
+            effective_risk_class=summary.risk_class,
+            co_beneficiary_count=len(summary.co_beneficiary_qids),
+        )
+
+    if len(summary.union_passing_dependents) > policy.passing_dependents_threshold:
+        return KitGateDecision(
+            accepted=False,
+            reason="union_passing_dependents_exceeds_threshold",
+            effective_risk_class=summary.risk_class,
+            co_beneficiary_count=len(summary.co_beneficiary_qids),
+        )
+
+    effective = summary.risk_class
+    co_count = len(summary.co_beneficiary_qids)
+    if co_count >= policy.co_beneficiary_downgrade_threshold:
+        effective = _downgrade_risk(effective)
+    if summary.scoped_alternative_available:
+        effective = _downgrade_risk(effective)
+    if effective == "high":
+        return KitGateDecision(
+            accepted=False,
+            reason="high_risk_no_scoped_alternative",
+            effective_risk_class=summary.risk_class,
+            co_beneficiary_count=co_count,
+        )
+
+    return KitGateDecision(
+        accepted=True,
+        reason="kit_safe",
+        effective_risk_class=effective,
+        co_beneficiary_count=co_count,
+    )
