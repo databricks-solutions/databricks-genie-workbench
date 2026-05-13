@@ -301,3 +301,136 @@ def kit_level_gate(
         effective_risk_class=effective,
         co_beneficiary_count=co_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.2 — Kit-aware patch-cap wrapper.
+# ---------------------------------------------------------------------------
+
+
+def select_kit_aware_patch_cap(
+    patches: list[dict],
+    *,
+    target_qids: tuple[str, ...],
+    max_patches: int,
+    cluster_target_qids: tuple[str, ...],
+    policy: KitSafetyPolicy,
+    active_cluster_ids: tuple[str, ...] = (),
+    per_cluster_slot_floor: int = 0,
+    soft_evidence_matched_qids_by_kit: dict[str, tuple[str, ...]] | None = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Phase 2 Action 2.2 — kit-aware wrapper around
+    ``select_target_aware_causal_patch_cap``.
+
+    Returns ``(selected_patches, legacy_decisions, kit_outcomes)``:
+
+    * ``selected_patches`` — patches that survived BOTH the legacy
+      target-aware cap AND the kit-level gate. Atomicity guarantee:
+      every patch in the result belongs to a kit whose every other
+      member is also in the result.
+    * ``legacy_decisions`` — pass-through of the legacy cap's per-patch
+      decision rows (kept / dropped reasons), unchanged.
+    * ``kit_outcomes`` — one dict per kit with kit_id, accepted, reason,
+      kept_count, total_count, co_beneficiary_count, effective_risk_class.
+
+    ``soft_evidence_matched_qids_by_kit`` (Phase 3 Action 3.3 contract)
+    maps each kit's ``kit_id`` to a tuple of soft-cluster qids that
+    share root-cause evidence with the kit's hard target. The wrapper
+    passes these to ``build_kit_safety_summary`` per-kit. Default
+    ``None`` → all kits get ``()`` co-beneficiaries → the downgrade
+    is a no-op (Phase 2 default).
+    """
+    from genie_space_optimizer.optimization.patch_selection import (
+        select_target_aware_causal_patch_cap,
+    )
+    from genie_space_optimizer.optimization.repair_kit import (
+        group_patches_into_kits,
+    )
+
+    if not patches:
+        return [], [], []
+
+    soft_lookup: dict[str, tuple[str, ...]] = soft_evidence_matched_qids_by_kit or {}
+
+    kits = group_patches_into_kits(patches)
+    legacy_selected, legacy_decisions = select_target_aware_causal_patch_cap(
+        list(patches),
+        target_qids=target_qids,
+        max_patches=max_patches,
+        active_cluster_ids=active_cluster_ids,
+        per_cluster_slot_floor=per_cluster_slot_floor,
+    )
+    legacy_pid_set = {
+        str(p.get("proposal_id") or p.get("id") or "") for p in legacy_selected
+    }
+
+    kit_outcomes: list[dict] = []
+    selected: list[dict] = []
+
+    for kit in kits:
+        kit_pids = {
+            str(p.get("proposal_id") or p.get("id") or "") for p in kit.patches
+        }
+        kept = kit_pids & legacy_pid_set
+        kept_count = len(kept)
+        total_count = len(kit_pids)
+        soft_qids = soft_lookup.get(kit.kit_id, ())
+
+        if kept_count == 0:
+            kit_outcomes.append({
+                "kit_id": kit.kit_id,
+                "accepted": False,
+                "reason": "kit_dropped_by_legacy_cap",
+                "kept_count": 0,
+                "total_count": total_count,
+                "co_beneficiary_count": len(soft_qids),
+                "effective_risk_class": "n/a",
+            })
+            continue
+
+        if kept_count != total_count:
+            kit_outcomes.append({
+                "kit_id": kit.kit_id,
+                "accepted": False,
+                "reason": "kit_atomicity_violation",
+                "kept_count": kept_count,
+                "total_count": total_count,
+                "co_beneficiary_count": len(soft_qids),
+                "effective_risk_class": "n/a",
+            })
+            continue
+
+        summary = build_kit_safety_summary(
+            kit,
+            soft_evidence_matched_qids=soft_qids,
+        )
+        decision = kit_level_gate(
+            kit=kit,
+            summary=summary,
+            policy=policy,
+            cluster_target_qids=cluster_target_qids,
+        )
+        if not decision.accepted:
+            kit_outcomes.append({
+                "kit_id": kit.kit_id,
+                "accepted": False,
+                "reason": decision.reason,
+                "kept_count": 0,
+                "total_count": total_count,
+                "co_beneficiary_count": decision.co_beneficiary_count,
+                "effective_risk_class": decision.effective_risk_class,
+            })
+            continue
+
+        kit_outcomes.append({
+            "kit_id": kit.kit_id,
+            "accepted": True,
+            "reason": "kit_safe",
+            "kept_count": total_count,
+            "total_count": total_count,
+            "co_beneficiary_count": decision.co_beneficiary_count,
+            "effective_risk_class": decision.effective_risk_class,
+        })
+        selected.extend(kit.patches)
+
+    return selected, legacy_decisions, kit_outcomes
