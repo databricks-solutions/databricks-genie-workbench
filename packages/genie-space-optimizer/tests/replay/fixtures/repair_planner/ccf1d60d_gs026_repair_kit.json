@@ -1,0 +1,45 @@
+{
+  "_description": "Phase 2 Action 2.1 replay fixture — canonical ccf1d60d iter-0 gs_026 cluster + RCACard → expected RepairKit. Preserves the worked example from the gap-close roadmap so the planner's classification stays anchored to real evidence as the registry evolves.",
+  "card": {
+    "card_id": "card_ccf1d60d_gs026",
+    "cluster_id": "H001",
+    "qids": ["gs_026"],
+    "root_cause": "top_n_cardinality_collapse",
+    "grounding_terms": ["plural_top_n_collapse", "rank_eq_1", "zone_vp_name"],
+    "intended_patch_shape": "cardinality_preserving_top_n_guidance",
+    "allowed_patch_families": ["cardinality_preserving_top_n_guidance"],
+    "forbidden_patch_families": [],
+    "rationale": "Generated SQL collapses to RANK = 1; question is plural ('rank zone VPs')."
+  },
+  "cluster": {
+    "cluster_id": "H001",
+    "question_ids": ["gs_026"],
+    "asi_question_intent": "plural"
+  },
+  "expected_kit": {
+    "repair_archetype": "plural_top_n_collapse",
+    "card_id": "card_ccf1d60d_gs026",
+    "cluster_id": "H001",
+    "target_qids": ["gs_026"],
+    "grounding_terms": ["plural_top_n_collapse", "rank_eq_1", "zone_vp_name"],
+    "priority_step": "repair_kit",
+    "expected_causal_effect": "Replace RANK = 1 collapse with cardinality-preserving ORDER BY <metric> DESC; produces multiple rows for plural ranking questions.",
+    "required_companions": [],
+    "pre_eval_propagation_verification": false,
+    "provenance": "canonical",
+    "lifecycle_state": "stable"
+  },
+  "expected_kit_under_instruction_insufficient_force": {
+    "repair_archetype": "plural_top_n_collapse",
+    "card_id": "card_ccf1d60d_gs026",
+    "cluster_id": "H001",
+    "target_qids": ["gs_026"],
+    "grounding_terms": ["plural_top_n_collapse", "rank_eq_1", "zone_vp_name"],
+    "priority_step": "narrow_l6_snippet",
+    "expected_causal_effect": "Replace RANK = 1 collapse with cardinality-preserving ORDER BY <metric> DESC; produces multiple rows for plural ranking questions.",
+    "required_companions": ["narrow_l6_snippet"],
+    "pre_eval_propagation_verification": false,
+    "provenance": "canonical",
+    "lifecycle_state": "stable"
+  }
+}
