@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "policy_name": "attribution_drift_policy_pilot_default",
+  "frozen_at": "2026-05-13",
+  "predictions": [
+    {
+      "fixture_id": "ccf1d60d_iter1",
+      "predicted_accepted": true,
+      "predicted_reason_code": "accepted_with_partial_harvest_debt",
+      "rationale": "delta_pp +4.3 >= floor 4.0, target_fixed=0 == policy min 0, 1 unknown_to_hard (LOOKUP_FAILED) in allowed_debt_buckets, cumulative 0+1 <= 3. evaluate_regression_debt returns accepted_with_partial_harvest_debt at the policy layer; decide_control_plane_acceptance maps it to accepted_with_attribution_drift_and_debt at the production layer (Phase 1 Task 6)."
+    },
+    {
+      "fixture_id": "31ecd96f_no_payload",
+      "predicted_accepted": null,
+      "predicted_reason_code": "no_payload",
+      "rationale": "No candidate ever built. Same behavior as Phase 0.1 — classifier short-circuits on payload_present=false."
+    },
+    {
+      "fixture_id": "3b050ec5_iter1",
+      "predicted_accepted": true,
+      "predicted_reason_code": "no_debt_to_harvest",
+      "rationale": "delta_pp +8.1 >= floor 4.0, target_fixed=0 == policy min 0, debt_count=0 -> evaluate_regression_debt short-circuits to no_debt_present (control_plane.py:1865-1874). classify_payload maps no_debt_present to no_debt_to_harvest. In production this case is handled by the existing zero-debt accepted_with_attribution_drift branch (control_plane.py:1567)."
+    }
+  ]
+}
