@@ -21647,6 +21647,43 @@ def _run_lever_loop(
                         exc_info=True,
                     )
 
+            # Phase 3 follow-up (2026-05-13): reconcile each lever's
+            # classifier outcome against _current_iter_inputs["decision_records"]
+            # before marker emit. The reconciliation upgrades
+            # NO_STRUCTURAL_CANDIDATE to FORCE_LLM_DECLINED for lever 6
+            # when a matching ``lever6_force_llm_declined`` record is
+            # present (the canonical signal _emit_force_l6_outcome
+            # appends inside the proposal-generation loop). Pure,
+            # observability-only — does not change control flow.
+            if _directive_outcome_ledger is not None:
+                try:
+                    from genie_space_optimizer.optimization.directive_outcome import (
+                        reconcile_outcome_from_records,
+                    )
+                    _records_for_recon = (
+                        _current_iter_inputs.get("decision_records") or []
+                    )
+                    for _lever_int, _outcome in list(
+                        _directive_outcome_ledger.outcomes_by_lever.items()
+                    ):
+                        _refined = reconcile_outcome_from_records(
+                            classifier_outcome=_outcome,
+                            lever_key=int(_lever_int),
+                            ag_id=str(ag_id),
+                            iteration=int(iteration_counter),
+                            decision_records=_records_for_recon,
+                        )
+                        if _refined != _outcome:
+                            _directive_outcome_ledger.outcomes_by_lever[
+                                _lever_int
+                            ] = _refined
+                except Exception:
+                    logger.debug(
+                        "Phase 3 followup: reconciliation failed "
+                        "(non-fatal; classifier output preserved)",
+                        exc_info=True,
+                    )
+
             # Phase 3 (2026-05-13): emit per-AG directive outcome marker +
             # thread the ledger into _current_iter_inputs for the coverage
             # invariant.
