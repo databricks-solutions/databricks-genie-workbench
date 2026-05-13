@@ -1073,6 +1073,28 @@ def no_structural_candidate_marker(
     )
 
 
+def directive_outcome_marker(
+    *,
+    optimization_run_id: str,
+    ledger: "Any",
+) -> str:
+    """Phase 3 (2026-05-13) — single-shape stdout marker for per-AG
+    directive outcomes.
+
+    One marker per AG per iteration. Payload carries the closed-vocabulary
+    outcome for every lever in ``ag.lever_directives``. Consumers parse
+    the line via the canonical ``GSO_<NAME>_V1 <json>`` regex.
+
+    Anchor:
+    docs/runid_analysis/2314bb2c-95a1-4d60-8226-09e5155aee2a/postmortem.md
+    """
+    import json as _json
+
+    payload = ledger.to_marker_payload()
+    payload["optimization_run_id"] = str(optimization_run_id or "")
+    return "GSO_DIRECTIVE_OUTCOME_V1 " + _json.dumps(payload, sort_keys=True)
+
+
 def gso_invariant_violation_marker(
     *,
     optimization_run_id: str,
