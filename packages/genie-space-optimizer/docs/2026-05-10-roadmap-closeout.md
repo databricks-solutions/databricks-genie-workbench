@@ -289,6 +289,41 @@ some emit sites append the dataclass directly to
 addresses the related dataclass-vs-dict mismatch in the replay-fixture
 serializer.
 
+**2026-05-13 B5 — replay-fixture attribution-drift emission (RCO-6 input):**
+
+Closes the 2314bb2c gap where the lever loop completed
+`READY_TO_MERGE_WITH_ATTRIBUTION_DRIFT` but Phase H wrote
+`replay_fixture.json = {}` and stderr `PHASE_A_REPLAY_FIXTURE_JSON` markers
+were absent. Root cause: a `DecisionRecord` dataclass in
+`iterations_data[i]["decision_records"]` made `_strip_dict`'s `k in d`
+check raise `TypeError`, which the harness's outer try-except swallowed
+silently, producing an empty fixture.
+
+Three changes:
+
+1. `_coerce_record_to_dict` helper in `journey_fixture_exporter.py`
+   normalizes dataclass / Mapping / other to dict (mirrors B2's
+   `_record_to_mapping`).
+2. Per-iteration try/except wrapper in `_build_fixture` — one malformed
+   iteration cannot bring down the whole serialization.
+3. New diagnostic marker `GSO_REPLAY_FIXTURE_EMPTY_V1` emitted from the
+   Phase A block when `iterations_data` had entries but the resulting
+   fixture is semantically empty (zero iterations or any iteration with
+   zero `eval_rows`).
+
+Test coverage: 17 tests (5 strip-iteration + 5 resilience + 3 marker +
+4 integration). The integration test replays the 2314bb2c iter 1 shape
+(accepted-with-attribution-drift + real DecisionRecord in decision_records)
+and asserts the fixture is non-empty and the emptiness marker does NOT fire.
+
+**Companion:** `2026-05-13-b2-decisionrecord-invariant-input-shape-plan.md`
+fixes the related dataclass-vs-dict mismatch in the invariant projection.
+
+**Unblocks RCO-6** (replay/journey parity closeout): with the fixture now
+reliably non-empty on attribution-drift runs, the next layer of work — a
+`bundle://<run_id>` round-trip assertion through `tools/evidence_bundle.py`
+— can begin. Tracked separately under RCO-6.
+
 ### RCO-4 — Stage-6 Gate Pure-Helper Extraction
 
 **Status:** closed-local pending corpus — three of six conceptual gates extracted into pure helpers in ``optimization/stages/gates.py`` (``run_blast_radius_production_gate``, ``resolve_narrow_replacement``, ``run_applyability_gate``) behind default-off flags ``GSO_STAGE6_BLAST_RADIUS_PURE`` / ``GSO_STAGE6_NARROW_REPL_PURE`` / ``GSO_STAGE6_APPLYABILITY_PURE``. The remaining three (alignment / reflection / cap) are deferred to RCO-4b with named blockers documented in ``docs/2026-05-11-rco-4-deferred-gates.md`` and a full gate-to-code mapping in ``docs/2026-05-11-rco-4-gate-inventory.md``. Production firing order pinned by ``tests/unit/test_rco4_sequencing_grep_guard.py``. Parity fixtures under ``tests/unit/fixtures/rco4/``. Corpus confirmation + simultaneous flag flip pending the next airline + 7Now run (the flag flip belongs in RCO-3's pilot batch).
