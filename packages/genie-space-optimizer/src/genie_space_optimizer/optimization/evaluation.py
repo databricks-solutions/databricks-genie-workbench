@@ -8343,13 +8343,29 @@ def run_evaluation(
         permission_blocked_count = (
             precheck_counts["permission_blocked_count"] + row_permission_blocked_count
         )
-        mlflow.log_metrics({
-            "overall_accuracy": arbiter_adjusted_accuracy,
+        evaluation_run_metrics: dict[str, float] = {
+            "overall_accuracy": float(arbiter_adjusted_accuracy),
+            "pre_arbiter_accuracy": float(
+                scores_100.get(
+                    "_pre_arbiter/result_correctness",
+                    arbiter_adjusted_accuracy,
+                ),
+            ),
             "correct_count": float(arbiter_adjusted_correct),
             "total_questions": float(len(filtered)),
             "evaluated_count": float(evaluated_count),
             "failure_count": float(len(failure_ids)),
             "excluded_count": float(excluded_count),
+            "thresholds_passed": 1.0 if thresholds_passed else 0.0,
+            "harness_retry_count": float(harness_retry_count),
+        }
+        mlflow.log_metrics({
+            "overall_accuracy": evaluation_run_metrics["overall_accuracy"],
+            "correct_count": evaluation_run_metrics["correct_count"],
+            "total_questions": evaluation_run_metrics["total_questions"],
+            "evaluated_count": evaluation_run_metrics["evaluated_count"],
+            "failure_count": evaluation_run_metrics["failure_count"],
+            "excluded_count": evaluation_run_metrics["excluded_count"],
         })
         mlflow.set_tags(
             {
@@ -8359,6 +8375,16 @@ def run_evaluation(
                 "unresolved_column_count": str(unresolved_column_count),
                 "harness_retry_count": str(harness_retry_count),
             }
+        )
+        _annotate_mlflow_evaluation_runs(
+            eval_result,
+            parent_run_name=run_name,
+            tags={
+                **_version_tags,
+                "genie.run_role": "mlflow_genai_evaluation",
+                "evaluation_status": "success",
+            },
+            metrics=evaluation_run_metrics,
         )
 
         trace_map: dict[str, str] = {}

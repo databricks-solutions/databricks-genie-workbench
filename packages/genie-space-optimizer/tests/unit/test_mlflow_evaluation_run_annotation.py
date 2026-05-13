@@ -136,3 +136,41 @@ def test_sequential_fallback_preserves_row_evaluation_run_ids(monkeypatch):
 
     assert result.evaluation_run_ids == ["eval-row-1", "eval-row-2"]
     assert call_count["n"] == 2
+
+
+def test_annotate_mlflow_evaluation_runs_mirrors_headline_metrics(monkeypatch):
+    client = _FakeMlflowClient()
+    monkeypatch.setattr(evaluation, "MlflowClient", lambda: client)
+
+    annotated = evaluation._annotate_mlflow_evaluation_runs(
+        SimpleNamespace(run_id="eval-main-1"),
+        parent_run_name="iter_05 / full_eval / pass_1 / run_abcd1234",
+        tags={
+            "genie.run_id": "opt-123",
+            "genie.stage": "full_eval",
+            "genie.iteration": "05",
+            "genie.eval_scope": "full",
+        },
+        metrics={
+            "overall_accuracy": 95.83,
+            "pre_arbiter_accuracy": 66.67,
+            "correct_count": 23,
+            "total_questions": 24,
+            "evaluated_count": 24,
+            "excluded_count": 0,
+            "failure_count": 1,
+            "thresholds_passed": 1.0,
+            "harness_retry_count": 0,
+        },
+    )
+
+    assert annotated == ["eval-main-1"]
+    assert (
+        "eval-main-1",
+        "mlflow.runName",
+        "iter_05 / full_eval / pass_1 / mlflow_eval / run_abcd1234",
+    ) in client.tags
+    assert ("eval-main-1", "overall_accuracy", 95.83) in client.metrics
+    assert ("eval-main-1", "pre_arbiter_accuracy", 66.67) in client.metrics
+    assert ("eval-main-1", "evaluated_count", 24.0) in client.metrics
+    assert ("eval-main-1", "excluded_count", 0.0) in client.metrics
