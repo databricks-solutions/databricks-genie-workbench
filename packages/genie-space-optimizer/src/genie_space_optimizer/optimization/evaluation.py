@@ -6656,6 +6656,43 @@ def _summarize_duplicate_records(
     return "; ".join(examples)
 
 
+def _write_benchmarks_via_spark(
+    spark: SparkSession,
+    records: list[dict],
+    uc_table_name: str,
+) -> None:
+    """Write benchmark records to a Delta table using Spark (no mlflow.genai.datasets).
+
+    Produces the same ``inputs`` / ``expectations`` column schema that
+    ``load_benchmarks_from_dataset`` expects, so downstream readers work
+    identically regardless of whether the MLflow dataset API or this
+    Spark-based path was used.
+    """
+    import pyspark.sql.functions as F
+    from pyspark.sql.types import MapType, StringType
+
+    rows = []
+    for r in records:
+        rows.append(
+            {
+                "inputs": json.dumps(r["inputs"]),
+                "expectations": json.dumps(r["expectations"]),
+            }
+        )
+    df = spark.createDataFrame(rows, schema=["inputs", "expectations"])
+    df = df.withColumn("inputs", F.from_json(F.col("inputs"), MapType(StringType(), StringType()))) \
+           .withColumn("expectations", F.from_json(F.col("expectations"), MapType(StringType(), StringType())))
+
+    parts = uc_table_name.split(".")
+    quoted = ".".join(f"`{p.strip('`')}`" for p in parts)
+
+    retry_delta_write(
+        lambda: df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(quoted),
+        operation_name="spark_benchmark_write",
+        table_name=uc_table_name,
+    )
+
+
 def create_evaluation_dataset(
     spark: SparkSession,
     benchmarks: list[dict],
@@ -6668,29 +6705,17 @@ def create_evaluation_dataset(
     *,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict[str, Any]:
-    """Create or update the MLflow UC evaluation dataset from benchmarks.
+    """Create or update the evaluation dataset from benchmarks.
 
-    Uses ``merge_records`` (upsert by question_id) to preserve version history
-    rather than dropping and recreating each run.
-
-    Pass *experiment_id* to link the dataset to the experiment so it appears
-    in the experiment's Datasets tab in the UI.
+    Attempts to use ``mlflow.genai.datasets`` first (registers the dataset in
+    the MLflow experiment UI).  If the workspace blocks dataset writes (e.g.
+    customer-managed-key / CMK workspaces), falls back to writing a plain
+    Delta table via Spark.  Downstream readers (``load_benchmarks_from_dataset``)
+    use ``spark.sql("SELECT * FROM …")`` so both paths produce compatible output.
     """
     uc_table_name = f"{uc_schema}.genie_benchmarks_{domain}"
     exp_ids = [experiment_id] if experiment_id else None
     try:
-        try:
-            eval_dataset = mlflow.genai.datasets.get_dataset(name=uc_table_name)
-            logger.info("Reusing existing evaluation dataset: %s", uc_table_name)
-        except Exception:
-            create_kwargs: dict[str, Any] = {"name": uc_table_name}
-            if exp_ids:
-                create_kwargs["experiment_id"] = exp_ids
-            eval_dataset = mlflow.genai.datasets.create_dataset(**create_kwargs)
-            logger.info(
-                "Created new evaluation dataset: %s (experiment_id=%s)",
-                uc_table_name, exp_ids,
-            )
         if len(benchmarks) > max_benchmark_count:
             benchmarks = _truncate_benchmarks(benchmarks, max_benchmark_count)
         records = []
@@ -6750,7 +6775,7 @@ def create_evaluation_dataset(
                 if str(r.get("inputs", {}).get("question_id", "") or "").strip() in duplicate_qids
             ]
             raise RuntimeError(
-                "Duplicate benchmark question_id values before MLflow merge_records "
+                "Duplicate benchmark question_id values before dataset write "
                 f"for {uc_table_name}: {duplicate_qids}. "
                 f"Examples: {_summarize_duplicate_records(duplicate_records, field='question_id')}"
             )
@@ -6766,17 +6791,46 @@ def create_evaluation_dataset(
                 if str(r.get("inputs", {}).get("question", "") or "").lower().strip() in duplicate_questions
             ]
             raise RuntimeError(
-                "Duplicate benchmark question text before MLflow merge_records "
+                "Duplicate benchmark question text before dataset write "
                 f"for {uc_table_name}: {list(duplicate_questions)[:5]}. "
                 f"Examples: {_summarize_duplicate_records(duplicate_records, field='_normalized_question')}"
             )
 
-        retry_delta_write(
-            lambda: eval_dataset.merge_records(records),
-            operation_name="evaluation_dataset.merge_records",
-            table_name=uc_table_name,
-        )
-        logger.info("UC Evaluation Dataset: %s (%d records merged)", uc_table_name, len(records))
+        # Try MLflow dataset API first; fall back to Spark Delta on CMK or
+        # other unsupported-workspace errors.
+        eval_dataset = None
+        try:
+            try:
+                eval_dataset = mlflow.genai.datasets.get_dataset(name=uc_table_name)
+                logger.info("Reusing existing evaluation dataset: %s", uc_table_name)
+            except Exception:
+                create_kwargs: dict[str, Any] = {"name": uc_table_name}
+                if exp_ids:
+                    create_kwargs["experiment_id"] = exp_ids
+                eval_dataset = mlflow.genai.datasets.create_dataset(**create_kwargs)
+                logger.info(
+                    "Created new evaluation dataset: %s (experiment_id=%s)",
+                    uc_table_name, exp_ids,
+                )
+            retry_delta_write(
+                lambda: eval_dataset.merge_records(records),
+                operation_name="evaluation_dataset.merge_records",
+                table_name=uc_table_name,
+            )
+            logger.info("UC Evaluation Dataset: %s (%d records merged via MLflow)", uc_table_name, len(records))
+        except Exception as mlflow_exc:
+            _exc_msg = str(mlflow_exc).lower()
+            if "customer-managed key" in _exc_msg or "not supported" in _exc_msg or "cmk" in _exc_msg:
+                logger.warning(
+                    "mlflow.genai.datasets blocked (likely CMK workspace): %s — "
+                    "falling back to Spark Delta write for %s",
+                    str(mlflow_exc)[:300], uc_table_name,
+                )
+                _write_benchmarks_via_spark(spark, records, uc_table_name)
+                logger.info("UC Evaluation Dataset: %s (%d records written via Spark fallback)", uc_table_name, len(records))
+            else:
+                raise
+
         return {
             "dataset": eval_dataset,
             "table_name": uc_table_name,
