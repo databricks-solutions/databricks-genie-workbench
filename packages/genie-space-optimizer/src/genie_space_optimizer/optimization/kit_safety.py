@@ -422,6 +422,16 @@ def select_kit_aware_patch_cap(
             })
             continue
 
+        # Phase 2 Action 2.3 — surface the scoped-variant risk downgrade
+        # so the harness can emit kit_risk_downgraded_by_scoped_variant.
+        # Downgrade fires when the kit's pure-from-patches risk_class was
+        # 'high' but the gate's effective_risk_class is one tier lower
+        # because a scoped alternative was available.
+        risk_downgraded = (
+            summary.risk_class == "high"
+            and summary.scoped_alternative_available
+            and decision.effective_risk_class != "high"
+        )
         kit_outcomes.append({
             "kit_id": kit.kit_id,
             "accepted": True,
@@ -430,6 +440,7 @@ def select_kit_aware_patch_cap(
             "total_count": total_count,
             "co_beneficiary_count": decision.co_beneficiary_count,
             "effective_risk_class": decision.effective_risk_class,
+            "risk_downgraded_from_high_to_medium": risk_downgraded,
         })
         selected.extend(kit.patches)
 

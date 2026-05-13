@@ -24279,6 +24279,82 @@ def _run_lever_loop(
                             )
                         )
                 else:
+                    # Phase 2 Action 2.3 — proactive scoped variants for
+                    # hub-table patches. When the flag is on, append a
+                    # scoped sibling for every hub-table patch in
+                    # _before_cap before the kit-aware wrapper consumes
+                    # it. Default OFF; replay byte-stability holds.
+                    try:
+                        from genie_space_optimizer.common.config import (
+                            hub_table_dependents_threshold as _hub_threshold,
+                            hub_table_scoped_variants_enabled as _hub_scoped_enabled,
+                        )
+                        if _hub_scoped_enabled():
+                            from genie_space_optimizer.optimization.decision_emitters import (
+                                hub_table_no_scoped_variant_available_record as _hub_no_var_rec,
+                                hub_table_scoped_variant_generated_record as _hub_var_gen_rec,
+                            )
+                            from genie_space_optimizer.optimization.scoped_variants import (
+                                apply_scoped_variants_to_proposals as _apply_scoped,
+                                is_hub_table_patch as _is_hub_patch,
+                            )
+                            _hub_th_val = _hub_threshold()
+                            _expanded, _scoped_summary = _apply_scoped(
+                                _before_cap,
+                                target_qids=_patch_cap_target_qids,
+                                threshold=_hub_th_val,
+                            )
+                            _scoped_ag_id = str(ag.get("id") or ag.get("ag_id") or "")
+                            for _p in _expanded:
+                                _scoped_from = str(_p.get("_scoped_from_pid") or "")
+                                if not _scoped_from:
+                                    continue
+                                decision_records.append(_hub_var_gen_rec(
+                                    run_id=run_id,
+                                    iteration=iteration_counter,
+                                    ag_id=_scoped_ag_id,
+                                    parent_pid=_scoped_from,
+                                    scoped_pid=str(
+                                        _p.get("proposal_id") or _p.get("id") or ""
+                                    ),
+                                    target_qids=_patch_cap_target_qids,
+                                    target_table=str(_p.get("target_table") or ""),
+                                ))
+                            for _p in _before_cap:
+                                if not _is_hub_patch(_p, threshold=_hub_th_val):
+                                    continue
+                                _pid = str(
+                                    _p.get("proposal_id") or _p.get("id") or ""
+                                )
+                                _has_sibling = any(
+                                    str(q.get("_scoped_from_pid") or "") == _pid
+                                    for q in _expanded
+                                )
+                                if _has_sibling:
+                                    continue
+                                decision_records.append(_hub_no_var_rec(
+                                    run_id=run_id,
+                                    iteration=iteration_counter,
+                                    ag_id=_scoped_ag_id,
+                                    parent_pid=_pid,
+                                    target_qids=_patch_cap_target_qids,
+                                    target_table=str(_p.get("target_table") or ""),
+                                ))
+                            _before_cap = _expanded
+                            logger.info(
+                                "SCOPED VARIANTS: ag_id=%s scoped=%s "
+                                "no_var=%s pass_through=%s",
+                                _scoped_ag_id,
+                                _scoped_summary.get("scoped_variants_generated"),
+                                _scoped_summary.get("no_scoped_variant_available"),
+                                _scoped_summary.get("non_hub_proposals_passed_through"),
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Scoped variants wiring failed (non-fatal)",
+                            exc_info=True,
+                        )
+
                     # Phase 2 Action 2.2 — kit-aware patch cap. When the
                     # flag is on, wrap the legacy cap with the kit-level
                     # gate. Default OFF; the legacy call below runs when
@@ -24338,6 +24414,19 @@ def _run_lever_loop(
                                     ),
                                 ))
                                 if _ko.get("accepted"):
+                                    if _ko.get("risk_downgraded_from_high_to_medium"):
+                                        from genie_space_optimizer.optimization.decision_emitters import (
+                                            kit_risk_downgraded_by_scoped_variant_record as _kit_downgrade_rec,
+                                        )
+                                        decision_records.append(_kit_downgrade_rec(
+                                            run_id=run_id,
+                                            iteration=iteration_counter,
+                                            ag_id=_ag_id_for_kit,
+                                            kit_id=str(_ko.get("kit_id") or ""),
+                                            original_risk_class="high",
+                                            downgraded_to="medium",
+                                            target_qids=_patch_cap_target_qids,
+                                        ))
                                     continue
                                 _reason = str(_ko.get("reason") or "")
                                 if _reason == "kit_atomicity_violation":
