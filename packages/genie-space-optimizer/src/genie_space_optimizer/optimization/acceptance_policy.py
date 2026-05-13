@@ -388,6 +388,102 @@ def regression_debt_policy_from_config() -> RegressionDebtPolicy:
     )
 
 
+# ── Phase 1 (2026-05-13): attribution-drift acceptance tier ──────────
+#
+# Sibling of the partial-harvest tier above. Used by the new branch in
+# decide_control_plane_acceptance gated on GSO_ATTRIBUTION_DRIFT_WITH_DEBT.
+# Design rationale: 2026-05-13-acceptance-gate-redesign-design-record.md
+# (decisions D1-D4).
+
+
+def attribution_drift_policy_pilot_default() -> RegressionDebtPolicy:
+    """Pilot policy applied when GSO_ATTRIBUTION_DRIFT_WITH_DEBT=1.
+
+    Differs from regression_debt_policy_pilot_default along three axes:
+    - min_target_clusters_fixed=0 (accepts even when no target is fixed)
+    - min_aggregate_improvement_pp=4.0 (lower aggregate floor)
+    - allowed_debt_buckets includes LOOKUP_FAILED (unknown_to_hard)
+      alongside SOFT_TO_HARD; passing_to_hard remains excluded.
+
+    The cumulative_debt_max is shared with the partial-harvest tier
+    (single harness counter); per-tier accounting is a follow-up.
+    """
+    return RegressionDebtPolicy(
+        max_debt_qids=1,
+        allowed_debt_buckets=frozenset(
+            {DeltaState.SOFT_TO_HARD, DeltaState.LOOKUP_FAILED}
+        ),
+        min_aggregate_improvement_pp=4.0,
+        min_target_clusters_fixed=0,
+        min_threshold_pass_rate=0.95,
+        cumulative_debt_max=3,
+    )
+
+
+def attribution_drift_policy_from_config() -> RegressionDebtPolicy:
+    """Build the attribution-drift policy honoring env overrides.
+
+    Reads GSO_ATTRIBUTION_DRIFT_WITH_DEBT to choose the base policy:
+    pilot default when on, hard-zero default when off. Per-field
+    overrides mirror the partial-harvest from_config pattern:
+
+    - GSO_ATTRIBUTION_DRIFT_MAX_DEBT_QIDS
+    - GSO_ATTRIBUTION_DRIFT_CUMULATIVE_MAX
+    - GSO_ATTRIBUTION_DRIFT_MIN_AGG_IMPROVEMENT_PP
+    - GSO_ATTRIBUTION_DRIFT_MIN_TARGETS_FIXED
+    - GSO_ATTRIBUTION_DRIFT_MIN_THRESHOLD_PASS_RATE
+    """
+    import os
+
+    from genie_space_optimizer.common.config import (
+        attribution_drift_with_debt_enabled,
+    )
+
+    if not attribution_drift_with_debt_enabled():
+        base = RegressionDebtPolicy()  # hard-zero default
+    else:
+        base = attribution_drift_policy_pilot_default()
+
+    def _int_override(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        stripped = raw.strip()
+        return int(stripped) if stripped.lstrip("-").isdigit() else default
+
+    def _float_override(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return default
+
+    return RegressionDebtPolicy(
+        max_debt_qids=_int_override(
+            "GSO_ATTRIBUTION_DRIFT_MAX_DEBT_QIDS", base.max_debt_qids
+        ),
+        allowed_debt_buckets=base.allowed_debt_buckets,
+        min_aggregate_improvement_pp=_float_override(
+            "GSO_ATTRIBUTION_DRIFT_MIN_AGG_IMPROVEMENT_PP",
+            base.min_aggregate_improvement_pp,
+        ),
+        min_target_clusters_fixed=_int_override(
+            "GSO_ATTRIBUTION_DRIFT_MIN_TARGETS_FIXED",
+            base.min_target_clusters_fixed,
+        ),
+        min_threshold_pass_rate=_float_override(
+            "GSO_ATTRIBUTION_DRIFT_MIN_THRESHOLD_PASS_RATE",
+            base.min_threshold_pass_rate,
+        ),
+        cumulative_debt_max=_int_override(
+            "GSO_ATTRIBUTION_DRIFT_CUMULATIVE_MAX",
+            base.cumulative_debt_max,
+        ),
+    )
+
+
 # ── Phase 1 Action 1.2: four-tier acceptance gate ─────────────────────
 #
 # The four-tier classifier consumes the canonical
