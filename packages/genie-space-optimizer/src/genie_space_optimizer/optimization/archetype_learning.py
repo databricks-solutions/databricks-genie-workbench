@@ -335,3 +335,62 @@ def synthesize_provisional_archetype(
     )
     state.provisional_archetypes.append(pa)
     return pa
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.5 Tier 4 — trial-outcome bookkeeping.
+# ---------------------------------------------------------------------------
+
+import dataclasses
+
+
+_PROMOTING_TIERS: frozenset[str] = frozenset({"strict_win", "net_win_with_debt"})
+_FAILING_TIERS: frozenset[str] = frozenset({"loss"})
+_HOLDING_TIERS: frozenset[str] = frozenset({"diagnostic_hold"})
+
+
+def record_provisional_archetype_trial_outcome(
+    *,
+    run_id: str,
+    signature_hash: str,
+    iteration: int,
+    acceptance_tier: str,
+) -> "ProvisionalArchetype | None":
+    """Tier 4: update the provisional archetype's lifecycle based on the
+    iteration's acceptance-gate decision.
+
+    Returns the (possibly mutated) :class:`ProvisionalArchetype`, or
+    ``None`` when no provisional with ``signature_hash`` is registered
+    for ``run_id``. Mutation is via ``dataclasses.replace`` because
+    :class:`ProvisionalArchetype` is frozen.
+
+    Lifecycle transitions:
+      * ``strict_win``, ``net_win_with_debt`` → ``confirmed_in_run``
+      * ``loss`` → ``failed_in_run``
+      * ``diagnostic_hold`` → stays ``provisional`` (eligible for retrial)
+    """
+    from genie_space_optimizer.optimization.archetype_learning_state import (
+        get_state,
+    )
+
+    state = get_state(run_id)
+    for idx, pa in enumerate(state.provisional_archetypes):
+        if pa.signature_hash != signature_hash:
+            continue
+        if acceptance_tier in _PROMOTING_TIERS:
+            new_state = "confirmed_in_run"
+        elif acceptance_tier in _FAILING_TIERS:
+            new_state = "failed_in_run"
+        elif acceptance_tier in _HOLDING_TIERS:
+            new_state = "provisional"
+        else:
+            return pa  # unknown tier — no transition
+        updated = dataclasses.replace(
+            pa,
+            lifecycle_state=new_state,
+            trial_iterations=tuple(pa.trial_iterations) + (iteration,),
+            last_outcome=acceptance_tier,
+        )
+        state.provisional_archetypes[idx] = updated
+        return updated
+    return None
