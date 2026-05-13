@@ -109,3 +109,69 @@ class ProvisionalArchetype:
             provenance=self.provenance,
             lifecycle_state=self.lifecycle_state,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.5 Tier 1 — signature + unmatched-pattern record emission.
+# ---------------------------------------------------------------------------
+
+import hashlib
+
+
+def compute_unmatched_signature(
+    *,
+    card: "RCACard",
+    asi_question_intent: str,
+) -> str:
+    """Deterministic 16-char hex signature derived from the cluster
+    shape — the grouping key for Tier 2 candidate detection.
+
+    The signature MUST be stable across iterations and runs for the
+    same input shape, otherwise pattern_candidate detection cannot
+    accumulate evidence across iterations.
+    """
+    rc = card.root_cause
+    rc_label = rc.name if hasattr(rc, "name") else str(rc)
+    parts = (
+        str(rc_label),
+        ",".join(sorted(card.grounding_terms or ())),
+        str(card.intended_patch_shape or ""),
+        str(asi_question_intent or ""),
+    )
+    raw = "|".join(parts).encode("utf-8")
+    return hashlib.blake2s(raw, digest_size=8).hexdigest()
+
+
+def emit_unmatched_pattern_record(
+    *,
+    run_id: str,
+    card: "RCACard",
+    cluster: dict,
+) -> UnmatchedPatternRecord:
+    """Tier 1: build the record, append it to the run state, and
+    return it so the caller can also emit a decision record.
+
+    Pure with respect to the LLM and the catalog — only mutates
+    the in-memory run state.
+    """
+    from genie_space_optimizer.optimization.archetype_learning_state import (
+        get_state,
+    )
+
+    intent = str(cluster.get("asi_question_intent") or "")
+    sig = compute_unmatched_signature(card=card, asi_question_intent=intent)
+    rc = card.root_cause
+    rc_label = rc.name if hasattr(rc, "name") else str(rc)
+    rec = UnmatchedPatternRecord(
+        signature_hash=sig,
+        cluster_id=str(cluster.get("cluster_id") or ""),
+        root_cause_label=str(rc_label),
+        grounding_terms=frozenset(card.grounding_terms or ()),
+        intended_patch_shape=str(card.intended_patch_shape or ""),
+        asi_question_intent=intent,
+        qids=tuple(
+            str(q) for q in (cluster.get("question_ids") or []) if str(q)
+        ),
+    )
+    get_state(run_id).unmatched_pattern_records.append(rec)
+    return rec
