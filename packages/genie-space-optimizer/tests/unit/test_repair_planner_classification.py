@@ -153,3 +153,64 @@ def test_classify_default_time_window_requires_token_in_grounding() -> None:
     cluster = {"cluster_id": "H_t"}
     result = classify_cluster_archetype(card=card, cluster=cluster)
     assert result is None
+
+
+def test_plan_repair_classifies_against_additional_archetypes_when_no_canonical_match() -> None:
+    """When the cluster's RCACard does not match any canonical archetype
+    but matches a provisional one passed via additional_archetypes,
+    plan_repair must classify against the provisional."""
+    from genie_space_optimizer.optimization.repair_archetypes import RepairArchetype
+    from genie_space_optimizer.optimization.repair_planner import plan_repair
+    from genie_space_optimizer.optimization.rca import RCACard, RcaKind
+
+    provisional = RepairArchetype(
+        name="brand_dimension_disambiguation_provisional",
+        applicable_rca_kinds=frozenset({RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING}),
+        required_grounding_tokens=frozenset({"snack_brand"}),
+        evidence_predicates=frozenset(),
+        default_priority_step="repair_kit",
+        expected_causal_effect_template="x",
+        rationale="provisional",
+    )
+    card = RCACard(
+        card_id="c1", cluster_id="S001", qids=("gs_002",),
+        root_cause=RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING,
+        grounding_terms=frozenset({"snack_brand"}),
+        intended_patch_shape="entity_disambiguation",
+        allowed_patch_families=frozenset(),
+        forbidden_patch_families=frozenset(),
+        rationale="t",
+    )
+    cluster = {"cluster_id": "S001", "question_ids": ["gs_002"]}
+    kit = plan_repair(
+        card=card, cluster=cluster, propagation_root_cause="unknown",
+        additional_archetypes=(provisional,),
+    )
+    assert kit is not None
+    assert kit["repair_archetype"] == "brand_dimension_disambiguation_provisional"
+
+
+def test_plan_repair_default_additional_archetypes_is_empty_tuple_no_behaviour_change() -> None:
+    """Default empty tuple - identical behaviour to Section A baseline."""
+    from genie_space_optimizer.optimization.repair_planner import plan_repair
+    from genie_space_optimizer.optimization.rca import RCACard, RcaKind
+
+    card = RCACard(
+        card_id="c1", cluster_id="H001", qids=("gs_026",),
+        root_cause=RcaKind.TOP_N_CARDINALITY_COLLAPSE,
+        grounding_terms=frozenset({"rank_eq_1"}),
+        intended_patch_shape="cardinality_preserving_top_n_guidance",
+        allowed_patch_families=frozenset(),
+        forbidden_patch_families=frozenset(),
+        rationale="t",
+    )
+    cluster = {"cluster_id": "H001", "asi_question_intent": "plural",
+               "question_ids": ["gs_026"]}
+    kit_default = plan_repair(
+        card=card, cluster=cluster, propagation_root_cause="unknown",
+    )
+    kit_explicit = plan_repair(
+        card=card, cluster=cluster, propagation_root_cause="unknown",
+        additional_archetypes=(),
+    )
+    assert kit_default == kit_explicit
