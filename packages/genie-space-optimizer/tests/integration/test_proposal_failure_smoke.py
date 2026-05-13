@@ -109,3 +109,109 @@ def test_smoke_coverage_invariant_fires_on_silent_iter(monkeypatch) -> None:
         "proposal_failure_decided_coverage" in m
         for m in iter_inputs["markers"]
     )
+
+
+def test_smoke_coverage_invariant_central_finalize_wiring(
+    monkeypatch, capsys,
+) -> None:
+    """PF-T12 — the centralized wiring inside _finalize_iteration_summary
+    must fire the coverage invariant for a no-applied exit path that
+    the legacy exit-path-specific call sites do NOT cover
+    (dead_on_arrival), and must also print the
+    GSO_INVARIANT_VIOLATION_V1 marker to stdout for the postmortem
+    parser."""
+    monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", "1")
+
+    from genie_space_optimizer.optimization.harness import (
+        _finalize_iteration_summary,
+    )
+
+    iter_traces: dict = {}
+    iter_summaries: dict = {}
+    iter_inputs = {
+        "applied_patches_total": 0,
+        "decision_records": [
+            {
+                "run_id": "r1", "iteration": 7,
+                "decision_type": "evaluation_classified",
+                "outcome": "info", "reason_code": "tier_loss",
+            },
+        ],
+    }
+
+    _finalize_iteration_summary(
+        iter_traces=iter_traces,
+        iter_summaries=iter_summaries,
+        iteration=7,
+        current_iter_inputs=iter_inputs,
+        journey_events=[],
+        journey_report=None,
+        accepted_count=0,
+        rolled_back_count=0,
+        skipped_count=0,
+        gate_drop_count=0,
+        iteration_accuracy_percent=None,
+        exit_path="dead_on_arrival",
+        run_id="ccf1d60d-d686-467b-bafa-1640131b4393",
+    )
+
+    markers = iter_inputs.get("markers") or []
+    assert any(
+        "proposal_failure_decided_coverage" in m for m in markers
+    ), f"central wiring did not emit invariant marker; markers={markers!r}"
+
+    captured = capsys.readouterr()
+    assert "proposal_failure_decided_coverage" in captured.out, (
+        "PF-T12: coverage invariant marker must be printed to stdout "
+        "so the postmortem parser sees it"
+    )
+
+
+def test_smoke_coverage_invariant_central_finalize_noop_on_completed(
+    monkeypatch, capsys,
+) -> None:
+    """PF-T12 — the centralized wiring is a hard no-op on a non-no-applied
+    exit path like ``completed`` even when applied_patches_total=0,
+    because the invariant's exit-path frozenset is the gate."""
+    monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", "1")
+
+    from genie_space_optimizer.optimization.harness import (
+        _finalize_iteration_summary,
+    )
+
+    iter_traces: dict = {}
+    iter_summaries: dict = {}
+    iter_inputs = {
+        "applied_patches_total": 0,
+        "decision_records": [
+            {
+                "run_id": "r1", "iteration": 1,
+                "decision_type": "evaluation_classified",
+                "outcome": "info", "reason_code": "tier_loss",
+            },
+        ],
+    }
+
+    _finalize_iteration_summary(
+        iter_traces=iter_traces,
+        iter_summaries=iter_summaries,
+        iteration=1,
+        current_iter_inputs=iter_inputs,
+        journey_events=[],
+        journey_report=None,
+        accepted_count=0,
+        rolled_back_count=0,
+        skipped_count=0,
+        gate_drop_count=0,
+        iteration_accuracy_percent=None,
+        exit_path="completed",
+        run_id="r1",
+    )
+
+    markers = iter_inputs.get("markers") or []
+    assert not any(
+        "proposal_failure_decided_coverage" in m for m in markers
+    ), f"central wiring fired on a non-no-applied exit path; markers={markers!r}"
+
+    captured = capsys.readouterr()
+    assert "proposal_failure_decided_coverage" not in captured.out
