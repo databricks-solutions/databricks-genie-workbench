@@ -3467,3 +3467,121 @@ def strategist_context_consumed_record(
             "keys_in_both": keys_in_both,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.1 — Repair planner Section A emitters
+# ---------------------------------------------------------------------------
+
+
+def cluster_archetype_classified_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    card_id: str,
+    archetype_name: str,
+    priority_step: str,
+    target_qids: tuple[str, ...],
+    propagation_root_cause: str,
+) -> DecisionRecord:
+    """Phase 2 Action 2.1 — emitted when the Repair Planner classifies a
+    cluster's RCACard into one of the five named archetypes.
+
+    Carries the archetype name, the priority step (after propagation
+    conditioning), and the target qids so postmortems can attribute
+    each kit back to a deterministic classification decision.
+    """
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.CLUSTER_SELECTED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.CLUSTER_ARCHETYPE_CLASSIFIED,
+        cluster_id=str(cluster_id or ""),
+        evidence_refs=(f"card:{card_id}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"Cluster {cluster_id} classified as repair_archetype="
+            f"{archetype_name} with priority_step={priority_step}."
+        ),
+        next_action=(
+            f"Emit RepairKit for archetype={archetype_name}, "
+            f"priority_step={priority_step}, "
+            f"propagation_root_cause={propagation_root_cause}."
+        ),
+    )
+
+
+def repair_planner_no_archetype_match_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    card_id: str,
+    root_cause: str,
+    target_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Phase 2 Action 2.1 — emitted when the Repair Planner could not
+    classify a cluster's RCACard into any known archetype. The cluster
+    falls through to the legacy proposal pipeline.
+    """
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.CLUSTER_SELECTED,
+        outcome=DecisionOutcome.SKIPPED,
+        reason_code=ReasonCode.REPAIR_PLANNER_NO_ARCHETYPE_MATCH,
+        cluster_id=str(cluster_id or ""),
+        evidence_refs=(f"card:{card_id}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        root_cause=str(root_cause or ""),
+        expected_effect=(
+            f"Cluster {cluster_id} root_cause={root_cause} did not match "
+            f"any of the five named repair archetypes."
+        ),
+        next_action=(
+            "Fall through to legacy proposal generation; consider adding "
+            "an archetype for this root_cause."
+        ),
+    )
+
+
+def repair_plan_propagation_guarded_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    archetype_name: str,
+    propagation_root_cause: str,
+    guard_action: str,
+    target_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Phase 2 Action 2.1 — emitted when the propagation root cause from
+    Phase 1 Action 1.3 forced the Repair Planner to up-promote the
+    priority step or insert a verification hook.
+
+    Documents the guard action so postmortems can attribute the change
+    to the propagation diagnostic rather than the archetype default.
+    """
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.CLUSTER_SELECTED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.REPAIR_PLAN_PROPAGATION_GUARDED,
+        cluster_id=str(cluster_id or ""),
+        evidence_refs=(f"propagation_root_cause:{propagation_root_cause}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"Cluster {cluster_id}: propagation_root_cause="
+            f"{propagation_root_cause} guarded archetype={archetype_name}."
+        ),
+        next_action=(
+            f"Apply guard action={guard_action} for "
+            f"propagation_root_cause={propagation_root_cause}."
+        ),
+    )
