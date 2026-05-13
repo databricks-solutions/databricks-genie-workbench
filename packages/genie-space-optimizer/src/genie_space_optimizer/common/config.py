@@ -5517,6 +5517,27 @@ def attribution_drift_with_debt_enabled() -> bool:
     return _flag_enabled("GSO_ATTRIBUTION_DRIFT_WITH_DEBT")
 
 
+def directive_outcome_coverage_enabled() -> bool:
+    """Phase 3 (2026-05-13) — per-AG-per-lever directive outcome coverage.
+
+    When on (default), the per-AG proposal-generation loop populates an
+    ``AgDirectiveLedger`` recording one ``DirectiveOutcomeCode`` per lever
+    in ``ag.lever_directives``, emits a ``GSO_DIRECTIVE_OUTCOME_V1`` marker
+    per AG, and the iteration's finalize path runs
+    ``check_directive_outcome_coverage`` (warn-and-degrade — violations
+    emit ``GSO_INVARIANT_VIOLATION_V1`` and the loop continues).
+
+    Closes the silent-AG-budget-burn gap from 2314bb2c iter 2-5 where AG2's
+    L5/L6 directives produced zero proposals with no per-lever attribution.
+
+    Default ON. Disable with ``GSO_DIRECTIVE_OUTCOME_COVERAGE=0``.
+
+    Evidence anchor:
+    docs/2026-05-13-phase-3-directive-outcome-inventory.md
+    """
+    return _flag_default_on("GSO_DIRECTIVE_OUTCOME_COVERAGE")
+
+
 def phase_b_aggregator_in_finalize_enabled() -> bool:
     """Cycle 14-T1 — when on, ``_finalize_iteration_summary`` invokes
     ``record_phase_b_iter_accounting`` so producer exceptions earlier
