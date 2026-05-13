@@ -5403,6 +5403,25 @@ def rca_card_llm_normalization_enabled() -> bool:
     return _flag_enabled("GSO_RCA_CARD_LLM_NORMALIZATION")
 
 
+def tier_gate_soft_signal_observability_enabled() -> bool:
+    """Phase 1 Addendum — observability-only soft-signal pass-rate
+    emission on the four-tier acceptance record.
+
+    When ON (and the four-tier flag is also ON), ``stages/acceptance.decide``
+    computes ``compute_soft_signal_pass_rate`` from the candidate eval
+    rows and surfaces it on
+    ``tier_classification_record.metrics["soft_signal_pass_rate"]``.
+    Postmortems aggregate this for trend reporting.
+
+    **The four-tier gate's verdict does NOT depend on this value.** The
+    classifier ``classify_acceptance_tier`` does not accept any
+    soft-signal parameter; this is the anti-gaming contract.
+
+    Default OFF. Enable with ``GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY=1``.
+    """
+    return _flag_enabled("GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY")
+
+
 def rca_card_soft_evidence_enabled() -> bool:
     """Phase 1 Addendum — soft-evidence wiring on the RCA card builder.
 

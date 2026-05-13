@@ -2190,6 +2190,7 @@ def tier_classification_record(
     ag_id: str,
     target_qids: tuple[str, ...],
     verdict,  # acceptance_policy.TierVerdict, typed loosely
+    soft_signal_pass_rate: float | None = None,  # Phase 1 Addendum — observability only
 ) -> DecisionRecord:
     """Phase 1 Action 1.2 — emit one ACCEPTANCE_DECIDED record per AG
     with the four-tier classification.
@@ -2199,6 +2200,13 @@ def tier_classification_record(
       * NET_WIN_WITH_DEBT   → ACCEPTED   + TIER_NET_WIN_WITH_DEBT
       * DIAGNOSTIC_HOLD     → ROLLED_BACK + TIER_DIAGNOSTIC_HOLD
       * LOSS                → ROLLED_BACK + TIER_LOSS
+
+    Phase 1 Addendum — ``soft_signal_pass_rate`` is an
+    **observability-only** value surfaced on ``metrics`` when supplied
+    (default ``None`` keeps the field absent). The gate's verdict does
+    **not** depend on this value; ``classify_acceptance_tier`` has no
+    soft-signal parameter (enforced by the anti-gaming invariant test
+    in ``test_tier_classifier.py``).
     """
     cls = getattr(verdict, "accepted_class", None)
     cls_value = getattr(cls, "value", str(cls or ""))
@@ -2237,6 +2245,17 @@ def tier_classification_record(
         ),
     }
 
+    metrics: dict = {
+        "accepted_class": cls_value,
+        "debt_classification": dict(getattr(verdict, "debt_classification", {}) or {}),
+        "reflection": dict(getattr(verdict, "reflection_payload", {}) or {}),
+    }
+    if soft_signal_pass_rate is not None:
+        # Phase 1 Addendum — observability only. Surfaced for
+        # postmortem trend reporting; the classifier is
+        # hard-correctness-only and does not consume this value.
+        metrics["soft_signal_pass_rate"] = float(soft_signal_pass_rate)
+
     return DecisionRecord(
         run_id=str(run_id or ""),
         iteration=int(iteration),
@@ -2248,11 +2267,7 @@ def tier_classification_record(
         next_action=next_action_by_class.get(
             cls_value, "Tier classifier returned an unknown class."
         ),
-        metrics={
-            "accepted_class": cls_value,
-            "debt_classification": dict(getattr(verdict, "debt_classification", {}) or {}),
-            "reflection": dict(getattr(verdict, "reflection_payload", {}) or {}),
-        },
+        metrics=metrics,
     )
 
 

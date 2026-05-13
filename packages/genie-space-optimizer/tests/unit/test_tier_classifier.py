@@ -124,3 +124,20 @@ def test_diagnostic_hold_when_fixes_vs_regressions_too_thin() -> None:
     assert verdict.accept is False
     # Reflection payload populated for diagnostic_hold.
     assert "fixes_vs_regressions" in verdict.reflection_payload
+
+
+def test_classifier_decision_is_invariant_under_soft_signal_pass_rate() -> None:
+    """Phase 1 Addendum — anti-gaming guarantee: the four-tier
+    classifier's verdict cannot depend on soft-signal pass rate
+    because the helper has no soft-signal parameter at all. This
+    test makes the contract explicit so future PRs cannot quietly
+    add a soft-signal parameter without breaking it."""
+    import inspect
+
+    sig = inspect.signature(classify_acceptance_tier)
+    params = set(sig.parameters)
+    forbidden = {"soft_signal_pass_rate", "soft_signal_results", "soft_results"}
+    assert not (params & forbidden), (
+        f"classify_acceptance_tier MUST NOT accept soft-signal inputs; "
+        f"found {params & forbidden}. This is the anti-gaming contract."
+    )

@@ -284,12 +284,32 @@ def decide(ctx, inp: AcceptanceInput) -> AgOutcome:
                 decision=decision,
                 policy=tier_acceptance_policy_from_config(),
             )
+            # Phase 1 Addendum — observability-only soft-signal pass
+            # rate. Computed from candidate (post-apply) eval rows;
+            # surfaced on the record's metrics for postmortem trend
+            # reporting. The classifier's verdict above does NOT
+            # depend on this value — an anti-gaming invariant test in
+            # test_tier_classifier.py pins that contract.
+            from genie_space_optimizer.common.config import (
+                tier_gate_soft_signal_observability_enabled,
+            )
+
+            soft_pass_rate: float | None = None
+            if tier_gate_soft_signal_observability_enabled():
+                from genie_space_optimizer.optimization.acceptance_policy import (
+                    compute_soft_signal_pass_rate,
+                )
+                soft_pass_rate = compute_soft_signal_pass_rate(
+                    list(inp.post_rows or ())
+                )
+
             tier_record = tier_classification_record(
                 run_id=ctx.run_id,
                 iteration=ctx.iteration,
                 ag_id=ag_id,
                 target_qids=target_qids,
                 verdict=tier_verdict,
+                soft_signal_pass_rate=soft_pass_rate,
             )
             ctx.decision_emit(tier_record)
 
