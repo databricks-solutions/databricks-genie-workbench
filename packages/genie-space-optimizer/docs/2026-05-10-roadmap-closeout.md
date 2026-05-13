@@ -243,6 +243,30 @@ mis-shaped for the corpus; the partial-harvest tier needs its own pilot
 policy update before flipping. The attribution-drift tier does not change
 that conclusion; it is a sibling, not a substitute.
 
+**2026-05-13 Phase 3 — directive-to-proposal obligation (lever-loop-free):**
+
+Adds a per-(ag_id, lever_key) outcome ledger so every directive an AG carries
+maps to exactly one closed-vocabulary `DirectiveOutcomeCode`. Closes the
+silent-AG-budget-burn pattern from 2314bb2c iter 2-5 where AG2 had L5/L6
+directives that produced zero proposals with no per-lever attribution in
+the trace.
+
+- New closed vocabulary (6 entries): `proposal_emitted`,
+  `no_structural_candidate`, `force_llm_declined`, `applyability_rejected`,
+  `collateral_rejected`, `lever_not_proposal_generating`.
+- New stdout marker `GSO_DIRECTIVE_OUTCOME_V1` (per AG per iteration).
+- New invariant `check_directive_outcome_coverage` (warn-and-degrade).
+- New flag `GSO_DIRECTIVE_OUTCOME_COVERAGE` (default-ON; falsy rollback).
+- Distinct from P-F: P-F is iteration-level + recovery-decision; Phase 3 is
+  per-AG-per-directive + attribution-only. The two invariants run
+  independently; neither subsumes the other.
+
+**Unblocks Phase 2** (recovery dispatcher): Phase 2's per-directive recovery
+actions read this plan's closed vocabulary. Phase 2 is a separate plan.
+
+**Enforcement (raise/block) deferred** to a follow-up plan after one trial
+confirms zero false positives on the corpus.
+
 ### RCO-4 — Stage-6 Gate Pure-Helper Extraction
 
 **Status:** closed-local pending corpus — three of six conceptual gates extracted into pure helpers in ``optimization/stages/gates.py`` (``run_blast_radius_production_gate``, ``resolve_narrow_replacement``, ``run_applyability_gate``) behind default-off flags ``GSO_STAGE6_BLAST_RADIUS_PURE`` / ``GSO_STAGE6_NARROW_REPL_PURE`` / ``GSO_STAGE6_APPLYABILITY_PURE``. The remaining three (alignment / reflection / cap) are deferred to RCO-4b with named blockers documented in ``docs/2026-05-11-rco-4-deferred-gates.md`` and a full gate-to-code mapping in ``docs/2026-05-11-rco-4-gate-inventory.md``. Production firing order pinned by ``tests/unit/test_rco4_sequencing_grep_guard.py``. Parity fixtures under ``tests/unit/fixtures/rco4/``. Corpus confirmation + simultaneous flag flip pending the next airline + 7Now run (the flag flip belongs in RCO-3's pilot batch).
