@@ -354,3 +354,183 @@ def build_card(
             card = outcome.card
 
     return card, None, llm_skip_reason
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 Addendum — deterministic soft-evidence matcher.
+# ---------------------------------------------------------------------------
+
+from typing import Sequence as _Sequence
+
+from genie_space_optimizer.optimization.rca import (
+    SoftEvidenceMatch as _SoftEvidenceMatch,
+)
+
+
+# Closed root-family map. Each RcaKind belongs to exactly one family.
+# Families discipline the matcher — a soft cluster in a different
+# family is never paired with a hard cluster.
+_RCA_FAMILY: dict[RcaKind, str] = {
+    # filter_* — ASI strings ``missing_filter`` / ``wrong_filter`` /
+    # ``wrong_filter_condition`` all map to FILTER_LOGIC_MISMATCH; the
+    # time-window mismatch is grouped here too because its repair shape
+    # (default time-window filter) is filter-shaped.
+    RcaKind.FILTER_LOGIC_MISMATCH: "filter",
+    RcaKind.TIME_WINDOW_LOGIC_MISMATCH: "filter",
+    RcaKind.EXTRA_DEFENSIVE_FILTER: "filter",
+    # top_n_* — cardinality-preserving top-N family.
+    RcaKind.TOP_N_CARDINALITY_COLLAPSE: "top_n",
+    # routing_* — dimension / metric-view / join routing ambiguity.
+    RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING: "routing",
+    RcaKind.METRIC_VIEW_ROUTING_CONFUSION: "routing",
+    RcaKind.JOIN_SPEC_MISSING_OR_WRONG: "routing",
+    RcaKind.CANONICAL_DIMENSION_MISSED: "routing",
+    RcaKind.MISSING_REQUIRED_DIMENSION: "routing",
+    RcaKind.ASSET_TYPE_ROUTING_MISMATCH: "routing",
+    RcaKind.FUNCTION_ROUTING_MISMATCH: "routing",
+    # measure_* — measure-swap / aggregation-mismatch / grain.
+    RcaKind.MEASURE_SWAP: "measure",
+    RcaKind.GRAIN_OR_GROUPING_MISMATCH: "measure",
+    RcaKind.SQL_EXPRESSION_MISSING: "measure",
+    RcaKind.FUNCTION_OR_TVF_NOT_INVOKED: "measure",
+    RcaKind.EXAMPLE_SQL_SHAPE_NEEDED: "measure",
+}
+
+
+_SQL_CLAUSE_KEYWORDS = ("WHERE", "GROUP BY", "ORDER BY", "LIMIT", "JOIN")
+_SOFT_EVIDENCE_TOKEN_SKIP = frozenset({
+    "a", "an", "the", "add", "filter", "where", "to", "on", "and", "or",
+})
+
+
+def _root_family(rca_kind: RcaKind) -> str:
+    return _RCA_FAMILY.get(rca_kind, "")
+
+
+def _normalize_token(token: str) -> str:
+    """Lowercase, strip surrounding punctuation, and drop table prefix.
+
+    ``f.time_window`` and ``time_window`` both normalize to
+    ``time_window`` so the matcher pairs counterfactuals that
+    reference the same column with or without a table alias.
+    """
+    t = token.strip().strip(".,;:'\"`").lower()
+    if "." in t:
+        # Strip table prefix: ``f.time_window`` → ``time_window``.
+        t = t.rsplit(".", 1)[-1]
+    return t
+
+
+def _tokens_from_text(text: str) -> set[str]:
+    """Extract symbolic tokens (column / value / predicate hints) from
+    a counterfactual-fix string. Strips articles, quoting, and
+    punctuation. Returns a set of normalized lowercase tokens."""
+    if not text:
+        return set()
+    raw = text.replace("=", " ").replace(",", " ").split()
+    return {
+        t for t in (_normalize_token(w) for w in raw)
+        if t and t not in _SOFT_EVIDENCE_TOKEN_SKIP and len(t) > 1
+    }
+
+
+def _wrong_clause_keyword(wrong_clause: str) -> str:
+    upper = (wrong_clause or "").upper()
+    for kw in _SQL_CLAUSE_KEYWORDS:
+        if kw in upper:
+            return kw
+    return ""
+
+
+def match_soft_evidence(
+    *,
+    hard_root_cause: RcaKind,
+    hard_asi_by_qid: Mapping[str, dict],
+    soft_clusters: _Sequence[dict],
+) -> tuple[_SoftEvidenceMatch, ...]:
+    """Phase 1 Addendum — pair soft-cluster qids to a hard cluster's
+    RCA via shared evidence.
+
+    Eligibility (both must hold):
+      1. Same root family.
+      2. AT LEAST ONE of: shared_blame, matching_counterfactual,
+         matching_wrong_clause.
+
+    Returns matches sorted by ``(soft_cluster_id, soft_qid)`` so the
+    output is deterministic and replay byte-stable.
+    """
+    hard_family = _root_family(hard_root_cause)
+    if not hard_family:
+        return ()
+
+    # Aggregate hard-side evidence once.
+    hard_blame: set[str] = set()
+    hard_cf_tokens: set[str] = set()
+    hard_clauses: set[tuple[str, str]] = set()  # (keyword, column-token)
+    for meta in hard_asi_by_qid.values():
+        if not isinstance(meta, dict):
+            continue
+        for entry in meta.get("blame_set") or ():
+            if isinstance(entry, str) and entry:
+                for tok in entry.replace("=", " ").split():
+                    norm = _normalize_token(tok)
+                    if norm:
+                        hard_blame.add(norm)
+        cf_tokens = _tokens_from_text(str(meta.get("counterfactual_fix") or ""))
+        hard_cf_tokens |= cf_tokens
+        kw = _wrong_clause_keyword(str(meta.get("wrong_clause") or ""))
+        if kw:
+            for col_tok in cf_tokens:
+                hard_clauses.add((kw, col_tok))
+
+    matches: list[_SoftEvidenceMatch] = []
+    for soft in soft_clusters or ():
+        soft_root = soft.get("dominant_root_cause")
+        if not isinstance(soft_root, RcaKind):
+            continue
+        if _root_family(soft_root) != hard_family:
+            continue
+        soft_cluster_id = str(soft.get("cluster_id") or "")
+        for soft_qid, meta in (soft.get("asi_by_qid") or {}).items():
+            if not isinstance(meta, dict):
+                continue
+            soft_blame = {
+                _normalize_token(tok)
+                for entry in (meta.get("blame_set") or ())
+                if isinstance(entry, str) and entry
+                for tok in entry.replace("=", " ").split()
+            } - {""}
+            soft_cf = str(meta.get("counterfactual_fix") or "")
+            soft_cf_tokens = _tokens_from_text(soft_cf)
+            soft_clause_kw = _wrong_clause_keyword(str(meta.get("wrong_clause") or ""))
+
+            evidence_token: str | None = None
+            match_kind: str | None = None
+
+            shared_blame_overlap = sorted(soft_blame & hard_blame)
+            if shared_blame_overlap:
+                match_kind = "shared_blame"
+                evidence_token = shared_blame_overlap[0]
+            elif soft_cf_tokens & hard_cf_tokens:
+                match_kind = "matching_counterfactual"
+                evidence_token = sorted(soft_cf_tokens & hard_cf_tokens)[0]
+            elif soft_clause_kw:
+                wrong_clause_hits = sorted(
+                    col for (kw, col) in hard_clauses
+                    if kw == soft_clause_kw and col in soft_cf_tokens
+                )
+                if wrong_clause_hits:
+                    match_kind = "matching_wrong_clause"
+                    evidence_token = wrong_clause_hits[0]
+
+            if match_kind and evidence_token:
+                matches.append(_SoftEvidenceMatch(
+                    soft_qid=str(soft_qid),
+                    soft_cluster_id=soft_cluster_id,
+                    match_kind=match_kind,
+                    evidence_token=evidence_token,
+                    soft_counterfactual=soft_cf,
+                ))
+
+    matches.sort(key=lambda m: (m.soft_cluster_id, m.soft_qid))
+    return tuple(matches)
