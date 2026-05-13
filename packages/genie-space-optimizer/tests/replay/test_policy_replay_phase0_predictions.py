@@ -118,3 +118,66 @@ def test_pre_registered_prediction_or_structured_mismatch(
         f"This indicates the classifier or fixture has a structural gap "
         f"the design document did not anticipate."
     )
+
+
+# Phase 0.2 (2026-05-13) — parametrize an end-to-end CLI run per policy
+# so the new attribution-drift tier's offline replay outcome is
+# enforced by CI alongside the original Phase 0.1 pilot.
+
+import subprocess
+
+
+@pytest.mark.parametrize(
+    "policy_name,predictions_file,expected_match_count",
+    [
+        (
+            "regression_debt_policy_pilot_default",
+            "predictions.json",
+            1,  # Phase 0.1: 1 match (no_payload), 2 structured mismatches
+        ),
+        (
+            "attribution_drift_policy_pilot_default",
+            "predictions_attribution_drift.json",
+            3,  # Phase 0.2: 3 exact matches
+        ),
+    ],
+)
+def test_phase0_replay_each_policy_meets_pass_criterion(
+    policy_name, predictions_file, expected_match_count
+):
+    """End-to-end CLI invocation per policy. Each policy must produce
+    pass_criterion_met=true and the expected match count."""
+    fixtures_dir = (
+        pathlib.Path(__file__).parent / "fixtures" / "policy_replay"
+    )
+    predictions_path = fixtures_dir / predictions_file
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "genie_space_optimizer.tools.policy_replay",
+            "--fixtures-dir",
+            str(fixtures_dir),
+            "--predictions",
+            str(predictions_path),
+            "--policy-name",
+            policy_name,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"policy_replay exited non-zero under {policy_name}: "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    lines = [
+        json.loads(line) for line in result.stdout.splitlines() if line.strip()
+    ]
+    summary = lines[-1]
+    assert summary["event"] == "replay_classifier_summary"
+    assert summary["policy_name"] == policy_name
+    assert summary["pass_criterion_met"] is True
+    assert summary["matches"] == expected_match_count
+    assert summary["unstructured_mismatches"] == 0
