@@ -203,9 +203,18 @@ def _project_iteration(
     rca_present = {
         str(k): bool(v) for k, v in dict(rca_present_raw).items()
     }
-    _decision_records = list(
+    # B2 (2026-05-13) — normalize at the projection boundary so downstream
+    # invariants (check_i7_rca_grounding, check_i14_l6_decline_dedup) can
+    # use ``.get()`` without raising on DecisionRecord dataclass entries.
+    # Closes 18 medium-tier I_CHECK_FAILED rows on 2314bb2c iter 1.
+    _raw_decision_records = list(
         current_iter_inputs.get("decision_records") or []
     )
+    _decision_records: list[dict[str, Any]] = []
+    for _r in _raw_decision_records:
+        _normalized = _record_to_mapping(_r)
+        if _normalized is not None:
+            _decision_records.append(_normalized)
     # Cycle 16 T5 — I11 evidence keys (causal continuity).
     # Count typed records in this iteration's decision_records;
     # halt AGs from the per-iter set stamped during blast-radius gate.
