@@ -56,16 +56,17 @@ def test_type_to_section_includes_new_decision_types() -> None:
     assert DecisionType.STRATEGIST_CONTEXT_CONSUMED in TYPE_TO_SECTION
 
 
-def test_stage4_context_persistence_flag_default_off(
+def test_stage4_context_persistence_flag_default_on(
     monkeypatch,
 ) -> None:
-    """Default-OFF preserves byte-stable replay."""
+    """2026-05-13 default-on flip: env-unset returns True. Rollback
+    escape hatch is ``GSO_STAGE4_CONTEXT_PERSISTENCE=0``."""
     from genie_space_optimizer.common.config import (
         stage4_context_persistence_enabled,
     )
 
     monkeypatch.delenv("GSO_STAGE4_CONTEXT_PERSISTENCE", raising=False)
-    assert stage4_context_persistence_enabled() is False
+    assert stage4_context_persistence_enabled() is True
 
 
 def test_stage4_context_persistence_flag_truthy_values(
@@ -87,7 +88,9 @@ def test_stage4_context_persistence_flag_falsy_values(
         stage4_context_persistence_enabled,
     )
 
-    for falsy in ("", "0", "false", "no", "off"):
+    # Empty string excluded — _flag_default_on treats it as unset
+    # (defaults to True). Matches the canonical RCO-4b contract.
+    for falsy in ("0", "false", "False", "no", "off"):
         monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", falsy)
         assert stage4_context_persistence_enabled() is False, falsy
 
@@ -387,13 +390,14 @@ def test_optimizer_emits_assembled_record_when_flag_on(monkeypatch) -> None:
 
 
 def test_optimizer_skips_assembled_emit_when_flag_off(monkeypatch) -> None:
-    """Flag default-OFF preserves replay byte stability — no emit."""
+    """Flag-off (rollback escape) preserves replay byte stability — no emit."""
     from genie_space_optimizer.optimization.optimizer import (
         _emit_strategist_context_records_for_test_harness as _emit_helper,
     )
 
     monkeypatch.setenv("GSO_STAGE_HANDLERS_CHUNK_A", "1")
-    monkeypatch.delenv("GSO_STAGE4_CONTEXT_PERSISTENCE", raising=False)
+    # 2026-05-13: flag is default-on; assert the off-path by setting =0.
+    monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", "0")
     captured: list = []
 
     result = _emit_helper(
@@ -495,12 +499,13 @@ def test_emit_consumed_record_helper_uses_assembled_hash_from_local_state(
 def test_emit_consumed_record_helper_is_noop_when_flag_off(
     monkeypatch,
 ) -> None:
-    """Default-OFF: no record emitted regardless of payload."""
+    """Flag-off (rollback escape): no record emitted regardless of payload."""
     from genie_space_optimizer.optimization.optimizer import (
         _emit_strategist_context_consumed_for_test_harness as _emit_consumed,
     )
 
-    monkeypatch.delenv("GSO_STAGE4_CONTEXT_PERSISTENCE", raising=False)
+    # 2026-05-13: flag is default-on; assert the off-path by setting =0.
+    monkeypatch.setenv("GSO_STAGE4_CONTEXT_PERSISTENCE", "0")
     captured: list = []
 
     _emit_consumed(

@@ -57,14 +57,16 @@ def test_type_to_section_includes_proposal_failure_decided() -> None:
     )
 
 
-def test_proposal_failure_decided_flag_default_off(monkeypatch) -> None:
-    """Default-OFF preserves replay byte-stability of pre-P-F fixtures."""
+def test_proposal_failure_decided_flag_default_on(monkeypatch) -> None:
+    """2026-05-13 default-on flip: env-unset returns True (observability
+    surface is now lit by default; rollback escape hatch is
+    ``GSO_PROPOSAL_FAILURE_DECIDED=0``)."""
     from genie_space_optimizer.common.config import (
         proposal_failure_decided_enabled,
     )
 
     monkeypatch.delenv("GSO_PROPOSAL_FAILURE_DECIDED", raising=False)
-    assert proposal_failure_decided_enabled() is False
+    assert proposal_failure_decided_enabled() is True
 
 
 def test_proposal_failure_decided_flag_truthy_values(monkeypatch) -> None:
@@ -82,7 +84,10 @@ def test_proposal_failure_decided_flag_falsy_values(monkeypatch) -> None:
         proposal_failure_decided_enabled,
     )
 
-    for falsy in ("", "0", "false", "no", "off"):
+    # Empty string excluded — _flag_default_on treats it as unset
+    # (defaults to True), per the canonical contract in
+    # tests/unit/test_rco4b_trial_preflight_flag_inventory.py.
+    for falsy in ("0", "false", "False", "no", "off"):
         monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", falsy)
         assert proposal_failure_decided_enabled() is False, falsy
 

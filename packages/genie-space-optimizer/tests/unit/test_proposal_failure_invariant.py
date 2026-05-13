@@ -62,8 +62,10 @@ def test_emit_proposal_failure_decided_helper_appends_record_and_marker(
 def test_emit_proposal_failure_decided_helper_noop_when_flag_off(
     monkeypatch,
 ) -> None:
-    """Flag-off path appends nothing — replay byte-stability."""
-    monkeypatch.delenv("GSO_PROPOSAL_FAILURE_DECIDED", raising=False)
+    """Flag-off (rollback escape) appends nothing — replay byte-stability.
+
+    2026-05-13: flag is default-on; assert the off-path by setting =0."""
+    monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", "0")
 
     from genie_space_optimizer.optimization.harness import (
         _emit_proposal_failure_decided,
@@ -289,8 +291,10 @@ def test_harness_emits_invariant_marker_when_coverage_violated(
 
 
 def test_harness_skips_invariant_marker_when_flag_off(monkeypatch) -> None:
-    """Flag-off path emits nothing — replay byte-stability."""
-    monkeypatch.delenv("GSO_PROPOSAL_FAILURE_DECIDED", raising=False)
+    """Flag-off (rollback escape) path emits nothing — replay byte-stability.
+
+    2026-05-13: flag is default-on; assert the off-path by setting =0."""
+    monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", "0")
 
     from genie_space_optimizer.optimization.harness import (
         _check_and_emit_proposal_failure_coverage,

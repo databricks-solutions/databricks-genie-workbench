@@ -86,12 +86,14 @@ def test_partial_harvest_with_debt_flag_on_via_env(monkeypatch) -> None:
     assert partial_harvest_with_debt_enabled() is True
 
 
-def test_patch_subset_isolation_flag_default_off(monkeypatch) -> None:
+def test_patch_subset_isolation_flag_default_on(monkeypatch) -> None:
+    """2026-05-13 default-on flip: env-unset returns True. Rollback
+    escape hatch is ``GSO_PATCH_SUBSET_ISOLATION=0``."""
     monkeypatch.delenv("GSO_PATCH_SUBSET_ISOLATION", raising=False)
     from genie_space_optimizer.common.config import (
         patch_subset_isolation_enabled,
     )
-    assert patch_subset_isolation_enabled() is False
+    assert patch_subset_isolation_enabled() is True
 
 
 def test_patch_subset_isolation_flag_on_via_env(monkeypatch) -> None:
