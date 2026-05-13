@@ -3725,3 +3725,110 @@ def kit_atomicity_violation_record(
             "expected_causal_effect."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.3 — Section C scoped-variant emitters.
+# ---------------------------------------------------------------------------
+
+
+def hub_table_scoped_variant_generated_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    parent_pid: str,
+    scoped_pid: str,
+    target_qids: tuple[str, ...],
+    target_table: str,
+) -> DecisionRecord:
+    """Phase 2 Action 2.3 — emitted when the proposal pipeline emits a
+    scoped sibling for a hub-table proposal. Both siblings flow through
+    the gate; this record is the audit trail."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.HUB_TABLE_SCOPED_VARIANT_GENERATED,
+        ag_id=str(ag_id or ""),
+        evidence_refs=(f"parent_pid:{parent_pid}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"Hub-table parent {parent_pid} (table={target_table}) "
+            f"produced scoped sibling {scoped_pid} bound to "
+            f"{len(target_qids)} qid(s)."
+        ),
+        next_action=(
+            f"Both {parent_pid} and {scoped_pid} flow through the gate; "
+            "kit-safety summary may downgrade risk for the kit containing "
+            "the scoped variant."
+        ),
+    )
+
+
+def hub_table_no_scoped_variant_available_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    parent_pid: str,
+    target_qids: tuple[str, ...],
+    target_table: str,
+) -> DecisionRecord:
+    """Phase 2 Action 2.3 — emitted when a hub-table proposal could not
+    generate a scoped variant (e.g., no target qids in scope, or
+    intersection with passing_dependents was empty). Documents the gap
+    so postmortems can attribute the loss."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.SKIPPED,
+        reason_code=ReasonCode.HUB_TABLE_NO_SCOPED_VARIANT_AVAILABLE,
+        ag_id=str(ag_id or ""),
+        evidence_refs=(f"parent_pid:{parent_pid}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"Hub-table parent {parent_pid} (table={target_table}) had no "
+            "scopable variant available."
+        ),
+        next_action=(
+            "Kit containing this parent may be high-risk without scoped "
+            "alternative; kit-level gate will reject if no other scoped "
+            "variant exists for the kit."
+        ),
+    )
+
+
+def kit_risk_downgraded_by_scoped_variant_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    kit_id: str,
+    original_risk_class: str,
+    downgraded_to: str,
+    target_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Phase 2 Action 2.3 — emitted when the kit-safety gate downgrades
+    a kit's risk class because at least one member has a scoped
+    alternative."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.GATE_DECISION,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.KIT_RISK_DOWNGRADED_BY_SCOPED_VARIANT,
+        ag_id=str(ag_id or ""),
+        evidence_refs=(f"kit:{kit_id}",),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"Kit {kit_id} risk_class {original_risk_class} → {downgraded_to} "
+            "via scoped alternative."
+        ),
+        next_action="Kit clears the kit-level gate at the downgraded risk class.",
+    )
