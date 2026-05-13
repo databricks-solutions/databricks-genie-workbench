@@ -3904,3 +3904,241 @@ def strategist_coverage_recall_result_record(
             "any cluster still uncovered falls to the diagnostic AG path."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Action 2.5 — Section E archetype-learning emitters.
+# ---------------------------------------------------------------------------
+
+
+def unmatched_pattern_record_emitted_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    signature_hash: str,
+    root_cause_label: str,
+    grounding_terms: tuple[str, ...],
+    target_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Phase 2 Action 2.5 Tier 1 — emitted whenever the planner returns
+    no archetype match for a cluster. Pure data emission; no decision
+    is taken."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.SKIPPED,
+        reason_code=ReasonCode.UNMATCHED_PATTERN_RECORD_EMITTED,
+        cluster_id=str(cluster_id or ""),
+        evidence_refs=(f"cluster:{cluster_id}",),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"signature={signature_hash} root_cause={root_cause_label} "
+            f"grounding={list(grounding_terms)}"
+        ),
+        next_action=(
+            "Pattern is added to the in-loop unmatched-pattern store; "
+            "Tier 2 detection runs at the start of the next iteration."
+        ),
+    )
+
+
+def pattern_candidate_detected_record(
+    *,
+    run_id: str,
+    iteration: int,
+    signature_hash: str,
+    member_count: int,
+    member_cluster_ids: tuple[str, ...],
+    union_qids: tuple[str, ...],
+    root_cause_label: str,
+) -> DecisionRecord:
+    """Phase 2 Action 2.5 Tier 2 — emitted when >= K unmatched-pattern
+    records share a signature."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.PATTERN_CANDIDATE_DETECTED,
+        evidence_refs=tuple(f"cluster:{cid}" for cid in member_cluster_ids),
+        affected_qids=tuple(str(q) for q in (union_qids or ()) if q),
+        target_qids=tuple(str(q) for q in (union_qids or ()) if q),
+        expected_effect=(
+            f"signature={signature_hash} member_count={member_count} "
+            f"root_cause={root_cause_label}"
+        ),
+        next_action=(
+            "Eligible for Tier 3 synthesis (capped at "
+            "provisional_synthesis_max_per_iteration())."
+        ),
+    )
+
+
+def provisional_archetype_synthesized_record(
+    *,
+    run_id: str,
+    iteration: int,
+    signature_hash: str,
+    archetype_name: str,
+    default_priority_step: str,
+    applicable_rca_kinds: tuple[str, ...],
+    target_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Phase 2 Action 2.5 Tier 3 — emitted on a successful LLM
+    synthesis. The archetype is appended to the run state's
+    provisional list and will be passed to the planner on the next
+    iteration via ``additional_archetypes=``."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.PROVISIONAL_ARCHETYPE_SYNTHESIZED,
+        evidence_refs=(f"signature:{signature_hash}",),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"applicable_rca_kinds={list(applicable_rca_kinds)} "
+            f"priority={default_priority_step}"
+        ),
+        next_action=(
+            f"Trial provisional archetype {archetype_name!r} on next "
+            "iteration via apply_repair_planner_to_clusters("
+            "additional_archetypes=...)."
+        ),
+    )
+
+
+def provisional_archetype_synthesis_declined_record(
+    *,
+    run_id: str,
+    iteration: int,
+    signature_hash: str,
+    decline_reason: str,
+) -> DecisionRecord:
+    """Phase 2 Action 2.5 Tier 3 — emitted when the synthesis LLM
+    declines (or returns an unparseable payload). The candidate is
+    parked for the next iteration; it is not retried this iteration."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.SKIPPED,
+        reason_code=ReasonCode.PROVISIONAL_ARCHETYPE_SYNTHESIS_DECLINED,
+        evidence_refs=(f"signature:{signature_hash}",),
+        affected_qids=(),
+        target_qids=(),
+        expected_effect=f"decline_reason={decline_reason}",
+        next_action=(
+            "Pattern candidate is parked; eligible for re-synthesis on "
+            "the next iteration."
+        ),
+    )
+
+
+def provisional_archetype_trial_outcome_record(
+    *,
+    run_id: str,
+    iteration: int,
+    signature_hash: str,
+    archetype_name: str,
+    acceptance_tier: str,
+    new_lifecycle_state: str,
+    target_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Phase 2 Action 2.5 Tier 4 — emitted at iteration close for each
+    provisional archetype that produced a kit this iteration. Records
+    the acceptance-tier decision and the resulting lifecycle transition.
+    """
+    outcome = (
+        DecisionOutcome.INFO
+        if new_lifecycle_state == "confirmed_in_run"
+        else DecisionOutcome.SKIPPED
+    )
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=outcome,
+        reason_code=ReasonCode.PROVISIONAL_ARCHETYPE_TRIAL_OUTCOME,
+        evidence_refs=(f"signature:{signature_hash}",),
+        affected_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if q),
+        expected_effect=(
+            f"archetype={archetype_name} acceptance_tier={acceptance_tier} "
+            f"lifecycle={new_lifecycle_state}"
+        ),
+        next_action=(
+            "Reuse confirmed archetype for subsequent iterations." if
+            new_lifecycle_state == "confirmed_in_run" else
+            ("Park failed archetype for the rest of the run." if
+             new_lifecycle_state == "failed_in_run" else
+             "Hold provisional archetype for retrial up to the cap.")
+        ),
+    )
+
+
+def confirmed_in_run_archetype_promoted_record(
+    *,
+    run_id: str,
+    iteration: int,
+    signature_hash: str,
+    archetype_name: str,
+    first_promotion_iteration: int,
+) -> DecisionRecord:
+    """Phase 2 Action 2.5 — emitted exactly once per provisional that
+    transitions to confirmed_in_run, on its first promotion."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.CONFIRMED_IN_RUN_ARCHETYPE_PROMOTED,
+        evidence_refs=(f"signature:{signature_hash}",),
+        affected_qids=(),
+        target_qids=(),
+        expected_effect=(
+            f"first_promotion_iteration={first_promotion_iteration}"
+        ),
+        next_action=(
+            f"Provisional archetype {archetype_name!r} reused as a "
+            "canonical-equivalent for the rest of this run."
+        ),
+    )
+
+
+def cross_run_promotion_candidate_recorded_record(
+    *,
+    run_id: str,
+    iteration: int,
+    signature_hash: str,
+    archetype_name: str,
+    confirming_iterations: tuple[int, ...],
+    union_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Phase 2 Action 2.5 — emitted at run close for each
+    confirmed_in_run archetype. Feeds the offline analyzer that
+    decides which provisional archetypes to canonicalise into
+    REPAIR_ARCHETYPES. The decision to canonicalise is human-gated
+    and out of scope for this plan."""
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.CROSS_RUN_PROMOTION_CANDIDATE_RECORDED,
+        evidence_refs=(f"signature:{signature_hash}",),
+        affected_qids=tuple(str(q) for q in (union_qids or ()) if q),
+        target_qids=tuple(str(q) for q in (union_qids or ()) if q),
+        expected_effect=(
+            f"confirming_iterations={list(confirming_iterations)} "
+            f"qid_count={len(union_qids)}"
+        ),
+        next_action=(
+            f"Offline analyzer evaluates whether to canonicalise "
+            f"{archetype_name!r} into REPAIR_ARCHETYPES."
+        ),
+    )
