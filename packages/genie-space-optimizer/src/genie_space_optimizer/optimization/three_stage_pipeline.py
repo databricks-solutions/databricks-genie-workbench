@@ -103,7 +103,15 @@ def _stage_2_l4(bundle: "ActivationBundle", w: Any) -> dict:
 
 
 def _stage_2_l1(bundle: "ActivationBundle", w: Any) -> dict:
-    """Stage-2 adapter for lever-1-table-column-description."""
+    """Stage-2 adapter for lever-1-table-column-description.
+
+    Plan 4: forwards ``bundle.raw_evidence`` to
+    ``_call_llm_for_proposal`` as a keyword arg so the per-skill
+    prompt sees the rendered ``{{ raw_evidence_block }}`` slot.
+    Empty tuple is passed when the bundle has no raw evidence
+    (Plan 3 default or Plan 4 flag-off) — call signature stays
+    consistent.
+    """
     from genie_space_optimizer.optimization.optimizer import (
         _call_llm_for_proposal,
     )
@@ -115,6 +123,7 @@ def _stage_2_l1(bundle: "ActivationBundle", w: Any) -> dict:
                 p = _call_llm_for_proposal(
                     cluster_afs, bundle.metadata_snapshot,
                     patch_type, lever=1, w=w,
+                    raw_evidence=bundle.raw_evidence,
                 )
             except Exception:
                 logger.warning(

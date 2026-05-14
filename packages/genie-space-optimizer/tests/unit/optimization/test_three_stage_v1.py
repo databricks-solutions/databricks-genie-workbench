@@ -1219,7 +1219,7 @@ def test_stage_2_l1_produces_one_proposal_per_target(monkeypatch):
     from genie_space_optimizer.optimization import optimizer
     from genie_space_optimizer.optimization import three_stage_pipeline
 
-    def _fake_call_llm_for_proposal(cluster, metadata_snapshot, patch_type, lever, w=None):
+    def _fake_call_llm_for_proposal(cluster, metadata_snapshot, patch_type, lever, w=None, **kwargs):
         return {
             "proposed_value": f"description for {patch_type}",
             "rationale": "ok",
@@ -1242,7 +1242,7 @@ def test_stage_2_l1_uses_add_table_description_for_table_targets(monkeypatch):
     from genie_space_optimizer.optimization.afs import format_afs
 
     captured = []
-    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None):
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None, **kwargs):
         captured.append(patch_type)
         return {"proposed_value": "x", "rationale": "y"}
     monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)

@@ -747,3 +747,72 @@ def test_format_raw_evidence_block_empty():
     assert "COMMON" not in block
 
 
+# ── Section 8: _stage_2_l1 thread-through ─────────────────────────────
+
+
+def _bundle_with_raw_evidence(skill_id: str, raw_evidence: tuple[dict, ...]):
+    from genie_space_optimizer.optimization.activation_bundle import (
+        ActivationBundle,
+    )
+    from genie_space_optimizer.optimization.afs import format_afs
+    return ActivationBundle(
+        skill_id=skill_id,
+        ag_id="AG1",
+        target_objects=("catalog.schema.dim_store",),
+        cluster_afs=(format_afs(_sample_cluster_with_traces()),),
+        metadata_snapshot=_sample_metadata_snapshot(),
+        identifier_allowlist="catalog.schema.dim_store",
+        evidence_refs=(),
+        expected_impact_qids=(),
+        raw_evidence=raw_evidence,
+        lever_directives_legacy=None,
+        discovery_rationale="x",
+        priority=1,
+    )
+
+
+def test_stage_2_l1_forwards_raw_evidence(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    received_kwargs: list[dict] = []
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
+               *, raw_evidence=()):
+        received_kwargs.append({"raw_evidence": raw_evidence,
+                                  "lever": lever})
+        return {"proposed_value": "x", "rationale": "y"}
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
+
+    triples = ({"question_id": "Q1", "trace_id": "", "question": "q",
+                  "actual_sql": "a", "expected_sql": "e",
+                  "judge_rationale": "r"},)
+    bundle = _bundle_with_raw_evidence(
+        "lever-1-table-column-description", triples,
+    )
+    three_stage_pipeline._stage_2_l1(bundle, w=None)
+    assert received_kwargs, "L1 adapter did not invoke _call_llm_for_proposal"
+    assert all(rk["raw_evidence"] == triples for rk in received_kwargs)
+
+
+def test_stage_2_l1_empty_raw_evidence_passes_empty_tuple(monkeypatch):
+    """When the bundle has empty raw_evidence (Plan 3 default or
+    Plan 4 flag-off), the adapter still passes an empty tuple kwarg
+    so the call signature is consistent."""
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    received_kwargs: list[dict] = []
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
+               *, raw_evidence=()):
+        received_kwargs.append({"raw_evidence": raw_evidence})
+        return {"proposed_value": "x", "rationale": "y"}
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
+
+    bundle = _bundle_with_raw_evidence(
+        "lever-1-table-column-description", (),
+    )
+    three_stage_pipeline._stage_2_l1(bundle, w=None)
+    assert all(rk["raw_evidence"] == () for rk in received_kwargs)
+
+
+
