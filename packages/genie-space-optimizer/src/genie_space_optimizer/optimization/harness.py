@@ -17959,6 +17959,36 @@ def _run_lever_loop(
         # ``finally:`` below emits ``GSO_ITERATION_FAULTED_V1`` if this
         # remains False at finally time.
         _iter_terminal_emitted = False
+        # Phase 0.4 Task 13 — per-iteration candidate ledger field locals.
+        # Initialized at the TOP of the iteration body so short-circuit
+        # ``continue`` paths still have valid defaults when the
+        # ``finally:`` block builds the IterationCandidateLedgerEntry.
+        # Task 10 emit sites overwrite ``_iter_terminal_reason`` with the
+        # same string they pass to ``iteration_no_candidate_marker``; the
+        # full_eval/accepted path sets ``_iter_terminal_reason="accepted"``.
+        # Future Plan-C tasks populate the remaining locals with richer
+        # state captured at the point of decision; for Phase 0.4 these
+        # defaults are correct postmortem information.
+        _iter_terminal_reason: str = "unknown"
+        _iter_ag_id_for_ledger: str = ""
+        _iter_cluster_ids_for_ledger: tuple[str, ...] = ()
+        _iter_target_qids_for_ledger: tuple[str, ...] = ()
+        _iter_levers_for_ledger: tuple[int, ...] = ()
+        _iter_root_cause_for_ledger: str = ""
+        _iter_acceptance_tier: str = "reject_loss"
+        _iter_patches_applied: int = 0
+        _iter_accuracy_delta_pp: float = 0.0
+        _iter_subset_isolation_run: bool = False
+        _iter_subset_isolation_kept: tuple[str, ...] = ()
+        _iter_subset_isolation_dropped: tuple[str, ...] = ()
+        _iter_protected_dependents: tuple[str, ...] = ()
+        _iter_narrow_replacement_attempted: bool = False
+        _iter_narrow_replacement_succeeded: bool = False
+        _iter_rca_card_id: str = ""
+        _iter_selected_proposal_id: str = ""
+        _iter_proposal_attempts: int = 0
+        _iter_best_of_n_size: int = 1
+        _iter_retire_signature: str = ""
         try:
             # ── Exit checks ──────────────────────────────────────────────
             from genie_space_optimizer.optimization.acceptance_policy import (
@@ -19418,6 +19448,9 @@ def _run_lever_loop(
                             ag_id="",
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason to
+                        # the per-iteration ledger field local.
+                        _iter_terminal_reason = "no_structural_candidate"
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: no_actionable_clusters "
@@ -21074,6 +21107,10 @@ def _run_lever_loop(
                             ag_id="",
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason and
+                        # capture the strategist clusters for the ledger.
+                        _iter_terminal_reason = "no_action_group_emitted"
+                        _iter_cluster_ids_for_ledger = _cids_for_marker
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: strategy_zero_ags marker "
@@ -21273,18 +21310,24 @@ def _run_lever_loop(
                 # without producing any evaluated candidate.
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
+                        _ag_cids_for_ledger = tuple(
+                            str(c) for c in
+                            (ag.get("source_cluster_ids") or ())
+                            if str(c)
+                        )
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
                             terminal_reason="ag_collision_with_forbidden_set",
-                            cluster_ids=tuple(
-                                str(c) for c in
-                                (ag.get("source_cluster_ids") or ())
-                                if str(c)
-                            ),
+                            cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason and
+                        # capture ag identifiers for the ledger row.
+                        _iter_terminal_reason = "ag_collision_with_forbidden_set"
+                        _iter_ag_id_for_ledger = str(ag_id or "")
+                        _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: ag_identity_skip marker "
@@ -23018,18 +23061,24 @@ def _run_lever_loop(
                 # apply or evaluate any candidate.
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
+                        _ag_cids_for_ledger = tuple(
+                            str(c) for c in
+                            (ag.get("source_cluster_ids") or ())
+                            if str(c)
+                        )
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
                             terminal_reason="proposal_generation_empty",
-                            cluster_ids=tuple(
-                                str(c) for c in
-                                (ag.get("source_cluster_ids") or ())
-                                if str(c)
-                            ),
+                            cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason and
+                        # capture ag identifiers for the ledger row.
+                        _iter_terminal_reason = "proposal_generation_empty"
+                        _iter_ag_id_for_ledger = str(ag_id or "")
+                        _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: proposals_empty marker "
@@ -24241,18 +24290,24 @@ def _run_lever_loop(
                 # iteration has no candidate to evaluate.
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
+                        _ag_cids_for_ledger = tuple(
+                            str(c) for c in
+                            (ag.get("source_cluster_ids") or ())
+                            if str(c)
+                        )
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
                             terminal_reason="no_rca_ground",
-                            cluster_ids=tuple(
-                                str(c) for c in
-                                (ag.get("source_cluster_ids") or ())
-                                if str(c)
-                            ),
+                            cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason and
+                        # capture ag identifiers for the ledger row.
+                        _iter_terminal_reason = "no_rca_ground"
+                        _iter_ag_id_for_ledger = str(ag_id or "")
+                        _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: post_grounding_skip "
@@ -25765,18 +25820,24 @@ def _run_lever_loop(
                 # would deterministically drop everything again.
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
+                        _ag_cids_for_ledger = tuple(
+                            str(c) for c in
+                            (ag.get("source_cluster_ids") or ())
+                            if str(c)
+                        )
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
                             terminal_reason="no_applied_patches",
-                            cluster_ids=tuple(
-                                str(c) for c in
-                                (ag.get("source_cluster_ids") or ())
-                                if str(c)
-                            ),
+                            cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason and
+                        # capture ag identifiers for the ledger row.
+                        _iter_terminal_reason = "no_applied_patches"
+                        _iter_ag_id_for_ledger = str(ag_id or "")
+                        _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: no_pending_ags_first_pass "
@@ -25903,18 +25964,24 @@ def _run_lever_loop(
                 # reason applies, so this terminates as ``unknown``.
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
+                        _ag_cids_for_ledger = tuple(
+                            str(c) for c in
+                            (ag.get("source_cluster_ids") or ())
+                            if str(c)
+                        )
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
                             terminal_reason="unknown",
-                            cluster_ids=tuple(
-                                str(c) for c in
-                                (ag.get("source_cluster_ids") or ())
-                                if str(c)
-                            ),
+                            cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason and
+                        # capture ag identifiers for the ledger row.
+                        _iter_terminal_reason = "unknown"
+                        _iter_ag_id_for_ledger = str(ag_id or "")
+                        _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: "
@@ -26446,18 +26513,24 @@ def _run_lever_loop(
                 # iteration has no candidate to evaluate.
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
+                        _ag_cids_for_ledger = tuple(
+                            str(c) for c in
+                            (ag.get("source_cluster_ids") or ())
+                            if str(c)
+                        )
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
                             terminal_reason="no_applied_patches",
-                            cluster_ids=tuple(
-                                str(c) for c in
-                                (ag.get("source_cluster_ids") or ())
-                                if str(c)
-                            ),
+                            cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason and
+                        # capture ag identifiers for the ledger row.
+                        _iter_terminal_reason = "no_applied_patches"
+                        _iter_ag_id_for_ledger = str(ag_id or "")
+                        _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: "
@@ -26736,18 +26809,24 @@ def _run_lever_loop(
                 # ``unknown``.
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
+                        _ag_cids_for_ledger = tuple(
+                            str(c) for c in
+                            (ag.get("source_cluster_ids") or ())
+                            if str(c)
+                        )
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
                             terminal_reason="unknown",
-                            cluster_ids=tuple(
-                                str(c) for c in
-                                (ag.get("source_cluster_ids") or ())
-                                if str(c)
-                            ),
+                            cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason and
+                        # capture ag identifiers for the ledger row.
+                        _iter_terminal_reason = "unknown"
+                        _iter_ag_id_for_ledger = str(ag_id or "")
+                        _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: applier_failed marker "
@@ -26921,6 +27000,14 @@ def _run_lever_loop(
                     _gr.get("rollback_reason") or ""
                 ).startswith("full_eval:"):
                     _iter_terminal_emitted = True
+                    # Phase 0.4 Task 13 — full_eval path produced a real
+                    # candidate; tag the ledger row accordingly. PASS
+                    # iterations land here with passed=True; FAIL paths
+                    # that emit full_eval marker also land here.
+                    if bool(_gr.get("passed")):
+                        _iter_terminal_reason = "accepted"
+                    else:
+                        _iter_terminal_reason = "full_eval_regression"
             except Exception:
                 logger.debug(
                     "Phase 0.3 Task 9: terminal-marker sentinel update "
@@ -27797,18 +27884,24 @@ def _run_lever_loop(
                 # else-branch rule.
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
+                        _ag_cids_for_ledger = tuple(
+                            str(c) for c in
+                            (ag.get("source_cluster_ids") or ())
+                            if str(c)
+                        )
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
                             terminal_reason="unknown",
-                            cluster_ids=tuple(
-                                str(c) for c in
-                                (ag.get("source_cluster_ids") or ())
-                                if str(c)
-                            ),
+                            cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
+                        # Phase 0.4 Task 13 — mirror terminal_reason and
+                        # capture ag identifiers for the ledger row.
+                        _iter_terminal_reason = "unknown"
+                        _iter_ag_id_for_ledger = str(ag_id or "")
+                        _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
                         logger.debug(
                             "Phase 0.3 Task 10: rolled_back marker emit "
@@ -29044,6 +29137,94 @@ def _run_lever_loop(
                         "emission failed (non-fatal)",
                         exc_info=True,
                     )
+
+            # Phase 0.4 Task 13 — per-iteration candidate ledger row.
+            # Every iteration (terminal short-circuit OR full_eval accept
+            # OR exception) emits exactly one ledger row. Field locals are
+            # initialized at the top of the iteration body so even
+            # crash-before-data paths get default values; Task 10 emit
+            # sites and the full_eval sentinel above overwrite
+            # ``_iter_terminal_reason`` and the ag/cluster locals where
+            # data is in scope. Gated by ``candidate_ledger_enabled()`` so
+            # the GSO_CANDIDATE_LEDGER=0 rollback path skips both the
+            # artifact write and the stdout marker.
+            try:
+                from genie_space_optimizer.common.config import (
+                    candidate_ledger_enabled,
+                )
+                from genie_space_optimizer.optimization.candidate_ledger import (
+                    IterationCandidateLedgerEntry,
+                    emit_ledger_marker,
+                    write_ledger_entry,
+                )
+                if candidate_ledger_enabled():
+                    _ledger_entry = IterationCandidateLedgerEntry(
+                        iteration=int(_iter_num),
+                        ag_id=str(_iter_ag_id_for_ledger or ""),
+                        cluster_ids=tuple(_iter_cluster_ids_for_ledger or ()),
+                        target_qids=tuple(_iter_target_qids_for_ledger or ()),
+                        root_cause=str(_iter_root_cause_for_ledger or ""),
+                        requested_levers=tuple(
+                            int(L) for L in (_iter_levers_for_ledger or ())
+                        ),
+                        rca_card_id_or_provisional=str(_iter_rca_card_id or ""),
+                        proposal_attempts=int(_iter_proposal_attempts or 0),
+                        selected_proposal_id=str(
+                            _iter_selected_proposal_id or ""
+                        ),
+                        terminal_reason=str(_iter_terminal_reason or "unknown"),
+                        terminal_outcome="info",
+                        best_of_n_size=int(_iter_best_of_n_size or 1),
+                        patches_applied=int(_iter_patches_applied or 0),
+                        subset_isolation_run=bool(_iter_subset_isolation_run),
+                        subset_isolation_kept=tuple(
+                            _iter_subset_isolation_kept or ()
+                        ),
+                        subset_isolation_dropped=tuple(
+                            _iter_subset_isolation_dropped or ()
+                        ),
+                        protected_dependents=tuple(
+                            _iter_protected_dependents or ()
+                        ),
+                        narrow_replacement_attempted=bool(
+                            _iter_narrow_replacement_attempted
+                        ),
+                        narrow_replacement_succeeded=bool(
+                            _iter_narrow_replacement_succeeded
+                        ),
+                        accuracy_delta_pp=float(
+                            _iter_accuracy_delta_pp or 0.0
+                        ),
+                        acceptance_tier=str(
+                            _iter_acceptance_tier or "reject_loss"
+                        ),
+                        retire_signature=str(_iter_retire_signature or ""),
+                    )
+                    import os as _os_for_ledger
+                    _ledger_path = (
+                        _os_for_ledger.environ.get("GSO_RUN_ARTIFACT_ROOT")
+                        or "/tmp"
+                    ) + "/iteration_candidate_ledger.jsonl"
+                    try:
+                        write_ledger_entry(
+                            _ledger_entry, path=_ledger_path,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.4 Task 13: candidate ledger write "
+                            "failed (non-fatal)",
+                            exc_info=True,
+                        )
+                    print(emit_ledger_marker(
+                        _ledger_entry,
+                        optimization_run_id=str(run_id or ""),
+                    ), flush=True)
+            except Exception:
+                logger.debug(
+                    "Phase 0.4 Task 13: candidate ledger emit failed "
+                    "(non-fatal)",
+                    exc_info=True,
+                )
     write_stage(
         spark, run_id, "LEVER_LOOP_STARTED", "COMPLETE",
         task_key="lever_loop",
