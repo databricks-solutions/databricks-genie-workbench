@@ -31579,6 +31579,25 @@ def _run_lever_loop(
             else None
         ),
     }
+
+    # Plan 1 — narrowing trial telemetry. No-op unless
+    # GSO_RCA_CONTRACT_NARROW_V1=1 was set for this run.
+    try:
+        from genie_space_optimizer.common.config import dump_narrowing_capture_summary
+        _narrowing_summary = dump_narrowing_capture_summary()
+        if any(count > 0 for count in _narrowing_summary["hits"].values()):
+            logger.info(
+                "narrowing_v1 trial summary: hits=%s all_sites_exercised=%s "
+                "unhit=%s sink_path=%s",
+                _narrowing_summary["hits"],
+                _narrowing_summary["all_sites_exercised"],
+                _narrowing_summary["unhit_sites"],
+                _narrowing_summary["sink_path"],
+            )
+    except Exception as _narrowing_log_exc:
+        # Telemetry must never break a real run.
+        logger.warning("narrowing_v1 summary emit failed: %s", _narrowing_log_exc)
+
     return _build_loop_out_with_pretty_print(
         loop_out_base=_loop_out_base,
         phase_h_full_transcript=_full_transcript,
