@@ -203,3 +203,113 @@ def run_three_stage_pipeline_for_ag(
         "stage_2_results": stage_2_results,
         "fallback_to_legacy": False,
     }
+
+
+def _select_strategy_path_for_iteration(
+    legacy_kwargs: dict,
+    clusters_for_pipeline: list[dict],
+) -> dict:
+    """Plan 3 — flag-aware selector that decides which strategy path
+    runs for one iteration.
+
+    Returns ``{"source": str, "legacy_action_groups": list,
+    "legacy_strategy_full": dict, "pipeline_result": dict | None}``
+    where ``source`` is one of:
+      * ``legacy_strategist`` — both flags off; pipeline never ran.
+      * ``three_stage_pipeline`` — pipeline-mode succeeded; pipeline
+        result authoritative.
+      * ``legacy_strategist_after_fallback`` — pipeline-mode ran and
+        returned ``fallback_to_legacy=True``; legacy ran second.
+      * ``legacy_strategist_shadow`` — shadow mode; both paths ran
+        in parallel; legacy applied; comparison emitted.
+
+    Plan 3 implementation divergence: the plan's verbatim selector
+    returned only ``legacy_action_groups`` (action_groups slice).
+    To preserve byte-stability of the default-off harness path
+    (``global_instruction_rewrite`` and ``rationale`` keys carried
+    forward from the legacy strategist output), the selector also
+    surfaces ``legacy_strategy_full`` — the full legacy strategist
+    dict — so the harness can use it directly for the off / fallback
+    / shadow modes. For pipeline-only mode, ``legacy_strategy_full``
+    is ``{}`` (no legacy call was made).
+
+    The harness call site in ``_run_lever_loop`` consumes
+    ``legacy_strategy_full`` directly when ``source`` is anything but
+    ``three_stage_pipeline``. When source is ``three_stage_pipeline``,
+    the harness uses the projection helper
+    ``_project_pipeline_to_action_groups`` (Task 14) to convert
+    Stage-2 results back to ``lever_directives`` shape.
+    """
+    from genie_space_optimizer.common.config import (
+        three_stage_enabled, three_stage_shadow_enabled,
+    )
+    from genie_space_optimizer.optimization import optimizer
+
+    pipeline_on = three_stage_enabled()
+    shadow_on = three_stage_shadow_enabled()
+
+    if shadow_on and not pipeline_on:
+        legacy = optimizer._call_llm_for_adaptive_strategy(**legacy_kwargs)
+        ag_for_pipeline = (legacy.get("action_groups") or [{}])[0]
+        ag_id = str(ag_for_pipeline.get("id", ""))
+        rcs = str(ag_for_pipeline.get("root_cause_summary", ""))
+        pipeline_result = run_three_stage_pipeline_for_ag(
+            ag_id=ag_id,
+            root_cause_summary=rcs,
+            clusters=clusters_for_pipeline,
+            metadata_snapshot=legacy_kwargs.get("metadata_snapshot", {}),
+            w=legacy_kwargs.get("w"),
+        )
+        optimizer._emit_three_stage_shadow_comparison(
+            ag_id=ag_id,
+            stage_1_picks=pipeline_result.get("stage_1_picks", []),
+            legacy_action_groups=legacy.get("action_groups", []),
+            pipeline_stage_2_results=pipeline_result.get("stage_2_results", []),
+        )
+        return {
+            "source": "legacy_strategist_shadow",
+            "legacy_action_groups": legacy.get("action_groups", []),
+            "legacy_strategy_full": legacy,
+            "pipeline_result": pipeline_result,
+        }
+
+    if pipeline_on:
+        # Need an AG ID + root_cause_summary for discovery's prompt;
+        # in pipeline-mode we synthesize a stub legacy call ONLY to
+        # mine the cluster context — the legacy strategist does NOT
+        # produce the applied AGs in pipeline-only mode.
+        # To keep the LLM call count to one in pipeline-mode, we use
+        # the most-impacted cluster's metadata as a proxy AG context.
+        proxy_ag_id = "AG_PIPELINE"
+        proxy_rcs = ""
+        if clusters_for_pipeline:
+            proxy_rcs = str(clusters_for_pipeline[0].get("root_cause", ""))
+        pipeline_result = run_three_stage_pipeline_for_ag(
+            ag_id=proxy_ag_id,
+            root_cause_summary=proxy_rcs,
+            clusters=clusters_for_pipeline,
+            metadata_snapshot=legacy_kwargs.get("metadata_snapshot", {}),
+            w=legacy_kwargs.get("w"),
+        )
+        if pipeline_result.get("fallback_to_legacy"):
+            legacy = optimizer._call_llm_for_adaptive_strategy(**legacy_kwargs)
+            return {
+                "source": "legacy_strategist_after_fallback",
+                "legacy_action_groups": legacy.get("action_groups", []),
+                "legacy_strategy_full": legacy,
+                "pipeline_result": pipeline_result,
+            }
+        return {
+            "source": "three_stage_pipeline",
+            "legacy_action_groups": [],
+            "legacy_strategy_full": {},
+            "pipeline_result": pipeline_result,
+        }
+
+    legacy = optimizer._call_llm_for_adaptive_strategy(**legacy_kwargs)
+    return {
+        "source": "legacy_strategist",
+        "legacy_action_groups": legacy.get("action_groups", []),
+        "legacy_strategy_full": legacy,
+        "pipeline_result": None,
+    }

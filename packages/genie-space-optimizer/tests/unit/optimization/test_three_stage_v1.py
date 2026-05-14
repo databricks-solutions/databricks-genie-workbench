@@ -941,3 +941,159 @@ def test_pipeline_merges_duplicate_skill_picks(monkeypatch):
     # One Stage-2 call (merged), not two:
     assert call_count["n"] == 1
     assert len(out["stage_2_results"]) == 1
+
+
+# ── Section 9: harness selector ───────────────────────────────────────
+
+
+def test_select_strategy_path_off_uses_legacy(monkeypatch):
+    cfg = _reload_config_with_env({})
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    legacy_calls = {"n": 0}
+    pipeline_calls = {"n": 0}
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_adaptive_strategy",
+        lambda **kw: (legacy_calls.__setitem__("n", legacy_calls["n"] + 1)
+                       or {"action_groups": [{"id": "AG1"}],
+                           "global_instruction_rewrite": {"text": "GIR"},
+                           "rationale": "legacy rationale"}),
+    )
+    monkeypatch.setattr(
+        three_stage_pipeline, "run_three_stage_pipeline_for_ag",
+        lambda **kw: (pipeline_calls.__setitem__("n", pipeline_calls["n"] + 1)
+                      or {"ag_id": "AG1", "stage_2_results": [], "fallback_to_legacy": False}),
+    )
+
+    out = three_stage_pipeline._select_strategy_path_for_iteration(
+        legacy_kwargs={
+            "clusters": [], "soft_signal_clusters": [],
+            "metadata_snapshot": _sample_metadata_snapshot(),
+            "reflection_buffer": [], "priority_ranking": [],
+            "tried_patches": set(), "w": None,
+        },
+        clusters_for_pipeline=[_sample_cluster()],
+    )
+    assert legacy_calls["n"] == 1
+    assert pipeline_calls["n"] == 0
+    assert out["source"] == "legacy_strategist"
+    # Divergence from plan: selector also returns legacy_strategy_full
+    # (the full dict) so the harness can byte-stably restore
+    # global_instruction_rewrite/rationale when flags are off.
+    assert "legacy_strategy_full" in out
+    assert out["legacy_strategy_full"]["action_groups"] == out["legacy_action_groups"]
+    assert out["legacy_strategy_full"]["rationale"] == "legacy rationale"
+
+
+def test_select_strategy_path_pipeline_uses_three_stage(monkeypatch):
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "1"})
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    legacy_calls = {"n": 0}
+    pipeline_calls = {"n": 0}
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_adaptive_strategy",
+        lambda **kw: (legacy_calls.__setitem__("n", legacy_calls["n"] + 1)
+                       or {"action_groups": [{"id": "AG1"}]}),
+    )
+    monkeypatch.setattr(
+        three_stage_pipeline, "run_three_stage_pipeline_for_ag",
+        lambda **kw: (pipeline_calls.__setitem__("n", pipeline_calls["n"] + 1)
+                      or {"ag_id": "AG1", "stage_2_results": [], "fallback_to_legacy": False}),
+    )
+
+    out = three_stage_pipeline._select_strategy_path_for_iteration(
+        legacy_kwargs={
+            "clusters": [], "soft_signal_clusters": [],
+            "metadata_snapshot": _sample_metadata_snapshot(),
+            "reflection_buffer": [], "priority_ranking": [],
+            "tried_patches": set(), "w": None,
+        },
+        clusters_for_pipeline=[_sample_cluster()],
+    )
+    assert legacy_calls["n"] == 0
+    assert pipeline_calls["n"] == 1
+    assert out["source"] == "three_stage_pipeline"
+
+
+def test_select_strategy_path_pipeline_fallback_runs_legacy(monkeypatch):
+    """When pipeline returns fallback_to_legacy=True, the selector
+    runs the legacy strategist after all and applies that result."""
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "1"})
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_adaptive_strategy",
+        lambda **kw: {"action_groups": [{"id": "AG_LEGACY"}],
+                       "global_instruction_rewrite": {"text": "fb-GIR"},
+                       "rationale": "fb-rationale"},
+    )
+    monkeypatch.setattr(
+        three_stage_pipeline, "run_three_stage_pipeline_for_ag",
+        lambda **kw: {"ag_id": "AG1", "stage_2_results": [],
+                       "fallback_to_legacy": True},
+    )
+
+    out = three_stage_pipeline._select_strategy_path_for_iteration(
+        legacy_kwargs={
+            "clusters": [], "soft_signal_clusters": [],
+            "metadata_snapshot": _sample_metadata_snapshot(),
+            "reflection_buffer": [], "priority_ranking": [],
+            "tried_patches": set(), "w": None,
+        },
+        clusters_for_pipeline=[_sample_cluster()],
+    )
+    assert out["source"] == "legacy_strategist_after_fallback"
+    assert out["legacy_action_groups"][0]["id"] == "AG_LEGACY"
+    # Divergence: full legacy dict preserved on fallback so harness can
+    # restore rationale + global_instruction_rewrite byte-stably.
+    assert out["legacy_strategy_full"]["rationale"] == "fb-rationale"
+
+
+def test_select_strategy_path_shadow_runs_both_applies_legacy(monkeypatch):
+    """Shadow mode: both paths run; legacy applied; comparison emitted
+    via _emit_three_stage_shadow_comparison."""
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_SHADOW_V1": "1"})
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    legacy_calls = {"n": 0}
+    pipeline_calls = {"n": 0}
+    emit_calls = {"n": 0}
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_adaptive_strategy",
+        lambda **kw: (legacy_calls.__setitem__("n", legacy_calls["n"] + 1)
+                       or {"action_groups": [{"id": "AG_LEG"}],
+                           "global_instruction_rewrite": {},
+                           "rationale": "sh-rationale"}),
+    )
+    monkeypatch.setattr(
+        three_stage_pipeline, "run_three_stage_pipeline_for_ag",
+        lambda **kw: (pipeline_calls.__setitem__("n", pipeline_calls["n"] + 1)
+                      or {"ag_id": "AG1", "stage_1_picks": [], "stage_2_results": [],
+                          "fallback_to_legacy": False}),
+    )
+    monkeypatch.setattr(
+        optimizer, "_emit_three_stage_shadow_comparison",
+        lambda **kw: emit_calls.__setitem__("n", emit_calls["n"] + 1),
+    )
+
+    out = three_stage_pipeline._select_strategy_path_for_iteration(
+        legacy_kwargs={
+            "clusters": [], "soft_signal_clusters": [],
+            "metadata_snapshot": _sample_metadata_snapshot(),
+            "reflection_buffer": [], "priority_ranking": [],
+            "tried_patches": set(), "w": None,
+        },
+        clusters_for_pipeline=[_sample_cluster()],
+    )
+    assert legacy_calls["n"] == 1
+    assert pipeline_calls["n"] == 1
+    assert emit_calls["n"] == 1
+    assert out["source"] == "legacy_strategist_shadow"
+    # Divergence: shadow mode also preserves legacy_strategy_full for
+    # byte-stable downstream use.
+    assert out["legacy_strategy_full"]["rationale"] == "sh-rationale"
