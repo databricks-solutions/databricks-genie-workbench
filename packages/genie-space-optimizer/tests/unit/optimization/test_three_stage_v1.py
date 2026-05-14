@@ -1210,3 +1210,76 @@ def test_project_pipeline_to_action_groups_preserves_skill_to_lever_map():
     # Both 5a and 5b proposals merged into key "5":
     five = ag["lever_directives"]["5"]["_pipeline_proposals"]
     assert len(five) == 2
+
+
+# ── Section 7b: L1/L2 stage-2 adapters ────────────────────────────────
+
+
+def test_stage_2_l1_produces_one_proposal_per_target(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    def _fake_call_llm_for_proposal(cluster, metadata_snapshot, patch_type, lever, w=None):
+        return {
+            "proposed_value": f"description for {patch_type}",
+            "rationale": "ok",
+            "_target_for_test": patch_type,
+        }
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake_call_llm_for_proposal)
+
+    bundle = _sample_bundle("lever-1-table-column-description")
+    out = three_stage_pipeline._stage_2_l1(bundle, w=None)
+    assert out["skill_id"] == "lever-1-table-column-description"
+    assert len(out["proposals"]) == len(bundle.target_objects)
+
+
+def test_stage_2_l1_uses_add_table_description_for_table_targets(monkeypatch):
+    """Targets without a column suffix → patch_type='add_table_description'.
+    Targets with `<table>.<col>` → 'add_column_description'."""
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+    from genie_space_optimizer.optimization.activation_bundle import ActivationBundle
+    from genie_space_optimizer.optimization.afs import format_afs
+
+    captured = []
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None):
+        captured.append(patch_type)
+        return {"proposed_value": "x", "rationale": "y"}
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
+
+    bundle = ActivationBundle(
+        skill_id="lever-1-table-column-description",
+        ag_id="AG1",
+        target_objects=("catalog.schema.fact_bookings",
+                        "catalog.schema.fact_bookings.booking_date"),
+        cluster_afs=(format_afs(_sample_cluster()),),
+        metadata_snapshot=_sample_metadata_snapshot(),
+        identifier_allowlist="",
+        evidence_refs=(), expected_impact_qids=(),
+        raw_evidence=(), lever_directives_legacy=None,
+        discovery_rationale="", priority=1,
+    )
+    three_stage_pipeline._stage_2_l1(bundle, w=None)
+    assert "add_table_description" in captured
+    assert "add_column_description" in captured
+
+
+def test_stage_2_l2_passes_lever_2(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    captured_levers = []
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None):
+        captured_levers.append(lever)
+        return {"proposed_value": "x", "rationale": "y"}
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
+
+    bundle = _sample_bundle("lever-2-mv-column-refinement")
+    three_stage_pipeline._stage_2_l2(bundle, w=None)
+    assert all(lv == 2 for lv in captured_levers)
+
+
+def test_stage_2_l1_dispatcher_table_registered():
+    from genie_space_optimizer.optimization import three_stage_pipeline
+    assert "lever-1-table-column-description" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE
+    assert "lever-2-mv-column-refinement" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE

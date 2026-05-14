@@ -39,6 +39,19 @@ logger = logging.getLogger(__name__)
 # ── Stage-2 adapters ──────────────────────────────────────────────────
 
 
+def _patch_type_for_target(target: str) -> tuple[str, str]:
+    """Return (patch_type, kind) for a target identifier.
+
+    Heuristic: a target with three or more dotted parts is treated as
+    ``catalog.schema.table.column`` → column-level. Two parts (or
+    schemaless) → table-level.
+    """
+    parts = (target or "").split(".")
+    if len(parts) >= 4:
+        return ("add_column_description", "column")
+    return ("add_table_description", "table")
+
+
 def _stage_2_l4(bundle: "ActivationBundle", w: Any) -> dict:
     """Stage-2 adapter for lever-4-join-discovery.
 
@@ -89,11 +102,76 @@ def _stage_2_l4(bundle: "ActivationBundle", w: Any) -> dict:
     }
 
 
+def _stage_2_l1(bundle: "ActivationBundle", w: Any) -> dict:
+    """Stage-2 adapter for lever-1-table-column-description."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _call_llm_for_proposal,
+    )
+    proposals: list[dict] = []
+    for target in (bundle.target_objects or ("",)):
+        patch_type, _ = _patch_type_for_target(target)
+        for cluster_afs in bundle.cluster_afs:
+            try:
+                p = _call_llm_for_proposal(
+                    cluster_afs, bundle.metadata_snapshot,
+                    patch_type, lever=1, w=w,
+                )
+            except Exception:
+                logger.warning(
+                    "Stage-2 L1 proposal failed for target=%s AG=%s",
+                    target, bundle.ag_id, exc_info=True,
+                )
+                continue
+            if p:
+                p = {**p, "_target": target, "_patch_type": patch_type}
+                proposals.append(p)
+    return {
+        "skill_id": bundle.skill_id,
+        "ag_id": bundle.ag_id,
+        "proposals": proposals,
+    }
+
+
+def _stage_2_l2(bundle: "ActivationBundle", w: Any) -> dict:
+    """Stage-2 adapter for lever-2-mv-column-refinement.
+
+    Same shape as L1 but lever=2; restricted (by Stage-1 prompt
+    instruction) to MV-column targets.
+    """
+    from genie_space_optimizer.optimization.optimizer import (
+        _call_llm_for_proposal,
+    )
+    proposals: list[dict] = []
+    for target in (bundle.target_objects or ("",)):
+        for cluster_afs in bundle.cluster_afs:
+            try:
+                p = _call_llm_for_proposal(
+                    cluster_afs, bundle.metadata_snapshot,
+                    "add_column_description", lever=2, w=w,
+                )
+            except Exception:
+                logger.warning(
+                    "Stage-2 L2 proposal failed for target=%s AG=%s",
+                    target, bundle.ag_id, exc_info=True,
+                )
+                continue
+            if p:
+                p = {**p, "_target": target}
+                proposals.append(p)
+    return {
+        "skill_id": bundle.skill_id,
+        "ag_id": bundle.ag_id,
+        "proposals": proposals,
+    }
+
+
 # ── Dispatcher ────────────────────────────────────────────────────────
 
 # Plan 3 starts with L4 only. Tasks 15-18 add the remaining adapters
 # to this table.
 _STAGE_2_DISPATCH_TABLE: dict[str, Callable[..., dict]] = {
+    "lever-1-table-column-description": _stage_2_l1,
+    "lever-2-mv-column-refinement": _stage_2_l2,
     "lever-4-join-discovery": _stage_2_l4,
 }
 
