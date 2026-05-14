@@ -10998,6 +10998,18 @@ def _call_llm_for_stage_1_discovery(
     }
 
 
+def _emit_three_stage_shadow_comparison(
+    ag_id: str,
+    stage_1_picks: list[dict],
+    legacy_action_groups: list[dict],
+    pipeline_stage_2_results: list[dict],
+) -> None:
+    """Stub — replaced with the real implementation in Task 14.
+    Until then, this is a no-op so the orchestrator's compile-time
+    references resolve."""
+    return None
+
+
 # ── Phase 1a: Triage ────────────────────────────────────────────────────
 
 _EMPTY_TRIAGE: dict[str, Any] = {
