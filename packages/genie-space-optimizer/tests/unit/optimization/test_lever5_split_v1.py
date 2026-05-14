@@ -355,3 +355,121 @@ def test_validate_5a_allows_empty_instruction_text():
         "rationale": "Nothing actionable found.",
     })
     assert ok
+
+
+# ── Section 5: _dispatch_lever_5_split ────────────────────────────────
+
+
+def test_dispatch_returns_holistic_compatible_shape(monkeypatch):
+    """Dispatcher output shape MUST match _call_llm_for_holistic_instructions
+    so the rest of generate_proposals_from_strategy is unaffected."""
+    from genie_space_optimizer.optimization import optimizer
+
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_lever_5a_instructions",
+        lambda **kw: {"instruction_text": "PURPOSE:\nX", "rationale": "r5a"},
+    )
+    # Stub the per-cluster 5b adapter to return one example proposal per
+    # cluster. Adapter signature: (cluster, metadata_snapshot, w,
+    # benchmark_corpus) -> list[dict].
+    def _fake_5b_per_cluster(cluster, metadata_snapshot, w, benchmark_corpus):
+        return [{
+            "example_question": f"Q for {cluster.get('cluster_id', '?')}",
+            "example_sql": "SELECT 1",
+            "parameters": [],
+            "usage_guidance": "test",
+        }]
+    monkeypatch.setattr(
+        optimizer, "_dispatch_lever_5b_for_cluster", _fake_5b_per_cluster,
+    )
+
+    result = optimizer._dispatch_lever_5_split(
+        all_clusters=[{"cluster_id": "C1"}, {"cluster_id": "C2"}],
+        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
+                           "metric_views": [], "functions": [],
+                           "instructions": {"text_instructions": []}},
+        lever_changes=[],
+        w=None,
+        benchmarks=[],
+    )
+    assert set(result.keys()) == {"instruction_text", "example_sql_proposals", "rationale"}
+    assert result["instruction_text"] == "PURPOSE:\nX"
+    assert len(result["example_sql_proposals"]) == 2
+    assert result["rationale"]  # non-empty
+
+
+def test_dispatch_runs_5a_once_and_5b_once_per_cluster(monkeypatch):
+    """Verify per-cluster fan-out for L5b."""
+    from genie_space_optimizer.optimization import optimizer
+
+    calls_5a = {"n": 0}
+    calls_5b = {"n": 0}
+
+    def _fake_5a(**kw):
+        calls_5a["n"] += 1
+        return {"instruction_text": "X", "rationale": "r"}
+    def _fake_5b(cluster, metadata_snapshot, w, benchmark_corpus):
+        calls_5b["n"] += 1
+        return []
+    monkeypatch.setattr(optimizer, "_call_llm_for_lever_5a_instructions", _fake_5a)
+    monkeypatch.setattr(optimizer, "_dispatch_lever_5b_for_cluster", _fake_5b)
+
+    optimizer._dispatch_lever_5_split(
+        all_clusters=[{"cluster_id": f"C{i}"} for i in range(3)],
+        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
+                           "metric_views": [], "functions": [],
+                           "instructions": {"text_instructions": []}},
+        lever_changes=[],
+        w=None,
+        benchmarks=[],
+    )
+    assert calls_5a["n"] == 1
+    assert calls_5b["n"] == 3
+
+
+def test_dispatch_5b_adapter_handles_none_return(monkeypatch):
+    """synthesis.synthesize_example_sqls returns dict | None — None
+    means 'no archetype matched' or 'caps exhausted' (logged, not an
+    error). The adapter must convert None -> []."""
+    from genie_space_optimizer.optimization import optimizer, synthesis
+
+    monkeypatch.setattr(
+        synthesis, "synthesize_example_sqls",
+        lambda **kw: None,
+    )
+    out = optimizer._dispatch_lever_5b_for_cluster(
+        cluster={"cluster_id": "C1"},
+        metadata_snapshot={"tables": [], "metric_views": [],
+                            "functions": []},
+        w=None,
+        benchmark_corpus=None,
+    )
+    assert out == []
+
+
+def test_dispatch_5b_adapter_wraps_single_dict_in_list(monkeypatch):
+    """synthesis returns one dict; adapter wraps in list with the
+    holistic-shape keys."""
+    from genie_space_optimizer.optimization import optimizer, synthesis
+
+    monkeypatch.setattr(
+        synthesis, "synthesize_example_sqls",
+        lambda **kw: {
+            "example_question": "What is X?",
+            "example_sql": "SELECT 1",
+            "usage_guidance": "use for X",
+            "rationale": "r",
+        },
+    )
+    out = optimizer._dispatch_lever_5b_for_cluster(
+        cluster={"cluster_id": "C1"},
+        metadata_snapshot={"tables": [], "metric_views": [],
+                            "functions": []},
+        w=None,
+        benchmark_corpus=None,
+    )
+    assert len(out) == 1
+    assert out[0]["example_question"] == "What is X?"
+    assert out[0]["example_sql"] == "SELECT 1"
+    assert out[0]["usage_guidance"] == "use for X"
+    assert out[0]["parameters"] == []  # adapter defaults missing key

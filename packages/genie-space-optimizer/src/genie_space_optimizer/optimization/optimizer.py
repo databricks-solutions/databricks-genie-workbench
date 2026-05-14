@@ -9322,6 +9322,150 @@ def _call_llm_for_lever_5a_instructions(
     return {"instruction_text": "", "rationale": "All retries exhausted"}
 
 
+def _dispatch_lever_5b_for_cluster(
+    cluster: dict,
+    metadata_snapshot: dict,
+    w: WorkspaceClient | None,
+    benchmark_corpus: Any,
+) -> list[dict]:
+    """Plan 2 — adapter that calls ``synthesis.synthesize_example_sqls``
+    for ONE cluster and returns the proposed example SQL(s) in
+    holistic-compatible shape.
+
+    Notes on the underlying contract (do NOT relax these in this adapter):
+      * ``synthesize_example_sqls(cluster, metadata_snapshot,
+        benchmark_corpus, *, archetype=None, budget=None,
+        existing_example_sql_count=0, w=None, ...)`` — see
+        ``synthesis.py:875+``.
+      * Returns ``dict | None`` — a single validated proposal, or
+        ``None`` when no archetype matches / caps exhausted / all
+        gate attempts fail. The adapter wraps single-dict in a list and
+        returns ``[]`` for ``None``.
+      * AFS is built INTERNALLY by ``synthesize_example_sqls`` via
+        ``format_afs(cluster)``; the adapter does NOT pre-compute it.
+      * ``benchmark_corpus`` (a ``BenchmarkCorpus`` instance built from
+        the strategy's ``benchmarks`` list) is required by the L5b
+        firewall for n-gram leakage checks. Pass ``None`` only in tests
+        where ``synthesize_example_sqls`` is monkeypatched.
+    """
+    from genie_space_optimizer.optimization import synthesis
+
+    try:
+        proposal = synthesis.synthesize_example_sqls(
+            cluster=cluster,
+            metadata_snapshot=metadata_snapshot,
+            benchmark_corpus=benchmark_corpus,
+            budget=synthesis.SynthesisBudget.new(),
+            w=w,
+        )
+    except Exception:
+        logger.exception(
+            "Lever 5b per-cluster synthesis failed for cluster %s",
+            cluster.get("cluster_id", "?"),
+        )
+        return []
+
+    if proposal is None:
+        return []
+
+    # Capture-sink hit AFTER a successful return so failed/skipped
+    # syntheses don't pad the counter. The capture-sink helper lands in
+    # Task 13; keep the import INSIDE the flag-gated branch so this
+    # function remains importable before then. The try/except guards
+    # against env-leak from sibling tests setting the flag before the
+    # capture sink exists (pre-Task-13 state).
+    from genie_space_optimizer.common.config import (
+        lever5_shadow_enabled,
+        lever5_split_enabled,
+    )
+    if lever5_split_enabled() or lever5_shadow_enabled():
+        try:
+            from genie_space_optimizer.common.config import (  # noqa: F401
+                _record_lever5_skill_hit,
+            )
+            _record_lever5_skill_hit("lever-5b-example-sql")
+        except ImportError:
+            pass  # Pre-Task-13: capture sink not yet wired.
+
+    return [{
+        "example_question": proposal.get("example_question", ""),
+        "example_sql": proposal.get("example_sql", ""),
+        "parameters": proposal.get("parameters", []) or [],
+        "usage_guidance": proposal.get("usage_guidance", "")
+                          or proposal.get("rationale", ""),
+    }]
+
+
+def _dispatch_lever_5_split(
+    all_clusters: list[dict],
+    metadata_snapshot: dict,
+    lever_changes: list[dict] | None = None,
+    w: WorkspaceClient | None = None,
+    benchmarks: list[dict] | None = None,
+) -> dict:
+    """Plan 2 — split-mode dispatcher for Lever 5.
+
+    Returns the SAME output shape as
+    ``_call_llm_for_holistic_instructions`` so the rest of
+    ``generate_proposals_from_strategy`` is unaffected:
+        {"instruction_text": str,
+         "example_sql_proposals": list[dict],
+         "rationale": str}
+
+    Internal fan-out:
+      * one ``_call_llm_for_lever_5a_instructions`` call (merged
+        instruction document for the whole AG),
+      * one ``_dispatch_lever_5b_for_cluster`` call per input cluster
+        (caps in ``synthesis.SynthesisBudget`` enforce per-cluster /
+        per-archetype limits inside synthesize_example_sqls).
+
+    ``benchmarks`` is threaded from
+    ``generate_proposals_from_strategy``'s arg of the same name so the
+    L5b leakage firewall has the corpus it needs.
+    """
+    # Build the benchmark corpus once and reuse for every cluster.
+    benchmark_corpus = None
+    try:
+        from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
+        benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks or [])
+    except Exception:
+        logger.warning(
+            "L5 split: unable to construct BenchmarkCorpus from "
+            "%d benchmarks; L5b firewall will run with empty corpus",
+            len(benchmarks or []),
+            exc_info=True,
+        )
+
+    five_a = _call_llm_for_lever_5a_instructions(
+        all_clusters=all_clusters,
+        metadata_snapshot=metadata_snapshot,
+        lever_changes=lever_changes,
+        w=w,
+    )
+
+    example_sql_proposals: list[dict] = []
+    for cluster in (all_clusters or []):
+        example_sql_proposals.extend(
+            _dispatch_lever_5b_for_cluster(
+                cluster=cluster,
+                metadata_snapshot=metadata_snapshot,
+                w=w,
+                benchmark_corpus=benchmark_corpus,
+            )
+        )
+
+    rationale = (
+        f"L5a: {five_a.get('rationale', '') or '(none)'}. "
+        f"L5b: {len(example_sql_proposals)} example SQLs across "
+        f"{len(all_clusters or [])} cluster(s)."
+    )
+    return {
+        "instruction_text": five_a.get("instruction_text", "") or "",
+        "example_sql_proposals": example_sql_proposals,
+        "rationale": rationale,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Phase 1 — Holistic Strategist
 # ═══════════════════════════════════════════════════════════════════════
