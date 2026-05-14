@@ -1,68 +1,31 @@
 #!/usr/bin/env python
-"""Export hi-fidelity Plan-2 lever5-split fixtures from a real trial run.
+"""Export lever5-split shadow-comparison records into committable fixtures.
 
-Status
-------
-This is the **future hi-fidelity** Plan 2 fixture path. It captures the
-holistic / 5a / 5b prompt+response bytes as actually rendered during a
-live optimization trial that ran with ``GSO_LEVER5_SHADOW_V1=1`` (which
-doubles LLM cost, so use sparingly).
+Reads:
+  * NDJSON capture file (`GSO_LEVER5_SPLIT_CAPTURE_PATH` from the trial
+    run; passed via --capture-path).
+  * MLflow traces filtered to spans:
+      - lever_5_holistic
+      - lever_5a_instructions
+      - lever_5b_example_sql
+      - lever_5b_example_sql_for_rca
 
-For the **default** Plan 2 path that does not require a live shadow
-trial, see ``scripts/export_lever5_split_fixtures_synthetic.py``. That
-script builds ``(old, new)`` proposal pairs in memory, calls the real
-``_emit_lever5_shadow_comparison`` to compute the comparison record,
-and writes fixtures that satisfy the byte-stability test
-(``tests/unit/optimization/test_lever5_split_fixtures.py``). Use the
-synthetic path unless you specifically need real LLM-rendered prompts
-in the fixture for a downstream consumer.
+Writes:
+  * One fixture file per shadow record into
+    tests/fixtures/lever5_split_v1/<ag_id>__<short_hash>.json
+    with structure:
+        {
+          "ag_id", "cluster_ids",
+          "instruction_text_jaccard", "example_sqls_set_overlap",
+          "old_example_sqls_count", "new_example_sqls_count",
+          "old_example_sqls_hashes", "new_example_sqls_hashes",
+          "lever_5_holistic":  {prompt_bytes, response_bytes},
+          "lever_5a":           {instruction_text, rationale},
+          "lever_5b_proposals": [ {example_sql, ...}, ... ]
+        }
+  * A summary printed to stdout.
 
-Inputs
-------
-* ``--capture-path`` — NDJSON written by ``_LeverFiveCaptureSink``
-  during the shadow trial (one record per Stage-2 dispatch with
-  ``GSO_LEVER5_SPLIT_CAPTURE_PATH`` set).
-* ``--mlflow-experiment-id`` — experiment that owns the trial's
-  traces; used to fetch the holistic / 5a / 5b spans corresponding to
-  each NDJSON record.
-
-Span model
-----------
-This exporter assumes traces with the following root-span names exist
-in the target experiment, each carrying their LLM call's
-prompt / response:
-
-  - ``lever_5_holistic``
-  - ``lever_5a_instructions``
-  - ``lever_5b_example_sql``
-  - ``lever_5b_example_sql_for_rca``
-
-Note: The existing implementation reads ``inputs.prompt`` /
-``outputs.text`` directly off the matched span. If a future trial is
-run with the OpenAI autolog integration emitting ``Completions`` child
-spans (the same shape as ``export_narrowing_fixtures.py``), this
-helper will need a similar walk-to-child rewrite. Cross-reference
-``scripts/export_narrowing_fixtures.py``'s
-``_extract_prompt_and_response_from_completions`` for the pattern.
-
-Outputs
--------
-One fixture file per shadow record into
-``tests/fixtures/lever5_split_v1/<ag_id>__<short_hash>.json`` with
-structure:
-
-    {
-      "ag_id", "cluster_ids",
-      "instruction_text_jaccard", "example_sqls_set_overlap",
-      "old_example_sqls_count", "new_example_sqls_count",
-      "old_example_sqls_hashes", "new_example_sqls_hashes",
-      "lever_5_holistic":  {prompt_bytes, response_bytes},
-      "lever_5a":           {instruction_text, rationale},
-      "lever_5b_proposals": [ {example_sql, ...}, ... ]
-    }
-
-Idempotent: re-runs skip files whose ``ag_id`` + content hash already
-exist.
+Idempotent: re-runs skip files whose `ag_id` + content hash already exist.
 """
 from __future__ import annotations
 

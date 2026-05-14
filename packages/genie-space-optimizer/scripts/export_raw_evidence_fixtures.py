@@ -1,37 +1,18 @@
 #!/usr/bin/env python
-"""Export hi-fidelity Plan-4 raw-evidence fixtures from a real trial run.
+"""Plan 4 — export raw-evidence shadow-comparison records into
+committable fixtures.
 
-Status
-------
-This is the **future hi-fidelity** Plan 4 fixture path. It preserves
-shadow-comparison records emitted during a live optimization trial
-that ran with ``GSO_RAW_EVIDENCE_SHADOW_V1=1`` (which doubles LLM
-cost during Stage-2 dispatch — every dispatch runs both the
-raw-evidence-on and raw-evidence-off path).
+Reads:
+  * NDJSON capture file from ``GSO_RAW_EVIDENCE_CAPTURE_PATH`` (passed
+    via ``--capture-path``).
 
-For the **default** Plan 4 path that does not require a live shadow
-trial, see ``scripts/export_raw_evidence_fixtures_synthetic.py``.
-That script invokes the real ``_emit_raw_evidence_shadow_comparison``
-with synthetic ``(off, on)`` proposal pairs covering every valid
-``structural_diff`` token (``identical``, ``count_differs``,
-``keys_differ``, ``content_differs``, ``both_empty``) and writes
-fixtures that satisfy the byte-stability test
-(``tests/unit/optimization/test_raw_evidence_fixtures.py``). Use the
-synthetic path unless you specifically need real Stage-2 proposal
-content captured from a live LLM render.
-
-Inputs
-------
-* ``--capture-path`` — NDJSON written by ``_RawEvidenceCaptureSink``
-  during the shadow trial (one record per Stage-2 dispatch with
-  ``GSO_RAW_EVIDENCE_CAPTURE_PATH`` set).
-
-Outputs
--------
-One fixture per record into
+Writes one fixture per record into
 ``tests/fixtures/raw_evidence_v1/<ag_id>__<skill_id>__<short_hash>.json``
-preserving the comparison record verbatim. Idempotent: re-runs skip
-files whose content hash already exists.
+preserving the comparison record verbatim. The downstream regression
+test (``test_raw_evidence_fixtures.py``) validates skill_id, structural
+diff token, and non-negative proposal counts.
+
+Idempotent: re-runs skip files whose content hash already exists.
 """
 from __future__ import annotations
 
