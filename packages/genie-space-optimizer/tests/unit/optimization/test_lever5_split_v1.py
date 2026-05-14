@@ -777,3 +777,17 @@ def test_emit_shadow_comparison_no_op_when_no_flags():
     )
     snap = cfg.dump_lever5_split_capture_summary()
     assert snap["shadow_comparisons"] == 0
+
+
+# ── Section 10: harness summary integration ───────────────────────────
+
+
+def test_dump_lever5_split_capture_summary_is_safe_when_no_state():
+    """The harness summary block calls this on every run; it must not
+    raise even when the sink is fresh."""
+    from genie_space_optimizer.common import config as cfg
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    snap = cfg.dump_lever5_split_capture_summary()
+    assert isinstance(snap, dict)
+    assert set(snap["hits"].keys()) == cfg._LEVER_5_SPLIT_SKILL_NAMES  # noqa: SLF001
+    assert snap["shadow_comparisons"] == 0

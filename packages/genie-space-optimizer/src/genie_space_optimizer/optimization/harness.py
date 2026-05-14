@@ -31598,6 +31598,24 @@ def _run_lever_loop(
         # Telemetry must never break a real run.
         logger.warning("narrowing_v1 summary emit failed: %s", _narrowing_log_exc)
 
+    # Plan 2 — L5 split / shadow trial telemetry. No-op unless one of
+    # GSO_LEVER5_SPLIT_V1 / GSO_LEVER5_SHADOW_V1 was set for this run.
+    try:
+        from genie_space_optimizer.common.config import dump_lever5_split_capture_summary
+        _l5_summary = dump_lever5_split_capture_summary()
+        if any(c > 0 for c in _l5_summary["hits"].values()) or _l5_summary["shadow_comparisons"] > 0:
+            logger.info(
+                "lever5_split trial summary: hits=%s shadow_comparisons=%d "
+                "all_sites_exercised=%s unhit=%s sink_path=%s",
+                _l5_summary["hits"],
+                _l5_summary["shadow_comparisons"],
+                _l5_summary["all_sites_exercised"],
+                _l5_summary["unhit_sites"],
+                _l5_summary["sink_path"],
+            )
+    except Exception as _l5_log_exc:
+        logger.warning("lever5_split summary emit failed: %s", _l5_log_exc)
+
     return _build_loop_out_with_pretty_print(
         loop_out_base=_loop_out_base,
         phase_h_full_transcript=_full_transcript,
