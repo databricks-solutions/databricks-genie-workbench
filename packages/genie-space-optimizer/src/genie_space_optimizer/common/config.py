@@ -6746,3 +6746,80 @@ def provisional_rca_from_soft_signals_enabled() -> bool:
     provisional path (legacy behavior).
     """
     return _flag_default_on("GSO_PROVISIONAL_RCA_FROM_SOFT_SIGNALS")
+
+
+# ---------------------------------------------------------------------------
+# Phase 1+2 deferred-wiring flags (2026-05-14).
+# Plan: docs/final_plan/2026-05-14-final-closeout-phase-1-2-decision-plane-and-causal-repair-plan.md
+# ---------------------------------------------------------------------------
+
+
+def iteration_terminal_policy_enabled() -> bool:
+    """Phase 1.2 / spec Section 12.5 — when ON, the lever-loop
+    consumes the canonical :func:`decide_iteration_terminal_action`
+    router (per contract spec Section 4.5 + Section 12.6
+    ``_ROUTING_TABLE``) at end-of-iteration to decide ``next_step``
+    + ``add_to_forbidden_set``.
+
+    Default-ON. Explicit ``GSO_ITERATION_TERMINAL_POLICY=0`` forces
+    the legacy ad-hoc retire path (the pre-Phase-1 ``do_not_retry``
+    block) for A/B testing.
+    """
+    return _flag_default_on("GSO_ITERATION_TERMINAL_POLICY")
+
+
+def strategist_recovery_pivot_enabled() -> bool:
+    """Phase 1.5 — when ON, the harness builds the ordered cluster
+    priority list (``regressed + uncovered + original_target``) via
+    :func:`build_recovery_priority_list` and threads it into the
+    strategist's ``ActionGroupsInput.priority_cluster_ids`` so the
+    strategist pivots to regressed clusters first.
+
+    Default-ON. Explicit ``GSO_STRATEGIST_RECOVERY_PIVOT=0`` rolls
+    back to the legacy unordered cluster list.
+    """
+    return _flag_default_on("GSO_STRATEGIST_RECOVERY_PIVOT")
+
+
+def structural_repair_gate_enabled() -> bool:
+    """Phase 2.3 / spec Section 8.4 + 12.4 — when ON, the harness
+    invokes :func:`enforce_structural_repair_shape` between the
+    blast-radius gate and the applyability gate, rejecting
+    iterations that emitted only instruction-only patches when the
+    RCA card's ``intended_patch_shape`` is structural. Emits
+    ``GSO_STRUCTURAL_REPAIR_DECISION_V1`` + a
+    ``STRUCTURAL_REPAIR_DECISION`` DecisionRecord on every firing.
+
+    Default-ON. Explicit ``GSO_STRUCTURAL_REPAIR_GATE=0`` allows
+    instruction-only patches to survive (legacy behavior).
+    """
+    return _flag_default_on("GSO_STRUCTURAL_REPAIR_GATE")
+
+
+def auto_narrow_replacement_on_collateral_enabled() -> bool:
+    """Phase 2.4 — when ON and blast-radius dropped every patch
+    for an iteration, the harness auto-invokes
+    :func:`try_narrow_replacement` (wrapping
+    ``build_narrow_l6_replacement`` /
+    ``build_l5_example_sql_replacement``) before declaring the
+    iteration ``BLAST_RADIUS_REJECTED``.
+
+    Default-ON. Explicit
+    ``GSO_AUTO_NARROW_REPLACEMENT_ON_COLLATERAL=0`` skips the
+    auto-narrow attempt (legacy behavior — collateral drop is
+    terminal).
+    """
+    return _flag_default_on("GSO_AUTO_NARROW_REPLACEMENT_ON_COLLATERAL")
+
+
+def best_of_n_structural_enabled() -> bool:
+    """Phase 2.6 — when ON and a structural AG has
+    ``prior_failure_count >= 1``, the harness generates N proposal
+    samples via :func:`should_run_best_of_n` /
+    :func:`rank_proposal_candidates` and selects the top-ranked
+    survivor for the applier.
+
+    Default-ON. Explicit ``GSO_BEST_OF_N_STRUCTURAL=0`` falls back
+    to single-shot proposal generation (legacy behavior).
+    """
+    return _flag_default_on("GSO_BEST_OF_N_STRUCTURAL")
