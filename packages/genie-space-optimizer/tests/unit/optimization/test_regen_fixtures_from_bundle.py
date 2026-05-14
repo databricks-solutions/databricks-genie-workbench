@@ -135,3 +135,20 @@ def test_orchestrator_handles_missing_experiment_id(tmp_path):
     summary = regen_fixtures(bundle_dir=bundle_dir, output_root=tmp_path / "out")
     assert summary["exit_code"] != 0
     assert summary["error"] == "mlflow_experiment_id_missing"
+
+
+def test_orchestrator_dispatch_table_points_at_existing_scripts():
+    """Plan 5 — the four exporter script paths in _DISPATCH must exist
+    on disk. If a future PR renames or moves a script, this test
+    catches the break before the orchestrator is run for real."""
+    regen_mod = _load_regen_module()
+    dispatch = regen_mod._DISPATCH  # noqa: SLF001
+    repo_root = Path(__file__).resolve().parents[3]
+    for plan in dispatch:
+        script_path = repo_root / plan.exporter_script
+        assert script_path.is_file(), (
+            f"plan {plan.plan_id} dispatches to {plan.exporter_script} "
+            f"but {script_path} does not exist. If you renamed the "
+            f"exporter script, update _DISPATCH in "
+            f"scripts/regen_fixtures_from_bundle.py."
+        )
