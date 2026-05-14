@@ -9149,6 +9149,165 @@ def _call_llm_for_holistic_instructions(
     return {"instruction_text": "", "example_sql_proposals": [], "rationale": "All retries exhausted"}
 
 
+def _call_llm_for_lever_5a_instructions(
+    all_clusters: list[dict],
+    metadata_snapshot: dict,
+    lever_changes: list[dict] | None = None,
+    w: WorkspaceClient | None = None,
+) -> dict:
+    """Plan 2 — Lever 5a (instruction-only) LLM call.
+
+    Sibling of ``_call_llm_for_holistic_instructions`` that uses
+    ``LEVER_5A_INSTRUCTION_PROMPT`` and enforces the no-SQL output
+    contract. Returns ``{"instruction_text": str, "rationale": str}``
+    — no ``example_sql_proposals`` key.
+
+    Capture-sink hit is recorded when either ``GSO_LEVER5_SPLIT_V1``
+    or ``GSO_LEVER5_SHADOW_V1`` is on; both are no-op default-off.
+    """
+    from genie_space_optimizer.common.config import (
+        LEVER_5A_INSTRUCTION_PROMPT,
+        lever5_shadow_enabled,
+        lever5_split_enabled,
+    )
+    from genie_space_optimizer.optimization.applier import _get_general_instructions
+
+    ds = metadata_snapshot.get("data_sources", {})
+    if not isinstance(ds, dict):
+        ds = {}
+    _tables = metadata_snapshot.get("tables", []) or ds.get("tables", [])
+    _mvs = metadata_snapshot.get("metric_views", []) or ds.get("metric_views", [])
+    _funcs = metadata_snapshot.get("functions", []) or ds.get("functions", [])
+
+    config = metadata_snapshot.get("config") or {}
+    space_desc = config.get("description") or ""
+    if isinstance(space_desc, list):
+        space_desc = "\n".join(space_desc)
+    if not space_desc:
+        space_desc = "(No description set for this Genie Space.)"
+
+    current_instructions = _get_general_instructions(metadata_snapshot)
+    existing_example_sqls = _format_existing_example_sqls(metadata_snapshot)
+
+    resolved_ids: set[str] = set()
+    for lc in (lever_changes or []):
+        for cid in (lc.get("cluster_ids", []) or []):
+            if lc.get("status") in ("applied", "success"):
+                resolved_ids.add(str(cid))
+
+    unresolved = [
+        c for c in all_clusters
+        if str(c.get("cluster_id", "")) not in resolved_ids
+    ]
+    focus_clusters = unresolved if unresolved else all_clusters
+
+    _allowlist = _build_identifier_allowlist(metadata_snapshot)
+
+    # 5a budget is 1500 chars smaller than today's holistic budget so
+    # the per-cluster L5b calls in Plan 4 have room for raw evidence.
+    LEVER_5A_INSTRUCTION_BUDGET = max(0, 24500 - 500 - 1500)
+
+    format_kwargs: dict[str, Any] = {
+        "space_description": space_desc,
+        "eval_summary": _format_eval_summary(focus_clusters),
+        "cluster_briefs": _format_cluster_briefs_afs(focus_clusters, top_n=5),
+        "lever_summary": _format_lever_summary(lever_changes),
+        "current_instructions": current_instructions or "(No current instructions.)",
+        "existing_example_sqls": existing_example_sqls,
+        "instruction_char_budget": LEVER_5A_INSTRUCTION_BUDGET,
+        "identifier_allowlist": _format_identifier_allowlist(_allowlist),
+    }
+
+    format_kwargs = _truncate_to_budget(
+        format_kwargs, LEVER_5A_INSTRUCTION_PROMPT,
+        priority_keys=["existing_example_sqls", "lever_summary",
+                       "cluster_briefs", "eval_summary"],
+    )
+
+    prompt = format_mlflow_template(LEVER_5A_INSTRUCTION_PROMPT, **format_kwargs)
+
+    from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
+    _link_prompt_to_trace("lever_5a_instructions")
+
+    # Capture-sink hit BEFORE the LLM call so a crash mid-call still
+    # records that L5a was attempted (the dispatcher uses this counter
+    # for coverage gating).
+    if lever5_split_enabled() or lever5_shadow_enabled():
+        from genie_space_optimizer.common.config import _record_lever5_skill_hit
+        _record_lever5_skill_hit("lever-5a-instructions")
+
+    logger.info(
+        "\n┌─── LLM Call [LEVER_5A_INSTRUCTIONS] ─────────────────────────────────\n"
+        "│ Clusters: %d  Lever changes: %d  Prompt length: %d chars\n"
+        "└─────────────────────────────────────────────────────────────────────────",
+        len(focus_clusters), len(lever_changes or []), len(prompt),
+    )
+
+    import time
+    from genie_space_optimizer.optimization.evaluation import _extract_json
+
+    system_msg = (
+        "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
+        "Do NOT include any explanation, analysis, or markdown outside the JSON. "
+        "Your entire response must be parseable by json.loads(). "
+        "The JSON must contain an 'instruction_text' string field. "
+        "It MUST NOT contain an 'example_sql_proposals' field — that field "
+        "belongs to a separate skill and your output will be rejected if "
+        "you include it."
+    )
+
+    text = ""
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            text, _response = _call_llm_openai(
+                w,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt},
+                ],
+                max_retries=1,
+                temperature=LLM_TEMPERATURE,
+            )
+            try:
+                result = _extract_json(text)
+            except json.JSONDecodeError:
+                result = _repair_truncated_holistic_json(text)
+
+            instruction_text = result.get("instruction_text", "")
+            if instruction_text:
+                instruction_text = _sanitize_plaintext_instructions(instruction_text)
+            rationale = result.get("rationale", "")
+
+            if instruction_text and len(instruction_text) > MAX_HOLISTIC_INSTRUCTION_CHARS:
+                logger.warning(
+                    "L5a instruction text exceeds %d chars (%d), truncating",
+                    MAX_HOLISTIC_INSTRUCTION_CHARS, len(instruction_text),
+                )
+                instruction_text = instruction_text[:MAX_HOLISTIC_INSTRUCTION_CHARS]
+
+            return {
+                "instruction_text": instruction_text,
+                "rationale": rationale,
+            }
+        except json.JSONDecodeError:
+            logger.warning(
+                "L5a LLM response was not valid JSON (attempt %d): %.500s",
+                attempt + 1, text,
+            )
+            if attempt >= LLM_MAX_RETRIES - 1:
+                return {"instruction_text": "", "rationale": "JSON parse failed"}
+        except Exception:
+            if attempt < LLM_MAX_RETRIES - 1:
+                time.sleep(2**attempt)
+            else:
+                logger.exception(
+                    "L5a LLM call failed after %d retries (prompt len: %d)",
+                    LLM_MAX_RETRIES, len(prompt),
+                )
+                return {"instruction_text": "", "rationale": "LLM call failed"}
+    return {"instruction_text": "", "rationale": "All retries exhausted"}
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Phase 1 — Holistic Strategist
 # ═══════════════════════════════════════════════════════════════════════

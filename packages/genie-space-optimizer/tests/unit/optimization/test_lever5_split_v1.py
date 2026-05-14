@@ -205,3 +205,62 @@ def test_lever_5a_instruction_prompt_renders_with_realistic_kwargs():
     assert "Hotel bookings analytics" in rendered
     assert "{{" not in rendered, "unrendered template variable in L5a prompt"
     assert '"example_sql_proposals"' not in rendered  # not even in the schema
+
+
+# ── Section 3: _call_llm_for_lever_5a_instructions ────────────────────
+
+
+def test_call_llm_for_lever_5a_instructions_returns_instruction_only_shape(monkeypatch):
+    """The function must return {instruction_text, rationale} only —
+    no example_sql_proposals key."""
+    from genie_space_optimizer.optimization import optimizer
+
+    # Stub _call_llm_openai to return a deterministic JSON payload:
+    def _fake_call_llm_openai(*args, **kwargs):
+        return (
+            '{"instruction_text": "PURPOSE:\\nHotel bookings.\\n",'
+            ' "rationale": "Coverage."}',
+            None,
+        )
+
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_call_llm_openai)
+
+    metadata_snapshot = {
+        "config": {"description": "Hotel bookings"},
+        "data_sources": {"tables": [], "metric_views": [], "functions": []},
+        "instructions": {"text_instructions": []},
+        "tables": [],
+        "metric_views": [],
+        "functions": [],
+    }
+    result = optimizer._call_llm_for_lever_5a_instructions(
+        all_clusters=[],
+        metadata_snapshot=metadata_snapshot,
+        lever_changes=[],
+        w=None,
+    )
+    assert set(result.keys()) == {"instruction_text", "rationale"}, result
+    assert "example_sql_proposals" not in result
+
+
+def test_call_llm_for_lever_5a_instructions_records_capture_when_flag_on(monkeypatch):
+    """When GSO_LEVER5_SPLIT_V1=1 (or shadow), the call must increment
+    the lever-5a-instructions hit counter via _record_lever5_skill_hit."""
+    cfg = _reload_config_with_env({"GSO_LEVER5_SPLIT_V1": "1"})
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_call_llm_openai(*args, **kwargs):
+        return ('{"instruction_text": "X", "rationale": "Y"}', None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_call_llm_openai)
+
+    optimizer._call_llm_for_lever_5a_instructions(
+        all_clusters=[],
+        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
+                            "metric_views": [], "functions": [],
+                            "instructions": {"text_instructions": []}},
+        lever_changes=[],
+        w=None,
+    )
+    snap = cfg.dump_lever5_split_capture_summary()
+    assert snap["hits"]["lever-5a-instructions"] == 1
