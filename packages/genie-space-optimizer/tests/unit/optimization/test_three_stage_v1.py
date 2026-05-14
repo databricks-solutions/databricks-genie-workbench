@@ -636,3 +636,113 @@ def test_call_llm_for_stage_1_discovery_returns_empty_on_llm_failure(monkeypatch
     )
     assert result["applicable_skills"] == []
     assert "LLM call failed" in result["discovery_rationale"]
+
+
+# ── Section 3: _ThreeStageCaptureSink ─────────────────────────────────
+
+
+def test_three_stage_capture_sink_initial_state():
+    cfg = _reload_config_with_env({})
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    snap = cfg.dump_three_stage_capture_summary()
+    assert snap["discovery_calls"] == 0
+    assert all(c == 0 for c in snap["skill_dispatches"].values())
+    assert snap["shadow_comparisons"] == 0
+    assert snap["all_required_sites_exercised"] is False
+
+
+def test_three_stage_record_discovery_call_increments():
+    cfg = _reload_config_with_env({})
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_three_stage_discovery_call("AG1")
+    cfg._record_three_stage_discovery_call("AG2")
+    snap = cfg.dump_three_stage_capture_summary()
+    assert snap["discovery_calls"] == 2
+
+
+def test_three_stage_record_skill_dispatch_increments_per_skill():
+    cfg = _reload_config_with_env({})
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_three_stage_skill_dispatch("lever-4-join-discovery")
+    cfg._record_three_stage_skill_dispatch("lever-4-join-discovery")
+    cfg._record_three_stage_skill_dispatch("lever-1-table-column-description")
+    snap = cfg.dump_three_stage_capture_summary()
+    assert snap["skill_dispatches"]["lever-4-join-discovery"] == 2
+    assert snap["skill_dispatches"]["lever-1-table-column-description"] == 1
+    assert snap["skill_dispatches"]["lever-6-sql-expression"] == 0
+
+
+def test_three_stage_record_shadow_comparison_writes_ndjson():
+    import json
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "three_stage.ndjson"
+        cfg = _reload_config_with_env({
+            "GSO_THREE_STAGE_SHADOW_V1": "1",
+            "GSO_THREE_STAGE_CAPTURE_PATH": str(path),
+        })
+        cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+        cfg._record_three_stage_shadow_comparison({
+            "ag_id": "AG1",
+            "stage_1_skill_ids": ["lever-4-join-discovery"],
+            "legacy_lever_directives_keys": ["1", "4"],
+            "structural_overlap": 0.5,
+        })
+        lines = path.read_text().strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["ag_id"] == "AG1"
+        assert "captured_at" in record
+        assert "process_pid" in record
+
+
+def test_three_stage_coverage_gate_passes_on_full_coverage():
+    cfg = _reload_config_with_env({
+        "GSO_THREE_STAGE_SHADOW_V1": "1",
+        "GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_three_stage_discovery_call("AG1")
+    cfg._record_three_stage_skill_dispatch("lever-4-join-discovery")
+    cfg._record_three_stage_shadow_comparison({"ag_id": "AG1"})
+    cfg._THREE_STAGE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+def test_three_stage_coverage_gate_raises_when_no_discovery_call():
+    import pytest
+    cfg = _reload_config_with_env({
+        "GSO_THREE_STAGE_SHADOW_V1": "1",
+        "GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_three_stage_skill_dispatch("lever-4-join-discovery")
+    cfg._record_three_stage_shadow_comparison({"ag_id": "AG1"})
+    with pytest.raises(RuntimeError, match="zero Stage-1 discovery"):
+        cfg._THREE_STAGE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+def test_three_stage_coverage_gate_raises_when_no_skill_dispatched():
+    import pytest
+    cfg = _reload_config_with_env({
+        "GSO_THREE_STAGE_SHADOW_V1": "1",
+        "GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_three_stage_discovery_call("AG1")
+    cfg._record_three_stage_shadow_comparison({"ag_id": "AG1"})
+    with pytest.raises(RuntimeError, match="zero Stage-2 dispatch"):
+        cfg._THREE_STAGE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+def test_three_stage_coverage_gate_raises_when_no_shadow_in_shadow_mode():
+    import pytest
+    cfg = _reload_config_with_env({
+        "GSO_THREE_STAGE_SHADOW_V1": "1",
+        "GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_three_stage_discovery_call("AG1")
+    cfg._record_three_stage_skill_dispatch("lever-4-join-discovery")
+    with pytest.raises(RuntimeError, match="zero shadow comparison"):
+        cfg._THREE_STAGE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001

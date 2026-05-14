@@ -6049,6 +6049,140 @@ STAGE_1_DISCOVERY_PROMPT = (
 )
 
 
+# ── Plan 3 (Phase 3): Three-Stage Pipeline capture sink ───────────────
+# Mirrors Plan 1's _NarrowingCaptureSink and Plan 2's
+# _LeverFiveCaptureSink with three counter categories:
+#   discovery_calls — number of Stage-1 LLM calls,
+#   skill_dispatches — per-skill Stage-2 dispatch counts,
+#   shadow_comparisons — number of shadow-comparison records emitted.
+# The atexit gate (when GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE=1)
+# requires (a) discovery_calls > 0, (b) at least one skill_dispatch
+# > 0, (c) (when shadow flag was on) shadow_comparisons > 0.
+
+
+class _ThreeStageCaptureSink:
+    def __init__(self) -> None:
+        self._lock = _threading.Lock()
+        self._discovery_calls: int = 0
+        self._skill_dispatches: dict[str, int] = {
+            n: 0 for n in _THREE_STAGE_SKILL_NAMES
+        }
+        self._shadow_comparisons: int = 0
+        self._sink_path: str | None = None
+        self._sink_path_resolved = False
+        self._coverage_gate_registered = False
+
+    def _resolve_sink_path(self) -> str | None:
+        if not self._sink_path_resolved:
+            self._sink_path = (
+                os.environ.get("GSO_THREE_STAGE_CAPTURE_PATH") or ""
+            ).strip() or None
+            self._sink_path_resolved = True
+        return self._sink_path
+
+    def record_discovery_call(self, ag_id: str) -> None:
+        with self._lock:
+            self._discovery_calls += 1
+            self._maybe_register_atexit()
+
+    def record_skill_dispatch(self, skill_id: str) -> None:
+        with self._lock:
+            if skill_id in self._skill_dispatches:
+                self._skill_dispatches[skill_id] += 1
+            self._maybe_register_atexit()
+
+    def record_shadow_comparison(self, comparison_record: dict) -> None:
+        with self._lock:
+            self._shadow_comparisons += 1
+            path = self._resolve_sink_path()
+            if path is not None:
+                payload = dict(comparison_record)
+                payload.setdefault("captured_at", _time.time())
+                payload.setdefault("process_pid", os.getpid())
+                try:
+                    with open(path, "a", encoding="utf-8", buffering=1) as fh:
+                        fh.write(_json.dumps(payload, default=str) + "\n")
+                except OSError:
+                    pass
+            self._maybe_register_atexit()
+
+    def _maybe_register_atexit(self) -> None:
+        if self._coverage_gate_registered:
+            return
+        if _flag_enabled("GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE"):
+            _atexit.register(self._atexit_gate)
+            self._coverage_gate_registered = True
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            disc = self._discovery_calls
+            disp = dict(self._skill_dispatches)
+            shadow = self._shadow_comparisons
+        any_dispatched = any(c > 0 for c in disp.values())
+        return {
+            "discovery_calls": disc,
+            "skill_dispatches": disp,
+            "shadow_comparisons": shadow,
+            "all_required_sites_exercised": (disc > 0 and any_dispatched),
+            "sink_path": self._sink_path,
+        }
+
+    def enforce_coverage_or_raise(self) -> None:
+        if not _flag_enabled("GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE"):
+            return
+        snap = self.snapshot()
+        problems: list[str] = []
+        if snap["discovery_calls"] == 0:
+            problems.append("zero Stage-1 discovery calls recorded")
+        if not any(c > 0 for c in snap["skill_dispatches"].values()):
+            problems.append("zero Stage-2 dispatch records across all skills")
+        if _flag_enabled("GSO_THREE_STAGE_SHADOW_V1") and snap["shadow_comparisons"] == 0:
+            problems.append("zero shadow comparison records emitted")
+        if problems:
+            raise RuntimeError(
+                "three-stage trial incomplete: "
+                + "; ".join(problems)
+                + f"; do not commit captures. snapshot={snap}"
+            )
+
+    def _atexit_gate(self) -> None:
+        try:
+            self.enforce_coverage_or_raise()
+        except RuntimeError as exc:
+            import sys as _sys
+            print(f"[GSO_THREE_STAGE] {exc}", file=_sys.stderr)
+            os._exit(2)  # noqa: SLF001
+
+    def reset_for_test(self) -> None:
+        with self._lock:
+            self._discovery_calls = 0
+            self._skill_dispatches = {n: 0 for n in _THREE_STAGE_SKILL_NAMES}
+            self._shadow_comparisons = 0
+            self._sink_path = None
+            self._sink_path_resolved = False
+            self._coverage_gate_registered = False
+
+
+_THREE_STAGE_CAPTURE_SINK = _ThreeStageCaptureSink()
+
+
+def _record_three_stage_discovery_call(ag_id: str) -> None:
+    _THREE_STAGE_CAPTURE_SINK.record_discovery_call(ag_id)
+
+
+def _record_three_stage_skill_dispatch(skill_id: str) -> None:
+    _THREE_STAGE_CAPTURE_SINK.record_skill_dispatch(skill_id)
+
+
+def _record_three_stage_shadow_comparison(comparison_record: dict) -> None:
+    _THREE_STAGE_CAPTURE_SINK.record_shadow_comparison(comparison_record)
+
+
+def dump_three_stage_capture_summary() -> dict:
+    """Public entry for harness end-of-run logging."""
+    return _THREE_STAGE_CAPTURE_SINK.snapshot()
+
+
 def partial_harvest_with_debt_enabled() -> bool:
     """Cycle 14B-T1+T2 — when on, ``decide_control_plane_acceptance``
     can accept candidates that fix >=1 hard cluster AND meet
