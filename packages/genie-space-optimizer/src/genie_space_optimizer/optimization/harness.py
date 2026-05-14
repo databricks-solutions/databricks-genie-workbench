@@ -31686,11 +31686,64 @@ def _run_lever_loop(
     except Exception as _re_log_exc:
         logger.warning("raw_evidence summary emit failed: %s", _re_log_exc)
 
+    # Plan 5 — UI-triggered trial: upload the four capture NDJSONs as
+    # MLflow artifacts on the Phase H anchor so the existing
+    # evidence_bundle puller surfaces them in the postmortem bundle
+    # (under runid_analysis/<opt>/evidence/gso_trial_captures/). The
+    # helpers swallow all exceptions so telemetry never breaks the loop.
+    # Each summary may be None if its dump_* call swallowed an
+    # exception in the blocks above; _collect_trial_capture_paths
+    # handles that gracefully.
+    try:
+        _capture_paths = _collect_trial_capture_paths(
+            narrowing_summary=locals().get("_narrowing_summary"),
+            lever5_summary=locals().get("_l5_summary"),
+            three_stage_summary=locals().get("_ts_summary"),
+            raw_evidence_summary=locals().get("_re_summary"),
+        )
+        if _capture_paths:
+            _upload_trial_captures_to_phase_h_anchor(
+                anchor_run_id=_phase_h_anchor_run_id,
+                capture_paths=_capture_paths,
+            )
+    except Exception as _upload_exc:
+        logger.warning(
+            "Plan 5 capture-artifact upload step failed: %s",
+            _upload_exc,
+        )
+
     return _build_loop_out_with_pretty_print(
         loop_out_base=_loop_out_base,
         phase_h_full_transcript=_full_transcript,
         phase_h_anchor_run_id=_phase_h_anchor_run_id,
     )
+
+
+def _collect_trial_capture_paths(
+    narrowing_summary: dict | None,
+    lever5_summary: dict | None,
+    three_stage_summary: dict | None,
+    raw_evidence_summary: dict | None,
+) -> list[str]:
+    """Plan 5 — collect non-empty ``sink_path`` strings from the four
+    ``dump_*_capture_summary()`` return values into a single list.
+
+    A summary may be ``None`` if its ``dump_*_capture_summary()`` call
+    swallowed an exception (the post-loop telemetry blocks all wrap
+    in try/except — see ``harness.py:31613-31687``). In that case we
+    omit that plan from the upload list rather than crashing.
+    """
+    paths: list[str] = []
+    for summary in (
+        narrowing_summary, lever5_summary,
+        three_stage_summary, raw_evidence_summary,
+    ):
+        if not isinstance(summary, dict):
+            continue
+        sink_path = summary.get("sink_path")
+        if isinstance(sink_path, str) and sink_path:
+            paths.append(sink_path)
+    return paths
 
 
 def _upload_trial_captures_to_phase_h_anchor(

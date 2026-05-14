@@ -102,3 +102,38 @@ def test_upload_swallows_log_artifact_exceptions(tmp_path, caplog):
     )
     # And the failure is logged.
     assert any("upload failed" in r.message.lower() for r in caplog.records)
+
+
+def test_collect_capture_paths_from_summaries_returns_all_four():
+    """Plan 5 — collect the four sink_path strings from the four
+    dump_*_capture_summary() return values into a single list."""
+    from genie_space_optimizer.optimization.harness import (
+        _collect_trial_capture_paths,
+    )
+    paths = _collect_trial_capture_paths(
+        narrowing_summary={"sink_path": "/tmp/gso_trial_captures/narrowing_v1.ndjson"},
+        lever5_summary={"sink_path": "/tmp/gso_trial_captures/lever5_split_v1.ndjson"},
+        three_stage_summary={"sink_path": "/tmp/gso_trial_captures/three_stage_v1.ndjson"},
+        raw_evidence_summary={"sink_path": "/tmp/gso_trial_captures/raw_evidence_v1.ndjson"},
+    )
+    assert paths == [
+        "/tmp/gso_trial_captures/narrowing_v1.ndjson",
+        "/tmp/gso_trial_captures/lever5_split_v1.ndjson",
+        "/tmp/gso_trial_captures/three_stage_v1.ndjson",
+        "/tmp/gso_trial_captures/raw_evidence_v1.ndjson",
+    ]
+
+
+def test_collect_capture_paths_skips_none_summaries():
+    """If a dump_* call swallowed an exception and returned None, that
+    plan's path is omitted from the upload list (helpfully)."""
+    from genie_space_optimizer.optimization.harness import (
+        _collect_trial_capture_paths,
+    )
+    paths = _collect_trial_capture_paths(
+        narrowing_summary=None,
+        lever5_summary={"sink_path": "/tmp/gso_trial_captures/lever5_split_v1.ndjson"},
+        three_stage_summary={"sink_path": ""},
+        raw_evidence_summary={"sink_path": None},
+    )
+    assert paths == ["/tmp/gso_trial_captures/lever5_split_v1.ndjson"]
