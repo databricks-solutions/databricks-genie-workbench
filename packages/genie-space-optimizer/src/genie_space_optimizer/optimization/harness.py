@@ -29520,6 +29520,81 @@ def _run_lever_loop(
                     text=(_replay_fixture_json or "{}"),
                     artifact_file=_paths["replay_fixture"],
                 )
+
+                # Phase 0.2 — Task 6: aggregate
+                # ``gso_postmortem_bundle/iteration_summaries.json``
+                # sourced from the SAME in-memory replay-fixture
+                # iterations list that backs the
+                # PHASE_A_REPLAY_FIXTURE_JSON stderr blob. This
+                # guarantees parity between the stderr fixture and the
+                # Phase H artifact. Immediately after the write we
+                # consult ``check_iteration_summary_totality`` and emit
+                # GSO_ITERATION_SUMMARY_TOTALITY_V1 on mismatch (silent
+                # on healthy runs). Gated by ``phase_h_totality_enabled``
+                # (default-ON); GSO_PHASE_H_TOTALITY=0 rolls back to the
+                # legacy writer path (no aggregate file).
+                try:
+                    from genie_space_optimizer.common.config import (
+                        phase_h_totality_enabled as _phase_h_totality_enabled,
+                    )
+                    if _phase_h_totality_enabled():
+                        from genie_space_optimizer.optimization.run_output_bundle import (
+                            build_phase_h_aggregate_iteration_summaries_payload as _build_phase_h_iter_summaries,
+                        )
+                        from genie_space_optimizer.optimization.run_analysis_contract import (
+                            check_iteration_summary_totality as _check_iter_summary_totality,
+                            iteration_summary_totality_marker as _iter_summary_totality_marker,
+                        )
+
+                        _phase_h_iter_payload = _build_phase_h_iter_summaries(
+                            optimization_run_id=str(run_id or ""),
+                            iteration_counter=int(iteration_counter or 0),
+                            replay_fixture_iterations=list(
+                                _replay_fixture_iterations or []
+                            ),
+                        )
+                        _client_phase_h.log_text(
+                            run_id=_phase_h_anchor_run_id,
+                            text=_json_phase_h_c18.dumps(
+                                _phase_h_iter_payload,
+                                sort_keys=True, indent=2,
+                            ),
+                            artifact_file=(
+                                f"gso_postmortem_bundle/iteration_summaries.json"
+                            ),
+                        )
+
+                        _totality_violation = _check_iter_summary_totality(
+                            iteration_counter=int(iteration_counter or 0),
+                            iteration_summary_count=len(
+                                _phase_h_iter_payload.get(
+                                    "iteration_summaries"
+                                ) or []
+                            ),
+                            phase_b_iter_record_counts_length=int(
+                                len(_phase_b_iter_record_counts or [])
+                            ),
+                        )
+                        if _totality_violation is not None:
+                            print(_iter_summary_totality_marker(
+                                optimization_run_id=str(run_id or ""),
+                                iteration_counter=_totality_violation[
+                                    "iteration_counter"
+                                ],
+                                iteration_summary_count=_totality_violation[
+                                    "iteration_summary_count"
+                                ],
+                                phase_b_iter_record_counts_length=_totality_violation[
+                                    "phase_b_iter_record_counts_length"
+                                ],
+                            ), flush=True)
+                except Exception:
+                    logger.debug(
+                        "Phase 0.2 Task 6: aggregate iteration_summaries.json "
+                        "write/totality emission skipped (non-fatal)",
+                        exc_info=True,
+                    )
+
                 _client_phase_h.log_text(
                     run_id=_phase_h_anchor_run_id,
                     text=_json_phase_h_c18.dumps(
