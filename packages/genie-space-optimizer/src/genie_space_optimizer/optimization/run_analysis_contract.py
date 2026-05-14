@@ -1371,6 +1371,45 @@ def candidate_ledger_entry_marker(
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 1.2 — iteration_terminal_policy router decision marker.
+# ---------------------------------------------------------------------------
+
+
+def iteration_terminal_decided_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    terminal_reason: str,
+    terminal_signature: Mapping[str, Any],
+    next_step: str,
+    add_to_forbidden_set: bool,
+    forbidden_set_size_after: int,
+) -> str:
+    """Plan A / Spec Section 9.2.1 — emit
+    ``GSO_ITERATION_TERMINAL_DECIDED_V1``.
+
+    Pure: returns the stdout marker line. Caller is responsible for
+    ``print(..., flush=True)``. The harness calls
+    :func:`~genie_space_optimizer.optimization.iteration_terminal_policy.decide_iteration_terminal_action`
+    in the Task 9 finally block and pipes the result through this
+    producer; the first deploy is OBSERVE-ONLY (the harness does NOT
+    yet mutate ``_forbidden_ag_set`` from ``add_to_forbidden_set``).
+    """
+    return marker_line(
+        "GSO_ITERATION_TERMINAL_DECIDED_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "terminal_reason": str(terminal_reason or ""),
+            "terminal_signature": dict(terminal_signature or {}),
+            "next_step": str(next_step or ""),
+            "add_to_forbidden_set": bool(add_to_forbidden_set),
+            "forbidden_set_size_after": int(forbidden_set_size_after),
+        },
+    )
+
+
 def check_iteration_terminal_present(
     *,
     stdout: str,

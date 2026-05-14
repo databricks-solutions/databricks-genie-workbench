@@ -23647,6 +23647,87 @@ def _run_lever_loop(
                         exc_info=True,
                     )
 
+                # Phase 1.5 (deferred wire #4) — strategist recovery
+                # pivot. When ``strategist_recovery_pivot_enabled()`` is
+                # ON and a prior reflection entry exists, build the
+                # ordered ``regressed + uncovered + original_target``
+                # cluster priority list via
+                # ``build_recovery_priority_list`` and thread it into
+                # ``ActionGroupsInput.priority_cluster_ids`` so the
+                # strategist pivots to regressed clusters first.
+                #
+                # The prior reflection entry carries ``new_regressions``
+                # (regressed qids, not cluster ids) and
+                # ``source_cluster_ids`` (the cluster(s) the prior AG
+                # targeted, i.e. the original target). We rebuild the
+                # ``qid -> cluster_id`` map from the current iteration's
+                # ``clusters`` (each cluster has ``question_ids``) so
+                # the priority builder can attribute regressed qids to
+                # cluster ids. No separate ``uncovered`` signal is in
+                # scope at this site (the strategist-coverage-gap
+                # concept fires post-strategist call), so the uncovered
+                # list is left empty here — dedup in the builder keeps
+                # the order stable even when uncovered overlaps the
+                # original.
+                _priority_cluster_ids_tuple: tuple[str, ...] = ()
+                try:
+                    from genie_space_optimizer.common.config import (
+                        strategist_recovery_pivot_enabled,
+                    )
+                    from genie_space_optimizer.optimization.recovery_priority import (
+                        build_recovery_priority_list,
+                    )
+                    if strategist_recovery_pivot_enabled() and reflection_buffer:
+                        _prior_entry = reflection_buffer[-1] or {}
+                        _prior_regressed_qids = tuple(
+                            str(q) for q in (
+                                _prior_entry.get("new_regressions") or ()
+                            ) if str(q)
+                        )
+                        _prior_source_cluster_ids = tuple(
+                            str(c) for c in (
+                                _prior_entry.get("source_cluster_ids") or ()
+                            ) if str(c)
+                        )
+                        # Rebuild qid -> cluster_id map from current
+                        # clusters (cluster dicts carry question_ids).
+                        _qid_to_cluster: dict[str, str] = {}
+                        for _c in (clusters or []):
+                            if not isinstance(_c, dict):
+                                continue
+                            _cid = str(_c.get("cluster_id") or "")
+                            if not _cid:
+                                continue
+                            for _q in (_c.get("question_ids") or ()):
+                                _qs = str(_q)
+                                if _qs:
+                                    _qid_to_cluster.setdefault(_qs, _cid)
+                        _regressed_qids_to_cluster_id = {
+                            _q: _qid_to_cluster[_q]
+                            for _q in _prior_regressed_qids
+                            if _q in _qid_to_cluster
+                        }
+                        _original_target_cluster_id = (
+                            _prior_source_cluster_ids[0]
+                            if _prior_source_cluster_ids else ""
+                        )
+                        _priority_cluster_ids_tuple = build_recovery_priority_list(
+                            regressed_qids_to_cluster_id=(
+                                _regressed_qids_to_cluster_id
+                            ),
+                            uncovered_cluster_ids=(),
+                            original_target_cluster_id=(
+                                _original_target_cluster_id
+                            ),
+                        )
+                except Exception:
+                    logger.debug(
+                        "Phase 1.5: strategist recovery-pivot priority "
+                        "list build failed (non-fatal); falling back to "
+                        "empty priority tuple",
+                        exc_info=True,
+                    )
+
                 _ags_inp = _ags_stage.ActionGroupsInput(
                     action_groups=tuple([ag]),
                     source_clusters_by_id={
@@ -23675,6 +23756,8 @@ def _run_lever_loop(
                     forbidden_ags=_chunk_b_forbidden_ags,
                     # Defect Plan 1 — grounding-gate cluster blocklist.
                     blocked_cluster_ids=_blocked_cluster_ids_tuple,
+                    # Phase 1.5 — ordered recovery-pivot priority list.
+                    priority_cluster_ids=_priority_cluster_ids_tuple,
                 )
                 # Phase F+H Commit B11: wrap F4 with stage_io_capture
                 # decorator. Replay-byte-stable — wrap_with_io_capture
@@ -29336,6 +29419,101 @@ def _run_lever_loop(
                         "emission failed (non-fatal)",
                         exc_info=True,
                     )
+
+            # Phase 1.2 — iteration_terminal_policy router observation.
+            # Closes deferred-wiring backlog items #1 + #3: calls
+            # ``decide_iteration_terminal_action(...)`` (Task 7's router)
+            # and emits ``GSO_ITERATION_TERMINAL_DECIDED_V1`` carrying the
+            # router's ``next_step`` + ``add_to_forbidden_set`` decision.
+            # OBSERVE-ONLY for the first deploy — does NOT mutate
+            # ``_forbidden_ag_set`` or any retry state; the forbidden-set
+            # mutation is gated for a future flip once the marker stream
+            # has been audited. ``prior_forbidden_set`` is passed as an
+            # empty frozenset deliberately so the router never reports
+            # ``add_to_forbidden_set=False`` via the idempotency rule
+            # during the observation window. Gated by
+            # ``iteration_terminal_policy_enabled()`` (default-ON; set
+            # ``GSO_ITERATION_TERMINAL_POLICY=0`` to disable).
+            try:
+                from genie_space_optimizer.common.config import (
+                    iteration_terminal_policy_enabled,
+                )
+                from genie_space_optimizer.optimization.iteration_terminal_policy import (
+                    decide_iteration_terminal_action,
+                )
+                from genie_space_optimizer.optimization.run_analysis_contract import (
+                    iteration_terminal_decided_marker,
+                )
+                from genie_space_optimizer.optimization.terminal_reason import (
+                    TerminalReason,
+                )
+                from genie_space_optimizer.optimization.terminal_signature import (
+                    TerminalSignature,
+                    to_jsonable as _terminal_signature_to_jsonable,
+                )
+                if iteration_terminal_policy_enabled():
+                    try:
+                        _tr_enum = TerminalReason(
+                            str(_iter_terminal_reason or "unknown")
+                        )
+                    except Exception:
+                        _tr_enum = TerminalReason.UNKNOWN
+                    # The ``accepted`` full-eval path is not a terminal
+                    # reason in the router's vocabulary, so the
+                    # ``TerminalReason(...)`` lookup above falls through to
+                    # UNKNOWN. Skip the router call on that branch — the
+                    # router only describes terminal short-circuit paths.
+                    if str(_iter_terminal_reason or "") != "accepted":
+                        _tsig_for_router = TerminalSignature(
+                            root_cause=str(
+                                _iter_root_cause_for_ledger or ""
+                            ),
+                            blame_set_norm=(),
+                            lever_set=frozenset(
+                                int(L) for L in (
+                                    _iter_levers_for_ledger or ()
+                                )
+                            ),
+                            target_qids=frozenset(
+                                str(q) for q in (
+                                    _iter_target_qids_for_ledger or ()
+                                )
+                            ),
+                            terminal_reason=_tr_enum.value,
+                        )
+                        _router_action = decide_iteration_terminal_action(
+                            terminal_reason=_tr_enum,
+                            signature=_tsig_for_router,
+                            # Observe-only: empty prior set so the
+                            # idempotency rule never fires during the
+                            # observation window. The forbidden-set
+                            # mutation remains gated for a future flip.
+                            prior_forbidden_set=frozenset(),
+                            iteration_index=int(_iter_num),
+                            iteration_budget=int(max_iterations or 0),
+                        )
+                        print(iteration_terminal_decided_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(_iter_num),
+                            terminal_reason=_tr_enum.value,
+                            terminal_signature=_terminal_signature_to_jsonable(
+                                _tsig_for_router
+                            ),
+                            next_step=str(_router_action.next_step),
+                            add_to_forbidden_set=bool(
+                                _router_action.add_to_forbidden_set
+                            ),
+                            # Observe-only — we did not actually grow the
+                            # forbidden set, so the "after" size equals
+                            # the empty prior set's size.
+                            forbidden_set_size_after=0,
+                        ), flush=True)
+            except Exception:
+                logger.debug(
+                    "Phase 1.2: iteration_terminal_policy router "
+                    "observation failed (non-fatal)",
+                    exc_info=True,
+                )
 
             # Phase 0.4 Task 13 — per-iteration candidate ledger row.
             # Every iteration (terminal short-circuit OR full_eval accept
