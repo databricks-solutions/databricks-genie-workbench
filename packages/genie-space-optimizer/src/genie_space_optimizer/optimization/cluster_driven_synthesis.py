@@ -246,15 +246,67 @@ class ClusterContext:
         return self.asset_slice.asset_ids()
 
 
+@dataclass(frozen=True, slots=True)
+class ProposalContext:
+    """Phase 2.5 — lightweight proposer context used by the lever-loop
+    harness to thread protected-dependent QIDs into the proposal prompt.
+
+    Distinct from :class:`ClusterContext` (which carries AFS + AssetSlice
+    for cluster-driven preflight rendering). ``ProposalContext`` is the
+    minimal envelope used by the decision-plane wiring site (Task 16):
+
+    - ``cluster_id``: which cluster this proposal targets.
+    - ``target_qids``: in-cluster QIDs the proposal is allowed to mutate.
+    - ``rca_card``: the failure root-cause card driving the proposal.
+    - ``protected_dependents``: outside-target QIDs the proposer MUST
+      preserve. Populated whenever a prior iteration dropped a patch
+      for collateral against those QIDs (sourced from the harness
+      ``_outside_target_qids`` lane). Default ``()`` = no constraint
+      and the rendered prompt stays byte-stable with pre-Phase-2.5
+      fixtures.
+    """
+    cluster_id: str
+    target_qids: tuple[str, ...]
+    rca_card: dict
+    protected_dependents: tuple[str, ...] = ()
+
+
+def _render_protected_dependents_section(
+    protected_dependents: tuple[str, ...],
+) -> str:
+    """Phase 2.5 — render the "Protected dependent QIDs" prompt section.
+
+    Returns an empty string when ``protected_dependents`` is empty so
+    callers can unconditionally splice the result without breaking
+    byte-equivalence on the default path.
+    """
+    if not protected_dependents:
+        return ""
+    bullets = "\n".join(f"  - {q}" for q in protected_dependents)
+    return (
+        "\n## Protected dependent QIDs\n\n"
+        "The following question_ids depend on broader space-level "
+        "behavior that MUST be preserved. Do NOT alter SQL, "
+        "instructions, or metadata in a way that changes how these "
+        "QIDs are answered:\n\n"
+        f"{bullets}\n\n"
+        "When proposing patches for the target QIDs above, "
+        "explicitly narrow the scope (per-question example_sql, "
+        "per-question instructions, or a question-specific "
+        "metric view) so the protected QIDs continue to use the "
+        "existing logic unchanged.\n"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Prompt wrapper — prepends AFS to the pre-flight prompt
 # ═══════════════════════════════════════════════════════════════════════
 
 
 def render_cluster_driven_prompt(
-    archetype: Archetype,
-    context: ClusterContext,
-    existing_questions: list[str],
+    archetype: Archetype | None = None,
+    context: ClusterContext | ProposalContext | None = None,
+    existing_questions: list[str] | None = None,
     *,
     retry_feedback: str | None = None,
 ) -> str:
@@ -276,7 +328,27 @@ def render_cluster_driven_prompt(
     flight prompt verbatim, preserving the invariant that pre-flight's
     prompt is unchanged whether or not AFS is present. Tested in
     ``test_preflight_prompt_bytes_equivalent_without_afs``.
+
+    Phase 2.5 — when ``context`` is a :class:`ProposalContext` (used by
+    the decision-plane wiring site) the function dispatches to a
+    minimal renderer that emits only the "Protected dependent QIDs"
+    directive when applicable. This is the entry point the harness
+    uses to thread outside-target QIDs into the proposal prompt.
     """
+    # Phase 2.5 — ProposalContext dispatch. ProposalContext is the
+    # lightweight envelope from the harness wiring site; it does not
+    # carry an AssetSlice/AFS so the preflight base prompt is not
+    # rendered here. Empty protected_dependents yields an empty string
+    # (byte-stable with pre-Phase-2.5 callers that never set the field).
+    if isinstance(context, ProposalContext):
+        return _render_protected_dependents_section(
+            context.protected_dependents
+        )
+
+    assert context is not None and archetype is not None, (
+        "render_cluster_driven_prompt requires (archetype, ClusterContext, "
+        "existing_questions) for the cluster-driven preflight path."
+    )
     base = render_preflight_prompt(
         archetype, context.asset_slice, existing_questions,
         data_profile=context.data_profile,
