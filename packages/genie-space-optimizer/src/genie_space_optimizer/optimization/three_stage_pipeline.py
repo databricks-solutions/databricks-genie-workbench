@@ -83,6 +83,7 @@ def _stage_2_l4(bundle: "ActivationBundle", w: Any) -> dict:
     try:
         proposals = _call_llm_for_join_discovery(
             bundle.metadata_snapshot, hints, w=w,
+            raw_evidence=bundle.raw_evidence,
         )
     except Exception:
         logger.warning(
@@ -157,6 +158,7 @@ def _stage_2_l2(bundle: "ActivationBundle", w: Any) -> dict:
                 p = _call_llm_for_proposal(
                     cluster_afs, bundle.metadata_snapshot,
                     "add_column_description", lever=2, w=w,
+                    raw_evidence=bundle.raw_evidence,
                 )
             except Exception:
                 logger.warning(
@@ -186,6 +188,7 @@ def _stage_2_l3(bundle: "ActivationBundle", w: Any) -> dict:
                 p = _call_llm_for_proposal(
                     cluster_afs, bundle.metadata_snapshot,
                     "add_tvf_description", lever=3, w=w,
+                    raw_evidence=bundle.raw_evidence,
                 )
             except Exception:
                 logger.warning(
@@ -218,6 +221,7 @@ def _stage_2_l5a(bundle: "ActivationBundle", w: Any) -> dict:
             metadata_snapshot=bundle.metadata_snapshot,
             lever_changes=[],
             w=w,
+            raw_evidence=bundle.raw_evidence,
         )
     except Exception:
         logger.warning(
@@ -300,6 +304,7 @@ def _stage_2_l6(
                 w=w, spark=spark, catalog=catalog,
                 gold_schema=gold_schema, warehouse_id=warehouse_id,
                 benchmarks=benchmarks,
+                raw_evidence=bundle.raw_evidence,
             )
         except Exception:
             logger.warning(

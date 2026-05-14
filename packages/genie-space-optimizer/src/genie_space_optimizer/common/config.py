@@ -2510,6 +2510,9 @@ LEVER_4_JOIN_SPEC_PROMPT = (
     '\n'
     + _RCA_CONTRACT_HEADER +
     '<context>\n'
+    '\n'
+    '## Raw Failure Evidence\n'
+    '{{ raw_evidence_block }}\n'
     '## SQL Diffs showing join issues\n'
     '{{ sql_diffs }}\n'
     '\n'
@@ -2590,6 +2593,9 @@ LEVER_4_JOIN_DISCOVERY_PROMPT = (
     '\n'
     + _rca_contract_for("lever-4-join-discovery") +
     '<context>\n'
+    '\n'
+    '## Raw Failure Evidence\n'
+    '{{ raw_evidence_block }}\n'
     '## Full Schema Context (tables, columns, data types, descriptions)\n'
     '{{ full_schema_context }}\n'
     '\n'
@@ -2732,6 +2738,9 @@ LEVER_5_INSTRUCTION_PROMPT = (
     '\n'
     + _RCA_CONTRACT_HEADER +
     '<context>\n'
+    '\n'
+    '## Raw Failure Evidence\n'
+    '{{ raw_evidence_block }}\n'
     '## SQL Diffs showing routing/disambiguation issues\n'
     '{{ sql_diffs }}\n'
     '\n'
@@ -2964,6 +2973,9 @@ LEVER_5A_INSTRUCTION_PROMPT = (
     '\n'
     + _RCA_CONTRACT_HEADER +
     '<context>\n'
+    '\n'
+    '## Raw Failure Evidence\n'
+    '{{ raw_evidence_block }}\n'
     '## Genie Space Purpose\n'
     '{{ space_description }}\n'
     '\n'
@@ -5081,6 +5093,8 @@ _LEVER_6_SQL_EXPRESSION_BODY = """You are an expert at defining SQL Expressions 
 A Genie Space is answering user questions incorrectly. Analysis of the failures
 shows the root cause is: **{{ root_cause }}**
 
+## Raw Failure Evidence
+{{ raw_evidence_block }}
 ### Failed questions and SQL diffs
 {{ cluster_context }}
 

@@ -8496,6 +8496,8 @@ def _call_llm_for_join_discovery(
     metadata_snapshot: dict,
     hints: list[dict],
     w: WorkspaceClient | None = None,
+    *,
+    raw_evidence: tuple[dict, ...] = (),
 ) -> list[dict]:
     """Call the LLM with the discovery prompt to validate and refine join hints.
 
@@ -8537,6 +8539,7 @@ def _call_llm_for_join_discovery(
             hints,
             join_overlaps=metadata_snapshot.get("_join_overlaps"),
         ),
+        "raw_evidence_block": _format_raw_evidence_block(raw_evidence),
     }
 
     format_kwargs = _truncate_to_budget(
@@ -9185,6 +9188,8 @@ def _call_llm_for_lever_5a_instructions(
     metadata_snapshot: dict,
     lever_changes: list[dict] | None = None,
     w: WorkspaceClient | None = None,
+    *,
+    raw_evidence: tuple[dict, ...] = (),
 ) -> dict:
     """Plan 2 — Lever 5a (instruction-only) LLM call.
 
@@ -9247,6 +9252,7 @@ def _call_llm_for_lever_5a_instructions(
         "existing_example_sqls": existing_example_sqls,
         "instruction_char_budget": LEVER_5A_INSTRUCTION_BUDGET,
         "identifier_allowlist": _format_identifier_allowlist(_allowlist),
+        "raw_evidence_block": _format_raw_evidence_block(raw_evidence),
     }
 
     format_kwargs = _truncate_to_budget(
@@ -12759,6 +12765,7 @@ def _generate_lever6_proposal(
     gold_schema: str = "",
     warehouse_id: str = "",
     benchmarks: list[dict] | None = None,
+    raw_evidence: tuple[dict, ...] = (),
 ) -> dict | None:
     """Generate a SQL Expression proposal for a failure cluster.
 
@@ -12800,6 +12807,7 @@ def _generate_lever6_proposal(
             schema_context=schema_context,
             existing_sql_snippets=existing_snippets,
             strategist_hints=hints_text,
+            raw_evidence_block=_format_raw_evidence_block(raw_evidence),
         )
 
         span.set_inputs({"root_cause": root_cause, "prompt_chars": len(prompt)})

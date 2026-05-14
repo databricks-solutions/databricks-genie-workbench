@@ -926,5 +926,102 @@ def test_stage_2_lever_5b_never_runs_shadow(monkeypatch):
     assert captured["calls"] == 1, "lever-5b must run only once even in shadow mode"
 
 
+# ── Section 8b: remaining adapter thread-through ─────────────────────
 
+
+def test_stage_2_l2_l3_forward_raw_evidence(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    seen: list[tuple[int, tuple]] = []
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
+               *, raw_evidence=()):
+        seen.append((lever, raw_evidence))
+        return {"proposed_value": "x", "rationale": "y"}
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
+
+    triples = ({"question_id": "Q", "trace_id": "", "question": "q",
+                  "actual_sql": "a", "expected_sql": "e",
+                  "judge_rationale": "r"},)
+    for sid in ("lever-2-mv-column-refinement", "lever-3-tvf-routing"):
+        bundle = _bundle_with_raw_evidence(sid, triples)
+        adapter = three_stage_pipeline._STAGE_2_DISPATCH_TABLE[sid]
+        adapter(bundle, w=None)
+    assert any(rk for lv, rk in seen if lv == 2 and rk == triples)
+    assert any(rk for lv, rk in seen if lv == 3 and rk == triples)
+
+
+def test_stage_2_l4_forwards_raw_evidence(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    received = {"raw_evidence": None}
+    def _fake_join(metadata_snapshot, hints, w=None, *, raw_evidence=()):
+        received["raw_evidence"] = raw_evidence
+        return []
+    monkeypatch.setattr(optimizer, "_call_llm_for_join_discovery", _fake_join)
+
+    triples = ({"question_id": "Q", "trace_id": "", "question": "q",
+                  "actual_sql": "a", "expected_sql": "e",
+                  "judge_rationale": "r"},)
+    bundle = _bundle_with_raw_evidence("lever-4-join-discovery", triples)
+    three_stage_pipeline._stage_2_l4(bundle, w=None)
+    assert received["raw_evidence"] == triples
+
+
+def test_stage_2_l5a_forwards_raw_evidence(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    received = {"raw_evidence": None}
+    def _fake(all_clusters, metadata_snapshot, lever_changes=None, w=None,
+               *, raw_evidence=()):
+        received["raw_evidence"] = raw_evidence
+        return {"instruction_text": "X", "rationale": "ok"}
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_lever_5a_instructions", _fake,
+    )
+
+    triples = ({"question_id": "Q", "trace_id": "", "question": "q",
+                  "actual_sql": "a", "expected_sql": "e",
+                  "judge_rationale": "r"},)
+    bundle = _bundle_with_raw_evidence("lever-5a-instructions", triples)
+    three_stage_pipeline._stage_2_l5a(bundle, w=None)
+    assert received["raw_evidence"] == triples
+
+
+def test_stage_2_l6_forwards_raw_evidence(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    received = {"raw_evidence": None}
+    def _fake_l6(cluster, metadata_snapshot, *, strategist_hints=None,
+                  w=None, spark=None, catalog="", gold_schema="",
+                  warehouse_id="", benchmarks=None, raw_evidence=()):
+        received["raw_evidence"] = raw_evidence
+        return {"snippet_type": "filter", "sql": "x = 1",
+                 "instruction": "x"}
+    monkeypatch.setattr(optimizer, "_generate_lever6_proposal", _fake_l6)
+
+    triples = ({"question_id": "Q", "trace_id": "", "question": "q",
+                  "actual_sql": "a", "expected_sql": "e",
+                  "judge_rationale": "r"},)
+    bundle = _bundle_with_raw_evidence("lever-6-sql-expression", triples)
+    three_stage_pipeline._stage_2_l6(bundle, w=None)
+    assert received["raw_evidence"] == triples
+
+
+def test_remaining_prompts_have_raw_evidence_block_slot():
+    cfg = _reload_config_with_env({})
+    for prompt_name in (
+        "LEVER_4_JOIN_SPEC_PROMPT",
+        "LEVER_4_JOIN_DISCOVERY_PROMPT",
+        "LEVER_5_INSTRUCTION_PROMPT",
+        "LEVER_5A_INSTRUCTION_PROMPT",
+        "LEVER_6_SQL_EXPRESSION_PROMPT",
+    ):
+        prompt = getattr(cfg, prompt_name)
+        assert "{{ raw_evidence_block }}" in prompt, (
+            f"{prompt_name} is missing the raw_evidence_block slot"
+        )
 
