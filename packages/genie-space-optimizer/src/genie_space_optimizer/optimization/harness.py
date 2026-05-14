@@ -12322,12 +12322,27 @@ def _compute_forbidden_ag_set(
       patches or was intercepted by the collision guard;
       same-signature retry is unconditionally rejected.
 
+    Phase 1.3: when :func:`terminal_signature_retire_enabled` is on,
+    the function ALSO admits every prior non-accepted reflection
+    whose ``terminal_signature`` is a :class:`TerminalSignature`.
+    Each admitted signature is mapped to the legacy 3-tuple shape
+    via :func:`legacy_forbidden_tuple` so the return type and the
+    downstream collision-key comparison (which keys on
+    ``(root_cause, blame_set_norm, frozenset(lever_set))``) are
+    unchanged. This widens the retirement vocabulary from
+    ``CONTENT_REGRESSION``-only to *any* non-accepted terminal cause
+    (e.g., ``NO_APPLIED_PATCHES``, ``PROPOSAL_GENERATION_EMPTY``,
+    ``STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY``) so the lever loop
+    pivots off a failing strategy rather than retrying it across
+    iterations 2..N.
+
     Returns a set of ``(root_cause, blame_set_norm, frozenset(lever_set))``
     tuples.
     """
     from genie_space_optimizer.common.config import (
         forbidden_ag_admission_observe_enabled,
         forbidden_ag_admits_no_action_enabled,
+        terminal_signature_retire_enabled,
     )
     from genie_space_optimizer.optimization.rollback_class import (
         RollbackClass,
@@ -12335,10 +12350,28 @@ def _compute_forbidden_ag_set(
     from genie_space_optimizer.optimization.run_analysis_contract import (
         forbidden_ag_admission_observe_marker,
     )
+    from genie_space_optimizer.optimization.terminal_signature import (
+        legacy_forbidden_tuple,
+    )
+    from genie_space_optimizer.optimization.forbidden_ag_set_v2 import (
+        compute_retired_signatures,
+    )
 
     admit_no_action = forbidden_ag_admits_no_action_enabled()
     observe = forbidden_ag_admission_observe_enabled()
     forbidden: set[tuple[str, Any, frozenset[int]]] = set()
+
+    # Phase 1.3 — widen retirement to any non-accepted TerminalSignature.
+    # The flag-on path returns the union of the legacy admission and
+    # the terminal-signature admission; both are mapped to the legacy
+    # 3-tuple shape for byte-stable return-type compatibility.
+    if terminal_signature_retire_enabled():
+        retired_sigs = compute_retired_signatures(
+            reflection_buffer=reflection_buffer or (),
+        )
+        for sig in retired_sigs:
+            forbidden.add(legacy_forbidden_tuple(sig))
+
     for r in reflection_buffer:
         # Cycle 14-V T1: shadow-mode observability for NO_ACTION
         # reflections. Emit the would-admit signal regardless of
@@ -22980,14 +23013,34 @@ def _run_lever_loop(
                                 )
                                 if str(s)
                             )
+                            # Phase 1.4 Task 8 — compute
+                            # prior_failure_count from reflection_buffer.
+                            # Cluster signature is computed independently —
+                            # it is NOT a TerminalSignature field; the
+                            # cluster_id grouping is recorded only on the
+                            # reflection_buffer entry.
+                            _this_cluster_id = str(
+                                (ag.get("source_cluster_ids") or [""])[0]
+                                or ""
+                            )
+                            _this_target_qids = tuple(
+                                str(q) for q in (
+                                    ag.get("affected_questions") or ()
+                                ) if str(q)
+                            )
+                            _cluster_sig_for_pfc = (
+                                (_this_cluster_id,
+                                 tuple(sorted(_this_target_qids))),
+                            )
+                            _pfc = compute_prior_failure_count(
+                                cluster_signature=_cluster_sig_for_pfc,
+                                reflection_buffer=reflection_buffer,
+                            )
                             _emit_proposal_failure_decided(
                                 run_id=run_id,
                                 iteration=iteration_counter,
                                 ag_id=str(ag_id),
-                                cluster_id=str(
-                                    (ag.get("source_cluster_ids") or [""])[0]
-                                    or ""
-                                ),
+                                cluster_id=_this_cluster_id,
                                 cluster_signature=(
                                     _ag_signatures[0] if _ag_signatures else ""
                                 ),
@@ -23008,12 +23061,8 @@ def _run_lever_loop(
                                 rca_card_grounded=bool(
                                     ag.get("rca_card_grounded", False)
                                 ),
-                                prior_failure_count=0,
-                                target_qids=tuple(
-                                    str(q) for q in (
-                                        ag.get("affected_questions") or ()
-                                    ) if str(q)
-                                ),
+                                prior_failure_count=_pfc,
+                                target_qids=_this_target_qids,
                                 iter_inputs=_current_iter_inputs,
                             )
                         except Exception:
@@ -25304,14 +25353,30 @@ def _run_lever_loop(
                                 )
                                 if str(s)
                             )
+                            # Phase 1.4 Task 8 — compute
+                            # prior_failure_count from reflection_buffer.
+                            _this_cluster_id = str(
+                                (ag.get("source_cluster_ids") or [""])[0]
+                                or ""
+                            )
+                            _this_target_qids = tuple(
+                                str(q) for q in (
+                                    ag.get("affected_questions") or ()
+                                ) if str(q)
+                            )
+                            _cluster_sig_for_pfc = (
+                                (_this_cluster_id,
+                                 tuple(sorted(_this_target_qids))),
+                            )
+                            _pfc = compute_prior_failure_count(
+                                cluster_signature=_cluster_sig_for_pfc,
+                                reflection_buffer=reflection_buffer,
+                            )
                             _emit_proposal_failure_decided(
                                 run_id=run_id,
                                 iteration=iteration_counter,
                                 ag_id=str(ag.get("id") or ag.get("ag_id") or ""),
-                                cluster_id=str(
-                                    (ag.get("source_cluster_ids") or [""])[0]
-                                    or ""
-                                ),
+                                cluster_id=_this_cluster_id,
                                 cluster_signature=(
                                     _ag_signatures[0] if _ag_signatures else ""
                                 ),
@@ -25332,12 +25397,8 @@ def _run_lever_loop(
                                 rca_card_grounded=bool(
                                     ag.get("rca_card_grounded", True)
                                 ),
-                                prior_failure_count=0,
-                                target_qids=tuple(
-                                    str(q) for q in (
-                                        ag.get("affected_questions") or ()
-                                    ) if str(q)
-                                ),
+                                prior_failure_count=_pfc,
+                                target_qids=_this_target_qids,
                                 iter_inputs=_current_iter_inputs,
                             )
                         except Exception:
@@ -26300,13 +26361,29 @@ def _run_lever_loop(
                             )
                             if str(s)
                         )
+                        # Phase 1.4 Task 8 — compute
+                        # prior_failure_count from reflection_buffer.
+                        _this_cluster_id = str(
+                            (ag.get("source_cluster_ids") or [""])[0] or ""
+                        )
+                        _this_target_qids = tuple(
+                            str(q) for q in (
+                                ag.get("affected_questions") or ()
+                            ) if str(q)
+                        )
+                        _cluster_sig_for_pfc = (
+                            (_this_cluster_id,
+                             tuple(sorted(_this_target_qids))),
+                        )
+                        _pfc = compute_prior_failure_count(
+                            cluster_signature=_cluster_sig_for_pfc,
+                            reflection_buffer=reflection_buffer,
+                        )
                         _emit_proposal_failure_decided(
                             run_id=run_id,
                             iteration=iteration_counter,
                             ag_id=str(ag_id),
-                            cluster_id=str(
-                                (ag.get("source_cluster_ids") or [""])[0] or ""
-                            ),
+                            cluster_id=_this_cluster_id,
                             cluster_signature=(
                                 _ag_signatures[0] if _ag_signatures else ""
                             ),
@@ -26327,12 +26404,8 @@ def _run_lever_loop(
                             rca_card_grounded=bool(
                                 ag.get("rca_card_grounded", True)
                             ),
-                            prior_failure_count=0,
-                            target_qids=tuple(
-                                str(q) for q in (
-                                    ag.get("affected_questions") or ()
-                                ) if str(q)
-                            ),
+                            prior_failure_count=_pfc,
+                            target_qids=_this_target_qids,
                             iter_inputs=_current_iter_inputs,
                         )
                     except Exception:
@@ -26473,13 +26546,29 @@ def _run_lever_loop(
                         )
                         if str(s)
                     )
+                    # Phase 1.4 Task 8 — compute prior_failure_count
+                    # from reflection_buffer.
+                    _this_cluster_id = str(
+                        (ag.get("source_cluster_ids") or [""])[0] or ""
+                    )
+                    _this_target_qids = tuple(
+                        str(q) for q in (
+                            ag.get("affected_questions") or ()
+                        ) if str(q)
+                    )
+                    _cluster_sig_for_pfc = (
+                        (_this_cluster_id,
+                         tuple(sorted(_this_target_qids))),
+                    )
+                    _pfc = compute_prior_failure_count(
+                        cluster_signature=_cluster_sig_for_pfc,
+                        reflection_buffer=reflection_buffer,
+                    )
                     _emit_proposal_failure_decided(
                         run_id=run_id,
                         iteration=iteration_counter,
                         ag_id=str(ag_id),
-                        cluster_id=str(
-                            (ag.get("source_cluster_ids") or [""])[0] or ""
-                        ),
+                        cluster_id=_this_cluster_id,
                         cluster_signature=(
                             _ag_signatures[0] if _ag_signatures else ""
                         ),
@@ -26498,12 +26587,8 @@ def _run_lever_loop(
                         rca_card_grounded=bool(
                             ag.get("rca_card_grounded", True)
                         ),
-                        prior_failure_count=0,
-                        target_qids=tuple(
-                            str(q) for q in (
-                                ag.get("affected_questions") or ()
-                            ) if str(q)
-                        ),
+                        prior_failure_count=_pfc,
+                        target_qids=_this_target_qids,
                         iter_inputs=_current_iter_inputs,
                     )
                 except Exception:
