@@ -473,3 +473,117 @@ def test_dispatch_5b_adapter_wraps_single_dict_in_list(monkeypatch):
     assert out[0]["example_sql"] == "SELECT 1"
     assert out[0]["usage_guidance"] == "use for X"
     assert out[0]["parameters"] == []  # adapter defaults missing key
+
+
+# ── Section 6: routing precedence inside generate_proposals_from_strategy ──
+
+
+def test_l5_branch_calls_holistic_when_both_flags_off(monkeypatch):
+    cfg = _reload_config_with_env({})
+    from genie_space_optimizer.optimization import optimizer
+
+    holistic_calls = {"n": 0}
+    dispatch_calls = {"n": 0}
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_holistic_instructions",
+        lambda *a, **kw: (holistic_calls.__setitem__("n", holistic_calls["n"] + 1)
+                           or {"instruction_text": "", "example_sql_proposals": [], "rationale": ""}),
+    )
+    monkeypatch.setattr(
+        optimizer, "_dispatch_lever_5_split",
+        lambda **kw: (dispatch_calls.__setitem__("n", dispatch_calls["n"] + 1)
+                      or {"instruction_text": "", "example_sql_proposals": [], "rationale": ""}),
+    )
+    optimizer._select_lever_5_holistic_path(
+        all_clusters=[],
+        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
+                           "metric_views": [], "functions": [],
+                           "instructions": {"text_instructions": []}},
+        lever_changes=[],
+        w=None,
+    )
+    assert holistic_calls["n"] == 1
+    assert dispatch_calls["n"] == 0
+
+
+def test_l5_branch_calls_dispatch_only_when_split_flag_on(monkeypatch):
+    cfg = _reload_config_with_env({"GSO_LEVER5_SPLIT_V1": "1"})
+    from genie_space_optimizer.optimization import optimizer
+
+    holistic_calls = {"n": 0}
+    dispatch_calls = {"n": 0}
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_holistic_instructions",
+        lambda *a, **kw: (holistic_calls.__setitem__("n", holistic_calls["n"] + 1)
+                           or {"instruction_text": "", "example_sql_proposals": [], "rationale": ""}),
+    )
+    monkeypatch.setattr(
+        optimizer, "_dispatch_lever_5_split",
+        lambda **kw: (dispatch_calls.__setitem__("n", dispatch_calls["n"] + 1)
+                      or {"instruction_text": "", "example_sql_proposals": [], "rationale": ""}),
+    )
+    optimizer._select_lever_5_holistic_path(
+        all_clusters=[],
+        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
+                           "metric_views": [], "functions": [],
+                           "instructions": {"text_instructions": []}},
+        lever_changes=[],
+        w=None,
+    )
+    assert holistic_calls["n"] == 0
+    assert dispatch_calls["n"] == 1
+
+
+def test_l5_branch_runs_both_in_shadow_mode_and_applies_holistic(monkeypatch):
+    cfg = _reload_config_with_env({"GSO_LEVER5_SHADOW_V1": "1"})
+    from genie_space_optimizer.optimization import optimizer
+
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_holistic_instructions",
+        lambda *a, **kw: {"instruction_text": "OLD", "example_sql_proposals": [],
+                          "rationale": "old"},
+    )
+    monkeypatch.setattr(
+        optimizer, "_dispatch_lever_5_split",
+        lambda **kw: {"instruction_text": "NEW", "example_sql_proposals": [],
+                      "rationale": "new"},
+    )
+    applied = optimizer._select_lever_5_holistic_path(
+        all_clusters=[],
+        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
+                           "metric_views": [], "functions": [],
+                           "instructions": {"text_instructions": []}},
+        lever_changes=[],
+        w=None,
+    )
+    # Shadow without split → OLD path's result is applied:
+    assert applied["instruction_text"] == "OLD"
+
+
+def test_l5_branch_split_wins_over_shadow_when_both_set(monkeypatch):
+    cfg = _reload_config_with_env({
+        "GSO_LEVER5_SPLIT_V1": "1",
+        "GSO_LEVER5_SHADOW_V1": "1",
+    })
+    from genie_space_optimizer.optimization import optimizer
+
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_holistic_instructions",
+        lambda *a, **kw: {"instruction_text": "OLD", "example_sql_proposals": [],
+                          "rationale": "old"},
+    )
+    monkeypatch.setattr(
+        optimizer, "_dispatch_lever_5_split",
+        lambda **kw: {"instruction_text": "NEW", "example_sql_proposals": [],
+                      "rationale": "new"},
+    )
+    applied = optimizer._select_lever_5_holistic_path(
+        all_clusters=[],
+        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
+                           "metric_views": [], "functions": [],
+                           "instructions": {"text_instructions": []}},
+        lever_changes=[],
+        w=None,
+    )
+    # Split wins; NEW is applied. Shadow comparison still happens (Task 14).
+    assert applied["instruction_text"] == "NEW"

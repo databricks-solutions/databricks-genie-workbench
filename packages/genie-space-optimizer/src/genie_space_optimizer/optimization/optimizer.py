@@ -9466,6 +9466,99 @@ def _dispatch_lever_5_split(
     }
 
 
+def _select_lever_5_holistic_path(
+    all_clusters: list[dict],
+    metadata_snapshot: dict,
+    lever_changes: list[dict] | None = None,
+    w: WorkspaceClient | None = None,
+    benchmarks: list[dict] | None = None,
+) -> dict:
+    """Plan 2 — flag-aware selector for the L5 result.
+
+    Precedence:
+      * ``GSO_LEVER5_SPLIT_V1=1`` → return ``_dispatch_lever_5_split(...)``.
+        If shadow flag is also on, ``_call_llm_for_holistic_instructions``
+        runs in parallel and the comparison is recorded; the dispatcher's
+        result is still returned (split wins).
+      * ``GSO_LEVER5_SHADOW_V1=1`` (split off) → run BOTH; record
+        comparison; return the holistic result (zero production risk).
+      * Both off → today's behavior: holistic only.
+
+    The shadow comparison record is emitted by ``_emit_lever5_shadow_comparison``
+    (added in Task 14). Both shadow branches call it; the dispatcher branch
+    only calls it when the dispatcher's result is the one applied.
+    """
+    from genie_space_optimizer.common.config import (
+        lever5_shadow_enabled,
+        lever5_split_enabled,
+    )
+    split_on = lever5_split_enabled()
+    shadow_on = lever5_shadow_enabled()
+
+    if split_on and shadow_on:
+        old = _call_llm_for_holistic_instructions(
+            all_clusters, metadata_snapshot,
+            lever_changes=lever_changes, w=w,
+        )
+        new = _dispatch_lever_5_split(
+            all_clusters=all_clusters,
+            metadata_snapshot=metadata_snapshot,
+            lever_changes=lever_changes,
+            w=w,
+            benchmarks=benchmarks,
+        )
+        _emit_lever5_shadow_comparison(
+            ag_id=str(metadata_snapshot.get("_active_ag_id", "")),
+            cluster_ids=[c.get("cluster_id", "") for c in (all_clusters or [])],
+            old=old, new=new,
+        )
+        return new
+
+    if split_on:
+        return _dispatch_lever_5_split(
+            all_clusters=all_clusters,
+            metadata_snapshot=metadata_snapshot,
+            lever_changes=lever_changes,
+            w=w,
+            benchmarks=benchmarks,
+        )
+
+    if shadow_on:
+        old = _call_llm_for_holistic_instructions(
+            all_clusters, metadata_snapshot,
+            lever_changes=lever_changes, w=w,
+        )
+        new = _dispatch_lever_5_split(
+            all_clusters=all_clusters,
+            metadata_snapshot=metadata_snapshot,
+            lever_changes=lever_changes,
+            w=w,
+            benchmarks=benchmarks,
+        )
+        _emit_lever5_shadow_comparison(
+            ag_id=str(metadata_snapshot.get("_active_ag_id", "")),
+            cluster_ids=[c.get("cluster_id", "") for c in (all_clusters or [])],
+            old=old, new=new,
+        )
+        return old  # zero-risk: apply old path
+
+    return _call_llm_for_holistic_instructions(
+        all_clusters, metadata_snapshot,
+        lever_changes=lever_changes, w=w,
+    )
+
+
+def _emit_lever5_shadow_comparison(
+    ag_id: str,
+    cluster_ids: list[str],
+    old: dict,
+    new: dict,
+) -> None:
+    """Stub — replaced with the real implementation in Task 14.
+    Until then, this is a no-op so the routing tests pass."""
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Phase 1 — Holistic Strategist
 # ═══════════════════════════════════════════════════════════════════════
@@ -15817,11 +15910,12 @@ def generate_metadata_proposals(
             if natural_lever == 5 or natural_lever in failed_levers:
                 all_lever5_clusters.append(cluster)
 
-        holistic_result = _call_llm_for_holistic_instructions(
-            all_lever5_clusters if all_lever5_clusters else clusters,
-            metadata_snapshot,
+        holistic_result = _select_lever_5_holistic_path(
+            all_clusters=all_lever5_clusters if all_lever5_clusters else clusters,
+            metadata_snapshot=metadata_snapshot,
             lever_changes=lever_changes,
             w=w,
+            benchmarks=benchmarks,
         )
 
         instruction_text = holistic_result.get("instruction_text", "")
