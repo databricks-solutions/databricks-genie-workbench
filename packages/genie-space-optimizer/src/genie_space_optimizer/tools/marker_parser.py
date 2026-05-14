@@ -392,3 +392,35 @@ def parse_plateau_input_source_marker(line: str) -> dict:
             payload.get("last_acceptance_was_rollback")
         ),
     }
+
+
+def parse_candidate_ledger_entry_marker(line: str) -> dict:
+    """Parse ``GSO_CANDIDATE_LEDGER_ENTRY_V1 {json}`` (Phase 0.4).
+
+    Returns ``{"optimization_run_id", "entry"}`` where ``entry`` is
+    the full ledger payload (22 required fields + schema_version).
+    """
+    payload = _parse_named_marker(line, "GSO_CANDIDATE_LEDGER_ENTRY_V1")
+    return {
+        "optimization_run_id": str(payload.get("optimization_run_id") or ""),
+        "entry": dict(payload.get("entry") or {}),
+    }
+
+
+def extract_candidate_ledger_from_stdout(stdout: str) -> tuple[dict, ...]:
+    """Phase 0.4 — convenience reader that returns every embedded
+    ledger entry from a stdout blob in iteration order.
+
+    Used by the postmortem skill when no JSONL artifact is in the
+    bundle (e.g., stale-anchor case).
+    """
+    out: list[dict] = []
+    for raw in stdout.splitlines():
+        if not raw.startswith("GSO_CANDIDATE_LEDGER_ENTRY_V1 "):
+            continue
+        try:
+            parsed = parse_candidate_ledger_entry_marker(raw)
+        except ValueError:
+            continue
+        out.append(parsed["entry"])
+    return tuple(out)

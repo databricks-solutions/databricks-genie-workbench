@@ -1213,3 +1213,119 @@ def contract_health_summary_marker(summary) -> str:
     """
     payload = summary.to_json_dict()
     return marker_line("GSO_CONTRACT_HEALTH_V1", payload)
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.3 — typed terminal markers for the lever-loop iteration body.
+# ---------------------------------------------------------------------------
+
+
+def iteration_no_candidate_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    terminal_reason: str,
+    cluster_ids: tuple[str, ...] | list[str],
+    ag_id: str,
+) -> str:
+    """Phase 0.3 — typed terminal marker for an iteration that ended
+    without an evaluated candidate.
+
+    Every iteration that does NOT emit ``GSO_FULL_EVAL_V1`` MUST emit
+    this marker with a typed ``terminal_reason``. The value is drawn
+    from the closed vocabulary in
+    ``optimization/run_analysis_contract.py`` (see ``ReasonCode``
+    enum from ``rca_decision_trace.py`` for the canonical set;
+    future Phase 1 work introduces ``TerminalReason`` as a strict
+    subset).
+    """
+    return marker_line(
+        "GSO_ITERATION_NO_CANDIDATE_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "terminal_reason": str(terminal_reason or "unknown"),
+            "cluster_ids": [str(c) for c in (cluster_ids or ())],
+            "ag_id": str(ag_id or ""),
+        },
+    )
+
+
+def iteration_faulted_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    exception_class: str,
+    exception_message: str,
+    traceback_head: str,
+) -> str:
+    """Phase 0.3 — typed terminal marker for an iteration that ended
+    with an uncaught exception.
+
+    Emitted from a ``finally`` block when neither ``GSO_FULL_EVAL_V1``
+    nor ``GSO_ITERATION_NO_CANDIDATE_V1`` was emitted before the
+    finally ran. Captures the exception class, repr, and the first
+    2048 chars of traceback so the postmortem can answer "what
+    failed?" without re-running.
+    """
+    truncated_tb = str(traceback_head or "")[:2048]
+    return marker_line(
+        "GSO_ITERATION_FAULTED_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "exception_class": str(exception_class or ""),
+            "exception_message": str(exception_message or ""),
+            "traceback_head": truncated_tb,
+        },
+    )
+
+
+def check_iteration_terminal_exhaustiveness(
+    *,
+    stdout: str,
+) -> dict | None:
+    """Phase 0.3 — contract-health check: every iteration_summary
+    marker is paired with exactly one terminal marker
+    (full_eval | iteration_no_candidate | iteration_faulted).
+
+    Pure: no I/O. Returns ``None`` on a clean run, or a violation
+    dict suitable for emission via the contract-health summary.
+    """
+    iter_summary_count = stdout.count("GSO_ITERATION_SUMMARY_V1 ")
+    terminal_count = (
+        stdout.count("GSO_FULL_EVAL_V1 ")
+        + stdout.count("GSO_ITERATION_NO_CANDIDATE_V1 ")
+        + stdout.count("GSO_ITERATION_FAULTED_V1 ")
+    )
+    if iter_summary_count == terminal_count:
+        return None
+    return {
+        "iteration_summary_count": iter_summary_count,
+        "terminal_marker_count": terminal_count,
+        "delta": iter_summary_count - terminal_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.4 — candidate ledger stdout marker.
+# ---------------------------------------------------------------------------
+
+
+def candidate_ledger_entry_marker(
+    *,
+    optimization_run_id: str,
+    entry: dict,
+) -> str:
+    """Phase 0.4 — stdout mirror of one candidate-ledger JSONL line.
+
+    The full entry payload is embedded so a postmortem that only has
+    stdout (no Phase H artifacts) can still reconstruct the ledger.
+    """
+    return marker_line(
+        "GSO_CANDIDATE_LEDGER_ENTRY_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "entry": dict(entry or {}),
+        },
+    )
