@@ -1314,6 +1314,87 @@ def lever5_structural_gate_records(
     return records
 
 
+def structural_repair_decision_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    rca_id: str,
+    root_cause: str,
+    target_qids: Sequence[str],
+    intended_patch_shape: str,
+    emitted_patch_shape: str,
+    gate_verdict: str,
+    terminal_reason: str = "",
+    narrow_replacement_available: bool = False,
+    repairability_score: float = 0.0,
+    component_scores: Mapping[str, Any] | None = None,
+) -> DecisionRecord:
+    """Phase 2.3 / spec Section 12.4 — STRUCTURAL_REPAIR_DECISION
+    DecisionRecord emitted on EVERY firing of the structural-repair-shape
+    gate (admitted AND rejected). Paired with the
+    ``GSO_STRUCTURAL_REPAIR_DECISION_V1`` stdout marker.
+
+    Carries ``ReasonCode.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY`` only
+    on the rejection path; admitted firings use ``ReasonCode.NONE`` and
+    outcome ``INFO`` so postmortems can distinguish observation-only
+    admissions from rejections.
+    """
+    cleaned_target_qids = tuple(
+        str(q) for q in (target_qids or ()) if str(q)
+    )
+    verdict_str = str(gate_verdict or "").strip().lower()
+    is_rejected = verdict_str == "rejected"
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        ag_id=str(ag_id or ""),
+        rca_id=str(rca_id or ""),
+        root_cause=str(root_cause or ""),
+        decision_type=DecisionType.GATE_DECISION,
+        outcome=DecisionOutcome.DROPPED if is_rejected else DecisionOutcome.INFO,
+        reason_code=(
+            ReasonCode.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY
+            if is_rejected else ReasonCode.NONE
+        ),
+        gate="structural_repair_shape_gate",
+        reason_detail=(
+            f"intended={intended_patch_shape or ''};"
+            f"emitted={emitted_patch_shape or ''};"
+            f"verdict={verdict_str};"
+            f"narrow_replacement_available={bool(narrow_replacement_available)}"
+        ),
+        evidence_refs=(f"ag:{ag_id}", "structural_repair_shape_gate"),
+        target_qids=cleaned_target_qids,
+        affected_qids=cleaned_target_qids,
+        expected_effect=(
+            f"Structural-repair-shape gate enforces intended_patch_shape="
+            f"{intended_patch_shape or ''} on "
+            f"{len(cleaned_target_qids)} target qid(s)."
+        ),
+        observed_effect=(
+            f"Verdict {verdict_str}: intended={intended_patch_shape or ''}, "
+            f"emitted={emitted_patch_shape or ''}, "
+            f"narrow_replacement_available={bool(narrow_replacement_available)}."
+        ),
+        next_action=(
+            "Re-route via Lever 6 (sql_snippet) or attach example_sql"
+            if is_rejected else "Observe-only admission (no action)"
+        ),
+        metrics={
+            "intended_patch_shape": str(intended_patch_shape or ""),
+            "emitted_patch_shape": str(emitted_patch_shape or ""),
+            "gate_verdict": verdict_str,
+            "terminal_reason": str(terminal_reason or ""),
+            "narrow_replacement_available": bool(
+                narrow_replacement_available
+            ),
+            "repairability_score": float(repairability_score or 0.0),
+            "component_scores": dict(component_scores or {}),
+        },
+    )
+
+
 def dead_on_arrival_decision_records(
     *,
     run_id: str,

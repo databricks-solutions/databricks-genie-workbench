@@ -1073,6 +1073,50 @@ def no_structural_candidate_marker(
     )
 
 
+def structural_repair_decision_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    target_qids: Sequence[str] | None = None,
+    rca_root_cause: str,
+    intended_patch_shape: str,
+    emitted_patch_shape: str,
+    gate_verdict: str,
+    terminal_reason: str = "",
+    narrow_replacement_available: bool = False,
+    repairability_score: float = 0.0,
+    component_scores: Mapping[str, Any] | None = None,
+) -> str:
+    """Phase 2.3 / spec Section 12.4 — stdout marker emitted on EVERY
+    firing of the structural-repair-shape gate (admitted AND rejected).
+
+    Payload mirrors the spec Section 9.2.5 schema so postmortem
+    consumers can detect admission/rejection of instruction-only
+    survivors when ``rca_card.intended_patch_shape == "structural"``.
+    Parsed by ``tools.marker_parser`` (where applicable).
+    """
+    return marker_line(
+        "GSO_STRUCTURAL_REPAIR_DECISION_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id or ""),
+            "cluster_id": str(cluster_id or ""),
+            "target_qids": list(target_qids or ()),
+            "rca_root_cause": str(rca_root_cause or ""),
+            "intended_patch_shape": str(intended_patch_shape or ""),
+            "emitted_patch_shape": str(emitted_patch_shape or ""),
+            "gate_verdict": str(gate_verdict or ""),
+            "terminal_reason": str(terminal_reason or ""),
+            "narrow_replacement_available": bool(narrow_replacement_available),
+            "repairability_score": float(repairability_score or 0.0),
+            "component_scores": dict(component_scores or {}),
+        },
+    )
+
+
 def replay_fixture_empty_marker(
     *,
     optimization_run_id: str,
