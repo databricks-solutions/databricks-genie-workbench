@@ -636,3 +636,114 @@ def test_build_bundle_n_zero_keeps_evidence_empty_even_when_flag_on():
     )
     assert bundle.raw_evidence == ()
 
+
+# ── Section 9: _call_llm_for_proposal raw_evidence kwarg ──────────────
+
+
+def test_call_llm_for_proposal_default_kwarg_is_empty_tuple(monkeypatch):
+    """Default kwarg ensures legacy callers (no Plan 4 awareness) get
+    byte-stable behavior."""
+    from genie_space_optimizer.optimization import optimizer
+    captured_prompt = {"text": ""}
+    def _fake_call(*args, **kwargs):
+        captured_prompt["text"] = kwargs.get("messages", [{}, {}])[1].get("content", "")
+        return ('{"changes": [], "table_changes": [], "rationale": "ok"}', None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_call)
+
+    optimizer._call_llm_for_proposal(
+        cluster=_sample_cluster_with_traces(),
+        metadata_snapshot=_sample_metadata_snapshot(),
+        patch_type="add_column_description",
+        lever=1,
+        w=None,
+    )
+    # Default empty raw_evidence renders as the empty-evidence
+    # placeholder (no anti-anchoring header):
+    assert "(No raw failure evidence" in captured_prompt["text"]
+    assert "COMMON" not in captured_prompt["text"]
+
+
+def test_call_llm_for_proposal_renders_anti_anchoring_when_evidence(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    captured_prompt = {"text": ""}
+    def _fake_call(*args, **kwargs):
+        captured_prompt["text"] = kwargs.get("messages", [{}, {}])[1].get("content", "")
+        return ('{"changes": [], "table_changes": [], "rationale": "ok"}', None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_call)
+
+    triples = (
+        {"question_id": "Q1", "trace_id": "trace://q1",
+         "question": "How many active stores in CA?",
+         "actual_sql": "SELECT count(*) FROM dim_store WHERE store_id = 1",
+         "expected_sql": "SELECT count(*) FROM dim_store WHERE location_id = 1",
+         "judge_rationale": "store_id is wrong"},
+    )
+    optimizer._call_llm_for_proposal(
+        cluster=_sample_cluster_with_traces(),
+        metadata_snapshot=_sample_metadata_snapshot(),
+        patch_type="add_column_description",
+        lever=1,
+        w=None,
+        raw_evidence=triples,
+    )
+    text = captured_prompt["text"]
+    assert "COMMON" in text
+    assert "Example 1 of 1" in text
+    assert "How many active stores" in text
+    assert "store_id is wrong" in text
+
+
+def test_call_llm_for_proposal_renders_n_3_with_correct_numbering(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    captured_prompt = {"text": ""}
+    def _fake_call(*args, **kwargs):
+        captured_prompt["text"] = kwargs.get("messages", [{}, {}])[1].get("content", "")
+        return ('{"changes": [], "table_changes": [], "rationale": "ok"}', None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_call)
+
+    triples = tuple(
+        {"question_id": f"Q{i}", "trace_id": "", "question": f"q text {i}",
+         "actual_sql": f"sa{i}", "expected_sql": f"se{i}",
+         "judge_rationale": f"r{i}"}
+        for i in range(1, 4)
+    )
+    optimizer._call_llm_for_proposal(
+        cluster=_sample_cluster_with_traces(),
+        metadata_snapshot=_sample_metadata_snapshot(),
+        patch_type="add_column_description",
+        lever=1, w=None,
+        raw_evidence=triples,
+    )
+    text = captured_prompt["text"]
+    assert "Example 1 of 3" in text
+    assert "Example 2 of 3" in text
+    assert "Example 3 of 3" in text
+
+
+def test_call_llm_for_proposal_render_helper_handles_long_sql(monkeypatch):
+    """Long SQL must not blow up the prompt budget — render helper
+    truncates each SQL field to 600 chars."""
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization.optimizer import (
+        _format_raw_evidence_block,
+    )
+    triples = (
+        {"question_id": "Q1", "trace_id": "", "question": "q",
+         "actual_sql": "X" * 5000, "expected_sql": "Y" * 5000,
+         "judge_rationale": "Z" * 5000},
+    )
+    block = _format_raw_evidence_block(triples)
+    assert len(block) < 5000  # well under the input cap
+    assert "X" * 600 in block
+    assert "X" * 1000 not in block
+
+
+def test_format_raw_evidence_block_empty():
+    from genie_space_optimizer.optimization.optimizer import (
+        _format_raw_evidence_block,
+    )
+    block = _format_raw_evidence_block(())
+    assert "No raw failure evidence" in block
+    assert "COMMON" not in block
+
+

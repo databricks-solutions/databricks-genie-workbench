@@ -8129,12 +8129,42 @@ def _resolve_lever5_llm_result(
     }
 
 
+def _format_raw_evidence_block(raw_evidence: tuple[dict, ...]) -> str:
+    """Plan 4 — render raw evidence for the ``{{ raw_evidence_block }}``
+    prompt slot.
+
+    Empty tuple → ``"(No raw failure evidence — proceed using AFS only.)"``.
+    Non-empty tuple → anti-anchoring header from
+    ``common.config._RAW_EVIDENCE_ANTI_ANCHORING_HEADER`` followed by
+    one ``Example k of N`` block per triple. Each SQL / rationale
+    field is truncated to 600 chars to keep prompt budget bounded.
+    """
+    if not raw_evidence:
+        return "(No raw failure evidence — proceed using AFS only.)"
+    from genie_space_optimizer.common.config import (
+        _RAW_EVIDENCE_ANTI_ANCHORING_HEADER,
+    )
+    parts: list[str] = [_RAW_EVIDENCE_ANTI_ANCHORING_HEADER, ""]
+    n = len(raw_evidence)
+    for i, t in enumerate(raw_evidence, start=1):
+        parts.append(
+            f"Example {i} of {n} — qid={t.get('question_id', '')}\n"
+            f"  question: {t.get('question', '')}\n"
+            f"  actual_sql:\n{(t.get('actual_sql', '') or '')[:600]}\n"
+            f"  expected_sql:\n{(t.get('expected_sql', '') or '')[:600]}\n"
+            f"  judge_rationale: {(t.get('judge_rationale', '') or '')[:600]}"
+        )
+    return "\n\n".join(parts)
+
+
 def _call_llm_for_proposal(
     cluster: dict,
     metadata_snapshot: dict,
     patch_type: str,
     lever: int,
     w: WorkspaceClient | None = None,
+    *,
+    raw_evidence: tuple[dict, ...] = (),
 ) -> dict:
     """Call Databricks Claude Opus 4.6 to generate proposal text.
 
@@ -8236,6 +8266,7 @@ def _call_llm_for_proposal(
             f.get("name") or f.get("identifier", "")
             for f in _funcs
         ],
+        "raw_evidence_block": _format_raw_evidence_block(raw_evidence),
     }
 
     if lever in (1, 2):
