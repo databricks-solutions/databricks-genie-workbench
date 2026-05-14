@@ -17926,6 +17926,23 @@ def _run_lever_loop(
     _consecutive_collision_skips: int = 0
     _was_collision_skip_this_iter: bool = False
 
+    # Phase 0.3 Task 9 — terminal-marker exhaustiveness wrapper. Every
+    # iteration of the loop below is expected to emit exactly one of
+    # ``GSO_FULL_EVAL_V1`` or ``GSO_ITERATION_NO_CANDIDATE_V1`` before
+    # the per-iteration ``finally:`` runs. If neither marker fired (the
+    # iteration body raised, or short-circuited via a path Task 10 has
+    # not yet wired with ``iteration_no_candidate_marker``), the finally
+    # emits ``GSO_ITERATION_FAULTED_V1`` so terminal-marker totality is
+    # never silently violated. Gated by ``iteration_terminal_marker_enabled``
+    # (default-ON); set ``GSO_ITERATION_TERMINAL_MARKER=0`` to roll back.
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        iteration_faulted_marker,
+    )
+    from genie_space_optimizer.common.config import (
+        iteration_terminal_marker_enabled,
+    )
+    _iter_marker_active = iteration_terminal_marker_enabled()
+
     for _iter_num in range(1, max_iterations + 1):
         # Risk-1 mitigation — clear the consecutive counter if the
         # previous iteration did NOT take the collision-skip path.
@@ -17935,6 +17952,12 @@ def _run_lever_loop(
         if not _was_collision_skip_this_iter:
             _consecutive_collision_skips = 0
         _was_collision_skip_this_iter = False
+        # Phase 0.3 Task 9 — per-iteration terminal-marker sentinel.
+        # Sites that emit ``GSO_FULL_EVAL_V1`` or
+        # ``GSO_ITERATION_NO_CANDIDATE_V1`` set this True; the iteration
+        # ``finally:`` below emits ``GSO_ITERATION_FAULTED_V1`` if this
+        # remains False at finally time.
+        _iter_terminal_emitted = False
         try:
             # ── Exit checks ──────────────────────────────────────────────
             from genie_space_optimizer.optimization.acceptance_policy import (
@@ -26654,6 +26677,29 @@ def _run_lever_loop(
                 cumulative_regression_debt=_cumulative_regression_debt,
             )
 
+            # Phase 0.3 Task 9 — terminal-marker exhaustiveness. The
+            # ``_run_gate_checks`` helper emits ``GSO_FULL_EVAL_V1`` from
+            # two paths: PASS (line ~16334) when ``passed=True``, and FAIL
+            # (line ~16164) when the rollback_reason starts with
+            # ``full_eval:`` (regression detected after full eval ran).
+            # Slice/p0/gate-stage early returns (line ~15010 / ~15206)
+            # do NOT emit the marker — Task 10 will close those paths
+            # with ``iteration_no_candidate_marker``. Until then, those
+            # iterations fall through to ``GSO_ITERATION_FAULTED_V1`` in
+            # the finally below.
+            try:
+                _gr = gate_result or {}
+                if bool(_gr.get("passed")) or str(
+                    _gr.get("rollback_reason") or ""
+                ).startswith("full_eval:"):
+                    _iter_terminal_emitted = True
+            except Exception:
+                logger.debug(
+                    "Phase 0.3 Task 9: terminal-marker sentinel update "
+                    "failed (non-fatal)",
+                    exc_info=True,
+                )
+
             # Cycle 14B-T2: accumulate accepted regression debt against
             # the policy's cumulative cap. The gate's
             # ``acceptance_decision`` carries the reason and debt qids
@@ -28692,6 +28738,49 @@ def _run_lever_loop(
                     logger.debug(
                         "Phase H exception-fallback finalise "
                         "skipped (non-fatal)",
+                        exc_info=True,
+                    )
+
+            # Phase 0.3 Task 9 — terminal-marker exhaustiveness. If no
+            # terminal marker (GSO_FULL_EVAL_V1 or
+            # GSO_ITERATION_NO_CANDIDATE_V1) fired during this iteration,
+            # emit GSO_ITERATION_FAULTED_V1 so the contract's totality
+            # invariant holds. If an exception is unwinding, capture its
+            # class, repr (truncated), and traceback head; otherwise the
+            # marker carries a "NoTerminalMarker" sentinel that Task 10
+            # will convert into typed iteration_no_candidate_marker
+            # emissions at every short-circuit path inside the iteration
+            # body. Gated by ``_iter_marker_active`` so the
+            # GSO_ITERATION_TERMINAL_MARKER=0 rollback path is hot.
+            if _iter_marker_active and not _iter_terminal_emitted:
+                try:
+                    import sys as _sys_mod
+                    import traceback as _tb_mod
+                    _exc_type, _exc_val, _exc_tb = _sys_mod.exc_info()
+                    if _exc_val is not None:
+                        _iter_exc_class = type(_exc_val).__name__
+                        _iter_exc_message = repr(_exc_val)[:512]
+                        _iter_tb_head = "".join(
+                            _tb_mod.format_tb(_exc_tb)
+                        )[:2048]
+                    else:
+                        _iter_exc_class = "NoTerminalMarker"
+                        _iter_exc_message = (
+                            "iteration ended without FULL_EVAL or "
+                            "NO_CANDIDATE marker"
+                        )
+                        _iter_tb_head = ""
+                    print(iteration_faulted_marker(
+                        optimization_run_id=str(run_id or ""),
+                        iteration=int(_iter_num),
+                        exception_class=_iter_exc_class,
+                        exception_message=_iter_exc_message,
+                        traceback_head=_iter_tb_head,
+                    ), flush=True)
+                except Exception:
+                    logger.debug(
+                        "Phase 0.3 Task 9: iteration_faulted_marker "
+                        "emission failed (non-fatal)",
                         exc_info=True,
                     )
     write_stage(
