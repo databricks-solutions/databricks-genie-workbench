@@ -216,6 +216,14 @@ class ActionGroupsInput(JsonRoundTrip):
     # AG-emit time. select() drops AGs whose source_cluster_ids
     # intersect this set when ag_emit_grounding_gate_enabled().
     blocked_cluster_ids: tuple[str, ...] = ()
+    # Phase 1.5 — ordered cluster priority list
+    # (regressed + uncovered + original_target) built by
+    # ``build_recovery_priority_list`` and threaded by the harness when
+    # ``strategist_recovery_pivot_enabled()`` is on. Empty tuple is the
+    # legacy / flag-off / iter-1 sentinel and is byte-stable: today
+    # ``select()`` plumbs the field through unchanged for downstream
+    # observability; honoring the order requires a follow-up commit.
+    priority_cluster_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_json(cls, payload: dict) -> "ActionGroupsInput":
@@ -243,6 +251,9 @@ class ActionGroupsInput(JsonRoundTrip):
         blocked = tuple(
             str(c) for c in (payload.get("blocked_cluster_ids") or [])
         )
+        priority = tuple(
+            str(c) for c in (payload.get("priority_cluster_ids") or [])
+        )
         return cls(
             action_groups=ags,
             source_clusters_by_id=src,
@@ -252,6 +263,7 @@ class ActionGroupsInput(JsonRoundTrip):
             prior_iteration_dropped_causal_patches=dropped,
             forbidden_ags=forbidden,
             blocked_cluster_ids=blocked,
+            priority_cluster_ids=priority,
         )
 
 
