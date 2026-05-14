@@ -241,3 +241,60 @@ def test_coverage_gate_no_op_when_flag_unset():
     cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
     # Don't trigger any sites; gate is opt-in so this should not raise:
     cfg._NARROWING_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+# ── Task 6: byte-delta tests ─────────────────────────────────────────
+
+
+def test_lever_4_join_discovery_byte_delta_when_flag_on():
+    """When flag is on, LEVER_4_JOIN_DISCOVERY_PROMPT must be smaller
+    than when flag is off, by approximately len(_RCA_CONTRACT_HEADER).
+    The exact byte count makes the regression detectable."""
+    cfg_off = _reload_config_with_env({})
+    prompt_off = cfg_off.LEVER_4_JOIN_DISCOVERY_PROMPT
+    header_len = len(cfg_off._RCA_CONTRACT_HEADER)
+
+    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    prompt_on = cfg_on.LEVER_4_JOIN_DISCOVERY_PROMPT
+
+    delta = len(prompt_off) - len(prompt_on)
+    # Allow ±2 chars slack for the trailing "\n\n" grouping in the
+    # header definition; the dominant signal is the contract block size.
+    assert abs(delta - header_len) <= 2, (
+        f"Expected ~{header_len}-byte reduction in flag-on prompt, "
+        f"got {delta}. prompt_off={len(prompt_off)} prompt_on={len(prompt_on)}"
+    )
+
+
+# ── Task 7: rendering tests ──────────────────────────────────────────
+
+
+def test_lever_4_join_discovery_renders_under_both_flag_states():
+    """Ensure format_mlflow_template still parses the prompt cleanly
+    whether the contract block is present or stripped."""
+    from genie_space_optimizer.common.config import format_mlflow_template
+
+    sample_kwargs = {
+        "full_schema_context": "(test schema)",
+        "current_join_specs": "[]",
+        "discovery_hints": "(no hints)",
+        "identifier_allowlist": "test.schema.t1.col1",
+    }
+
+    # Flag off
+    cfg_off = _reload_config_with_env({})
+    rendered_off = format_mlflow_template(
+        cfg_off.LEVER_4_JOIN_DISCOVERY_PROMPT, **sample_kwargs,
+    )
+    assert "(test schema)" in rendered_off
+    assert "<unified_rca_engine_contract>" in rendered_off
+    assert "{{" not in rendered_off, "unrendered template variables remain"
+
+    # Flag on
+    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    rendered_on = format_mlflow_template(
+        cfg_on.LEVER_4_JOIN_DISCOVERY_PROMPT, **sample_kwargs,
+    )
+    assert "(test schema)" in rendered_on
+    assert "<unified_rca_engine_contract>" not in rendered_on
+    assert "{{" not in rendered_on, "unrendered template variables remain"
