@@ -731,3 +731,49 @@ def test_coverage_gate_raises_when_no_shadow_comparisons():
     # No shadow comparison emitted:
     with pytest.raises(RuntimeError, match="zero shadow comparison"):
         cfg._LEVER_FIVE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+# ── Section 9: _emit_lever5_shadow_comparison ─────────────────────────
+
+
+def test_emit_shadow_comparison_records_jaccard_and_overlap():
+    cfg = _reload_config_with_env({"GSO_LEVER5_SHADOW_V1": "1"})
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+
+    optimizer._emit_lever5_shadow_comparison(
+        ag_id="AG1",
+        cluster_ids=["C1", "C2"],
+        old={"instruction_text": "PURPOSE:\nHotel bookings.\nROUTING: use fact_bookings.",
+             "example_sql_proposals": [
+                 {"example_sql": "SELECT a FROM t1"},
+                 {"example_sql": "SELECT b FROM t2"},
+             ],
+             "rationale": "old"},
+        new={"instruction_text": "PURPOSE:\nHotel bookings.\nROUTING: use fact_bookings table.",
+             "example_sql_proposals": [
+                 {"example_sql": "SELECT a FROM t1"},  # overlaps
+                 {"example_sql": "SELECT c FROM t3"},  # new
+             ],
+             "rationale": "new"},
+    )
+    snap = cfg.dump_lever5_split_capture_summary()
+    assert snap["shadow_comparisons"] == 1
+
+
+def test_emit_shadow_comparison_no_op_when_no_flags():
+    """When neither shadow nor split is on, _emit must not record
+    anything (defensive — _select_lever_5_holistic_path's both-off
+    branch never calls it, but a future bug shouldn't pollute the
+    sink)."""
+    cfg = _reload_config_with_env({})
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+
+    optimizer._emit_lever5_shadow_comparison(
+        ag_id="AG1", cluster_ids=[],
+        old={"instruction_text": "x", "example_sql_proposals": [], "rationale": ""},
+        new={"instruction_text": "y", "example_sql_proposals": [], "rationale": ""},
+    )
+    snap = cfg.dump_lever5_split_capture_summary()
+    assert snap["shadow_comparisons"] == 0

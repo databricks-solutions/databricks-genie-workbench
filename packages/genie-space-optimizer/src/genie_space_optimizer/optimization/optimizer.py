@@ -9554,9 +9554,64 @@ def _emit_lever5_shadow_comparison(
     old: dict,
     new: dict,
 ) -> None:
-    """Stub — replaced with the real implementation in Task 14.
-    Until then, this is a no-op so the routing tests pass."""
-    return None
+    """Plan 2 — emit one shadow-comparison record to the L5 capture sink.
+
+    No-op when neither GSO_LEVER5_SPLIT_V1 nor GSO_LEVER5_SHADOW_V1 is on
+    (defensive — selector's both-off branch never calls us, but a
+    future bug shouldn't pollute the sink).
+    """
+    from genie_space_optimizer.common.config import (
+        _record_lever5_shadow_comparison,
+        lever5_shadow_enabled,
+        lever5_split_enabled,
+    )
+    if not (lever5_shadow_enabled() or lever5_split_enabled()):
+        return
+
+    import hashlib
+
+    def _hash(s: str) -> str:
+        return hashlib.sha256((s or "").encode("utf-8")).hexdigest()[:16]
+
+    def _sql_set(props: list[dict] | None) -> set[str]:
+        return {(p.get("example_sql") or "").strip()
+                for p in (props or []) if (p.get("example_sql") or "").strip()}
+
+    def _jaccard(a: str, b: str) -> float:
+        ta = set((a or "").lower().split())
+        tb = set((b or "").lower().split())
+        if not ta and not tb:
+            return 1.0
+        union = ta | tb
+        if not union:
+            return 1.0
+        return len(ta & tb) / len(union)
+
+    def _overlap(a: set[str], b: set[str]) -> float:
+        if not a and not b:
+            return 1.0
+        union = a | b
+        if not union:
+            return 1.0
+        return len(a & b) / len(union)
+
+    old_sql = _sql_set(old.get("example_sql_proposals"))
+    new_sql = _sql_set(new.get("example_sql_proposals"))
+    record = {
+        "ag_id": ag_id,
+        "cluster_ids": cluster_ids,
+        "old_instruction_text_hash": _hash(old.get("instruction_text", "")),
+        "new_5a_instruction_text_hash": _hash(new.get("instruction_text", "")),
+        "instruction_text_jaccard": _jaccard(
+            old.get("instruction_text", ""), new.get("instruction_text", ""),
+        ),
+        "old_example_sqls_count": len(old_sql),
+        "new_example_sqls_count": len(new_sql),
+        "example_sqls_set_overlap": _overlap(old_sql, new_sql),
+        "old_example_sqls_hashes": sorted(_hash(s) for s in old_sql),
+        "new_example_sqls_hashes": sorted(_hash(s) for s in new_sql),
+    }
+    _record_lever5_shadow_comparison(record)
 
 
 # ═══════════════════════════════════════════════════════════════════════
