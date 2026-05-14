@@ -2229,7 +2229,7 @@ EXPAND_INSTRUCTION_PROMPT = (
     '— never rewrite or rephrase content that already exists.\n'
     '</role>\n'
     '\n'
-    + _RCA_CONTRACT_HEADER +
+    + _rca_contract_for("preflight-instruction-expand") +
     '<context>\n'
     '## Existing Instructions\n'
     '{{ existing_instructions }}\n'
