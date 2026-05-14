@@ -6734,3 +6734,15 @@ def reserved_recovery_budget_enabled() -> bool:
     every iteration consume budget regardless of work state.
     """
     return _flag_default_on("GSO_RESERVED_RECOVERY_BUDGET")
+
+
+def provisional_rca_from_soft_signals_enabled() -> bool:
+    """Phase 2.2 — when ON and the hard-ASI path returns no RCA
+    card, the harness tries ``build_provisional_card`` from soft
+    signals before emitting CLUSTER_BLOCKED_NO_RCA.
+
+    Default-ON. Explicit
+    ``GSO_PROVISIONAL_RCA_FROM_SOFT_SIGNALS=0`` skips the
+    provisional path (legacy behavior).
+    """
+    return _flag_default_on("GSO_PROVISIONAL_RCA_FROM_SOFT_SIGNALS")
