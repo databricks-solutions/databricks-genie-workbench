@@ -121,3 +121,87 @@ def test_lever_5b_skill_id_accessor():
     by the dispatcher and capture sink."""
     from genie_space_optimizer.optimization import synthesis
     assert synthesis.lever_5b_skill_id() == "lever-5b-example-sql"
+
+
+# ── Section 2: LEVER_5A_INSTRUCTION_PROMPT ────────────────────────────
+
+
+def test_lever_5a_instruction_prompt_exists_and_has_required_slots():
+    cfg = _reload_config_with_env({})
+    p = cfg.LEVER_5A_INSTRUCTION_PROMPT
+    # Required template slots — these are what _call_llm_for_lever_5a_instructions
+    # will fill in Task 7.
+    for slot in (
+        "{{ space_description }}",
+        "{{ eval_summary }}",
+        "{{ cluster_briefs }}",
+        "{{ lever_summary }}",
+        "{{ current_instructions }}",
+        "{{ existing_example_sqls }}",
+        "{{ identifier_allowlist }}",
+        "{{ instruction_char_budget }}",
+    ):
+        assert slot in p, slot
+
+
+def test_lever_5a_instruction_prompt_forbids_example_sql_in_output_schema():
+    """The prompt must NOT instruct the LLM to produce example_sql_proposals.
+    Any wording that asks for SQL output makes the firewall pointless."""
+    cfg = _reload_config_with_env({})
+    p = cfg.LEVER_5A_INSTRUCTION_PROMPT
+    # Split into output_schema block + the rest.
+    schema_section = p.split("<output_schema>", 1)[-1]
+    forbidden_in_schema = (
+        "example_sql_proposals",
+        '"example_sql"',
+        "example_sql:",
+    )
+    for sub in forbidden_in_schema:
+        assert sub not in schema_section, (
+            f"L5a output_schema contains forbidden substring: {sub}. "
+            "L5a must produce instruction_text + rationale only."
+        )
+
+
+def test_lever_5a_instruction_prompt_keeps_existing_example_sqls_as_context():
+    """Existing example SQLs are still passed AS CONTEXT (so L5a knows
+    what's already there and avoids duplicating instruction guidance for
+    them). This is different from instructing the LLM to PRODUCE example
+    SQLs in its output."""
+    cfg = _reload_config_with_env({})
+    p = cfg.LEVER_5A_INSTRUCTION_PROMPT
+    # Slot for read-only context:
+    assert "{{ existing_example_sqls }}" in p
+    # And the contextual header that introduces it:
+    assert "Existing Example SQL Queries" in p
+
+
+def test_lever_5a_instruction_prompt_output_schema_is_instruction_only():
+    cfg = _reload_config_with_env({})
+    p = cfg.LEVER_5A_INSTRUCTION_PROMPT
+    # The output_schema block must mention instruction_text and rationale,
+    # and must NOT mention example_sql:
+    assert "instruction_text" in p
+    assert "rationale" in p
+    schema_block = p.split("<output_schema>", 1)[-1]
+    assert "example_sql" not in schema_block
+
+
+def test_lever_5a_instruction_prompt_renders_with_realistic_kwargs():
+    cfg = _reload_config_with_env({})
+    sample_kwargs = {
+        "space_description": "Hotel bookings analytics",
+        "eval_summary": "3 clusters; 12 failing questions",
+        "cluster_briefs": "C1: missing temporal filter on fact_bookings",
+        "lever_summary": "L1 added column descriptions for booking_date",
+        "current_instructions": "PURPOSE:\nHotel bookings.\n",
+        "existing_example_sqls": "(none)",
+        "identifier_allowlist": "catalog.schema.fact_bookings.booking_date",
+        "instruction_char_budget": "20000",
+    }
+    rendered = cfg.format_mlflow_template(
+        cfg.LEVER_5A_INSTRUCTION_PROMPT, **sample_kwargs,
+    )
+    assert "Hotel bookings analytics" in rendered
+    assert "{{" not in rendered, "unrendered template variable in L5a prompt"
+    assert '"example_sql_proposals"' not in rendered  # not even in the schema
