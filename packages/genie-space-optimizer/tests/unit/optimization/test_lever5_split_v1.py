@@ -587,3 +587,46 @@ def test_l5_branch_split_wins_over_shadow_when_both_set(monkeypatch):
     )
     # Split wins; NEW is applied. Shadow comparison still happens (Task 14).
     assert applied["instruction_text"] == "NEW"
+
+
+# ── Section 7: integration through the L5 holistic entry point ────────
+
+
+def test_generate_metadata_proposals_l5_branch_routes_through_selector(monkeypatch):
+    """Plan 2 / Task 12. The plan names ``generate_proposals_from_strategy``
+    here, but in the current cycle-12 codebase the L5 holistic-instructions
+    call lives in ``generate_metadata_proposals`` (the function whose L5
+    branch was refactored in Task 11). Asserting on the correct entry
+    point preserves the plan's intent: any future patch that reintroduces
+    a direct call to ``_call_llm_for_holistic_instructions`` inside this
+    function will break this test.
+    """
+    cfg = _reload_config_with_env({"GSO_LEVER5_SPLIT_V1": "1"})
+    from genie_space_optimizer.optimization import optimizer
+
+    selector_called = {"n": 0}
+    def _fake_selector(**kw):
+        selector_called["n"] += 1
+        return {"instruction_text": "X", "example_sql_proposals": [],
+                "rationale": "r"}
+    monkeypatch.setattr(
+        optimizer, "_select_lever_5_holistic_path", _fake_selector,
+    )
+
+    metadata_snapshot = {
+        "config": {"description": "test"},
+        "data_sources": {"tables": [], "metric_views": [], "functions": []},
+        "tables": [], "metric_views": [], "functions": [],
+        "instructions": {"text_instructions": []},
+    }
+
+    optimizer.generate_metadata_proposals(
+        clusters=[],
+        metadata_snapshot=metadata_snapshot,
+        target_lever=5,
+        w=None,
+    )
+    assert selector_called["n"] == 1, (
+        "L5 branch must route through _select_lever_5_holistic_path, "
+        "not call _call_llm_for_holistic_instructions directly."
+    )
