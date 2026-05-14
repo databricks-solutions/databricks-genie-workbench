@@ -70,6 +70,28 @@ def test_three_stage_capture_path_set_when_var_present():
     assert cfg.three_stage_capture_path_set() is True
 
 
+# ── Section 1b: skill name registry ───────────────────────────────────
+
+
+def test_three_stage_skill_names_contains_expected():
+    cfg = _reload_config_with_env({})
+    expected = {
+        "lever-1-table-column-description",
+        "lever-2-mv-column-refinement",
+        "lever-3-tvf-routing",
+        "lever-4-join-discovery",
+        "lever-5a-instructions",
+        "lever-5b-example-sql",
+        "lever-6-sql-expression",
+    }
+    assert cfg._THREE_STAGE_SKILL_NAMES == frozenset(expected)
+
+
+def test_three_stage_skill_names_is_frozenset():
+    cfg = _reload_config_with_env({})
+    assert isinstance(cfg._THREE_STAGE_SKILL_NAMES, frozenset)
+
+
 # ── Section 4: ActivationBundle ───────────────────────────────────────
 
 

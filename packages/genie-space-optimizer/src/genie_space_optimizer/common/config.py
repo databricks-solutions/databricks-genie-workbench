@@ -5922,6 +5922,24 @@ def three_stage_capture_require_coverage_enabled() -> bool:
     return _flag_enabled("GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE")
 
 
+# ── Plan 3 (Phase 3): canonical Stage-2 skill_id registry ─────────────
+# The Stage-1 discovery LLM picks from this set. Stage-2 dispatcher in
+# three_stage_pipeline.py rejects (logs + skips) any skill_id outside
+# this set. The four other catalogue skills (preflight-instruction-
+# expand, preflight-sql-expression-seeding, lever-5-holistic deprecated,
+# rca-card-narrative-polish) are explicitly NOT pickable by Stage-1
+# because they are deterministic preflight or polish operations.
+_THREE_STAGE_SKILL_NAMES: frozenset[str] = frozenset({
+    "lever-1-table-column-description",
+    "lever-2-mv-column-refinement",
+    "lever-3-tvf-routing",
+    "lever-4-join-discovery",
+    "lever-5a-instructions",
+    "lever-5b-example-sql",
+    "lever-6-sql-expression",
+})
+
+
 def partial_harvest_with_debt_enabled() -> bool:
     """Cycle 14B-T1+T2 — when on, ``decide_control_plane_acceptance``
     can accept candidates that fix >=1 hard cluster AND meet
