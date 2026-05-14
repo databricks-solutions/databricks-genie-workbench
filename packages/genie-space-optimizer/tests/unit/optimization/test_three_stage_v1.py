@@ -1305,3 +1305,59 @@ def test_stage_2_l3_uses_lever_3(monkeypatch):
 def test_stage_2_l3_dispatcher_table_registered():
     from genie_space_optimizer.optimization import three_stage_pipeline
     assert "lever-3-tvf-routing" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE
+
+
+# ── Section 7c: L5a + L5b stage-2 adapters ────────────────────────────
+
+
+def test_stage_2_l5a_returns_instruction_text_only(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_lever_5a_instructions",
+        lambda **kw: {"instruction_text": "PURPOSE:\nX", "rationale": "r5a"},
+    )
+
+    bundle = _sample_bundle("lever-5a-instructions")
+    out = three_stage_pipeline._stage_2_l5a(bundle, w=None)
+    assert out["skill_id"] == "lever-5a-instructions"
+    assert len(out["proposals"]) == 1
+    assert out["proposals"][0]["instruction_text"] == "PURPOSE:\nX"
+    assert "example_sql" not in out["proposals"][0]
+
+
+def test_stage_2_l5b_runs_once_per_cluster(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    call_count = {"n": 0}
+    def _fake_5b(cluster, metadata_snapshot, w, benchmark_corpus):
+        call_count["n"] += 1
+        return [{"example_question": "Q?", "example_sql": "SELECT 1",
+                 "parameters": [], "usage_guidance": "test"}]
+    monkeypatch.setattr(optimizer, "_dispatch_lever_5b_for_cluster", _fake_5b)
+
+    # Bundle with two clusters:
+    from genie_space_optimizer.optimization.activation_bundle import ActivationBundle
+    from genie_space_optimizer.optimization.afs import format_afs
+    bundle = ActivationBundle(
+        skill_id="lever-5b-example-sql",
+        ag_id="AG1", target_objects=(),
+        cluster_afs=(format_afs(_sample_cluster()),
+                      format_afs({**_sample_cluster(), "cluster_id": "C2"})),
+        metadata_snapshot=_sample_metadata_snapshot(),
+        identifier_allowlist="", evidence_refs=(),
+        expected_impact_qids=(), raw_evidence=(),
+        lever_directives_legacy=None, discovery_rationale="",
+        priority=1,
+    )
+    out = three_stage_pipeline._stage_2_l5b(bundle, w=None)
+    assert call_count["n"] == 2
+    assert len(out["proposals"]) == 2
+
+
+def test_stage_2_l5a_l5b_dispatcher_registered():
+    from genie_space_optimizer.optimization import three_stage_pipeline
+    assert "lever-5a-instructions" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE
+    assert "lever-5b-example-sql" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE

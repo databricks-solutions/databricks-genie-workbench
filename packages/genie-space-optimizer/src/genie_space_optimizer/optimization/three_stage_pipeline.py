@@ -194,6 +194,72 @@ def _stage_2_l3(bundle: "ActivationBundle", w: Any) -> dict:
     }
 
 
+def _stage_2_l5a(bundle: "ActivationBundle", w: Any) -> dict:
+    """Stage-2 adapter for lever-5a-instructions (Plan 2)."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _call_llm_for_lever_5a_instructions,
+    )
+    # 5a is per-AG (one merged instruction document), not per-cluster.
+    # The legacy entry takes the AG's clusters as a list.
+    raw_clusters = list(bundle.cluster_afs)  # AFS dicts are fine — lever 5a
+                                              # uses _format_cluster_briefs_afs internally.
+    try:
+        result = _call_llm_for_lever_5a_instructions(
+            all_clusters=raw_clusters,
+            metadata_snapshot=bundle.metadata_snapshot,
+            lever_changes=[],
+            w=w,
+        )
+    except Exception:
+        logger.warning(
+            "Stage-2 L5a failed for AG=%s", bundle.ag_id, exc_info=True,
+        )
+        return {
+            "skill_id": bundle.skill_id, "ag_id": bundle.ag_id,
+            "proposals": [], "error": "L5a LLM call failed",
+        }
+    if not (result.get("instruction_text") or "").strip():
+        return {
+            "skill_id": bundle.skill_id, "ag_id": bundle.ag_id,
+            "proposals": [],
+        }
+    return {
+        "skill_id": bundle.skill_id,
+        "ag_id": bundle.ag_id,
+        "proposals": [{
+            "instruction_text": result["instruction_text"],
+            "rationale": result.get("rationale", ""),
+        }],
+    }
+
+
+def _stage_2_l5b(bundle: "ActivationBundle", w: Any) -> dict:
+    """Stage-2 adapter for lever-5b-example-sql (Plan 2 per-cluster)."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _dispatch_lever_5b_for_cluster,
+    )
+    # Plan 2's adapter handles benchmark_corpus internally when None;
+    # since the bundle does not carry the raw benchmarks list, pass None
+    # (firewall degrades gracefully — see Plan 2 Task 10 docstring).
+    proposals: list[dict] = []
+    for cluster_afs in bundle.cluster_afs:
+        # The adapter takes a cluster dict; AFS dicts are accepted because
+        # synthesize_example_sqls calls format_afs(cluster) which is
+        # idempotent on already-AFS-shaped dicts.
+        per_cluster = _dispatch_lever_5b_for_cluster(
+            cluster=dict(cluster_afs),
+            metadata_snapshot=bundle.metadata_snapshot,
+            w=w,
+            benchmark_corpus=None,
+        )
+        proposals.extend(per_cluster or [])
+    return {
+        "skill_id": bundle.skill_id,
+        "ag_id": bundle.ag_id,
+        "proposals": proposals,
+    }
+
+
 # ── Dispatcher ────────────────────────────────────────────────────────
 
 # Plan 3 starts with L4 only. Tasks 15-18 add the remaining adapters
@@ -203,6 +269,8 @@ _STAGE_2_DISPATCH_TABLE: dict[str, Callable[..., dict]] = {
     "lever-2-mv-column-refinement": _stage_2_l2,
     "lever-3-tvf-routing": _stage_2_l3,
     "lever-4-join-discovery": _stage_2_l4,
+    "lever-5a-instructions": _stage_2_l5a,
+    "lever-5b-example-sql": _stage_2_l5b,
 }
 
 
