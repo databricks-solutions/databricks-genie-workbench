@@ -526,6 +526,51 @@ def build_iteration_summary_payload(
     }
 
 
+def build_phase_h_aggregate_iteration_summaries_payload(
+    *,
+    optimization_run_id: str,
+    iteration_counter: int,
+    replay_fixture_iterations: list[dict] | None = None,
+) -> dict:
+    """Phase 0.2 — aggregate Phase H ``iteration_summaries.json`` payload.
+
+    Sources every per-iteration summary entry from the SAME in-memory
+    ``replay_fixture_iterations`` list used to build the
+    ``PHASE_A_REPLAY_FIXTURE_JSON`` stderr blob, guaranteeing parity
+    between stderr fixture and Phase H artifact. The output payload
+    is the canonical contents of
+    ``gso_postmortem_bundle/iteration_summaries.json``.
+
+    Distinct from :func:`build_iteration_summary_payload` which writes
+    one file per iteration. This aggregate variant is the single
+    Phase H artifact for the whole run.
+
+    Pure: no I/O. Empty ``replay_fixture_iterations`` yields an
+    empty ``iteration_summaries`` list.
+    """
+    iterations = list(replay_fixture_iterations or [])
+    summaries: list[dict] = []
+    for entry in iterations:
+        summaries.append({
+            "iteration": int(entry.get("iteration") or 0),
+            "ag_id": str(entry.get("ag_id") or ""),
+            "decision_record_count": int(entry.get("decision_record_count") or 0),
+            "accepted_count": int(entry.get("accepted_count") or 0),
+            "rolled_back_count": int(entry.get("rolled_back_count") or 0),
+            "skipped_count": int(entry.get("skipped_count") or 0),
+            "gate_drop_count": int(entry.get("gate_drop_count") or 0),
+            "journey_violation_count": int(entry.get("journey_violation_count") or 0),
+            "eval_rows": int(entry.get("eval_rows") or 0),
+        })
+
+    return {
+        "optimization_run_id": str(optimization_run_id or ""),
+        "iteration_counter": int(iteration_counter),
+        "iteration_summaries": summaries,
+        "schema_version": "v1",
+    }
+
+
 def build_iteration_decision_trace_payload(
     *,
     iteration: int,
