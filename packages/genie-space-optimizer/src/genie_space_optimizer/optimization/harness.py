@@ -31646,6 +31646,27 @@ def _run_lever_loop(
     except Exception as _l5_log_exc:
         logger.warning("lever5_split summary emit failed: %s", _l5_log_exc)
 
+    # Plan 3 — three-stage pipeline trial telemetry. No-op unless one of
+    # GSO_THREE_STAGE_V1 / GSO_THREE_STAGE_SHADOW_V1 was set for this run.
+    try:
+        from genie_space_optimizer.common.config import dump_three_stage_capture_summary
+        _ts_summary = dump_three_stage_capture_summary()
+        if (_ts_summary["discovery_calls"] > 0
+                or _ts_summary["shadow_comparisons"] > 0
+                or any(c > 0 for c in _ts_summary["skill_dispatches"].values())):
+            logger.info(
+                "three_stage trial summary: discovery_calls=%d "
+                "skill_dispatches=%s shadow_comparisons=%d "
+                "all_required_sites_exercised=%s sink_path=%s",
+                _ts_summary["discovery_calls"],
+                _ts_summary["skill_dispatches"],
+                _ts_summary["shadow_comparisons"],
+                _ts_summary["all_required_sites_exercised"],
+                _ts_summary["sink_path"],
+            )
+    except Exception as _ts_log_exc:
+        logger.warning("three_stage summary emit failed: %s", _ts_log_exc)
+
     return _build_loop_out_with_pretty_print(
         loop_out_base=_loop_out_base,
         phase_h_full_transcript=_full_transcript,

@@ -1402,3 +1402,15 @@ def test_stage_2_l6_drops_none_proposals(monkeypatch):
 def test_stage_2_l6_dispatcher_registered():
     from genie_space_optimizer.optimization import three_stage_pipeline
     assert "lever-6-sql-expression" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE
+
+
+# ── Section 9c: harness summary ───────────────────────────────────────
+
+
+def test_dump_three_stage_capture_summary_safe_when_no_state():
+    from genie_space_optimizer.common import config as cfg
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    snap = cfg.dump_three_stage_capture_summary()
+    assert isinstance(snap, dict)
+    assert snap["discovery_calls"] == 0
+    assert all(c == 0 for c in snap["skill_dispatches"].values())
