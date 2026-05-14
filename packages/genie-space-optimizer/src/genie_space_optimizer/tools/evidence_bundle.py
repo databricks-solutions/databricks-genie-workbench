@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import enum
 import json
 import logging
 import sys
@@ -342,6 +343,107 @@ def detect_stale_phase_h_anchor(
             "the lever_loop task ran without emitting Phase H artifacts — "
             "treat replay fixture as authoritative and skip Phase H consumers."
         ),
+    )
+
+
+class EvidenceBundleStatus(enum.Enum):
+    """Phase 0.1 — typed status enum for Phase H anchor resolution.
+
+    HEALTHY: the artifact's ``lever_loop_task_run_id`` matches the
+             resolved task. Phase H artifacts may be consumed.
+    STALE_ANCHOR: the artifact's ``lever_loop_task_run_id`` does NOT
+                  match the resolved task. Phase H artifacts must NOT
+                  be consumed; postmortem falls back to stdout.
+    """
+
+    HEALTHY = "healthy"
+    STALE_ANCHOR = "stale_anchor"
+
+
+class StalePhaseHAnchorError(RuntimeError):
+    """Raised when ``resolve_phase_h_anchor`` detects a stale or
+    unresolvable Phase H anchor.
+
+    The error message always begins with the ``STALE_ANCHOR`` sentinel
+    so callers and tests can match on it deterministically. When the
+    mismatch involves two concrete task_run_ids, both are surfaced in
+    the message to support post-hoc diagnosis without re-reading the
+    artifact.
+    """
+
+
+def resolve_phase_h_anchor(
+    *,
+    artifact_path: str | Path,
+    resolved_task_run_id: str,
+) -> EvidenceBundleStatus:
+    """Phase 0.1 / Phase 5 Task 13 — typed wrapper that reads a Phase H
+    replay artifact and confirms its embedded
+    ``lever_loop_task_run_id`` matches ``resolved_task_run_id``.
+
+    Returns ``EvidenceBundleStatus.HEALTHY`` on match. On mismatch,
+    missing file, or unparseable JSON, raises
+    :class:`StalePhaseHAnchorError` whose message begins with
+    ``STALE_ANCHOR`` and (for mismatches) includes both the expected
+    and observed task_run_ids.
+
+    Mirrors the pure-helper semantics of
+    :func:`detect_stale_phase_h_anchor` but with a path-based interface
+    so postmortem callers can do::
+
+        status = resolve_phase_h_anchor(
+            artifact_path=run_manifest_v2_path,
+            resolved_task_run_id=task_run_id,
+        )
+
+    instead of constructing a :class:`MissingPiece` by hand.
+    """
+    p = Path(artifact_path) if not isinstance(artifact_path, Path) else artifact_path
+    expected = str(resolved_task_run_id or "").strip()
+
+    if not p.exists():
+        raise StalePhaseHAnchorError(
+            f"STALE_ANCHOR: Phase H artifact {p} does not exist; "
+            f"cannot anchor on lever_loop_task_run_id={expected or '<blank>'}."
+        )
+
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise StalePhaseHAnchorError(
+            f"STALE_ANCHOR: Phase H artifact {p} could not be parsed as "
+            f"JSON ({exc}); cannot anchor on "
+            f"lever_loop_task_run_id={expected or '<blank>'}."
+        ) from exc
+
+    # Look for lever_loop_task_run_id in common locations.
+    raw_candidate = (
+        payload.get("lever_loop_task_run_id")
+        if isinstance(payload, dict)
+        else None
+    )
+    if not raw_candidate and isinstance(payload, dict):
+        manifest = payload.get("manifest")
+        if isinstance(manifest, dict):
+            raw_candidate = manifest.get("lever_loop_task_run_id")
+    if not raw_candidate and isinstance(payload, dict):
+        tags = payload.get("tags")
+        if isinstance(tags, dict):
+            raw_candidate = tags.get(
+                "genie.databricks.lever_loop_task_run_id"
+            )
+
+    candidate = str(raw_candidate or "").strip()
+
+    if candidate and candidate == expected:
+        return EvidenceBundleStatus.HEALTHY
+
+    raise StalePhaseHAnchorError(
+        f"STALE_ANCHOR: Phase H artifact {p} has "
+        f"lever_loop_task_run_id={candidate or '<blank>'} but caller "
+        f"resolved task_run_id={expected or '<blank>'}. Phase H "
+        "artifacts belong to a different run; consuming them would "
+        "pollute the postmortem."
     )
 
 
