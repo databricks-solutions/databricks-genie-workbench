@@ -1687,12 +1687,26 @@ class _NarrowingCaptureSink:
         self._coverage_gate_registered = False
 
     def _resolve_sink_path(self) -> str | None:
-        # Resolve once per process. Re-resolution would be wrong because
-        # tests reload the module under patched env; reset_for_test()
-        # clears this flag.
+        # Plan 5: when GSO_NARROWING_CAPTURE_PATH is unset, default to a
+        # deterministic local path so a UI-triggered job's harness
+        # post-loop hook can find and upload the NDJSON as an MLflow
+        # artifact under gso_trial_captures/. Setting the env var to an
+        # empty string still falls back to the default; only an
+        # explicit non-empty value overrides.
         if not self._sink_path_resolved:
-            self._sink_path = (os.environ.get("GSO_NARROWING_CAPTURE_PATH") or "").strip() or None
+            env_value = (os.environ.get("GSO_NARROWING_CAPTURE_PATH") or "").strip()
+            if env_value:
+                self._sink_path = env_value
+            else:
+                self._sink_path = "/tmp/gso_trial_captures/narrowing_v1.ndjson"
             self._sink_path_resolved = True
+            # Make sure the parent directory exists. This is best-effort:
+            # if /tmp is unwriteable the open(...) call elsewhere will
+            # silently swallow OSError.
+            try:
+                os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
+            except OSError:
+                pass
         return self._sink_path
 
     def record_hit(self, skill_id: str, header_omitted_bytes: int) -> None:
@@ -1837,11 +1851,23 @@ class _LeverFiveCaptureSink:
         self._coverage_gate_registered = False
 
     def _resolve_sink_path(self) -> str | None:
+        # Plan 5: see _NarrowingCaptureSink._resolve_sink_path for the
+        # rationale on default-path resolution. Each sink defaults to its
+        # own NDJSON file under /tmp/gso_trial_captures/ when the env
+        # var is unset; an explicit non-empty env var overrides.
         if not self._sink_path_resolved:
-            self._sink_path = (
+            env_value = (
                 os.environ.get("GSO_LEVER5_SPLIT_CAPTURE_PATH") or ""
-            ).strip() or None
+            ).strip()
+            if env_value:
+                self._sink_path = env_value
+            else:
+                self._sink_path = "/tmp/gso_trial_captures/lever5_split_v1.ndjson"
             self._sink_path_resolved = True
+            try:
+                os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
+            except OSError:
+                pass
         return self._sink_path
 
     def record_skill_hit(self, skill_id: str) -> None:
@@ -5438,11 +5464,23 @@ class _ThreeStageCaptureSink:
         self._coverage_gate_registered = False
 
     def _resolve_sink_path(self) -> str | None:
+        # Plan 5: see _NarrowingCaptureSink._resolve_sink_path for the
+        # rationale on default-path resolution. Each sink defaults to its
+        # own NDJSON file under /tmp/gso_trial_captures/ when the env
+        # var is unset; an explicit non-empty env var overrides.
         if not self._sink_path_resolved:
-            self._sink_path = (
+            env_value = (
                 os.environ.get("GSO_THREE_STAGE_CAPTURE_PATH") or ""
-            ).strip() or None
+            ).strip()
+            if env_value:
+                self._sink_path = env_value
+            else:
+                self._sink_path = "/tmp/gso_trial_captures/three_stage_v1.ndjson"
             self._sink_path_resolved = True
+            try:
+                os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
+            except OSError:
+                pass
         return self._sink_path
 
     def record_discovery_call(self, ag_id: str) -> None:
@@ -5677,11 +5715,23 @@ class _RawEvidenceCaptureSink:
         self._coverage_gate_registered = False
 
     def _resolve_sink_path(self) -> str | None:
+        # Plan 5: see _NarrowingCaptureSink._resolve_sink_path for the
+        # rationale on default-path resolution. Each sink defaults to its
+        # own NDJSON file under /tmp/gso_trial_captures/ when the env
+        # var is unset; an explicit non-empty env var overrides.
         if not self._sink_path_resolved:
-            self._sink_path = (
+            env_value = (
                 os.environ.get("GSO_RAW_EVIDENCE_CAPTURE_PATH") or ""
-            ).strip() or None
+            ).strip()
+            if env_value:
+                self._sink_path = env_value
+            else:
+                self._sink_path = "/tmp/gso_trial_captures/raw_evidence_v1.ndjson"
             self._sink_path_resolved = True
+            try:
+                os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
+            except OSError:
+                pass
         return self._sink_path
 
     def record_projection(self, skill_id: str) -> None:
