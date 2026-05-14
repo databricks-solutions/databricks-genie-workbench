@@ -10860,6 +10860,144 @@ def _call_llm_for_adaptive_strategy(
     }
 
 
+def _call_llm_for_stage_1_discovery(
+    ag_id: str,
+    root_cause_summary: str,
+    clusters: list[dict],
+    metadata_snapshot: dict,
+    w: WorkspaceClient | None = None,
+) -> dict:
+    """Plan 3 — Stage-1 discovery LLM call.
+
+    Picks ``applicable_skills`` from the Plan 1 catalogue for ONE
+    action group. Returns ``{"applicable_skills": [...], "discovery_rationale": str}``.
+
+    Best-effort: any failure (LLM exception, JSON parse failure,
+    no valid skill_ids) returns empty ``applicable_skills`` and the
+    caller falls back to ``_call_llm_for_adaptive_strategy``.
+
+    Capture-sink hit recorded when split or shadow flag is on.
+    """
+    from genie_space_optimizer.common.config import (
+        STAGE_1_DISCOVERY_PROMPT,
+        _THREE_STAGE_SKILL_NAMES,
+        three_stage_enabled,
+        three_stage_shadow_enabled,
+    )
+    from genie_space_optimizer.optimization.evaluation import (
+        _extract_json,
+        _link_prompt_to_trace,
+    )
+
+    config = metadata_snapshot.get("config") or {}
+    space_desc = config.get("description") or "(No description set.)"
+    if isinstance(space_desc, list):
+        space_desc = "\n".join(space_desc)
+
+    cluster_briefs = _format_cluster_briefs_afs(clusters or [], top_n=5)
+
+    skill_catalogue = "\n".join(
+        f"- {sid}" for sid in sorted(_THREE_STAGE_SKILL_NAMES)
+    )
+
+    _allowlist = _build_identifier_allowlist(metadata_snapshot)
+
+    format_kwargs: dict[str, Any] = {
+        "space_description": space_desc,
+        "ag_id": ag_id,
+        "root_cause_summary": root_cause_summary or "(unknown)",
+        "cluster_briefs": cluster_briefs,
+        "skill_catalogue": skill_catalogue,
+        "identifier_allowlist": _format_identifier_allowlist(_allowlist),
+    }
+
+    prompt = format_mlflow_template(STAGE_1_DISCOVERY_PROMPT, **format_kwargs)
+    _link_prompt_to_trace("stage_1_discovery")
+
+    if three_stage_enabled() or three_stage_shadow_enabled():
+        # Forward-reference safety: the capture-sink symbol lands in
+        # Task 9. Import lazily inside the gate so this function stays
+        # importable when only Task 8 has shipped.
+        from genie_space_optimizer.common.config import (
+            _record_three_stage_discovery_call,
+        )
+        _record_three_stage_discovery_call(ag_id)
+
+    logger.info(
+        "\n┌─── LLM Call [STAGE_1_DISCOVERY] ─────────────────────────────────\n"
+        "│ AG: %s  Clusters: %d  Prompt: %d chars\n"
+        "└─────────────────────────────────────────────────────────────────────",
+        ag_id, len(clusters or []), len(prompt),
+    )
+
+    system_msg = (
+        "You are a JSON API. You MUST respond with ONLY a valid JSON "
+        "object containing 'applicable_skills' (array) and "
+        "'discovery_rationale' (string). No prose outside the JSON."
+    )
+
+    try:
+        text, _response = _call_llm_openai(
+            w,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt},
+            ],
+            max_retries=1,
+            temperature=LLM_TEMPERATURE,
+        )
+    except Exception:
+        logger.warning(
+            "Stage-1 discovery LLM call failed for AG=%s — "
+            "falling back to legacy strategist", ag_id, exc_info=True,
+        )
+        return {"applicable_skills": [], "discovery_rationale": "LLM call failed"}
+
+    try:
+        result = _extract_json(text, strict=True)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning(
+            "Stage-1 discovery returned non-JSON (AG=%s): %.300s",
+            ag_id, text,
+        )
+        return {"applicable_skills": [], "discovery_rationale": "JSON parse failed"}
+    if not isinstance(result, dict):
+        logger.warning(
+            "Stage-1 discovery returned non-object JSON (AG=%s): %.300s",
+            ag_id, text,
+        )
+        return {"applicable_skills": [], "discovery_rationale": "JSON parse failed"}
+
+    raw_picks = result.get("applicable_skills", [])
+    if not isinstance(raw_picks, list):
+        raw_picks = []
+
+    valid_picks: list[dict] = []
+    for pick in raw_picks:
+        if not isinstance(pick, dict):
+            continue
+        sid = pick.get("skill_id", "")
+        if sid not in _THREE_STAGE_SKILL_NAMES:
+            logger.info(
+                "Stage-1 discovery dropped unknown skill_id=%s (AG=%s)",
+                sid, ag_id,
+            )
+            continue
+        valid_picks.append({
+            "skill_id": sid,
+            "target_objects": pick.get("target_objects") or [],
+            "expected_impact_qids": pick.get("expected_impact_qids") or [],
+            "evidence_refs": pick.get("evidence_refs") or [],
+            "why": str(pick.get("why", "")),
+            "priority": int(pick.get("priority", 3) or 3),
+        })
+
+    return {
+        "applicable_skills": valid_picks,
+        "discovery_rationale": str(result.get("discovery_rationale", "")),
+    }
+
+
 # ── Phase 1a: Triage ────────────────────────────────────────────────────
 
 _EMPTY_TRIAGE: dict[str, Any] = {

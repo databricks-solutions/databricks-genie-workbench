@@ -519,3 +519,120 @@ def test_build_bundle_target_objects_deduped_and_sorted():
         metadata_snapshot=_sample_metadata_snapshot(),
     )
     assert bundle.target_objects == ("a", "b", "c")
+
+
+# ── Section 6: _call_llm_for_stage_1_discovery ────────────────────────
+
+
+def test_call_llm_for_stage_1_discovery_returns_applicable_skills_shape(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_llm_openai(*args, **kwargs):
+        return (
+            '{"applicable_skills": ['
+            '{"skill_id": "lever-4-join-discovery",'
+            ' "target_objects": ["catalog.schema.fact_orders"],'
+            ' "expected_impact_qids": ["Q1"],'
+            ' "evidence_refs": ["trace://q1"],'
+            ' "why": "missing join", "priority": 1}'
+            '], "discovery_rationale": "missing join across fact + dim"}',
+            None,
+        )
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    result = optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="missing join",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    assert "applicable_skills" in result
+    assert isinstance(result["applicable_skills"], list)
+    assert len(result["applicable_skills"]) == 1
+    assert result["applicable_skills"][0]["skill_id"] == "lever-4-join-discovery"
+    assert "discovery_rationale" in result
+
+
+def test_call_llm_for_stage_1_discovery_filters_unknown_skill_ids(monkeypatch):
+    """Out-of-set skill_ids must be dropped (logged + skipped). Empty
+    applicable_skills after filtering is valid."""
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_llm_openai(*args, **kwargs):
+        return (
+            '{"applicable_skills": ['
+            '{"skill_id": "made-up-skill",'
+            ' "target_objects": ["x"], "expected_impact_qids": [],'
+            ' "evidence_refs": [], "why": "?", "priority": 1}'
+            '], "discovery_rationale": "trying"}',
+            None,
+        )
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    result = optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="x",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    assert result["applicable_skills"] == []
+
+
+def test_call_llm_for_stage_1_discovery_records_capture_when_flag_on(monkeypatch):
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "1"})
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_llm_openai(*args, **kwargs):
+        return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="x",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    snap = cfg.dump_three_stage_capture_summary()
+    assert snap["discovery_calls"] == 1
+
+
+def test_call_llm_for_stage_1_discovery_returns_empty_on_json_parse_failure(monkeypatch):
+    """Discovery is best-effort. JSON parse failure → empty
+    applicable_skills (caller falls back to legacy)."""
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_llm_openai(*args, **kwargs):
+        return ("not valid json", None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    result = optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="x",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    assert result == {"applicable_skills": [], "discovery_rationale": "JSON parse failed"}
+
+
+def test_call_llm_for_stage_1_discovery_returns_empty_on_llm_failure(monkeypatch):
+    """LLM call exception → empty (caller falls back to legacy)."""
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_llm_openai(*args, **kwargs):
+        raise RuntimeError("LLM endpoint down")
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    result = optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="x",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    assert result["applicable_skills"] == []
+    assert "LLM call failed" in result["discovery_rationale"]
