@@ -1,0 +1,37 @@
+{
+  "_note": "L6 SQL-expression patch was dropped for high collateral risk; it does NOT appear in the surviving set.",
+  "_source": "hand-authored from postmortem.md F3 and iteration_summary row 1 (3 applied patches: zone_vp_name description, synonym, ASSET ROUTING instruction)",
+  "patches": [
+    {
+      "lever": "L1",
+      "patch_id": "L1_zone_vp_name_description",
+      "patch_type": "update_column_description",
+      "rationale": "Add description clarifying zone_vp_name is the zone VP column for ranking questions.",
+      "scope": {
+        "column": "zone_vp_name",
+        "table": "mv_esr_dim_location"
+      }
+    },
+    {
+      "lever": "L1",
+      "patch_id": "L1_zone_vp_name_synonym",
+      "patch_type": "add_column_synonym",
+      "rationale": "Add synonym so Genie maps 'zone VP' to zone_vp_name instead of zone_combination.",
+      "scope": {
+        "column": "zone_vp_name",
+        "table": "mv_esr_dim_location"
+      }
+    },
+    {
+      "lever": "L5",
+      "patch_id": "L5_asset_routing_instruction",
+      "patch_type": "add_sql_snippet",
+      "rationale": "Add ASSET ROUTING instruction to prefer TABLE for zone VP queries.",
+      "scope": {
+        "instruction_kind": "asset_routing"
+      }
+    }
+  ],
+  "run_id": "ccf1d60d-d686-467b-bafa-1640131b4393",
+  "source_task": "576427031888570"
+}

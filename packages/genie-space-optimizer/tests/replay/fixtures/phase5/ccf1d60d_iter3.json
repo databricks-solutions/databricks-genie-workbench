@@ -1,0 +1,47 @@
+{
+  "_source": "hand-authored from postmortem.md F1/F5 cross-referenced with evidence iter_03 cluster_formation/output.json",
+  "ag_id_selected": "AG1",
+  "candidate_clusters": [
+    {
+      "cluster_id": "H001",
+      "is_hard_failure": true,
+      "question_ids": [
+        "gs_026"
+      ]
+    },
+    {
+      "cluster_id": "H002",
+      "is_hard_failure": true,
+      "question_ids": [
+        "gs_021"
+      ]
+    },
+    {
+      "cluster_id": "H003",
+      "is_hard_failure": true,
+      "question_ids": [
+        "gs_001"
+      ]
+    }
+  ],
+  "clusters_with_hard_asi": [
+    "H001",
+    "H002",
+    "H003"
+  ],
+  "iteration": 3,
+  "proposal_count": 0,
+  "quarantined_qids": [
+    "gs_009",
+    "gs_019",
+    "gs_021",
+    "gs_026"
+  ],
+  "run_id": "ccf1d60d-d686-467b-bafa-1640131b4393",
+  "soft_signal_clusters": [],
+  "source_task": "576427031888570",
+  "target_qids": [
+    "gs_026"
+  ],
+  "terminal_reason_in_recorded_run": "proposal_generation_empty"
+}

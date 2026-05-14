@@ -1,0 +1,25 @@
+{
+  "_source": "hand-authored from postmortem.md F2/F3 and postmortem.json iteration_summary[0]",
+  "accepted_in_recorded_run": false,
+  "ag_id_selected": "AG1",
+  "applied_patch_count": 3,
+  "baseline_post_arbiter": 87.0,
+  "baseline_pre_arbiter": 56.5,
+  "candidate_post_arbiter": 90.9,
+  "candidate_pre_arbiter": 63.6,
+  "iteration": 1,
+  "out_of_target_regressed_qids": [
+    "gs_021"
+  ],
+  "proposal_count": 6,
+  "reason_code_in_recorded_run": "target_qids_not_improved",
+  "run_id": "ccf1d60d-d686-467b-bafa-1640131b4393",
+  "source_task": "576427031888570",
+  "target_fixed_qids": [],
+  "target_qids": [
+    "gs_026"
+  ],
+  "target_still_hard_qids": [
+    "gs_026"
+  ]
+}
