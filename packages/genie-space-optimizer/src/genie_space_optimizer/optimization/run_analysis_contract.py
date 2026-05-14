@@ -1369,3 +1369,44 @@ def candidate_ledger_entry_marker(
             "entry": dict(entry or {}),
         },
     )
+
+
+def check_iteration_terminal_present(
+    *,
+    stdout: str,
+) -> dict | None:
+    """Phase 1.2 — verify every ``GSO_ITERATION_NO_CANDIDATE_V1``
+    payload carries a ``terminal_reason`` value from the
+    :class:`TerminalReason` closed vocabulary.
+
+    Pure: no I/O. Returns ``None`` on a clean run, or a violation
+    dict listing the unknown reasons.
+
+    Distinct from the Phase 0.3 ``check_iteration_terminal_exhaustiveness``
+    (which counts markers); this one validates the typed payload
+    content.
+    """
+    import json
+    from genie_space_optimizer.optimization.terminal_reason import TerminalReason
+
+    valid_values = {r.value for r in TerminalReason}
+    unknown: list[str] = []
+
+    for raw in stdout.splitlines():
+        if not raw.startswith("GSO_ITERATION_NO_CANDIDATE_V1 "):
+            continue
+        _, _, json_blob = raw.partition(" ")
+        try:
+            payload = json.loads(json_blob)
+        except json.JSONDecodeError:
+            continue
+        reason = str(payload.get("terminal_reason") or "")
+        if reason and reason not in valid_values:
+            unknown.append(reason)
+
+    if not unknown:
+        return None
+    return {
+        "unknown_terminal_reasons": sorted(set(unknown)),
+        "valid_values_count": len(valid_values),
+    }
