@@ -29963,6 +29963,37 @@ def _run_lever_loop(
                     artifact_file=_paths["replay_fixture"],
                 )
 
+                # Phase 0.4 — Task 14: copy the candidate ledger JSONL
+                # into the Phase H bundle artifact tree
+                # (``gso_postmortem_bundle/iteration_candidate_ledger.jsonl``)
+                # so postmortems can consume it via the standard
+                # parent-bundle download path. Best-effort, non-fatal.
+                # Gated by ``candidate_ledger_enabled()``.
+                try:
+                    from genie_space_optimizer.common.config import (
+                        candidate_ledger_enabled as _ledger_enabled_phase_h,
+                    )
+                    if _ledger_enabled_phase_h():
+                        import os as _os_for_ledger_copy
+                        _ledger_src = (
+                            _os_for_ledger_copy.environ.get(
+                                "GSO_RUN_ARTIFACT_ROOT"
+                            )
+                            or "/tmp"
+                        ) + "/iteration_candidate_ledger.jsonl"
+                        if _os_for_ledger_copy.path.exists(_ledger_src):
+                            _client_phase_h.log_artifact(
+                                run_id=_phase_h_anchor_run_id,
+                                local_path=_ledger_src,
+                                artifact_path="gso_postmortem_bundle",
+                            )
+                except Exception:
+                    logger.debug(
+                        "Phase 0.4 Task 14: candidate ledger Phase H copy "
+                        "failed (non-fatal)",
+                        exc_info=True,
+                    )
+
                 # Phase 0.2 — Task 6: aggregate
                 # ``gso_postmortem_bundle/iteration_summaries.json``
                 # sourced from the SAME in-memory replay-fixture

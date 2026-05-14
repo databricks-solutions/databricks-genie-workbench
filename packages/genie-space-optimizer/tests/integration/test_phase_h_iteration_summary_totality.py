@@ -104,3 +104,55 @@ def test_optimization_run_id_carried_through():
     )
     assert payload["optimization_run_id"] == "opt-42"
     assert payload["schema_version"] == "v1"
+
+
+def test_phase_h_candidate_ledger_artifact_roundtrips(tmp_path):
+    """Phase 0.4 — Task 14: end-to-end. Writing the ledger to a path
+    inside the canonical Phase H bundle dir (the same dir the harness
+    uploads to and ``download_parent_bundle`` materializes locally)
+    must be parseable by ``read_ledger`` so ``build_bundle`` can record
+    ``candidate_ledger_entry_count`` on the manifest."""
+    from genie_space_optimizer.optimization.candidate_ledger import (
+        IterationCandidateLedgerEntry,
+        write_ledger_entry,
+        read_ledger,
+    )
+
+    bundle_dir = tmp_path / "gso_postmortem_bundle"
+    bundle_dir.mkdir(parents=True)
+    ledger_path = bundle_dir / "iteration_candidate_ledger.jsonl"
+
+    entries = [
+        IterationCandidateLedgerEntry(
+            iteration=i,
+            ag_id=f"ag-{i}",
+            cluster_ids=("c1",),
+            target_qids=("gs_026",),
+            root_cause="r",
+            requested_levers=(5,),
+            rca_card_id_or_provisional="rca-1",
+            proposal_attempts=1,
+            selected_proposal_id="p1",
+            terminal_reason="no_structural_candidate",
+            terminal_outcome="info",
+            best_of_n_size=1,
+            patches_applied=0,
+            subset_isolation_run=False,
+            subset_isolation_kept=(),
+            subset_isolation_dropped=(),
+            protected_dependents=(),
+            narrow_replacement_attempted=False,
+            narrow_replacement_succeeded=False,
+            accuracy_delta_pp=0.0,
+            acceptance_tier="reject_loss",
+            retire_signature="sig",
+        )
+        for i in range(1, 4)
+    ]
+    for e in entries:
+        write_ledger_entry(e, path=str(ledger_path))
+
+    parsed = read_ledger(str(ledger_path))
+    assert len(parsed) == 3
+    assert parsed[0].iteration == 1
+    assert parsed[2].ag_id == "ag-3"

@@ -461,6 +461,12 @@ def _walk_audit_artifacts(
                 or artifact_path.startswith(
                     "gso_postmortem_bundle/iterations/iter_"
                 )
+                # Phase 0.4 — Task 14: also pull the top-level candidate
+                # ledger so build_bundle can parse it and set
+                # ``candidate_ledger_entry_count`` on the manifest.
+                or artifact_path == (
+                    "gso_postmortem_bundle/iteration_candidate_ledger.jsonl"
+                )
             ):
                 continue
             dest = paths.mlflow_dir / sibling["run_id"]
@@ -841,6 +847,54 @@ def build_bundle(
 
     recommendations = _derive_trace_fetch_recommendations(mlflow_dir=paths.mlflow_dir)
 
+    # Phase 0.4 — Task 14: parse the Phase H candidate ledger when
+    # present and record the entry count on the manifest. Search the
+    # canonical bundle location first
+    # (``evidence/gso_postmortem_bundle/iteration_candidate_ledger.jsonl``)
+    # and fall back to the ``evidence/mlflow/<sibling>/...`` landing
+    # path used by ``_walk_audit_artifacts``. On parse failure emit a
+    # typed MissingPiece with a stdout-marker fallback suggestion.
+    _ledger_entry_count = 0
+    _ledger_candidate_paths: list[Path] = []
+    _canonical_ledger_path = (
+        paths.parent_bundle_dir / "iteration_candidate_ledger.jsonl"
+    )
+    if _canonical_ledger_path.exists():
+        _ledger_candidate_paths.append(_canonical_ledger_path)
+    else:
+        # Fall back to whatever ``_walk_audit_artifacts`` placed under
+        # ``paths.mlflow_dir/<sibling_run_id>/gso_postmortem_bundle/``.
+        if paths.mlflow_dir.exists():
+            _ledger_candidate_paths.extend(
+                paths.mlflow_dir.glob(
+                    "*/gso_postmortem_bundle/iteration_candidate_ledger.jsonl"
+                )
+            )
+    if _ledger_candidate_paths:
+        _ledger_artifact_path = _ledger_candidate_paths[0]
+        try:
+            from genie_space_optimizer.optimization.candidate_ledger import (
+                read_ledger,
+            )
+            _ledger_entries = read_ledger(str(_ledger_artifact_path))
+            _ledger_entry_count = len(_ledger_entries)
+        except Exception as exc:  # noqa: BLE001
+            missing.append(MissingPiece(
+                kind=MissingPieceKind.PHASE_A_ARTIFACT_MISSING_ON_ANCHOR,
+                iteration=None,
+                diagnosis=(
+                    f"candidate ledger parse failed at "
+                    f"{_ledger_artifact_path}: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                suggested_action=(
+                    "Inspect iteration_candidate_ledger.jsonl manually; "
+                    "the marker_parser stdout fallback "
+                    "(extract_candidate_ledger_from_stdout) may still "
+                    "yield entries."
+                ),
+            ))
+
     manifest = Manifest(
         schema_version=SCHEMA_VERSION,
         bundle_version=BUNDLE_VERSION,
@@ -868,6 +922,7 @@ def build_bundle(
         missing_pieces=tuple(missing),
         trace_fetch_recommendations=recommendations,
         exit_status="incomplete" if missing else "complete",
+        candidate_ledger_entry_count=_ledger_entry_count,
     )
     paths.manifest.write_text(json.dumps(manifest_to_dict(manifest), indent=2, sort_keys=True))
     return BundleResult(paths=paths, manifest=manifest)

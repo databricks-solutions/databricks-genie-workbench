@@ -99,6 +99,11 @@ class Manifest:
         default_factory=tuple
     )
     exit_status: str = "complete"
+    # Phase 0.4 — Task 14: count of entries successfully parsed from the
+    # Phase H ``iteration_candidate_ledger.jsonl`` artifact. 0 when the
+    # artifact is absent (legacy bundles, pre-Phase 0.4 runs) or when
+    # parsing failed (a typed MissingPiece is appended in that case).
+    candidate_ledger_entry_count: int = 0
 
 
 def bundle_paths_for(*, root: Path, optimization_run_id: str) -> BundlePaths:
@@ -200,4 +205,8 @@ def manifest_from_dict(data: Mapping[str, Any]) -> Manifest:
         missing_pieces=missing,
         trace_fetch_recommendations=recs,
         exit_status=data.get("exit_status", "complete"),
+        # Phase 0.4 — Task 14: default 0 keeps legacy bundles loadable.
+        candidate_ledger_entry_count=int(
+            data.get("candidate_ledger_entry_count", 0) or 0
+        ),
     )
