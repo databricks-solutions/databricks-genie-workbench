@@ -21840,24 +21840,222 @@ def _run_lever_loop(
                     _pre_struct_drops = len(_get_l5_drops_pre())
                 except Exception:
                     _pre_struct_drops = 0
-                lever_proposals = generate_proposals_from_strategy(
-                    strategy=strategy,
-                    action_group=ag,
-                    metadata_snapshot=metadata_snapshot,
-                    target_lever=lever_int,
-                    apply_mode=apply_mode,
-                    w=w,
-                    spark=spark,
-                    catalog=catalog,
-                    gold_schema=schema,
-                    warehouse_id=resolve_warehouse_id(""),
-                    benchmarks=benchmarks,
-                    # Cycle 9 W4 — pass the per-run DOA fingerprint buffer so
-                    # the strategist's end-of-function prune drops candidates
-                    # whose retry signature was already captured as
-                    # target_still_hard in this run.
-                    doa_fingerprint_buffer=_doa_fingerprint_buffer,
-                )
+
+                # Phase 2.6 wire (item #8): Best-of-N proposal sampling for
+                # hard structural AGs. Gated by GSO_BEST_OF_N_STRUCTURAL
+                # (default-ON). Trigger condition limits blast radius to
+                # retry iterations on structural intent only:
+                #   * flag is ON, AND
+                #   * intended_patch_shape == "structural" (from this AG's
+                #     first source-cluster rca_card), AND
+                #   * prior_failure_count >= 1 for this cluster signature.
+                # When triggered, generate N=3 proposal samples via the
+                # existing single-shot call, flatten across samples, rank
+                # via rank_proposal_candidates (causal-shape × protected ×
+                # coverage × blast × patch_count), and emit only the
+                # top-1 survivor. Falls back to single-shot otherwise.
+                _bon_fired = False
+                _bon_sample_count = 0
+                _bon_candidate_total = 0
+                _bon_top_patch_id = ""
+                _bon_intent_shape = ""
+                _bon_pfc = 0
+                _bon_first_cid = ""
+                _bon_target_qids: tuple[str, ...] = ()
+                try:
+                    from genie_space_optimizer.common.config import (
+                        best_of_n_structural_enabled,
+                    )
+                    from genie_space_optimizer.optimization.best_of_n_proposal import (
+                        rank_proposal_candidates,
+                        should_run_best_of_n,
+                    )
+                    # Resolve intended_patch_shape from AG's first source
+                    # cluster's rca_card. Falls open (empty string → False)
+                    # when no card / no cluster available; downstream
+                    # should_run_best_of_n then declines.
+                    try:
+                        _bon_cids = ag.get("source_cluster_ids") or ()
+                        if _bon_cids:
+                            _bon_first_cid = str(_bon_cids[0] or "")
+                        if _bon_first_cid:
+                            for _bon_c in (clusters or []):
+                                if str(_bon_c.get("cluster_id") or "") == _bon_first_cid:
+                                    _bon_card = _bon_c.get("rca_card")
+                                    if _bon_card is not None:
+                                        _bon_intent_shape = str(
+                                            getattr(_bon_card, "intended_patch_shape", "")
+                                            or ""
+                                        )
+                                    break
+                    except Exception:
+                        _bon_intent_shape = ""
+                    # Compute prior_failure_count for this AG's cluster
+                    # signature (same shape as the post-hoc emission sites
+                    # at harness.py:23096 etc.).
+                    try:
+                        _bon_target_qids = tuple(
+                            str(q) for q in (
+                                ag.get("affected_questions") or ()
+                            ) if str(q)
+                        )
+                        _bon_cluster_sig = (
+                            (_bon_first_cid,
+                             tuple(sorted(_bon_target_qids))),
+                        )
+                        _bon_pfc = int(compute_prior_failure_count(
+                            cluster_signature=_bon_cluster_sig,
+                            reflection_buffer=reflection_buffer or (),
+                        ) or 0)
+                    except Exception:
+                        _bon_pfc = 0
+                    _use_best_of_n = (
+                        best_of_n_structural_enabled()
+                        and should_run_best_of_n(
+                            intended_patch_shape=_bon_intent_shape,
+                            prior_failure_count=_bon_pfc,
+                        )
+                    )
+                except Exception:
+                    _use_best_of_n = False
+                    logger.debug(
+                        "Phase 2.6: Best-of-N trigger evaluation failed "
+                        "(non-fatal; falling back to single-shot)",
+                        exc_info=True,
+                    )
+
+                if _use_best_of_n:
+                    _bon_fired = True
+                    _bon_candidates: list[dict] = []
+                    _bon_sample_groups: list[list[dict]] = []
+                    for _bon_idx in range(3):
+                        try:
+                            _sample = generate_proposals_from_strategy(
+                                strategy=strategy,
+                                action_group=ag,
+                                metadata_snapshot=metadata_snapshot,
+                                target_lever=lever_int,
+                                apply_mode=apply_mode,
+                                w=w,
+                                spark=spark,
+                                catalog=catalog,
+                                gold_schema=schema,
+                                warehouse_id=resolve_warehouse_id(""),
+                                benchmarks=benchmarks,
+                                doa_fingerprint_buffer=_doa_fingerprint_buffer,
+                            ) or []
+                            _bon_sample_count += 1
+                            if _sample:
+                                _bon_sample_groups.append(list(_sample))
+                                _bon_candidates.extend(
+                                    p for p in _sample if isinstance(p, dict)
+                                )
+                        except Exception:
+                            logger.debug(
+                                "Phase 2.6: Best-of-N sample %d failed "
+                                "(non-fatal)",
+                                _bon_idx,
+                                exc_info=True,
+                            )
+                    _bon_candidate_total = len(_bon_candidates)
+                    if _bon_candidates:
+                        try:
+                            _bon_ranking = rank_proposal_candidates(
+                                candidates=_bon_candidates,
+                                target_qids=_bon_target_qids,
+                                protected_dependents=tuple(
+                                    _iter_protected_dependents or ()
+                                ),
+                            )
+                            _bon_top = _bon_ranking.top_candidate
+                            if _bon_top is not None:
+                                lever_proposals = [dict(_bon_top)]
+                                _bon_top_patch_id = str(
+                                    _bon_top.get("patch_id")
+                                    or _bon_top.get("id")
+                                    or ""
+                                )
+                            else:
+                                # Empty ranking — fall back to first non-empty
+                                # sample group to preserve forward progress.
+                                lever_proposals = (
+                                    _bon_sample_groups[0]
+                                    if _bon_sample_groups else []
+                                )
+                        except Exception:
+                            logger.debug(
+                                "Phase 2.6: rank_proposal_candidates failed "
+                                "(non-fatal; using first sample group)",
+                                exc_info=True,
+                            )
+                            lever_proposals = (
+                                _bon_sample_groups[0]
+                                if _bon_sample_groups else []
+                            )
+                    else:
+                        lever_proposals = []
+                    # Mark the iteration as having used Best-of-N for the
+                    # iteration candidate ledger entry (harness.py:29859).
+                    try:
+                        _iter_best_of_n_size = max(
+                            int(_iter_best_of_n_size or 1),
+                            int(_bon_sample_count or 1),
+                        )
+                    except Exception:
+                        pass
+                    # Observability marker — single-line GSO_BEST_OF_N_RANKED_V1
+                    # for postmortem parsers. Emit-only; does not change
+                    # control flow.
+                    try:
+                        from genie_space_optimizer.optimization.run_analysis_contract import (
+                            marker_line as _bon_marker_line,
+                        )
+                        print(_bon_marker_line(
+                            "GSO_BEST_OF_N_RANKED_V1",
+                            {
+                                "optimization_run_id": str(run_id or ""),
+                                "iteration": int(iteration_counter),
+                                "ag_id": str(ag_id or ""),
+                                "lever": int(lever_int),
+                                "intended_patch_shape": str(
+                                    _bon_intent_shape or ""
+                                ),
+                                "prior_failure_count": int(_bon_pfc or 0),
+                                "samples_requested": 3,
+                                "samples_emitted": int(_bon_sample_count),
+                                "candidate_total": int(_bon_candidate_total),
+                                "top_patch_id": str(_bon_top_patch_id or ""),
+                                "target_qids": list(_bon_target_qids or ()),
+                                "protected_dependents": list(
+                                    _iter_protected_dependents or ()
+                                ),
+                            },
+                        ), flush=True)
+                    except Exception:
+                        logger.debug(
+                            "Phase 2.6: GSO_BEST_OF_N_RANKED_V1 marker "
+                            "emit failed (non-fatal)",
+                            exc_info=True,
+                        )
+                else:
+                    lever_proposals = generate_proposals_from_strategy(
+                        strategy=strategy,
+                        action_group=ag,
+                        metadata_snapshot=metadata_snapshot,
+                        target_lever=lever_int,
+                        apply_mode=apply_mode,
+                        w=w,
+                        spark=spark,
+                        catalog=catalog,
+                        gold_schema=schema,
+                        warehouse_id=resolve_warehouse_id(""),
+                        benchmarks=benchmarks,
+                        # Cycle 9 W4 — pass the per-run DOA fingerprint buffer so
+                        # the strategist's end-of-function prune drops candidates
+                        # whose retry signature was already captured as
+                        # target_still_hard in this run.
+                        doa_fingerprint_buffer=_doa_fingerprint_buffer,
+                    )
                 all_proposals.extend(lever_proposals)
 
                 # Phase 3: classify outcome for this lever and record it.
@@ -25426,6 +25624,172 @@ def _run_lever_loop(
                         [d["proposal_id"] for d in _blast_dropped[:8]],
                     )
                 patches = _blast_kept
+
+            # Phase 2.3 deferred-wiring item #6 — structural-repair-shape
+            # gate between blast-radius and applyability. When the RCA
+            # card's ``intended_patch_shape == "structural"`` but the
+            # surviving patch set emits only instruction/metadata shapes,
+            # the iteration is terminated with
+            # ``STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY``. Emits
+            # ``GSO_STRUCTURAL_REPAIR_DECISION_V1`` marker + a paired
+            # ``STRUCTURAL_REPAIR_DECISION`` DecisionRecord on EVERY
+            # firing (admitted AND rejected) per spec Section 12.4.
+            try:
+                from genie_space_optimizer.common.config import (
+                    structural_repair_gate_enabled as _structural_repair_on,
+                )
+                if _structural_repair_on():
+                    from genie_space_optimizer.optimization.structural_repair_gate import (
+                        enforce_structural_repair_shape as _enforce_repair_shape,
+                    )
+                    from genie_space_optimizer.optimization.terminal_signature import (
+                        resolve_emitted_patch_shape as _resolve_emitted_shape,
+                    )
+                    from genie_space_optimizer.optimization.run_analysis_contract import (
+                        structural_repair_decision_marker as _structural_repair_marker,
+                    )
+                    from genie_space_optimizer.optimization.decision_emitters import (
+                        structural_repair_decision_record as _structural_repair_record,
+                    )
+
+                    # Resolve the RCA card for this AG. Prefer the first
+                    # source cluster's ``rca_card`` (set by ``build_rca_card``
+                    # at the cluster stamping site); fall back to the AG's
+                    # legacy ``root_cause`` string when the card is missing
+                    # (legacy iterations without Phase 1 RCA cards fail
+                    # OPEN via the gate's empty-intent branch).
+                    _sr_cluster_id = ""
+                    _sr_rca_card = None
+                    for _sr_cid in (ag.get("source_cluster_ids") or []):
+                        _sr_cluster_id = str(_sr_cid)
+                        _sr_cluster = (
+                            _iter_source_clusters_by_id.get(str(_sr_cid)) or {}
+                        )
+                        _sr_rca_card = _sr_cluster.get("rca_card")
+                        if _sr_rca_card is not None:
+                            break
+                    _sr_intended_shape = str(
+                        getattr(_sr_rca_card, "intended_patch_shape", "") or ""
+                    )
+                    _sr_rca_root_cause = str(
+                        getattr(_sr_rca_card, "root_cause", "")
+                        or ag.get("root_cause")
+                        or ""
+                    )
+                    _sr_rca_id = str(
+                        getattr(_sr_rca_card, "card_id", "")
+                        or _iter_rca_id_by_cluster.get(str(_sr_cluster_id))
+                        or ""
+                    )
+                    _sr_target_qids = tuple(
+                        str(q) for q in (_blast_target_qids or ()) if str(q)
+                    )
+                    _sr_emitted_shape = _resolve_emitted_shape(patches)
+                    # narrow_replacement_available: True iff the
+                    # cluster-driven narrow-replacement loop produced any
+                    # survivors for this AG (rough proxy via the local
+                    # ``_narrow_kept`` set captured by the blast-radius
+                    # block above; defaults to False when not in scope).
+                    _sr_narrow_available = bool(
+                        locals().get("_narrow_kept") or ()
+                    )
+                    _sr_verdict = _enforce_repair_shape(
+                        intended_patch_shape=_sr_intended_shape,
+                        emitted_patch_shape=_sr_emitted_shape,
+                        narrow_replacement_available=_sr_narrow_available,
+                    )
+                    _sr_score = _sr_verdict.repairability
+                    _sr_score_value = (
+                        float(_sr_score.value) if _sr_score is not None else 0.0
+                    )
+                    _sr_component_scores = (
+                        _sr_score.to_jsonable() if _sr_score is not None else {}
+                    )
+                    # Always emit marker + DecisionRecord (spec 12.4).
+                    try:
+                        print(_structural_repair_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            ag_id=str(ag_id or ""),
+                            cluster_id=str(_sr_cluster_id or ""),
+                            target_qids=_sr_target_qids,
+                            rca_root_cause=_sr_rca_root_cause,
+                            intended_patch_shape=_sr_intended_shape,
+                            emitted_patch_shape=str(_sr_emitted_shape.value),
+                            gate_verdict=str(_sr_verdict.outcome),
+                            terminal_reason=str(_sr_verdict.terminal_reason),
+                            narrow_replacement_available=_sr_narrow_available,
+                            repairability_score=_sr_score_value,
+                            component_scores=_sr_component_scores,
+                        ), flush=True)
+                    except Exception:
+                        logger.debug(
+                            "Phase 2.3 item #6: structural-repair marker "
+                            "emit failed (non-fatal)",
+                            exc_info=True,
+                        )
+                    try:
+                        _sr_record = _structural_repair_record(
+                            run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            ag_id=str(ag_id or ""),
+                            rca_id=_sr_rca_id,
+                            root_cause=_sr_rca_root_cause,
+                            target_qids=_sr_target_qids,
+                            intended_patch_shape=_sr_intended_shape,
+                            emitted_patch_shape=str(_sr_emitted_shape.value),
+                            gate_verdict=str(_sr_verdict.outcome),
+                            terminal_reason=str(_sr_verdict.terminal_reason),
+                            narrow_replacement_available=_sr_narrow_available,
+                            repairability_score=_sr_score_value,
+                            component_scores=_sr_component_scores,
+                        )
+                        _current_iter_inputs.setdefault(
+                            "decision_records", []
+                        ).append(_sr_record.to_dict())
+                    except Exception:
+                        logger.debug(
+                            "Phase 2.3 item #6: structural-repair "
+                            "DecisionRecord emit failed (non-fatal)",
+                            exc_info=True,
+                        )
+                    # On rejection, short-circuit the iteration via the
+                    # Task 10 no-candidate marker pattern: stamp the
+                    # iter terminal sentinels and wipe ``patches`` so
+                    # downstream gates / patch_cap run with zero
+                    # survivors (mirrors the Cycle 16 T4 halt shape).
+                    if _sr_verdict.outcome == "rejected":
+                        if _iter_marker_active and not _iter_terminal_emitted:
+                            try:
+                                print(iteration_no_candidate_marker(
+                                    optimization_run_id=str(run_id or ""),
+                                    iteration=int(iteration_counter),
+                                    terminal_reason=(
+                                        "structural_gate_dropped_instruction_only"
+                                    ),
+                                    cluster_ids=(
+                                        (str(_sr_cluster_id),)
+                                        if _sr_cluster_id else ()
+                                    ),
+                                    ag_id=str(ag_id or ""),
+                                ), flush=True)
+                                _iter_terminal_emitted = True
+                                _iter_terminal_reason = (
+                                    "structural_gate_dropped_instruction_only"
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Phase 2.3 item #6: iteration_no_candidate"
+                                    "_marker emit failed (non-fatal)",
+                                    exc_info=True,
+                                )
+                        patches = []
+            except Exception:
+                logger.debug(
+                    "Phase 2.3 item #6: structural-repair-shape gate "
+                    "raised (non-fatal); admitting current patches",
+                    exc_info=True,
+                )
 
             # Phase H Completion Task 4: wire F6 safety_gates as additive
             # observability after the three harness inline gate sites
