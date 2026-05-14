@@ -133,6 +133,26 @@ resources:
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0
+        # ── Plan 5: UI-triggered trial activation ──────────────────────
+        # As of Plan 5 (2026-05-14), Plans 1, 2, and 4 are default-on
+        # in code. A UI-triggered run picks up the new behavior with no
+        # operator action required. To roll back any plan in an
+        # emergency, edit ``run_lever_loop.py`` to set the matching env
+        # var BEFORE the harness import, then redeploy via
+        # ``./scripts/deploy.sh``:
+        #
+        #   import os as _os
+        #   _os.environ.setdefault("GSO_RCA_CONTRACT_NARROW_V1", "0")  # Plan 1
+        #   _os.environ.setdefault("GSO_LEVER5_SPLIT_V1", "0")        # Plan 2
+        #   _os.environ.setdefault("GSO_RAW_EVIDENCE_V1", "0")        # Plan 4
+        #
+        # Plan 3 (three-stage strategist) stays default-off until the
+        # second trial run. To activate Plan 3 for trial 2, set:
+        #
+        #   _os.environ.setdefault("GSO_THREE_STAGE_V1", "1")         # Plan 3
+        #
+        # See docs/prompt_improvements/2026-05-14-prompt-improvements-plan-5-...
+        # for the full trial workflow.
         - task_key: lever_loop
           depends_on:
             - task_key: enrichment
