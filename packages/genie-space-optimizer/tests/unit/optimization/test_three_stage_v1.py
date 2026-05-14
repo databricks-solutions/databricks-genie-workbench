@@ -780,7 +780,7 @@ def test_stage_2_for_skill_dispatches_l4(monkeypatch):
     from genie_space_optimizer.optimization import three_stage_pipeline
 
     captured_calls = []
-    def _fake_join_discovery(metadata_snapshot, hints, w=None):
+    def _fake_join_discovery(metadata_snapshot, hints, w=None, **kwargs):
         captured_calls.append({"hints": hints})
         return [{
             "join_spec": {
@@ -824,7 +824,7 @@ def test_stage_2_for_skill_records_capture_hit(monkeypatch):
     from genie_space_optimizer.optimization import three_stage_pipeline
 
     monkeypatch.setattr(optimizer, "_call_llm_for_join_discovery",
-                         lambda metadata_snapshot, hints, w=None: [])
+                         lambda metadata_snapshot, hints, w=None, **kwargs: [])
 
     bundle = _sample_bundle("lever-4-join-discovery")
     three_stage_pipeline._stage_2_for_skill(bundle, w=None)
@@ -856,7 +856,7 @@ def test_pipeline_returns_stage_2_results_for_each_pick(monkeypatch):
     )
     monkeypatch.setattr(
         optimizer, "_call_llm_for_join_discovery",
-        lambda metadata_snapshot, hints, w=None: [{
+        lambda metadata_snapshot, hints, w=None, **kwargs: [{
             "join_spec": {
                 "left_table": "catalog.schema.fact_bookings",
                 "right_table": "catalog.schema.dim_hotel",
@@ -926,7 +926,7 @@ def test_pipeline_merges_duplicate_skill_picks(monkeypatch):
         },
     )
     call_count = {"n": 0}
-    def _fake_join_discovery(metadata_snapshot, hints, w=None):
+    def _fake_join_discovery(metadata_snapshot, hints, w=None, **kwargs):
         call_count["n"] += 1
         return []
     monkeypatch.setattr(optimizer, "_call_llm_for_join_discovery", _fake_join_discovery)
@@ -1372,7 +1372,7 @@ def test_stage_2_l6_returns_proposal_per_cluster(monkeypatch):
 
     def _fake_l6(cluster, metadata_snapshot, *, strategist_hints=None,
                  w=None, spark=None, catalog="", gold_schema="",
-                 warehouse_id="", benchmarks=None):
+                 warehouse_id="", benchmarks=None, **kwargs):
         return {"snippet_type": "filter", "sql": "x = 1",
                  "instruction": "for X questions"}
     monkeypatch.setattr(optimizer, "_generate_lever6_proposal", _fake_l6)

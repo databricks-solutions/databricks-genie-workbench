@@ -198,6 +198,8 @@ def test_lever_5a_instruction_prompt_renders_with_realistic_kwargs():
         "existing_example_sqls": "(none)",
         "identifier_allowlist": "catalog.schema.fact_bookings.booking_date",
         "instruction_char_budget": "20000",
+        # Plan 4 slot — render-time placeholder for raw evidence.
+        "raw_evidence_block": "(no raw evidence)",
     }
     rendered = cfg.format_mlflow_template(
         cfg.LEVER_5A_INSTRUCTION_PROMPT, **sample_kwargs,
