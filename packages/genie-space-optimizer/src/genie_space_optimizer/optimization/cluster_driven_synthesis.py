@@ -1335,6 +1335,7 @@ def build_narrow_l6_replacement(
     original_patch: dict,
     ag_target_qids: tuple[str, ...],
     root_cause: str,
+    protected_dependents: tuple[str, ...] = (),
 ) -> dict | None:
     """Cycle 9 W3 / Cycle 10 W4 — synthesize a narrow-scope variant of
     an L6 patch dropped at ``high_collateral_risk_flagged``.
@@ -1353,12 +1354,18 @@ def build_narrow_l6_replacement(
     expression also returned ``None`` legacy because they lack a
     where_predicate, so flag-off byte-stability holds).
 
+    Phase 2.5: ``protected_dependents`` is now a first-class keyword
+    argument, used by both the Branch C diagnosis path AND the Phase
+    2.4 auto-replacement path. Default ``()`` preserves byte-stable
+    behavior for all existing callers.
+
     Pure: no I/O, no clock, no logger.
     """
     from genie_space_optimizer.common.config import (
         l6_narrow_replacement_patch_aware_enabled,
     )
     _ = root_cause  # reserved for future per-RCA narrowing strategies
+    _ = protected_dependents  # threaded for prompt context; no effect at default ().
     ptype = str((original_patch or {}).get("patch_type") or "")
     if l6_narrow_replacement_patch_aware_enabled():
         diag = narrow_replacement_diagnosis(
@@ -1434,6 +1441,7 @@ def build_l5_example_sql_replacement(
     qid_to_question_text: dict[str, str],
     qid_to_reference_sql: dict[str, str],
     root_cause: str,
+    protected_dependents: tuple[str, ...] = (),
 ) -> tuple[dict, ...]:
     """Cycle 16 T1 — synthesize one Lever-5 ``add_example_sql`` patch
     per resolvable target QID when an L6 expression / measure patch is
@@ -1462,8 +1470,14 @@ def build_l5_example_sql_replacement(
       * ``original_patch.patch_type`` is not L6 expression / measure, OR
       * no target QID is resolvable.
 
+    Phase 2.5: ``protected_dependents`` is now a first-class keyword
+    argument, used by both the Branch C diagnosis path AND the Phase
+    2.4 auto-replacement path. Default ``()`` preserves byte-stable
+    behavior for all existing callers.
+
     Pure: no I/O, no clock, no logger, no flag reads.
     """
+    _ = protected_dependents  # threaded for prompt context; no effect at default ().
     ptype = str((original_patch or {}).get("patch_type") or "")
     if ptype not in _BRANCH_C_L6_PATCH_TYPES:
         return ()
