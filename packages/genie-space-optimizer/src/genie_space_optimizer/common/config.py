@@ -6183,6 +6183,83 @@ def dump_three_stage_capture_summary() -> dict:
     return _THREE_STAGE_CAPTURE_SINK.snapshot()
 
 
+def raw_evidence_v1_enabled() -> bool:
+    """Plan 4 — when on, ``optimization.activation_bundle.build_activation_bundle``
+    populates ``ActivationBundle.raw_evidence`` with ``raw_evidence_n()``
+    diverse ``(question, actual_sql, expected_sql, judge_rationale)``
+    triples per cluster, for every Stage-2 skill EXCEPT
+    ``lever-5b-example-sql``. Per-skill prompts render the
+    ``{{ raw_evidence_block }}`` slot.
+
+    Production-affecting. Flip default-on AFTER the shadow-mode trial
+    run produces commit-ready fixtures (see Plan 4's Trial-run protocol).
+
+    Default OFF preserves Plan 3 behavior byte-for-byte (raw_evidence=()).
+
+    Enable with ``GSO_RAW_EVIDENCE_V1=1``.
+    """
+    return _flag_enabled("GSO_RAW_EVIDENCE_V1")
+
+
+def raw_evidence_v1_shadow_enabled() -> bool:
+    """Plan 4 — when on, BOTH raw-evidence-on and raw-evidence-off
+    prompts run for each Stage-2 dispatch; the OFF result is applied
+    (zero production risk); a comparison record is captured to
+    ``GSO_RAW_EVIDENCE_CAPTURE_PATH`` when set.
+
+    Doubles LLM cost during the trial. Use only on the dedicated
+    trial run.
+
+    Enable with ``GSO_RAW_EVIDENCE_SHADOW_V1=1``.
+    """
+    return _flag_enabled("GSO_RAW_EVIDENCE_SHADOW_V1")
+
+
+def raw_evidence_capture_path_set() -> bool:
+    """True when ``GSO_RAW_EVIDENCE_CAPTURE_PATH`` is set to a non-empty
+    path. The shadow-comparison emitter writes one NDJSON record per
+    Stage-2 dispatch to this path when set."""
+    return bool((os.environ.get("GSO_RAW_EVIDENCE_CAPTURE_PATH") or "").strip())
+
+
+def raw_evidence_capture_require_coverage_enabled() -> bool:
+    """Plan 4 — atexit fail-loud gate. When on, ``_RawEvidenceCaptureSink``
+    registers an atexit handler that raises ``RuntimeError`` if any of:
+      * no projection was recorded for any Plan-3 pickable skill except
+        ``lever-5b-example-sql``,
+      * (when shadow flag was on) no shadow comparison records emitted.
+
+    Use only on the dedicated trial run. Default OFF.
+
+    Enable with ``GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE=1``.
+    """
+    return _flag_enabled("GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE")
+
+
+def raw_evidence_n() -> int:
+    """Plan 4 — number of diverse `(question, actual_sql, expected_sql,
+    judge_rationale)` triples per cluster.
+
+    Defaults to 3. ``0`` disables raw evidence (useful for ablation
+    even when ``GSO_RAW_EVIDENCE_V1=1``). Values >10 are clamped to
+    10. Negative or non-integer values fall back to 3.
+
+    Read from ``GSO_RAW_EVIDENCE_N``.
+    """
+    raw = (os.environ.get("GSO_RAW_EVIDENCE_N") or "").strip()
+    if not raw:
+        return 3
+    try:
+        n = int(raw)
+    except ValueError:
+        return 3
+    if n < 0:
+        return 3
+    if n > 10:
+        return 10
+    return n
+
+
 def partial_harvest_with_debt_enabled() -> bool:
     """Cycle 14B-T1+T2 — when on, ``decide_control_plane_acceptance``
     can accept candidates that fix >=1 hard cluster AND meet
