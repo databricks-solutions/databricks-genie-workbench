@@ -106,6 +106,7 @@ def test_missing_piece_kind_is_closed_enum() -> None:
         "OPTIMIZATION_RUN_ID_UNRESOLVED",
         "DATABRICKS_IDS_UNRESOLVED",
         "BACKFILL_FAILED",
+        "STALE_ANCHOR",  # Phase 0.1 — emitted when no Phase H sibling matches
     }
     assert {m.name for m in MissingPieceKind} == expected
 
