@@ -2442,7 +2442,7 @@ LEVER_4_JOIN_DISCOVERY_PROMPT = (
     'Your task is to identify MISSING join relationships between tables.\n'
     '</role>\n'
     '\n'
-    + _RCA_CONTRACT_HEADER +
+    + _rca_contract_for("lever-4-join-discovery") +
     '<context>\n'
     '## Full Schema Context (tables, columns, data types, descriptions)\n'
     '{{ full_schema_context }}\n'
