@@ -165,6 +165,35 @@ def _stage_2_l2(bundle: "ActivationBundle", w: Any) -> dict:
     }
 
 
+def _stage_2_l3(bundle: "ActivationBundle", w: Any) -> dict:
+    """Stage-2 adapter for lever-3-tvf-routing."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _call_llm_for_proposal,
+    )
+    proposals: list[dict] = []
+    for target in (bundle.target_objects or ("",)):
+        for cluster_afs in bundle.cluster_afs:
+            try:
+                p = _call_llm_for_proposal(
+                    cluster_afs, bundle.metadata_snapshot,
+                    "add_tvf_description", lever=3, w=w,
+                )
+            except Exception:
+                logger.warning(
+                    "Stage-2 L3 proposal failed for target=%s AG=%s",
+                    target, bundle.ag_id, exc_info=True,
+                )
+                continue
+            if p:
+                p = {**p, "_target": target}
+                proposals.append(p)
+    return {
+        "skill_id": bundle.skill_id,
+        "ag_id": bundle.ag_id,
+        "proposals": proposals,
+    }
+
+
 # ── Dispatcher ────────────────────────────────────────────────────────
 
 # Plan 3 starts with L4 only. Tasks 15-18 add the remaining adapters
@@ -172,6 +201,7 @@ def _stage_2_l2(bundle: "ActivationBundle", w: Any) -> dict:
 _STAGE_2_DISPATCH_TABLE: dict[str, Callable[..., dict]] = {
     "lever-1-table-column-description": _stage_2_l1,
     "lever-2-mv-column-refinement": _stage_2_l2,
+    "lever-3-tvf-routing": _stage_2_l3,
     "lever-4-join-discovery": _stage_2_l4,
 }
 

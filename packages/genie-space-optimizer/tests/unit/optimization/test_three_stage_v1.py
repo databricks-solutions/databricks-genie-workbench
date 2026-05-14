@@ -1283,3 +1283,25 @@ def test_stage_2_l1_dispatcher_table_registered():
     from genie_space_optimizer.optimization import three_stage_pipeline
     assert "lever-1-table-column-description" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE
     assert "lever-2-mv-column-refinement" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE
+
+
+def test_stage_2_l3_uses_lever_3(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    captured = []
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None):
+        captured.append((lever, patch_type))
+        return {"proposed_value": "x", "rationale": "y"}
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
+
+    bundle = _sample_bundle("lever-3-tvf-routing")
+    out = three_stage_pipeline._stage_2_l3(bundle, w=None)
+    assert out["skill_id"] == "lever-3-tvf-routing"
+    assert all(lv == 3 for lv, _ in captured)
+    assert all(pt == "add_tvf_description" for _, pt in captured)
+
+
+def test_stage_2_l3_dispatcher_table_registered():
+    from genie_space_optimizer.optimization import three_stage_pipeline
+    assert "lever-3-tvf-routing" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE
