@@ -6657,3 +6657,45 @@ def soft_signal_trend_report_enabled() -> bool:
     Default ON. Disable with ``GSO_SOFT_SIGNAL_TREND_REPORT=0``.
     """
     return _flag_default_on("GSO_SOFT_SIGNAL_TREND_REPORT")
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 — Final Closeout prerequisites (2026-05-14).
+# Plan: docs/final_plan/2026-05-14-final-closeout-phase-0-evidence-and-ledger-plan.md
+# ---------------------------------------------------------------------------
+
+
+def phase_h_totality_enabled() -> bool:
+    """Phase 0.2 — when ON, the harness sources Phase H per-iteration
+    summaries from the replay-fixture iterations list AND emits the
+    GSO_ITERATION_SUMMARY_TOTALITY_V1 alarm marker on mismatch.
+
+    Default-ON. Explicit ``GSO_PHASE_H_TOTALITY=0`` forces the
+    legacy Phase H writer path (for byte-stable replay of pre-Phase-0
+    fixtures).
+    """
+    return _flag_default_on("GSO_PHASE_H_TOTALITY")
+
+
+def iteration_terminal_marker_enabled() -> bool:
+    """Phase 0.3 — when ON, each lever-loop iteration body is wrapped
+    in a try/finally that emits ``GSO_ITERATION_FAULTED_V1`` if no
+    other terminal marker (``GSO_FULL_EVAL_V1`` or
+    ``GSO_ITERATION_NO_CANDIDATE_V1``) was emitted before the finally
+    ran.
+
+    Default-ON. Explicit ``GSO_ITERATION_TERMINAL_MARKER=0`` rolls
+    back to the legacy iteration body.
+    """
+    return _flag_default_on("GSO_ITERATION_TERMINAL_MARKER")
+
+
+def candidate_ledger_enabled() -> bool:
+    """Phase 0.4 — when ON, the lever loop writes an
+    ``iteration_candidate_ledger.jsonl`` artifact AND emits
+    ``GSO_CANDIDATE_LEDGER_ENTRY_V1`` to stdout once per iteration.
+
+    Default-ON. Explicit ``GSO_CANDIDATE_LEDGER=0`` skips both
+    the artifact and the marker.
+    """
+    return _flag_default_on("GSO_CANDIDATE_LEDGER")
