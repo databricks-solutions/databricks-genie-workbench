@@ -2,22 +2,45 @@
 """Export narrowing-v1 trial-run captures into committable fixture files.
 
 Reads:
-  * NDJSON capture file written by _NarrowingCaptureSink during the trial
-    run (path passed via --narrowing-capture-path).
-  * MLflow traces for spans named one of:
-      - lever_4_join_discovery
-      - sql_expression_seeding_llm
-      - generate_proactive_instructions  (or whatever span EXPAND_INSTRUCTION_PROMPT
-        emits — discovered automatically below)
+  * NDJSON capture file written by ``_NarrowingCaptureSink`` during the
+    trial run (path passed via ``--narrowing-capture-path``).
+  * MLflow traces whose root-span name matches one of:
+      - ``lever_4_join_discovery``
+      - ``sql_expression_seeding_llm``
+      - ``generate_proactive_instructions`` / ``expand_instructions``
+        (EXPAND_INSTRUCTION_PROMPT's call site builds span_name
+        dynamically per attempt; both observed variants are accepted)
     via the MLflow tracking client (configured via env / MLFLOW_TRACKING_URI).
 
 Writes:
   * One fixture file per (skill_id, captured render) into
-    tests/fixtures/narrowing_v1/<skill_id>__<short_hash>.json
-    Each file: {"skill_id", "prompt_bytes", "llm_response_bytes",
-                "captured_at", "source_span_id"}.
+    ``tests/fixtures/narrowing_v1/<skill_id>__<short_hash>.json``.
+    Each file: ``{"skill_id", "prompt_bytes", "llm_response_bytes",
+    "captured_at", "source_span_id"}``.
   * A summary printed to stdout listing files emitted, files skipped,
     and any captures that could not be matched to an MLflow span.
+
+Span model
+----------
+The harness uses ``_traced_llm_call`` (see ``optimizer.py``) to wrap
+each LLM invocation. That wrapper opens an outer span with a domain
+name (e.g. ``lever_4_join_discovery``). The actual prompt/response
+bytes live in a **child** span emitted by the OpenAI SDK
+auto-instrumentation — typically a ``Completions`` span of
+``span_type == LLM`` whose ``inputs`` are the OpenAI chat-completions
+request (``{"messages": [...]}``) and whose ``outputs`` are the
+OpenAI chat-completions response
+(``{"choices": [{"message": {"content": "..."}}]}``).
+
+This exporter walks each matching outer span, locates the first
+``Completions`` child, and pulls prompt/response from there. Reading
+``parent_span.inputs.prompt`` directly (the obvious-but-wrong shape)
+returns empty strings for the OpenAI autolog integration the trial
+runs use.
+
+Trace search uses one direct ``mlflow.traceName`` filter per known
+root-span name, which is faster and far less wasteful than paginating
+``search_runs`` + per-run ``search_traces``.
 
 Usage:
     python scripts/export_narrowing_fixtures.py \\
@@ -39,19 +62,30 @@ from pathlib import Path
 from typing import Any
 
 
-# Map skill_id (NDJSON `skill_id` field) to the MLflow span_name that
-# the corresponding _traced_llm_call uses. Matches the catalogue at
-# docs/prompt_improvements/skill-catalogue.md.
-SKILL_TO_SPAN_NAMES: dict[str, tuple[str, ...]] = {
+# Map skill_id (NDJSON ``skill_id`` field) to the MLflow root-trace
+# names that the corresponding ``_traced_llm_call`` produces. Matches
+# the catalogue at ``docs/prompt_improvements/skill-catalogue.md``.
+SKILL_TO_ROOT_TRACE_NAMES: dict[str, tuple[str, ...]] = {
     "lever-4-join-discovery": ("lever_4_join_discovery",),
     "preflight-sql-expression-seeding": ("sql_expression_seeding_llm",),
     # EXPAND_INSTRUCTION_PROMPT's call site at optimizer.py:4253 builds
-    # span_name dynamically per attempt. Discover by prefix at runtime.
+    # span_name dynamically per attempt; both observed variants are
+    # accepted.
     "preflight-instruction-expand": (
         "generate_proactive_instructions",
         "expand_instructions",
     ),
 }
+
+# Span-name fragments / span_type tokens that identify the
+# OpenAI-autolog child span carrying the actual prompt + response
+# bytes. Different MLflow versions use slightly different names.
+_COMPLETIONS_CHILD_NAMES = (
+    "Completions",
+    "ChatCompletion",
+    "OpenAI.chat.completions.create",
+)
+_COMPLETIONS_CHILD_TYPES = {"LLM", "CHAT_MODEL", "COMPLETIONS"}
 
 
 def _short_hash(prompt_bytes: str) -> str:
@@ -68,66 +102,151 @@ def _read_ndjson(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def _query_mlflow_spans(experiment_id: str, span_names: set[str]) -> list[Any]:
-    """Returns a list of MLflow span objects whose name is in span_names.
-    Local import keeps mlflow optional for test environments."""
-    import mlflow
+def _query_mlflow_traces(
+    experiment_id: str,
+    root_trace_names: set[str],
+) -> list[Any]:
+    """Return Trace objects whose root span name matches one of the
+    requested names. One filtered ``search_traces`` call per name keeps
+    the query language requirements minimal (no ``IN`` clause needed).
 
-    client = mlflow.tracking.MlflowClient()
-    # Use experiment-scoped trace search; filter client-side because
-    # MLflow's filter language does not support span-name filters.
-    spans: list[Any] = []
-    runs = client.search_runs([experiment_id], max_results=1000)
-    for run in runs:
+    Local import keeps mlflow optional for test environments.
+    """
+    import mlflow  # noqa: F401  (verifies the package is installed)
+    from mlflow.tracking import MlflowClient
+
+    client = MlflowClient()
+    out: list[Any] = []
+    for name in sorted(root_trace_names):
+        flt = f"tags.`mlflow.traceName` = '{name}'"
         try:
-            traces = client.search_traces(experiment_ids=[experiment_id],
-                                          run_id=run.info.run_id,
-                                          max_results=200)
-        except Exception:
+            batch = client.search_traces(
+                experiment_ids=[experiment_id],
+                filter_string=flt,
+                max_results=200,
+                order_by=["timestamp_ms ASC"],
+            )
+        except Exception as exc:  # network / auth / unsupported filter
+            print(
+                f"warning: search_traces failed for name={name!r}: {exc}",
+                file=sys.stderr,
+            )
             continue
-        for trace in traces:
-            for span in trace.data.spans:
-                if span.name in span_names:
-                    spans.append(span)
-    return spans
+        out.extend(batch)
+    return out
 
 
-def _match_span_for_record(
-    record: dict[str, Any],
-    spans_by_name: dict[str, list[Any]],
-) -> Any | None:
-    """Pick the MLflow span whose start time is closest to record's
-    rendered_at_ts among spans with a matching span name."""
-    candidate_span_names = SKILL_TO_SPAN_NAMES.get(record["skill_id"], ())
-    candidates: list[Any] = []
-    for name in candidate_span_names:
-        candidates.extend(spans_by_name.get(name, []))
-    if not candidates:
+def _find_completions_child(trace: Any, root_span_name: str) -> Any | None:
+    """Locate the OpenAI-autolog ``Completions`` child span for the
+    given root-span name within a single trace. Returns ``None`` if the
+    trace has no recognizable child completion span."""
+    spans = list(getattr(trace.data, "spans", []) or [])
+    if not spans:
         return None
-    target_ts = float(record["rendered_at_ts"])
-    return min(
-        candidates,
-        key=lambda s: abs(getattr(s, "start_time", 0) / 1e9 - target_ts),
-    )
+
+    root = next((s for s in spans if s.name == root_span_name), None)
+    if root is None:
+        return None
+
+    by_parent: dict[str, list[Any]] = {}
+    for span in spans:
+        parent = getattr(span, "parent_id", None) or ""
+        by_parent.setdefault(parent, []).append(span)
+
+    # BFS from root. Match by name fragment OR by span_type token.
+    queue: list[Any] = list(by_parent.get(root.span_id, []))
+    while queue:
+        cur = queue.pop(0)
+        if any(frag in cur.name for frag in _COMPLETIONS_CHILD_NAMES):
+            return cur
+        span_type = str(getattr(cur, "span_type", "") or "").upper()
+        if span_type in _COMPLETIONS_CHILD_TYPES:
+            return cur
+        queue.extend(by_parent.get(cur.span_id, []))
+    return None
 
 
-def _extract_prompt_and_response(span: Any) -> tuple[str, str]:
-    """Best-effort extraction of prompt + response bytes from an MLflow
-    span. Span attribute layout follows _traced_llm_call's MLflow
-    convention: input is the user prompt; output is the raw LLM text."""
+def _extract_prompt_and_response_from_completions(
+    span: Any,
+) -> tuple[str, str]:
+    """Extract prompt/response bytes from a Completions child span. The
+    inputs are the OpenAI chat-completions request; the outputs are the
+    response. Falls back to permissive lookups if the integration uses
+    a slightly different shape."""
     inputs = getattr(span, "inputs", None) or {}
     outputs = getattr(span, "outputs", None) or {}
-    prompt = ""
-    response = ""
+
+    prompt_text = ""
     if isinstance(inputs, dict):
-        # _traced_llm_call passes (system_msg, prompt) as positional args;
-        # the 'prompt' key is added by the wrapper for searchability.
-        prompt = inputs.get("prompt") or inputs.get("user_prompt") or ""
+        messages = inputs.get("messages")
+        if isinstance(messages, list):
+            # Render the prompt as the concatenation of "role: content"
+            # lines so the byte-stability check sees the full payload
+            # actually sent (including any system message prefix).
+            parts = []
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                role = str(msg.get("role", ""))
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    # OpenAI vision-style content blocks; flatten to text.
+                    content = "".join(
+                        block.get("text", "")
+                        for block in content
+                        if isinstance(block, dict)
+                    )
+                parts.append(f"{role}: {content}")
+            prompt_text = "\n\n".join(parts)
+        if not prompt_text:
+            # Older convention: a single 'prompt' string.
+            prompt_text = str(
+                inputs.get("prompt") or inputs.get("user_prompt") or ""
+            )
+
+    response_text = ""
     if isinstance(outputs, dict):
-        response = outputs.get("text") or outputs.get("response") or ""
+        choices = outputs.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                msg = first.get("message")
+                if isinstance(msg, dict):
+                    response_text = str(msg.get("content") or "")
+                if not response_text:
+                    response_text = str(first.get("text") or "")
+        if not response_text:
+            response_text = str(
+                outputs.get("text") or outputs.get("response") or ""
+            )
     elif isinstance(outputs, str):
-        response = outputs
-    return str(prompt), str(response)
+        response_text = outputs
+
+    return prompt_text, response_text
+
+
+def _match_trace_for_record(
+    record: dict[str, Any],
+    traces_by_root_name: dict[str, list[Any]],
+) -> tuple[Any, str] | None:
+    """Pick the trace whose timestamp is closest to record's
+    ``rendered_at_ts``, restricted to traces whose root-span name
+    corresponds to the record's ``skill_id``. Returns
+    ``(trace, root_span_name)`` or ``None`` if no candidate."""
+    candidate_root_names = SKILL_TO_ROOT_TRACE_NAMES.get(record["skill_id"], ())
+    candidates: list[tuple[Any, str]] = []
+    for name in candidate_root_names:
+        for trace in traces_by_root_name.get(name, ()):
+            candidates.append((trace, name))
+    if not candidates:
+        return None
+    target_ts_ms = float(record["rendered_at_ts"]) * 1000.0
+    return min(
+        candidates,
+        key=lambda item: abs(
+            float(getattr(item[0].info, "timestamp_ms", 0.0)) - target_ts_ms
+        ),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -155,14 +274,15 @@ def main(argv: list[str] | None = None) -> int:
               "any non-causal site")
         return 1
 
-    span_names_needed: set[str] = set()
+    root_names_needed: set[str] = set()
     for skill_id in {r["skill_id"] for r in records}:
-        span_names_needed.update(SKILL_TO_SPAN_NAMES.get(skill_id, ()))
+        root_names_needed.update(SKILL_TO_ROOT_TRACE_NAMES.get(skill_id, ()))
 
-    spans = _query_mlflow_spans(args.mlflow_experiment_id, span_names_needed)
-    spans_by_name: dict[str, list[Any]] = {}
-    for s in spans:
-        spans_by_name.setdefault(s.name, []).append(s)
+    traces = _query_mlflow_traces(args.mlflow_experiment_id, root_names_needed)
+    traces_by_root_name: dict[str, list[Any]] = {}
+    for t in traces:
+        name = t.info.tags.get("mlflow.traceName", "")
+        traces_by_root_name.setdefault(name, []).append(t)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     written = 0
@@ -171,11 +291,18 @@ def main(argv: list[str] | None = None) -> int:
     seen_hashes: set[str] = set()
 
     for record in records:
-        span = _match_span_for_record(record, spans_by_name)
-        if span is None:
+        match = _match_trace_for_record(record, traces_by_root_name)
+        if match is None:
             unmatched.append(record)
             continue
-        prompt_bytes, response_bytes = _extract_prompt_and_response(span)
+        trace, root_name = match
+        child = _find_completions_child(trace, root_name)
+        if child is None:
+            unmatched.append(record)
+            continue
+        prompt_bytes, response_bytes = (
+            _extract_prompt_and_response_from_completions(child)
+        )
         if not prompt_bytes:
             unmatched.append(record)
             continue
@@ -190,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
             "prompt_bytes": prompt_bytes,
             "llm_response_bytes": response_bytes,
             "captured_at": record["rendered_at_ts"],
-            "source_span_id": getattr(span, "span_id", "") or "",
+            "source_span_id": getattr(child, "span_id", "") or "",
         }
         out_path = args.output_dir / f"{record['skill_id']}__{h}.json"
         if out_path.exists():
