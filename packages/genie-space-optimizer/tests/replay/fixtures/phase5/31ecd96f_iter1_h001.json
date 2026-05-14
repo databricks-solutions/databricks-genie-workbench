@@ -1,0 +1,24 @@
+{
+  "_source": "hand-authored from postmortem.md",
+  "ag_id": "H001_gs009",
+  "directives": {
+    "L5": {
+      "outcome": "no_structural_candidate",
+      "reason": "no_metric_view_pattern_match"
+    },
+    "L6": {
+      "outcome": "available",
+      "patch_type_candidate": "add_metric_view"
+    }
+  },
+  "iteration": 1,
+  "rendered_proposal_kinds": [
+    "L6_metric_view"
+  ],
+  "run_id": "31ecd96f-5d56-4b5a-af8e-38e9e5c549af",
+  "source_task": "527064244842391",
+  "target_qids": [
+    "gs_009"
+  ],
+  "violation": "renderer emitted an L6 proposal while L5 directive said no_structural_candidate; the L6 must be its own AG (H002), not folded under H001."
+}

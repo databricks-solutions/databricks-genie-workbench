@@ -1,0 +1,22 @@
+{
+  "_source": "hand-authored from postmortem.md",
+  "ag_selection_sequence": [
+    "H002",
+    "H001",
+    "H002"
+  ],
+  "h002_target_qids": [
+    "gs_024"
+  ],
+  "iteration_indices": [
+    2,
+    3,
+    4
+  ],
+  "run_id": "31ecd96f-5d56-4b5a-af8e-38e9e5c549af",
+  "source_task": "527064244842391",
+  "terminal_reason_sequence_for_h002": [
+    "no_applied_patches",
+    "no_applied_patches"
+  ]
+}

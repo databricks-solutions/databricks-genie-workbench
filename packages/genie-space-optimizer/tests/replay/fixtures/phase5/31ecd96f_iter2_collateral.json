@@ -1,0 +1,28 @@
+{
+  "_source": "hand-authored from postmortem.md",
+  "ag_id": "H002_gs024",
+  "applied_patches": [],
+  "dropped_patches": [
+    {
+      "drop_reason": "high_collateral_risk_flagged",
+      "dropped_for_dependents": [
+        "gs_003"
+      ],
+      "patch_id": "L6_tkt_payment_revenue",
+      "patch_type": "add_sql_snippet_measure",
+      "target_table": "catalog.schema.tkt_payment"
+    }
+  ],
+  "expected_narrow_replacement_call": {
+    "helper": "build_narrow_l6_replacement",
+    "protected_dependents": [
+      "gs_003"
+    ]
+  },
+  "iteration": 2,
+  "run_id": "31ecd96f-5d56-4b5a-af8e-38e9e5c549af",
+  "source_task": "527064244842391",
+  "target_qids": [
+    "gs_024"
+  ]
+}
