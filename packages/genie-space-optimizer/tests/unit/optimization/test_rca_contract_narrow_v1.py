@@ -349,3 +349,41 @@ def test_expand_instruction_byte_delta_when_flag_on():
     assert abs(delta - header_len) <= 2, (
         f"Expected ~{header_len}-byte reduction, got {delta}"
     )
+
+
+# ── Task 10: SQL_EXPRESSION_SEEDING_PROMPT ──────────────────────────
+
+
+def test_sql_expression_seeding_renders_under_both_flag_states():
+    from genie_space_optimizer.common.config import format_mlflow_template
+
+    sample_kwargs = {
+        "candidates": "[]",
+        "schema": "(test)",
+    }
+
+    cfg_off = _reload_config_with_env({})
+    rendered_off = format_mlflow_template(
+        cfg_off.SQL_EXPRESSION_SEEDING_PROMPT, **sample_kwargs,
+    )
+    assert "<unified_rca_engine_contract>" in rendered_off
+
+    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    rendered_on = format_mlflow_template(
+        cfg_on.SQL_EXPRESSION_SEEDING_PROMPT, **sample_kwargs,
+    )
+    assert "<unified_rca_engine_contract>" not in rendered_on
+
+
+def test_sql_expression_seeding_byte_delta_when_flag_on():
+    cfg_off = _reload_config_with_env({})
+    header_len = len(cfg_off._RCA_CONTRACT_HEADER)
+    prompt_off = cfg_off.SQL_EXPRESSION_SEEDING_PROMPT
+
+    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    prompt_on = cfg_on.SQL_EXPRESSION_SEEDING_PROMPT
+
+    delta = len(prompt_off) - len(prompt_on)
+    assert abs(delta - header_len) <= 2, (
+        f"Expected ~{header_len}-byte reduction, got {delta}"
+    )

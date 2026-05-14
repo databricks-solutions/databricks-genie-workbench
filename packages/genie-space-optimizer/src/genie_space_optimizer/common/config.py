@@ -1769,12 +1769,29 @@ class _NarrowingCaptureSink:
             os._exit(2)  # bypass other atexit handlers
 
     def reset_for_test(self) -> None:
-        """Test hook: clear counters and re-resolve env on next call."""
+        """Test hook: clear counters, re-resolve env on next call, and
+        truncate the sink file. Module-reload during tests re-runs every
+        prompt-constant assembly, which writes capture lines BEFORE the
+        test gets a chance to reset. Truncating here gives the test a
+        clean slate."""
         with self._lock:
+            # Capture the resolved sink path BEFORE clearing it so we
+            # can truncate the file. The path may have been resolved
+            # during module-reload's prompt-constant assembly.
+            prior_sink_path = self._sink_path
             self._hits = {name: 0 for name in _NON_CAUSAL_PROMPT_NAMES}
             self._sink_path = None
             self._sink_path_resolved = False
             self._coverage_gate_registered = False
+        # Truncate the prior sink file if it exists. Outside the lock
+        # to avoid I/O contention; test isolation guarantees no
+        # concurrent writers anyway.
+        if prior_sink_path:
+            try:
+                with open(prior_sink_path, "w", encoding="utf-8"):
+                    pass
+            except OSError:
+                pass
 
 
 _NARROWING_CAPTURE_SINK = _NarrowingCaptureSink()
@@ -5172,7 +5189,10 @@ Output strict JSON array matching the input order. Each element:
 {{"display_name": "...", "synonyms": [...], "instruction": "...", "alias": "..."}}
 """
 
-SQL_EXPRESSION_SEEDING_PROMPT = _RCA_CONTRACT_HEADER + _SQL_EXPRESSION_SEEDING_BODY
+SQL_EXPRESSION_SEEDING_PROMPT = (
+    _rca_contract_for("preflight-sql-expression-seeding")
+    + _SQL_EXPRESSION_SEEDING_BODY
+)
 
 # ── 26. Pre-flight example_sql synthesis (Bug #4 follow-up; schema-driven) ──
 #
