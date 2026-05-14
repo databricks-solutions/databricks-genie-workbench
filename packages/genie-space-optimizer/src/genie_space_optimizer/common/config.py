@@ -5871,6 +5871,57 @@ def lever5_split_capture_require_coverage_enabled() -> bool:
     return _flag_enabled("GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE")
 
 
+def three_stage_enabled() -> bool:
+    """Plan 3 — when on, the per-iteration strategist call in
+    ``optimization.harness._run_lever_loop`` routes through
+    ``three_stage_pipeline.run_three_stage_pipeline_for_ag``
+    (Stage-1 discovery + Stage-2 per-skill activation) instead of
+    ``_call_llm_for_adaptive_strategy``.
+
+    Production-affecting. Flip default-on AFTER the shadow-mode trial
+    run produces commit-ready fixtures (see Plan 3's Trial-run protocol).
+
+    Default OFF preserves existing strategist behavior byte-for-byte.
+
+    Enable with ``GSO_THREE_STAGE_V1=1``.
+    """
+    return _flag_enabled("GSO_THREE_STAGE_V1")
+
+
+def three_stage_shadow_enabled() -> bool:
+    """Plan 3 — when on, BOTH the legacy strategist AND the new
+    three-stage pipeline run for each iteration; the LEGACY result is
+    applied (zero production risk); the comparison record is captured
+    to ``GSO_THREE_STAGE_CAPTURE_PATH`` when set.
+
+    Use only on the dedicated trial run. Default OFF.
+
+    Enable with ``GSO_THREE_STAGE_SHADOW_V1=1``.
+    """
+    return _flag_enabled("GSO_THREE_STAGE_SHADOW_V1")
+
+
+def three_stage_capture_path_set() -> bool:
+    """True when ``GSO_THREE_STAGE_CAPTURE_PATH`` is set to a non-empty
+    path. The shadow-comparison emitter writes one NDJSON record per AG
+    to this path when the path is set."""
+    return bool((os.environ.get("GSO_THREE_STAGE_CAPTURE_PATH") or "").strip())
+
+
+def three_stage_capture_require_coverage_enabled() -> bool:
+    """Plan 3 — atexit fail-loud gate. When on, ``_ThreeStageCaptureSink``
+    registers an atexit handler that raises ``RuntimeError`` if any of:
+      * no Stage-1 discovery hit was recorded,
+      * no Stage-2 dispatch was recorded across all skill_ids,
+      * (when shadow flag was on) no shadow comparisons were emitted.
+
+    Use only on the dedicated trial run. Default OFF.
+
+    Enable with ``GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE=1``.
+    """
+    return _flag_enabled("GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE")
+
+
 def partial_harvest_with_debt_enabled() -> bool:
     """Cycle 14B-T1+T2 — when on, ``decide_control_plane_acceptance``
     can accept candidates that fix >=1 hard cluster AND meet
