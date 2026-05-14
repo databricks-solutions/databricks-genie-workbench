@@ -277,6 +277,36 @@ _log = partial(_log_base, _TASK_LABEL)
 
 # COMMAND ----------
 
+# Plan 5 trial-2 wiring — activate the four V1 paths whose capture sinks
+# need to fire to produce committable byte-stable fixtures. The
+# ``setdefault`` form lets an operator override any of these from the
+# job environment for emergency rollback (set ``GSO_<flag>=0``).
+#
+# Active paths (Plans 1, 2, 4) are already default-on in
+# ``common/config.py`` (covered by
+# ``test_v1_flags_default_posture.py``). Plan 3 is documented as
+# default-off in code; the setdefault here intentionally activates it
+# only for this trial's lever-loop notebook so the three-stage capture
+# sink emits records, without flipping the in-code default. The unit
+# test still passes because it reloads ``config.py`` standalone with
+# the env vars popped — it never imports this notebook.
+#
+# Shadow flags trigger the comparison-record sink writes that the
+# Plan 2/3/4 fixture exporters consume (the ``hits`` records alone are
+# not byte-stable on the comparison payload). Each shadow flag DOUBLES
+# the LLM call count at the affected sites — accept the cost for the
+# one trial that produces the fixtures, then turn the shadow flags off
+# again by removing the setdefaults below before the next non-fixture
+# trial. Plans 1, 2, 4 active flags should stay (they ARE the new
+# production posture).
+import os as _os
+_os.environ.setdefault("GSO_LEVER5_SHADOW_V1", "1")        # Plan 2 shadow
+_os.environ.setdefault("GSO_THREE_STAGE_V1", "1")          # Plan 3 active
+_os.environ.setdefault("GSO_THREE_STAGE_SHADOW_V1", "1")   # Plan 3 shadow
+_os.environ.setdefault("GSO_RAW_EVIDENCE_SHADOW_V1", "1")  # Plan 4 shadow
+
+# COMMAND ----------
+
 from genie_space_optimizer._workspace_client import make_workspace_client
 w = make_workspace_client()
 spark = SparkSession.builder.getOrCreate()
