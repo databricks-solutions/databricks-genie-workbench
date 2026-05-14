@@ -1594,6 +1594,50 @@ _EXAMPLE_SYNTHESIS_CONTRACT_HEADER: str = (
 )
 
 
+# ── Plan 1 (Phase 1): per-prompt contract gating ──────────────────────
+# Maps prompt skill_ids that are NOT subject to RCA invariants. Stripping
+# `_RCA_CONTRACT_HEADER` from these is byte-output-equivalent for downstream
+# consumers because their output JSON shape is independent of the contract
+# block. The classification justification is documented in
+# `docs/prompt_improvements/skill-catalogue.md`.
+#
+# Adding a new entry here requires updating the catalogue first and
+# extending `tests/unit/optimization/test_rca_contract_narrow_v1.py`.
+_NON_CAUSAL_PROMPT_NAMES: frozenset[str] = frozenset({
+    "preflight-instruction-expand",       # config.py:2032 EXPAND_INSTRUCTION_PROMPT
+    "lever-4-join-discovery",             # config.py:2245 LEVER_4_JOIN_DISCOVERY_PROMPT
+    "preflight-sql-expression-seeding",   # config.py:4975 SQL_EXPRESSION_SEEDING_PROMPT
+})
+
+
+def _rca_contract_for(prompt_name: str) -> str:
+    """Return the contract header for a prompt by skill_id.
+
+    Non-causal prompts (per ``_NON_CAUSAL_PROMPT_NAMES``) get an empty
+    string when ``GSO_RCA_CONTRACT_NARROW_V1`` is on; everything else
+    gets the full header. Default-off preserves byte-stable replay.
+
+    Unknown names are treated as causal — opting out is an explicit
+    registry edit, not an accident.
+    """
+    # Note on evaluation timing: the prompts that call this helper are
+    # assembled at module import below, so each process resolves the
+    # branch once at import. Tests that need a different value must
+    # ``importlib.reload(cfg)`` under a patched env (see
+    # ``test_rca_contract_narrow_v1.py::_reload_config_with_env``).
+    #
+    # We inline the env check (rather than call ``_flag_enabled``)
+    # because the canonical flag helper is defined ~3700 lines below
+    # this point; at module-import time, prompt constants below call
+    # this function during their string assembly, and a forward
+    # reference to ``_flag_enabled`` would raise ``NameError``.
+    if prompt_name in _NON_CAUSAL_PROMPT_NAMES:
+        raw = os.environ.get("GSO_RCA_CONTRACT_NARROW_V1", "").strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return ""
+    return _RCA_CONTRACT_HEADER
+
+
 # ── 5b. Proposal Generation Prompts ───────────────────────────────────
 
 PROPOSAL_GENERATION_PROMPT = (
@@ -5356,6 +5400,23 @@ def target_delta_strict_enabled() -> bool:
     Disable with ``GSO_TARGET_DELTA_STRICT=0``.
     """
     return _flag_default_on("GSO_TARGET_DELTA_STRICT")
+
+
+def rca_contract_narrowed_enabled() -> bool:
+    """Plan 1 — when on, omit ``_RCA_CONTRACT_HEADER`` from prompts whose
+    output is not subject to RCA invariants (preflight enrichment, schema-
+    grounded join discovery, snippet display-name enrichment).
+
+    Default OFF for one release so existing replay fixtures continue to
+    render the contract block in non-causal prompts. Flip default-on after
+    the first release with the flag observed in production.
+
+    Enable with ``GSO_RCA_CONTRACT_NARROW_V1=1``.
+
+    See ``packages/genie-space-optimizer/docs/prompt_improvements/skill-catalogue.md``
+    for the canonical causal/non-causal classification.
+    """
+    return _flag_enabled("GSO_RCA_CONTRACT_NARROW_V1")
 
 
 def partial_harvest_with_debt_enabled() -> bool:
