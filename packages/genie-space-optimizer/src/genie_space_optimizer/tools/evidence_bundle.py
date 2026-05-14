@@ -711,13 +711,65 @@ def build_bundle(
                 )
             )
 
+    # Phase 0.1: fail-closed stale-anchor detection. If at least one
+    # sibling advertises Phase H artifacts (``gso_postmortem_bundle/*``)
+    # and *none* of them carries the same ``lever_loop_task_run_id`` as
+    # the chosen task, record STALE_ANCHOR and skip Phase H artifact
+    # downloads so the postmortem does not consume mismatched artifacts
+    # (the airline ff71c000 defect, where Phase H artifacts from a
+    # *different* run polluted the postmortem).
+    #
+    # When no sibling advertises Phase H artifacts at all, the check is
+    # a no-op — legacy Phase A/B/E siblings predate the lever-loop tag
+    # contract and must continue to flow through ``_walk_audit_artifacts``
+    # unchanged.
+    _skip_phase_h_downloads = False
     if audit:
+        _has_phase_h_sibling = any(
+            any(
+                str(p or "").startswith("gso_postmortem_bundle/")
+                for p in (_sib.get("artifact_paths") or [])
+            )
+            for _sib in (audit.get("sibling_runs") or [])
+        )
+        if _has_phase_h_sibling:
+            _chosen_task_run_id = str(
+                (lever_task or {}).get("run_id") or ""
+            ).strip()
+            _phase_h_sibling_task_run_ids: list[str] = []
+            for _sib in (audit.get("sibling_runs") or []):
+                _has_phase_h_paths = any(
+                    str(p or "").startswith("gso_postmortem_bundle/")
+                    for p in (_sib.get("artifact_paths") or [])
+                )
+                if not _has_phase_h_paths:
+                    continue
+                _tags = _sib.get("tags") or {}
+                _sib_task_run_id = str(
+                    _tags.get("genie.databricks.lever_loop_task_run_id") or ""
+                ).strip()
+                if _sib_task_run_id:
+                    _phase_h_sibling_task_run_ids.append(_sib_task_run_id)
+            _stale_anchor = detect_stale_phase_h_anchor(
+                chosen_task_run_id=_chosen_task_run_id,
+                phase_h_sibling_task_run_ids=tuple(_phase_h_sibling_task_run_ids),
+            )
+            if _stale_anchor is not None:
+                missing.append(_stale_anchor)
+                _skip_phase_h_downloads = True
+
+    if audit and not _skip_phase_h_downloads:
         sibling_run_ids, pulled_artifacts, audit_missing, anchor_run_id = (
             _walk_audit_artifacts(
                 audit=audit, mlflow_runner=mlflow_runner, paths=paths
             )
         )
         missing.extend(audit_missing)
+        paths.mlflow_audit_json.write_text(json.dumps(audit, indent=2, sort_keys=True))
+        paths.mlflow_audit_md.write_text(_render_audit_markdown(audit))
+    elif audit and _skip_phase_h_downloads:
+        # Still persist the audit JSON/MD so operators can inspect the
+        # mismatch — only the artifact downloads are skipped.
         paths.mlflow_audit_json.write_text(json.dumps(audit, indent=2, sort_keys=True))
         paths.mlflow_audit_md.write_text(_render_audit_markdown(audit))
 
