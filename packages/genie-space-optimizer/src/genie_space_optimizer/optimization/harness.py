@@ -17937,6 +17937,7 @@ def _run_lever_loop(
     # (default-ON); set ``GSO_ITERATION_TERMINAL_MARKER=0`` to roll back.
     from genie_space_optimizer.optimization.run_analysis_contract import (
         iteration_faulted_marker,
+        iteration_no_candidate_marker,
     )
     from genie_space_optimizer.common.config import (
         iteration_terminal_marker_enabled,
@@ -19402,6 +19403,27 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # no_actionable_clusters short-circuit. The cluster set
+                # collapsed to empty after filtering tried_root_causes /
+                # human_required_signatures, so no structural candidate
+                # remains for this iteration.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="no_structural_candidate",
+                            cluster_ids=(),
+                            ag_id="",
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: no_actionable_clusters "
+                            "marker emit failed (non-fatal)",
+                            exc_info=True,
+                        )
                 break
 
             # Track H — quarantine attribution audit. The strategist must
@@ -21033,6 +21055,31 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # strategy_zero_ags short-circuit. The strategist (and
+                # the holistic/diagnostic fallbacks below it) produced
+                # no action groups, so no candidate exists this iteration.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        _cids_for_marker = tuple(
+                            str(c.get("cluster_id") or "")
+                            for c in (clusters or [])
+                            if str(c.get("cluster_id") or "")
+                        )
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="no_action_group_emitted",
+                            cluster_ids=_cids_for_marker,
+                            ag_id="",
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: strategy_zero_ags marker "
+                            "emit failed (non-fatal)",
+                            exc_info=True,
+                        )
                 break
 
             ag_id = ag.get("id", f"AG{iteration_counter}")
@@ -21218,6 +21265,32 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # ag_identity_skip short-circuit. The strategist
+                # re-proposed an AG whose (root_cause, blame, lever_set)
+                # or (cluster_signature, lever_set) tuple is already in
+                # the forbidden set, so the iteration discards the AG
+                # without producing any evaluated candidate.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="ag_collision_with_forbidden_set",
+                            cluster_ids=tuple(
+                                str(c) for c in
+                                (ag.get("source_cluster_ids") or ())
+                                if str(c)
+                            ),
+                            ag_id=str(ag_id or ""),
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: ag_identity_skip marker "
+                            "emit failed (non-fatal)",
+                            exc_info=True,
+                        )
                 # Risk-1 mitigation — record this iter as a collision
                 # skip and bump the consecutive counter. The next loop
                 # iteration's top-of-body reset will see the flag and
@@ -22939,6 +23012,30 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # proposals_empty short-circuit. No proposals survived
+                # the per-AG generation step, so the iteration cannot
+                # apply or evaluate any candidate.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="proposal_generation_empty",
+                            cluster_ids=tuple(
+                                str(c) for c in
+                                (ag.get("source_cluster_ids") or ())
+                                if str(c)
+                            ),
+                            ag_id=str(ag_id or ""),
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: proposals_empty marker "
+                            "emit failed (non-fatal)",
+                            exc_info=True,
+                        )
                 continue
 
             # Task 6A — RCA/patch-type compatibility gate. Drop proposals
@@ -24137,6 +24234,31 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # post_grounding_skip short-circuit. Grounding rejected
+                # every proposal in this AG (no patch survived the RCA-
+                # grounded compatibility / target-qid check), so the
+                # iteration has no candidate to evaluate.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="no_rca_ground",
+                            cluster_ids=tuple(
+                                str(c) for c in
+                                (ag.get("source_cluster_ids") or ())
+                                if str(c)
+                            ),
+                            ag_id=str(ag_id or ""),
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: post_grounding_skip "
+                            "marker emit failed (non-fatal)",
+                            exc_info=True,
+                        )
                 continue
 
             # Task 2 — Blast-radius gate. The counterfactual scan above stamps
@@ -25635,6 +25757,32 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # dead-on-arrival retry-blocked short-circuit. The
+                # strategist re-proposed an AG whose selected-patch /
+                # selected-proposal signature already produced
+                # no_applied_patches earlier in the run, so the applier
+                # would deterministically drop everything again.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="no_applied_patches",
+                            cluster_ids=tuple(
+                                str(c) for c in
+                                (ag.get("source_cluster_ids") or ())
+                                if str(c)
+                            ),
+                            ag_id=str(ag_id or ""),
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: no_pending_ags_first_pass "
+                            "marker emit failed (non-fatal)",
+                            exc_info=True,
+                        )
                 continue
 
             # T3.3: shadow apply. When enabled, the intent is to clone the
@@ -25748,6 +25896,32 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # pre_ag_snapshot_failed short-circuit. An infrastructure
+                # failure (snapshot capture) prevented the AG from
+                # reaching the applier; no closed-vocab structural
+                # reason applies, so this terminates as ``unknown``.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="unknown",
+                            cluster_ids=tuple(
+                                str(c) for c in
+                                (ag.get("source_cluster_ids") or ())
+                                if str(c)
+                            ),
+                            ag_id=str(ag_id or ""),
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: "
+                            "no_pending_ags_second_pass marker emit "
+                            "failed (non-fatal)",
+                            exc_info=True,
+                        )
                 continue
 
             metadata_snapshot = _pre_ag_snapshot_capture["snapshot"]
@@ -26265,6 +26439,32 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # skipped_no_applied_patches short-circuit. The applier
+                # produced zero ``applied`` entries (every selected
+                # patch was dropped), so the gate never ran and the
+                # iteration has no candidate to evaluate.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="no_applied_patches",
+                            cluster_ids=tuple(
+                                str(c) for c in
+                                (ag.get("source_cluster_ids") or ())
+                                if str(c)
+                            ),
+                            ag_id=str(ag_id or ""),
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: "
+                            "skipped_no_applied_patches marker emit "
+                            "failed (non-fatal)",
+                            exc_info=True,
+                        )
                 continue
 
             _fallback_lever = int(lever_keys[0]) if lever_keys else 0
@@ -26526,6 +26726,34 @@ def _run_lever_loop(
                     new_failure_qids=prev_failure_qids,
                     **_ag_identity_kwargs,
                 ))
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # applier_failed short-circuit. Emit BEFORE the
+                # SCHEMA_FATAL / INFRA_EXHAUSTED ``break`` paths below
+                # so every exit (break + continue) carries the typed
+                # marker. The Genie API rejected the PATCH payload
+                # (SCHEMA_FAILURE or INFRA_FAILURE); no closed-vocab
+                # structural reason applies, so this terminates as
+                # ``unknown``.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="unknown",
+                            cluster_ids=tuple(
+                                str(c) for c in
+                                (ag.get("source_cluster_ids") or ())
+                                if str(c)
+                            ),
+                            ag_id=str(ag_id or ""),
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: applier_failed marker "
+                            "emit failed (non-fatal)",
+                            exc_info=True,
+                        )
                 if _pe_class == RollbackClass.SCHEMA_FAILURE:
                     print(
                         _section("LEVER LOOP — SCHEMA-FATAL PATCH ERROR", "!") + "\n"
@@ -27554,6 +27782,39 @@ def _run_lever_loop(
                         "_invariant_evidence_for_next_iter", None
                     )
                 )
+                # Phase 0.3 Task 10 — typed terminal marker for the
+                # rolled_back path. Task 9's gate-result sentinel above
+                # already flips _iter_terminal_emitted=True for
+                # ``full_eval:`` rollback reasons (those emit
+                # GSO_FULL_EVAL_V1 from inside _run_gate_checks). What
+                # remains here is slice_gate / p0_gate rollbacks (the
+                # pre-full-eval gates rejected the candidate after
+                # patches were applied), plus any rollback reason that
+                # didn't start with full_eval. None of the closed-vocab
+                # values fits a "candidate evaluated and regressed at
+                # slice/p0" outcome cleanly, so we route them to the
+                # catch-all ``unknown`` per the plan's Section 8.5
+                # else-branch rule.
+                if _iter_marker_active and not _iter_terminal_emitted:
+                    try:
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            terminal_reason="unknown",
+                            cluster_ids=tuple(
+                                str(c) for c in
+                                (ag.get("source_cluster_ids") or ())
+                                if str(c)
+                            ),
+                            ag_id=str(ag_id or ""),
+                        ), flush=True)
+                        _iter_terminal_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "Phase 0.3 Task 10: rolled_back marker emit "
+                            "failed (non-fatal)",
+                            exc_info=True,
+                        )
                 continue
 
             # ── Accept action group ──────────────────────────────────────
