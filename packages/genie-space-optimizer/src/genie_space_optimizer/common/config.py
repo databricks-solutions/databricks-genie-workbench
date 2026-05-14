@@ -5595,6 +5595,55 @@ def rca_contract_narrowed_enabled() -> bool:
     return _flag_enabled("GSO_RCA_CONTRACT_NARROW_V1")
 
 
+def lever5_split_enabled() -> bool:
+    """Plan 2 — when on, ``generate_proposals_from_strategy``'s lever-5
+    branch routes through ``_dispatch_lever_5_split`` (5a instructions
+    + per-cluster 5b example SQLs) instead of
+    ``_call_llm_for_holistic_instructions``.
+
+    Production-affecting. Flip default-on AFTER the shadow-mode trial
+    run produces commit-ready fixtures (see Plan 2's Trial-run protocol).
+
+    Default OFF preserves existing L5 behavior byte-for-byte.
+
+    Enable with ``GSO_LEVER5_SPLIT_V1=1``.
+    """
+    return _flag_enabled("GSO_LEVER5_SPLIT_V1")
+
+
+def lever5_shadow_enabled() -> bool:
+    """Plan 2 — when on, the L5 branch runs BOTH the old holistic call
+    AND the new split dispatcher, applies the OLD path's result (zero
+    production risk), and emits a per-call shadow-comparison record to
+    ``GSO_LEVER5_SPLIT_CAPTURE_PATH`` if set.
+
+    Use only on the dedicated trial run. With ``GSO_LEVER5_SPLIT_V1=1``
+    also set, split mode wins (the dispatcher's result is applied) and
+    shadow comparison still runs against the deprecated holistic path.
+
+    Default OFF.
+
+    Enable with ``GSO_LEVER5_SHADOW_V1=1``.
+    """
+    return _flag_enabled("GSO_LEVER5_SHADOW_V1")
+
+
+def lever5_split_capture_require_coverage_enabled() -> bool:
+    """Plan 2 — atexit fail-loud gate. When on, the
+    ``_LeverFiveCaptureSink`` registers an atexit handler that raises
+    ``RuntimeError`` if any of:
+      * ``lever-5a-instructions`` recorded zero hits,
+      * ``lever-5b-example-sql`` recorded zero hits,
+      * zero shadow-comparison records were emitted (when shadow flag
+        was on for the run).
+
+    Use only on the dedicated trial run. Default OFF.
+
+    Enable with ``GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE=1``.
+    """
+    return _flag_enabled("GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE")
+
+
 def partial_harvest_with_debt_enabled() -> bool:
     """Cycle 14B-T1+T2 — when on, ``decide_control_plane_acceptance``
     can accept candidates that fix >=1 hard cluster AND meet
