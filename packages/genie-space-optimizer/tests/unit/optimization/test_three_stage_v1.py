@@ -92,6 +92,68 @@ def test_three_stage_skill_names_is_frozenset():
     assert isinstance(cfg._THREE_STAGE_SKILL_NAMES, frozenset)
 
 
+# ── Section 2: STAGE_1_DISCOVERY_PROMPT ───────────────────────────────
+
+
+def test_stage_1_discovery_prompt_exists_and_has_required_slots():
+    cfg = _reload_config_with_env({})
+    p = cfg.STAGE_1_DISCOVERY_PROMPT
+    for slot in (
+        "{{ space_description }}",
+        "{{ ag_id }}",
+        "{{ root_cause_summary }}",
+        "{{ cluster_briefs }}",
+        "{{ skill_catalogue }}",
+        "{{ identifier_allowlist }}",
+    ):
+        assert slot in p, f"missing slot: {slot}"
+
+
+def test_stage_1_discovery_prompt_lists_all_pickable_skills():
+    """The prompt body must enumerate every skill_id the dispatcher
+    accepts. If a new skill is added to _THREE_STAGE_SKILL_NAMES,
+    this test fails until the prompt is updated."""
+    cfg = _reload_config_with_env({})
+    p = cfg.STAGE_1_DISCOVERY_PROMPT
+    for skill_id in cfg._THREE_STAGE_SKILL_NAMES:
+        assert skill_id in p, f"skill {skill_id} missing from discovery prompt"
+
+
+def test_stage_1_discovery_prompt_includes_rca_contract_header():
+    """Discovery is causal — its choice gates downstream patches.
+    Plan 1's narrowing flag does NOT remove the contract header from
+    causal prompts, so the header substring is always present."""
+    cfg = _reload_config_with_env({})
+    assert "RCA" in cfg.STAGE_1_DISCOVERY_PROMPT or "Root Cause" in cfg.STAGE_1_DISCOVERY_PROMPT
+
+
+def test_stage_1_discovery_prompt_output_schema_is_applicable_skills():
+    """The output_schema block must define applicable_skills with
+    skill_id, target_objects, expected_impact_qids, evidence_refs,
+    why, priority."""
+    cfg = _reload_config_with_env({})
+    p = cfg.STAGE_1_DISCOVERY_PROMPT
+    for key in ("applicable_skills", "target_objects",
+                "expected_impact_qids", "evidence_refs",
+                "priority", "why"):
+        assert key in p, f"output_schema missing: {key}"
+
+
+def test_stage_1_discovery_prompt_renders_with_realistic_kwargs():
+    cfg = _reload_config_with_env({})
+    rendered = cfg.format_mlflow_template(
+        cfg.STAGE_1_DISCOVERY_PROMPT,
+        space_description="Hotel bookings",
+        ag_id="AG1",
+        root_cause_summary="missing join between fact_bookings and dim_hotel",
+        cluster_briefs="C1: missing_join — hotel_key not joined to dim_hotel",
+        skill_catalogue="lever-4-join-discovery: ...",
+        identifier_allowlist="catalog.schema.fact_bookings.hotel_key",
+    )
+    assert "Hotel bookings" in rendered
+    assert "{{" not in rendered, "unrendered template variable"
+
+
 # ── Section 4: ActivationBundle ───────────────────────────────────────
 
 
