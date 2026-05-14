@@ -364,3 +364,103 @@ def test_projector_table_explicitly_lists_excluded_skills():
         in_proj = sid in _PROJECTOR_TABLE
         in_exc = sid in _EXCLUDED_SKILLS
         assert in_proj ^ in_exc, f"{sid} must be in exactly one of the tables"
+
+
+# ── Section 6: _RawEvidenceCaptureSink ────────────────────────────────
+
+
+def test_raw_evidence_sink_initial_state():
+    cfg = _reload_config_with_env({})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    snap = cfg.dump_raw_evidence_capture_summary()
+    assert all(c == 0 for c in snap["projections"].values())
+    assert snap["shadow_comparisons"] == 0
+    assert snap["all_required_sites_exercised"] is False
+
+
+def test_record_projection_increments_per_skill():
+    cfg = _reload_config_with_env({})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_raw_evidence_projection("lever-1-table-column-description")
+    cfg._record_raw_evidence_projection("lever-1-table-column-description")
+    cfg._record_raw_evidence_projection("lever-4-join-discovery")
+    snap = cfg.dump_raw_evidence_capture_summary()
+    assert snap["projections"]["lever-1-table-column-description"] == 2
+    assert snap["projections"]["lever-4-join-discovery"] == 1
+    assert snap["projections"]["lever-6-sql-expression"] == 0
+
+
+def test_record_projection_excludes_lever_5b():
+    """lever-5b is excluded from raw evidence by design — the sink
+    must NOT count projections for it (defensive: if upstream code
+    accidentally calls _record_raw_evidence_projection('lever-5b-...')
+    the sink silently ignores it so the coverage gate doesn't pass
+    spuriously)."""
+    cfg = _reload_config_with_env({})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_raw_evidence_projection("lever-5b-example-sql")
+    snap = cfg.dump_raw_evidence_capture_summary()
+    assert "lever-5b-example-sql" not in snap["projections"]
+
+
+def test_record_shadow_comparison_writes_ndjson():
+    import json
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "raw.ndjson"
+        cfg = _reload_config_with_env({
+            "GSO_RAW_EVIDENCE_SHADOW_V1": "1",
+            "GSO_RAW_EVIDENCE_CAPTURE_PATH": str(path),
+        })
+        cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+        cfg._record_raw_evidence_shadow_comparison({
+            "ag_id": "AG1", "skill_id": "lever-1-table-column-description",
+            "n_evidence": 3,
+            "off_proposal_count": 2, "on_proposal_count": 2,
+            "diff_summary": "two columns disagree",
+        })
+        lines = path.read_text().strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["ag_id"] == "AG1"
+        assert record["skill_id"] == "lever-1-table-column-description"
+        assert "captured_at" in record
+        assert "process_pid" in record
+
+
+def test_coverage_gate_passes_on_full_coverage():
+    cfg = _reload_config_with_env({
+        "GSO_RAW_EVIDENCE_SHADOW_V1": "1",
+        "GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_raw_evidence_projection("lever-1-table-column-description")
+    cfg._record_raw_evidence_shadow_comparison({
+        "ag_id": "AG1", "skill_id": "lever-1-table-column-description",
+    })
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+def test_coverage_gate_raises_when_zero_projections():
+    import pytest
+    cfg = _reload_config_with_env({
+        "GSO_RAW_EVIDENCE_SHADOW_V1": "1",
+        "GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_raw_evidence_shadow_comparison({"ag_id": "AG1", "skill_id": "x"})
+    with pytest.raises(RuntimeError, match="zero raw-evidence projections"):
+        cfg._RAW_EVIDENCE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+def test_coverage_gate_raises_when_no_shadow_in_shadow_mode():
+    import pytest
+    cfg = _reload_config_with_env({
+        "GSO_RAW_EVIDENCE_SHADOW_V1": "1",
+        "GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_raw_evidence_projection("lever-1-table-column-description")
+    with pytest.raises(RuntimeError, match="zero shadow comparison"):
+        cfg._RAW_EVIDENCE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001

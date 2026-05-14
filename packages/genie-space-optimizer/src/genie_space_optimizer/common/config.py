@@ -6260,6 +6260,136 @@ def raw_evidence_n() -> int:
     return n
 
 
+# ── Plan 4 (Phase 5): Raw evidence capture sink ───────────────────────
+# Mirrors Plans 1/2/3 sink patterns. Two counter categories:
+#   projections — per-skill count of raw-evidence projection hits,
+#   shadow_comparisons — total comparison records emitted.
+# The atexit gate (when GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE=1)
+# requires (a) at least one projection (excluding lever-5b which is
+# always empty by design); (b) (when shadow flag was on) at least
+# one shadow_comparison.
+
+_RAW_EVIDENCE_PROJECTABLE_SKILLS: frozenset[str] = frozenset({
+    "lever-1-table-column-description",
+    "lever-2-mv-column-refinement",
+    "lever-3-tvf-routing",
+    "lever-4-join-discovery",
+    "lever-5a-instructions",
+    "lever-6-sql-expression",
+})
+
+
+class _RawEvidenceCaptureSink:
+    def __init__(self) -> None:
+        self._lock = _threading.Lock()
+        self._projections: dict[str, int] = {
+            n: 0 for n in _RAW_EVIDENCE_PROJECTABLE_SKILLS
+        }
+        self._shadow_comparisons: int = 0
+        self._sink_path: str | None = None
+        self._sink_path_resolved = False
+        self._coverage_gate_registered = False
+
+    def _resolve_sink_path(self) -> str | None:
+        if not self._sink_path_resolved:
+            self._sink_path = (
+                os.environ.get("GSO_RAW_EVIDENCE_CAPTURE_PATH") or ""
+            ).strip() or None
+            self._sink_path_resolved = True
+        return self._sink_path
+
+    def record_projection(self, skill_id: str) -> None:
+        with self._lock:
+            if skill_id in self._projections:
+                self._projections[skill_id] += 1
+            self._maybe_register_atexit()
+
+    def record_shadow_comparison(self, comparison_record: dict) -> None:
+        with self._lock:
+            self._shadow_comparisons += 1
+            path = self._resolve_sink_path()
+            if path is not None:
+                payload = dict(comparison_record)
+                payload.setdefault("captured_at", _time.time())
+                payload.setdefault("process_pid", os.getpid())
+                try:
+                    with open(path, "a", encoding="utf-8", buffering=1) as fh:
+                        fh.write(_json.dumps(payload, default=str) + "\n")
+                except OSError:
+                    pass
+            self._maybe_register_atexit()
+
+    def _maybe_register_atexit(self) -> None:
+        if self._coverage_gate_registered:
+            return
+        if _flag_enabled("GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE"):
+            _atexit.register(self._atexit_gate)
+            self._coverage_gate_registered = True
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            proj = dict(self._projections)
+            shadow = self._shadow_comparisons
+        any_projected = any(c > 0 for c in proj.values())
+        return {
+            "projections": proj,
+            "shadow_comparisons": shadow,
+            "all_required_sites_exercised": any_projected,
+            "sink_path": self._sink_path,
+        }
+
+    def enforce_coverage_or_raise(self) -> None:
+        if not _flag_enabled("GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE"):
+            return
+        snap = self.snapshot()
+        problems: list[str] = []
+        if not any(c > 0 for c in snap["projections"].values()):
+            problems.append(
+                "zero raw-evidence projections recorded for any "
+                "projectable skill"
+            )
+        if _flag_enabled("GSO_RAW_EVIDENCE_SHADOW_V1") and snap["shadow_comparisons"] == 0:
+            problems.append("zero shadow comparison records emitted")
+        if problems:
+            raise RuntimeError(
+                "raw-evidence trial incomplete: "
+                + "; ".join(problems)
+                + f"; do not commit captures. snapshot={snap}"
+            )
+
+    def _atexit_gate(self) -> None:
+        try:
+            self.enforce_coverage_or_raise()
+        except RuntimeError as exc:
+            import sys as _sys
+            print(f"[GSO_RAW_EVIDENCE] {exc}", file=_sys.stderr)
+            os._exit(2)  # noqa: SLF001
+
+    def reset_for_test(self) -> None:
+        with self._lock:
+            self._projections = {n: 0 for n in _RAW_EVIDENCE_PROJECTABLE_SKILLS}
+            self._shadow_comparisons = 0
+            self._sink_path = None
+            self._sink_path_resolved = False
+            self._coverage_gate_registered = False
+
+
+_RAW_EVIDENCE_CAPTURE_SINK = _RawEvidenceCaptureSink()
+
+
+def _record_raw_evidence_projection(skill_id: str) -> None:
+    _RAW_EVIDENCE_CAPTURE_SINK.record_projection(skill_id)
+
+
+def _record_raw_evidence_shadow_comparison(comparison_record: dict) -> None:
+    _RAW_EVIDENCE_CAPTURE_SINK.record_shadow_comparison(comparison_record)
+
+
+def dump_raw_evidence_capture_summary() -> dict:
+    """Public entry for harness end-of-run logging."""
+    return _RAW_EVIDENCE_CAPTURE_SINK.snapshot()
+
+
 def partial_harvest_with_debt_enabled() -> bool:
     """Cycle 14B-T1+T2 — when on, ``decide_control_plane_acceptance``
     can accept candidates that fix >=1 hard cluster AND meet
