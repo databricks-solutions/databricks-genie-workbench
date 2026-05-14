@@ -71,9 +71,5 @@ jobs:
             tests/replay/test_31ecd96f_repeated_no_applied_retires.py \
             tests/integration/test_phase5_best_of_n_structural_with_prior_failure.py \
             tests/integration/test_phase5_phase_h_anchor_matches_task_id.py \
-            tests/integration/test_phase5_contract_health_clean.py
-          # TODO(phase5/task11): include the line below once
-          # tests/integration/test_phase5_terminal_signature_never_repeated.py
-          # has been authored. It is the 12th fixture in the Phase 5 gate and
-          # is currently absent from the repository.
-          #   tests/integration/test_phase5_terminal_signature_never_repeated.py
+            tests/integration/test_phase5_contract_health_clean.py \
+            tests/integration/test_phase5_terminal_signature_never_repeated.py
