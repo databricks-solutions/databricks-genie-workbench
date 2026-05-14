@@ -31693,6 +31693,77 @@ def _run_lever_loop(
     )
 
 
+def _upload_trial_captures_to_phase_h_anchor(
+    anchor_run_id: str | None,
+    capture_paths: list[str],
+    client: object | None = None,
+) -> None:
+    """Plan 5 — upload Plan 1/2/4 capture NDJSONs as MLflow artifacts
+    on the resolved Phase H anchor run, under ``gso_trial_captures/``.
+
+    The existing evidence-bundle puller (``tools.evidence_bundle``)
+    already pulls every artifact attached to the parent lever-loop
+    run, so once these files are uploaded here the postmortem skill
+    surfaces them at
+    ``runid_analysis/<opt_run_id>/evidence/gso_trial_captures/<file>``
+    automatically — no bundle code changes needed.
+
+    Behavior:
+      * No-op when ``anchor_run_id`` is None or empty (Phase H anchor
+        resolution failed earlier — degraded mode is acceptable for
+        observability; the loop continues normally).
+      * Each path in ``capture_paths`` that does not exist on disk is
+        skipped silently (the corresponding plan was disabled or no
+        capture site fired).
+      * Each path that exists is uploaded via
+        ``MlflowClient.log_artifact(anchor_run_id, local_path,
+        artifact_path="gso_trial_captures")``.
+      * Any exception raised by ``log_artifact`` is logged at WARNING
+        and swallowed. Telemetry MUST NEVER break a real run.
+
+    Args:
+      anchor_run_id: The Phase H anchor MLflow run id resolved by
+        ``resolve_or_create_phase_h_anchor``. ``None`` or ``""``
+        triggers a no-op.
+      capture_paths: Absolute paths to the four sink NDJSONs. The
+        caller (``_run_lever_loop``) reads these from the four
+        ``dump_*_capture_summary()`` results' ``sink_path`` field.
+      client: Optional MLflow client for testing. Defaults to a fresh
+        ``MlflowClient()`` when None.
+    """
+    if not anchor_run_id:
+        return
+    if client is None:
+        try:
+            from mlflow.tracking import MlflowClient  # type: ignore[import-not-found]
+            client = MlflowClient()
+        except Exception as _exc:
+            logger.warning(
+                "Plan 5 trial-capture upload skipped: MlflowClient "
+                "unavailable: %s", _exc,
+            )
+            return
+    for local_path in capture_paths:
+        if not local_path:
+            continue
+        try:
+            from pathlib import Path as _P
+            if not _P(local_path).is_file():
+                continue
+        except Exception:
+            continue
+        try:
+            client.log_artifact(
+                anchor_run_id, local_path,
+                artifact_path="gso_trial_captures",
+            )
+        except Exception as _exc:
+            logger.warning(
+                "Plan 5 trial-capture upload failed for %s: %s",
+                local_path, _exc,
+            )
+
+
 # ── Stage 4: FINALIZE ───────────────────────────────────────────────
 
 
