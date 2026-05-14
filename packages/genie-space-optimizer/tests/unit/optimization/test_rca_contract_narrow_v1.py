@@ -67,11 +67,23 @@ def test_unknown_prompt_name_defaults_to_causal_treatment():
     assert cfg._rca_contract_for("brand-new-skill-not-yet-classified") == cfg._RCA_CONTRACT_HEADER
 
 
-def test_flag_default_is_off():
+def test_flag_default_is_on_as_of_plan_5():
+    """Plan 5 flipped this helper to default-on. The canonical posture
+    test now lives in test_v1_flags_default_posture.py; this test pins
+    the dual claim that (a) the helper is on by default, and (b) the
+    _rca_contract_for projection routes non-causal sites to the empty
+    string under that posture."""
     cfg = _reload_config_with_env({})
-    # When unset, env-var lookup misses; _flag_enabled returns False.
+    assert cfg.rca_contract_narrowed_enabled() is True
+    # Under the narrowed posture, non-causal sites omit the header.
+    assert cfg._rca_contract_for("lever-4-join-discovery") == ""
+
+
+def test_flag_emergency_rollback_returns_full_header():
+    """Operator override: GSO_RCA_CONTRACT_NARROW_V1=0 disables the
+    narrowing so non-causal sites again receive the full header."""
+    cfg = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "0"})
     assert cfg.rca_contract_narrowed_enabled() is False
-    # Therefore the helper returns the header even for non-causal names.
     assert cfg._rca_contract_for("lever-4-join-discovery") == cfg._RCA_CONTRACT_HEADER
 
 
@@ -111,9 +123,12 @@ def test_three_non_causal_sites_omit_contract_when_flag_on():
         assert "<unified_rca_engine_contract>" not in prompt, name
 
 
-def test_three_non_causal_sites_keep_contract_when_flag_off():
-    """Default-off path preserves byte-stable replay: contract still present."""
-    cfg = _reload_config_with_env({})
+def test_three_non_causal_sites_keep_contract_under_emergency_rollback():
+    """Operator override (GSO_RCA_CONTRACT_NARROW_V1=0) restores the
+    contract block in non-causal prompts. The default-on posture renders
+    them WITHOUT the contract — see
+    ``test_three_non_causal_sites_omit_contract_by_default``."""
+    cfg = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "0"})
     non_causal_constants = (
         "EXPAND_INSTRUCTION_PROMPT",
         "LEVER_4_JOIN_DISCOVERY_PROMPT",
@@ -122,6 +137,20 @@ def test_three_non_causal_sites_keep_contract_when_flag_off():
     for name in non_causal_constants:
         prompt = getattr(cfg, name)
         assert "<unified_rca_engine_contract>" in prompt, name
+
+
+def test_three_non_causal_sites_omit_contract_by_default():
+    """Plan 5 default-on posture: the three non-causal prompts render
+    WITHOUT the contract block when no env var is set."""
+    cfg = _reload_config_with_env({})
+    non_causal_constants = (
+        "EXPAND_INSTRUCTION_PROMPT",
+        "LEVER_4_JOIN_DISCOVERY_PROMPT",
+        "SQL_EXPRESSION_SEEDING_PROMPT",
+    )
+    for name in non_causal_constants:
+        prompt = getattr(cfg, name)
+        assert "<unified_rca_engine_contract>" not in prompt, name
 
 
 import json
@@ -180,17 +209,19 @@ def test_capture_sink_writes_ndjson_when_path_set():
             assert isinstance(r["process_pid"], int)
 
 
-def test_capture_sink_no_op_when_flag_off_even_with_path():
-    """If the flag is off, no narrowing happens, so capture must not write."""
+def test_capture_sink_no_op_when_emergency_rollback_even_with_path():
+    """When the operator rolls back via GSO_RCA_CONTRACT_NARROW_V1=0,
+    no narrowing happens, so capture must not write — even when the
+    sink path is set."""
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "capture.ndjson"
         cfg = _reload_config_with_env({
+            "GSO_RCA_CONTRACT_NARROW_V1": "0",
             "GSO_NARROWING_CAPTURE_PATH": str(path),
-            # flag explicitly off
         })
         cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
         _ = cfg._rca_contract_for("lever-4-join-discovery")
-        assert not path.exists(), "capture must not write when flag is off"
+        assert not path.exists(), "capture must not write under emergency rollback"
 
 
 def test_dump_summary_returns_per_skill_counts():
@@ -221,11 +252,16 @@ def test_coverage_gate_passes_when_all_sites_hit():
     cfg._NARROWING_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
 
 
-def test_coverage_gate_raises_when_a_site_is_unhit():
+def test_coverage_gate_raises_when_a_site_is_unhit(monkeypatch):
+    """Plan 5 makes the gate inert in production (helper returns False).
+    Dev tests that want to exercise the gate path monkeypatch the helper
+    back to True."""
     cfg = _reload_config_with_env({
         "GSO_RCA_CONTRACT_NARROW_V1": "1",
-        "GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE": "1",
     })
+    monkeypatch.setattr(
+        cfg, "narrowing_capture_require_coverage_enabled", lambda: True,
+    )
     cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
     cfg._rca_contract_for("lever-4-join-discovery")
     # Two sites unhit:
@@ -246,23 +282,23 @@ def test_coverage_gate_no_op_when_flag_unset():
 # ── Task 6: byte-delta tests ─────────────────────────────────────────
 
 
-def test_lever_4_join_discovery_byte_delta_when_flag_on():
-    """When flag is on, LEVER_4_JOIN_DISCOVERY_PROMPT must be smaller
-    than when flag is off, by approximately len(_RCA_CONTRACT_HEADER).
-    The exact byte count makes the regression detectable."""
-    cfg_off = _reload_config_with_env({})
+def test_lever_4_join_discovery_byte_delta_between_rollback_and_default():
+    """Plan 5 default-on posture: the rollback prompt (env=0) must be
+    ~header_len larger than the default prompt. The exact byte count
+    makes the regression detectable."""
+    cfg_off = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "0"})
     prompt_off = cfg_off.LEVER_4_JOIN_DISCOVERY_PROMPT
     header_len = len(cfg_off._RCA_CONTRACT_HEADER)
 
-    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    cfg_on = _reload_config_with_env({})  # default-on
     prompt_on = cfg_on.LEVER_4_JOIN_DISCOVERY_PROMPT
 
     delta = len(prompt_off) - len(prompt_on)
     # Allow ±2 chars slack for the trailing "\n\n" grouping in the
     # header definition; the dominant signal is the contract block size.
     assert abs(delta - header_len) <= 2, (
-        f"Expected ~{header_len}-byte reduction in flag-on prompt, "
-        f"got {delta}. prompt_off={len(prompt_off)} prompt_on={len(prompt_on)}"
+        f"Expected ~{header_len}-byte reduction in default (narrowed) prompt, "
+        f"got {delta}. rollback={len(prompt_off)} default={len(prompt_on)}"
     )
 
 
@@ -282,8 +318,8 @@ def test_lever_4_join_discovery_renders_under_both_flag_states():
         "raw_evidence_block": "",
     }
 
-    # Flag off
-    cfg_off = _reload_config_with_env({})
+    # Emergency rollback — contract present
+    cfg_off = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "0"})
     rendered_off = format_mlflow_template(
         cfg_off.LEVER_4_JOIN_DISCOVERY_PROMPT, **sample_kwargs,
     )
@@ -291,8 +327,8 @@ def test_lever_4_join_discovery_renders_under_both_flag_states():
     assert "<unified_rca_engine_contract>" in rendered_off
     assert "{{" not in rendered_off, "unrendered template variables remain"
 
-    # Flag on
-    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    # Default (Plan 5 default-on) — contract omitted
+    cfg_on = _reload_config_with_env({})
     rendered_on = format_mlflow_template(
         cfg_on.LEVER_4_JOIN_DISCOVERY_PROMPT, **sample_kwargs,
     )
@@ -322,13 +358,13 @@ def test_expand_instruction_renders_under_both_flag_states():
         "functions_context": "(none)",
     }
 
-    cfg_off = _reload_config_with_env({})
+    cfg_off = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "0"})
     rendered_off = format_mlflow_template(
         cfg_off.EXPAND_INSTRUCTION_PROMPT, **sample_kwargs,
     )
     assert "<unified_rca_engine_contract>" in rendered_off
 
-    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    cfg_on = _reload_config_with_env({})  # Plan 5 default-on
     rendered_on = format_mlflow_template(
         cfg_on.EXPAND_INSTRUCTION_PROMPT, **sample_kwargs,
     )
@@ -338,12 +374,12 @@ def test_expand_instruction_renders_under_both_flag_states():
 # ── Task 9: EXPAND_INSTRUCTION_PROMPT byte-delta ─────────────────────
 
 
-def test_expand_instruction_byte_delta_when_flag_on():
-    cfg_off = _reload_config_with_env({})
+def test_expand_instruction_byte_delta_between_rollback_and_default():
+    cfg_off = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "0"})
     header_len = len(cfg_off._RCA_CONTRACT_HEADER)
     prompt_off = cfg_off.EXPAND_INSTRUCTION_PROMPT
 
-    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    cfg_on = _reload_config_with_env({})  # Plan 5 default-on
     prompt_on = cfg_on.EXPAND_INSTRUCTION_PROMPT
 
     delta = len(prompt_off) - len(prompt_on)
@@ -363,25 +399,25 @@ def test_sql_expression_seeding_renders_under_both_flag_states():
         "schema": "(test)",
     }
 
-    cfg_off = _reload_config_with_env({})
+    cfg_off = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "0"})
     rendered_off = format_mlflow_template(
         cfg_off.SQL_EXPRESSION_SEEDING_PROMPT, **sample_kwargs,
     )
     assert "<unified_rca_engine_contract>" in rendered_off
 
-    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    cfg_on = _reload_config_with_env({})  # Plan 5 default-on
     rendered_on = format_mlflow_template(
         cfg_on.SQL_EXPRESSION_SEEDING_PROMPT, **sample_kwargs,
     )
     assert "<unified_rca_engine_contract>" not in rendered_on
 
 
-def test_sql_expression_seeding_byte_delta_when_flag_on():
-    cfg_off = _reload_config_with_env({})
+def test_sql_expression_seeding_byte_delta_between_rollback_and_default():
+    cfg_off = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "0"})
     header_len = len(cfg_off._RCA_CONTRACT_HEADER)
     prompt_off = cfg_off.SQL_EXPRESSION_SEEDING_PROMPT
 
-    cfg_on = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    cfg_on = _reload_config_with_env({})  # Plan 5 default-on
     prompt_on = cfg_on.SQL_EXPRESSION_SEEDING_PROMPT
 
     delta = len(prompt_off) - len(prompt_on)

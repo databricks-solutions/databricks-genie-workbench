@@ -43,23 +43,29 @@ def _reload_config_with_env(env: dict[str, str]):
 # ── Section 1: flag helpers ──────────────────────────────────────────
 
 
-def test_lever5_split_default_off():
+def test_lever5_split_default_on_as_of_plan_5():
+    """Plan 5 flipped lever5_split_enabled to default-on. Shadow stays
+    off (zero-risk dual-path is only useful during a trial run) and the
+    require-coverage helper is forced inert in production."""
     cfg = _reload_config_with_env({})
-    assert cfg.lever5_split_enabled() is False
+    assert cfg.lever5_split_enabled() is True
     assert cfg.lever5_shadow_enabled() is False
     assert cfg.lever5_split_capture_require_coverage_enabled() is False
 
 
-def test_lever5_split_flag_on():
-    cfg = _reload_config_with_env({"GSO_LEVER5_SPLIT_V1": "1"})
-    assert cfg.lever5_split_enabled() is True
-    # Shadow is independent:
+def test_lever5_split_emergency_rollback_via_env():
+    """Operator override: GSO_LEVER5_SPLIT_V1=0 disables the split path."""
+    cfg = _reload_config_with_env({"GSO_LEVER5_SPLIT_V1": "0"})
+    assert cfg.lever5_split_enabled() is False
     assert cfg.lever5_shadow_enabled() is False
 
 
 def test_lever5_shadow_flag_on():
+    """Shadow flag is independent of split — operator can opt into the
+    dual-path comparison during a trial."""
     cfg = _reload_config_with_env({"GSO_LEVER5_SHADOW_V1": "1"})
-    assert cfg.lever5_split_enabled() is False
+    # Split stays default-on (Plan 5 posture); shadow opt-in is additive.
+    assert cfg.lever5_split_enabled() is True
     assert cfg.lever5_shadow_enabled() is True
 
 
@@ -480,8 +486,10 @@ def test_dispatch_5b_adapter_wraps_single_dict_in_list(monkeypatch):
 # ── Section 6: routing precedence inside generate_proposals_from_strategy ──
 
 
-def test_l5_branch_calls_holistic_when_both_flags_off(monkeypatch):
-    cfg = _reload_config_with_env({})
+def test_l5_branch_calls_holistic_when_split_rolled_back(monkeypatch):
+    """Plan 5 default-on posture: to exercise the legacy holistic path
+    you must opt OUT via the emergency-rollback env var."""
+    cfg = _reload_config_with_env({"GSO_LEVER5_SPLIT_V1": "0"})
     from genie_space_optimizer.optimization import optimizer
 
     holistic_calls = {"n": 0}
@@ -537,7 +545,13 @@ def test_l5_branch_calls_dispatch_only_when_split_flag_on(monkeypatch):
 
 
 def test_l5_branch_runs_both_in_shadow_mode_and_applies_holistic(monkeypatch):
-    cfg = _reload_config_with_env({"GSO_LEVER5_SHADOW_V1": "1"})
+    """Shadow + split-rollback: legacy applied, comparison emitted. Plan 5
+    default-on posture for split means we must explicitly clear it for
+    this assertion to hold."""
+    cfg = _reload_config_with_env({
+        "GSO_LEVER5_SPLIT_V1": "0",
+        "GSO_LEVER5_SHADOW_V1": "1",
+    })
     from genie_space_optimizer.optimization import optimizer
 
     monkeypatch.setattr(
@@ -767,8 +781,12 @@ def test_emit_shadow_comparison_no_op_when_no_flags():
     """When neither shadow nor split is on, _emit must not record
     anything (defensive — _select_lever_5_holistic_path's both-off
     branch never calls it, but a future bug shouldn't pollute the
-    sink)."""
-    cfg = _reload_config_with_env({})
+    sink). Plan 5 default-on posture: explicitly clear split + shadow
+    via the emergency-rollback env vars to exercise the no-op branch."""
+    cfg = _reload_config_with_env({
+        "GSO_LEVER5_SPLIT_V1": "0",
+        "GSO_LEVER5_SHADOW_V1": "0",
+    })
     cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
     from genie_space_optimizer.optimization import optimizer
 

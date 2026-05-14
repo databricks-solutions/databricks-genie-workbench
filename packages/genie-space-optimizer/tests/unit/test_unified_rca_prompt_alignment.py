@@ -4,6 +4,17 @@ from __future__ import annotations
 # RCA-driven prompts that MUST embed the full shared RCA contract.
 # Keep this in sync with the "Scope Decisions" table in
 # docs/2026-04-29-unified-rca-prompt-alignment-plan.md.
+#
+# Plan 1 (contract narrowing) classified three of these as NON-CAUSAL —
+# the ``_rca_contract_for(...)`` helper renders the empty string for
+# them when ``rca_contract_narrowed_enabled()`` is on. Plan 5 made the
+# narrowing flag default-on, so those three prompts no longer embed the
+# tag in their default rendering.
+#
+# They live in ``NON_CAUSAL_PROMPT_NAMES_OMITTED_BY_NARROWING`` below
+# and are excluded from the always-embed assertion. They MUST still
+# embed the tag under the emergency-rollback posture — see
+# ``test_rca_contract_narrow_v1.py::test_three_non_causal_sites_keep_contract_under_emergency_rollback``.
 FULL_RCA_PROMPT_NAMES = (
     "ADAPTIVE_STRATEGIST_PROMPT",
     "STRATEGIST_PROMPT",
@@ -13,11 +24,16 @@ FULL_RCA_PROMPT_NAMES = (
     "LEVER_5_HOLISTIC_PROMPT",
     "LEVER_5_INSTRUCTION_PROMPT",
     "LEVER_6_SQL_EXPRESSION_PROMPT",
-    "LEVER_4_JOIN_DISCOVERY_PROMPT",
     "LEVER_4_JOIN_SPEC_PROMPT",
     "PROPOSAL_GENERATION_PROMPT",
-    "EXPAND_INSTRUCTION_PROMPT",
     "PROSE_RULE_MINING_PROMPT",
+)
+
+# Plan-1 non-causal prompts: contract is OMITTED under default-on
+# narrowing; restored only under emergency rollback.
+NON_CAUSAL_PROMPT_NAMES_OMITTED_BY_NARROWING = (
+    "LEVER_4_JOIN_DISCOVERY_PROMPT",
+    "EXPAND_INSTRUCTION_PROMPT",
     "SQL_EXPRESSION_SEEDING_PROMPT",
 )
 
@@ -187,11 +203,12 @@ def test_lever_6_sql_expression_prompt_renders_with_double_brace_substitution() 
 
 
 def test_lever_prompts_embed_contract_tag() -> None:
-    """Each lever / proposal prompt embeds the contract by structural tag."""
+    """Each CAUSAL lever / proposal prompt embeds the contract by
+    structural tag. Plan-1-non-causal prompts (LEVER_4_JOIN_DISCOVERY,
+    EXPAND_INSTRUCTION) are excluded under Plan 5 default-on narrowing
+    — they re-acquire the tag only under emergency rollback."""
     from genie_space_optimizer.common.config import (
-        EXPAND_INSTRUCTION_PROMPT,
         LEVER_1_2_COLUMN_PROMPT,
-        LEVER_4_JOIN_DISCOVERY_PROMPT,
         LEVER_4_JOIN_SPEC_PROMPT,
         LEVER_5_HOLISTIC_PROMPT,
         LEVER_5_INSTRUCTION_PROMPT,
@@ -201,13 +218,11 @@ def test_lever_prompts_embed_contract_tag() -> None:
 
     for prompt in (
         LEVER_1_2_COLUMN_PROMPT,
-        LEVER_4_JOIN_DISCOVERY_PROMPT,
         LEVER_4_JOIN_SPEC_PROMPT,
         LEVER_5_HOLISTIC_PROMPT,
         LEVER_5_INSTRUCTION_PROMPT,
         LEVER_6_SQL_EXPRESSION_PROMPT,
         PROPOSAL_GENERATION_PROMPT,
-        EXPAND_INSTRUCTION_PROMPT,
     ):
         assert "<unified_rca_engine_contract>" in prompt
         assert "</unified_rca_engine_contract>" in prompt

@@ -1615,8 +1615,11 @@ def _rca_contract_for(prompt_name: str) -> str:
     """Return the contract header for a prompt by skill_id.
 
     Non-causal prompts (per ``_NON_CAUSAL_PROMPT_NAMES``) get an empty
-    string when ``GSO_RCA_CONTRACT_NARROW_V1`` is on; everything else
-    gets the full header. Default-off preserves byte-stable replay.
+    string when narrowing is on; everything else gets the full header.
+
+    **Plan 5: default-on.** Setting ``GSO_RCA_CONTRACT_NARROW_V1`` to a
+    falsy value (``0``, ``false``, ``no``, ``off``) reverts to the
+    full-header posture for emergency rollback.
 
     Unknown names are treated as causal — opting out is an explicit
     registry edit, not an accident.
@@ -1627,14 +1630,15 @@ def _rca_contract_for(prompt_name: str) -> str:
     # ``importlib.reload(cfg)`` under a patched env (see
     # ``test_rca_contract_narrow_v1.py::_reload_config_with_env``).
     #
-    # We inline the env check (rather than call ``_flag_enabled``)
-    # because the canonical flag helper is defined ~3700 lines below
-    # this point; at module-import time, prompt constants below call
-    # this function during their string assembly, and a forward
-    # reference to ``_flag_enabled`` would raise ``NameError``.
+    # We inline the env check (rather than call the public
+    # ``rca_contract_narrowed_enabled``) because the canonical flag
+    # helper is defined ~3700 lines below this point; at module-import
+    # time, prompt constants below call this function during their
+    # string assembly, and a forward reference would raise NameError.
     if prompt_name in _NON_CAUSAL_PROMPT_NAMES:
         raw = os.environ.get("GSO_RCA_CONTRACT_NARROW_V1", "").strip().lower()
-        if raw in ("1", "true", "yes", "on"):
+        # Plan 5 default-on: narrow unless explicitly rolled back.
+        if raw not in ("0", "false", "no", "off"):
             _record_narrowing_hit(prompt_name)
             return ""
     return _RCA_CONTRACT_HEADER
@@ -1727,7 +1731,14 @@ class _NarrowingCaptureSink:
                     # because a temp dir was unwriteable.
                     pass
 
-            # Register the atexit gate exactly once (only if requested).
+            # Register the atexit gate exactly once. Plan 5 makes the
+            # production helper always return False; we cannot call the
+            # helper here (it's defined ~3700 lines below) so we inline
+            # the same logic. The atexit gate stays inert in prod even
+            # if the env var was set explicitly; dev tests that want to
+            # exercise the gate path monkeypatch
+            # ``narrowing_capture_require_coverage_enabled`` (which
+            # ``enforce_coverage_or_raise`` consults at gate-fire time).
             if not self._coverage_gate_registered and _flag_enabled_inline(
                 "GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE"
             ):
@@ -1748,7 +1759,7 @@ class _NarrowingCaptureSink:
     def enforce_coverage_or_raise(self) -> None:
         """Raise if GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE=1 and any
         non-causal site recorded zero hits. No-op otherwise."""
-        if not _flag_enabled_inline("GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE"):
+        if not narrowing_capture_require_coverage_enabled():
             return
         snap = self.snapshot()
         if not snap["all_sites_exercised"]:
@@ -5232,16 +5243,34 @@ def rca_contract_narrowed_enabled() -> bool:
     output is not subject to RCA invariants (preflight enrichment, schema-
     grounded join discovery, snippet display-name enrichment).
 
-    Default OFF for one release so existing replay fixtures continue to
-    render the contract block in non-causal prompts. Flip default-on after
-    the first release with the flag observed in production.
-
-    Enable with ``GSO_RCA_CONTRACT_NARROW_V1=1``.
+    **Default ON as of Plan 5** (UI-triggered trial activation). Flip to
+    OFF for emergency rollback by setting ``GSO_RCA_CONTRACT_NARROW_V1=0``
+    in ``packages/genie-space-optimizer/databricks.yml`` under the
+    lever_loop task's ``base_parameters`` (or by setting the env var on
+    the job environment) and redeploying. The flag helper still honors
+    a falsy explicit override.
 
     See ``packages/genie-space-optimizer/docs/prompt_improvements/skill-catalogue.md``
     for the canonical causal/non-causal classification.
     """
-    return _flag_enabled("GSO_RCA_CONTRACT_NARROW_V1")
+    return _flag_default_on("GSO_RCA_CONTRACT_NARROW_V1")
+
+
+def narrowing_capture_require_coverage_enabled() -> bool:
+    """Plan 1 / Plan 5 — historically an atexit fail-loud gate. As of
+    Plan 5, the gate is **inert in production** to avoid turning a
+    successful Databricks notebook task into a failed one when a
+    coverage site isn't exercised. The same coverage data is surfaced
+    by ``dump_narrowing_capture_summary()`` in
+    ``harness._run_lever_loop`` and consumed by the postmortem
+    workflow.
+
+    Helper retained so monkeypatched dev tests can opt back into the
+    gate via ``monkeypatch.setattr(cfg, "narrowing_capture_require_coverage_enabled", lambda: True)``.
+    Reading the env var directly is not honored — the production posture
+    is always False.
+    """
+    return False
 
 
 def lever5_split_enabled() -> bool:
@@ -5250,14 +5279,13 @@ def lever5_split_enabled() -> bool:
     + per-cluster 5b example SQLs) instead of
     ``_call_llm_for_holistic_instructions``.
 
-    Production-affecting. Flip default-on AFTER the shadow-mode trial
-    run produces commit-ready fixtures (see Plan 2's Trial-run protocol).
-
-    Default OFF preserves existing L5 behavior byte-for-byte.
-
-    Enable with ``GSO_LEVER5_SPLIT_V1=1``.
+    **Default ON as of Plan 5** (UI-triggered trial activation). Flip to
+    OFF for emergency rollback by setting ``GSO_LEVER5_SPLIT_V1=0`` in
+    ``packages/genie-space-optimizer/databricks.yml`` under the
+    lever_loop task's ``base_parameters`` and redeploying. The flag
+    helper still honors a falsy explicit override.
     """
-    return _flag_enabled("GSO_LEVER5_SPLIT_V1")
+    return _flag_default_on("GSO_LEVER5_SPLIT_V1")
 
 
 def lever5_shadow_enabled() -> bool:
@@ -5286,11 +5314,18 @@ def lever5_split_capture_require_coverage_enabled() -> bool:
       * zero shadow-comparison records were emitted (when shadow flag
         was on for the run).
 
-    Use only on the dedicated trial run. Default OFF.
+    **Inert in production as of Plan 5** — always returns False so the
+    atexit gate cannot turn a successful Databricks notebook task into
+    a failed one. The same coverage data is surfaced by
+    ``dump_lever5_split_capture_summary()`` in
+    ``harness._run_lever_loop`` and consumed by the postmortem workflow.
 
-    Enable with ``GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE=1``.
+    Helper retained so monkeypatched dev tests can opt back into the
+    gate path via
+    ``monkeypatch.setattr(cfg, "lever5_split_capture_require_coverage_enabled", lambda: True)``.
+    Reading the env var directly is not honored.
     """
-    return _flag_enabled("GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE")
+    return False
 
 
 def three_stage_enabled() -> bool:
@@ -5337,11 +5372,18 @@ def three_stage_capture_require_coverage_enabled() -> bool:
       * no Stage-2 dispatch was recorded across all skill_ids,
       * (when shadow flag was on) no shadow comparisons were emitted.
 
-    Use only on the dedicated trial run. Default OFF.
+    **Inert in production as of Plan 5** — always returns False so the
+    atexit gate cannot turn a successful Databricks notebook task into
+    a failed one. The same coverage data is surfaced by
+    ``dump_three_stage_capture_summary()`` in
+    ``harness._run_lever_loop`` and consumed by the postmortem workflow.
 
-    Enable with ``GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE=1``.
+    Helper retained so monkeypatched dev tests can opt back into the
+    gate path via
+    ``monkeypatch.setattr(cfg, "three_stage_capture_require_coverage_enabled", lambda: True)``.
+    Reading the env var directly is not honored.
     """
-    return _flag_enabled("GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE")
+    return False
 
 
 # ── Plan 3 (Phase 3): canonical Stage-2 skill_id registry ─────────────
@@ -5514,14 +5556,13 @@ def raw_evidence_v1_enabled() -> bool:
     ``lever-5b-example-sql``. Per-skill prompts render the
     ``{{ raw_evidence_block }}`` slot.
 
-    Production-affecting. Flip default-on AFTER the shadow-mode trial
-    run produces commit-ready fixtures (see Plan 4's Trial-run protocol).
-
-    Default OFF preserves Plan 3 behavior byte-for-byte (raw_evidence=()).
-
-    Enable with ``GSO_RAW_EVIDENCE_V1=1``.
+    **Default ON as of Plan 5** (UI-triggered trial activation). Flip to
+    OFF for emergency rollback by setting ``GSO_RAW_EVIDENCE_V1=0`` in
+    ``packages/genie-space-optimizer/databricks.yml`` under the
+    lever_loop task's ``base_parameters`` and redeploying. The flag
+    helper still honors a falsy explicit override.
     """
-    return _flag_enabled("GSO_RAW_EVIDENCE_V1")
+    return _flag_default_on("GSO_RAW_EVIDENCE_V1")
 
 
 def raw_evidence_v1_shadow_enabled() -> bool:
@@ -5552,11 +5593,18 @@ def raw_evidence_capture_require_coverage_enabled() -> bool:
         ``lever-5b-example-sql``,
       * (when shadow flag was on) no shadow comparison records emitted.
 
-    Use only on the dedicated trial run. Default OFF.
+    **Inert in production as of Plan 5** — always returns False so the
+    atexit gate cannot turn a successful Databricks notebook task into
+    a failed one. The same coverage data is surfaced by
+    ``dump_raw_evidence_capture_summary()`` in
+    ``harness._run_lever_loop`` and consumed by the postmortem workflow.
 
-    Enable with ``GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE=1``.
+    Helper retained so monkeypatched dev tests can opt back into the
+    gate path via
+    ``monkeypatch.setattr(cfg, "raw_evidence_capture_require_coverage_enabled", lambda: True)``.
+    Reading the env var directly is not honored.
     """
-    return _flag_enabled("GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE")
+    return False
 
 
 def raw_evidence_n() -> int:

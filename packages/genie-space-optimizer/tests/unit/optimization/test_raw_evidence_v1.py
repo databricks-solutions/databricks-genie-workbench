@@ -46,23 +46,30 @@ def _reload_config_with_env(env: dict[str, str]):
 # ── Section 1: flag helpers ──────────────────────────────────────────
 
 
-def test_raw_evidence_v1_default_off():
+def test_raw_evidence_v1_default_posture_as_of_plan_5():
+    """Plan 5 flipped raw_evidence_v1_enabled to default-on. Shadow stays
+    off (used only on trial runs); capture-path is unset (the new
+    default-path resolution is tested separately in
+    test_capture_sink_default_paths.py); require-coverage is forced inert."""
     cfg = _reload_config_with_env({})
-    assert cfg.raw_evidence_v1_enabled() is False
+    assert cfg.raw_evidence_v1_enabled() is True
     assert cfg.raw_evidence_v1_shadow_enabled() is False
     assert cfg.raw_evidence_capture_path_set() is False
     assert cfg.raw_evidence_capture_require_coverage_enabled() is False
 
 
-def test_raw_evidence_v1_pipeline_flag_on():
-    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "1"})
-    assert cfg.raw_evidence_v1_enabled() is True
-    assert cfg.raw_evidence_v1_shadow_enabled() is False
+def test_raw_evidence_v1_emergency_rollback_via_env():
+    """Operator override: GSO_RAW_EVIDENCE_V1=0 disables raw-evidence
+    injection. Plan 4 path becomes byte-stable with Plan 3 again."""
+    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "0"})
+    assert cfg.raw_evidence_v1_enabled() is False
 
 
 def test_raw_evidence_v1_shadow_flag_on():
+    """Shadow flag is independent of the V1 flag; Plan 5 default-on
+    posture means both stay on when shadow is enabled."""
     cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_SHADOW_V1": "1"})
-    assert cfg.raw_evidence_v1_enabled() is False
+    assert cfg.raw_evidence_v1_enabled() is True  # default-on
     assert cfg.raw_evidence_v1_shadow_enabled() is True
 
 
@@ -541,8 +548,11 @@ def _sample_metadata_snapshot() -> dict:
     }
 
 
-def test_build_bundle_default_off_keeps_raw_evidence_empty():
-    cfg = _reload_config_with_env({})
+def test_build_bundle_emergency_rollback_keeps_raw_evidence_empty():
+    """Plan 5 made raw-evidence default-on. To exercise the empty
+    raw_evidence path (byte-stable with Plan 3), the operator emergency-
+    rollback env var must be set."""
+    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "0"})
     cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
     from genie_space_optimizer.optimization.activation_bundle import (
         build_activation_bundle,
