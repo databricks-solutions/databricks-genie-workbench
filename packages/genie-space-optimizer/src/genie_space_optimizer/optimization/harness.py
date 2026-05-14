@@ -23813,6 +23813,132 @@ def _run_lever_loop(
                         exc_info=True,
                     )
 
+                # Phase 2.2 (deferred wire #5) — provisional RCA from
+                # soft signals. After Plan P-D's hard-ASI regen path
+                # has run, any cluster still lacking ``rca_card`` is
+                # about to be bucketed as CLUSTER_BLOCKED_NO_RCA by
+                # the Defect Plan 1 grounding-gate prelude below.
+                # When ``provisional_rca_from_soft_signals_enabled()``
+                # is ON (default-ON), try ``build_provisional_card``
+                # from the iteration's ``soft_signal_clusters`` BEFORE
+                # the bucketing step. On success, mutate
+                # ``cluster["rca_card"]`` with the provisional card
+                # and mark ``rca_provisional=True`` so downstream
+                # gates can apply stricter rules. On failure (no
+                # consistent hint reaches quorum), fall through to
+                # the legacy CLUSTER_BLOCKED_NO_RCA emit.
+                #
+                # We do NOT modify ``_regenerate_rca_for_cluster``'s
+                # return shape — that's the cross-caller refactor
+                # outside scope. The wrap lives here at the caller
+                # so all 3 unit-test callers + Plan P-D's
+                # ``run_rca_recovery_for_iteration`` stay byte-stable.
+                try:
+                    from genie_space_optimizer.common.config import (
+                        provisional_rca_from_soft_signals_enabled,
+                    )
+                    from genie_space_optimizer.optimization.rca_provisional_card import (
+                        build_provisional_card,
+                    )
+                    if (
+                        provisional_rca_from_soft_signals_enabled()
+                        and (soft_signal_clusters or [])
+                        and (clusters or [])
+                    ):
+                        # Build cluster_id -> (root_cause_hint, question_ids)
+                        # index over the iteration's soft clusters so we
+                        # can expand them into per-qid signal dicts that
+                        # ``build_provisional_card`` consumes.
+                        _soft_by_cid: dict[str, dict] = {}
+                        for _sc in soft_signal_clusters or []:
+                            _sc_cid = str((_sc or {}).get("cluster_id") or "")
+                            if not _sc_cid:
+                                continue
+                            _soft_by_cid[_sc_cid] = {
+                                "root_cause_hint": str(
+                                    (_sc or {}).get("root_cause") or ""
+                                ),
+                                "question_ids": [
+                                    str(q) for q in (
+                                        (_sc or {}).get("question_ids") or []
+                                    ) if q
+                                ],
+                            }
+                        for _cand in clusters or []:
+                            if not isinstance(_cand, dict):
+                                continue
+                            if bool(_cand.get("rca_card")):
+                                continue
+                            _cand_cid = str(_cand.get("cluster_id") or "")
+                            if not _cand_cid:
+                                continue
+                            _soft_entry = _soft_by_cid.get(_cand_cid)
+                            if not _soft_entry:
+                                continue
+                            _hint = _soft_entry["root_cause_hint"]
+                            _per_qid_signals = [
+                                {
+                                    "qid": _q,
+                                    "cluster_id": _cand_cid,
+                                    "root_cause_hint": _hint,
+                                }
+                                for _q in _soft_entry["question_ids"]
+                            ]
+                            try:
+                                _prov_card = build_provisional_card(
+                                    cluster_id=_cand_cid,
+                                    soft_signals_for_cluster=_per_qid_signals,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Phase 2.2: build_provisional_card raised "
+                                    "(non-fatal); falling through to "
+                                    "CLUSTER_BLOCKED_NO_RCA",
+                                    exc_info=True,
+                                )
+                                _prov_card = None
+                            if _prov_card is None:
+                                continue
+                            _cand["rca_card"] = _prov_card
+                            _cand["rca_provisional"] = True
+                            # Observability marker so postmortems can
+                            # identify iterations that proceeded with a
+                            # provisional (soft-signal-derived) card.
+                            try:
+                                print(
+                                    "GSO_PROVISIONAL_RCA_ACCEPTED_V1 "
+                                    + json.dumps(
+                                        {
+                                            "optimization_run_id": str(
+                                                run_id or ""
+                                            ),
+                                            "iteration": int(
+                                                iteration_counter
+                                            ),
+                                            "cluster_id": _cand_cid,
+                                            "root_cause": _hint,
+                                            "signal_count": len(
+                                                _per_qid_signals
+                                            ),
+                                        },
+                                        sort_keys=True,
+                                    ),
+                                    flush=True,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Phase 2.2: provisional-RCA marker "
+                                    "emit failed (non-fatal)",
+                                    exc_info=True,
+                                )
+                except Exception:
+                    logger.debug(
+                        "Phase 2.2: provisional-RCA fallback wire site "
+                        "failed (non-fatal); falling through to "
+                        "grounding gate",
+                        exc_info=True,
+                    )
+
                 # Defect Plan 1 (2026-05-12) — grounding gate prelude.
                 # Emit one CLUSTER_BLOCKED_NO_RCA decision record per
                 # open hard cluster whose rca_card is falsy, accumulate
