@@ -24716,6 +24716,176 @@ def _run_lever_loop(
                 )
                 if _narrow_kept:
                     _blast_kept = list(_blast_kept) + _narrow_kept
+
+                # Phase 2.4 deferred-wiring item #7 — auto narrow-
+                # replacement on collateral drop. When the legacy
+                # ``_run_narrow_l6_replacement_loop`` produced no
+                # survivor AND every patch was dropped at
+                # ``high_collateral_risk_flagged``, invoke
+                # ``try_narrow_replacement`` (the Phase 2.4 wrapper
+                # over ``build_narrow_l6_replacement`` /
+                # ``build_l5_example_sql_replacement`` with the
+                # ``protected_dependents`` kwarg from Task 17) as a
+                # second-chance attempt before falling through to
+                # BLAST_RADIUS_REJECTED. Default-ON; explicit
+                # ``GSO_AUTO_NARROW_REPLACEMENT_ON_COLLATERAL=0``
+                # restores legacy terminal behavior.
+                try:
+                    from genie_space_optimizer.common.config import (
+                        auto_narrow_replacement_on_collateral_enabled,
+                    )
+                    if (
+                        auto_narrow_replacement_on_collateral_enabled()
+                        and not _blast_kept
+                        and _blast_dropped
+                    ):
+                        from genie_space_optimizer.optimization.auto_narrow_replacement import (
+                            try_narrow_replacement,
+                        )
+                        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+                            build_narrow_l6_replacement,
+                            build_l5_example_sql_replacement,
+                        )
+                        from genie_space_optimizer.optimization.proposal_grounding import (
+                            patch_blast_radius_is_safe as _p24_br_safe,
+                        )
+                        # Aggregate outside-target QIDs across every
+                        # HCRF-flagged drop so the wrapper passes the
+                        # union as ``protected_dependents`` into the
+                        # builder.
+                        _p24_outside_target: tuple[str, ...] = tuple(
+                            sorted({
+                                str(q)
+                                for d in _blast_dropped
+                                if str(d.get("reason") or "") == "high_collateral_risk_flagged"
+                                for q in (d.get("passing_dependents_outside_target") or ())
+                                if str(q)
+                            })
+                        )
+                        # Translate harness drop dicts (key=``reason``)
+                        # into the wrapper's expected shape
+                        # (key=``drop_reason``) while preserving
+                        # ``original_patch`` for the synthesis call.
+                        _p24_adapted_drops = [
+                            {
+                                **d,
+                                "drop_reason": str(d.get("reason") or ""),
+                            }
+                            for d in (_blast_dropped or ())
+                        ]
+                        # Resolve the source cluster + RCA card for
+                        # context. Use the first source_cluster_id on
+                        # the AG; cluster lookup falls back to ``{}``.
+                        _p24_cluster_id = str(
+                            (ag.get("source_cluster_ids") or ["?"])[0]
+                        )
+                        _p24_cluster = (
+                            _iter_source_clusters_by_id.get(_p24_cluster_id) or {}
+                        )
+                        _p24_rca_card = {
+                            "rca_id": str(
+                                _iter_rca_id_by_cluster.get(_p24_cluster_id) or ag.get("rca_id") or ""
+                            ),
+                            "root_cause": str(ag.get("root_cause") or ""),
+                        }
+                        # Adapter callables — the Phase 2.4 wrapper
+                        # invokes ``synthesis_callable_l6(cluster=,
+                        # rca_card=, protected_dependents=,
+                        # original_dropped_patch=)`` but the builders
+                        # take ``original_patch=, ag_target_qids=,
+                        # root_cause=, protected_dependents=``.
+                        def _p24_synth_l6(*, cluster, rca_card, protected_dependents, original_dropped_patch):
+                            return build_narrow_l6_replacement(
+                                original_patch=(original_dropped_patch or {}).get("original_patch") or original_dropped_patch or {},
+                                ag_target_qids=tuple(_blast_target_qids or ()),
+                                root_cause=str((rca_card or {}).get("root_cause") or ""),
+                                protected_dependents=tuple(protected_dependents or ()),
+                            )
+
+                        def _p24_synth_l5(*, cluster, rca_card, protected_dependents, original_dropped_patch):
+                            # build_l5_example_sql_replacement returns
+                            # a list of candidates; pick the first so
+                            # the wrapper's single-replacement
+                            # contract holds.
+                            _cands = build_l5_example_sql_replacement(
+                                original_patch=(original_dropped_patch or {}).get("original_patch") or original_dropped_patch or {},
+                                ag_target_qids=tuple(_blast_target_qids or ()),
+                                qid_to_question_text=_branch_c_qid_to_question_text(
+                                    clusters=clusters,
+                                    benchmarks=benchmarks,
+                                    ag_target_qids=_blast_target_qids,
+                                ),
+                                qid_to_reference_sql=reference_sqls or {},
+                                root_cause=str((rca_card or {}).get("root_cause") or ""),
+                            ) or []
+                            return _cands[0] if _cands else None
+
+                        _p24_result = try_narrow_replacement(
+                            dropped_patches=_p24_adapted_drops,
+                            outside_target_qids=_p24_outside_target,
+                            cluster=_p24_cluster,
+                            rca_card=_p24_rca_card,
+                            synthesis_callable_l6=_p24_synth_l6,
+                            synthesis_callable_l5=_p24_synth_l5,
+                        )
+                        # Stamp telemetry so the candidate ledger row
+                        # reflects the attempt regardless of outcome.
+                        _iter_narrow_replacement_attempted = bool(
+                            _p24_result.attempted
+                        )
+                        if _p24_outside_target:
+                            _iter_protected_dependents = _p24_outside_target
+                        if (
+                            _p24_result.attempted
+                            and _p24_result.replacement_patch
+                        ):
+                            # Re-gate the narrowed survivor through the
+                            # same blast-radius check so we never
+                            # splice an unsafe candidate back in.
+                            _p24_candidate = dict(_p24_result.replacement_patch)
+                            try:
+                                _p24_retest = _p24_br_safe(
+                                    _p24_candidate,
+                                    ag_target_qids=tuple(_blast_target_qids or ()),
+                                    max_outside_target=0,
+                                    live_hard_qids=_live_hard_qids_for_blast,
+                                )
+                            except Exception:
+                                _p24_retest = {"safe": False, "reason": "p24_retest_raised"}
+                            if _p24_retest.get("safe") is True:
+                                _blast_kept = list(_blast_kept) + [_p24_candidate]
+                                _iter_narrow_replacement_succeeded = True
+                        # Observability marker — emitted for every
+                        # attempt regardless of replacement outcome so
+                        # the trace shows the second-chance attempt.
+                        try:
+                            _current_iter_inputs.setdefault("markers", []).append({
+                                "kind": "phase_2_4_auto_narrow_replacement_attempted",
+                                "run_id": str(run_id or ""),
+                                "iteration": int(iteration_counter),
+                                "ag_id": str(ag_id),
+                                "cluster_id": _p24_cluster_id,
+                                "attempted": bool(_p24_result.attempted),
+                                "replacement_produced": bool(
+                                    _p24_result.replacement_patch is not None
+                                ),
+                                "outside_target_qids": list(_p24_outside_target),
+                                "terminal_reason_hint": str(
+                                    _p24_result.terminal_reason or ""
+                                ),
+                            })
+                        except Exception:
+                            logger.debug(
+                                "Phase 2.4: auto-narrow marker emit failed (non-fatal)",
+                                exc_info=True,
+                            )
+                except Exception:
+                    logger.debug(
+                        "Phase 2.4: auto narrow-replacement second-chance "
+                        "block raised (non-fatal); falling through to "
+                        "BLAST_RADIUS_REJECTED",
+                        exc_info=True,
+                    )
                 # Cycle 16 T4 — Branch C cleanup: when at least one
                 # structural-causal patch was dropped AND no narrow
                 # survivor replaced it (Branch A or Branch C), emit
@@ -25112,6 +25282,141 @@ def _run_lever_loop(
                 )
                 if _narrow_kept:
                     _blast_kept = list(_blast_kept) + _narrow_kept
+
+                # Phase 2.4 deferred-wiring item #7 — mirror of the
+                # Site A second-chance attempt for the ImportError
+                # fallback path. Same gate, same adapter shape; ensures
+                # the auto-narrow attempt fires regardless of which
+                # blast-radius implementation path executed.
+                try:
+                    from genie_space_optimizer.common.config import (
+                        auto_narrow_replacement_on_collateral_enabled,
+                    )
+                    if (
+                        auto_narrow_replacement_on_collateral_enabled()
+                        and not _blast_kept
+                        and _blast_dropped
+                    ):
+                        from genie_space_optimizer.optimization.auto_narrow_replacement import (
+                            try_narrow_replacement,
+                        )
+                        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+                            build_narrow_l6_replacement,
+                            build_l5_example_sql_replacement,
+                        )
+                        from genie_space_optimizer.optimization.proposal_grounding import (
+                            patch_blast_radius_is_safe as _p24b_br_safe,
+                        )
+                        _p24b_outside_target: tuple[str, ...] = tuple(
+                            sorted({
+                                str(q)
+                                for d in _blast_dropped
+                                if str(d.get("reason") or "") == "high_collateral_risk_flagged"
+                                for q in (d.get("passing_dependents_outside_target") or ())
+                                if str(q)
+                            })
+                        )
+                        _p24b_adapted_drops = [
+                            {
+                                **d,
+                                "drop_reason": str(d.get("reason") or ""),
+                            }
+                            for d in (_blast_dropped or ())
+                        ]
+                        _p24b_cluster_id = str(
+                            (ag.get("source_cluster_ids") or ["?"])[0]
+                        )
+                        _p24b_cluster = (
+                            _iter_source_clusters_by_id.get(_p24b_cluster_id) or {}
+                        )
+                        _p24b_rca_card = {
+                            "rca_id": str(
+                                _iter_rca_id_by_cluster.get(_p24b_cluster_id) or ag.get("rca_id") or ""
+                            ),
+                            "root_cause": str(ag.get("root_cause") or ""),
+                        }
+
+                        def _p24b_synth_l6(*, cluster, rca_card, protected_dependents, original_dropped_patch):
+                            return build_narrow_l6_replacement(
+                                original_patch=(original_dropped_patch or {}).get("original_patch") or original_dropped_patch or {},
+                                ag_target_qids=tuple(_blast_target_qids or ()),
+                                root_cause=str((rca_card or {}).get("root_cause") or ""),
+                                protected_dependents=tuple(protected_dependents or ()),
+                            )
+
+                        def _p24b_synth_l5(*, cluster, rca_card, protected_dependents, original_dropped_patch):
+                            _cands = build_l5_example_sql_replacement(
+                                original_patch=(original_dropped_patch or {}).get("original_patch") or original_dropped_patch or {},
+                                ag_target_qids=tuple(_blast_target_qids or ()),
+                                qid_to_question_text=_branch_c_qid_to_question_text(
+                                    clusters=clusters,
+                                    benchmarks=benchmarks,
+                                    ag_target_qids=_blast_target_qids,
+                                ),
+                                qid_to_reference_sql=reference_sqls or {},
+                                root_cause=str((rca_card or {}).get("root_cause") or ""),
+                            ) or []
+                            return _cands[0] if _cands else None
+
+                        _p24b_result = try_narrow_replacement(
+                            dropped_patches=_p24b_adapted_drops,
+                            outside_target_qids=_p24b_outside_target,
+                            cluster=_p24b_cluster,
+                            rca_card=_p24b_rca_card,
+                            synthesis_callable_l6=_p24b_synth_l6,
+                            synthesis_callable_l5=_p24b_synth_l5,
+                        )
+                        _iter_narrow_replacement_attempted = bool(
+                            _p24b_result.attempted
+                        )
+                        if _p24b_outside_target:
+                            _iter_protected_dependents = _p24b_outside_target
+                        if (
+                            _p24b_result.attempted
+                            and _p24b_result.replacement_patch
+                        ):
+                            _p24b_candidate = dict(_p24b_result.replacement_patch)
+                            try:
+                                _p24b_retest = _p24b_br_safe(
+                                    _p24b_candidate,
+                                    ag_target_qids=tuple(_blast_target_qids or ()),
+                                    max_outside_target=0,
+                                    live_hard_qids=_live_hard_qids_for_blast,
+                                )
+                            except Exception:
+                                _p24b_retest = {"safe": False, "reason": "p24_retest_raised"}
+                            if _p24b_retest.get("safe") is True:
+                                _blast_kept = list(_blast_kept) + [_p24b_candidate]
+                                _iter_narrow_replacement_succeeded = True
+                        try:
+                            _current_iter_inputs.setdefault("markers", []).append({
+                                "kind": "phase_2_4_auto_narrow_replacement_attempted",
+                                "run_id": str(run_id or ""),
+                                "iteration": int(iteration_counter),
+                                "ag_id": str(ag_id),
+                                "cluster_id": _p24b_cluster_id,
+                                "attempted": bool(_p24b_result.attempted),
+                                "replacement_produced": bool(
+                                    _p24b_result.replacement_patch is not None
+                                ),
+                                "outside_target_qids": list(_p24b_outside_target),
+                                "terminal_reason_hint": str(
+                                    _p24b_result.terminal_reason or ""
+                                ),
+                                "site": "import_fallback",
+                            })
+                        except Exception:
+                            logger.debug(
+                                "Phase 2.4: auto-narrow marker emit failed (non-fatal, Site B)",
+                                exc_info=True,
+                            )
+                except Exception:
+                    logger.debug(
+                        "Phase 2.4: auto narrow-replacement Site B "
+                        "second-chance block raised (non-fatal); "
+                        "falling through to BLAST_RADIUS_REJECTED",
+                        exc_info=True,
+                    )
                 if _blast_dropped:
                     logger.warning(
                         "AG %s blast-radius gate dropped %d/%d patches: %s",
