@@ -464,3 +464,64 @@ def test_coverage_gate_raises_when_no_shadow_in_shadow_mode():
     cfg._record_raw_evidence_projection("lever-1-table-column-description")
     with pytest.raises(RuntimeError, match="zero shadow comparison"):
         cfg._RAW_EVIDENCE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+# ── Section 2: anti-anchoring header + raw_evidence slot ──────────────
+
+
+def test_anti_anchoring_header_exists_and_mentions_common():
+    cfg = _reload_config_with_env({})
+    h = cfg._RAW_EVIDENCE_ANTI_ANCHORING_HEADER
+    assert "COMMON" in h
+    assert "specific enough" in h
+    assert "general enough" in h
+
+
+def test_lever_1_2_prompt_contains_raw_evidence_block_slot():
+    cfg = _reload_config_with_env({})
+    assert "{{ raw_evidence_block }}" in cfg.LEVER_1_2_COLUMN_PROMPT
+
+
+def test_lever_1_2_prompt_renders_with_empty_raw_evidence_block():
+    cfg = _reload_config_with_env({})
+    rendered = cfg.format_mlflow_template(
+        cfg.LEVER_1_2_COLUMN_PROMPT,
+        failure_type="x", blame_set="y", affected_questions=[],
+        sql_diffs="", current_metadata="",
+        patch_type_description="", failures_context="",
+        current_join_specs="[]", table_relationships="[]",
+        current_column_configs="{}", full_schema_context="",
+        identifier_allowlist="", string_column_count=0,
+        max_value_dictionary_cols=0, current_dictionary_count=0,
+        current_instructions="", existing_example_sqls="",
+        instruction_char_budget=0, table_names=[], mv_names=[],
+        tvf_names=[], structured_table_context="",
+        structured_column_context="",
+        raw_evidence_block="",
+    )
+    assert "{{" not in rendered, "unrendered template variable"
+
+
+def test_lever_1_2_prompt_renders_anti_anchoring_when_evidence_provided():
+    cfg = _reload_config_with_env({})
+    block = (
+        cfg._RAW_EVIDENCE_ANTI_ANCHORING_HEADER
+        + "\n\nExample 1 of 3 — qid=Q1\n  question: ...\n"
+    )
+    rendered = cfg.format_mlflow_template(
+        cfg.LEVER_1_2_COLUMN_PROMPT,
+        failure_type="x", blame_set="y", affected_questions=[],
+        sql_diffs="", current_metadata="",
+        patch_type_description="", failures_context="",
+        current_join_specs="[]", table_relationships="[]",
+        current_column_configs="{}", full_schema_context="",
+        identifier_allowlist="", string_column_count=0,
+        max_value_dictionary_cols=0, current_dictionary_count=0,
+        current_instructions="", existing_example_sqls="",
+        instruction_char_budget=0, table_names=[], mv_names=[],
+        tvf_names=[], structured_table_context="",
+        structured_column_context="",
+        raw_evidence_block=block,
+    )
+    assert "COMMON" in rendered
+    assert "Example 1 of 3" in rendered

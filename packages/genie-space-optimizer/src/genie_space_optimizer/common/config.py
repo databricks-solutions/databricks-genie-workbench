@@ -1989,6 +1989,9 @@ LEVER_1_2_COLUMN_PROMPT = (
     '- Blamed objects: {{ blame_set }}\n'
     '- Affected questions: {{ affected_questions }}\n'
     '\n'
+    '## Raw Failure Evidence\n'
+    '{{ raw_evidence_block }}\n'
+    '\n'
     '## SQL Diffs (Expected vs Generated)\n'
     '{{ sql_diffs }}\n'
     '\n'
@@ -6277,6 +6280,21 @@ _RAW_EVIDENCE_PROJECTABLE_SKILLS: frozenset[str] = frozenset({
     "lever-5a-instructions",
     "lever-6-sql-expression",
 })
+
+
+# ── Plan 4 (Phase 5): anti-anchoring framing for raw-evidence prompts ─
+# Single literal injected at the top of every {{ raw_evidence_block }}
+# render. The wording is intentionally directive: tells the LLM
+# explicitly that the examples share a root cause and the patch must
+# generalize. Anchoring research suggests a single example primes the
+# LLM to fit that one example narrowly; this header counters that bias.
+_RAW_EVIDENCE_ANTI_ANCHORING_HEADER = (
+    "Below are N independent failures believed to share a common "
+    "root cause. Look for what is COMMON across these failures, NOT "
+    "what is unique to any one. Your patch must be specific enough "
+    "to fix each one but general enough to fix all of them — "
+    "and any future failure with the same root cause."
+)
 
 
 class _RawEvidenceCaptureSink:
