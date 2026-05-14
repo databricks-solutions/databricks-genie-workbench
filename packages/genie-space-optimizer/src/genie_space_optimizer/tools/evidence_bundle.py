@@ -190,12 +190,21 @@ def _extract_stdout_with_fallback(
            ``spark_python_task`` runs.
         2. ``out["notebook_output"]["result"]`` — populated for
            ``notebook_task`` runs (logs is empty by API contract).
-        3. Empty string if neither is populated.
+        3. **Phase 0.1**: ``out["notebook_output"]["error_trace"]`` —
+           populated for ``python_wheel_task`` / ``spark_python_task``
+           runs that wrote to stderr (the PHASE_A_REPLAY_FIXTURE_JSON
+           markers live here for non-notebook tasks).
+        4. **Phase 0.1**: ``result + "\\n" + error_trace`` concatenated
+           when the fixture begin marker is in one and the end marker
+           is in the other (Databricks truncation edge case).
+        5. Empty string if none populated.
 
     Returns ``(stdout_text, source, missing_piece)``. ``source`` is one
-    of ``"logs"``, ``"notebook_output.result"``, or ``"absent"``. A
+    of ``"logs"``, ``"notebook_output.result"``,
+    ``"notebook_output.error_trace"``,
+    ``"notebook_output.result+error_trace"``, or ``"absent"``. A
     ``STDOUT_FALLBACK_NOTEBOOK_OUTPUT`` ``MissingPiece`` is returned
-    when fallback is used so postmortems make the source explicit.
+    when any fallback (tiers 2-4) is used.
     """
     logs_text = str((out or {}).get("logs") or "")
     if logs_text:
@@ -203,31 +212,137 @@ def _extract_stdout_with_fallback(
 
     notebook_output = (out or {}).get("notebook_output") or {}
     result_text = str(notebook_output.get("result") or "")
+    error_trace_text = str(notebook_output.get("error_trace") or "")
     truncated = bool(notebook_output.get("truncated"))
-    if result_text:
+
+    _BEGIN = "===PHASE_A_REPLAY_FIXTURE_JSON_BEGIN==="
+    _END = "===PHASE_A_REPLAY_FIXTURE_JSON_END==="
+
+    def _has_full_fixture(s: str) -> bool:
+        return _BEGIN in s and _END in s and s.index(_END) > s.index(_BEGIN)
+
+    fallback_diagnosis_template = (
+        "logs field empty (Databricks Jobs API). Falling back to {source}{truncated}."
+    )
+    fallback_suggested = (
+        "no operator action required. The marker parser and replay "
+        "extractor consume the same string regardless of source."
+    )
+
+    if _has_full_fixture(result_text):
         suffix = " (truncated by Databricks)" if truncated else ""
-        diagnosis = (
-            "logs field empty (notebook task — Databricks Jobs API does "
-            "not populate `logs` for notebook_task; the real stdout is in "
-            "notebook_output.result). Falling back to notebook_output."
-            f"result{suffix}."
-        )
-        suggested = (
-            "no operator action required. The marker parser and replay "
-            "extractor consume the same string regardless of source."
-        )
         return (
             result_text,
             "notebook_output.result",
             MissingPiece(
                 kind=MissingPieceKind.STDOUT_FALLBACK_NOTEBOOK_OUTPUT,
                 iteration=None,
-                diagnosis=diagnosis,
-                suggested_action=suggested,
+                diagnosis=fallback_diagnosis_template.format(
+                    source="notebook_output.result", truncated=suffix,
+                ),
+                suggested_action=fallback_suggested,
+            ),
+        )
+
+    if _has_full_fixture(error_trace_text):
+        return (
+            error_trace_text,
+            "notebook_output.error_trace",
+            MissingPiece(
+                kind=MissingPieceKind.STDOUT_FALLBACK_NOTEBOOK_OUTPUT,
+                iteration=None,
+                diagnosis=fallback_diagnosis_template.format(
+                    source="notebook_output.error_trace (stderr)", truncated="",
+                ),
+                suggested_action=fallback_suggested,
+            ),
+        )
+
+    if (_BEGIN in result_text and _END in error_trace_text) or (
+        _BEGIN in error_trace_text and _END in result_text
+    ):
+        concatenated = result_text + "\n" + error_trace_text
+        return (
+            concatenated,
+            "notebook_output.result+error_trace",
+            MissingPiece(
+                kind=MissingPieceKind.STDOUT_FALLBACK_NOTEBOOK_OUTPUT,
+                iteration=None,
+                diagnosis=(
+                    "PHASE_A_REPLAY_FIXTURE markers split across "
+                    "notebook_output.result and notebook_output.error_trace. "
+                    "Concatenating and resplitting."
+                ),
+                suggested_action=fallback_suggested,
+            ),
+        )
+
+    if result_text:
+        suffix = " (truncated by Databricks)" if truncated else ""
+        return (
+            result_text,
+            "notebook_output.result",
+            MissingPiece(
+                kind=MissingPieceKind.STDOUT_FALLBACK_NOTEBOOK_OUTPUT,
+                iteration=None,
+                diagnosis=fallback_diagnosis_template.format(
+                    source="notebook_output.result (no PHASE_A markers)",
+                    truncated=suffix,
+                ),
+                suggested_action=fallback_suggested,
+            ),
+        )
+
+    if error_trace_text:
+        return (
+            error_trace_text,
+            "notebook_output.error_trace",
+            MissingPiece(
+                kind=MissingPieceKind.STDOUT_FALLBACK_NOTEBOOK_OUTPUT,
+                iteration=None,
+                diagnosis=fallback_diagnosis_template.format(
+                    source="notebook_output.error_trace (no PHASE_A markers)",
+                    truncated="",
+                ),
+                suggested_action=fallback_suggested,
             ),
         )
 
     return "", "absent", None
+
+
+def detect_stale_phase_h_anchor(
+    *,
+    chosen_task_run_id: str,
+    phase_h_sibling_task_run_ids: tuple[str, ...] | list[str],
+) -> MissingPiece | None:
+    """Phase 0.1 — return STALE_ANCHOR when no Phase H sibling's
+    ``lever_loop_task_run_id`` matches the chosen lever_loop task.
+
+    Pure: no I/O. Caller decides whether to abort or degrade.
+    """
+    chosen = str(chosen_task_run_id or "").strip()
+    candidates = [str(s or "").strip() for s in (phase_h_sibling_task_run_ids or ())]
+    if chosen and chosen in candidates:
+        return None
+    diagnosis = (
+        f"chosen lever_loop task_run_id={chosen or '<blank>'} does not match any "
+        f"Phase H sibling task_run_id in {candidates or '<empty>'}. The Phase H "
+        "artifacts (gso_postmortem_bundle, journey_validation_all, etc.) belong "
+        "to a different run; consuming them would pollute the postmortem."
+    )
+    return MissingPiece(
+        kind=MissingPieceKind.STALE_ANCHOR,
+        iteration=None,
+        diagnosis=diagnosis,
+        suggested_action=(
+            "Re-run the evidence bundle CLI with the lever_loop parent run "
+            "whose MLflow tag genie.databricks.lever_loop_task_run_id matches "
+            f"{chosen or 'the chosen task'}. If no such Phase H run exists, "
+            "the lever_loop task ran without emitting Phase H artifacts — "
+            "treat replay fixture as authoritative and skip Phase H consumers."
+        ),
+    )
 
 
 def _markers_to_json(markers: Any) -> str:

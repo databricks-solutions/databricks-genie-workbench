@@ -28,6 +28,12 @@ class MissingPieceKind(Enum):
     OPTIMIZATION_RUN_ID_UNRESOLVED = "OPTIMIZATION_RUN_ID_UNRESOLVED"
     DATABRICKS_IDS_UNRESOLVED = "DATABRICKS_IDS_UNRESOLVED"
     BACKFILL_FAILED = "BACKFILL_FAILED"
+    STALE_ANCHOR = "stale_anchor"
+    """Phase 0.1 — emitted when no Phase H sibling artifact carries
+    the same ``lever_loop_task_run_id`` as the resolved lever_loop
+    task. Fail-closed; the postmortem must NOT consume mismatched
+    Phase H artifacts.
+    """
 
 
 class TraceFetchReason(Enum):
