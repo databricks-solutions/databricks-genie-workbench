@@ -791,3 +791,46 @@ def test_dump_lever5_split_capture_summary_is_safe_when_no_state():
     assert isinstance(snap, dict)
     assert set(snap["hits"].keys()) == cfg._LEVER_5_SPLIT_SKILL_NAMES  # noqa: SLF001
     assert snap["shadow_comparisons"] == 0
+
+
+# ── Section 11: synthetic end-to-end (no LLM) ─────────────────────────
+
+
+def test_capture_sink_e2e_with_synthetic_dispatcher_calls():
+    """No LLM. Drive the full capture pathway via direct calls to the
+    public hit/comparison helpers, then assert the gate accepts."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "lever5.ndjson"
+        cfg = _reload_config_with_env({
+            "GSO_LEVER5_SHADOW_V1": "1",
+            "GSO_LEVER5_SPLIT_CAPTURE_PATH": str(path),
+            "GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE": "1",
+        })
+        cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+
+        cfg._record_lever5_skill_hit("lever-5a-instructions")
+        cfg._record_lever5_skill_hit("lever-5b-example-sql")
+        cfg._record_lever5_shadow_comparison({
+            "ag_id": "AG1",
+            "cluster_ids": ["C1"],
+            "old_instruction_text_hash": "a" * 16,
+            "new_5a_instruction_text_hash": "b" * 16,
+            "instruction_text_jaccard": 0.7,
+            "old_example_sqls_count": 2,
+            "new_example_sqls_count": 2,
+            "example_sqls_set_overlap": 0.5,
+            "old_example_sqls_hashes": ["h1", "h2"],
+            "new_example_sqls_hashes": ["h1", "h3"],
+        })
+
+        cfg._LEVER_FIVE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+        lines = path.read_text().strip().splitlines()
+        assert len(lines) == 1
+        rec = json.loads(lines[0])
+        assert rec["ag_id"] == "AG1"
+        assert rec["instruction_text_jaccard"] == 0.7
