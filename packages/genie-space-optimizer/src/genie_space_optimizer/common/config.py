@@ -1801,6 +1801,132 @@ def _record_narrowing_hit(skill_id: str) -> None:
     _NARROWING_CAPTURE_SINK.record_hit(skill_id, len(_RCA_CONTRACT_HEADER))
 
 
+# ── Plan 2 (Phase 2): Lever 5 Split capture sink ──────────────────────
+# Mirrors Plan 1's _NarrowingCaptureSink with two extras: tracked
+# skill_ids are {lever-5a-instructions, lever-5b-example-sql}, and an
+# additional counter `shadow_comparisons` records how many
+# old-vs-new comparison events were emitted. The atexit gate requires
+# both skill counters to be > 0 AND shadow_comparisons > 0 (when
+# GSO_LEVER5_SHADOW_V1 is on for the run).
+
+_LEVER_5_SPLIT_SKILL_NAMES: frozenset[str] = frozenset({
+    "lever-5a-instructions",
+    "lever-5b-example-sql",
+})
+
+
+class _LeverFiveCaptureSink:
+    def __init__(self) -> None:
+        self._lock = _threading.Lock()
+        self._hits: dict[str, int] = {n: 0 for n in _LEVER_5_SPLIT_SKILL_NAMES}
+        self._shadow_comparisons: int = 0
+        self._sink_path: str | None = None
+        self._sink_path_resolved = False
+        self._coverage_gate_registered = False
+
+    def _resolve_sink_path(self) -> str | None:
+        if not self._sink_path_resolved:
+            self._sink_path = (
+                os.environ.get("GSO_LEVER5_SPLIT_CAPTURE_PATH") or ""
+            ).strip() or None
+            self._sink_path_resolved = True
+        return self._sink_path
+
+    def record_skill_hit(self, skill_id: str) -> None:
+        with self._lock:
+            if skill_id in self._hits:
+                self._hits[skill_id] += 1
+            self._maybe_register_atexit()
+
+    def record_shadow_comparison(self, comparison_record: dict) -> None:
+        with self._lock:
+            self._shadow_comparisons += 1
+            path = self._resolve_sink_path()
+            if path is not None:
+                payload = dict(comparison_record)
+                payload.setdefault("captured_at", _time.time())
+                payload.setdefault("process_pid", os.getpid())
+                try:
+                    with open(path, "a", encoding="utf-8", buffering=1) as fh:
+                        fh.write(_json.dumps(payload, default=str) + "\n")
+                except OSError:
+                    pass
+            self._maybe_register_atexit()
+
+    def _maybe_register_atexit(self) -> None:
+        if self._coverage_gate_registered:
+            return
+        if _flag_enabled_inline("GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE"):
+            _atexit.register(self._atexit_gate)
+            self._coverage_gate_registered = True
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            hits = dict(self._hits)
+            shadow = self._shadow_comparisons
+        unhit = tuple(sorted(n for n, c in hits.items() if c == 0))
+        return {
+            "hits": hits,
+            "shadow_comparisons": shadow,
+            "all_sites_exercised": len(unhit) == 0,
+            "unhit_sites": unhit,
+            "sink_path": self._sink_path,
+        }
+
+    def enforce_coverage_or_raise(self) -> None:
+        if not _flag_enabled_inline("GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE"):
+            return
+        snap = self.snapshot()
+        problems: list[str] = []
+        if not snap["all_sites_exercised"]:
+            problems.append(f"unhit_sites={snap['unhit_sites']}")
+        # Shadow check is gated on the shadow flag — if shadow was off
+        # for the run, no shadow comparisons are expected.
+        if _flag_enabled_inline("GSO_LEVER5_SHADOW_V1") and snap["shadow_comparisons"] == 0:
+            problems.append("zero shadow comparison records emitted")
+        if problems:
+            raise RuntimeError(
+                "lever-5 trial incomplete: "
+                + "; ".join(problems)
+                + f"; do not commit captures. snapshot={snap}"
+            )
+
+    def _atexit_gate(self) -> None:
+        try:
+            self.enforce_coverage_or_raise()
+        except RuntimeError as exc:
+            import sys as _sys
+            print(f"[GSO_LEVER5_SPLIT] {exc}", file=_sys.stderr)
+            os._exit(2)  # noqa: SLF001
+
+    def reset_for_test(self) -> None:
+        with self._lock:
+            self._hits = {n: 0 for n in _LEVER_5_SPLIT_SKILL_NAMES}
+            self._shadow_comparisons = 0
+            self._sink_path = None
+            self._sink_path_resolved = False
+            self._coverage_gate_registered = False
+
+
+_LEVER_FIVE_CAPTURE_SINK = _LeverFiveCaptureSink()
+
+
+def _record_lever5_skill_hit(skill_id: str) -> None:
+    _LEVER_FIVE_CAPTURE_SINK.record_skill_hit(skill_id)
+
+
+def _record_lever5_shadow_comparison(comparison_record: dict) -> None:
+    _LEVER_FIVE_CAPTURE_SINK.record_shadow_comparison(comparison_record)
+
+
+def dump_lever5_split_capture_summary() -> dict:
+    """Public entry for harness end-of-run logging. Returns
+    ``{"hits": {skill_id: count}, "shadow_comparisons": int,
+       "all_sites_exercised": bool, "unhit_sites": tuple,
+       "sink_path": str | None}``."""
+    return _LEVER_FIVE_CAPTURE_SINK.snapshot()
+
+
 def dump_narrowing_capture_summary() -> dict:
     """Public entry point for harness end-of-run logging. Returns
     ``{"hits": {skill_id: count}, "all_sites_exercised": bool,

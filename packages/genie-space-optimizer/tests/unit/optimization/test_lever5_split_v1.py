@@ -630,3 +630,104 @@ def test_generate_metadata_proposals_l5_branch_routes_through_selector(monkeypat
         "L5 branch must route through _select_lever_5_holistic_path, "
         "not call _call_llm_for_holistic_instructions directly."
     )
+
+
+# ── Section 8: _LeverFiveCaptureSink ──────────────────────────────────
+
+
+def test_capture_sink_initial_state():
+    cfg = _reload_config_with_env({})
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    snap = cfg.dump_lever5_split_capture_summary()
+    assert snap["hits"] == {
+        "lever-5a-instructions": 0,
+        "lever-5b-example-sql": 0,
+    }
+    assert snap["shadow_comparisons"] == 0
+    assert snap["all_sites_exercised"] is False
+
+
+def test_record_skill_hit_increments_counter():
+    cfg = _reload_config_with_env({})
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_lever5_skill_hit("lever-5a-instructions")
+    cfg._record_lever5_skill_hit("lever-5a-instructions")
+    cfg._record_lever5_skill_hit("lever-5b-example-sql")
+    snap = cfg.dump_lever5_split_capture_summary()
+    assert snap["hits"] == {
+        "lever-5a-instructions": 2,
+        "lever-5b-example-sql": 1,
+    }
+
+
+def test_record_shadow_comparison_increments_counter():
+    cfg = _reload_config_with_env({})
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_lever5_shadow_comparison({"ag_id": "AG1"})
+    cfg._record_lever5_shadow_comparison({"ag_id": "AG2"})
+    snap = cfg.dump_lever5_split_capture_summary()
+    assert snap["shadow_comparisons"] == 2
+
+
+def test_capture_sink_writes_ndjson_when_path_set():
+    import json
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "lever5.ndjson"
+        cfg = _reload_config_with_env({
+            "GSO_LEVER5_SHADOW_V1": "1",
+            "GSO_LEVER5_SPLIT_CAPTURE_PATH": str(path),
+        })
+        cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+        cfg._record_lever5_shadow_comparison({
+            "ag_id": "AG1",
+            "old_instruction_text_hash": "abcd",
+            "new_5a_instruction_text_hash": "efgh",
+            "instruction_text_jaccard": 0.85,
+        })
+        lines = path.read_text().strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["ag_id"] == "AG1"
+        assert "captured_at" in record
+        assert "process_pid" in record
+
+
+def test_coverage_gate_passes_when_all_sites_hit_and_one_shadow():
+    cfg = _reload_config_with_env({
+        "GSO_LEVER5_SHADOW_V1": "1",
+        "GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_lever5_skill_hit("lever-5a-instructions")
+    cfg._record_lever5_skill_hit("lever-5b-example-sql")
+    cfg._record_lever5_shadow_comparison({"ag_id": "AG1"})
+    cfg._LEVER_FIVE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+def test_coverage_gate_raises_when_5b_unhit():
+    import pytest
+    cfg = _reload_config_with_env({
+        "GSO_LEVER5_SHADOW_V1": "1",
+        "GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_lever5_skill_hit("lever-5a-instructions")
+    cfg._record_lever5_shadow_comparison({"ag_id": "AG1"})
+    with pytest.raises(RuntimeError, match="lever-5 trial incomplete"):
+        cfg._LEVER_FIVE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+def test_coverage_gate_raises_when_no_shadow_comparisons():
+    import pytest
+    cfg = _reload_config_with_env({
+        "GSO_LEVER5_SHADOW_V1": "1",
+        "GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._record_lever5_skill_hit("lever-5a-instructions")
+    cfg._record_lever5_skill_hit("lever-5b-example-sql")
+    # No shadow comparison emitted:
+    with pytest.raises(RuntimeError, match="zero shadow comparison"):
+        cfg._LEVER_FIVE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
