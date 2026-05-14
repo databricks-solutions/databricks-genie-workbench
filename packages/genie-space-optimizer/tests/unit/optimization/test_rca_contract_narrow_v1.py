@@ -279,6 +279,7 @@ def test_lever_4_join_discovery_renders_under_both_flag_states():
         "current_join_specs": "[]",
         "discovery_hints": "(no hints)",
         "identifier_allowlist": "test.schema.t1.col1",
+        "raw_evidence_block": "",
     }
 
     # Flag off
