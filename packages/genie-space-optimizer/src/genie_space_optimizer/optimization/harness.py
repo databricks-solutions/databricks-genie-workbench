@@ -20281,7 +20281,16 @@ def _run_lever_loop(
                             )
                             _prior_iteration_feedback_for_strategist = None
 
-                        strategy = _call_llm_for_adaptive_strategy(
+                        # Plan 3 — route through the three-stage selector.
+                        # When both GSO_THREE_STAGE_V1 and
+                        # GSO_THREE_STAGE_SHADOW_V1 are off (default),
+                        # the selector returns the legacy strategist
+                        # result byte-stably via legacy_strategy_full.
+                        from genie_space_optimizer.optimization.three_stage_pipeline import (
+                            _select_strategy_path_for_iteration,
+                            _project_pipeline_to_action_groups,
+                        )
+                        _legacy_kwargs = dict(
                             clusters=_strategy_hard_clusters,
                             soft_signal_clusters=_strategy_soft_clusters,
                             metadata_snapshot=metadata_snapshot,
@@ -20317,6 +20326,27 @@ def _run_lever_loop(
                                 _prior_iteration_feedback_for_strategist
                             ),
                         )
+                        _selector_out = _select_strategy_path_for_iteration(
+                            legacy_kwargs=_legacy_kwargs,
+                            clusters_for_pipeline=_strategy_hard_clusters,
+                        )
+                        if _selector_out["source"] == "three_stage_pipeline":
+                            strategy = {
+                                "action_groups": _project_pipeline_to_action_groups(
+                                    _selector_out["pipeline_result"]
+                                ),
+                                "global_instruction_rewrite": {},
+                                "rationale": (
+                                    _selector_out["pipeline_result"]
+                                    .get("discovery_rationale", "")
+                                ),
+                            }
+                        else:
+                            # Plan 3 divergence: surface the full legacy
+                            # strategist dict (preserves global_instruction_rewrite,
+                            # rationale, and any other strategist keys) so
+                            # the default-off path is byte-stable.
+                            strategy = _selector_out["legacy_strategy_full"]
                         strategist_memo_cache[_memo_key] = copy.deepcopy(strategy)
                         strategy["_memoized"] = False
                     logger.info(

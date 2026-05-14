@@ -11004,10 +11004,73 @@ def _emit_three_stage_shadow_comparison(
     legacy_action_groups: list[dict],
     pipeline_stage_2_results: list[dict],
 ) -> None:
-    """Stub — replaced with the real implementation in Task 14.
-    Until then, this is a no-op so the orchestrator's compile-time
-    references resolve."""
-    return None
+    """Plan 3 — emit one shadow-comparison record per AG.
+
+    No-op when neither GSO_THREE_STAGE_V1 nor GSO_THREE_STAGE_SHADOW_V1
+    is on (defensive — selector's both-off branch never calls us).
+
+    Maps legacy ``lever_directives.keys()`` → canonical skill_ids
+    using the static legacy→skill table below; computes set overlap
+    between the mapped legacy keys and Stage-1 picks; records totals
+    and per-skill proposal counts for the export script.
+    """
+    from genie_space_optimizer.common.config import (
+        _record_three_stage_shadow_comparison,
+        three_stage_enabled,
+        three_stage_shadow_enabled,
+    )
+    if not (three_stage_enabled() or three_stage_shadow_enabled()):
+        return
+
+    # Legacy lever-directive key → canonical skill_id (one or many).
+    # When a legacy key maps to multiple skills (lever 5 → 5a + 5b),
+    # the legacy set absorbs both for the overlap calculation.
+    legacy_to_skills: dict[str, set[str]] = {
+        "1": {"lever-1-table-column-description"},
+        "2": {"lever-2-mv-column-refinement"},
+        "3": {"lever-3-tvf-routing"},
+        "4": {"lever-4-join-discovery"},
+        "5": {"lever-5a-instructions", "lever-5b-example-sql"},
+        "6": {"lever-6-sql-expression"},
+    }
+
+    legacy_keys: set[str] = set()
+    for ag in (legacy_action_groups or []):
+        for k in (ag.get("lever_directives", {}) or {}).keys():
+            legacy_keys.add(str(k))
+
+    legacy_skill_set: set[str] = set()
+    for k in legacy_keys:
+        legacy_skill_set |= legacy_to_skills.get(k, set())
+
+    stage_1_skill_set: set[str] = {
+        p.get("skill_id", "") for p in (stage_1_picks or [])
+        if p.get("skill_id")
+    }
+
+    union = legacy_skill_set | stage_1_skill_set
+    overlap = (
+        len(legacy_skill_set & stage_1_skill_set) / len(union)
+        if union else 1.0
+    )
+
+    proposals_per_skill = {
+        r.get("skill_id", ""): len(r.get("proposals") or [])
+        for r in (pipeline_stage_2_results or [])
+    }
+
+    record = {
+        "ag_id": ag_id,
+        "stage_1_skill_ids": sorted(stage_1_skill_set),
+        "legacy_lever_keys": sorted(legacy_keys),
+        "legacy_skill_set_mapped": sorted(legacy_skill_set),
+        "structural_overlap": overlap,
+        "stage_1_skills_only": sorted(stage_1_skill_set - legacy_skill_set),
+        "legacy_skills_only": sorted(legacy_skill_set - stage_1_skill_set),
+        "pipeline_proposals_per_skill": proposals_per_skill,
+        "pipeline_total_proposals": sum(proposals_per_skill.values()),
+    }
+    _record_three_stage_shadow_comparison(record)
 
 
 # ── Phase 1a: Triage ────────────────────────────────────────────────────

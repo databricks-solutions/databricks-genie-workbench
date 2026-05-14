@@ -1097,3 +1097,116 @@ def test_select_strategy_path_shadow_runs_both_applies_legacy(monkeypatch):
     # Divergence: shadow mode also preserves legacy_strategy_full for
     # byte-stable downstream use.
     assert out["legacy_strategy_full"]["rationale"] == "sh-rationale"
+
+
+# ── Section 9b: _emit_three_stage_shadow_comparison ───────────────────
+
+
+def test_emit_shadow_comparison_records_overlap():
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_SHADOW_V1": "1"})
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+
+    optimizer._emit_three_stage_shadow_comparison(
+        ag_id="AG1",
+        stage_1_picks=[
+            {"skill_id": "lever-4-join-discovery"},
+            {"skill_id": "lever-1-table-column-description"},
+        ],
+        legacy_action_groups=[{
+            "id": "AG1",
+            "lever_directives": {"1": {"tables": []}, "4": {"join_specs": []}},
+        }],
+        pipeline_stage_2_results=[
+            {"skill_id": "lever-4-join-discovery", "proposals": [{"x": 1}]},
+            {"skill_id": "lever-1-table-column-description", "proposals": []},
+        ],
+    )
+    snap = cfg.dump_three_stage_capture_summary()
+    assert snap["shadow_comparisons"] == 1
+
+
+def test_emit_shadow_comparison_no_op_when_no_flags():
+    cfg = _reload_config_with_env({})
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+
+    optimizer._emit_three_stage_shadow_comparison(
+        ag_id="AG1",
+        stage_1_picks=[],
+        legacy_action_groups=[],
+        pipeline_stage_2_results=[],
+    )
+    snap = cfg.dump_three_stage_capture_summary()
+    assert snap["shadow_comparisons"] == 0
+
+
+def test_emit_shadow_comparison_includes_overlap_metrics():
+    """Real comparison record must include skill_id sets + overlap
+    metrics so the export script can compute fixture-level statistics."""
+    import json
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "cap.ndjson"
+        cfg = _reload_config_with_env({
+            "GSO_THREE_STAGE_SHADOW_V1": "1",
+            "GSO_THREE_STAGE_CAPTURE_PATH": str(path),
+        })
+        cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+        from genie_space_optimizer.optimization import optimizer
+
+        optimizer._emit_three_stage_shadow_comparison(
+            ag_id="AG1",
+            stage_1_picks=[
+                {"skill_id": "lever-4-join-discovery"},
+                {"skill_id": "lever-1-table-column-description"},
+            ],
+            legacy_action_groups=[{
+                "id": "AG1",
+                "lever_directives": {"4": {"join_specs": []}, "5": {}},
+            }],
+            pipeline_stage_2_results=[
+                {"skill_id": "lever-4-join-discovery", "proposals": []},
+                {"skill_id": "lever-1-table-column-description", "proposals": []},
+            ],
+        )
+        record = json.loads(path.read_text().strip())
+        assert record["ag_id"] == "AG1"
+        assert sorted(record["stage_1_skill_ids"]) == [
+            "lever-1-table-column-description", "lever-4-join-discovery",
+        ]
+        assert sorted(record["legacy_lever_keys"]) == ["4", "5"]
+        # Mapping legacy lever keys → skill_ids: {4} → lever-4-join-discovery,
+        # {5} → lever-5a-instructions or lever-5b-example-sql (both, in
+        # split-mode) — emitter records the mapped form for diff:
+        assert "structural_overlap" in record
+        assert 0.0 <= record["structural_overlap"] <= 1.0
+
+
+def test_project_pipeline_to_action_groups_preserves_skill_to_lever_map():
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _project_pipeline_to_action_groups,
+    )
+    pipeline_result = {
+        "ag_id": "AG1",
+        "discovery_rationale": "missing join + missing instruction",
+        "stage_2_results": [
+            {"skill_id": "lever-4-join-discovery",
+             "proposals": [{"join_spec": {"left_table": "t1"}}]},
+            {"skill_id": "lever-5a-instructions",
+             "proposals": [{"instruction_text": "PURPOSE:\nX"}]},
+            {"skill_id": "lever-5b-example-sql",
+             "proposals": [{"example_sql": "SELECT 1"}]},
+        ],
+    }
+    ags = _project_pipeline_to_action_groups(pipeline_result)
+    assert len(ags) == 1
+    ag = ags[0]
+    assert ag["id"] == "AG1"
+    assert ag["_three_stage_pipeline"] is True
+    assert "4" in ag["lever_directives"]
+    assert "5" in ag["lever_directives"]
+    # Both 5a and 5b proposals merged into key "5":
+    five = ag["lever_directives"]["5"]["_pipeline_proposals"]
+    assert len(five) == 2
