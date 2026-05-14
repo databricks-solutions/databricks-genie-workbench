@@ -746,3 +746,87 @@ def test_three_stage_coverage_gate_raises_when_no_shadow_in_shadow_mode():
     cfg._record_three_stage_skill_dispatch("lever-4-join-discovery")
     with pytest.raises(RuntimeError, match="zero shadow comparison"):
         cfg._THREE_STAGE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+# ── Section 7: _stage_2_for_skill (L4 first) ──────────────────────────
+
+
+def _sample_bundle(skill_id: str = "lever-4-join-discovery"):
+    from genie_space_optimizer.optimization.activation_bundle import (
+        ActivationBundle,
+    )
+    from genie_space_optimizer.optimization.afs import format_afs
+    return ActivationBundle(
+        skill_id=skill_id,
+        ag_id="AG1",
+        target_objects=("catalog.schema.fact_bookings",
+                        "catalog.schema.dim_hotel"),
+        cluster_afs=(format_afs(_sample_cluster()),),
+        metadata_snapshot=_sample_metadata_snapshot(),
+        identifier_allowlist="catalog.schema.fact_bookings, catalog.schema.dim_hotel",
+        evidence_refs=("trace://q1",),
+        expected_impact_qids=("Q1",),
+        raw_evidence=(),
+        lever_directives_legacy=None,
+        discovery_rationale="missing join",
+        priority=1,
+    )
+
+
+def test_stage_2_for_skill_dispatches_l4(monkeypatch):
+    """L4 dispatcher delegates to _call_llm_for_join_discovery and
+    returns its list[{join_spec, rationale}] output unchanged."""
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    captured_calls = []
+    def _fake_join_discovery(metadata_snapshot, hints, w=None):
+        captured_calls.append({"hints": hints})
+        return [{
+            "join_spec": {
+                "left_table": "catalog.schema.fact_bookings",
+                "right_table": "catalog.schema.dim_hotel",
+                "join_guidance": "fact_bookings.hotel_key = dim_hotel.hotel_key",
+            },
+            "rationale": "from L4 stub",
+        }]
+    monkeypatch.setattr(optimizer, "_call_llm_for_join_discovery", _fake_join_discovery)
+
+    bundle = _sample_bundle("lever-4-join-discovery")
+    result = three_stage_pipeline._stage_2_for_skill(bundle, w=None)
+
+    assert result["skill_id"] == "lever-4-join-discovery"
+    assert result["ag_id"] == "AG1"
+    assert len(result["proposals"]) == 1
+    assert result["proposals"][0]["join_spec"]["left_table"] == "catalog.schema.fact_bookings"
+    assert len(captured_calls) == 1
+    # hints derived from target_objects:
+    assert any("fact_bookings" in str(h) for h in captured_calls[0]["hints"])
+
+
+def test_stage_2_for_skill_unknown_skill_returns_empty(monkeypatch):
+    """Unknown skill_id → empty proposals, error logged. Not an
+    exception — the orchestrator continues with the rest of the AG's
+    skill picks."""
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    bundle = _sample_bundle("not-a-real-skill")
+    result = three_stage_pipeline._stage_2_for_skill(bundle, w=None)
+    assert result["proposals"] == []
+    assert result["skill_id"] == "not-a-real-skill"
+    assert "no adapter" in result.get("error", "").lower()
+
+
+def test_stage_2_for_skill_records_capture_hit(monkeypatch):
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "1"})
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    monkeypatch.setattr(optimizer, "_call_llm_for_join_discovery",
+                         lambda metadata_snapshot, hints, w=None: [])
+
+    bundle = _sample_bundle("lever-4-join-discovery")
+    three_stage_pipeline._stage_2_for_skill(bundle, w=None)
+    snap = cfg.dump_three_stage_capture_summary()
+    assert snap["skill_dispatches"]["lever-4-join-discovery"] == 1
