@@ -181,6 +181,21 @@ def render_synthesis_prompt(afs: dict, archetype: Any, identifier_allowlist: str
     )
 
 
+# ── Skill identity (Plan 2 — Lever 5 Split) ───────────────────────────
+
+_LEVER_5B_SKILL_ID = "lever-5b-example-sql"
+
+
+def lever_5b_skill_id() -> str:
+    """Canonical skill_id for the L5b example-SQL synthesis path.
+
+    Used by ``optimization.optimizer._dispatch_lever_5_split`` and by
+    ``common.config._LeverFiveCaptureSink`` to coordinate capture
+    counters and coverage gating without a circular import.
+    """
+    return _LEVER_5B_SKILL_ID
+
+
 # ── 5-gate validation (P3.3) ──────────────────────────────────────────
 
 
@@ -935,7 +950,7 @@ def synthesize_example_sqls(
         try:
             raw, _ = _traced_llm_call(
                 w, "You are a SQL example author.", p,
-                span_name="synthesize_example_sql",
+                span_name="lever_5b_example_sql",
             )
             return raw
         except Exception:
@@ -1088,7 +1103,7 @@ def synthesize_example_sqls_for_rca(
                 w,
                 "You are a SQL example author.",
                 prompt,
-                span_name="synthesize_example_sql_for_rca",
+                span_name="lever_5b_example_sql_for_rca",
             )
         except Exception:
             logger.warning("RCA example SQL synthesis LLM call failed", exc_info=True)

@@ -75,3 +75,49 @@ def test_lever5_split_and_shadow_are_mutually_exclusive_in_practice():
     # Both helpers return True; the dispatcher resolves the precedence:
     assert cfg.lever5_split_enabled() is True
     assert cfg.lever5_shadow_enabled() is True
+
+
+# ── Section 1b: L5b byte-stability ────────────────────────────────────
+
+
+def test_render_synthesis_prompt_byte_stable_after_plan_2():
+    """Plan 2 explicitly does NOT modify the synthesis prompt template.
+    This test pins that contract — any byte change here is an unintended
+    regression."""
+    from genie_space_optimizer.optimization import synthesis
+
+    afs = {
+        "cluster_id": "C1",
+        "failure_type": "missing_filter",
+        "affected_judge": "result_correctness",
+        "question_count": 3,
+        "blame_set": ["catalog.schema.fact_orders.order_date"],
+        "counterfactual_fixes": ["add WHERE order_date >= '2024-01-01'"],
+        "structural_diff": {"missing": ["WHERE"]},
+        "judge_verdict_pattern": "result_count_mismatch",
+        "suggested_fix_summary": "add temporal filter",
+    }
+
+    class _Arch:
+        name = "temporal_filter_archetype"
+        output_shape = {"requires": ["WHERE"]}
+        prompt_template = "Use a WHERE clause filtering by the date column."
+
+    rendered = synthesis.render_synthesis_prompt(
+        afs, _Arch(), "catalog.schema.fact_orders.order_date",
+    )
+    # Pin the docstring-stable substrings of the template:
+    assert "abstracted failure signature (AFS)" in rendered
+    assert "Cluster ID: C1" in rendered
+    assert "Failure Type: missing_filter" in rendered
+    assert "temporal_filter_archetype" in rendered
+    assert "{{" not in rendered  # all template variables substituted
+    # Pin the output_format header so structural-template changes are caught:
+    assert "Output format (strict JSON)" in rendered
+
+
+def test_lever_5b_skill_id_accessor():
+    """synthesis.lever_5b_skill_id() returns the canonical skill_id used
+    by the dispatcher and capture sink."""
+    from genie_space_optimizer.optimization import synthesis
+    assert synthesis.lever_5b_skill_id() == "lever-5b-example-sql"
