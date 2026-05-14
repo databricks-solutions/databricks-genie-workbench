@@ -1172,6 +1172,12 @@ def assemble_run_manifest_v2_line(
     mlflow_experiment_id: str = "",
     space_id: str = "",
     event: str,
+    # Phase 0.1 — resolver-ladder kwargs (new, optional). When any are
+    # provided, the resolver runs in this precedence: dbutils > env >
+    # jobs_run_snapshot > the legacy scalar kwarg > "unknown".
+    env_resolved: Mapping[str, Any] | None = None,
+    dbutils_resolved: Mapping[str, Any] | None = None,
+    jobs_run_snapshot: Mapping[str, Any] | None = None,
 ) -> str:
     """Convenience wrapper used by the harness — collects build_metadata +
     effective flags and renders the V2 line in one call."""
@@ -1181,6 +1187,40 @@ def assemble_run_manifest_v2_line(
         read_python_version,
         read_wheel_sha,
     )
+
+    def _pick(*tiers: str) -> str:
+        for tier_val in tiers:
+            if tier_val:
+                return tier_val
+        return "unknown"
+
+    use_ladder = (
+        env_resolved is not None
+        or dbutils_resolved is not None
+        or jobs_run_snapshot is not None
+    )
+    if use_ladder:
+        _env = env_resolved or {}
+        _dbu = dbutils_resolved or {}
+        _snap = jobs_run_snapshot or {}
+        databricks_job_id = _pick(
+            str(_dbu.get("databricks_job_id") or ""),
+            str(_env.get("databricks_job_id") or ""),
+            str(_snap.get("job_id") or ""),
+            databricks_job_id,  # legacy scalar kwarg as last fallback
+        )
+        databricks_parent_run_id = _pick(
+            str(_dbu.get("databricks_parent_run_id") or ""),
+            str(_env.get("databricks_parent_run_id") or ""),
+            str(_snap.get("parent_run_id") or ""),
+            databricks_parent_run_id,
+        )
+        lever_loop_task_run_id = _pick(
+            str(_dbu.get("lever_loop_task_run_id") or ""),
+            str(_env.get("lever_loop_task_run_id") or ""),
+            str(_snap.get("task_run_id") or ""),
+            lever_loop_task_run_id,
+        )
 
     return run_manifest_v2_marker(
         optimization_run_id=optimization_run_id,
