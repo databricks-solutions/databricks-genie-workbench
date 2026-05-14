@@ -18039,6 +18039,71 @@ def _run_lever_loop(
         _iter_best_of_n_size: int = 1
         _iter_retire_signature: str = ""
         try:
+            # Phase 1.6 — reserved recovery iteration budget check.
+            # The LAST iteration of the lever loop is reserved for
+            # recovery: it only spends budget when there are regressed
+            # qids or uncovered clusters from prior rollback to work on.
+            # Otherwise we skip the iteration and terminate honestly.
+            # Gated by ``reserved_recovery_budget_enabled`` (default-ON);
+            # set ``GSO_RESERVED_RECOVERY_BUDGET=0`` to roll back.
+            from genie_space_optimizer.common.config import (
+                reserved_recovery_budget_enabled,
+            )
+            from genie_space_optimizer.optimization.recovery_budget import (
+                skip_or_proceed,
+                RecoveryBudgetAction,
+            )
+            if reserved_recovery_budget_enabled():
+                # Derive recovery-work signals from the previous
+                # iteration's reflection_buffer entry (the plan's
+                # documented fallback when no dedicated carryover
+                # variable exists in the harness). A rolled-back
+                # iteration leaves ``new_regressions`` (regressed qids)
+                # and ``source_cluster_ids`` (clusters that emerged
+                # from the rollback) on its reflection entry.
+                _prev_reflection: dict = (
+                    reflection_buffer[-1] if reflection_buffer else {}
+                )
+                _regressed_qids_count = len(
+                    _prev_reflection.get("new_regressions") or ()
+                )
+                # Only count uncovered clusters when the previous
+                # iteration was a rollback (i.e. not accepted) — an
+                # accepted iteration's source_cluster_ids are resolved,
+                # not uncovered.
+                _uncovered_cluster_ids_count = (
+                    len(_prev_reflection.get("source_cluster_ids") or ())
+                    if not _prev_reflection.get("accepted", True)
+                    else 0
+                )
+                _budget_action = skip_or_proceed(
+                    iteration=int(_iter_num),
+                    max_iterations=int(max_iterations),
+                    regressed_qids_count=_regressed_qids_count,
+                    uncovered_cluster_ids_count=_uncovered_cluster_ids_count,
+                )
+                if _budget_action == RecoveryBudgetAction.SKIP_EARLY_TERMINATE:
+                    # Honest early termination: emit the typed
+                    # no-candidate marker and break the lever loop.
+                    if _iter_marker_active and not _iter_terminal_emitted:
+                        try:
+                            print(iteration_no_candidate_marker(
+                                optimization_run_id=str(run_id or ""),
+                                iteration=int(_iter_num),
+                                terminal_reason="blast_radius_rejected",
+                                cluster_ids=(),
+                                ag_id="",
+                            ), flush=True)
+                            _iter_terminal_emitted = True
+                            _iter_terminal_reason = "blast_radius_rejected"
+                        except Exception:
+                            logger.debug(
+                                "Phase 1.6: reserved-recovery-budget "
+                                "marker emit failed (non-fatal)",
+                                exc_info=True,
+                            )
+                    break
+
             # ── Exit checks ──────────────────────────────────────────────
             from genie_space_optimizer.optimization.acceptance_policy import (
                 arbiter_objective_complete_from_counts,

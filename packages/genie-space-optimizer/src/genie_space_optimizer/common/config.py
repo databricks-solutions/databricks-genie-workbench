@@ -6723,3 +6723,14 @@ def ag_admission_blocking_enabled() -> bool:
     ignored).
     """
     return _flag_default_on("GSO_AG_ADMISSION_BLOCKING")
+
+
+def reserved_recovery_budget_enabled() -> bool:
+    """Phase 1.6 — when ON, the LAST iteration of the lever loop is
+    reserved for recovery work; skipped (with honest early
+    termination) when no regressed/uncovered clusters exist.
+
+    Default-ON. Explicit ``GSO_RESERVED_RECOVERY_BUDGET=0`` makes
+    every iteration consume budget regardless of work state.
+    """
+    return _flag_default_on("GSO_RESERVED_RECOVERY_BUDGET")
