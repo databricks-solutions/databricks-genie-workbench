@@ -333,12 +333,26 @@ _STAGE_2_DISPATCH_TABLE: dict[str, Callable[..., dict]] = {
 def _stage_2_for_skill(bundle: "ActivationBundle", w: Any) -> dict:
     """Dispatch one ActivationBundle to its skill's executor.
 
-    Returns the canonical envelope ``{skill_id, ag_id, proposals,
-    [error]}``. Unknown skill_id returns empty proposals + error
-    string; the orchestrator continues with remaining picks.
+    Plan 4 wraps Plan 3's dispatcher with shadow-mode logic:
+
+      * Default off (no Plan 4 flags) → single call with bundle as-is.
+        Byte-stable with Plan 3.
+      * Pipeline mode (``GSO_RAW_EVIDENCE_V1=1``) → single call with
+        bundle as-is (which now has populated raw_evidence per
+        Plan 4 Task 6).
+      * Shadow mode (``GSO_RAW_EVIDENCE_SHADOW_V1=1``) → TWO calls.
+        The "OFF" call uses a clone of the bundle with raw_evidence=();
+        the "ON" call uses the bundle as-is. The OFF result is
+        applied (zero production risk); the comparison record is
+        emitted via _emit_raw_evidence_shadow_comparison.
+
+    ``lever-5b-example-sql`` always runs once (its bundle's
+    raw_evidence is always () by projector design — there's nothing
+    to compare). Same for any unknown skill_id.
     """
     from genie_space_optimizer.common.config import (
         _record_three_stage_skill_dispatch,
+        raw_evidence_v1_shadow_enabled,
         three_stage_enabled,
         three_stage_shadow_enabled,
     )
@@ -359,7 +373,99 @@ def _stage_2_for_skill(bundle: "ActivationBundle", w: Any) -> dict:
     if three_stage_enabled() or three_stage_shadow_enabled():
         _record_three_stage_skill_dispatch(bundle.skill_id)
 
+    # Plan 4 shadow: only meaningful when bundle has raw evidence to
+    # toggle off. Empty raw_evidence (lever-5b, unknown skill,
+    # cluster with no failed-judge questions, GSO_RAW_EVIDENCE_N=0)
+    # falls through to the single-call path.
+    if raw_evidence_v1_shadow_enabled() and bundle.raw_evidence:
+        from dataclasses import replace
+        # OFF path: clone bundle with empty evidence; this is what gets applied.
+        off_bundle = replace(bundle, raw_evidence=())
+        off_result = adapter(off_bundle, w)
+        # ON path: bundle as-is; observability only.
+        try:
+            on_result = adapter(bundle, w)
+        except Exception:
+            logger.warning(
+                "Stage-2 raw-evidence ON path failed (AG=%s skill=%s) "
+                "— applying OFF result, no comparison emitted",
+                bundle.ag_id, bundle.skill_id, exc_info=True,
+            )
+            return off_result
+        _emit_raw_evidence_shadow_comparison(
+            ag_id=bundle.ag_id,
+            skill_id=bundle.skill_id,
+            n_evidence=len(bundle.raw_evidence),
+            off_proposals=off_result.get("proposals") or [],
+            on_proposals=on_result.get("proposals") or [],
+        )
+        return off_result
+
     return adapter(bundle, w)
+
+
+def _emit_raw_evidence_shadow_comparison(
+    ag_id: str,
+    skill_id: str,
+    n_evidence: int,
+    off_proposals: list,
+    on_proposals: list,
+) -> None:
+    """Plan 4 — emit one shadow-comparison record per Stage-2 dispatch.
+
+    No-op when neither raw-evidence flag is on.
+
+    Schema:
+      {
+        "ag_id": str,
+        "skill_id": str,
+        "n_evidence": int,
+        "off_proposal_count": int,
+        "on_proposal_count": int,
+        "off_proposal_keys": [...],   # sorted top-level keys, scrubbed
+        "on_proposal_keys": [...],
+        "structural_diff": "<one of: identical | count_differs | keys_differ | content_differs | both_empty>",
+      }
+    """
+    from genie_space_optimizer.common.config import (
+        _record_raw_evidence_shadow_comparison,
+        raw_evidence_v1_enabled,
+        raw_evidence_v1_shadow_enabled,
+    )
+    if not (raw_evidence_v1_enabled() or raw_evidence_v1_shadow_enabled()):
+        return
+
+    def _proposal_signature(props: list) -> tuple:
+        return tuple(
+            tuple(sorted((k for k in p.keys() if isinstance(k, str))))
+            for p in props if isinstance(p, dict)
+        )
+
+    off_sig = _proposal_signature(off_proposals)
+    on_sig = _proposal_signature(on_proposals)
+
+    if not off_proposals and not on_proposals:
+        diff = "both_empty"
+    elif len(off_proposals) != len(on_proposals):
+        diff = "count_differs"
+    elif off_sig != on_sig:
+        diff = "keys_differ"
+    elif off_proposals == on_proposals:
+        diff = "identical"
+    else:
+        diff = "content_differs"
+
+    record = {
+        "ag_id": ag_id,
+        "skill_id": skill_id,
+        "n_evidence": n_evidence,
+        "off_proposal_count": len(off_proposals),
+        "on_proposal_count": len(on_proposals),
+        "off_proposal_keys": [list(s) for s in off_sig],
+        "on_proposal_keys": [list(s) for s in on_sig],
+        "structural_diff": diff,
+    }
+    _record_raw_evidence_shadow_comparison(record)
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────

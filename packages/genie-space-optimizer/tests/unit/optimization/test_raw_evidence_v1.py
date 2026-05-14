@@ -815,4 +815,116 @@ def test_stage_2_l1_empty_raw_evidence_passes_empty_tuple(monkeypatch):
     assert all(rk["raw_evidence"] == () for rk in received_kwargs)
 
 
+# ── Section 10: shadow comparison ────────────────────────────────────
+
+
+def test_stage_2_for_skill_shadow_runs_both_paths(monkeypatch):
+    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_SHADOW_V1": "1"})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    captured = {"on_count": 0, "off_count": 0}
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
+               *, raw_evidence=()):
+        if raw_evidence:
+            captured["on_count"] += 1
+            return {"proposed_value": "with_evidence", "rationale": "on"}
+        else:
+            captured["off_count"] += 1
+            return {"proposed_value": "no_evidence", "rationale": "off"}
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
+
+    triples = ({"question_id": "Q1", "trace_id": "", "question": "q",
+                  "actual_sql": "a", "expected_sql": "e",
+                  "judge_rationale": "r"},)
+    bundle = _bundle_with_raw_evidence(
+        "lever-1-table-column-description", triples,
+    )
+    out = three_stage_pipeline._stage_2_for_skill(bundle, w=None)
+    assert captured["off_count"] >= 1, "OFF (applied) path must run"
+    assert captured["on_count"] >= 1, "ON (shadow) path must run"
+    snap = cfg.dump_raw_evidence_capture_summary()
+    assert snap["shadow_comparisons"] >= 1
+    # Applied result is the OFF result:
+    assert out["proposals"][0]["proposed_value"] == "no_evidence"
+
+
+def test_stage_2_for_skill_pipeline_mode_uses_on_only(monkeypatch):
+    """Pipeline mode (V1=1, SHADOW_V1=0) runs ONLY the raw-evidence-on
+    path. No shadow comparison emitted."""
+    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "1"})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    captured = {"on_count": 0, "off_count": 0}
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
+               *, raw_evidence=()):
+        if raw_evidence:
+            captured["on_count"] += 1
+            return {"proposed_value": "on", "rationale": "on"}
+        else:
+            captured["off_count"] += 1
+            return {"proposed_value": "off", "rationale": "off"}
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
+
+    triples = ({"question_id": "Q1", "trace_id": "", "question": "q",
+                  "actual_sql": "a", "expected_sql": "e",
+                  "judge_rationale": "r"},)
+    bundle = _bundle_with_raw_evidence(
+        "lever-1-table-column-description", triples,
+    )
+    out = three_stage_pipeline._stage_2_for_skill(bundle, w=None)
+    assert captured["on_count"] >= 1
+    assert captured["off_count"] == 0
+    snap = cfg.dump_raw_evidence_capture_summary()
+    assert snap["shadow_comparisons"] == 0
+    assert out["proposals"][0]["proposed_value"] == "on"
+
+
+def test_stage_2_for_skill_default_off_uses_off_only(monkeypatch):
+    """Default off: bundle has empty raw_evidence (Plan 3 byte-stable
+    behavior) AND no shadow path. Single call with empty tuple."""
+    cfg = _reload_config_with_env({})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    captured = {"calls": 0}
+    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
+               *, raw_evidence=()):
+        captured["calls"] += 1
+        return {"proposed_value": "x", "rationale": "x"}
+    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
+
+    bundle = _bundle_with_raw_evidence(
+        "lever-1-table-column-description", (),  # empty (default-off)
+    )
+    three_stage_pipeline._stage_2_for_skill(bundle, w=None)
+    # One call only — default-off matches Plan 3 byte-stably:
+    assert captured["calls"] == 1
+
+
+def test_stage_2_lever_5b_never_runs_shadow(monkeypatch):
+    """Even in shadow mode, lever-5b dispatches only ONCE — its
+    bundle has empty raw_evidence by design and shadow comparison
+    would be a no-op (nothing to compare). Skip the second call."""
+    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_SHADOW_V1": "1"})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    captured = {"calls": 0}
+    def _fake_5b(cluster, metadata_snapshot, w, benchmark_corpus):
+        captured["calls"] += 1
+        return []
+    monkeypatch.setattr(optimizer, "_dispatch_lever_5b_for_cluster", _fake_5b)
+
+    bundle = _bundle_with_raw_evidence("lever-5b-example-sql", ())
+    three_stage_pipeline._stage_2_for_skill(bundle, w=None)
+    assert captured["calls"] == 1, "lever-5b must run only once even in shadow mode"
+
+
+
 

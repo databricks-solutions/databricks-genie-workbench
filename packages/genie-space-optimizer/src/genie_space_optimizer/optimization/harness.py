@@ -31667,6 +31667,25 @@ def _run_lever_loop(
     except Exception as _ts_log_exc:
         logger.warning("three_stage summary emit failed: %s", _ts_log_exc)
 
+    # Plan 4 — raw-evidence trial telemetry. No-op unless one of
+    # GSO_RAW_EVIDENCE_V1 / GSO_RAW_EVIDENCE_SHADOW_V1 was set for this run.
+    try:
+        from genie_space_optimizer.common.config import dump_raw_evidence_capture_summary
+        _re_summary = dump_raw_evidence_capture_summary()
+        if (_re_summary["shadow_comparisons"] > 0
+                or any(c > 0 for c in _re_summary["projections"].values())):
+            logger.info(
+                "raw_evidence trial summary: projections=%s "
+                "shadow_comparisons=%d all_required_sites_exercised=%s "
+                "sink_path=%s",
+                _re_summary["projections"],
+                _re_summary["shadow_comparisons"],
+                _re_summary["all_required_sites_exercised"],
+                _re_summary.get("sink_path"),
+            )
+    except Exception as _re_log_exc:
+        logger.warning("raw_evidence summary emit failed: %s", _re_log_exc)
+
     return _build_loop_out_with_pretty_print(
         loop_out_base=_loop_out_base,
         phase_h_full_transcript=_full_transcript,
