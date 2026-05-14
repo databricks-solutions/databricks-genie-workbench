@@ -525,3 +525,114 @@ def test_lever_1_2_prompt_renders_anti_anchoring_when_evidence_provided():
     )
     assert "COMMON" in rendered
     assert "Example 1 of 3" in rendered
+
+
+# ── Section 7: build_activation_bundle integration ───────────────────
+
+
+def _sample_metadata_snapshot() -> dict:
+    return {
+        "tables": [{
+            "name": "catalog.schema.dim_store",
+            "column_configs": [{"name": "location_id"}, {"name": "is_active"}],
+        }],
+        "metric_views": [], "functions": [],
+        "instructions": {"text_instructions": []},
+    }
+
+
+def test_build_bundle_default_off_keeps_raw_evidence_empty():
+    cfg = _reload_config_with_env({})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization.activation_bundle import (
+        build_activation_bundle,
+    )
+    pick = {"skill_id": "lever-1-table-column-description",
+             "target_objects": ["catalog.schema.dim_store"],
+             "evidence_refs": [], "expected_impact_qids": [],
+             "why": "x", "priority": 1}
+    bundle = build_activation_bundle(
+        pick=pick, ag_id="AG1",
+        clusters=[_sample_cluster_with_traces()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+    )
+    assert bundle.raw_evidence == ()
+
+
+def test_build_bundle_flag_on_populates_raw_evidence_for_l1():
+    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "1"})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization.activation_bundle import (
+        build_activation_bundle,
+    )
+    pick = {"skill_id": "lever-1-table-column-description",
+             "target_objects": [], "evidence_refs": [],
+             "expected_impact_qids": [], "why": "x", "priority": 1}
+    bundle = build_activation_bundle(
+        pick=pick, ag_id="AG1",
+        clusters=[_sample_cluster_with_traces()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    assert isinstance(bundle.raw_evidence, tuple)
+    assert len(bundle.raw_evidence) == 3  # default N
+    for triple in bundle.raw_evidence:
+        assert "question" in triple
+        assert "actual_sql" in triple
+        assert "expected_sql" in triple
+        assert "judge_rationale" in triple
+
+
+def test_build_bundle_flag_on_lever_5b_stays_empty():
+    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "1"})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization.activation_bundle import (
+        build_activation_bundle,
+    )
+    pick = {"skill_id": "lever-5b-example-sql",
+             "target_objects": [], "evidence_refs": [],
+             "expected_impact_qids": [], "why": "x", "priority": 1}
+    bundle = build_activation_bundle(
+        pick=pick, ag_id="AG1",
+        clusters=[_sample_cluster_with_traces()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+    )
+    assert bundle.raw_evidence == ()
+
+
+def test_build_bundle_records_capture_when_flag_on():
+    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "1"})
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization.activation_bundle import (
+        build_activation_bundle,
+    )
+    pick = {"skill_id": "lever-1-table-column-description",
+             "target_objects": [], "evidence_refs": [],
+             "expected_impact_qids": [], "why": "x", "priority": 1}
+    build_activation_bundle(
+        pick=pick, ag_id="AG1",
+        clusters=[_sample_cluster_with_traces()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+    )
+    snap = cfg.dump_raw_evidence_capture_summary()
+    assert snap["projections"]["lever-1-table-column-description"] == 1
+
+
+def test_build_bundle_n_zero_keeps_evidence_empty_even_when_flag_on():
+    cfg = _reload_config_with_env({
+        "GSO_RAW_EVIDENCE_V1": "1", "GSO_RAW_EVIDENCE_N": "0",
+    })
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    from genie_space_optimizer.optimization.activation_bundle import (
+        build_activation_bundle,
+    )
+    pick = {"skill_id": "lever-1-table-column-description",
+             "target_objects": [], "evidence_refs": [],
+             "expected_impact_qids": [], "why": "x", "priority": 1}
+    bundle = build_activation_bundle(
+        pick=pick, ag_id="AG1",
+        clusters=[_sample_cluster_with_traces()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+    )
+    assert bundle.raw_evidence == ()
+
