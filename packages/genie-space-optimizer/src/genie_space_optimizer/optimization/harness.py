@@ -16895,6 +16895,14 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
+    # Plan 5 reliability fix: register the trial-capture upload safety
+    # net the moment the anchor is known. If the loop body raises before
+    # the in-line post-loop upload block runs, the atexit handler
+    # uploads whatever the four sinks managed to write before the raise.
+    # No-op when in_line_upload_completed is set later on the success
+    # path. Idempotent re-registration across calls within one process.
+    _plan5_register_trial_upload_safety_net(_phase_h_anchor_run_id)
+
     # Phase F+H C17 (v2): bundle-input accumulators for C18's
     # termination-time bundle assembly. Populated minimally on this
     # commit; per-iteration trace population is deferred (C18 will
@@ -31732,6 +31740,12 @@ def _run_lever_loop(
                 "resolved a sink_path; check Plan 1 import-time hits, "
                 "shadow flags for Plan 2/4)"
             )
+        # Mark in-line upload as completed so the atexit safety net
+        # registered earlier becomes a no-op. We mark even when
+        # ``capture_paths`` was empty: if no sink resolved on the
+        # success path, the atexit handler would observe the same and
+        # also skip, so re-attempting buys nothing.
+        _PLAN5_TRIAL_UPLOAD_STATE["in_line_upload_completed"] = True
     except Exception as _upload_exc:
         try:
             from genie_space_optimizer.common.config import _plan5_print as _p5p
@@ -31885,6 +31899,126 @@ def _upload_trial_captures_to_phase_h_anchor(
                 "Plan 5 trial-capture upload failed for %s: %s",
                 local_path, _exc,
             )
+
+
+# ── Plan 5 trial-capture upload safety net ──────────────────────────
+#
+# The in-line upload block at ``_run_lever_loop`` (search for "Plan 5 —
+# UI-triggered trial: upload") runs at function-body level *after* the
+# loop completes successfully. When the loop body raises before reaching
+# that block, the four NDJSON capture files sit on ``/tmp`` until the
+# notebook task ends, never get uploaded, and the postmortem bundle has
+# nothing under ``gso_trial_captures/``. That makes a single failed
+# trial waste the entire shadow-flag LLM cost premium.
+#
+# Wrapping the 15K-line ``_run_lever_loop`` body in ``try/finally`` is
+# surgically risky. Instead we register an ``atexit`` handler the moment
+# the Phase H anchor is known. The handler reads the four sink summaries
+# and uploads any non-empty NDJSON files. The in-line block (when it
+# does run) sets ``in_line_upload_completed = True`` so the atexit
+# handler becomes a no-op on the success path. This pattern matches the
+# existing per-sink coverage-gate atexit registrations in
+# ``common/config.py``.
+#
+# Module-level state is keyed by anchor_run_id so a hypothetical second
+# ``_run_lever_loop`` invocation in the same notebook task (rare; mostly
+# tests) overwrites the slot rather than races.
+_PLAN5_TRIAL_UPLOAD_STATE: dict[str, object] = {
+    "anchor_run_id": None,
+    "in_line_upload_completed": False,
+    "atexit_registered": False,
+}
+
+
+def _plan5_register_trial_upload_safety_net(
+    anchor_run_id: str | None,
+) -> None:
+    """Stamp module state with the resolved anchor and register an
+    ``atexit`` handler exactly once per process. Idempotent on repeat
+    calls within the same process.
+    """
+    state = _PLAN5_TRIAL_UPLOAD_STATE
+    state["anchor_run_id"] = anchor_run_id
+    state["in_line_upload_completed"] = False
+    if state["atexit_registered"]:
+        return
+    try:
+        import atexit
+        atexit.register(_plan5_atexit_upload_trial_captures)
+        state["atexit_registered"] = True
+    except Exception:
+        # atexit registration must never break the optimizer.
+        pass
+
+
+def _plan5_safe_dump(fn) -> dict | None:
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
+def _plan5_atexit_upload_trial_captures() -> None:
+    """Best-effort upload triggered at interpreter shutdown. Skipped
+    when the in-line post-loop block already succeeded. All exceptions
+    swallowed; the only externally visible signal is ``_plan5_print``
+    output to stderr (which postmortem bundles capture)."""
+    state = _PLAN5_TRIAL_UPLOAD_STATE
+    if state.get("in_line_upload_completed"):
+        return
+    try:
+        from genie_space_optimizer.common.config import (
+            _plan5_print,
+            dump_lever5_split_capture_summary,
+            dump_narrowing_capture_summary,
+            dump_raw_evidence_capture_summary,
+            dump_three_stage_capture_summary,
+        )
+        _plan5_print(
+            "[atexit] safety-net firing: in-line upload did not run "
+            "(loop likely raised); attempting trial-capture upload"
+        )
+        capture_paths = _collect_trial_capture_paths(
+            narrowing_summary=_plan5_safe_dump(dump_narrowing_capture_summary),
+            lever5_summary=_plan5_safe_dump(dump_lever5_split_capture_summary),
+            three_stage_summary=_plan5_safe_dump(
+                dump_three_stage_capture_summary
+            ),
+            raw_evidence_summary=_plan5_safe_dump(
+                dump_raw_evidence_capture_summary
+            ),
+        )
+        anchor = state.get("anchor_run_id")
+        if not isinstance(anchor, str) or not anchor:
+            _plan5_print(
+                f"[atexit] safety-net SKIP: no anchor_run_id in state "
+                f"(value={anchor!r}); captures sit on disk only"
+            )
+            return
+        if not capture_paths:
+            _plan5_print(
+                "[atexit] safety-net SKIP: no capture paths "
+                "(no sink resolved)"
+            )
+            return
+        _plan5_print(
+            f"[atexit] safety-net upload: anchor={anchor!r} "
+            f"capture_paths={capture_paths!r}"
+        )
+        _upload_trial_captures_to_phase_h_anchor(
+            anchor_run_id=anchor,
+            capture_paths=capture_paths,
+        )
+    except Exception as _exc:
+        # Last-ditch best-effort print; never re-raise from atexit.
+        try:
+            from genie_space_optimizer.common.config import _plan5_print
+            _plan5_print(
+                f"[atexit] safety-net itself failed: "
+                f"{type(_exc).__name__}: {_exc}"
+            )
+        except Exception:
+            pass
 
 
 # ── Stage 4: FINALIZE ───────────────────────────────────────────────
