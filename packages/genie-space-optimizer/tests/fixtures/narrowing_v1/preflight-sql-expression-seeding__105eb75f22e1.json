@@ -1,8 +1,0 @@
-{
-  "captured_at": 1778798226.580226,
-  "llm_response_bytes": "",
-  "prompt_bytes": "Given these SQL patterns extracted from proven benchmark queries for a Genie Space, generate business-friendly metadata for each:\n\n{{ candidates }}\n\nSchema context:\n{{ schema }}\n\nFor each candidate, provide:\n- display_name: A concise business-friendly name. MUST be specific enough to disambiguate the source table or business domain inside this space. When the SQL references a domain-specific table such as ``mv_<domain>_fact_<entity>`` or ``mv_<domain>_dim_<entity>`` (for example ``mv_orders_fact_lines`` or ``mv_claims_dim_date``), prefix the name with the compact qualifier (e.g. ``ORDERS Month-to-Date Filter``, ``CLAIMS Total Premium Amount``). Avoid generic names like ``Month-to-Date Filter`` or ``Total Revenue`` when multiple fact tables or metric views in this space could plausibly share that concept.\n- synonyms: 2-3 alternative terms users might use.\n- instruction: One sentence on when Genie should use this expression. MUST mention the source table or business domain so Genie can pick the correct snippet when several tables expose similar concepts.\n- alias: A snake_case identifier (for measures and expressions only).\n\nOutput strict JSON array matching the input order. Each element:\n{{\"display_name\": \"...\", \"synonyms\": [...], \"instruction\": \"...\", \"alias\": \"...\"}}\n",
-  "skill_id": "preflight-sql-expression-seeding",
-  "source": "template_snapshot",
-  "source_span_id": ""
-}
