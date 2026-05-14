@@ -264,3 +264,94 @@ def test_call_llm_for_lever_5a_instructions_records_capture_when_flag_on(monkeyp
     )
     snap = cfg.dump_lever5_split_capture_summary()
     assert snap["hits"]["lever-5a-instructions"] == 1
+
+
+# ── Section 4: _validate_lever_5a_no_sql_output ───────────────────────
+
+
+def test_validate_5a_accepts_pure_prose():
+    from genie_space_optimizer.optimization.optimizer import (
+        _validate_lever_5a_no_sql_output,
+    )
+    ok, reason = _validate_lever_5a_no_sql_output({
+        "instruction_text": (
+            "PURPOSE:\nHotel bookings.\n"
+            "ROUTING: Use fact_bookings for transactional queries.\n"
+            "Use GROUP BY booking_date for daily aggregations."
+        ),
+        "rationale": "Captures routing + temporal-grouping guidance.",
+    })
+    assert ok, reason
+
+
+def test_validate_5a_rejects_fenced_sql_block():
+    from genie_space_optimizer.optimization.optimizer import (
+        _validate_lever_5a_no_sql_output,
+    )
+    ok, reason = _validate_lever_5a_no_sql_output({
+        "instruction_text": (
+            "PURPOSE: Hotel bookings.\n\n"
+            "Example:\n```sql\nSELECT * FROM fact_bookings\n```\n"
+        ),
+        "rationale": "x",
+    })
+    assert not ok
+    assert "fenced SQL block" in reason
+
+
+def test_validate_5a_rejects_select_from_pattern():
+    from genie_space_optimizer.optimization.optimizer import (
+        _validate_lever_5a_no_sql_output,
+    )
+    ok, reason = _validate_lever_5a_no_sql_output({
+        "instruction_text": (
+            "PURPOSE: Use this query SELECT booking_id, hotel_key "
+            "FROM catalog.schema.fact_bookings WHERE booking_date >= '2024-01-01'."
+        ),
+        "rationale": "x",
+    })
+    assert not ok
+    assert "SELECT" in reason
+
+
+def test_validate_5a_rejects_example_sql_proposals_key():
+    from genie_space_optimizer.optimization.optimizer import (
+        _validate_lever_5a_no_sql_output,
+    )
+    ok, reason = _validate_lever_5a_no_sql_output({
+        "instruction_text": "PURPOSE:\nFine.",
+        "rationale": "x",
+        "example_sql_proposals": [{"example_sql": "SELECT 1"}],
+    })
+    assert not ok
+    assert "example_sql_proposals" in reason
+
+
+def test_validate_5a_allows_short_select_mentions_in_prose():
+    """A 'select' word in prose (e.g., 'select the right table') must
+    not trip the gate. The threshold is intentionally generous: ≥40
+    chars of SELECT...FROM..."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _validate_lever_5a_no_sql_output,
+    )
+    ok, reason = _validate_lever_5a_no_sql_output({
+        "instruction_text": (
+            "PURPOSE:\nHotel bookings.\n"
+            "Select the right fact table from these options."
+        ),
+        "rationale": "x",
+    })
+    assert ok, reason
+
+
+def test_validate_5a_allows_empty_instruction_text():
+    """Empty instruction_text is L5a's signal for 'nothing to add this
+    iteration'. Must not be rejected."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _validate_lever_5a_no_sql_output,
+    )
+    ok, _reason = _validate_lever_5a_no_sql_output({
+        "instruction_text": "",
+        "rationale": "Nothing actionable found.",
+    })
+    assert ok

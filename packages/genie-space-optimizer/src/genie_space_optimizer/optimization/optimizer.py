@@ -9285,10 +9285,24 @@ def _call_llm_for_lever_5a_instructions(
                 )
                 instruction_text = instruction_text[:MAX_HOLISTIC_INSTRUCTION_CHARS]
 
-            return {
+            candidate = {
                 "instruction_text": instruction_text,
                 "rationale": rationale,
             }
+            ok, reject_reason = _validate_lever_5a_no_sql_output(candidate)
+            if not ok:
+                logger.warning(
+                    "GSO_LEVER5A_REJECTED_V1: L5a output rejected by no-SQL gate "
+                    "on attempt %d: %s",
+                    attempt + 1, reject_reason,
+                )
+                if attempt < LLM_MAX_RETRIES - 1:
+                    # Repair retry: prepend the rejection reason to the
+                    # next prompt attempt so the LLM has direct feedback.
+                    text = ""
+                    continue
+                return {"instruction_text": "", "rationale": f"5a rejected: {reject_reason}"}
+            return candidate
         except json.JSONDecodeError:
             logger.warning(
                 "L5a LLM response was not valid JSON (attempt %d): %.500s",
@@ -11470,6 +11484,63 @@ def _validate_lever5_proposals(
             "Lever 5 proposal validation: %d rejected, %d kept", rejected, len(valid)
         )
     return valid
+
+
+# ── Plan 2 / Task 8 — defense-in-depth no-SQL gate for L5a ────────────
+
+_FENCED_SQL_RE = re.compile(r"```sql\b", re.IGNORECASE)
+# Note: plan-listed regex included ``\Z`` in the terminator alternation,
+# but that made it fire on prose like "Select the right fact table from
+# these options." (no WHERE/GROUP/;). Dropping ``\Z`` requires a real
+# SQL terminator, which is what the plan's prose-tolerant intent
+# specifies (see test_validate_5a_allows_short_select_mentions_in_prose).
+_SELECT_FROM_RE = re.compile(
+    r"\bSELECT\b[\s\S]{1,200}?\bFROM\b[\s\S]{0,200}?(?:\bWHERE\b|\bGROUP\b|;)",
+    re.IGNORECASE,
+)
+
+
+def _validate_lever_5a_no_sql_output(result: dict) -> tuple[bool, str]:
+    """Defense-in-depth gate: reject any L5a output that contains SQL.
+
+    The output schema in ``LEVER_5A_INSTRUCTION_PROMPT`` already
+    forbids ``example_sql_proposals`` and SQL blocks. This validator
+    catches the LLM going off-script.
+
+    Returns ``(ok, reason)``. ``ok=True`` means the result is publishable.
+
+    Detectors (in order, first match wins):
+      1. Forbidden top-level key ``example_sql_proposals`` in the dict.
+      2. Fenced ```sql code block in ``instruction_text`` (case-insensitive).
+      3. ``SELECT ... FROM ...`` pattern of ≥40 chars in ``instruction_text``
+         that resembles an actual query (heuristic; tuned to avoid prose
+         like "select the right table").
+    """
+    if not isinstance(result, dict):
+        return False, "result is not a dict"
+    if "example_sql_proposals" in result:
+        return False, (
+            "L5a output contains forbidden top-level key 'example_sql_proposals'; "
+            "use lever-5b-example-sql for SQL proposals."
+        )
+    instruction_text = result.get("instruction_text") or ""
+    if not isinstance(instruction_text, str):
+        return False, "instruction_text is not a string"
+    if not instruction_text.strip():
+        # Empty is fine — L5a's way to say "no changes this iteration".
+        return True, ""
+    if _FENCED_SQL_RE.search(instruction_text):
+        return False, (
+            "L5a instruction_text contains a fenced SQL block (```sql); "
+            "instructions are prose only, not SQL."
+        )
+    m = _SELECT_FROM_RE.search(instruction_text)
+    if m and len(m.group(0)) >= 40:
+        return False, (
+            f"L5a instruction_text contains a SELECT...FROM... pattern "
+            f"({len(m.group(0))} chars) that resembles SQL: {m.group(0)[:80]!r}"
+        )
+    return True, ""
 
 
 def _DEPRECATED_mine_benchmark_example_sqls_verbatim(
