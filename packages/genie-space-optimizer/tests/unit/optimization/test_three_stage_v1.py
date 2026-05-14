@@ -830,3 +830,114 @@ def test_stage_2_for_skill_records_capture_hit(monkeypatch):
     three_stage_pipeline._stage_2_for_skill(bundle, w=None)
     snap = cfg.dump_three_stage_capture_summary()
     assert snap["skill_dispatches"]["lever-4-join-discovery"] == 1
+
+
+# ── Section 8: run_three_stage_pipeline_for_ag ────────────────────────
+
+
+def test_pipeline_returns_stage_2_results_for_each_pick(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_stage_1_discovery",
+        lambda **kw: {
+            "applicable_skills": [{
+                "skill_id": "lever-4-join-discovery",
+                "target_objects": ["catalog.schema.fact_bookings",
+                                    "catalog.schema.dim_hotel"],
+                "expected_impact_qids": ["Q1"],
+                "evidence_refs": ["trace://q1"],
+                "why": "missing join",
+                "priority": 1,
+            }],
+            "discovery_rationale": "missing join across tables",
+        },
+    )
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_join_discovery",
+        lambda metadata_snapshot, hints, w=None: [{
+            "join_spec": {
+                "left_table": "catalog.schema.fact_bookings",
+                "right_table": "catalog.schema.dim_hotel",
+                "join_guidance": "fact_bookings.hotel_key = dim_hotel.hotel_key",
+            },
+            "rationale": "from L4",
+        }],
+    )
+
+    out = three_stage_pipeline.run_three_stage_pipeline_for_ag(
+        ag_id="AG1",
+        root_cause_summary="missing join",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    assert out["ag_id"] == "AG1"
+    assert out["fallback_to_legacy"] is False
+    assert len(out["stage_2_results"]) == 1
+    assert out["stage_2_results"][0]["skill_id"] == "lever-4-join-discovery"
+    assert len(out["stage_2_results"][0]["proposals"]) == 1
+
+
+def test_pipeline_falls_back_to_legacy_on_empty_picks(monkeypatch):
+    """Empty applicable_skills → fallback_to_legacy=True; no Stage-2
+    calls; orchestrator returns the empty stage_2_results."""
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_stage_1_discovery",
+        lambda **kw: {"applicable_skills": [], "discovery_rationale": "nothing"},
+    )
+
+    out = three_stage_pipeline.run_three_stage_pipeline_for_ag(
+        ag_id="AG1",
+        root_cause_summary="x",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    assert out["fallback_to_legacy"] is True
+    assert out["stage_2_results"] == []
+
+
+def test_pipeline_merges_duplicate_skill_picks(monkeypatch):
+    """Stage-1 returns two picks of the same skill_id with different
+    target_objects. Pipeline merges them into one bundle and runs
+    Stage-2 once."""
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    monkeypatch.setattr(
+        optimizer, "_call_llm_for_stage_1_discovery",
+        lambda **kw: {
+            "applicable_skills": [
+                {"skill_id": "lever-4-join-discovery",
+                 "target_objects": ["t1", "t2"],
+                 "expected_impact_qids": ["Q1"],
+                 "evidence_refs": [], "why": "join1", "priority": 1},
+                {"skill_id": "lever-4-join-discovery",
+                 "target_objects": ["t2", "t3"],
+                 "expected_impact_qids": ["Q2"],
+                 "evidence_refs": [], "why": "join2", "priority": 1},
+            ],
+            "discovery_rationale": "two join hints",
+        },
+    )
+    call_count = {"n": 0}
+    def _fake_join_discovery(metadata_snapshot, hints, w=None):
+        call_count["n"] += 1
+        return []
+    monkeypatch.setattr(optimizer, "_call_llm_for_join_discovery", _fake_join_discovery)
+
+    out = three_stage_pipeline.run_three_stage_pipeline_for_ag(
+        ag_id="AG1",
+        root_cause_summary="x",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    # One Stage-2 call (merged), not two:
+    assert call_count["n"] == 1
+    assert len(out["stage_2_results"]) == 1

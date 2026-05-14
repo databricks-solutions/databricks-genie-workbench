@@ -128,3 +128,78 @@ def _stage_2_for_skill(bundle: "ActivationBundle", w: Any) -> dict:
         _record_three_stage_skill_dispatch(bundle.skill_id)
 
     return adapter(bundle, w)
+
+
+# ── Orchestrator ──────────────────────────────────────────────────────
+
+
+def run_three_stage_pipeline_for_ag(
+    ag_id: str,
+    root_cause_summary: str,
+    clusters: list[dict],
+    metadata_snapshot: dict,
+    w: Any,
+) -> dict:
+    """Plan 3 — orchestrator. Stage-1 discovery → bundle build →
+    Stage-2 fan-out → result envelope.
+
+    Returns ``{"ag_id": str, "stage_1_picks": list[dict],
+    "discovery_rationale": str, "stage_2_results": list[dict],
+    "fallback_to_legacy": bool}``.
+
+    ``fallback_to_legacy=True`` means the caller MUST run
+    ``_call_llm_for_adaptive_strategy`` for this AG (logged with
+    marker ``GSO_DISCOVERY_FALLBACK_V1``). Triggered when:
+      * Stage-1 returned zero valid picks (LLM failure, parse error,
+        empty list, or all picks rejected as unknown skill_ids).
+    """
+    from genie_space_optimizer.optimization.activation_bundle import (
+        build_activation_bundle, merge_skill_picks,
+    )
+    from genie_space_optimizer.optimization.optimizer import (
+        _call_llm_for_stage_1_discovery,
+    )
+
+    discovery = _call_llm_for_stage_1_discovery(
+        ag_id=ag_id,
+        root_cause_summary=root_cause_summary,
+        clusters=clusters or [],
+        metadata_snapshot=metadata_snapshot,
+        w=w,
+    )
+    raw_picks = discovery.get("applicable_skills") or []
+    discovery_rationale = discovery.get("discovery_rationale", "")
+
+    if not raw_picks:
+        logger.info(
+            "GSO_DISCOVERY_FALLBACK_V1: AG=%s — Stage-1 returned 0 picks; "
+            "falling back to legacy strategist. discovery_rationale=%r",
+            ag_id, discovery_rationale[:200],
+        )
+        return {
+            "ag_id": ag_id,
+            "stage_1_picks": [],
+            "discovery_rationale": discovery_rationale,
+            "stage_2_results": [],
+            "fallback_to_legacy": True,
+        }
+
+    merged_picks = merge_skill_picks(raw_picks)
+    stage_2_results: list[dict] = []
+    for pick in merged_picks:
+        bundle = build_activation_bundle(
+            pick=pick,
+            ag_id=ag_id,
+            clusters=clusters or [],
+            metadata_snapshot=metadata_snapshot,
+        )
+        result = _stage_2_for_skill(bundle, w=w)
+        stage_2_results.append(result)
+
+    return {
+        "ag_id": ag_id,
+        "stage_1_picks": merged_picks,
+        "discovery_rationale": discovery_rationale,
+        "stage_2_results": stage_2_results,
+        "fallback_to_legacy": False,
+    }
