@@ -122,3 +122,122 @@ def test_three_non_causal_sites_keep_contract_when_flag_off():
     for name in non_causal_constants:
         prompt = getattr(cfg, name)
         assert "<unified_rca_engine_contract>" in prompt, name
+
+
+import json
+import tempfile
+from pathlib import Path
+
+
+def test_capture_sink_no_op_when_path_unset():
+    """When GSO_NARROWING_CAPTURE_PATH is unset, no NDJSON file should be
+    written even if GSO_RCA_CONTRACT_NARROW_V1=1 and a non-causal name
+    is queried. Counters still increment."""
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+        cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+        _ = cfg._rca_contract_for("lever-4-join-discovery")
+        # Counter incremented:
+        snap = cfg.dump_narrowing_capture_summary()
+        assert snap["hits"]["lever-4-join-discovery"] == 1
+        # No file:
+        assert list(Path(td).iterdir()) == []
+
+
+def test_capture_sink_writes_ndjson_when_path_set():
+    """With both flag and path, each non-causal call appends one
+    JSON line with the documented schema."""
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "capture.ndjson"
+        cfg = _reload_config_with_env({
+            "GSO_RCA_CONTRACT_NARROW_V1": "1",
+            "GSO_NARROWING_CAPTURE_PATH": str(path),
+        })
+        cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+        _ = cfg._rca_contract_for("lever-4-join-discovery")
+        _ = cfg._rca_contract_for("preflight-instruction-expand")
+        _ = cfg._rca_contract_for("lever-4-join-discovery")
+        # Causal name should NOT be captured:
+        _ = cfg._rca_contract_for("strategy-adaptive")
+
+        lines = path.read_text().strip().splitlines()
+        assert len(lines) == 3, lines
+        records = [json.loads(line) for line in lines]
+        skill_ids = [r["skill_id"] for r in records]
+        assert skill_ids == [
+            "lever-4-join-discovery",
+            "preflight-instruction-expand",
+            "lever-4-join-discovery",
+        ]
+        # Required fields:
+        for r in records:
+            assert set(r.keys()) >= {
+                "skill_id", "process_pid", "rendered_at_ts",
+                "header_omitted_bytes", "iteration_id",
+            }, r
+            assert isinstance(r["header_omitted_bytes"], int)
+            assert r["header_omitted_bytes"] > 0
+            assert isinstance(r["process_pid"], int)
+
+
+def test_capture_sink_no_op_when_flag_off_even_with_path():
+    """If the flag is off, no narrowing happens, so capture must not write."""
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "capture.ndjson"
+        cfg = _reload_config_with_env({
+            "GSO_NARROWING_CAPTURE_PATH": str(path),
+            # flag explicitly off
+        })
+        cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+        _ = cfg._rca_contract_for("lever-4-join-discovery")
+        assert not path.exists(), "capture must not write when flag is off"
+
+
+def test_dump_summary_returns_per_skill_counts():
+    cfg = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._rca_contract_for("lever-4-join-discovery")
+    cfg._rca_contract_for("lever-4-join-discovery")
+    cfg._rca_contract_for("preflight-instruction-expand")
+    snap = cfg.dump_narrowing_capture_summary()
+    assert snap["hits"] == {
+        "lever-4-join-discovery": 2,
+        "preflight-instruction-expand": 1,
+        "preflight-sql-expression-seeding": 0,
+    }
+    assert snap["all_sites_exercised"] is False
+    assert snap["unhit_sites"] == ("preflight-sql-expression-seeding",)
+
+
+def test_coverage_gate_passes_when_all_sites_hit():
+    cfg = _reload_config_with_env({
+        "GSO_RCA_CONTRACT_NARROW_V1": "1",
+        "GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    for name in cfg._NON_CAUSAL_PROMPT_NAMES:  # noqa: SLF001
+        cfg._rca_contract_for(name)
+    # Should not raise:
+    cfg._NARROWING_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+def test_coverage_gate_raises_when_a_site_is_unhit():
+    cfg = _reload_config_with_env({
+        "GSO_RCA_CONTRACT_NARROW_V1": "1",
+        "GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE": "1",
+    })
+    cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._rca_contract_for("lever-4-join-discovery")
+    # Two sites unhit:
+    import pytest
+    with pytest.raises(RuntimeError, match="narrowing trial incomplete"):
+        cfg._NARROWING_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
+
+
+def test_coverage_gate_no_op_when_flag_unset():
+    """The gate is opt-in — without GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE
+    it does nothing even if coverage is incomplete."""
+    cfg = _reload_config_with_env({"GSO_RCA_CONTRACT_NARROW_V1": "1"})
+    cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    # Don't trigger any sites; gate is opt-in so this should not raise:
+    cfg._NARROWING_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001

@@ -1634,8 +1634,164 @@ def _rca_contract_for(prompt_name: str) -> str:
     if prompt_name in _NON_CAUSAL_PROMPT_NAMES:
         raw = os.environ.get("GSO_RCA_CONTRACT_NARROW_V1", "").strip().lower()
         if raw in ("1", "true", "yes", "on"):
+            _record_narrowing_hit(prompt_name)
             return ""
     return _RCA_CONTRACT_HEADER
+
+
+# ── Plan 1 (Phase 1): one-shot trial-run capture for fixture pinning ──
+# Lever-loop runs are expensive (multi-hour, $$). The capture sink turns
+# the single trial run with GSO_RCA_CONTRACT_NARROW_V1=1 into the
+# definitive source of truth for two follow-up actions:
+#   1. Pin byte-stability fixtures (via scripts/export_narrowing_fixtures.py).
+#   2. Confidently flip GSO_RCA_CONTRACT_NARROW_V1 default-on.
+#
+# The capture is byte-cheap: one NDJSON line per non-causal-site render
+# with no prompt content (prompt bytes live in MLflow, fetched at
+# fixture-export time). The optional coverage gate (registered via
+# atexit) fails loud if any of the 3 non-causal sites recorded zero
+# hits — preventing silent partial coverage from contaminating the
+# fixture set.
+#
+# All three behaviors (counters, NDJSON sink, coverage gate) are
+# default-off and gated on env vars so this is invisible in CI and
+# existing dev runs.
+import atexit as _atexit
+import json as _json
+import threading as _threading
+import time as _time
+
+
+def _flag_enabled_inline(env_name: str) -> bool:
+    """Inline truthy-env check that mirrors ``_flag_enabled`` (defined
+    below in this file). Duplicated here because the canonical helper is
+    out of forward-reference range at module import."""
+    raw = os.environ.get(env_name, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+class _NarrowingCaptureSink:
+    """Per-process capture sink for non-causal prompt renders under
+    GSO_RCA_CONTRACT_NARROW_V1=1."""
+
+    def __init__(self) -> None:
+        self._lock = _threading.Lock()
+        self._hits: dict[str, int] = {name: 0 for name in _NON_CAUSAL_PROMPT_NAMES}
+        self._sink_path: str | None = None
+        self._sink_path_resolved = False
+        self._coverage_gate_registered = False
+
+    def _resolve_sink_path(self) -> str | None:
+        # Resolve once per process. Re-resolution would be wrong because
+        # tests reload the module under patched env; reset_for_test()
+        # clears this flag.
+        if not self._sink_path_resolved:
+            self._sink_path = (os.environ.get("GSO_NARROWING_CAPTURE_PATH") or "").strip() or None
+            self._sink_path_resolved = True
+        return self._sink_path
+
+    def record_hit(self, skill_id: str, header_omitted_bytes: int) -> None:
+        """Increment counter; optionally append NDJSON line."""
+        with self._lock:
+            if skill_id in self._hits:
+                self._hits[skill_id] += 1
+            path = self._resolve_sink_path()
+            if path is not None:
+                # iteration_id is best-effort: pulled from a contextvar
+                # if some downstream code sets one, else "" so the field
+                # exists in every record for downstream tooling.
+                try:
+                    from genie_space_optimizer.optimization.evaluation import (
+                        _current_scorer_feedback_cache,
+                    )
+                    cache = _current_scorer_feedback_cache.get()
+                    iteration_id = getattr(cache, "iteration_id", "") if cache else ""
+                except Exception:
+                    iteration_id = ""
+
+                record = {
+                    "skill_id": skill_id,
+                    "process_pid": os.getpid(),
+                    "rendered_at_ts": _time.time(),
+                    "header_omitted_bytes": int(header_omitted_bytes),
+                    "iteration_id": iteration_id,
+                }
+                # Line-buffered append so a process crash does not lose
+                # the most recent records.
+                try:
+                    with open(path, "a", encoding="utf-8", buffering=1) as fh:
+                        fh.write(_json.dumps(record) + "\n")
+                except OSError:
+                    # Capture is best-effort; never break the optimizer
+                    # because a temp dir was unwriteable.
+                    pass
+
+            # Register the atexit gate exactly once (only if requested).
+            if not self._coverage_gate_registered and _flag_enabled_inline(
+                "GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE"
+            ):
+                _atexit.register(self._atexit_gate)
+                self._coverage_gate_registered = True
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            hits = dict(self._hits)
+        unhit = tuple(sorted(name for name, count in hits.items() if count == 0))
+        return {
+            "hits": hits,
+            "all_sites_exercised": len(unhit) == 0,
+            "unhit_sites": unhit,
+            "sink_path": self._sink_path,
+        }
+
+    def enforce_coverage_or_raise(self) -> None:
+        """Raise if GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE=1 and any
+        non-causal site recorded zero hits. No-op otherwise."""
+        if not _flag_enabled_inline("GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE"):
+            return
+        snap = self.snapshot()
+        if not snap["all_sites_exercised"]:
+            raise RuntimeError(
+                "narrowing trial incomplete: "
+                f"unhit_sites={snap['unhit_sites']}; this trial cannot "
+                "finalize fixtures, do not commit captures. "
+                f"hits={snap['hits']} sink_path={snap['sink_path']}"
+            )
+
+    def _atexit_gate(self) -> None:
+        # atexit handlers must not raise — log loudly and exit non-zero
+        # so a CI / job runner can detect failure.
+        try:
+            self.enforce_coverage_or_raise()
+        except RuntimeError as exc:
+            import sys as _sys
+            print(f"[GSO_NARROWING] {exc}", file=_sys.stderr)
+            os._exit(2)  # bypass other atexit handlers
+
+    def reset_for_test(self) -> None:
+        """Test hook: clear counters and re-resolve env on next call."""
+        with self._lock:
+            self._hits = {name: 0 for name in _NON_CAUSAL_PROMPT_NAMES}
+            self._sink_path = None
+            self._sink_path_resolved = False
+            self._coverage_gate_registered = False
+
+
+_NARROWING_CAPTURE_SINK = _NarrowingCaptureSink()
+
+
+def _record_narrowing_hit(skill_id: str) -> None:
+    _NARROWING_CAPTURE_SINK.record_hit(skill_id, len(_RCA_CONTRACT_HEADER))
+
+
+def dump_narrowing_capture_summary() -> dict:
+    """Public entry point for harness end-of-run logging. Returns
+    ``{"hits": {skill_id: count}, "all_sites_exercised": bool,
+       "unhit_sites": tuple[str, ...], "sink_path": str | None}``.
+
+    Safe to call regardless of flag state.
+    """
+    return _NARROWING_CAPTURE_SINK.snapshot()
 
 
 # ── 5b. Proposal Generation Prompts ───────────────────────────────────
