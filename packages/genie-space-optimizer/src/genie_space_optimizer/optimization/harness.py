@@ -31694,19 +31694,53 @@ def _run_lever_loop(
     # Each summary may be None if its dump_* call swallowed an
     # exception in the blocks above; _collect_trial_capture_paths
     # handles that gracefully.
+    #
+    # Plan 5 self-diagnosing instrumentation: also write the four
+    # snapshots and the resolved capture-paths list to stderr via
+    # ``_plan5_print`` so the next UI trial's notebook stdout contains
+    # an explicit Plan-5 trail. Postmortem bundles only carry the
+    # notebook return-value JSON (per ``STDOUT_FALLBACK_NOTEBOOK_OUTPUT``
+    # diagnostic), so logger.info records do not survive — these
+    # ``print(file=sys.stderr)`` lines do.
     try:
+        from genie_space_optimizer.common.config import _plan5_print
+        _plan5_print(
+            f"post-loop snapshots: "
+            f"narrowing={locals().get('_narrowing_summary')!r} "
+            f"lever5_split={locals().get('_l5_summary')!r} "
+            f"three_stage={locals().get('_ts_summary')!r} "
+            f"raw_evidence={locals().get('_re_summary')!r}"
+        )
         _capture_paths = _collect_trial_capture_paths(
             narrowing_summary=locals().get("_narrowing_summary"),
             lever5_summary=locals().get("_l5_summary"),
             three_stage_summary=locals().get("_ts_summary"),
             raw_evidence_summary=locals().get("_re_summary"),
         )
+        _plan5_print(
+            f"upload step entry: anchor={_phase_h_anchor_run_id!r} "
+            f"capture_paths={_capture_paths!r}"
+        )
         if _capture_paths:
             _upload_trial_captures_to_phase_h_anchor(
                 anchor_run_id=_phase_h_anchor_run_id,
                 capture_paths=_capture_paths,
             )
+        else:
+            _plan5_print(
+                "upload step skipped: capture_paths empty (no sink "
+                "resolved a sink_path; check Plan 1 import-time hits, "
+                "shadow flags for Plan 2/4)"
+            )
     except Exception as _upload_exc:
+        try:
+            from genie_space_optimizer.common.config import _plan5_print as _p5p
+            _p5p(
+                f"upload step exception: type={type(_upload_exc).__name__} "
+                f"err={_upload_exc!r}"
+            )
+        except Exception:
+            pass
         logger.warning(
             "Plan 5 capture-artifact upload step failed: %s",
             _upload_exc,
@@ -31784,13 +31818,30 @@ def _upload_trial_captures_to_phase_h_anchor(
       client: Optional MLflow client for testing. Defaults to a fresh
         ``MlflowClient()`` when None.
     """
+    # Plan 5 self-diagnosing instrumentation: every branch prints to
+    # stderr via ``_plan5_print`` so the next UI trial's notebook
+    # stdout reveals which branch fired. Logger records do not survive
+    # the postmortem bundle's ``notebook_output.result`` capture path.
+    try:
+        from genie_space_optimizer.common.config import _plan5_print
+    except Exception:
+        def _plan5_print(line: str) -> None:  # type: ignore[no-redef]
+            return
     if not anchor_run_id:
+        _plan5_print(
+            "upload helper no-op: anchor_run_id is empty; "
+            "Phase H anchor resolution failed earlier"
+        )
         return
     if client is None:
         try:
             from mlflow.tracking import MlflowClient  # type: ignore[import-not-found]
             client = MlflowClient()
         except Exception as _exc:
+            _plan5_print(
+                f"upload helper aborted: MlflowClient unavailable "
+                f"err={type(_exc).__name__}: {_exc}"
+            )
             logger.warning(
                 "Plan 5 trial-capture upload skipped: MlflowClient "
                 "unavailable: %s", _exc,
@@ -31798,19 +31849,38 @@ def _upload_trial_captures_to_phase_h_anchor(
             return
     for local_path in capture_paths:
         if not local_path:
+            _plan5_print("upload helper skipping empty capture_paths entry")
             continue
         try:
             from pathlib import Path as _P
             if not _P(local_path).is_file():
+                _plan5_print(
+                    f"upload helper SKIP path not on disk: {local_path!r} "
+                    f"(sink resolved this path but no record reached the "
+                    f"file — check sink write OSError prints above)"
+                )
                 continue
-        except Exception:
+            _file_bytes = _P(local_path).stat().st_size
+        except Exception as _stat_exc:
+            _plan5_print(
+                f"upload helper SKIP stat failed for {local_path!r}: "
+                f"{type(_stat_exc).__name__}: {_stat_exc}"
+            )
             continue
         try:
             client.log_artifact(
                 anchor_run_id, local_path,
                 artifact_path="gso_trial_captures",
             )
+            _plan5_print(
+                f"upload helper OK: anchor={anchor_run_id} "
+                f"path={local_path!r} bytes={_file_bytes}"
+            )
         except Exception as _exc:
+            _plan5_print(
+                f"upload helper FAIL log_artifact: anchor={anchor_run_id} "
+                f"path={local_path!r} err={type(_exc).__name__}: {_exc}"
+            )
             logger.warning(
                 "Plan 5 trial-capture upload failed for %s: %s",
                 local_path, _exc,

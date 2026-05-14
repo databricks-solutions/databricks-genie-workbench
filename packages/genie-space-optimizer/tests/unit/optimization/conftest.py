@@ -61,7 +61,19 @@ def _clear_require_coverage_env() -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_capture_sinks_around_each_test():
+    # Plan 5 self-diagnosing prints are silenced in tests so the
+    # autouse sink resets and any stray ``_run_lever_loop`` invocations
+    # don't pollute pytest stderr. Production behavior unaffected
+    # (the env var is only set inside the test process).
+    prior_quiet = os.environ.get("GSO_TRIAL_CAPTURE_DEBUG_QUIET")
+    os.environ["GSO_TRIAL_CAPTURE_DEBUG_QUIET"] = "1"
     _reset_all_sinks()
-    yield
-    _reset_all_sinks()
-    _clear_require_coverage_env()
+    try:
+        yield
+    finally:
+        _reset_all_sinks()
+        _clear_require_coverage_env()
+        if prior_quiet is None:
+            os.environ.pop("GSO_TRIAL_CAPTURE_DEBUG_QUIET", None)
+        else:
+            os.environ["GSO_TRIAL_CAPTURE_DEBUG_QUIET"] = prior_quiet

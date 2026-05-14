@@ -1675,6 +1675,34 @@ def _flag_enabled_inline(env_name: str) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _plan5_print(line: str) -> None:
+    """Plan 5 self-diagnosing telemetry: emit a single-line marker to
+    stderr that survives Databricks' notebook_output capture path.
+
+    Why ``print`` and not ``logger``: in production the lever-loop runs
+    inside a Databricks Jobs notebook task whose ``logs`` field is
+    typically empty (per postmortem manifest's STDOUT_FALLBACK_NOTEBOOK_OUTPUT
+    diagnosis). The only stdout/stderr that reliably reaches the
+    postmortem bundle is what lands in ``notebook_output.result`` and
+    its sibling streams. Logger handlers, root level, and notebook log
+    forwarders all sit on top of that and have historically dropped
+    INFO/WARNING records. ``print(file=sys.stderr)`` bypasses all of
+    that and gives the next trial a self-explaining failure trail.
+
+    Suppressed when ``GSO_TRIAL_CAPTURE_DEBUG_QUIET=1`` so the autouse
+    conftest fixtures that exercise the sinks per-test don't spam
+    pytest output."""
+    if _flag_enabled_inline("GSO_TRIAL_CAPTURE_DEBUG_QUIET"):
+        return
+    try:
+        import sys as _sys
+        print(f"[GSO_PLAN5] {line}", file=_sys.stderr, flush=True)
+    except Exception:
+        # Telemetry must never break the optimizer; if even printing
+        # fails (closed stderr in some embedded harness), drop silently.
+        pass
+
+
 class _NarrowingCaptureSink:
     """Per-process capture sink for non-causal prompt renders under
     GSO_RCA_CONTRACT_NARROW_V1=1."""
@@ -1702,11 +1730,16 @@ class _NarrowingCaptureSink:
             self._sink_path_resolved = True
             # Make sure the parent directory exists. This is best-effort:
             # if /tmp is unwriteable the open(...) call elsewhere will
-            # silently swallow OSError.
+            # silently swallow OSError. Plan 5 instrumentation: print on
+            # makedirs failure so the next UI trial reveals the silent
+            # filesystem issue in notebook stdout.
             try:
                 os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
-            except OSError:
-                pass
+            except OSError as _mkdirs_exc:
+                _plan5_print(
+                    f"narrowing sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
+                    f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
+                )
         return self._sink_path
 
     def record_hit(self, skill_id: str, header_omitted_bytes: int) -> None:
@@ -1736,14 +1769,19 @@ class _NarrowingCaptureSink:
                     "iteration_id": iteration_id,
                 }
                 # Line-buffered append so a process crash does not lose
-                # the most recent records.
+                # the most recent records. Plan 5: print on write
+                # failure so the next UI trial's notebook stdout reveals
+                # the silent filesystem issue.
                 try:
                     with open(path, "a", encoding="utf-8", buffering=1) as fh:
                         fh.write(_json.dumps(record) + "\n")
-                except OSError:
+                except OSError as _write_exc:
                     # Capture is best-effort; never break the optimizer
                     # because a temp dir was unwriteable.
-                    pass
+                    _plan5_print(
+                        f"narrowing sink write FAILED path={path!r} "
+                        f"err={type(_write_exc).__name__}: {_write_exc}"
+                    )
 
             # Register the atexit gate exactly once. Plan 5 makes the
             # production helper always return False; we cannot call the
@@ -1866,8 +1904,11 @@ class _LeverFiveCaptureSink:
             self._sink_path_resolved = True
             try:
                 os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
-            except OSError:
-                pass
+            except OSError as _mkdirs_exc:
+                _plan5_print(
+                    f"lever5_split sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
+                    f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
+                )
         return self._sink_path
 
     def record_skill_hit(self, skill_id: str) -> None:
@@ -1887,8 +1928,11 @@ class _LeverFiveCaptureSink:
                 try:
                     with open(path, "a", encoding="utf-8", buffering=1) as fh:
                         fh.write(_json.dumps(payload, default=str) + "\n")
-                except OSError:
-                    pass
+                except OSError as _write_exc:
+                    _plan5_print(
+                        f"lever5_split sink write FAILED path={path!r} "
+                        f"err={type(_write_exc).__name__}: {_write_exc}"
+                    )
             self._maybe_register_atexit()
 
     def _maybe_register_atexit(self) -> None:
@@ -5479,8 +5523,11 @@ class _ThreeStageCaptureSink:
             self._sink_path_resolved = True
             try:
                 os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
-            except OSError:
-                pass
+            except OSError as _mkdirs_exc:
+                _plan5_print(
+                    f"three_stage sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
+                    f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
+                )
         return self._sink_path
 
     def record_discovery_call(self, ag_id: str) -> None:
@@ -5505,8 +5552,11 @@ class _ThreeStageCaptureSink:
                 try:
                     with open(path, "a", encoding="utf-8", buffering=1) as fh:
                         fh.write(_json.dumps(payload, default=str) + "\n")
-                except OSError:
-                    pass
+                except OSError as _write_exc:
+                    _plan5_print(
+                        f"three_stage sink write FAILED path={path!r} "
+                        f"err={type(_write_exc).__name__}: {_write_exc}"
+                    )
             self._maybe_register_atexit()
 
     def _maybe_register_atexit(self) -> None:
@@ -5730,8 +5780,11 @@ class _RawEvidenceCaptureSink:
             self._sink_path_resolved = True
             try:
                 os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
-            except OSError:
-                pass
+            except OSError as _mkdirs_exc:
+                _plan5_print(
+                    f"raw_evidence sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
+                    f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
+                )
         return self._sink_path
 
     def record_projection(self, skill_id: str) -> None:
@@ -5751,8 +5804,11 @@ class _RawEvidenceCaptureSink:
                 try:
                     with open(path, "a", encoding="utf-8", buffering=1) as fh:
                         fh.write(_json.dumps(payload, default=str) + "\n")
-                except OSError:
-                    pass
+                except OSError as _write_exc:
+                    _plan5_print(
+                        f"raw_evidence sink write FAILED path={path!r} "
+                        f"err={type(_write_exc).__name__}: {_write_exc}"
+                    )
             self._maybe_register_atexit()
 
     def _maybe_register_atexit(self) -> None:
