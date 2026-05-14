@@ -1,0 +1,11 @@
+{
+  "ag_id": "AG_SYNTH_RE_BOTH_EMPTY_005",
+  "n_evidence": 0,
+  "off_proposal_count": 0,
+  "off_proposal_keys": [],
+  "on_proposal_count": 0,
+  "on_proposal_keys": [],
+  "skill_id": "lever-5b-example-sql",
+  "source": "synthetic_comparison",
+  "structural_diff": "both_empty"
+}

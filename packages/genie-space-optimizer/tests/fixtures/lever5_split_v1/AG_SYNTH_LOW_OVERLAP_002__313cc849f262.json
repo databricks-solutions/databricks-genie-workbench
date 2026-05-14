@@ -1,0 +1,35 @@
+{
+  "ag_id": "AG_SYNTH_LOW_OVERLAP_002",
+  "captured_at": 1778798948.873112,
+  "cluster_ids": [
+    "c-synth-003"
+  ],
+  "example_sqls_set_overlap": 0.0,
+  "instruction_text_jaccard": 0.15625,
+  "lever_5_holistic": {
+    "prompt_bytes": "",
+    "response_bytes": "{\"example_sql_proposals\": [{\"example_question\": \"Top 10 customers by lifetime value\", \"example_sql\": \"SELECT customer_id, total_revenue FROM orders_summary ORDER BY total_revenue DESC LIMIT 10\", \"usage_guidance\": \"Always read from orders_summary, not orders.\"}], \"instruction_text\": \"Use the orders_summary materialized view for any aggregation by customer because the underlying orders table contains draft rows that distort the totals.\"}"
+  },
+  "lever_5a": {
+    "instruction_text": "Filter customers by status='active' for any analysis of the customer base; inactive accounts skew counts and revenue.",
+    "rationale": "Split path uncovered a different root cause than the holistic path; both proposals are valid but address disjoint failures."
+  },
+  "lever_5b_proposals": [
+    {
+      "example_question": "Active customer count",
+      "example_sql": "SELECT COUNT(*) FROM customers WHERE status = 'active'",
+      "usage_guidance": "Always filter by status when counting customers."
+    }
+  ],
+  "new_5a_instruction_text_hash": "6a44f4a5e730d23a",
+  "new_example_sqls_count": 1,
+  "new_example_sqls_hashes": [
+    "932285e36ecd3dc9"
+  ],
+  "old_example_sqls_count": 1,
+  "old_example_sqls_hashes": [
+    "1655b30c90fb7a9e"
+  ],
+  "old_instruction_text_hash": "d852a3450dec4101",
+  "source": "synthetic_comparison"
+}
