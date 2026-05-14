@@ -1361,3 +1361,44 @@ def test_stage_2_l5a_l5b_dispatcher_registered():
     from genie_space_optimizer.optimization import three_stage_pipeline
     assert "lever-5a-instructions" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE
     assert "lever-5b-example-sql" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE
+
+
+# ── Section 7d: L6 stage-2 adapter ────────────────────────────────────
+
+
+def test_stage_2_l6_returns_proposal_per_cluster(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    def _fake_l6(cluster, metadata_snapshot, *, strategist_hints=None,
+                 w=None, spark=None, catalog="", gold_schema="",
+                 warehouse_id="", benchmarks=None):
+        return {"snippet_type": "filter", "sql": "x = 1",
+                 "instruction": "for X questions"}
+    monkeypatch.setattr(optimizer, "_generate_lever6_proposal", _fake_l6)
+
+    bundle = _sample_bundle("lever-6-sql-expression")
+    out = three_stage_pipeline._stage_2_l6(bundle, w=None)
+    assert out["skill_id"] == "lever-6-sql-expression"
+    assert len(out["proposals"]) == 1
+    assert out["proposals"][0]["snippet_type"] == "filter"
+
+
+def test_stage_2_l6_drops_none_proposals(monkeypatch):
+    """_generate_lever6_proposal returns None on validation failure;
+    adapter must filter Nones."""
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization import three_stage_pipeline
+
+    monkeypatch.setattr(
+        optimizer, "_generate_lever6_proposal",
+        lambda *a, **kw: None,
+    )
+    bundle = _sample_bundle("lever-6-sql-expression")
+    out = three_stage_pipeline._stage_2_l6(bundle, w=None)
+    assert out["proposals"] == []
+
+
+def test_stage_2_l6_dispatcher_registered():
+    from genie_space_optimizer.optimization import three_stage_pipeline
+    assert "lever-6-sql-expression" in three_stage_pipeline._STAGE_2_DISPATCH_TABLE

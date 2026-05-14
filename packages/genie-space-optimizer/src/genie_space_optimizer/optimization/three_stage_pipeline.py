@@ -260,6 +260,52 @@ def _stage_2_l5b(bundle: "ActivationBundle", w: Any) -> dict:
     }
 
 
+def _stage_2_l6(
+    bundle: "ActivationBundle",
+    w: Any,
+    *,
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    warehouse_id: str = "",
+    benchmarks: list[dict] | None = None,
+) -> dict:
+    """Stage-2 adapter for lever-6-sql-expression.
+
+    Per-cluster fan-out — Lever 6 produces one SQL-expression proposal
+    per cluster. Drops ``None`` returns (validation failures).
+
+    Extra kwargs (spark/catalog/gold_schema/warehouse_id/benchmarks)
+    are harness-side context — orchestrator threads them via
+    ``executor_context`` (Task 19).
+    """
+    from genie_space_optimizer.optimization.optimizer import (
+        _generate_lever6_proposal,
+    )
+    proposals: list[dict] = []
+    for cluster_afs in bundle.cluster_afs:
+        try:
+            p = _generate_lever6_proposal(
+                dict(cluster_afs), bundle.metadata_snapshot,
+                strategist_hints=None,
+                w=w, spark=spark, catalog=catalog,
+                gold_schema=gold_schema, warehouse_id=warehouse_id,
+                benchmarks=benchmarks,
+            )
+        except Exception:
+            logger.warning(
+                "Stage-2 L6 failed for AG=%s", bundle.ag_id, exc_info=True,
+            )
+            continue
+        if p is not None:
+            proposals.append(p)
+    return {
+        "skill_id": bundle.skill_id,
+        "ag_id": bundle.ag_id,
+        "proposals": proposals,
+    }
+
+
 # ── Dispatcher ────────────────────────────────────────────────────────
 
 # Plan 3 starts with L4 only. Tasks 15-18 add the remaining adapters
@@ -271,6 +317,7 @@ _STAGE_2_DISPATCH_TABLE: dict[str, Callable[..., dict]] = {
     "lever-4-join-discovery": _stage_2_l4,
     "lever-5a-instructions": _stage_2_l5a,
     "lever-5b-example-sql": _stage_2_l5b,
+    "lever-6-sql-expression": _stage_2_l6,
 }
 
 
