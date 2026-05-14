@@ -152,6 +152,9 @@ from genie_space_optimizer.optimization.example_smoke_test import (
     run_pre_promotion_smoke_test,
 )
 from genie_space_optimizer.optimization.preflight import run_preflight
+from genie_space_optimizer.optimization.prior_failure_count import (
+    compute_prior_failure_count,
+)
 from genie_space_optimizer.optimization.repeatability import run_repeatability_test
 from genie_space_optimizer.optimization.report import generate_report
 from genie_space_optimizer.optimization.scorers import make_all_scorers
@@ -4583,6 +4586,7 @@ def _emit_force_l6_outcome(
     cached: bool = False,
     original_decline_iteration: int | None = None,
     cluster_signature: str = "",
+    reflection_buffer: list | None = None,
 ) -> None:
     """Cycle 10 W3.4 — record typed outcomes for the Cycle 7 N3
     force-Lever-6 path. Emits two records when ``outcome="declined"``
@@ -4639,6 +4643,18 @@ def _emit_force_l6_outcome(
             # GSO_LEVER6_FORCE_TYPED_OUTCOMES paths stay byte-stable
             # when GSO_PROPOSAL_FAILURE_DECIDED is off.
             try:
+                # Phase 1.4 Task 8 — compute prior_failure_count from
+                # the reflection_buffer if it is in scope. Cluster
+                # signature is computed independently (it is NOT a
+                # TerminalSignature field; the cluster_id grouping is
+                # recorded only on the reflection_buffer entry).
+                _cluster_sig_for_pfc = (
+                    (str(cluster_id or ""), tuple(sorted(qids))),
+                )
+                _pfc = compute_prior_failure_count(
+                    cluster_signature=_cluster_sig_for_pfc,
+                    reflection_buffer=reflection_buffer or (),
+                )
                 _emit_proposal_failure_decided(
                     run_id=str(run_id),
                     iteration=int(iteration),
@@ -4652,7 +4668,7 @@ def _emit_force_l6_outcome(
                     tried_lever_families=(6,),
                     ag_source_cluster_count=1,
                     rca_card_grounded=True,
-                    prior_failure_count=0,
+                    prior_failure_count=_pfc,
                     target_qids=qids,
                     iter_inputs=iter_inputs,
                 )
@@ -23559,6 +23575,39 @@ def _run_lever_loop(
                     stage_key="action_group_selection",
                 )
                 _ag_slate = _ags_wrapped(_stage_ctx_a2, _ags_inp)
+                # Phase 1.1 — consume the slate's admission_trace.
+                # Today the harness ignores admission_trace entirely
+                # and continues with the original candidate_ags list;
+                # this block enforces DENIED verdicts and surfaces the
+                # AG_RETIRED pivot signal for Phase 1.3.
+                from genie_space_optimizer.common.config import (
+                    ag_admission_blocking_enabled as _admission_on,
+                )
+                if _admission_on():
+                    from genie_space_optimizer.optimization.admission_trace_consumer import (
+                        apply_admission_trace as _apply_admission_trace,
+                    )
+                    _admission_result = _apply_admission_trace(
+                        slate_traces=tuple(
+                            getattr(_ag_slate, "admission_trace", ()) or ()
+                        ),
+                        candidate_ags=list(
+                            getattr(_ag_slate, "ags", ()) or ()
+                        ),
+                    )
+                    # Persist for downstream wire sites (Phase 1.3
+                    # pivot, Phase 0.4 ledger).
+                    _admitted_ags_after_trace = _admission_result.admitted_ags
+                    _ag_admission_pivot_signal = _admission_result.pivot_signal
+                    _ag_first_retired_id = _admission_result.first_ag_retired_id
+                    _ag_denied_ids_this_iter = _admission_result.denied_ag_ids
+                else:
+                    _admitted_ags_after_trace = list(
+                        getattr(_ag_slate, "ags", ()) or ()
+                    )
+                    _ag_admission_pivot_signal = False
+                    _ag_first_retired_id = ""
+                    _ag_denied_ids_this_iter = ()
                 # NOTE: F4 stage emits the same records the inline producer
                 # did, but ActionGroupSlate does NOT expose them as a tuple.
                 # The pre-A2 harness incremented _phase_b_target_qids_missing_

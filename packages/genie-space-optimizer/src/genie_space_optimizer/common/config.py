@@ -6699,3 +6699,27 @@ def candidate_ledger_enabled() -> bool:
     the artifact and the marker.
     """
     return _flag_default_on("GSO_CANDIDATE_LEDGER")
+
+
+def terminal_signature_retire_enabled() -> bool:
+    """Phase 1.3 — when ON, ``_compute_forbidden_ag_set`` retires
+    AGs whose ``TerminalSignature`` appeared in ANY prior
+    non-accepted iteration (not just CONTENT_REGRESSION).
+
+    Default-ON. Explicit ``GSO_TERMINAL_SIGNATURE_RETIRE=0`` falls
+    back to the patch-only retry memory (legacy CONTENT_REGRESSION
+    filter).
+    """
+    return _flag_default_on("GSO_TERMINAL_SIGNATURE_RETIRE")
+
+
+def ag_admission_blocking_enabled() -> bool:
+    """Phase 1.1 — when ON, the harness consumes
+    ``ActionGroupSlate.admission_trace`` after the action_groups
+    stage and skips DENIED AGs.
+
+    Default-ON. Explicit ``GSO_AG_ADMISSION_BLOCKING=0`` rolls back
+    to the pre-Phase-1 behaviour (admission_trace is built but
+    ignored).
+    """
+    return _flag_default_on("GSO_AG_ADMISSION_BLOCKING")

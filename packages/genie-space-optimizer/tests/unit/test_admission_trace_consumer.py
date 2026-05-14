@@ -108,3 +108,20 @@ def test_first_ag_retired_id_is_first_in_trace_order():
     )
     result = apply_admission_trace(slate_traces=traces, candidate_ags=candidates)
     assert result.first_ag_retired_id == "b"
+
+
+def test_flag_off_returns_all_candidates_unchanged(monkeypatch):
+    """When GSO_AG_ADMISSION_BLOCKING=0, the helper is still pure but
+    the harness wire site short-circuits to the legacy path. This
+    test verifies the FLAG ACCESSOR behaviour, not the wire site."""
+    monkeypatch.setenv("GSO_AG_ADMISSION_BLOCKING", "0")
+    from genie_space_optimizer.common.config import (
+        ag_admission_blocking_enabled,
+    )
+    assert ag_admission_blocking_enabled() is False
+
+    monkeypatch.setenv("GSO_AG_ADMISSION_BLOCKING", "1")
+    assert ag_admission_blocking_enabled() is True
+
+    monkeypatch.delenv("GSO_AG_ADMISSION_BLOCKING", raising=False)
+    assert ag_admission_blocking_enabled() is True  # default-on
