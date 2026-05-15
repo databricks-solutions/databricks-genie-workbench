@@ -1,139 +1,190 @@
-"""Unit test for Plan 5 _upload_trial_captures_to_phase_h_anchor helper.
+"""Unit tests for Plan 5 (Option B) ``_upload_trial_captures_to_phase_h_anchor``.
 
-The helper:
-  * Reads the four GSO sink default paths.
-  * For each path that exists on disk, calls
-    MlflowClient.log_artifact(anchor_run_id, local_path,
-    artifact_path="gso_trial_captures").
-  * No-ops when the anchor run id is None or empty.
-  * No-ops when the file does not exist.
-  * Never raises; logs warnings on failure.
+The helper now reads in-memory buffers from the four capture sinks
+(``sink.consume_records()``) and uploads each non-empty buffer as an
+NDJSON MLflow artifact under ``gso_trial_captures/<plan>.ndjson`` via
+``MlflowClient.log_text``. The previous file-based design depended on
+``/tmp`` being writable, which fails on Databricks serverless.
+
+Contract:
+  * No-op when ``anchor_run_id`` is ``None`` or ``""``.
+  * For each sink: consume_records() → if empty, skip; else serialize
+    to NDJSON (one ``json.dumps`` per record, joined by ``\\n``,
+    trailing newline) and call ``client.log_text(run_id=..., text=...,
+    artifact_file="gso_trial_captures/<plan>.ndjson")``.
+  * Filenames and order are fixed (narrowing → lever5_split →
+    three_stage → raw_evidence) so the resulting MLflow tree is
+    deterministic.
+  * Any ``log_text`` exception is logged at WARNING and swallowed —
+    telemetry must never break a real run.
 """
 from __future__ import annotations
 
-from pathlib import Path
+import importlib
+import json
+import sys
 from unittest.mock import MagicMock
 
-import pytest
+
+def _fresh_config():
+    """Re-import config to wipe sink state between tests."""
+    sys.modules.pop("genie_space_optimizer.common.config", None)
+    return importlib.import_module("genie_space_optimizer.common.config")
 
 
-def test_upload_skips_when_anchor_is_none(tmp_path):
+def _reset_all_sinks(cfg) -> None:
+    cfg._NARROWING_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
+
+
+def test_upload_skips_when_anchor_is_none():
     from genie_space_optimizer.optimization.harness import (
         _upload_trial_captures_to_phase_h_anchor,
     )
     client = MagicMock()
-    _upload_trial_captures_to_phase_h_anchor(
-        anchor_run_id=None,
-        capture_paths=[str(tmp_path / "x.ndjson")],
-        client=client,
-    )
+    _upload_trial_captures_to_phase_h_anchor(anchor_run_id=None, client=client)
+    client.log_text.assert_not_called()
     client.log_artifact.assert_not_called()
 
 
-def test_upload_skips_when_anchor_is_empty(tmp_path):
+def test_upload_skips_when_anchor_is_empty():
+    from genie_space_optimizer.optimization.harness import (
+        _upload_trial_captures_to_phase_h_anchor,
+    )
+    client = MagicMock()
+    _upload_trial_captures_to_phase_h_anchor(anchor_run_id="", client=client)
+    client.log_text.assert_not_called()
+
+
+def test_upload_skips_sinks_with_empty_buffers():
+    cfg = _fresh_config()
+    _reset_all_sinks(cfg)
     from genie_space_optimizer.optimization.harness import (
         _upload_trial_captures_to_phase_h_anchor,
     )
     client = MagicMock()
     _upload_trial_captures_to_phase_h_anchor(
-        anchor_run_id="",
-        capture_paths=[str(tmp_path / "x.ndjson")],
-        client=client,
+        anchor_run_id="anchor-1", client=client,
     )
-    client.log_artifact.assert_not_called()
+    client.log_text.assert_not_called()
 
 
-def test_upload_skips_missing_files(tmp_path):
+def test_upload_emits_log_text_for_each_non_empty_buffer():
+    cfg = _fresh_config()
+    _reset_all_sinks(cfg)
+
+    # Seed each sink with a record via its public emitter so we exercise
+    # the same code path the harness uses at runtime.
+    cfg._NARROWING_CAPTURE_SINK.record_hit(  # noqa: SLF001
+        "lever-4-join-discovery", header_omitted_bytes=512,
+    )
+    cfg._LEVER_FIVE_CAPTURE_SINK.record_shadow_comparison({  # noqa: SLF001
+        "skill_id": "lever-5a-instructions", "decision": "split_won",
+    })
+    cfg._THREE_STAGE_CAPTURE_SINK.record_shadow_comparison({  # noqa: SLF001
+        "skill_id": "lever-1-table-column-description",
+        "decision": "three_stage_won",
+    })
+    cfg._RAW_EVIDENCE_CAPTURE_SINK.record_shadow_comparison({  # noqa: SLF001
+        "skill_id": "lever-1-table-column-description",
+        "decision": "raw_evidence_won",
+    })
+
     from genie_space_optimizer.optimization.harness import (
         _upload_trial_captures_to_phase_h_anchor,
     )
     client = MagicMock()
     _upload_trial_captures_to_phase_h_anchor(
-        anchor_run_id="anchor-1",
-        capture_paths=[str(tmp_path / "missing.ndjson")],
-        client=client,
+        anchor_run_id="anchor-1", client=client,
     )
-    client.log_artifact.assert_not_called()
+
+    assert client.log_text.call_count == 4
+    seen_artifacts = []
+    seen_run_ids = []
+    seen_texts = []
+    for call in client.log_text.call_args_list:
+        seen_run_ids.append(call.kwargs.get("run_id") or call.args[0])
+        seen_texts.append(call.kwargs.get("text") or call.args[1])
+        seen_artifacts.append(
+            call.kwargs.get("artifact_file") or call.args[2]
+        )
+
+    assert seen_run_ids == ["anchor-1"] * 4
+    # Order is locked to make MLflow trees deterministic.
+    assert seen_artifacts == [
+        "gso_trial_captures/narrowing_v1.ndjson",
+        "gso_trial_captures/lever5_split_v1.ndjson",
+        "gso_trial_captures/three_stage_v1.ndjson",
+        "gso_trial_captures/raw_evidence_v1.ndjson",
+    ]
+    # Each text must be valid NDJSON: trailing newline, one JSON object
+    # per line, parseable.
+    for text in seen_texts:
+        assert text.endswith("\n"), (
+            "NDJSON files must end with a newline so concatenation is safe."
+        )
+        lines = text.strip().splitlines()
+        assert len(lines) >= 1
+        for line in lines:
+            json.loads(line)  # raises if malformed
 
 
-def test_upload_uploads_existing_files_under_correct_artifact_path(tmp_path):
+def test_upload_omits_sinks_that_remain_empty():
+    """If only one sink has buffered records, only one log_text call
+    should fire — the other three are skipped silently."""
+    cfg = _fresh_config()
+    _reset_all_sinks(cfg)
+
+    cfg._NARROWING_CAPTURE_SINK.record_hit(  # noqa: SLF001
+        "preflight-instruction-expand", header_omitted_bytes=128,
+    )
+
     from genie_space_optimizer.optimization.harness import (
         _upload_trial_captures_to_phase_h_anchor,
     )
     client = MagicMock()
-    p1 = tmp_path / "narrowing_v1.ndjson"
-    p1.write_text('{"hello": "world"}\n', encoding="utf-8")
-    p2 = tmp_path / "raw_evidence_v1.ndjson"
-    p2.write_text('{"plan": 4}\n', encoding="utf-8")
     _upload_trial_captures_to_phase_h_anchor(
-        anchor_run_id="anchor-1",
-        capture_paths=[str(p1), str(p2)],
-        client=client,
+        anchor_run_id="anchor-2", client=client,
     )
-    assert client.log_artifact.call_count == 2
-    calls = client.log_artifact.call_args_list
-    # Check positional + kwarg combinations because MlflowClient's API
-    # takes (run_id, local_path, artifact_path).
-    seen_local = {c.args[1] if len(c.args) > 1 else c.kwargs["local_path"]
-                  for c in calls}
-    seen_artifact_dirs = {
-        (c.args[2] if len(c.args) > 2 else c.kwargs.get("artifact_path"))
-        for c in calls
-    }
-    seen_run_ids = {c.args[0] if c.args else c.kwargs["run_id"] for c in calls}
-    assert seen_local == {str(p1), str(p2)}
-    assert seen_artifact_dirs == {"gso_trial_captures"}
-    assert seen_run_ids == {"anchor-1"}
+
+    assert client.log_text.call_count == 1
+    call = client.log_text.call_args
+    artifact = call.kwargs.get("artifact_file") or call.args[2]
+    assert artifact == "gso_trial_captures/narrowing_v1.ndjson"
 
 
-def test_upload_swallows_log_artifact_exceptions(tmp_path, caplog):
+def test_upload_swallows_log_text_exceptions(caplog):
+    cfg = _fresh_config()
+    _reset_all_sinks(cfg)
+    cfg._NARROWING_CAPTURE_SINK.record_hit(  # noqa: SLF001
+        "lever-4-join-discovery", header_omitted_bytes=64,
+    )
+
     from genie_space_optimizer.optimization.harness import (
         _upload_trial_captures_to_phase_h_anchor,
     )
     client = MagicMock()
-    client.log_artifact.side_effect = RuntimeError("network down")
-    p1 = tmp_path / "narrowing_v1.ndjson"
-    p1.write_text("{}\n", encoding="utf-8")
+    client.log_text.side_effect = RuntimeError("network down")
     # MUST NOT raise — observability never breaks the optimizer.
     _upload_trial_captures_to_phase_h_anchor(
-        anchor_run_id="anchor-1",
-        capture_paths=[str(p1)],
-        client=client,
+        anchor_run_id="anchor-3", client=client,
     )
-    # And the failure is logged.
-    assert any("upload failed" in r.message.lower() for r in caplog.records)
+    assert any(
+        "upload failed" in r.message.lower() for r in caplog.records
+    )
 
 
-def test_collect_capture_paths_from_summaries_returns_all_four():
-    """Plan 5 — collect the four sink_path strings from the four
-    dump_*_capture_summary() return values into a single list."""
-    from genie_space_optimizer.optimization.harness import (
-        _collect_trial_capture_paths,
+def test_consume_records_does_not_clear_buffer():
+    """consume_records() returns a snapshot but does not drain the
+    buffer — repeat calls are safe (e.g. atexit retry)."""
+    cfg = _fresh_config()
+    _reset_all_sinks(cfg)
+    cfg._NARROWING_CAPTURE_SINK.record_hit(  # noqa: SLF001
+        "lever-4-join-discovery", header_omitted_bytes=64,
     )
-    paths = _collect_trial_capture_paths(
-        narrowing_summary={"sink_path": "/tmp/gso_trial_captures/narrowing_v1.ndjson"},
-        lever5_summary={"sink_path": "/tmp/gso_trial_captures/lever5_split_v1.ndjson"},
-        three_stage_summary={"sink_path": "/tmp/gso_trial_captures/three_stage_v1.ndjson"},
-        raw_evidence_summary={"sink_path": "/tmp/gso_trial_captures/raw_evidence_v1.ndjson"},
-    )
-    assert paths == [
-        "/tmp/gso_trial_captures/narrowing_v1.ndjson",
-        "/tmp/gso_trial_captures/lever5_split_v1.ndjson",
-        "/tmp/gso_trial_captures/three_stage_v1.ndjson",
-        "/tmp/gso_trial_captures/raw_evidence_v1.ndjson",
-    ]
-
-
-def test_collect_capture_paths_skips_none_summaries():
-    """If a dump_* call swallowed an exception and returned None, that
-    plan's path is omitted from the upload list (helpfully)."""
-    from genie_space_optimizer.optimization.harness import (
-        _collect_trial_capture_paths,
-    )
-    paths = _collect_trial_capture_paths(
-        narrowing_summary=None,
-        lever5_summary={"sink_path": "/tmp/gso_trial_captures/lever5_split_v1.ndjson"},
-        three_stage_summary={"sink_path": ""},
-        raw_evidence_summary={"sink_path": None},
-    )
-    assert paths == ["/tmp/gso_trial_captures/lever5_split_v1.ndjson"]
+    first = cfg._NARROWING_CAPTURE_SINK.consume_records()  # noqa: SLF001
+    second = cfg._NARROWING_CAPTURE_SINK.consume_records()  # noqa: SLF001
+    assert first == second
+    assert len(first) == 1

@@ -1705,79 +1705,86 @@ def _plan5_print(line: str) -> None:
 
 class _NarrowingCaptureSink:
     """Per-process capture sink for non-causal prompt renders under
-    GSO_RCA_CONTRACT_NARROW_V1=1."""
+    GSO_RCA_CONTRACT_NARROW_V1=1.
+
+    Plan 5 (Option B): records are accumulated in an in-memory buffer
+    (``self._records``) regardless of any env var. The harness post-loop
+    hook calls :meth:`consume_records` and uploads the NDJSON to the
+    Phase H anchor via ``MlflowClient.log_text`` — no filesystem
+    dependency on Databricks serverless ``/tmp``.
+
+    The legacy ``GSO_NARROWING_CAPTURE_PATH`` env var is preserved as a
+    debug-only opt-in: when set to a non-empty path, each record is
+    ALSO appended to that file. When unset, no file is written and the
+    in-memory buffer is the sole source of truth. There is no
+    auto-default to ``/tmp/...`` anymore (the previous default hit
+    PermissionError on serverless and silently dropped every record).
+    """
 
     def __init__(self) -> None:
         self._lock = _threading.Lock()
         self._hits: dict[str, int] = {name: 0 for name in _NON_CAUSAL_PROMPT_NAMES}
+        self._records: list[dict] = []
         self._sink_path: str | None = None
         self._sink_path_resolved = False
         self._coverage_gate_registered = False
 
     def _resolve_sink_path(self) -> str | None:
-        # Plan 5: when GSO_NARROWING_CAPTURE_PATH is unset, default to a
-        # deterministic local path so a UI-triggered job's harness
-        # post-loop hook can find and upload the NDJSON as an MLflow
-        # artifact under gso_trial_captures/. Setting the env var to an
-        # empty string still falls back to the default; only an
-        # explicit non-empty value overrides.
+        """Plan 5 (Option B): file-mirror is opt-in only. Returns the
+        explicit ``GSO_NARROWING_CAPTURE_PATH`` value if non-empty,
+        else ``None``. No /tmp default — the in-memory buffer is the
+        primary store and gets uploaded to MLflow at end-of-run.
+        """
         if not self._sink_path_resolved:
             env_value = (os.environ.get("GSO_NARROWING_CAPTURE_PATH") or "").strip()
-            if env_value:
-                self._sink_path = env_value
-            else:
-                self._sink_path = "/tmp/gso_trial_captures/narrowing_v1.ndjson"
+            self._sink_path = env_value or None
             self._sink_path_resolved = True
-            # Make sure the parent directory exists. This is best-effort:
-            # if /tmp is unwriteable the open(...) call elsewhere will
-            # silently swallow OSError. Plan 5 instrumentation: print on
-            # makedirs failure so the next UI trial reveals the silent
-            # filesystem issue in notebook stdout.
-            try:
-                os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
-            except OSError as _mkdirs_exc:
-                _plan5_print(
-                    f"narrowing sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
-                    f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
-                )
+            if self._sink_path:
+                try:
+                    os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
+                except OSError as _mkdirs_exc:
+                    _plan5_print(
+                        f"narrowing sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
+                        f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
+                    )
         return self._sink_path
 
     def record_hit(self, skill_id: str, header_omitted_bytes: int) -> None:
-        """Increment counter; optionally append NDJSON line."""
+        """Increment counter, append record to the in-memory buffer,
+        and (optionally) mirror to disk if ``GSO_NARROWING_CAPTURE_PATH``
+        is set."""
+        # iteration_id is best-effort: pulled from a contextvar if some
+        # downstream code sets one, else "" so the field exists in
+        # every record for downstream tooling.
+        try:
+            from genie_space_optimizer.optimization.evaluation import (
+                _current_scorer_feedback_cache,
+            )
+            cache = _current_scorer_feedback_cache.get()
+            iteration_id = getattr(cache, "iteration_id", "") if cache else ""
+        except Exception:
+            iteration_id = ""
+
+        record = {
+            "skill_id": skill_id,
+            "process_pid": os.getpid(),
+            "rendered_at_ts": _time.time(),
+            "header_omitted_bytes": int(header_omitted_bytes),
+            "iteration_id": iteration_id,
+        }
+
         with self._lock:
             if skill_id in self._hits:
                 self._hits[skill_id] += 1
+            self._records.append(record)
             path = self._resolve_sink_path()
             if path is not None:
-                # iteration_id is best-effort: pulled from a contextvar
-                # if some downstream code sets one, else "" so the field
-                # exists in every record for downstream tooling.
-                try:
-                    from genie_space_optimizer.optimization.evaluation import (
-                        _current_scorer_feedback_cache,
-                    )
-                    cache = _current_scorer_feedback_cache.get()
-                    iteration_id = getattr(cache, "iteration_id", "") if cache else ""
-                except Exception:
-                    iteration_id = ""
-
-                record = {
-                    "skill_id": skill_id,
-                    "process_pid": os.getpid(),
-                    "rendered_at_ts": _time.time(),
-                    "header_omitted_bytes": int(header_omitted_bytes),
-                    "iteration_id": iteration_id,
-                }
-                # Line-buffered append so a process crash does not lose
-                # the most recent records. Plan 5: print on write
-                # failure so the next UI trial's notebook stdout reveals
-                # the silent filesystem issue.
+                # Optional file mirror — debug-only escape hatch when
+                # the operator wants per-record durability outside MLflow.
                 try:
                     with open(path, "a", encoding="utf-8", buffering=1) as fh:
                         fh.write(_json.dumps(record) + "\n")
                 except OSError as _write_exc:
-                    # Capture is best-effort; never break the optimizer
-                    # because a temp dir was unwriteable.
                     _plan5_print(
                         f"narrowing sink write FAILED path={path!r} "
                         f"err={type(_write_exc).__name__}: {_write_exc}"
@@ -1797,15 +1804,29 @@ class _NarrowingCaptureSink:
                 _atexit.register(self._atexit_gate)
                 self._coverage_gate_registered = True
 
+    def consume_records(self) -> tuple[dict, ...]:
+        """Atomic snapshot of the buffered records under the lock.
+
+        Used by ``harness._upload_trial_captures_to_phase_h_anchor`` to
+        serialize the buffer to NDJSON and upload via
+        ``MlflowClient.log_text``. Does NOT clear the buffer — repeat
+        calls are safe and return the same records (plus any added
+        between calls). Reset only on ``reset_for_test``.
+        """
+        with self._lock:
+            return tuple(self._records)
+
     def snapshot(self) -> dict:
         with self._lock:
             hits = dict(self._hits)
+            record_count = len(self._records)
         unhit = tuple(sorted(name for name, count in hits.items() if count == 0))
         return {
             "hits": hits,
             "all_sites_exercised": len(unhit) == 0,
             "unhit_sites": unhit,
             "sink_path": self._sink_path,
+            "record_count": record_count,
         }
 
     def enforce_coverage_or_raise(self) -> None:
@@ -1819,7 +1840,8 @@ class _NarrowingCaptureSink:
                 "narrowing trial incomplete: "
                 f"unhit_sites={snap['unhit_sites']}; this trial cannot "
                 "finalize fixtures, do not commit captures. "
-                f"hits={snap['hits']} sink_path={snap['sink_path']}"
+                f"hits={snap['hits']} sink_path={snap['sink_path']} "
+                f"record_count={snap['record_count']}"
             )
 
     def _atexit_gate(self) -> None:
@@ -1833,23 +1855,18 @@ class _NarrowingCaptureSink:
             os._exit(2)  # bypass other atexit handlers
 
     def reset_for_test(self) -> None:
-        """Test hook: clear counters, re-resolve env on next call, and
-        truncate the sink file. Module-reload during tests re-runs every
-        prompt-constant assembly, which writes capture lines BEFORE the
-        test gets a chance to reset. Truncating here gives the test a
-        clean slate."""
+        """Test hook: clear counters and the in-memory buffer,
+        re-resolve env on next call, and truncate any prior file
+        mirror. Module-reload during tests re-runs every prompt-constant
+        assembly, which writes capture lines BEFORE the test gets a
+        chance to reset."""
         with self._lock:
-            # Capture the resolved sink path BEFORE clearing it so we
-            # can truncate the file. The path may have been resolved
-            # during module-reload's prompt-constant assembly.
             prior_sink_path = self._sink_path
             self._hits = {name: 0 for name in _NON_CAUSAL_PROMPT_NAMES}
+            self._records = []
             self._sink_path = None
             self._sink_path_resolved = False
             self._coverage_gate_registered = False
-        # Truncate the prior sink file if it exists. Outside the lock
-        # to avoid I/O contention; test isolation guarantees no
-        # concurrent writers anyway.
         if prior_sink_path:
             try:
                 with open(prior_sink_path, "w", encoding="utf-8"):
@@ -1880,35 +1897,41 @@ _LEVER_5_SPLIT_SKILL_NAMES: frozenset[str] = frozenset({
 
 
 class _LeverFiveCaptureSink:
+    """Plan 2 — Lever-5 split-vs-holistic shadow capture sink.
+
+    Plan 5 (Option B) rewrite: shadow-comparison records flow into an
+    in-memory buffer (``self._records``) and are uploaded to MLflow at
+    end-of-run by the harness post-loop hook. The legacy
+    ``GSO_LEVER5_SPLIT_CAPTURE_PATH`` env var stays as a debug-only
+    file mirror; default sink_path is ``None`` (no /tmp).
+    """
+
     def __init__(self) -> None:
         self._lock = _threading.Lock()
         self._hits: dict[str, int] = {n: 0 for n in _LEVER_5_SPLIT_SKILL_NAMES}
         self._shadow_comparisons: int = 0
+        self._records: list[dict] = []
         self._sink_path: str | None = None
         self._sink_path_resolved = False
         self._coverage_gate_registered = False
 
     def _resolve_sink_path(self) -> str | None:
-        # Plan 5: see _NarrowingCaptureSink._resolve_sink_path for the
-        # rationale on default-path resolution. Each sink defaults to its
-        # own NDJSON file under /tmp/gso_trial_captures/ when the env
-        # var is unset; an explicit non-empty env var overrides.
+        """Plan 5 (Option B): debug-only file mirror via env var.
+        Returns ``None`` when ``GSO_LEVER5_SPLIT_CAPTURE_PATH`` is unset."""
         if not self._sink_path_resolved:
             env_value = (
                 os.environ.get("GSO_LEVER5_SPLIT_CAPTURE_PATH") or ""
             ).strip()
-            if env_value:
-                self._sink_path = env_value
-            else:
-                self._sink_path = "/tmp/gso_trial_captures/lever5_split_v1.ndjson"
+            self._sink_path = env_value or None
             self._sink_path_resolved = True
-            try:
-                os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
-            except OSError as _mkdirs_exc:
-                _plan5_print(
-                    f"lever5_split sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
-                    f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
-                )
+            if self._sink_path:
+                try:
+                    os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
+                except OSError as _mkdirs_exc:
+                    _plan5_print(
+                        f"lever5_split sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
+                        f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
+                    )
         return self._sink_path
 
     def record_skill_hit(self, skill_id: str) -> None:
@@ -1918,13 +1941,14 @@ class _LeverFiveCaptureSink:
             self._maybe_register_atexit()
 
     def record_shadow_comparison(self, comparison_record: dict) -> None:
+        payload = dict(comparison_record)
+        payload.setdefault("captured_at", _time.time())
+        payload.setdefault("process_pid", os.getpid())
         with self._lock:
             self._shadow_comparisons += 1
+            self._records.append(payload)
             path = self._resolve_sink_path()
             if path is not None:
-                payload = dict(comparison_record)
-                payload.setdefault("captured_at", _time.time())
-                payload.setdefault("process_pid", os.getpid())
                 try:
                     with open(path, "a", encoding="utf-8", buffering=1) as fh:
                         fh.write(_json.dumps(payload, default=str) + "\n")
@@ -1934,6 +1958,12 @@ class _LeverFiveCaptureSink:
                         f"err={type(_write_exc).__name__}: {_write_exc}"
                     )
             self._maybe_register_atexit()
+
+    def consume_records(self) -> tuple[dict, ...]:
+        """Atomic snapshot of the buffered shadow-comparison records.
+        See :meth:`_NarrowingCaptureSink.consume_records` for semantics."""
+        with self._lock:
+            return tuple(self._records)
 
     def _maybe_register_atexit(self) -> None:
         if self._coverage_gate_registered:
@@ -1946,6 +1976,7 @@ class _LeverFiveCaptureSink:
         with self._lock:
             hits = dict(self._hits)
             shadow = self._shadow_comparisons
+            record_count = len(self._records)
         unhit = tuple(sorted(n for n, c in hits.items() if c == 0))
         return {
             "hits": hits,
@@ -1953,6 +1984,7 @@ class _LeverFiveCaptureSink:
             "all_sites_exercised": len(unhit) == 0,
             "unhit_sites": unhit,
             "sink_path": self._sink_path,
+            "record_count": record_count,
         }
 
     def enforce_coverage_or_raise(self) -> None:
@@ -1985,6 +2017,7 @@ class _LeverFiveCaptureSink:
         with self._lock:
             self._hits = {n: 0 for n in _LEVER_5_SPLIT_SKILL_NAMES}
             self._shadow_comparisons = 0
+            self._records = []
             self._sink_path = None
             self._sink_path_resolved = False
             self._coverage_gate_registered = False
@@ -5496,6 +5529,15 @@ STAGE_1_DISCOVERY_PROMPT = _SKILL_LOADER.load_prompt(
 
 
 class _ThreeStageCaptureSink:
+    """Plan 3 — three-stage-vs-legacy shadow capture sink.
+
+    Plan 5 (Option B) rewrite: shadow-comparison records flow into an
+    in-memory buffer (``self._records``); the harness post-loop hook
+    serializes to NDJSON and uploads via ``MlflowClient.log_text``.
+    The legacy ``GSO_THREE_STAGE_CAPTURE_PATH`` env var stays as a
+    debug-only file mirror; default sink_path is ``None``.
+    """
+
     def __init__(self) -> None:
         self._lock = _threading.Lock()
         self._discovery_calls: int = 0
@@ -5503,31 +5545,28 @@ class _ThreeStageCaptureSink:
             n: 0 for n in _THREE_STAGE_SKILL_NAMES
         }
         self._shadow_comparisons: int = 0
+        self._records: list[dict] = []
         self._sink_path: str | None = None
         self._sink_path_resolved = False
         self._coverage_gate_registered = False
 
     def _resolve_sink_path(self) -> str | None:
-        # Plan 5: see _NarrowingCaptureSink._resolve_sink_path for the
-        # rationale on default-path resolution. Each sink defaults to its
-        # own NDJSON file under /tmp/gso_trial_captures/ when the env
-        # var is unset; an explicit non-empty env var overrides.
+        """Plan 5 (Option B): debug-only file mirror via env var.
+        Returns ``None`` when ``GSO_THREE_STAGE_CAPTURE_PATH`` is unset."""
         if not self._sink_path_resolved:
             env_value = (
                 os.environ.get("GSO_THREE_STAGE_CAPTURE_PATH") or ""
             ).strip()
-            if env_value:
-                self._sink_path = env_value
-            else:
-                self._sink_path = "/tmp/gso_trial_captures/three_stage_v1.ndjson"
+            self._sink_path = env_value or None
             self._sink_path_resolved = True
-            try:
-                os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
-            except OSError as _mkdirs_exc:
-                _plan5_print(
-                    f"three_stage sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
-                    f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
-                )
+            if self._sink_path:
+                try:
+                    os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
+                except OSError as _mkdirs_exc:
+                    _plan5_print(
+                        f"three_stage sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
+                        f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
+                    )
         return self._sink_path
 
     def record_discovery_call(self, ag_id: str) -> None:
@@ -5542,13 +5581,14 @@ class _ThreeStageCaptureSink:
             self._maybe_register_atexit()
 
     def record_shadow_comparison(self, comparison_record: dict) -> None:
+        payload = dict(comparison_record)
+        payload.setdefault("captured_at", _time.time())
+        payload.setdefault("process_pid", os.getpid())
         with self._lock:
             self._shadow_comparisons += 1
+            self._records.append(payload)
             path = self._resolve_sink_path()
             if path is not None:
-                payload = dict(comparison_record)
-                payload.setdefault("captured_at", _time.time())
-                payload.setdefault("process_pid", os.getpid())
                 try:
                     with open(path, "a", encoding="utf-8", buffering=1) as fh:
                         fh.write(_json.dumps(payload, default=str) + "\n")
@@ -5558,6 +5598,12 @@ class _ThreeStageCaptureSink:
                         f"err={type(_write_exc).__name__}: {_write_exc}"
                     )
             self._maybe_register_atexit()
+
+    def consume_records(self) -> tuple[dict, ...]:
+        """Atomic snapshot of the buffered shadow-comparison records.
+        See :meth:`_NarrowingCaptureSink.consume_records` for semantics."""
+        with self._lock:
+            return tuple(self._records)
 
     def _maybe_register_atexit(self) -> None:
         if self._coverage_gate_registered:
@@ -5571,6 +5617,7 @@ class _ThreeStageCaptureSink:
             disc = self._discovery_calls
             disp = dict(self._skill_dispatches)
             shadow = self._shadow_comparisons
+            record_count = len(self._records)
         any_dispatched = any(c > 0 for c in disp.values())
         return {
             "discovery_calls": disc,
@@ -5578,6 +5625,7 @@ class _ThreeStageCaptureSink:
             "shadow_comparisons": shadow,
             "all_required_sites_exercised": (disc > 0 and any_dispatched),
             "sink_path": self._sink_path,
+            "record_count": record_count,
         }
 
     def enforce_coverage_or_raise(self) -> None:
@@ -5611,6 +5659,7 @@ class _ThreeStageCaptureSink:
             self._discovery_calls = 0
             self._skill_dispatches = {n: 0 for n in _THREE_STAGE_SKILL_NAMES}
             self._shadow_comparisons = 0
+            self._records = []
             self._sink_path = None
             self._sink_path_resolved = False
             self._coverage_gate_registered = False
@@ -5754,37 +5803,43 @@ _RAW_EVIDENCE_ANTI_ANCHORING_HEADER = (
 
 
 class _RawEvidenceCaptureSink:
+    """Plan 4 — raw-evidence injection shadow capture sink.
+
+    Plan 5 (Option B) rewrite: shadow-comparison records flow into an
+    in-memory buffer (``self._records``); the harness post-loop hook
+    serializes to NDJSON and uploads via ``MlflowClient.log_text``.
+    The legacy ``GSO_RAW_EVIDENCE_CAPTURE_PATH`` env var stays as a
+    debug-only file mirror; default sink_path is ``None``.
+    """
+
     def __init__(self) -> None:
         self._lock = _threading.Lock()
         self._projections: dict[str, int] = {
             n: 0 for n in _RAW_EVIDENCE_PROJECTABLE_SKILLS
         }
         self._shadow_comparisons: int = 0
+        self._records: list[dict] = []
         self._sink_path: str | None = None
         self._sink_path_resolved = False
         self._coverage_gate_registered = False
 
     def _resolve_sink_path(self) -> str | None:
-        # Plan 5: see _NarrowingCaptureSink._resolve_sink_path for the
-        # rationale on default-path resolution. Each sink defaults to its
-        # own NDJSON file under /tmp/gso_trial_captures/ when the env
-        # var is unset; an explicit non-empty env var overrides.
+        """Plan 5 (Option B): debug-only file mirror via env var.
+        Returns ``None`` when ``GSO_RAW_EVIDENCE_CAPTURE_PATH`` is unset."""
         if not self._sink_path_resolved:
             env_value = (
                 os.environ.get("GSO_RAW_EVIDENCE_CAPTURE_PATH") or ""
             ).strip()
-            if env_value:
-                self._sink_path = env_value
-            else:
-                self._sink_path = "/tmp/gso_trial_captures/raw_evidence_v1.ndjson"
+            self._sink_path = env_value or None
             self._sink_path_resolved = True
-            try:
-                os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
-            except OSError as _mkdirs_exc:
-                _plan5_print(
-                    f"raw_evidence sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
-                    f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
-                )
+            if self._sink_path:
+                try:
+                    os.makedirs(os.path.dirname(self._sink_path), exist_ok=True)
+                except OSError as _mkdirs_exc:
+                    _plan5_print(
+                        f"raw_evidence sink makedirs FAILED dir={os.path.dirname(self._sink_path)!r} "
+                        f"err={type(_mkdirs_exc).__name__}: {_mkdirs_exc}"
+                    )
         return self._sink_path
 
     def record_projection(self, skill_id: str) -> None:
@@ -5794,13 +5849,14 @@ class _RawEvidenceCaptureSink:
             self._maybe_register_atexit()
 
     def record_shadow_comparison(self, comparison_record: dict) -> None:
+        payload = dict(comparison_record)
+        payload.setdefault("captured_at", _time.time())
+        payload.setdefault("process_pid", os.getpid())
         with self._lock:
             self._shadow_comparisons += 1
+            self._records.append(payload)
             path = self._resolve_sink_path()
             if path is not None:
-                payload = dict(comparison_record)
-                payload.setdefault("captured_at", _time.time())
-                payload.setdefault("process_pid", os.getpid())
                 try:
                     with open(path, "a", encoding="utf-8", buffering=1) as fh:
                         fh.write(_json.dumps(payload, default=str) + "\n")
@@ -5810,6 +5866,12 @@ class _RawEvidenceCaptureSink:
                         f"err={type(_write_exc).__name__}: {_write_exc}"
                     )
             self._maybe_register_atexit()
+
+    def consume_records(self) -> tuple[dict, ...]:
+        """Atomic snapshot of the buffered shadow-comparison records.
+        See :meth:`_NarrowingCaptureSink.consume_records` for semantics."""
+        with self._lock:
+            return tuple(self._records)
 
     def _maybe_register_atexit(self) -> None:
         if self._coverage_gate_registered:
@@ -5822,12 +5884,14 @@ class _RawEvidenceCaptureSink:
         with self._lock:
             proj = dict(self._projections)
             shadow = self._shadow_comparisons
+            record_count = len(self._records)
         any_projected = any(c > 0 for c in proj.values())
         return {
             "projections": proj,
             "shadow_comparisons": shadow,
             "all_required_sites_exercised": any_projected,
             "sink_path": self._sink_path,
+            "record_count": record_count,
         }
 
     def enforce_coverage_or_raise(self) -> None:
@@ -5861,6 +5925,7 @@ class _RawEvidenceCaptureSink:
         with self._lock:
             self._projections = {n: 0 for n in _RAW_EVIDENCE_PROJECTABLE_SKILLS}
             self._shadow_comparisons = 0
+            self._records = []
             self._sink_path = None
             self._sink_path_resolved = False
             self._coverage_gate_registered = False

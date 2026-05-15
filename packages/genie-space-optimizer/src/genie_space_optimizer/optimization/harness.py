@@ -31694,17 +31694,22 @@ def _run_lever_loop(
     except Exception as _re_log_exc:
         logger.warning("raw_evidence summary emit failed: %s", _re_log_exc)
 
-    # Plan 5 — UI-triggered trial: upload the four capture NDJSONs as
-    # MLflow artifacts on the Phase H anchor so the existing
-    # evidence_bundle puller surfaces them in the postmortem bundle
-    # (under runid_analysis/<opt>/evidence/gso_trial_captures/). The
-    # helpers swallow all exceptions so telemetry never breaks the loop.
-    # Each summary may be None if its dump_* call swallowed an
-    # exception in the blocks above; _collect_trial_capture_paths
-    # handles that gracefully.
+    # Plan 5 — UI-triggered trial: upload the four sink in-memory
+    # buffers as MLflow artifacts on the Phase H anchor so the
+    # existing evidence_bundle puller surfaces them in the postmortem
+    # bundle (under runid_analysis/<opt>/evidence/gso_trial_captures/).
+    # The helpers swallow all exceptions so telemetry never breaks the
+    # loop.
+    #
+    # Plan 5 (Option B) — sinks buffer records in memory, not on disk.
+    # The previous file-based design hit PermissionError [Errno 13]
+    # writing to /tmp on Databricks serverless workers and silently
+    # dropped every record (trial2 runs 766917165472155, 663910747650165).
+    # The helper now consumes the buffers directly and uploads via
+    # MlflowClient.log_text — no filesystem dependency.
     #
     # Plan 5 self-diagnosing instrumentation: also write the four
-    # snapshots and the resolved capture-paths list to stderr via
+    # snapshots and per-sink upload outcomes to stderr via
     # ``_plan5_print`` so the next UI trial's notebook stdout contains
     # an explicit Plan-5 trail. Postmortem bundles only carry the
     # notebook return-value JSON (per ``STDOUT_FALLBACK_NOTEBOOK_OUTPUT``
@@ -31719,32 +31724,17 @@ def _run_lever_loop(
             f"three_stage={locals().get('_ts_summary')!r} "
             f"raw_evidence={locals().get('_re_summary')!r}"
         )
-        _capture_paths = _collect_trial_capture_paths(
-            narrowing_summary=locals().get("_narrowing_summary"),
-            lever5_summary=locals().get("_l5_summary"),
-            three_stage_summary=locals().get("_ts_summary"),
-            raw_evidence_summary=locals().get("_re_summary"),
-        )
         _plan5_print(
             f"upload step entry: anchor={_phase_h_anchor_run_id!r} "
-            f"capture_paths={_capture_paths!r}"
+            f"(in-memory buffer mode — no /tmp staging file)"
         )
-        if _capture_paths:
-            _upload_trial_captures_to_phase_h_anchor(
-                anchor_run_id=_phase_h_anchor_run_id,
-                capture_paths=_capture_paths,
-            )
-        else:
-            _plan5_print(
-                "upload step skipped: capture_paths empty (no sink "
-                "resolved a sink_path; check Plan 1 import-time hits, "
-                "shadow flags for Plan 2/4)"
-            )
+        _upload_trial_captures_to_phase_h_anchor(
+            anchor_run_id=_phase_h_anchor_run_id,
+        )
         # Mark in-line upload as completed so the atexit safety net
-        # registered earlier becomes a no-op. We mark even when
-        # ``capture_paths`` was empty: if no sink resolved on the
-        # success path, the atexit handler would observe the same and
-        # also skip, so re-attempting buys nothing.
+        # registered earlier becomes a no-op. The new helper itself
+        # no-ops when buffers are empty, so re-attempting from atexit
+        # buys nothing.
         _PLAN5_TRIAL_UPLOAD_STATE["in_line_upload_completed"] = True
     except Exception as _upload_exc:
         try:
@@ -31767,44 +31757,37 @@ def _run_lever_loop(
     )
 
 
-def _collect_trial_capture_paths(
-    narrowing_summary: dict | None,
-    lever5_summary: dict | None,
-    three_stage_summary: dict | None,
-    raw_evidence_summary: dict | None,
-) -> list[str]:
-    """Plan 5 — collect non-empty ``sink_path`` strings from the four
-    ``dump_*_capture_summary()`` return values into a single list.
-
-    A summary may be ``None`` if its ``dump_*_capture_summary()`` call
-    swallowed an exception (the post-loop telemetry blocks all wrap
-    in try/except — see ``harness.py:31613-31687``). In that case we
-    omit that plan from the upload list rather than crashing.
-    """
-    paths: list[str] = []
-    for summary in (
-        narrowing_summary, lever5_summary,
-        three_stage_summary, raw_evidence_summary,
-    ):
-        if not isinstance(summary, dict):
-            continue
-        sink_path = summary.get("sink_path")
-        if isinstance(sink_path, str) and sink_path:
-            paths.append(sink_path)
-    return paths
+# Mapping of MLflow artifact filenames to (plan_label, sink_attr_name).
+# The sink_attr is looked up by name on
+# ``genie_space_optimizer.common.config`` so this module avoids a hard
+# import cycle. Order is fixed to make the resulting MLflow artifact
+# tree deterministic.
+_PLAN5_TRIAL_CAPTURE_SINKS: tuple[tuple[str, str, str], ...] = (
+    ("narrowing", "narrowing_v1.ndjson", "_NARROWING_CAPTURE_SINK"),
+    ("lever5_split", "lever5_split_v1.ndjson", "_LEVER_FIVE_CAPTURE_SINK"),
+    ("three_stage", "three_stage_v1.ndjson", "_THREE_STAGE_CAPTURE_SINK"),
+    ("raw_evidence", "raw_evidence_v1.ndjson", "_RAW_EVIDENCE_CAPTURE_SINK"),
+)
 
 
 def _upload_trial_captures_to_phase_h_anchor(
     anchor_run_id: str | None,
-    capture_paths: list[str],
     client: object | None = None,
 ) -> None:
-    """Plan 5 — upload Plan 1/2/4 capture NDJSONs as MLflow artifacts
-    on the resolved Phase H anchor run, under ``gso_trial_captures/``.
+    """Plan 5 (Option B) — upload the four Plan 1/2/3/4 capture sink
+    in-memory buffers as MLflow artifacts on the resolved Phase H
+    anchor run, under ``gso_trial_captures/<plan>.ndjson``.
+
+    Why in-memory and not on-disk: Databricks serverless workloads
+    cannot write to ``/tmp`` (PermissionError [Errno 13] — observed in
+    the trial2 runs 766917165472155 and 663910747650165). The previous
+    file-staging implementation silently dropped every record.
+    Buffering in-memory and uploading via ``MlflowClient.log_text``
+    avoids any local-filesystem dependency.
 
     The existing evidence-bundle puller (``tools.evidence_bundle``)
     already pulls every artifact attached to the parent lever-loop
-    run, so once these files are uploaded here the postmortem skill
+    run, so once these texts are uploaded here the postmortem skill
     surfaces them at
     ``runid_analysis/<opt_run_id>/evidence/gso_trial_captures/<file>``
     automatically — no bundle code changes needed.
@@ -31813,25 +31796,24 @@ def _upload_trial_captures_to_phase_h_anchor(
       * No-op when ``anchor_run_id`` is None or empty (Phase H anchor
         resolution failed earlier — degraded mode is acceptable for
         observability; the loop continues normally).
-      * Each path in ``capture_paths`` that does not exist on disk is
-        skipped silently (the corresponding plan was disabled or no
-        capture site fired).
-      * Each path that exists is uploaded via
-        ``MlflowClient.log_artifact(anchor_run_id, local_path,
-        artifact_path="gso_trial_captures")``.
-      * Any exception raised by ``log_artifact`` is logged at WARNING
-        and swallowed. Telemetry MUST NEVER break a real run.
+      * For each of the four sinks, ``consume_records()`` is called.
+        Empty buffers are skipped.
+      * Non-empty buffers are serialized to NDJSON (one
+        ``json.dumps`` per record, joined by ``\\n``) and uploaded
+        via ``MlflowClient.log_text(anchor_run_id, ndjson,
+        artifact_file="gso_trial_captures/<plan>.ndjson")``.
+      * Any exception raised by ``log_text`` is logged at WARNING and
+        swallowed. Telemetry MUST NEVER break a real run.
 
     Args:
       anchor_run_id: The Phase H anchor MLflow run id resolved by
         ``resolve_or_create_phase_h_anchor``. ``None`` or ``""``
         triggers a no-op.
-      capture_paths: Absolute paths to the four sink NDJSONs. The
-        caller (``_run_lever_loop``) reads these from the four
-        ``dump_*_capture_summary()`` results' ``sink_path`` field.
       client: Optional MLflow client for testing. Defaults to a fresh
         ``MlflowClient()`` when None.
     """
+    import json as _json
+
     # Plan 5 self-diagnosing instrumentation: every branch prints to
     # stderr via ``_plan5_print`` so the next UI trial's notebook
     # stdout reveals which branch fired. Logger records do not survive
@@ -31861,43 +31843,69 @@ def _upload_trial_captures_to_phase_h_anchor(
                 "unavailable: %s", _exc,
             )
             return
-    for local_path in capture_paths:
-        if not local_path:
-            _plan5_print("upload helper skipping empty capture_paths entry")
-            continue
-        try:
-            from pathlib import Path as _P
-            if not _P(local_path).is_file():
-                _plan5_print(
-                    f"upload helper SKIP path not on disk: {local_path!r} "
-                    f"(sink resolved this path but no record reached the "
-                    f"file — check sink write OSError prints above)"
-                )
-                continue
-            _file_bytes = _P(local_path).stat().st_size
-        except Exception as _stat_exc:
+
+    try:
+        from genie_space_optimizer.common import config as _cfg_module
+    except Exception as _exc:
+        _plan5_print(
+            f"upload helper aborted: cannot import common.config "
+            f"err={type(_exc).__name__}: {_exc}"
+        )
+        return
+
+    for plan_label, filename, sink_attr in _PLAN5_TRIAL_CAPTURE_SINKS:
+        sink = getattr(_cfg_module, sink_attr, None)
+        if sink is None:
             _plan5_print(
-                f"upload helper SKIP stat failed for {local_path!r}: "
-                f"{type(_stat_exc).__name__}: {_stat_exc}"
+                f"upload helper SKIP {plan_label}: sink attr "
+                f"{sink_attr!r} not present on common.config"
             )
             continue
         try:
-            client.log_artifact(
-                anchor_run_id, local_path,
-                artifact_path="gso_trial_captures",
+            records = sink.consume_records()
+        except Exception as _exc:
+            _plan5_print(
+                f"upload helper SKIP {plan_label}: consume_records "
+                f"raised {type(_exc).__name__}: {_exc}"
+            )
+            continue
+        if not records:
+            _plan5_print(
+                f"upload helper SKIP {plan_label}: zero records "
+                f"buffered (sink either inactive or no capture site fired)"
+            )
+            continue
+        try:
+            ndjson_text = "\n".join(
+                _json.dumps(r, default=str) for r in records
+            ) + "\n"
+        except Exception as _exc:
+            _plan5_print(
+                f"upload helper SKIP {plan_label}: NDJSON serialization "
+                f"raised {type(_exc).__name__}: {_exc}"
+            )
+            continue
+        artifact_file = f"gso_trial_captures/{filename}"
+        try:
+            client.log_text(
+                run_id=anchor_run_id,
+                text=ndjson_text,
+                artifact_file=artifact_file,
             )
             _plan5_print(
                 f"upload helper OK: anchor={anchor_run_id} "
-                f"path={local_path!r} bytes={_file_bytes}"
+                f"plan={plan_label} artifact={artifact_file!r} "
+                f"records={len(records)} bytes={len(ndjson_text)}"
             )
         except Exception as _exc:
             _plan5_print(
-                f"upload helper FAIL log_artifact: anchor={anchor_run_id} "
-                f"path={local_path!r} err={type(_exc).__name__}: {_exc}"
+                f"upload helper FAIL log_text: anchor={anchor_run_id} "
+                f"plan={plan_label} artifact={artifact_file!r} "
+                f"err={type(_exc).__name__}: {_exc}"
             )
             logger.warning(
                 "Plan 5 trial-capture upload failed for %s: %s",
-                local_path, _exc,
+                artifact_file, _exc,
             )
 
 
@@ -31951,64 +31959,36 @@ def _plan5_register_trial_upload_safety_net(
         pass
 
 
-def _plan5_safe_dump(fn) -> dict | None:
-    try:
-        return fn()
-    except Exception:
-        return None
-
-
 def _plan5_atexit_upload_trial_captures() -> None:
     """Best-effort upload triggered at interpreter shutdown. Skipped
     when the in-line post-loop block already succeeded. All exceptions
     swallowed; the only externally visible signal is ``_plan5_print``
-    output to stderr (which postmortem bundles capture)."""
+    output to stderr (which postmortem bundles capture).
+
+    Plan 5 (Option B): the underlying helper now reads in-memory
+    buffers (``sink.consume_records()``) and uploads via
+    ``MlflowClient.log_text`` — no on-disk staging file is required.
+    The handler simply forwards to that helper.
+    """
     state = _PLAN5_TRIAL_UPLOAD_STATE
     if state.get("in_line_upload_completed"):
         return
     try:
-        from genie_space_optimizer.common.config import (
-            _plan5_print,
-            dump_lever5_split_capture_summary,
-            dump_narrowing_capture_summary,
-            dump_raw_evidence_capture_summary,
-            dump_three_stage_capture_summary,
-        )
-        _plan5_print(
-            "[atexit] safety-net firing: in-line upload did not run "
-            "(loop likely raised); attempting trial-capture upload"
-        )
-        capture_paths = _collect_trial_capture_paths(
-            narrowing_summary=_plan5_safe_dump(dump_narrowing_capture_summary),
-            lever5_summary=_plan5_safe_dump(dump_lever5_split_capture_summary),
-            three_stage_summary=_plan5_safe_dump(
-                dump_three_stage_capture_summary
-            ),
-            raw_evidence_summary=_plan5_safe_dump(
-                dump_raw_evidence_capture_summary
-            ),
-        )
+        from genie_space_optimizer.common.config import _plan5_print
         anchor = state.get("anchor_run_id")
         if not isinstance(anchor, str) or not anchor:
             _plan5_print(
                 f"[atexit] safety-net SKIP: no anchor_run_id in state "
-                f"(value={anchor!r}); captures sit on disk only"
-            )
-            return
-        if not capture_paths:
-            _plan5_print(
-                "[atexit] safety-net SKIP: no capture paths "
-                "(no sink resolved)"
+                f"(value={anchor!r}); in-memory captures cannot be "
+                f"uploaded without an anchor run"
             )
             return
         _plan5_print(
-            f"[atexit] safety-net upload: anchor={anchor!r} "
-            f"capture_paths={capture_paths!r}"
+            f"[atexit] safety-net firing: in-line upload did not run "
+            f"(loop likely raised); attempting trial-capture upload "
+            f"anchor={anchor!r}"
         )
-        _upload_trial_captures_to_phase_h_anchor(
-            anchor_run_id=anchor,
-            capture_paths=capture_paths,
-        )
+        _upload_trial_captures_to_phase_h_anchor(anchor_run_id=anchor)
     except Exception as _exc:
         # Last-ditch best-effort print; never re-raise from atexit.
         try:
