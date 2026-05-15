@@ -277,19 +277,26 @@ _log = partial(_log_base, _TASK_LABEL)
 
 # COMMAND ----------
 
-# Plan 5 trial-2 wiring — activate the four V1 paths whose capture sinks
+# Plan 5 trial-3 wiring — activate the shadow paths whose capture sinks
 # need to fire to produce committable byte-stable fixtures. The
 # ``setdefault`` form lets an operator override any of these from the
 # job environment for emergency rollback (set ``GSO_<flag>=0``).
 #
+# Trial-3 design (see ``2026-05-15-trial-3-wiring-and-shadow-emission-design.md``):
+# we run Plan 3 in **shadow only**, leaving the legacy strategist as
+# authority. Trial-2 set ``GSO_THREE_STAGE_V1=1`` here, which routed
+# strategist calls through ``run_three_stage_pipeline_for_ag`` and
+# silently bypassed (a) Plan 2's shadow emitter — only reachable via
+# ``_select_lever_5_holistic_path`` inside ``generate_proposals_from_strategy``
+# — and (b) Plan 3's own shadow gate ``if shadow_on and not
+# pipeline_on:``. Both sinks logged zero comparison records as a result.
+# Removing the ``GSO_THREE_STAGE_V1`` setdefault restores both emission
+# paths for trial-3 while keeping the pipeline's shadow output captured
+# for fixture generation. Plan 3 activation will be re-trialled in a
+# follow-up shadow-off / pipeline-on run after trial-3 fixtures land.
+#
 # Active paths (Plans 1, 2, 4) are already default-on in
-# ``common/config.py`` (covered by
-# ``test_v1_flags_default_posture.py``). Plan 3 is documented as
-# default-off in code; the setdefault here intentionally activates it
-# only for this trial's lever-loop notebook so the three-stage capture
-# sink emits records, without flipping the in-code default. The unit
-# test still passes because it reloads ``config.py`` standalone with
-# the env vars popped — it never imports this notebook.
+# ``common/config.py`` (covered by ``test_v1_flags_default_posture.py``).
 #
 # Shadow flags trigger the comparison-record sink writes that the
 # Plan 2/3/4 fixture exporters consume (the ``hits`` records alone are
@@ -301,9 +308,11 @@ _log = partial(_log_base, _TASK_LABEL)
 # production posture).
 import os as _os
 _os.environ.setdefault("GSO_LEVER5_SHADOW_V1", "1")        # Plan 2 shadow
-_os.environ.setdefault("GSO_THREE_STAGE_V1", "1")          # Plan 3 active
 _os.environ.setdefault("GSO_THREE_STAGE_SHADOW_V1", "1")   # Plan 3 shadow
 _os.environ.setdefault("GSO_RAW_EVIDENCE_SHADOW_V1", "1")  # Plan 4 shadow
+# (GSO_THREE_STAGE_V1 setdefault intentionally removed for trial-3;
+# default OFF in common/config.py keeps the legacy strategist as
+# authority so Plan 2's selector and Plan 3's shadow gate both fire.)
 
 # COMMAND ----------
 
