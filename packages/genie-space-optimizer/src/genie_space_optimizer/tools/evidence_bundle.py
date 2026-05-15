@@ -108,8 +108,23 @@ def _select_lever_loop_task(
     if not lever_tasks:
         return None, []
 
-    def _sort_key(t: Mapping[str, Any]) -> tuple[int, int]:
-        return (int(t.get("end_time") or 0), int(t.get("start_time") or 0))
+    def _sort_key(t: Mapping[str, Any]) -> tuple[int, int, int]:
+        """Strictly-ordered key: end_time, then start_time, then numeric
+        task_run_id as a deterministic tiebreaker (Databricks task ids
+        are monotonically allocated, so the larger id is the later
+        attempt). Trial-3 exposed parents where two SUCCESS attempts
+        tied on (end_time, start_time) at second-level resolution;
+        without the third component the API's input order won and the
+        bundler anchored on the older attempt."""
+        try:
+            tid = int(str(t.get("task_run_id") or "0") or "0")
+        except (TypeError, ValueError):
+            tid = 0
+        return (
+            int(t.get("end_time") or 0),
+            int(t.get("start_time") or 0),
+            tid,
+        )
 
     successes = sorted(
         (t for t in lever_tasks if _task_result_state(t) == "SUCCESS"),

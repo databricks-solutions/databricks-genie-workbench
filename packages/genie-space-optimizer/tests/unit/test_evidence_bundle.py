@@ -588,3 +588,84 @@ def test_walk_audit_artifacts_pulls_per_iter_bundle_paths(tmp_path) -> None:
     )
     # Unrelated paths skipped by the prefix filter.
     assert "unrelated/path/to/skip.json" not in pulled_paths
+
+
+def test_select_lever_loop_task_picks_latest_success_attempt():
+    """Trial-3 reproducer: parent run contained two SUCCESS lever_loop
+    task attempts (a stale trial-2 attempt + the trial-3 attempt). The
+    bundler must anchor on the LATER attempt (largest start_time among
+    SUCCESS), not the first one returned by the API."""
+    from genie_space_optimizer.tools.evidence_bundle import (
+        _select_lever_loop_task,
+    )
+    tasks = [
+        {
+            "task_key": "lever_loop",
+            "task_run_id": "TRIAL2_TASK_ID",
+            "state": {"result_state": "SUCCESS"},
+            "start_time": 1_000_000_000,
+            "end_time":   1_000_001_000,
+        },
+        {
+            "task_key": "lever_loop",
+            "task_run_id": "TRIAL3_TASK_ID",
+            "state": {"result_state": "SUCCESS"},
+            "start_time": 2_000_000_000,
+            "end_time":   2_000_001_000,
+        },
+        {
+            "task_key": "noop_task",
+            "task_run_id": "OTHER",
+            "state": {"result_state": "SUCCESS"},
+            "start_time": 3_000_000_000,
+            "end_time":   3_000_001_000,
+        },
+    ]
+    chosen, failed = _select_lever_loop_task(tasks)
+    assert chosen is not None
+    assert chosen["task_run_id"] == "TRIAL3_TASK_ID", (
+        f"bundler anchored on stale trial-2 attempt; chose "
+        f"{chosen['task_run_id']!r}"
+    )
+    assert failed == []
+
+
+def test_select_lever_loop_task_breaks_end_time_ties_by_task_run_id():
+    """Trial-3 actual symptom: two SUCCESS attempts shared identical
+    end_time after second-level truncation, so the legacy
+    (end_time, start_time) sort key tied and the API's input order
+    won — anchoring on the older trial-2 attempt. Databricks task_run_ids
+    are monotonically allocated, so the larger numeric id is the later
+    attempt; we use it as a deterministic third tiebreaker.
+
+    Reproducer modeled on parent run 663910747650165 (trial-2 task
+    564549106333867 + trial-3 task 47763202511349). The actual run
+    had a much larger trial-3 id than trial-2; we use representative
+    numeric ids here so the test is independent of any real workspace
+    data."""
+    from genie_space_optimizer.tools.evidence_bundle import (
+        _select_lever_loop_task,
+    )
+    tasks = [
+        {
+            "task_key": "lever_loop",
+            "task_run_id": "564549106333867",  # smaller id → older attempt
+            "state": {"result_state": "SUCCESS"},
+            "start_time": 1_700_000_000_000,
+            "end_time":   1_700_000_001_000,
+        },
+        {
+            "task_key": "lever_loop",
+            "task_run_id": "47763202511349000",  # larger id → newer attempt
+            "state": {"result_state": "SUCCESS"},
+            "start_time": 1_700_000_000_000,
+            "end_time":   1_700_000_001_000,
+        },
+    ]
+    chosen, _failed = _select_lever_loop_task(tasks)
+    assert chosen is not None
+    assert chosen["task_run_id"] == "47763202511349000", (
+        f"tied end_time should be broken by larger task_run_id "
+        f"(deterministic, monotonic-id heuristic); chose "
+        f"{chosen['task_run_id']!r}"
+    )
