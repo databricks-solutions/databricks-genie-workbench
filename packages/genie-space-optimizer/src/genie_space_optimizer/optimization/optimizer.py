@@ -9478,7 +9478,21 @@ def _dispatch_lever_5_split(
     ``benchmarks`` is threaded from
     ``generate_proposals_from_strategy``'s arg of the same name so the
     L5b leakage firewall has the corpus it needs.
+
+    Track B: this function is now the *single* shadow-emission boundary
+    for Plan 2. When ``GSO_LEVER5_SHADOW_V1`` is on, after computing
+    the split result we also run the legacy holistic path one time and
+    emit a single ``_emit_lever5_shadow_comparison`` record for this
+    AG. The split result is still what we return — production behavior
+    is unchanged. This guarantees emission for every dispatcher call,
+    regardless of whether the entry point was the legacy
+    ``_select_lever_5_holistic_path`` selector or a future Plan 3
+    routing surface that funnels through the dispatcher. The legacy
+    selector no longer emits; see ``_select_lever_5_holistic_path``
+    for the matching change.
     """
+    from genie_space_optimizer.common.config import lever5_shadow_enabled
+
     # Build the benchmark corpus once and reuse for every cluster.
     benchmark_corpus = None
     try:
@@ -9515,11 +9529,36 @@ def _dispatch_lever_5_split(
         f"L5b: {len(example_sql_proposals)} example SQLs across "
         f"{len(all_clusters or [])} cluster(s)."
     )
-    return {
+    new_result = {
         "instruction_text": five_a.get("instruction_text", "") or "",
         "example_sql_proposals": example_sql_proposals,
         "rationale": rationale,
     }
+
+    if lever5_shadow_enabled():
+        try:
+            old_result = _call_llm_for_holistic_instructions(
+                all_clusters, metadata_snapshot,
+                lever_changes=lever_changes, w=w,
+            )
+        except Exception:
+            logger.warning(
+                "Lever-5 shadow holistic call failed — recording "
+                "comparison with empty old payload.",
+                exc_info=True,
+            )
+            old_result = {
+                "instruction_text": "",
+                "example_sql_proposals": [],
+                "rationale": "",
+            }
+        _emit_lever5_shadow_comparison(
+            ag_id=str(metadata_snapshot.get("_active_ag_id", "")),
+            cluster_ids=[c.get("cluster_id", "") for c in (all_clusters or [])],
+            old=old_result, new=new_result,
+        )
+
+    return new_result
 
 
 def _select_lever_5_holistic_path(
@@ -9529,20 +9568,17 @@ def _select_lever_5_holistic_path(
     w: WorkspaceClient | None = None,
     benchmarks: list[dict] | None = None,
 ) -> dict:
-    """Plan 2 — flag-aware selector for the L5 result.
+    """Track B: the selector now only routes; emission is owned by
+    ``_dispatch_lever_5_split``.
 
     Precedence:
-      * ``GSO_LEVER5_SPLIT_V1=1`` → return ``_dispatch_lever_5_split(...)``.
-        If shadow flag is also on, ``_call_llm_for_holistic_instructions``
-        runs in parallel and the comparison is recorded; the dispatcher's
-        result is still returned (split wins).
-      * ``GSO_LEVER5_SHADOW_V1=1`` (split off) → run BOTH; record
-        comparison; return the holistic result (zero production risk).
+      * ``GSO_LEVER5_SPLIT_V1=1`` → return the split result (which
+        also self-emits a shadow comparison when
+        ``GSO_LEVER5_SHADOW_V1`` is on).
+      * ``GSO_LEVER5_SHADOW_V1=1`` (split off) → run the dispatcher
+        anyway so it emits a comparison record, but apply the legacy
+        holistic result to production (zero-risk shadow mode).
       * Both off → today's behavior: holistic only.
-
-    The shadow comparison record is emitted by ``_emit_lever5_shadow_comparison``
-    (added in Task 14). Both shadow branches call it; the dispatcher branch
-    only calls it when the dispatcher's result is the one applied.
     """
     from genie_space_optimizer.common.config import (
         lever5_shadow_enabled,
@@ -9550,25 +9586,6 @@ def _select_lever_5_holistic_path(
     )
     split_on = lever5_split_enabled()
     shadow_on = lever5_shadow_enabled()
-
-    if split_on and shadow_on:
-        old = _call_llm_for_holistic_instructions(
-            all_clusters, metadata_snapshot,
-            lever_changes=lever_changes, w=w,
-        )
-        new = _dispatch_lever_5_split(
-            all_clusters=all_clusters,
-            metadata_snapshot=metadata_snapshot,
-            lever_changes=lever_changes,
-            w=w,
-            benchmarks=benchmarks,
-        )
-        _emit_lever5_shadow_comparison(
-            ag_id=str(metadata_snapshot.get("_active_ag_id", "")),
-            cluster_ids=[c.get("cluster_id", "") for c in (all_clusters or [])],
-            old=old, new=new,
-        )
-        return new
 
     if split_on:
         return _dispatch_lever_5_split(
@@ -9580,23 +9597,20 @@ def _select_lever_5_holistic_path(
         )
 
     if shadow_on:
-        old = _call_llm_for_holistic_instructions(
-            all_clusters, metadata_snapshot,
-            lever_changes=lever_changes, w=w,
-        )
-        new = _dispatch_lever_5_split(
+        # Run the dispatcher purely for its emission side effect; the
+        # dispatcher's shadow tail will compute the comparison record.
+        # Apply the legacy holistic result to production (zero-risk).
+        _ = _dispatch_lever_5_split(
             all_clusters=all_clusters,
             metadata_snapshot=metadata_snapshot,
             lever_changes=lever_changes,
             w=w,
             benchmarks=benchmarks,
         )
-        _emit_lever5_shadow_comparison(
-            ag_id=str(metadata_snapshot.get("_active_ag_id", "")),
-            cluster_ids=[c.get("cluster_id", "") for c in (all_clusters or [])],
-            old=old, new=new,
+        return _call_llm_for_holistic_instructions(
+            all_clusters, metadata_snapshot,
+            lever_changes=lever_changes, w=w,
         )
-        return old  # zero-risk: apply old path
 
     return _call_llm_for_holistic_instructions(
         all_clusters, metadata_snapshot,
