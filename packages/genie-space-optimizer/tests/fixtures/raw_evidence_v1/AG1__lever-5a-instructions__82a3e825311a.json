@@ -1,0 +1,22 @@
+{
+  "ag_id": "AG1",
+  "skill_id": "lever-5a-instructions",
+  "n_evidence": 2,
+  "off_proposal_count": 1,
+  "on_proposal_count": 1,
+  "off_proposal_keys": [
+    [
+      "instruction_text",
+      "rationale"
+    ]
+  ],
+  "on_proposal_keys": [
+    [
+      "instruction_text",
+      "rationale"
+    ]
+  ],
+  "structural_diff": "content_differs",
+  "captured_at": 1778868647.9399838,
+  "process_pid": 3203
+}

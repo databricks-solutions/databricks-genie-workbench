@@ -33,14 +33,20 @@ from typing import Any
 
 
 # Per-plan dispatch table mapping plan_id (matches the NDJSON file's
-# basename without ``.ndjson``) to the exporter script path and the
-# CLI flag it accepts for the capture file. Output dir is always
-# ``tests/fixtures/<plan_id>/``.
+# basename without ``.ndjson``) to the exporter script path, the CLI
+# flag it accepts for the capture file, and whether it consumes the
+# MLflow experiment id. Output dir is always
+# ``tests/fixtures/<plan_id>/``. The flag names mirror what each
+# ``scripts/export_*_fixtures.py`` actually declares with argparse —
+# they are intentionally not uniform across plans (Plan 1 uses
+# ``--narrowing-capture-path``; the others use ``--capture-path``;
+# Plan 4 does not need MLflow because every record is self-contained).
 @dataclass(frozen=True)
 class _PlanDispatch:
     plan_id: str
     exporter_script: str
     capture_flag: str
+    needs_mlflow_experiment_id: bool
 
 
 _DISPATCH = (
@@ -48,21 +54,25 @@ _DISPATCH = (
         plan_id="narrowing_v1",
         exporter_script="scripts/export_narrowing_fixtures.py",
         capture_flag="--narrowing-capture-path",
+        needs_mlflow_experiment_id=True,
     ),
     _PlanDispatch(
         plan_id="lever5_split_v1",
         exporter_script="scripts/export_lever5_split_fixtures.py",
-        capture_flag="--lever5-split-capture-path",
+        capture_flag="--capture-path",
+        needs_mlflow_experiment_id=True,
     ),
     _PlanDispatch(
         plan_id="three_stage_v1",
         exporter_script="scripts/export_three_stage_fixtures.py",
-        capture_flag="--three-stage-capture-path",
+        capture_flag="--capture-path",
+        needs_mlflow_experiment_id=True,
     ),
     _PlanDispatch(
         plan_id="raw_evidence_v1",
         exporter_script="scripts/export_raw_evidence_fixtures.py",
-        capture_flag="--raw-evidence-capture-path",
+        capture_flag="--capture-path",
+        needs_mlflow_experiment_id=False,
     ),
 )
 
@@ -137,9 +147,10 @@ def regen_fixtures(
             sys.executable,
             str(repo_root / plan.exporter_script),
             plan.capture_flag, str(capture_path),
-            "--mlflow-experiment-id", str(experiment_id),
             "--output-dir", str(out_dir),
         ]
+        if plan.needs_mlflow_experiment_id:
+            argv.extend(["--mlflow-experiment-id", str(experiment_id)])
         result = subprocess.run(argv, capture_output=True, text=True)
         if result.returncode == 0:
             summary["plans_attempted"].append(plan.plan_id)

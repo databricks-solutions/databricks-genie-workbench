@@ -87,17 +87,26 @@ def test_orchestrator_invokes_each_exporter_for_existing_capture(tmp_path):
     ]
     # Two subprocess.run calls — one per attempted plan.
     assert fake_run.call_count == 2
-    # Verify each invocation passed --mlflow-experiment-id and the
-    # correct capture path.
+    # Verify each invocation passed the correct capture path. Plans
+    # whose exporter declares ``needs_mlflow_experiment_id=True`` must
+    # also receive ``--mlflow-experiment-id <id>``; Plan 4
+    # (``raw_evidence_v1``) does not consume it because every record
+    # in the NDJSON is self-contained (no MLflow trace lookup needed).
+    by_script: dict[str, list[str]] = {}
     for call in fake_run.call_args_list:
         argv = call.args[0]
-        assert "--mlflow-experiment-id" in argv
-        assert argv[argv.index("--mlflow-experiment-id") + 1] == "exp-456"
-        # exporter scripts use either --narrowing-capture-path,
-        # --lever5-split-capture-path, --three-stage-capture-path,
-        # --raw-evidence-capture-path
-        assert any(a.endswith("-capture-path") for a in argv)
+        # exporter scripts use --narrowing-capture-path or --capture-path
+        assert any(a in {"--narrowing-capture-path", "--capture-path"} for a in argv)
         assert any(a.endswith(".ndjson") for a in argv)
+        script = next(a for a in argv if a.endswith(".py"))
+        by_script[script.rsplit("/", 1)[-1]] = argv
+    assert "export_narrowing_fixtures.py" in by_script
+    narrowing_argv = by_script["export_narrowing_fixtures.py"]
+    assert "--mlflow-experiment-id" in narrowing_argv
+    assert narrowing_argv[narrowing_argv.index("--mlflow-experiment-id") + 1] == "exp-456"
+    assert "export_raw_evidence_fixtures.py" in by_script
+    raw_argv = by_script["export_raw_evidence_fixtures.py"]
+    assert "--mlflow-experiment-id" not in raw_argv
     assert summary["exit_code"] == 0
 
 

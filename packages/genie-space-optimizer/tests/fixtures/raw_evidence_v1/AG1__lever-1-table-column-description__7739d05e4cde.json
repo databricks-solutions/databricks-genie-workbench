@@ -1,0 +1,42 @@
+{
+  "ag_id": "AG1",
+  "skill_id": "lever-1-table-column-description",
+  "n_evidence": 2,
+  "off_proposal_count": 2,
+  "on_proposal_count": 2,
+  "off_proposal_keys": [
+    [
+      "_patch_type",
+      "_target",
+      "changes",
+      "rationale",
+      "table_changes"
+    ],
+    [
+      "_patch_type",
+      "_target",
+      "changes",
+      "rationale",
+      "table_changes"
+    ]
+  ],
+  "on_proposal_keys": [
+    [
+      "_patch_type",
+      "_target",
+      "changes",
+      "rationale",
+      "table_changes"
+    ],
+    [
+      "_patch_type",
+      "_target",
+      "changes",
+      "rationale",
+      "table_changes"
+    ]
+  ],
+  "structural_diff": "content_differs",
+  "captured_at": 1778868723.0494423,
+  "process_pid": 3203
+}
