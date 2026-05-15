@@ -8549,84 +8549,103 @@ def _call_llm_for_join_discovery(
 
     prompt = format_mlflow_template(LEVER_4_JOIN_DISCOVERY_PROMPT, **format_kwargs)
 
-    from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
-    _link_prompt_to_trace("lever_4_join_discovery")
+    import mlflow
+    from mlflow.entities import SpanType
 
-    logger.info(
-        "\n"
-        "┌─── OPTIMIZER LLM [JOIN_DISCOVERY] INPUT ────────────────────────────────\n"
-        "│ Hints: %d\n"
-        "│ Existing join specs: %d\n"
-        "│ Prompt length: %d chars\n"
-        "└─────────────────────────────────────────────────────────────────────────",
-        len(hints), len(_join_specs), len(prompt),
-    )
+    with mlflow.start_span(
+        name="lever_4_join_discovery",
+        span_type=SpanType.CHAIN,
+    ) as _span:
+        _span.set_inputs({
+            "model": LLM_ENDPOINT,
+            "temperature": LLM_TEMPERATURE,
+            "prompt_chars": len(prompt),
+            "hints": len(hints),
+            "existing_join_specs": len(_join_specs),
+        })
 
-    import time
+        from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
+        _link_prompt_to_trace("lever_4_join_discovery")
 
-    system_msg = (
-        "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
-        "Do NOT include any explanation, analysis, or markdown outside the JSON. "
-        "Your entire response must be parseable by json.loads()."
-    )
+        logger.info(
+            "\n"
+            "┌─── OPTIMIZER LLM [JOIN_DISCOVERY] INPUT ────────────────────────────────\n"
+            "│ Hints: %d\n"
+            "│ Existing join specs: %d\n"
+            "│ Prompt length: %d chars\n"
+            "└─────────────────────────────────────────────────────────────────────────",
+            len(hints), len(_join_specs), len(prompt),
+        )
 
-    text = ""
-    for attempt in range(LLM_MAX_RETRIES):
-        try:
-            text, _response = _call_llm_openai(
-                w,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": prompt},
-                ],
-                max_retries=1,
-                temperature=LLM_TEMPERATURE,
-            )
-            result = _extract_json(text)
-            specs = result.get("join_specs", [])
-            rationale = result.get("rationale", "")
-            for s in specs:
-                if isinstance(s, dict) and "sql" in s:
-                    s["sql"] = [
-                        _sanitize_join_sql(part) for part in s["sql"]
-                        if isinstance(part, str)
-                    ]
-            out = [
-                {"join_spec": s, "rationale": rationale}
-                for s in specs
-                if isinstance(s, dict)
-            ]
-            logger.info(
-                "\n"
-                "┌─── OPTIMIZER LLM [JOIN_DISCOVERY] RESPONSE ─────────────────────────\n"
-                "│ Join specs returned: %d\n"
-                "│ Rationale: %s\n"
-                "└─────────────────────────────────────────────────────────────────────────",
-                len(out), _truncate_on_boundary(str(rationale), 300),
-            )
-            return out
-        except json.JSONDecodeError:
-            logger.warning(
-                "JOIN_DISCOVERY non-JSON response (attempt %d/%d): %.500s",
-                attempt + 1, LLM_MAX_RETRIES, text,
-            )
-            if attempt < LLM_MAX_RETRIES - 1:
-                time.sleep(2**attempt)
-                continue
-            return []
-        except Exception:
-            if attempt < LLM_MAX_RETRIES - 1:
-                time.sleep(2**attempt)
-            else:
-                logger.exception(
-                    "\n"
-                    "┌─── OPTIMIZER LLM [JOIN_DISCOVERY] ERROR ────────────────────────────\n"
-                    "│ Prompt len: %d chars | Retries: %d\n"
-                    "└─────────────────────────────────────────────────────────────────────────",
-                    len(prompt), LLM_MAX_RETRIES,
+        import time
+
+        system_msg = (
+            "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
+            "Do NOT include any explanation, analysis, or markdown outside the JSON. "
+            "Your entire response must be parseable by json.loads()."
+        )
+
+        text = ""
+        for attempt in range(LLM_MAX_RETRIES):
+            try:
+                text, _response = _call_llm_openai(
+                    w,
+                    messages=[
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_retries=1,
+                    temperature=LLM_TEMPERATURE,
                 )
+                result = _extract_json(text)
+                specs = result.get("join_specs", [])
+                rationale = result.get("rationale", "")
+                for s in specs:
+                    if isinstance(s, dict) and "sql" in s:
+                        s["sql"] = [
+                            _sanitize_join_sql(part) for part in s["sql"]
+                            if isinstance(part, str)
+                        ]
+                out = [
+                    {"join_spec": s, "rationale": rationale}
+                    for s in specs
+                    if isinstance(s, dict)
+                ]
+                _span.set_outputs({"join_specs_returned": len(out)})
+                logger.info(
+                    "\n"
+                    "┌─── OPTIMIZER LLM [JOIN_DISCOVERY] RESPONSE ─────────────────────────\n"
+                    "│ Join specs returned: %d\n"
+                    "│ Rationale: %s\n"
+                    "└─────────────────────────────────────────────────────────────────────────",
+                    len(out), _truncate_on_boundary(str(rationale), 300),
+                )
+                return out
+            except json.JSONDecodeError:
+                logger.warning(
+                    "JOIN_DISCOVERY non-JSON response (attempt %d/%d): %.500s",
+                    attempt + 1, LLM_MAX_RETRIES, text,
+                )
+                if attempt < LLM_MAX_RETRIES - 1:
+                    time.sleep(2**attempt)
+                    continue
+                _span.set_outputs({"join_specs_returned": 0, "non_json": True})
                 return []
-    return []
+            except Exception:
+                if attempt < LLM_MAX_RETRIES - 1:
+                    time.sleep(2**attempt)
+                else:
+                    logger.exception(
+                        "\n"
+                        "┌─── OPTIMIZER LLM [JOIN_DISCOVERY] ERROR ────────────────────────────\n"
+                        "│ Prompt len: %d chars | Retries: %d\n"
+                        "└─────────────────────────────────────────────────────────────────────────",
+                        len(prompt), LLM_MAX_RETRIES,
+                    )
+                    _span.set_outputs({"join_specs_returned": 0, "error": True})
+                    return []
+        _span.set_outputs({"join_specs_returned": 0, "exhausted": True})
+        return []
 
 
 _MARKDOWN_RESIDUE_RE = re.compile(
