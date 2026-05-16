@@ -142,3 +142,37 @@ def test_audit_anchor_prefers_latest_lever_loop_with_captures(monkeypatch) -> No
         client=_FakeClient(),
     )
     assert result["anchor_run_id"] == "run_new", result
+
+
+def test_audit_anchor_falls_back_to_latest_lever_loop_when_no_captures(
+    monkeypatch,
+) -> None:
+    """When no lever_loop sibling has ``gso_trial_captures/`` artifacts
+    (e.g. trial predates the in-memory upload helper, or the upload
+    block crashed before writing), the anchor still picks the
+    most-recently-started lever_loop sibling rather than the first one
+    returned by search_runs. Falling back to chronology beats falling
+    back to MLflow's response ordering."""
+    from genie_space_optimizer.tools import mlflow_audit
+
+    earliest = _FakeRun(
+        "run_a", {"genie.run_type": "lever_loop"}, start_time=1_000_000,
+    )
+    latest = _FakeRun(
+        "run_b", {"genie.run_type": "lever_loop"}, start_time=3_000_000,
+    )
+
+    class _FakeClient:
+        def search_runs(self, *a, **k):
+            return [earliest, latest]
+
+    monkeypatch.setattr(
+        mlflow_audit, "_list_artifacts_recursive", lambda c, r: [],
+    )
+
+    result = mlflow_audit.audit_optimization_run(
+        optimization_run_id="opt-shared",
+        experiment_id="exp1",
+        client=_FakeClient(),
+    )
+    assert result["anchor_run_id"] == "run_b", result
