@@ -20910,6 +20910,25 @@ def _run_lever_loop(
                         strategy.get("action_groups", [])
                     )
 
+                    # Plan B Task 7 (2026-05-16) — drain the L5b rich-path
+                    # decline ledger. The ledger was populated as
+                    # ``_select_strategy_path_for_iteration`` ran above
+                    # (Stage-2's L5b adapter routes through
+                    # ``_dispatch_rich_synthesis_for_l5b`` when the
+                    # ``GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE`` flag is
+                    # ON). Drains here — AFTER ``action_groups`` is
+                    # canonicalized so the resolver can map cluster_id ->
+                    # ag_id, BEFORE the AG-shape gate or any other
+                    # downstream stage processes the AG list. The wrapper
+                    # is a no-op when the ledger is empty (default
+                    # flag-OFF state), so this call is always safe.
+                    _drain_l5b_rich_path_after_stage2(
+                        run_id=str(run_id or ""),
+                        iteration=int(iteration_counter or 0),
+                        action_groups=action_groups,
+                        decision_emit_fn=_decision_emit,
+                    )
+
                     # Phase 3 Action 3.2 — AG-shape-differs gate.
                     # Computes (repair_archetype, target_scope) for each
                     # AG and compares against the per-target history
