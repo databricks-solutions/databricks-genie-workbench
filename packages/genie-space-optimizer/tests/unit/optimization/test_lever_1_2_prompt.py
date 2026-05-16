@@ -80,3 +80,27 @@ def test_lever_1_2_prompt_has_counterfactual_fix_hints_section():
     assert "## Counterfactual Fix Hints" in prompt
     assert "{{ counterfactual_fixes }}" in prompt
     assert "Counterfactual Fix Hints" in prompt or "counterfactual" in prompt.lower()
+
+
+def test_lever_1_2_prompt_has_output_bounds():
+    """The L1/L2 template <instructions> must include bounded-output rules."""
+    from genie_space_optimizer.common.config import LEVER_1_2_COLUMN_PROMPT
+
+    prompt = LEVER_1_2_COLUMN_PROMPT
+    assert (
+        "at most 3 changes" in prompt
+        or "maximum of 3 changes" in prompt
+        or "max 3 changes" in prompt
+    ), "instructions must bound changes[] to at most 3 entries"
+    assert "300 char" in prompt or "300 character" in prompt
+    assert "200 char" in prompt or "200 character" in prompt
+    assert "2-5" in prompt or "2 to 5" in prompt
+
+
+def test_lever_1_2_prompt_renames_sql_diffs_section():
+    """Section renamed from '## SQL Diffs' to '## Structural Diff Features'."""
+    from genie_space_optimizer.common.config import LEVER_1_2_COLUMN_PROMPT
+
+    prompt = LEVER_1_2_COLUMN_PROMPT
+    assert "## Structural Diff Features" in prompt
+    assert "## SQL Diffs (Expected vs Generated)" not in prompt

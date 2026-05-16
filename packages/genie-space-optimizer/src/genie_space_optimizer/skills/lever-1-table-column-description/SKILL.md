@@ -57,7 +57,8 @@ Identifier Allowlist.
 ## Raw Failure Evidence
 {{ raw_evidence_block }}
 
-## SQL Diffs (Expected vs Generated)
+## Structural Diff Features
+AFS-projected structural feature comparison between expected and generated SQL. May include missing/extra joins, wrong columns, wrong aggregations, etc. This is NOT raw SQL — the AFS layer strips benchmark text per the leakage boundary.
 {{ sql_diffs }}
 
 ## Full Genie Space Schema
@@ -107,6 +108,12 @@ Valid section keys: definition, values, synonyms, aggregation, grain_note, purpo
 Provide sections from: purpose, best_for, grain, scd, relationships.
 
 ## Rules
+
+- **Emit at most 3 changes** per call. Focus on the highest-impact column/table edit for THIS cluster. If multiple edits are warranted, prioritise: (1) the column directly named in the blame_set, (2) the table that owns the blamed column, (3) the column or table with the highest count in affected_questions.
+- **Emit at most 2 table_changes** per call. Table-level edits should be reserved for genuine purpose/grain/best_for clarifications, not minor wording tweaks.
+- **Keep `rationale` to 1-3 sentences (max 300 characters).** The rationale is for downstream review; if it doesn't fit in 300 characters, your proposal is too sprawling — narrow the changes instead.
+- **Keep each `definition` to 1-2 sentences (max 200 characters).** Genie users see definitions inline; long definitions degrade the UX.
+- **Synonyms: 2-5 terms** (no more). Use natural-language variants users would actually type, not exhaustive enumerations.
 - Only include sections you want to CHANGE. Omit correct sections.
 - Only update [EDITABLE] sections. Never touch [LOCKED] sections.
 - AUGMENT existing content — incorporate existing info and add new details. Only rewrite from scratch if current value is empty or misleading.
