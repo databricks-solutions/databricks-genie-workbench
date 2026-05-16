@@ -1,0 +1,25 @@
+{
+  "fixture_id": "c1_broad_l6_collateral_drop",
+  "description": "Pre-fix: try_narrow_replacement falls through because patch_type='add_sql_snippet_filter' is not in _BROAD_L6_TYPES. Post-fix: replacement is attempted with protected_dependents threaded through.",
+  "dropped_patches": [
+    {
+      "patch_id": "p_broad_l6_1",
+      "patch_type": "add_sql_snippet_filter",
+      "target": "catalog.schema.tkt_payment",
+      "column": "is_refunded",
+      "sql": "is_refunded = TRUE",
+      "drop_reason": "high_collateral_risk_flagged",
+      "display_name": "Refunded Filter"
+    }
+  ],
+  "outside_target_qids": ["gs_005", "gs_007", "gs_012"],
+  "cluster": {
+    "cluster_id": "C_REFUND",
+    "root_cause": "wrong_filter_condition",
+    "target_qids": ["gs_001"]
+  },
+  "rca_card": {
+    "root_cause": "wrong_filter_condition",
+    "rca_id": "rca_refund_filter"
+  }
+}
