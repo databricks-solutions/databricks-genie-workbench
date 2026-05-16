@@ -4718,6 +4718,15 @@ LEVER_5B_EXAMPLE_SQL_PROMPT = _SKILL_LOADER.load_prompt(
 )
 LEVER_PROMPTS["lever_5b_example_sql"] = LEVER_5B_EXAMPLE_SQL_PROMPT
 
+# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 8 — Lever-1
+# RCA-bridge prompt (Task 9 replaces the inline f-string at
+# optimizer.py:12591 with a template render against this constant).
+LEVER_1_RCA_BRIDGE_PROMPT = _SKILL_LOADER.load_prompt(
+    "lever-1-rca-bridge",
+    expected_constant_name="LEVER_1_RCA_BRIDGE_PROMPT",
+)
+LEVER_PROMPTS["lever_1_rca_bridge"] = LEVER_1_RCA_BRIDGE_PROMPT
+
 # ── 24. Prose Rule Mining (multi-target; prose → structured) ──────────
 #
 # Replaces the earlier INSTRUCTION_TO_SQL_EXPRESSION_PROMPT. A single LLM

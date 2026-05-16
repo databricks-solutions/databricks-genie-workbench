@@ -193,3 +193,17 @@ def test_lever_5b_example_sql_prompt_is_registered():
         "common/config.py and add 'lever_5b_example_sql': "
         "LEVER_5B_EXAMPLE_SQL_PROMPT to LEVER_PROMPTS."
     )
+
+
+def test_lever_1_rca_bridge_prompt_is_loaded_and_registered():
+    """The RCA-bridge prompt (formerly an inline f-string in
+    _generate_lever1_rca_proposal) must be loadable from
+    lever-1-rca-bridge/SKILL.md and registered in LEVER_PROMPTS.
+    """
+    assert hasattr(cfg, "LEVER_1_RCA_BRIDGE_PROMPT"), (
+        "LEVER_1_RCA_BRIDGE_PROMPT constant is missing from common.config."
+    )
+    assert "lever_1_rca_bridge" in cfg.LEVER_PROMPTS, (
+        "LEVER_1_RCA_BRIDGE_PROMPT is not in LEVER_PROMPTS."
+    )
+    assert cfg.LEVER_PROMPTS["lever_1_rca_bridge"] is cfg.LEVER_1_RCA_BRIDGE_PROMPT
