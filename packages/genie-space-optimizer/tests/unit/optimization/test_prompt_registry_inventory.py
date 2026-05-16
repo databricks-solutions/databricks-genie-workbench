@@ -146,3 +146,14 @@ def test_no_inline_fstring_LLM_prompts_in_optimization_module():
         "Inline f-string LLM prompts found — every prompt must live in a "
         "SKILL.md file:\n" + "\n".join(violations)
     )
+
+
+def test_lever_6_sql_expression_prompt_is_registered():
+    assert "lever_6_sql_expression" in cfg.LEVER_PROMPTS, (
+        "LEVER_6_SQL_EXPRESSION_PROMPT is the active Stage-2 prompt for "
+        "lever-6 (48 LLM calls in Trial-5) but is not in LEVER_PROMPTS, "
+        "so it is never registered to MLflow Prompt Registry. Add "
+        "'lever_6_sql_expression': LEVER_6_SQL_EXPRESSION_PROMPT to "
+        "LEVER_PROMPTS in common/config.py."
+    )
+    assert cfg.LEVER_PROMPTS["lever_6_sql_expression"] is cfg.LEVER_6_SQL_EXPRESSION_PROMPT

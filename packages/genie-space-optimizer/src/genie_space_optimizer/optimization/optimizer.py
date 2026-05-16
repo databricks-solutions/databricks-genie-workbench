@@ -12995,6 +12995,11 @@ def _generate_lever6_proposal(
 
         span.set_inputs({"root_cause": root_cause, "prompt_chars": len(prompt)})
 
+        # Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 2 —
+        # link the registered lever_6_sql_expression prompt to the trace.
+        from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
+        _link_prompt_to_trace("lever_6_sql_expression")
+
         try:
             from genie_space_optimizer.common.config import LEVER_6_MAX_TOKENS
             raw_text, _ = _traced_llm_call(

@@ -4701,6 +4701,9 @@ LEVER_6_SQL_EXPRESSION_PROMPT = _SKILL_LOADER.load_prompt(
     expected_constant_name="LEVER_6_SQL_EXPRESSION_PROMPT",
 )
 
+# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 2
+LEVER_PROMPTS["lever_6_sql_expression"] = LEVER_6_SQL_EXPRESSION_PROMPT
+
 # ── 24. Prose Rule Mining (multi-target; prose → structured) ──────────
 #
 # Replaces the earlier INSTRUCTION_TO_SQL_EXPRESSION_PROMPT. A single LLM
