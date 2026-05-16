@@ -168,6 +168,7 @@ def dispatch_forced_structural_synthesis(
     lever_keys: Iterable[int],
     reflection_buffer: Sequence[Any],
     current_iter_inputs: dict[str, Any],
+    ag_proposals_so_far: Sequence[Mapping[str, Any]] = (),
     synthesize: Callable[..., Any] | None = None,
 ) -> ForcedSynthesisDispatchResult:
     """Run the L5 forced-structural-synthesis dispatch for one AG.

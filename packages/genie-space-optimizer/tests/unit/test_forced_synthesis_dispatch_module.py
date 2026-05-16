@@ -212,3 +212,39 @@ def test_label_divergence_visits_cluster_after_canonicalization() -> None:
     assert result.attempted_dispatches == (("H001", "wrong_aggregation"),)
     assert len(result.appended_proposals) == 1
     assert synthesize_call_count["n"] == 1
+
+
+def test_dispatch_accepts_ag_proposals_so_far_kwarg() -> None:
+    """Phase 2 — dispatch admits ``ag_proposals_so_far`` (defaults to ()).
+    The kwarg is read in Task 9; for now we verify the signature accepts
+    it without breaking existing callers.
+    """
+    from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
+        dispatch_forced_structural_synthesis,
+    )
+
+    def _synthesize_must_not_run(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("no inputs — should not be called")
+
+    result = dispatch_forced_structural_synthesis(
+        run_id="test_run",
+        iteration=1,
+        ag={"id": "AG_TEST", "affected_questions": [], "source_cluster_ids": []},
+        l5_ag_drops=[],
+        iter_source_clusters_by_id={},
+        iter_rca_id_by_cluster={},
+        metadata_snapshot={},
+        benchmarks=[],
+        catalog="",
+        schema="",
+        w=None,
+        spark=None,
+        lever_keys=(),
+        reflection_buffer=(),
+        current_iter_inputs={},
+        ag_proposals_so_far=[],
+        synthesize=_synthesize_must_not_run,
+    )
+    assert result.attempted_dispatches == ()
+    assert result.appended_proposals == ()
+    assert result.emitted_decision_records == ()
