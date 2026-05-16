@@ -248,3 +248,58 @@ def test_no_phantom_LEVER_1_2_COLUMN_PROMPT_FOR_L2_references():
         f"Phantom constant LEVER_1_2_COLUMN_PROMPT_FOR_L2 still "
         f"referenced in: {bad}. It is never defined in code."
     )
+
+
+# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 20 — the
+# prompts in this allowlist may fire LLM calls without a Pydantic
+# response_model. Adding a new entry requires a paragraph of
+# justification in the plan doc. The list is reviewed quarterly; entries
+# are demoted to "needs typed output" if their call volume grows.
+TYPED_OUTPUT_DEFERRED_ALLOWLIST: frozenset[str] = frozenset({
+    # Preflight / enrichment — low volume, low blast radius:
+    "description_enrichment",
+    "table_description_enrichment",
+    "space_description",
+    "sample_questions",
+    "proactive_instruction",
+    "expand_instruction",
+    "gt_repair",
+    "prose_rule_mining",
+    "instruction_to_sql_expression",
+    "preflight_example_synthesis",
+    "proposal_generation",
+    # Strategist family monolith — superseded by triage+detail split
+    # which are contracted (StrategistTriageOutput / StrategistDetailOutput):
+    "strategist",
+    # Lever-5 holistic — legacy path superseded by lever_5_instruction
+    # in production:
+    "lever_5_holistic",
+    # Lever-4 join_spec — non-pickable scaffolding prompt; output shape
+    # is shared with Lever-4 join_discovery which IS contracted as
+    # Lever4JoinDiscoveryOutput:
+    "lever_4_join_spec",
+})
+
+
+def test_every_active_lever_prompt_has_typed_output_contract():
+    """Every LEVER_PROMPTS entry (except the explicit deferred allowlist)
+    must have a corresponding Pydantic model in prompt_io.py."""
+    from genie_space_optimizer.optimization import prompt_io as pio
+
+    expected_models = {
+        name: "".join(part.capitalize() for part in name.split("_")) + "Output"
+        for name in cfg.LEVER_PROMPTS
+        if name not in TYPED_OUTPUT_DEFERRED_ALLOWLIST
+    }
+    missing = [
+        f"{registry_name} -> expected pio.{model_name}"
+        for registry_name, model_name in expected_models.items()
+        if not hasattr(pio, model_name)
+    ]
+    assert not missing, (
+        f"These LEVER_PROMPTS entries are missing a Pydantic output "
+        f"contract in prompt_io.py: {missing}. Either add the model + "
+        f"wire response_model= at the callsite, or add the prompt name "
+        f"to TYPED_OUTPUT_DEFERRED_ALLOWLIST with a documented rationale "
+        f"in 2026-05-17-prompt-registry-and-typed-io-hygiene.md Task 20."
+    )

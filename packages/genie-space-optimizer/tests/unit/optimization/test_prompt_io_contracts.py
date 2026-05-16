@@ -307,10 +307,25 @@ def test_lever_4_join_discovery_output_allows_empty_join_specs():
 
 
 def test_lever_5a_instruction_output_parses_prose_only():
-    from genie_space_optimizer.optimization.prompt_io import Lever5aInstructionOutput
+    from genie_space_optimizer.optimization.prompt_io import Lever5aInstructionsOutput
     raw = '{"instruction_text": "PURPOSE:\\nSales analytics.", "rationale": "added purpose section"}'
-    parsed = validate_and_parse(raw, Lever5aInstructionOutput)
+    parsed = validate_and_parse(raw, Lever5aInstructionsOutput)
     assert parsed.instruction_text.startswith("PURPOSE:")
+
+
+def test_lever_5b_example_sql_output_parses_canonical_response():
+    from genie_space_optimizer.optimization.prompt_io import Lever5bExampleSqlOutput
+    raw = """
+    {
+      "example_question": "what was monthly revenue in Q4?",
+      "example_sql": "SELECT month, SUM(revenue) FROM fact_sales GROUP BY month",
+      "usage_guidance": "applies to monthly aggregation questions",
+      "rationale": "missing monthly aggregation pattern"
+    }
+    """
+    parsed = validate_and_parse(raw, Lever5bExampleSqlOutput)
+    assert parsed.example_question.startswith("what was")
+    assert "SUM(revenue)" in parsed.example_sql
 
 
 def test_lever_5_instruction_output_discriminates_three_types():

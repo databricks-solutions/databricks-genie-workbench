@@ -335,11 +335,31 @@ class Lever4JoinDiscoveryOutput(LLMOutputContract):
 # ── Lever-5a instructions (Task 19) ───────────────────────────────────
 
 
-class Lever5aInstructionOutput(LLMOutputContract):
+class Lever5aInstructionsOutput(LLMOutputContract):
     """LEVER_5A_INSTRUCTION_PROMPT output: prose-only instruction
-    document. No example_sqls allowed."""
+    document. No example_sqls allowed.
+
+    Class name matches the registry key ``lever_5a_instructions``
+    (plural) so the auto-derived class-name convention in
+    ``test_every_active_lever_prompt_has_typed_output_contract`` finds it.
+    """
 
     instruction_text: str = Field(default="")
+    rationale: str = Field(default="")
+
+
+# Backwards-compat alias for callers that may have imported the singular form.
+Lever5aInstructionOutput = Lever5aInstructionsOutput
+
+
+class Lever5bExampleSqlOutput(LLMOutputContract):
+    """LEVER_5B_EXAMPLE_SQL_PROMPT output (loaded from
+    lever-5b-example-sql/SKILL.md). Emits one example_question +
+    example_sql + usage_guidance + rationale."""
+
+    example_question: str = Field(description="NL question the example answers")
+    example_sql: str = Field(description="SQL teaching the structural pattern")
+    usage_guidance: str = Field(default="")
     rationale: str = Field(default="")
 
 
