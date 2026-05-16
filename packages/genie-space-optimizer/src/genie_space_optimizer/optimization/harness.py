@@ -17868,6 +17868,18 @@ def _run_lever_loop(
     # re-burning its budget.
     _rca_recovery_holder: dict = {}
 
+    # C4 (2026-05-17) — per-run dict tracking how many times each
+    # iteration-failure signature has fired. The key is the 16-char
+    # blake2b digest from ``iteration_failure_signature(...)``. Lives
+    # at the same scope as ``_rca_recovery_holder`` so it survives
+    # across iterations within this run; reset on each new run. Each
+    # emit site passes this dict into ``_emit_proposal_failure_decided``
+    # via the ``ProposalFailureCallSiteContext`` so the helper can
+    # bump and read the counter, populating ``prior_identical_failure_count``
+    # on the policy context and triggering ``ESCALATE_STALEMATE``
+    # when the same signature fires twice within the run.
+    _iter_failure_signatures: dict[str, int] = {}
+
     # Phase A — deterministic carrier for the most recent full-eval
     # result. Replaces opportunistic ``locals().get("full_result")``
     # reads in the eval-entry / post-eval / validator blocks below.
