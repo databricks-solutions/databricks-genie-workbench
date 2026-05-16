@@ -237,3 +237,101 @@ def test_replay_label_aligned_visits_cluster() -> None:
         iter1.appended_proposals[0]["provenance"]["synthesis_source"]
         == "forced_lever5_drop"
     )
+
+
+def test_replay_label_divergence_visits_cluster_after_fix() -> None:
+    """PLAN A PART 1 GATE — asserts the divergent-labels case fires.
+
+    Today (pre-fix): this test FAILS because the strict-equality lookup
+    short-circuits. After ``cluster_failure_keys`` lands and the dispatch
+    matches via set membership, this test PASSES.
+
+    Synthesize is stubbed to return a viable proposal. The assertion
+    chain proves the rich path was actually reached:
+
+    1. attempted_dispatches contains the (H001, "wrong_aggregation") pair.
+    2. appended_proposals contains exactly one add_example_sql.
+    3. The forced proposal's provenance.synthesis_source is "forced_lever5_drop".
+    """
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_replay import (
+        run_forced_synthesis_replay,
+    )
+
+    def _synthesize_success(cluster_arg, metadata_arg, **kwargs):
+        return ClusterSynthesisResult(
+            proposal={
+                "example_question": "How many flights per route?",
+                "example_sql": (
+                    "SELECT route, COUNT(*) AS cnt "
+                    "FROM flights GROUP BY route ORDER BY cnt DESC LIMIT 10"
+                ),
+                "_archetype_name": "ordered_list_by_metric",
+                "kit_id": "kit_h001",
+                "target_qids": ["gs_009"],
+                "rca_id": "rca_h001",
+                "_cluster_id": "H001",
+            },
+            attempted_archetypes=("ordered_list_by_metric",),
+            skipped_reason=None,
+        )
+
+    result = run_forced_synthesis_replay(
+        fixture=_load_fixture("label_divergence_minimal"),
+        synthesize=_synthesize_success,
+    )
+    assert result.fixture_id == "label_divergence_minimal"
+    assert len(result.iterations) == 1
+    iter1 = result.iterations[0]
+    assert iter1.attempted_dispatches == (("H001", "wrong_aggregation"),)
+    assert len(iter1.appended_proposals) == 1
+    proposal = iter1.appended_proposals[0]
+    assert proposal["patch_type"] == "add_example_sql"
+    assert proposal["provenance"]["synthesis_source"] == "forced_lever5_drop"
+    assert proposal["provenance"]["drop_root_cause"] == "wrong_aggregation"
+
+
+def test_replay_label_divergence_emits_nsc_when_synth_declines() -> None:
+    """PLAN A PART 1 GATE (complement) — asserts the NO_STRUCTURAL_CANDIDATE
+    branch is reachable after the fix.
+
+    Same fixture; synthesize stub returns ``proposal=None``. The
+    assertion chain:
+
+    1. attempted_dispatches still contains (H001, "wrong_aggregation").
+       (Dispatch ROUTED to the cluster — the fix's job.)
+    2. emitted_decision_records contains one NO_STRUCTURAL_CANDIDATE record.
+    3. appended_proposals is empty.
+
+    This proves the fix only changes the cluster-LOOKUP step; downstream
+    behavior (decline → emit NSC) is unchanged.
+    """
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_replay import (
+        run_forced_synthesis_replay,
+    )
+
+    def _synthesize_decline(cluster_arg, metadata_arg, **kwargs):
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=("ordered_list_by_metric",),
+            skipped_reason="no_viable_archetype",
+        )
+
+    result = run_forced_synthesis_replay(
+        fixture=_load_fixture("label_divergence_minimal"),
+        synthesize=_synthesize_decline,
+    )
+    iter1 = result.iterations[0]
+    assert iter1.attempted_dispatches == (("H001", "wrong_aggregation"),)
+    assert iter1.appended_proposals == ()
+    assert len(iter1.emitted_decision_records) == 1
+    nsc = iter1.emitted_decision_records[0]
+    assert nsc.get("decision_type") == "NO_STRUCTURAL_CANDIDATE"
+    assert nsc.get("ag_id") == "AG_DECOMPOSED_H001"
+    assert nsc.get("cluster_id") == "H001"
+    assert nsc.get("root_cause") == "wrong_aggregation"
