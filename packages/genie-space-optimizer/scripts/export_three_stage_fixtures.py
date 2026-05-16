@@ -44,6 +44,22 @@ def _short_hash(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
 
+# Per-process metadata that captures may carry but that is irrelevant
+# to the typed contract being pinned. Including these in the content
+# hash would make every trial regenerate "new" fixture files for the
+# same logical content, breaking the byte-stability gate.
+_VOLATILE_HASH_KEYS: frozenset[str] = frozenset({
+    "captured_at",
+    "process_pid",
+})
+
+
+def _stable_hash_input(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``payload`` with ``_VOLATILE_HASH_KEYS`` removed,
+    so the content hash depends only on the typed contract under test."""
+    return {k: v for k, v in payload.items() if k not in _VOLATILE_HASH_KEYS}
+
+
 def _read_ndjson(path: Path) -> list[dict[str, Any]]:
     out = []
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -163,7 +179,9 @@ def main(argv: list[str] | None = None) -> int:
             "stage_2_results": stage_2_results,
         }
 
-        content_hash = _short_hash(json.dumps(payload, sort_keys=True, default=str))
+        content_hash = _short_hash(
+            json.dumps(_stable_hash_input(payload), sort_keys=True, default=str)
+        )
         out_path = args.output_dir / f"{(payload.get('ag_id') or 'unknownAG')}__{content_hash}.json"
         if out_path.exists():
             skipped += 1

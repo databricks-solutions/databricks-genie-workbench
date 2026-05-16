@@ -2,6 +2,7 @@
   "ag_id": "AG1",
   "stage_1_skill_ids": [
     "lever-1-table-column-description",
+    "lever-4-join-discovery",
     "lever-5a-instructions",
     "lever-5b-example-sql"
   ],
@@ -14,9 +15,10 @@
     "lever-5b-example-sql",
     "lever-6-sql-expression"
   ],
-  "structural_overlap": 0.5,
+  "structural_overlap": 0.4,
   "stage_1_skills_only": [
-    "lever-1-table-column-description"
+    "lever-1-table-column-description",
+    "lever-4-join-discovery"
   ],
   "legacy_skills_only": [
     "lever-6-sql-expression"
@@ -24,11 +26,12 @@
   "pipeline_proposals_per_skill": {
     "lever-5b-example-sql": 2,
     "lever-5a-instructions": 1,
-    "lever-1-table-column-description": 2
+    "lever-1-table-column-description": 2,
+    "lever-4-join-discovery": 1
   },
-  "pipeline_total_proposals": 5,
-  "captured_at": 1778868723.049529,
-  "process_pid": 3203,
+  "pipeline_total_proposals": 6,
+  "captured_at": 1778894585.7733316,
+  "process_pid": 4026,
   "stage_1_discovery": {
     "prompt_bytes": "",
     "response_bytes": ""

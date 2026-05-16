@@ -1,0 +1,31 @@
+{
+  "ag_id": "AG1",
+  "cluster_ids": [
+    "H001",
+    "H002"
+  ],
+  "captured_at": 1778894585.7732651,
+  "instruction_text_jaccard": 0.5,
+  "example_sqls_set_overlap": 0.0,
+  "old_example_sqls_count": 4,
+  "new_example_sqls_count": 2,
+  "old_example_sqls_hashes": [
+    "014713ac8248116b",
+    "5735d553aa5ee17d",
+    "94e7b17f0ff6fc91",
+    "cc9cba6eca7761a2"
+  ],
+  "new_example_sqls_hashes": [
+    "0bb6592b0e9e826d",
+    "8496dbef29adef99"
+  ],
+  "lever_5_holistic": {
+    "prompt_bytes": "",
+    "response_bytes": ""
+  },
+  "lever_5a": {
+    "instruction_text": "",
+    "rationale": ""
+  },
+  "lever_5b_proposals": []
+}

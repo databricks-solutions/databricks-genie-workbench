@@ -1,0 +1,22 @@
+{
+  "ag_id": "AG1",
+  "skill_id": "lever-4-join-discovery",
+  "n_evidence": 2,
+  "off_proposal_count": 1,
+  "on_proposal_count": 1,
+  "off_proposal_keys": [
+    [
+      "join_spec",
+      "rationale"
+    ]
+  ],
+  "on_proposal_keys": [
+    [
+      "join_spec",
+      "rationale"
+    ]
+  ],
+  "structural_diff": "content_differs",
+  "captured_at": 1778894548.193843,
+  "process_pid": 4026
+}

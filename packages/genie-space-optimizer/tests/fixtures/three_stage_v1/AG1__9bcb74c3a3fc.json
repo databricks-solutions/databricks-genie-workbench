@@ -1,0 +1,41 @@
+{
+  "ag_id": "AG1",
+  "stage_1_skill_ids": [
+    "lever-1-table-column-description",
+    "lever-5a-instructions",
+    "lever-5b-example-sql"
+  ],
+  "legacy_lever_keys": [
+    "2",
+    "5"
+  ],
+  "legacy_skill_set_mapped": [
+    "lever-2-mv-column-refinement",
+    "lever-5a-instructions",
+    "lever-5b-example-sql"
+  ],
+  "structural_overlap": 0.5,
+  "stage_1_skills_only": [
+    "lever-1-table-column-description"
+  ],
+  "legacy_skills_only": [
+    "lever-2-mv-column-refinement"
+  ],
+  "pipeline_proposals_per_skill": {
+    "lever-5a-instructions": 1,
+    "lever-5b-example-sql": 2,
+    "lever-1-table-column-description": 2
+  },
+  "pipeline_total_proposals": 5,
+  "captured_at": 1778894284.869773,
+  "process_pid": 3982,
+  "stage_1_discovery": {
+    "prompt_bytes": "",
+    "response_bytes": ""
+  },
+  "legacy_adaptive_strategy": {
+    "prompt_bytes": "",
+    "response_bytes": ""
+  },
+  "stage_2_results": []
+}
