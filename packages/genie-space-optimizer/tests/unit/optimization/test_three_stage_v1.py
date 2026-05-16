@@ -346,23 +346,41 @@ def _sample_metadata_snapshot() -> dict:
     return {
         "config": {"description": "Hotel bookings analytics"},
         "data_sources": {
-            "tables": [{
+            "tables": [
+                {
+                    "name": "catalog.schema.fact_bookings",
+                    "column_configs": [
+                        {"name": "booking_id"},
+                        {"name": "booking_date"},
+                    ],
+                },
+                {
+                    "name": "catalog.schema.dim_hotel",
+                    "column_configs": [
+                        {"name": "hotel_id"},
+                        {"name": "hotel_name"},
+                    ],
+                },
+            ],
+            "metric_views": [],
+            "functions": [],
+        },
+        "tables": [
+            {
                 "name": "catalog.schema.fact_bookings",
                 "column_configs": [
                     {"name": "booking_id"},
                     {"name": "booking_date"},
                 ],
-            }],
-            "metric_views": [],
-            "functions": [],
-        },
-        "tables": [{
-            "name": "catalog.schema.fact_bookings",
-            "column_configs": [
-                {"name": "booking_id"},
-                {"name": "booking_date"},
-            ],
-        }],
+            },
+            {
+                "name": "catalog.schema.dim_hotel",
+                "column_configs": [
+                    {"name": "hotel_id"},
+                    {"name": "hotel_name"},
+                ],
+            },
+        ],
         "metric_views": [],
         "functions": [],
         "instructions": {"text_instructions": []},
@@ -903,11 +921,17 @@ def test_pipeline_merges_duplicate_skill_picks(monkeypatch):
         lambda **kw: {
             "applicable_skills": [
                 {"skill_id": "lever-4-join-discovery",
-                 "target_objects": ["t1", "t2"],
+                 "target_objects": [
+                     "catalog.schema.fact_bookings",
+                     "catalog.schema.dim_hotel",
+                 ],
                  "expected_impact_qids": ["Q1"],
                  "evidence_refs": [], "why": "join1", "priority": 1},
                 {"skill_id": "lever-4-join-discovery",
-                 "target_objects": ["t2", "t3"],
+                 "target_objects": [
+                     "catalog.schema.dim_hotel",
+                     "catalog.schema.fact_bookings",
+                 ],
                  "expected_impact_qids": ["Q2"],
                  "evidence_refs": [], "why": "join2", "priority": 1},
             ],
@@ -2389,3 +2413,50 @@ def test_stage_1_discovery_passes_through_valid_picks_unchanged(monkeypatch):
     assert result["applicable_skills"][0]["target_objects"] == [
         "cat.sch.fact_orders"
     ]
+
+
+# ── Section: Stage-2 dispatcher defensive guard (Task 6) ──────────────
+
+
+def test_stage_2_dispatcher_rejects_bundle_with_target_kind_mismatch(caplog):
+    """Belt-and-suspenders: even if Stage-1 coercion is bypassed (e.g.
+    a future code path constructs a bundle directly), the Stage-2
+    dispatcher must refuse bundles whose target_objects don't match
+    the skill's target_kind, log an ERROR, and return empty proposals
+    without calling the underlying LLM."""
+    import logging
+    from genie_space_optimizer.optimization.activation_bundle import (
+        ActivationBundle,
+    )
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _stage_2_for_skill,
+    )
+
+    # Construct a deliberately mismatched bundle: lever-2
+    # (target_kind=metric_view) handed a base-table FQN.
+    bundle = ActivationBundle(
+        skill_id="lever-2-mv-column-refinement",
+        ag_id="AG1",
+        target_objects=("cat.sch.fact_bookings",),  # WRONG — base table
+        cluster_afs=(),
+        metadata_snapshot={
+            "tables_short": {"fact_bookings"},
+            "metric_views": [],
+            "functions_short": set(),
+        },
+        identifier_allowlist="",
+        evidence_refs=(),
+        expected_impact_qids=(),
+        raw_evidence=(),
+        lever_directives_legacy=None,
+        discovery_rationale="",
+        priority=1,
+    )
+    with caplog.at_level(logging.ERROR):
+        result = _stage_2_for_skill(bundle, w=None)
+    assert result["proposals"] == []
+    assert "target_kind mismatch" in result.get("error", "").lower()
+    assert any(
+        "target_kind mismatch" in record.message.lower()
+        for record in caplog.records
+    )

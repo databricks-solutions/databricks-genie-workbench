@@ -623,6 +623,12 @@ def _stage_2_for_skill(bundle: "ActivationBundle", w: Any) -> dict:
     2026-05-16 dead-flag cleanup; ``ActivationBundle.raw_evidence`` is
     populated by ``build_activation_bundle`` and the dispatcher runs
     once with the bundle as-is.
+
+    Defensive target-kind guard: re-validates the bundle's
+    target_objects against the skill's target_kind. If Stage-1
+    coercion was bypassed (e.g. a non-Stage-1 caller constructed the
+    bundle directly), the dispatcher refuses the call and returns
+    empty proposals with an error marker.
     """
     from genie_space_optimizer.common.config import (
         _record_three_stage_skill_dispatch,
@@ -640,6 +646,59 @@ def _stage_2_for_skill(bundle: "ActivationBundle", w: Any) -> dict:
             "proposals": [],
             "error": f"no adapter registered for skill_id={bundle.skill_id}",
         }
+
+    # Defensive target-kind guard.
+    try:
+        from genie_space_optimizer.skills._loader import _SKILL_LOADER
+        meta = _SKILL_LOADER.load_metadata(bundle.skill_id) or {}
+    except Exception:
+        meta = {}
+    target_kind = str(meta.get("target_kind", "")).strip()
+    target_min_count = int(meta.get("target_min_count", 0) or 0)
+    if target_kind and bundle.target_objects:
+        # Prefer the snapshot's pre-computed allowlist buckets when the
+        # bundle carries them explicitly (unit tests inject these as
+        # ``tables_short``). Otherwise build the allowlist from the raw
+        # metadata_snapshot so the guard validates against the real
+        # catalogue. The ``tables_short`` key is the canonical signal —
+        # a raw metadata_snapshot has columns/joins under ``data_sources``
+        # but never a top-level ``tables_short`` set.
+        snap = bundle.metadata_snapshot or {}
+        if snap.get("tables_short") is not None:
+            allowlist = {
+                "tables_short": snap.get("tables_short") or set(),
+                "metric_views": snap.get("metric_views") or [],
+                "functions_short": snap.get("functions_short") or set(),
+            }
+        else:
+            from genie_space_optimizer.optimization.optimizer import (
+                _build_identifier_allowlist,
+            )
+            allowlist = _build_identifier_allowlist(snap)
+        coerced, dropped = _coerce_target_objects_for_skill(
+            skill_id=bundle.skill_id,
+            target_kind=target_kind,
+            target_min_count=target_min_count,
+            raw_targets=list(bundle.target_objects),
+            allowlist=allowlist,
+        )
+        if coerced is None or dropped:
+            logger.error(
+                "Stage-2 dispatcher: target_kind mismatch for skill=%s "
+                "(AG=%s) — expected target_kind=%s, got targets=%s, "
+                "dropped=%s. Refusing dispatch.",
+                bundle.skill_id, bundle.ag_id, target_kind,
+                list(bundle.target_objects), dropped,
+            )
+            return {
+                "skill_id": bundle.skill_id,
+                "ag_id": bundle.ag_id,
+                "proposals": [],
+                "error": (
+                    f"target_kind mismatch: expected {target_kind!r}, "
+                    f"got {list(bundle.target_objects)!r}"
+                ),
+            }
 
     _record_three_stage_skill_dispatch(bundle.skill_id)
     return adapter(bundle, w)
