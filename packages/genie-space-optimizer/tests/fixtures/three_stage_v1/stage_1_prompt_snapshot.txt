@@ -152,5 +152,8 @@ Rules:
 - Return at most 5 picks per AG.
 - Use only skill_ids from the catalogue above.
 - Use only target_objects from the identifier allowlist.
+- Every entry in expected_impact_qids MUST appear in the
+  ``Question IDs:`` line of one of the clusters above. Do NOT invent
+  new question IDs.
 - Empty applicable_skills is valid — means "route to legacy fallback for this AG".
 </output_schema>

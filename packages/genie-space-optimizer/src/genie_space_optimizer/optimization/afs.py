@@ -90,6 +90,7 @@ AFS_ALLOWED_FIELDS: frozenset[str] = frozenset({
     "structural_diff",
     "failure_features",
     "question_count",
+    "question_ids",
     "affected_judge",
     "suggested_fix_summary",
 })
@@ -276,11 +277,14 @@ def format_afs(cluster: dict) -> dict:
     and whose string values contain NO raw benchmark text. Safe to embed
     in any LLM prompt that produces persisted content.
     """
+    raw_qids = cluster.get("question_ids") or []
+    capped_qids = [str(q) for q in raw_qids if q][:15]
     afs: dict[str, Any] = {
         "cluster_id": str(cluster.get("cluster_id") or "?"),
         "failure_type": str(cluster.get("root_cause") or cluster.get("asi_failure_type") or "unknown"),
         "affected_judge": str(cluster.get("affected_judge") or "unknown"),
-        "question_count": int(len(cluster.get("question_ids", []) or [])),
+        "question_count": int(len(raw_qids)),
+        "question_ids": capped_qids,
         "blame_set": _normalize_blame(cluster.get("asi_blame_set"))[:10],
         "counterfactual_fixes": _counterfactual_fixes(cluster),
         "structural_diff": _structural_diff(cluster),

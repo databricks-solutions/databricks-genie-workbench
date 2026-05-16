@@ -6489,6 +6489,11 @@ def _format_cluster_briefs_afs(clusters: list[dict], top_n: int = 5) -> str:
         blame = afs.get("blame_set") or []
         if blame:
             lines.append(f"Blamed objects: {', '.join(blame[:5])}")
+        qids = afs.get("question_ids") or []
+        if qids:
+            preview = qids[:10]
+            suffix = f", +{len(qids) - 10} more" if len(qids) > 10 else ""
+            lines.append(f"Question IDs: {', '.join(preview)}{suffix}")
         cf = afs.get("counterfactual_fixes") or []
         if cf:
             lines.append("Suggested fixes:")

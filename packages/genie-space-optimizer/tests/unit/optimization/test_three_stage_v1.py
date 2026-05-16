@@ -1556,3 +1556,71 @@ def _regen_stage_1_snapshot() -> None:
     _STAGE_1_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _STAGE_1_SNAPSHOT_PATH.write_text(rendered, encoding="utf-8")
     print(f"wrote {len(rendered)} bytes to {_STAGE_1_SNAPSHOT_PATH}")
+
+
+# ── Section: Stage-1 prompt hardening (2026-05-17) ────────────────────
+
+
+def test_format_cluster_briefs_afs_includes_question_ids():
+    """The Stage-1 cluster briefs must surface a 'Question IDs:' line
+    per hard cluster so Stage-1 can ground expected_impact_qids in a
+    real choice set."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _format_cluster_briefs_afs,
+    )
+    clusters = [
+        {
+            "cluster_id": "C001",
+            "root_cause": "missing_join",
+            "asi_blame_set": ["cat.sch.fact_orders", "cat.sch.dim_product"],
+            "affected_judge": "schema_accuracy",
+            "question_ids": ["Q12", "Q14", "Q19"],
+            "signal_type": "hard",
+        },
+    ]
+    rendered = _format_cluster_briefs_afs(clusters, top_n=5)
+    assert "Question IDs: Q12, Q14, Q19" in rendered, (
+        f"expected 'Question IDs:' line in briefs; got:\n{rendered}"
+    )
+
+
+def test_format_cluster_briefs_afs_truncates_long_qid_lists():
+    """Long qid lists must be truncated in the briefs (the full list
+    is in AFS; the brief gets a preview with '+N more' suffix)."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _format_cluster_briefs_afs,
+    )
+    clusters = [
+        {
+            "cluster_id": "C001",
+            "root_cause": "missing_join",
+            "asi_blame_set": ["cat.sch.fact_orders"],
+            "affected_judge": "schema_accuracy",
+            "question_ids": [f"Q{i}" for i in range(1, 21)],  # 20 qids
+            "signal_type": "hard",
+        },
+    ]
+    rendered = _format_cluster_briefs_afs(clusters, top_n=5)
+    assert "Question IDs: Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, +5 more" in rendered, (
+        f"expected first 10 qids + '+5 more'; got:\n{rendered}"
+    )
+
+
+def test_format_cluster_briefs_afs_omits_qids_line_when_empty():
+    """Empty question_ids must not render an empty 'Question IDs:'
+    line in the brief."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _format_cluster_briefs_afs,
+    )
+    clusters = [
+        {
+            "cluster_id": "C001",
+            "root_cause": "missing_join",
+            "asi_blame_set": ["cat.sch.fact_orders"],
+            "affected_judge": "schema_accuracy",
+            "question_ids": [],
+            "signal_type": "hard",
+        },
+    ]
+    rendered = _format_cluster_briefs_afs(clusters, top_n=5)
+    assert "Question IDs:" not in rendered

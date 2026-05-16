@@ -147,6 +147,49 @@ def test_format_afs_batch_parity(corpus: BenchmarkCorpus) -> None:
     assert batch[1]["question_count"] == 2
 
 
+def test_format_afs_includes_question_ids_capped() -> None:
+    """AFS must surface a capped list of question_ids so Stage-1 can
+    ground expected_impact_qids in a real choice set instead of
+    hallucinating IDs from the output_schema example."""
+    assert "question_ids" in AFS_ALLOWED_FIELDS, (
+        "question_ids must be in the closed AFS schema"
+    )
+    cluster = {
+        "cluster_id": "C001",
+        "root_cause": "missing_join",
+        "asi_blame_set": ["cat.sch.fact_orders"],
+        "affected_judge": "schema_accuracy",
+        "question_ids": [f"Q{i}" for i in range(1, 25)],
+    }
+    afs = format_afs(cluster)
+    qids = afs.get("question_ids")
+    assert isinstance(qids, list), "question_ids must be a list"
+    assert all(isinstance(q, str) for q in qids), "qids must be strings"
+    assert len(qids) <= 15, (
+        f"qids must be capped to prevent prompt bloat; got {len(qids)}"
+    )
+    # First N entries preserved in order so the cap is deterministic.
+    assert qids[0] == "Q1"
+    # validate_afs must still pass (qids are opaque IDs, not benchmark text).
+    validate_afs(afs, None)
+
+
+def test_format_afs_question_ids_omitted_when_empty() -> None:
+    """Empty question_ids must not pollute the AFS view with an empty
+    list (keeps the rendered prompt clean)."""
+    cluster = {
+        "cluster_id": "C002",
+        "root_cause": "wrong_aggregation",
+        "asi_blame_set": ["cat.sch.fact_orders"],
+        "question_ids": [],
+    }
+    afs = format_afs(cluster)
+    # Either absent or empty-list is acceptable; renderer treats both
+    # the same. Assert it's not a non-empty list of placeholder values.
+    qids = afs.get("question_ids", [])
+    assert qids == [] or qids is None
+
+
 # ── AST differ (P2.5) ──────────────────────────────────────────────────
 
 
