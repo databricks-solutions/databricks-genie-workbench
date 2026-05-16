@@ -725,6 +725,17 @@ LEVER_6_MAX_TOKENS = 1200
 # Plan: 2026-05-17-lever-1-2-column-prompt-hardening.md Task 1
 LEVER_1_2_MAX_TOKENS: int = 2048
 
+# Lever-1/2 column-refinement system message. Frames the domain
+# (Genie Space metadata curation) and requires JSON-only output.
+# Plan: 2026-05-17-lever-1-2-column-prompt-hardening.md Task 2
+LEVER_1_2_SYSTEM_MSG: str = (
+    "You are a Databricks Genie Space metadata curator with deep expertise "
+    "in writing column definitions, synonyms, and table-level guidance that "
+    "improve natural-language to SQL routing accuracy. Your ENTIRE response "
+    "must be a single valid JSON object matching the schema in the prompt. "
+    "Start your response with '{' and end with '}'."
+)
+
 # ── 5. Benchmark Generation ────────────────────────────────────────────
 
 REQUIRE_GROUND_TRUTH_SQL: bool = True

@@ -25,3 +25,22 @@ def test_lever_1_2_max_tokens_constant_exists_and_is_sized():
         f"LEVER_1_2_MAX_TOKENS={config.LEVER_1_2_MAX_TOKENS} is outside the "
         f"evidence-based band (900, 2500]"
     )
+
+
+def test_lever_1_2_system_msg_constant_exists_and_frames_domain():
+    """LEVER_1_2_SYSTEM_MSG must frame the domain (metadata curation) and
+    require strict JSON output.
+    """
+    from genie_space_optimizer.common import config
+
+    assert hasattr(config, "LEVER_1_2_SYSTEM_MSG"), (
+        "LEVER_1_2_SYSTEM_MSG must be defined in genie_space_optimizer.common.config"
+    )
+    msg = config.LEVER_1_2_SYSTEM_MSG
+    assert isinstance(msg, str) and len(msg) > 80, (
+        "LEVER_1_2_SYSTEM_MSG should be a meaningful framing message, not boilerplate"
+    )
+    assert "Genie" in msg and "metadata" in msg.lower(), (
+        "system message must frame the Genie Space metadata-curation domain"
+    )
+    assert "JSON" in msg, "system message must require JSON output"
