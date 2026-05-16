@@ -108,6 +108,64 @@ def _render_rich_skill_catalogue(
     return "\n".join(lines)
 
 
+# Lever number -> skill_id(s). Sourced from optimizer.py's legacy
+# lever-key mapping (see _project_pipeline_to_action_groups's
+# skill_to_legacy_key dict). Lever 5 fans out to both 5a + 5b because
+# the legacy lever-5 directive could trigger either an instruction
+# patch or an example_sql patch depending on cluster shape.
+_LEVER_NUMBER_TO_SKILL_IDS: dict[int, tuple[str, ...]] = {
+    1: ("lever-1-table-column-description",),
+    2: ("lever-2-mv-column-refinement",),
+    3: ("lever-3-tvf-routing",),
+    4: ("lever-4-join-discovery",),
+    5: ("lever-5a-instructions", "lever-5b-example-sql"),
+    6: ("lever-6-sql-expression",),
+}
+
+
+def _render_failure_type_routing_table() -> str:
+    """Render the deterministic failure_type -> preferred skill_id(s)
+    routing table from _ROOT_CAUSE_LEVER_MAP.
+
+    Output is a Markdown pipe table:
+
+        | failure_type            | preferred skill_id(s)                       |
+        |-------------------------|---------------------------------------------|
+        | missing_join_spec       | lever-4-join-discovery                      |
+        | missing_instruction     | lever-5a-instructions or lever-5b-example-sql|
+        | wrong_aggregation       | lever-6-sql-expression                      |
+        ...
+
+    Treats the table as a prior, not an override — Stage-1 can still
+    propose decomposition into multiple picks for compound failures.
+
+    Lever=0 entries (extra_columns_only, select_star) are omitted
+    because they intentionally route to no skill (the legacy strategist
+    treats them as advisory-only).
+    """
+    from genie_space_optimizer.optimization.optimizer import (
+        _ROOT_CAUSE_LEVER_MAP,
+    )
+
+    rows: list[str] = [
+        "| failure_type | preferred skill_id(s) |",
+        "|---|---|",
+    ]
+    for failure_type in sorted(_ROOT_CAUSE_LEVER_MAP.keys()):
+        lever = _ROOT_CAUSE_LEVER_MAP[failure_type]
+        if lever == 0:
+            continue
+        skill_ids = _LEVER_NUMBER_TO_SKILL_IDS.get(lever)
+        if not skill_ids:
+            continue
+        if len(skill_ids) == 1:
+            skill_col = skill_ids[0]
+        else:
+            skill_col = " or ".join(skill_ids)
+        rows.append(f"| {failure_type} | {skill_col} |")
+    return "\n".join(rows)
+
+
 # ── Stage-2 adapters ──────────────────────────────────────────────────
 
 

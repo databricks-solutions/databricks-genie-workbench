@@ -97,6 +97,7 @@ def test_stage_1_discovery_prompt_lists_all_pickable_skills():
     catalogue gaps and template-slot regressions."""
     cfg = _reload_config_with_env({})
     from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_failure_type_routing_table,
         _render_rich_skill_catalogue,
     )
     rendered = cfg.format_mlflow_template(
@@ -106,6 +107,7 @@ def test_stage_1_discovery_prompt_lists_all_pickable_skills():
         root_cause_summary="(test)",
         cluster_briefs="(test)",
         skill_catalogue=_render_rich_skill_catalogue(),
+        failure_type_routing_table=_render_failure_type_routing_table(),
         identifier_allowlist="(test)",
     )
     for skill_id in cfg._THREE_STAGE_SKILL_NAMES:
@@ -143,6 +145,7 @@ def test_stage_1_discovery_prompt_renders_with_realistic_kwargs():
         root_cause_summary="missing join between fact_bookings and dim_hotel",
         cluster_briefs="C1: missing_join — hotel_key not joined to dim_hotel",
         skill_catalogue="lever-4-join-discovery: ...",
+        failure_type_routing_table="| failure_type | preferred skill_id(s) |",
         identifier_allowlist="catalog.schema.fact_bookings.hotel_key",
     )
     assert "Hotel bookings" in rendered
@@ -1391,6 +1394,7 @@ def test_stage_1_discovery_prompt_render_includes_rich_catalogue_via_helper():
         format_mlflow_template,
     )
     from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_failure_type_routing_table,
         _render_rich_skill_catalogue,
     )
     rendered = format_mlflow_template(
@@ -1400,6 +1404,7 @@ def test_stage_1_discovery_prompt_render_includes_rich_catalogue_via_helper():
         root_cause_summary="missing join between fact_bookings and dim_hotel",
         cluster_briefs="C1: missing_join — hotel_key not joined to dim_hotel",
         skill_catalogue=_render_rich_skill_catalogue(),
+        failure_type_routing_table=_render_failure_type_routing_table(),
         identifier_allowlist="catalog.schema.fact_bookings.hotel_key",
     )
     assert "{{" not in rendered, "unrendered template variable"
@@ -1507,12 +1512,14 @@ def test_stage_1_rendered_prompt_snapshot_byte_stable():
         format_mlflow_template,
     )
     from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_failure_type_routing_table,
         _render_rich_skill_catalogue,
     )
 
     rendered = format_mlflow_template(
         STAGE_1_DISCOVERY_PROMPT,
         skill_catalogue=_render_rich_skill_catalogue(),
+        failure_type_routing_table=_render_failure_type_routing_table(),
         **_STAGE_1_SNAPSHOT_KWARGS,
     )
 
@@ -1546,11 +1553,13 @@ def _regen_stage_1_snapshot() -> None:
         format_mlflow_template,
     )
     from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_failure_type_routing_table,
         _render_rich_skill_catalogue,
     )
     rendered = format_mlflow_template(
         STAGE_1_DISCOVERY_PROMPT,
         skill_catalogue=_render_rich_skill_catalogue(),
+        failure_type_routing_table=_render_failure_type_routing_table(),
         **_STAGE_1_SNAPSHOT_KWARGS,
     )
     _STAGE_1_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1624,3 +1633,105 @@ def test_format_cluster_briefs_afs_omits_qids_line_when_empty():
     ]
     rendered = _format_cluster_briefs_afs(clusters, top_n=5)
     assert "Question IDs:" not in rendered
+
+
+# ── Section: Failure-type routing table (Task 2) ──────────────────────
+
+
+def test_render_failure_type_routing_table_covers_every_lever_map_entry():
+    """Every entry in _ROOT_CAUSE_LEVER_MAP with lever != 0 must
+    appear in the rendered routing table, mapped to its skill_id(s).
+    Lever=0 entries (extra_columns_only, select_star) are intentionally
+    omitted — they route to no skill."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _ROOT_CAUSE_LEVER_MAP,
+    )
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_failure_type_routing_table,
+    )
+    rendered = _render_failure_type_routing_table()
+    for failure_type, lever in _ROOT_CAUSE_LEVER_MAP.items():
+        if lever == 0:
+            assert failure_type not in rendered, (
+                f"{failure_type} (lever=0) must be omitted from table"
+            )
+            continue
+        assert failure_type in rendered, (
+            f"{failure_type} (lever={lever}) missing from routing table"
+        )
+
+
+def test_render_failure_type_routing_table_maps_lever_5_to_both_5a_and_5b():
+    """Lever 5 ambiguously routes to lever-5a (instructions) or
+    lever-5b (example_sql). The rendered table must show both options
+    so the model can decompose based on cluster shape."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_failure_type_routing_table,
+    )
+    rendered = _render_failure_type_routing_table()
+    # missing_instruction -> lever 5 -> 5a or 5b
+    instruction_line = next(
+        (line for line in rendered.splitlines()
+         if "missing_instruction" in line),
+        None,
+    )
+    assert instruction_line is not None
+    assert "lever-5a-instructions" in instruction_line
+    assert "lever-5b-example-sql" in instruction_line
+
+
+def test_render_failure_type_routing_table_uses_pipe_table_format():
+    """Output must be a Markdown pipe table so Claude parses it
+    unambiguously. Header row + separator row + data rows."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_failure_type_routing_table,
+    )
+    rendered = _render_failure_type_routing_table()
+    lines = rendered.splitlines()
+    assert lines[0].startswith("| failure_type"), (
+        f"first line must be table header; got: {lines[0]!r}"
+    )
+    assert lines[1].startswith("|---"), (
+        f"second line must be table separator; got: {lines[1]!r}"
+    )
+
+
+def test_stage_1_prompt_includes_failure_type_routing_table_slot():
+    """The Stage-1 prompt template must expose a
+    {{ failure_type_routing_table }} slot in the <context> block."""
+    from genie_space_optimizer.common.config import STAGE_1_DISCOVERY_PROMPT
+    assert "{{ failure_type_routing_table }}" in STAGE_1_DISCOVERY_PROMPT, (
+        "STAGE_1_DISCOVERY_PROMPT must expose "
+        "{{ failure_type_routing_table }} slot"
+    )
+
+
+def test_call_llm_for_stage_1_discovery_passes_routing_table_kwarg(monkeypatch):
+    """_call_llm_for_stage_1_discovery must populate the
+    failure_type_routing_table format_kwarg."""
+    from genie_space_optimizer.optimization import optimizer
+    captured_prompt: dict = {}
+
+    def _fake_llm_openai(*args, **kwargs):
+        messages = kwargs.get("messages") or (args[1] if len(args) > 1 else [])
+        for m in messages:
+            if m.get("role") == "user":
+                captured_prompt["text"] = m["content"]
+                break
+        return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="missing join",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    assert "text" in captured_prompt, "user prompt was not captured"
+    assert "missing_join" in captured_prompt["text"], (
+        "routing table must be rendered into the prompt"
+    )
+    assert "lever-4-join-discovery" in captured_prompt["text"], (
+        "routing table must include skill_ids"
+    )

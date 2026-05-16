@@ -10886,9 +10886,11 @@ def _call_llm_for_stage_1_discovery(
     cluster_briefs = _format_cluster_briefs_afs(clusters or [], top_n=5)
 
     from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_failure_type_routing_table,
         _render_rich_skill_catalogue,
     )
     skill_catalogue = _render_rich_skill_catalogue()
+    failure_type_routing_table = _render_failure_type_routing_table()
 
     _allowlist = _build_identifier_allowlist(metadata_snapshot)
 
@@ -10898,6 +10900,7 @@ def _call_llm_for_stage_1_discovery(
         "root_cause_summary": root_cause_summary or "(unknown)",
         "cluster_briefs": cluster_briefs,
         "skill_catalogue": skill_catalogue,
+        "failure_type_routing_table": failure_type_routing_table,
         "identifier_allowlist": _format_identifier_allowlist(_allowlist),
     }
 

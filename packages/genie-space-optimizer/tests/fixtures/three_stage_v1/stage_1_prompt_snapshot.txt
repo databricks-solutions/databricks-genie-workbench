@@ -94,6 +94,42 @@ You may only pick skill_ids from this list:
     What: Add a reusable SQL expression (measure / filter / dimension) to the knowledge store.
     Pick when: Failure is a concrete missing measure, filter, or dimension that can be expressed as a single reusable SQL snippet at the MV level.
 
+## Failure-Type → Skill Routing Table
+Deterministic prior: each cluster's ``failure_type`` maps to one or
+more preferred skill_ids. Treat this as a strong hint — you may still
+decompose a compound failure into multiple picks, but the first pick
+for each cluster should come from this table unless you have a clear
+reason to override.
+
+| failure_type | preferred skill_id(s) |
+|---|---|
+| ambiguous_question | lever-5a-instructions or lever-5b-example-sql |
+| asset_routing_error | lever-5a-instructions or lever-5b-example-sql |
+| column_disambiguation | lever-1-table-column-description |
+| description_mismatch | lever-1-table-column-description |
+| format_difference | lever-5a-instructions or lever-5b-example-sql |
+| granularity_drop | lever-5a-instructions or lever-5b-example-sql |
+| missing_dimension | lever-6-sql-expression |
+| missing_filter | lever-6-sql-expression |
+| missing_instruction | lever-5a-instructions or lever-5b-example-sql |
+| missing_join_spec | lever-4-join-discovery |
+| missing_scd_filter | lever-6-sql-expression |
+| missing_synonym | lever-1-table-column-description |
+| missing_temporal_filter | lever-6-sql-expression |
+| plural_top_n_collapse | lever-5a-instructions or lever-5b-example-sql |
+| time_window_pivot | lever-5a-instructions or lever-5b-example-sql |
+| tvf_parameter_error | lever-3-tvf-routing |
+| value_format_mismatch | lever-6-sql-expression |
+| wrong_aggregation | lever-6-sql-expression |
+| wrong_column | lever-1-table-column-description |
+| wrong_filter_condition | lever-6-sql-expression |
+| wrong_grouping | lever-6-sql-expression |
+| wrong_join | lever-4-join-discovery |
+| wrong_join_spec | lever-4-join-discovery |
+| wrong_join_type | lever-5a-instructions or lever-5b-example-sql |
+| wrong_measure | lever-6-sql-expression |
+| wrong_table | lever-1-table-column-description |
+
 ## Identifier Allowlist
 Target objects MUST come from this allowlist:
 catalog.schema.fact_bookings, catalog.schema.dim_hotel, catalog.schema.dim_distribution

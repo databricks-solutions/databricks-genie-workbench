@@ -79,6 +79,15 @@ pick the right skills.
 You may only pick skill_ids from this list:
 {{ skill_catalogue }}
 
+## Failure-Type → Skill Routing Table
+Deterministic prior: each cluster's ``failure_type`` maps to one or
+more preferred skill_ids. Treat this as a strong hint — you may still
+decompose a compound failure into multiple picks, but the first pick
+for each cluster should come from this table unless you have a clear
+reason to override.
+
+{{ failure_type_routing_table }}
+
 ## Identifier Allowlist
 Target objects MUST come from this allowlist:
 {{ identifier_allowlist }}
