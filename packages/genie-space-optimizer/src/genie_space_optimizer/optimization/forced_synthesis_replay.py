@@ -16,6 +16,7 @@ This module is pure: no Databricks, Spark, MLflow, or LLM calls.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -131,4 +132,104 @@ def run_forced_synthesis_replay(
     return ForcedSynthesisReplayResult(
         fixture_id=fixture_id,
         iterations=tuple(iters),
+    )
+
+
+@dataclass(frozen=True)
+class L5bIterationReplay:
+    """One iteration's worth of L5b replay output (Plan B)."""
+
+    iteration: int
+    l5b_proposals: tuple[Mapping[str, Any], ...]
+    l5b_rich_path_declines: tuple[Mapping[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class L5bRichPathReplayResult:
+    """Full result of a Plan B L5b rich-path replay."""
+
+    fixture_id: str
+    iterations: tuple[L5bIterationReplay, ...]
+
+
+def run_l5b_rich_path_replay(
+    *,
+    fixture: Mapping[str, Any],
+    synthesize: Callable[..., Any] | None = None,
+) -> L5bRichPathReplayResult:
+    """Plan B — replay the Stage-2 L5b dispatch path offline.
+
+    For each iteration in ``fixture``, iterates each AG's source
+    cluster, calls ``_dispatch_lever_5b_for_cluster`` (which routes
+    through Plan B when the flag is on + cluster is SQL-shape), and
+    captures both the returned proposals and any decline ledger
+    entries.
+
+    ``synthesize`` is the rich synthesizer (defaults to the production
+    callable). Tests pass a stub. The lean-path
+    ``synthesize_example_sqls`` is consumed via its module path; tests
+    that want to assert flag-off behaviour monkeypatch it directly.
+
+    Returns a frozen ``L5bRichPathReplayResult`` with per-iteration
+    proposals + declines. The harness drain step
+    (``_emit_l5b_rich_path_decline_records``) is NOT invoked here — the
+    declines are surfaced raw so tests can pin the ledger contract
+    directly.
+    """
+    from genie_space_optimizer.optimization.optimizer import (
+        _dispatch_lever_5b_for_cluster,
+    )
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        drain_l5b_rich_path_declines,
+    )
+
+    fixture_id = str(fixture.get("fixture_id") or "unknown")
+    iterations_out: list[L5bIterationReplay] = []
+
+    if synthesize is not None:
+        import genie_space_optimizer.optimization.cluster_driven_synthesis as cds
+        original_synth = (
+            cds.run_cluster_driven_synthesis_for_single_cluster
+        )
+        cds.run_cluster_driven_synthesis_for_single_cluster = synthesize  # type: ignore[assignment]
+    else:
+        original_synth = None
+
+    try:
+        for iter_data in (fixture.get("iterations") or ()):
+            iteration_num = int(iter_data.get("iteration", 0))
+            iter_clusters = iter_data.get("iter_source_clusters_by_id") or {}
+            drain_l5b_rich_path_declines()  # reset ledger per iteration
+
+            proposals: list[Mapping[str, Any]] = []
+            for ag in (iter_data.get("strategist_response") or {}).get(
+                "action_groups", ()
+            ):
+                for cid in (ag.get("source_cluster_ids") or ()):
+                    cluster = iter_clusters.get(str(cid)) or {}
+                    if not cluster:
+                        continue
+                    out = _dispatch_lever_5b_for_cluster(
+                        cluster=cluster,
+                        metadata_snapshot={"_space_id": fixture_id},
+                        w=None,
+                        benchmark_corpus=None,
+                        benchmarks=None,
+                    )
+                    proposals.extend(out)
+            declines = drain_l5b_rich_path_declines()
+
+            iterations_out.append(L5bIterationReplay(
+                iteration=iteration_num,
+                l5b_proposals=tuple(proposals),
+                l5b_rich_path_declines=tuple(declines),
+            ))
+    finally:
+        if original_synth is not None:
+            import genie_space_optimizer.optimization.cluster_driven_synthesis as cds
+            cds.run_cluster_driven_synthesis_for_single_cluster = original_synth  # type: ignore[assignment]
+
+    return L5bRichPathReplayResult(
+        fixture_id=fixture_id,
+        iterations=tuple(iterations_out),
     )
