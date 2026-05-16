@@ -294,3 +294,105 @@ def test_replay_label_divergence_emits_nsc_when_synth_declines() -> None:
     assert nsc.get("ag_id") == "AG_DECOMPOSED_H001"
     assert nsc.get("cluster_id") == "H001"
     assert nsc.get("root_cause") == "wrong_aggregation"
+
+
+def test_replay_airline_iter5_h001_fires_dispatch_with_canonical_lookup() -> None:
+    """PLAN A PART 1 GATE — exercises the real airline run shape.
+
+    The airline iter-5 postmortem at
+    docs/runid_analysis/59a173d3-f71f-4901-90ad-e10f1084cd7f/evidence/
+    key_postmortem_facts_173220384276784.json shows a structural-gate
+    drop with root_causes=["wrong_aggregation"] for AG_DECOMPOSED_H001
+    targeting gs_009. Under the strict-equality bug the dispatch did not
+    fire. After Part 1, it must.
+
+    Variant A — synthesize returns a candidate → appended_proposals
+    contains exactly one add_example_sql whose target_qids contain
+    "airline_ticketing_and_fare_analysis_gs_009".
+    """
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_replay import (
+        run_forced_synthesis_replay,
+    )
+
+    def _synthesize_success(cluster_arg, metadata_arg, **kwargs):
+        return ClusterSynthesisResult(
+            proposal={
+                "example_question": (
+                    "Show the route with the highest passenger count"
+                ),
+                "example_sql": (
+                    "SELECT route, SUM(passengers) AS total_pax "
+                    "FROM flights GROUP BY route "
+                    "ORDER BY total_pax DESC LIMIT 1"
+                ),
+                "_archetype_name": "single_row_top_n",
+                "kit_id": "kit_h001_airline",
+                "target_qids": ["airline_ticketing_and_fare_analysis_gs_009"],
+                "rca_id": "rca_h001_airline",
+                "_cluster_id": "H001",
+            },
+            attempted_archetypes=("single_row_top_n",),
+            skipped_reason=None,
+        )
+
+    result = run_forced_synthesis_replay(
+        fixture=_load_fixture("airline_iter5_h001"),
+        synthesize=_synthesize_success,
+    )
+    assert result.fixture_id == "airline_iter5_h001"
+    assert len(result.iterations) == 1
+    iter5 = result.iterations[0]
+    assert iter5.iteration == 5
+    assert iter5.ag_id == "AG_DECOMPOSED_H001"
+    assert iter5.attempted_dispatches == (("H001", "wrong_aggregation"),)
+    assert len(iter5.appended_proposals) == 1
+    proposal = iter5.appended_proposals[0]
+    assert proposal["patch_type"] == "add_example_sql"
+    assert (
+        "airline_ticketing_and_fare_analysis_gs_009"
+        in (proposal.get("target_qids") or [])
+    )
+    assert proposal["provenance"]["synthesis_source"] == "forced_lever5_drop"
+
+
+def test_replay_airline_iter5_h001_emits_nsc_when_synth_declines() -> None:
+    """Variant B — synthesize declines → emitted_decision_records
+    contains exactly one NO_STRUCTURAL_CANDIDATE record (which the
+    harness turns into the GSO_NO_STRUCTURAL_CANDIDATE_V1 stdout
+    marker).
+    """
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_replay import (
+        run_forced_synthesis_replay,
+    )
+
+    def _synthesize_decline(cluster_arg, metadata_arg, **kwargs):
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=("single_row_top_n", "ordered_list_by_metric"),
+            skipped_reason="archetypes_exhausted",
+        )
+
+    result = run_forced_synthesis_replay(
+        fixture=_load_fixture("airline_iter5_h001"),
+        synthesize=_synthesize_decline,
+    )
+    iter5 = result.iterations[0]
+    assert iter5.attempted_dispatches == (("H001", "wrong_aggregation"),)
+    assert iter5.appended_proposals == ()
+    assert len(iter5.emitted_decision_records) == 1
+    nsc = iter5.emitted_decision_records[0]
+    assert nsc.get("decision_type") == "proposal_generated"
+    assert nsc.get("reason_code") == "no_structural_candidate"
+    assert nsc.get("ag_id") == "AG_DECOMPOSED_H001"
+    assert nsc.get("cluster_id") == "H001"
+    assert nsc.get("root_cause") == "wrong_aggregation"
+    assert (
+        "airline_ticketing_and_fare_analysis_gs_009"
+        in (nsc.get("target_qids") or ())
+    )
