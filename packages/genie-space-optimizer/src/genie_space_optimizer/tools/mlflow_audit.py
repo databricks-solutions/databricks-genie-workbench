@@ -102,9 +102,15 @@ def audit_optimization_run(
     )
 
     sibling_runs: list[dict[str, Any]] = []
-    anchor_run_id = ""
     earliest_start = None
     earliest_run_id = ""
+    # Track A (2026-05-16): when --opt-run-id is shared across multiple
+    # lever_loop attempts of the same job, the anchor must be the
+    # latest captures-bearing lever_loop sibling. ``MlflowClient.log_text``
+    # overwrites ``gso_trial_captures/*`` on each attempt, so the
+    # bundler needs the most recent run, not the first one MLflow
+    # returns.
+    lever_loop_candidates: list[tuple[int, bool, str]] = []  # (start_time, has_captures, run_id)
     iters_seen_by_kind: dict[str, set[int]] = {
         "PHASE_A_JOURNEY_VALIDATION": set(),
         "PHASE_B_DECISION_TRACE": set(),
@@ -129,20 +135,31 @@ def audit_optimization_run(
         sibling_runs.append(
             {"run_id": run_id, "run_type": run_type, "artifact_paths": artifacts}
         )
-        if run_type == _LEVER_LOOP_RUN_TYPE and not anchor_run_id:
-            anchor_run_id = run_id
         start_time = getattr(run.info, "start_time", None) or 0
         if earliest_start is None or start_time < earliest_start:
             earliest_start = start_time
             earliest_run_id = run_id
-        # Only count iter coverage on the lever_loop sibling — that's where
-        # decision-trail artifacts are anchored per Phase E.0.
         if run_type == _LEVER_LOOP_RUN_TYPE:
+            has_captures = any(
+                str(a or "").startswith("gso_trial_captures/")
+                for a in artifacts
+            )
+            lever_loop_candidates.append((start_time, has_captures, run_id))
             for art in artifacts:
                 for kind, pattern in iter_re_by_kind.items():
                     match = pattern.match(art)
                     if match:
                         iters_seen_by_kind[kind].add(int(match.group(1)))
+
+    # Precedence: latest-with-captures > latest-without-captures > earliest non-lever_loop.
+    anchor_run_id = ""
+    if lever_loop_candidates:
+        with_captures = [c for c in lever_loop_candidates if c[1]]
+        pool = with_captures or lever_loop_candidates
+        # max() over (start_time, run_id) breaks ties on run_id lexicographically
+        # for determinism when two siblings share a start_time (rare but possible
+        # in unit tests).
+        anchor_run_id = max(pool, key=lambda c: (c[0], c[2]))[2]
     if not anchor_run_id:
         anchor_run_id = earliest_run_id
 
