@@ -1810,3 +1810,178 @@ def test_stage_1_prompt_routing_examples_each_include_json_output():
         f"expected >=5 JSON output blocks in <routing_examples>; "
         f"got {n_outputs}"
     )
+
+
+# ── Section: Allowlist pre-filter (Task 5) ────────────────────────────
+
+
+def _allowlist_metadata_snapshot_with_joins():
+    return {
+        "config": {"description": "test"},
+        "data_sources": {
+            "tables": [
+                {
+                    "identifier": "cat.sch.fact_orders",
+                    "column_configs": [
+                        {"column_name": "order_id", "data_type": "STRING"},
+                        {"column_name": "customer_id", "data_type": "STRING"},
+                    ],
+                    "join_specs": [
+                        {"sql": ["fact_orders.customer_id = dim_customer.customer_id"]},
+                    ],
+                },
+                {
+                    "identifier": "cat.sch.dim_customer",
+                    "column_configs": [
+                        {"column_name": "customer_id", "data_type": "STRING"},
+                        {"column_name": "region", "data_type": "STRING"},
+                    ],
+                    "join_specs": [],
+                },
+                {
+                    "identifier": "cat.sch.dim_product",
+                    "column_configs": [
+                        {"column_name": "product_id", "data_type": "STRING"},
+                    ],
+                    "join_specs": [],
+                },
+                {
+                    "identifier": "cat.sch.fact_unrelated",
+                    "column_configs": [
+                        {"column_name": "thing_id", "data_type": "STRING"},
+                    ],
+                    "join_specs": [],
+                },
+            ],
+            "metric_views": [],
+            "functions": [],
+        },
+    }
+
+
+def test_build_identifier_allowlist_full_preserves_legacy_behavior():
+    """Calling _build_identifier_allowlist WITHOUT relevant_objects
+    must return the full allowlist exactly as before."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _build_identifier_allowlist,
+    )
+    snap = _allowlist_metadata_snapshot_with_joins()
+    full = _build_identifier_allowlist(snap)
+    assert "fact_orders" in full["tables_short"]
+    assert "dim_customer" in full["tables_short"]
+    assert "dim_product" in full["tables_short"]
+    assert "fact_unrelated" in full["tables_short"]
+
+
+def test_build_identifier_allowlist_filters_to_relevant_plus_1hop():
+    """When relevant_objects is provided, the returned allowlist must
+    contain only those identifiers + their 1-hop joined neighbors."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _build_identifier_allowlist,
+    )
+    snap = _allowlist_metadata_snapshot_with_joins()
+    # fact_orders is in blame; dim_customer is its 1-hop neighbor.
+    # dim_product and fact_unrelated are NOT in blame and NOT 1-hop.
+    filtered = _build_identifier_allowlist(
+        snap, relevant_objects={"cat.sch.fact_orders"},
+    )
+    assert "fact_orders" in filtered["tables_short"]
+    assert "dim_customer" in filtered["tables_short"], (
+        "1-hop join neighbor must be included"
+    )
+    assert "dim_product" not in filtered["tables_short"], (
+        "unrelated table must be filtered out"
+    )
+    assert "fact_unrelated" not in filtered["tables_short"]
+
+
+def test_build_identifier_allowlist_empty_relevant_falls_back_to_full():
+    """An empty relevant_objects set must fall back to the full
+    allowlist (graceful degradation when blame extraction fails)."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _build_identifier_allowlist,
+    )
+    snap = _allowlist_metadata_snapshot_with_joins()
+    filtered = _build_identifier_allowlist(snap, relevant_objects=set())
+    assert "fact_unrelated" in filtered["tables_short"], (
+        "empty relevant_objects must fall back to full allowlist"
+    )
+
+
+def test_call_llm_for_stage_1_discovery_filters_allowlist_to_blamed_objects(monkeypatch):
+    """End-to-end: Stage-1 must build a filtered allowlist from the
+    cluster's blame_set and pass it to format_kwargs."""
+    from genie_space_optimizer.optimization import optimizer
+    captured: dict = {}
+
+    def _fake_llm_openai(*args, **kwargs):
+        messages = kwargs.get("messages") or []
+        for m in messages:
+            if m.get("role") == "user":
+                captured["text"] = m["content"]
+                break
+        return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    snap = _allowlist_metadata_snapshot_with_joins()
+    cluster = {
+        "cluster_id": "C001",
+        "root_cause": "missing_join",
+        "asi_blame_set": ["cat.sch.fact_orders"],
+        "affected_judge": "schema_accuracy",
+        "question_ids": ["Q1"],
+        "signal_type": "hard",
+    }
+    optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="missing join",
+        clusters=[cluster],
+        metadata_snapshot=snap,
+        w=None,
+    )
+    prompt = captured.get("text", "")
+    assert "fact_orders" in prompt
+    assert "dim_customer" in prompt, (
+        "1-hop join neighbor must reach the prompt"
+    )
+    assert "fact_unrelated" not in prompt, (
+        "unrelated table must be filtered out of the prompt"
+    )
+
+
+def test_call_llm_for_stage_1_discovery_full_allowlist_when_env_flag_on(monkeypatch):
+    """Setting GSO_STAGE_1_ALLOWLIST_FULL=1 must bypass the filter
+    (debugging escape hatch)."""
+    from genie_space_optimizer.optimization import optimizer
+    monkeypatch.setenv("GSO_STAGE_1_ALLOWLIST_FULL", "1")
+    captured: dict = {}
+
+    def _fake_llm_openai(*args, **kwargs):
+        messages = kwargs.get("messages") or []
+        for m in messages:
+            if m.get("role") == "user":
+                captured["text"] = m["content"]
+                break
+        return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    snap = _allowlist_metadata_snapshot_with_joins()
+    cluster = {
+        "cluster_id": "C001",
+        "root_cause": "missing_join",
+        "asi_blame_set": ["cat.sch.fact_orders"],
+        "affected_judge": "schema_accuracy",
+        "question_ids": ["Q1"],
+        "signal_type": "hard",
+    }
+    optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="missing join",
+        clusters=[cluster],
+        metadata_snapshot=snap,
+        w=None,
+    )
+    prompt = captured.get("text", "")
+    assert "fact_unrelated" in prompt, (
+        "GSO_STAGE_1_ALLOWLIST_FULL=1 must include unrelated tables"
+    )

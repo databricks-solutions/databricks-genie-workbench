@@ -5634,12 +5634,20 @@ def _format_schema_index(metadata_snapshot: dict) -> str:
 def _build_identifier_allowlist(
     metadata_snapshot: dict,
     uc_columns: list[dict] | None = None,
+    relevant_objects: set[str] | None = None,
 ) -> dict[str, Any]:
     """Extract an authoritative allowlist of all valid identifiers from metadata.
 
     Merges Genie Config (tables, metric views, functions, column_configs)
     with UC column metadata to produce a single source of truth that LLM
     prompts and static validators can reference.
+
+    When ``relevant_objects`` is a non-empty set of fully-qualified
+    identifiers, the returned allowlist is filtered to:
+      - tables/MVs/functions whose FQN appears in relevant_objects, AND
+      - tables that are 1-hop joined neighbors of any relevant table
+        (per ``join_specs`` in the space config).
+    Empty or None relevant_objects falls back to the full allowlist.
     """
     ds = metadata_snapshot.get("data_sources", {})
     if not isinstance(ds, dict):
@@ -5647,6 +5655,54 @@ def _build_identifier_allowlist(
     tables_list = ds.get("tables", []) or metadata_snapshot.get("tables", [])
     funcs_list = metadata_snapshot.get("functions", []) or ds.get("functions", []) or []
     mvs_list = ds.get("metric_views", []) or metadata_snapshot.get("metric_views", []) or []
+
+    # 1-hop join neighbor expansion (only when relevant_objects given).
+    if relevant_objects:
+        relevant_short = {
+            r.rsplit(".", 1)[-1].lower() for r in relevant_objects if isinstance(r, str)
+        }
+        neighbors_short: set[str] = set()
+        for tbl in tables_list:
+            if not isinstance(tbl, dict):
+                continue
+            tbl_short = (tbl.get("identifier") or tbl.get("name") or "").rsplit(".", 1)[-1].lower()
+            if tbl_short not in relevant_short:
+                continue
+            for js in tbl.get("join_specs", []) or []:
+                if not isinstance(js, dict):
+                    continue
+                for cond in js.get("sql", []) or []:
+                    if not isinstance(cond, str):
+                        continue
+                    # Naive identifier extraction: any token that looks
+                    # like an existing table short name.
+                    cond_lower = cond.lower()
+                    for other in tables_list:
+                        if not isinstance(other, dict):
+                            continue
+                        other_short = (other.get("identifier") or other.get("name") or "").rsplit(".", 1)[-1].lower()
+                        if other_short and other_short != tbl_short and other_short in cond_lower:
+                            neighbors_short.add(other_short)
+        keep_short = relevant_short | neighbors_short
+        tables_list = [
+            t for t in tables_list
+            if isinstance(t, dict)
+            and (t.get("identifier") or t.get("name") or "").rsplit(".", 1)[-1].lower() in keep_short
+        ]
+        # Filter MVs and functions by FQN (no neighbor expansion — only
+        # tables have join_specs).
+        mvs_list = [
+            mv for mv in mvs_list
+            if (isinstance(mv, dict)
+                and (mv.get("identifier") or mv.get("name") or "") in relevant_objects)
+            or (isinstance(mv, str) and mv in relevant_objects)
+        ]
+        funcs_list = [
+            fn for fn in funcs_list
+            if (isinstance(fn, dict)
+                and (fn.get("identifier") or fn.get("name") or "") in relevant_objects)
+            or (isinstance(fn, str) and fn in relevant_objects)
+        ]
 
     table_ids: list[str] = []
     tables_short: set[str] = set()
@@ -10892,7 +10948,29 @@ def _call_llm_for_stage_1_discovery(
     skill_catalogue = _render_rich_skill_catalogue()
     failure_type_routing_table = _render_failure_type_routing_table()
 
-    _allowlist = _build_identifier_allowlist(metadata_snapshot)
+    # Compute per-AG relevant_objects (union of blame_set FQNs across
+    # clusters) for just-in-time allowlist filtering. Escape hatch:
+    # GSO_STAGE_1_ALLOWLIST_FULL=1 bypasses the filter for debugging.
+    if os.environ.get("GSO_STAGE_1_ALLOWLIST_FULL") == "1":
+        relevant_objects: set[str] | None = None
+    else:
+        relevant_objects = set()
+        for c in (clusters or []):
+            for b in (c.get("asi_blame_set") or []):
+                if isinstance(b, str) and b:
+                    relevant_objects.add(b)
+                elif isinstance(b, dict):
+                    for key in ("fqn", "name", "identifier", "table"):
+                        v = b.get(key)
+                        if v:
+                            relevant_objects.add(str(v))
+                            break
+        if not relevant_objects:
+            # Empty blame extraction -> safest fallback is full allowlist.
+            relevant_objects = None
+    _allowlist = _build_identifier_allowlist(
+        metadata_snapshot, relevant_objects=relevant_objects,
+    )
 
     format_kwargs: dict[str, Any] = {
         "space_description": space_desc,
