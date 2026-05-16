@@ -159,3 +159,91 @@ def test_lever6_accepts_proposal_with_affected_questions_subset(monkeypatch):
         f"Expected dict (proposal accepted), got: {result!r}"
     )
     assert result["affected_questions"] == ["q42"]
+
+
+def test_failure_type_to_snippet_type_routing_table_renders_typed_pairs():
+    """The routing table must list every typed failure_type with its
+    preferred snippet_type, in a stable order, with explanatory rationale.
+    """
+    from genie_space_optimizer.optimization.optimizer import (
+        _render_failure_type_to_snippet_type_table,
+    )
+
+    rendered = _render_failure_type_to_snippet_type_table()
+    assert isinstance(rendered, str)
+    # Each typed failure_type must appear with its snippet_type on the
+    # same line so the LLM sees them as a pair.
+    expected_pairs = [
+        ("plural_top_n_collapse", "expression"),
+        ("missing_filter", "filter"),
+        ("wrong_filter_condition", "filter"),
+        ("wrong_aggregation", "measure"),
+        ("missing_dimension", "expression"),
+        ("currency_or_unit_mismatch", "measure"),
+    ]
+    for failure, snippet in expected_pairs:
+        matching_lines = [
+            ln for ln in rendered.splitlines() if failure in ln
+        ]
+        assert matching_lines, (
+            f"failure_type {failure!r} not present in routing table:\n{rendered}"
+        )
+        assert any(snippet in ln for ln in matching_lines), (
+            f"failure_type {failure!r} found but expected snippet_type "
+            f"{snippet!r} not on same line:\n{matching_lines!r}"
+        )
+    # Free-form prose escape hatch must be documented.
+    assert "free-form" in rendered.lower() or "prose" in rendered.lower(), (
+        "Routing table must document the prose escape hatch (LLM choice)"
+    )
+
+
+def test_lever6_prompt_template_has_failure_type_routing_slot():
+    """The lever-6 prompt must include the {{ failure_type_routing_table }}
+    slot in the Task section. Without this, the helper is dead code.
+    """
+    from genie_space_optimizer.common.config import LEVER_6_SQL_EXPRESSION_PROMPT
+
+    assert "{{ failure_type_routing_table }}" in LEVER_6_SQL_EXPRESSION_PROMPT, (
+        "LEVER_6_SQL_EXPRESSION_PROMPT must contain the "
+        "{{ failure_type_routing_table }} slot"
+    )
+
+
+def test_generate_lever6_proposal_renders_routing_table_into_prompt(monkeypatch):
+    """The caller must thread the rendered routing table into the template.
+    Reach this by capturing the prompt argument to _traced_llm_call.
+    """
+    from genie_space_optimizer.optimization import optimizer
+
+    captured: dict = {}
+
+    def _fake_traced_llm_call(w, system_msg, prompt, *, span_name, **kwargs):
+        captured["prompt"] = prompt
+        return (
+            '{"snippet_type": "filter", "display_name": "X", "alias": "", '
+            '"sql": "tkt_document.PNR_LOCATOR_ID IS NOT NULL", "synonyms": [], '
+            '"instruction": "i", "rationale": "r", "target_table": "tkt_document", '
+            '"affected_questions": []}',
+            None,
+        )
+
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_traced_llm_call)
+    monkeypatch.setattr(
+        optimizer, "_validate_sql_identifiers", lambda sql, allow: (False, ["stop"]),
+    )
+    cluster = {
+        "cluster_id": "c1", "root_cause": "missing_filter",
+        "question_ids": ["q1"], "question_traces": [{"q": "q1"}],
+    }
+    optimizer._generate_lever6_proposal(
+        cluster, metadata_snapshot={"data_sources": {"tables": []}}, w=None,
+    )
+    prompt = captured.get("prompt", "")
+    # The routing table renders into the prompt — assert one anchor row.
+    assert "plural_top_n_collapse" in prompt, (
+        "Routing table not rendered into lever-6 prompt"
+    )
+    assert "| `missing_filter` | `filter` |" in prompt, (
+        "Routing table row not rendered correctly"
+    )

@@ -98,6 +98,10 @@ improve the identified questions.  Choose the most appropriate type:
   Use when the failure involves missing grouping attributes, derived columns,
   or computed dimensions.
 
+### Failure-type → snippet_type routing prior
+
+{{ failure_type_routing_table }}
+
 ## Output format (strict JSON)
 
 ```json

@@ -12392,6 +12392,53 @@ def _format_existing_sql_snippets(metadata_snapshot: dict) -> str:
     return "\n".join(lines) if lines else "(No existing SQL expressions.)"
 
 
+# G1 (2026-05-17 lever-6 hardening plan, Task 3) — failure_type → snippet_type
+# routing prior. See docs/prompt_improvements/2026-05-17-lever6-empirical-baseline.md
+# for the empirical distribution that motivated each pairing.
+_LEVER_6_FAILURE_TYPE_ROUTING: tuple[tuple[str, str, str], ...] = (
+    # (failure_type, preferred_snippet_type, rationale)
+    ("plural_top_n_collapse",     "expression",
+     "Top-N defects (RANK ties expanding the result set) need a ROW_NUMBER()/window expression"),
+    ("missing_filter",            "filter",
+     "A boolean WHERE clause is missing — emit a reusable filter snippet"),
+    ("wrong_filter_condition",    "filter",
+     "An existing filter has the wrong shape — emit the corrected boolean expression"),
+    ("wrong_aggregation",         "measure",
+     "Aggregation function is wrong (e.g. SUM vs COUNT) — emit a measure with the correct aggregate"),
+    ("missing_dimension",         "expression",
+     "Derived per-row column (e.g. MONTH(date), CASE bucket) is missing — emit an expression"),
+    ("currency_or_unit_mismatch", "measure",
+     "Result is in the wrong unit/currency — emit a unit-aware aggregation measure"),
+)
+
+
+def _render_failure_type_to_snippet_type_table() -> str:
+    """Render the typed failure_type → snippet_type routing prior for the
+    lever-6 prompt.
+
+    The table is the strongest deterministic prior available for the typed
+    failure-types observed in Trial-5 (67% of inputs). The other 33% (free-
+    form strategist prose) falls through to LLM choice — explicitly
+    documented as an escape hatch.
+    """
+    header = (
+        "When the cluster's failure_type matches one of the typed values "
+        "below, prefer the indicated snippet_type unless the cluster "
+        "evidence clearly points elsewhere:"
+    )
+    rows = ["| failure_type | snippet_type | rationale |", "|---|---|---|"]
+    for failure, snippet, rationale in _LEVER_6_FAILURE_TYPE_ROUTING:
+        rows.append(f"| `{failure}` | `{snippet}` | {rationale} |")
+    rows.append("")
+    rows.append(
+        "When the failure_type is free-form prose (an adaptive strategist "
+        "describing the failure in natural language), no deterministic "
+        "prior applies — use the cluster's `blame_set`, `counterfactual_fixes`, "
+        "and `structural_diff` to choose the snippet_type yourself."
+    )
+    return header + "\n\n" + "\n".join(rows)
+
+
 def _filter_rca_synonyms(
     candidates: list[Any], existing: list[str],
 ) -> list[str]:
@@ -12889,6 +12936,7 @@ def _generate_lever6_proposal(
             existing_sql_snippets=existing_snippets,
             strategist_hints=hints_text,
             raw_evidence_block=_format_raw_evidence_block(raw_evidence),
+            failure_type_routing_table=_render_failure_type_to_snippet_type_table(),
         )
 
         span.set_inputs({"root_cause": root_cause, "prompt_chars": len(prompt)})
