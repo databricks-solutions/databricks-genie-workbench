@@ -62,3 +62,77 @@ def test_dispatch_function_callable_with_empty_inputs() -> None:
     assert result.attempted_dispatches == ()
     assert result.appended_proposals == ()
     assert result.emitted_decision_records == ()
+
+
+def test_dispatch_visits_matching_cluster_when_labels_aligned() -> None:
+    """When ``cluster.root_cause`` equals the drop's ``root_causes[0]``,
+    the dispatch loop reaches synthesize and emits the proposal.
+
+    This pins today's behavior for the (aligned-labels) control case.
+    The (divergent-labels) bug case is pinned in Task 4's parity test,
+    not here.
+    """
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
+        dispatch_forced_structural_synthesis,
+    )
+
+    cluster = {
+        "cluster_id": "H001",
+        "root_cause": "wrong_aggregation",
+        "question_ids": ["gs_009"],
+        "asi_failure_type": "wrong_aggregation",
+    }
+    drop = {
+        "ag_id": "AG_DECOMPOSED_H001",
+        "source_clusters": ("H001",),
+        "root_causes": ("wrong_aggregation",),
+        "target_lever": 5,
+        "had_example_sqls": False,
+        "instruction_sections_dropped": True,
+        "instruction_guidance_dropped": False,
+    }
+
+    def _synthesize_stub(cluster_arg, metadata_arg, **kwargs):  # noqa: ARG001
+        return ClusterSynthesisResult(
+            proposal={
+                "example_question": "How many flights per route?",
+                "example_sql": "SELECT route, COUNT(*) FROM flights GROUP BY route",
+                "_archetype_name": "ordered_list_by_metric",
+                "kit_id": "test_kit",
+                "target_qids": ["gs_009"],
+                "rca_id": "rca_h001",
+                "_cluster_id": "H001",
+            },
+            attempted_archetypes=("ordered_list_by_metric",),
+            skipped_reason=None,
+        )
+
+    result = dispatch_forced_structural_synthesis(
+        run_id="test_run",
+        iteration=1,
+        ag={
+            "id": "AG_DECOMPOSED_H001",
+            "affected_questions": ["gs_009"],
+            "source_cluster_ids": ["H001"],
+        },
+        l5_ag_drops=[drop],
+        iter_source_clusters_by_id={"H001": cluster},
+        iter_rca_id_by_cluster={"H001": "rca_h001"},
+        metadata_snapshot={"_space_id": "test_space"},
+        benchmarks=[],
+        catalog="",
+        schema="",
+        w=None,
+        spark=None,
+        lever_keys=(5,),
+        reflection_buffer=(),
+        current_iter_inputs={},
+        synthesize=_synthesize_stub,
+    )
+    assert result.attempted_dispatches == (("H001", "wrong_aggregation"),)
+    assert len(result.appended_proposals) == 1
+    assert result.appended_proposals[0]["patch_type"] == "add_example_sql"
+    assert result.emitted_decision_records == ()
