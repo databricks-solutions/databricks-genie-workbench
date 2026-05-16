@@ -151,3 +151,31 @@ def test_lever_6_output_rejects_invalid_snippet_type():
     raw = '{"snippet_type": "join_spec", "display_name": "X", "sql": "y", "target_table": "t"}'
     with pytest.raises(ValueError):
         validate_and_parse(raw, Lever6SqlExpressionOutput)
+
+
+# ── Lever-1 RCA-bridge contract (Task 16) ─────────────────────────────
+
+
+def test_lever_1_rca_bridge_table_level_parses_description_only():
+    from genie_space_optimizer.optimization.prompt_io import Lever1RcaBridgeOutput
+    raw = '{"description": "fact table for sales transactions"}'
+    parsed = validate_and_parse(raw, Lever1RcaBridgeOutput)
+    assert parsed.description == "fact table for sales transactions"
+    assert parsed.synonyms == []
+
+
+def test_lever_1_rca_bridge_column_level_parses_synonyms():
+    from genie_space_optimizer.optimization.prompt_io import Lever1RcaBridgeOutput
+    raw = '{"description": "store name", "synonyms": ["store", "outlet"]}'
+    parsed = validate_and_parse(raw, Lever1RcaBridgeOutput)
+    assert parsed.description == "store name"
+    assert parsed.synonyms == ["store", "outlet"]
+
+
+def test_lever_1_rca_bridge_rejects_extra_fields():
+    """extra='forbid' on LLMOutputContract prevents hash/debug field
+    leaks from the model."""
+    from genie_space_optimizer.optimization.prompt_io import Lever1RcaBridgeOutput
+    raw = '{"description": "x", "synonyms": [], "extra_debug": "leak"}'
+    with pytest.raises(ValueError):
+        validate_and_parse(raw, Lever1RcaBridgeOutput)

@@ -209,3 +209,16 @@ class Lever6SqlExpressionOutput(LLMOutputContract):
     rationale: str = Field(default="")
     target_table: str = Field(default="")
     affected_questions: list[str] = Field(default_factory=list)
+
+
+class Lever1RcaBridgeOutput(LLMOutputContract):
+    """Lever-1 RCA-bridge proposal output. Table-level invocations
+    omit synonyms; column-level invocations include them. The
+    SKILL.md template fills the synonyms_schema_field slot
+    conditionally."""
+
+    description: str = Field(description="1-3 sentence description")
+    synonyms: list[str] = Field(
+        default_factory=list,
+        description="2-5 lowercase NL phrases (column-level only; empty for table-level)",
+    )
