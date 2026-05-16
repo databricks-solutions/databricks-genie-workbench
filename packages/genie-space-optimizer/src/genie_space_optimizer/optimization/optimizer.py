@@ -12620,30 +12620,39 @@ def _generate_lever1_rca_proposal(
                         existing_synonyms = list(col.get("synonyms") or [])
                         break
 
-    prompt = (
-        "You are a metadata curator for a Genie SQL space. "
-        "An RCA theme has identified that the following column/table needs "
-        "metadata improvements based on a class of failed eval rows.\n\n"
-        f"TARGET: {'table ' + table if is_table_level else table + '.' + column}\n"
-        f"INTENT: {intent}\n"
-        f"EXPECTED (correct) objects: {expected_objects}\n"
-        f"ACTUAL (wrongly chosen) objects: {actual_objects}\n"
-        f"FAILURE CONTEXT (sanitized): {_json.dumps(afs_projections, default=str)}\n"
-        f"EXISTING DESCRIPTION: {existing_description[:300]}\n"
-        f"EXISTING SYNONYMS: {existing_synonyms}\n\n"
-        "Produce a JSON object with these keys:\n"
-        '  "description": a 1-3 sentence description that strengthens the '
-        "intended semantics and (if relevant) contrasts with the wrongly "
-        "chosen objects. Do not contradict the existing description; "
-        "extend it.\n"
-        + ("" if is_table_level else
-           '  "synonyms": a list of 2-5 lowercase NL phrases users might '
-           "say that should route to this column. Derive from FAILURE "
-           "CONTEXT phrases and EXPECTED/ACTUAL identifiers. Do not include "
-           "phrases already in EXISTING SYNONYMS. Avoid SQL identifiers "
-           "(snake_case, ALL_CAPS).\n")
-        + "Return ONLY the JSON object, no prose."
+    # Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 9 — inline
+    # f-string replaced with template render against LEVER_1_RCA_BRIDGE_PROMPT
+    # (loaded from lever-1-rca-bridge/SKILL.md).
+    from genie_space_optimizer.common.config import LEVER_1_RCA_BRIDGE_PROMPT
+    from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
+    if is_table_level:
+        _target_str = f"table {table}"
+        synonyms_instruction_block = ""
+        synonyms_schema_field = ""
+    else:
+        _target_str = f"{table}.{column}"
+        synonyms_instruction_block = (
+            '- `synonyms`: a list of 2-5 lowercase NL phrases users might '
+            'say that should route to this column. Derive from FAILURE '
+            'CONTEXT phrases and EXPECTED/ACTUAL identifiers. Do not '
+            'include phrases already in EXISTING SYNONYMS. Avoid SQL '
+            'identifiers (snake_case, ALL_CAPS).'
+        )
+        synonyms_schema_field = ',"synonyms": ["term1", "term2"]'
+
+    prompt = format_mlflow_template(
+        LEVER_1_RCA_BRIDGE_PROMPT,
+        target=_target_str,
+        intent=intent,
+        expected_objects=expected_objects,
+        actual_objects=actual_objects,
+        failure_context_json=_json.dumps(afs_projections, default=str),
+        existing_description=existing_description[:300],
+        existing_synonyms=existing_synonyms,
+        synonyms_instruction_block=synonyms_instruction_block,
+        synonyms_schema_field=synonyms_schema_field,
     )
+    _link_prompt_to_trace("lever_1_rca_bridge")
 
     try:
         raw_text, _ = _traced_llm_call(
