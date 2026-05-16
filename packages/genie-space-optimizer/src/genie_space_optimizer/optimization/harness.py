@@ -5872,10 +5872,28 @@ def _t24_counterfactual_scan(
     instruction-scope gate's split-child propagation check needs the
     explicit ``[]`` to stop failing loud.
 
+    Plan C2 (2026-05-16) — when
+    ``sql_shape_overlap_gate_enabled()`` is true AND the proposal has
+    non-empty shape tokens (extracted from ``column`` + identifiers
+    parsed from the snippet's ``sql`` body, minus SQL keyword
+    stopwords), a benchmark is counted as a passing dependent ONLY
+    when both the table-name check AND the shape-overlap check
+    succeed. Proposals with empty shape tokens (non-snippet patches)
+    keep the legacy table-only behaviour.
+
     Returns the legacy ``_collateral_details`` list of
     ``(patch_type, target, sample_dependents)`` tuples for the operator
     transcript renderer.
     """
+    from genie_space_optimizer.common.config import (
+        sql_shape_overlap_gate_enabled,
+    )
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+        extract_snippet_shape_tokens,
+    )
+
+    shape_gate_enabled = sql_shape_overlap_gate_enabled()
     passing_qids = {b.get("id") for b in benchmarks if b.get("id")} - set(
         prev_failure_qids or ()
     )
@@ -5907,6 +5925,16 @@ def _t24_counterfactual_scan(
         _target_candidates = {_target, _target_tail}
         if _target_column:
             _target_candidates.add(f"{_target_tail}.{_target_column}")
+
+        # Plan C2 — extract shape tokens once per proposal. Empty for
+        # non-snippet patches; in that case the conjunction degenerates
+        # to the legacy table-only behaviour.
+        _shape_tokens = (
+            extract_snippet_shape_tokens(_p) if shape_gate_enabled
+            else frozenset()
+        )
+        _shape_gate_active = shape_gate_enabled and bool(_shape_tokens)
+
         _dependents: list[str] = []
         for _b in benchmarks:
             _bid = _b.get("id", "")
@@ -5926,8 +5954,17 @@ def _t24_counterfactual_scan(
                     c and c in _sql_text for c in _target_candidates
                 ):
                     _matched = True
+
+            # Plan C2 conjunction — drop the dependent if the shape
+            # gate is active and the benchmark doesn't use any of the
+            # snippet's shape tokens.
+            if _matched and _shape_gate_active:
+                if not benchmark_has_shape_overlap(_b, _shape_tokens):
+                    _matched = False
+
             if _matched:
                 _dependents.append(_bid)
+
         # Phase 3c Task A: stamp even when empty so the gate sees [] not None.
         _p["passing_dependents"] = _dependents[:50]
         if _dependents and len(_dependents) >= 2 * affected_n:
@@ -5939,12 +5976,15 @@ def _t24_counterfactual_scan(
             # diagnosis when the gate fires unexpectedly.
             logger.info(
                 "[%s] high_collateral_risk: proposal_id=%s target=%s "
-                "dependents=%s threshold=%d",
+                "dependents=%s threshold=%d shape_gate=%s "
+                "shape_tokens=%s",
                 ag.get("id", "?"),
                 _p.get("proposal_id") or _p.get("id") or "?",
                 _target,
                 _dependents,
                 2 * affected_n,
+                "on" if _shape_gate_active else "off",
+                sorted(_shape_tokens)[:10] if _shape_tokens else (),
             )
     return collateral_details
 
