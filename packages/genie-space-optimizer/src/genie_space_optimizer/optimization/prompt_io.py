@@ -190,3 +190,22 @@ class Stage1DiscoveryOutput(LLMOutputContract):
 
     applicable_skills: list[Stage1SkillPick] = Field(default_factory=list)
     discovery_rationale: str = Field(default="")
+
+
+class Lever6SqlExpressionOutput(LLMOutputContract):
+    """Lever-6 SQL-expression proposal. The actual SKILL.md emits a
+    single proposal object (not wrapped in a ``proposals: [...]`` list).
+    """
+
+    snippet_type: Literal["measure", "filter", "expression"]
+    display_name: str
+    alias: str = Field(
+        default="",
+        description="snake_case identifier (required for measure/expression, empty for filter)",
+    )
+    sql: str = Field(description="The SQL expression (no trailing semicolon)")
+    synonyms: list[str] = Field(default_factory=list)
+    instruction: str = Field(default="")
+    rationale: str = Field(default="")
+    target_table: str = Field(default="")
+    affected_questions: list[str] = Field(default_factory=list)

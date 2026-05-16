@@ -117,3 +117,37 @@ def test_stage_1_discovery_output_allows_empty_skills_list():
     raw = '{"applicable_skills": [], "discovery_rationale": "no actionable target"}'
     parsed = validate_and_parse(raw, Stage1DiscoveryOutput)
     assert parsed.applicable_skills == []
+
+
+# ── Lever-6 SQL-expression contract (Task 15) ─────────────────────────
+
+
+def test_lever_6_output_parses_canonical_proposal():
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever6SqlExpressionOutput,
+    )
+    raw = """
+    {
+      "snippet_type": "expression",
+      "display_name": "Top N by Rank",
+      "alias": "top_n_by_rank",
+      "sql": "ROW_NUMBER() OVER (ORDER BY x DESC)",
+      "synonyms": ["top n", "ranking"],
+      "instruction": "Use for top-N selection",
+      "rationale": "wrong_aggregation",
+      "target_table": "catalog.schema.fact_sales",
+      "affected_questions": ["Q1"]
+    }
+    """
+    parsed = validate_and_parse(raw, Lever6SqlExpressionOutput)
+    assert parsed.snippet_type == "expression"
+    assert parsed.affected_questions == ["Q1"]
+
+
+def test_lever_6_output_rejects_invalid_snippet_type():
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever6SqlExpressionOutput,
+    )
+    raw = '{"snippet_type": "join_spec", "display_name": "X", "sql": "y", "target_table": "t"}'
+    with pytest.raises(ValueError):
+        validate_and_parse(raw, Lever6SqlExpressionOutput)
