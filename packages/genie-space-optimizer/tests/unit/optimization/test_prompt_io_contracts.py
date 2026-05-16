@@ -72,3 +72,48 @@ def test_validate_and_parse_raises_on_missing_required_field():
 def test_validate_and_parse_raises_on_non_json():
     with pytest.raises(ValueError):
         validate_and_parse("not json at all", _Example)
+
+
+# ── Stage-1 discovery contract (Task 14) ──────────────────────────────
+
+
+def test_stage_1_discovery_output_parses_canonical_response():
+    from genie_space_optimizer.optimization.prompt_io import Stage1DiscoveryOutput
+    raw = """
+    {
+      "applicable_skills": [
+        {
+          "skill_id": "lever-6-sql-expression",
+          "target_objects": ["catalog.schema.fact_sales"],
+          "expected_impact_qids": ["Q1", "Q2"],
+          "evidence_refs": ["H001"],
+          "why": "wrong_aggregation",
+          "priority": 1
+        }
+      ],
+      "discovery_rationale": "all clusters point at fact_sales"
+    }
+    """
+    parsed = validate_and_parse(raw, Stage1DiscoveryOutput)
+    assert len(parsed.applicable_skills) == 1
+    pick = parsed.applicable_skills[0]
+    assert pick.skill_id == "lever-6-sql-expression"
+    assert pick.target_objects == ["catalog.schema.fact_sales"]
+    assert pick.priority == 1
+    assert parsed.discovery_rationale == "all clusters point at fact_sales"
+
+
+def test_stage_1_discovery_output_rejects_unknown_priority():
+    """priority must be in {1,2,3}; anything else fails validation."""
+    from genie_space_optimizer.optimization.prompt_io import Stage1DiscoveryOutput
+    raw = '{"applicable_skills": [{"skill_id": "x", "target_objects": [], "expected_impact_qids": [], "evidence_refs": [], "why": "x", "priority": 99}], "discovery_rationale": ""}'
+    with pytest.raises(ValueError):
+        validate_and_parse(raw, Stage1DiscoveryOutput)
+
+
+def test_stage_1_discovery_output_allows_empty_skills_list():
+    """Stage-1 may emit an empty list when no skill applies (the no-fit branch)."""
+    from genie_space_optimizer.optimization.prompt_io import Stage1DiscoveryOutput
+    raw = '{"applicable_skills": [], "discovery_rationale": "no actionable target"}'
+    parsed = validate_and_parse(raw, Stage1DiscoveryOutput)
+    assert parsed.applicable_skills == []

@@ -147,3 +147,46 @@ def validate_and_parse(raw_text: str, model_cls: type[_T]) -> _T:
         raise ValueError(
             f"LLM response did not match {model_cls.__name__} contract: {exc}"
         ) from exc
+
+
+# ── Per-prompt output contracts ───────────────────────────────────────
+# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Phase F.
+
+from typing import Literal  # noqa: E402
+from pydantic import Field  # noqa: E402
+
+
+class Stage1SkillPick(LLMOutputContract):
+    """One pick in the Stage-1 discovery output.
+
+    Mirrors the JSON shape declared in
+    skills/stage-1-discovery/SKILL.md <output_schema>.
+    """
+
+    skill_id: str = Field(
+        description="One of the skill_ids declared as pickable_by_stage_1=true",
+    )
+    target_objects: list[str] = Field(
+        default_factory=list,
+        description="Fully-qualified table/column/MV/function identifiers",
+    )
+    expected_impact_qids: list[str] = Field(
+        default_factory=list,
+        description="Question IDs from the cluster_briefs Question IDs: line",
+    )
+    evidence_refs: list[str] = Field(
+        default_factory=list,
+        description="Cluster IDs or trace URIs the pick was derived from",
+    )
+    why: str = Field(description="One-line routing rationale")
+    priority: Literal[1, 2, 3] = Field(
+        description="1 = must-do this iteration, 2 = should-do, 3 = nice-to-have",
+    )
+
+
+class Stage1DiscoveryOutput(LLMOutputContract):
+    """Top-level Stage-1 discovery output. Field name matches SKILL.md:
+    ``discovery_rationale`` (NOT ``reasoning``)."""
+
+    applicable_skills: list[Stage1SkillPick] = Field(default_factory=list)
+    discovery_rationale: str = Field(default="")
