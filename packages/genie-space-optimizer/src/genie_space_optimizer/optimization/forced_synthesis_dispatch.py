@@ -123,6 +123,33 @@ def _should_invoke_safety_net(
     return triggers
 
 
+# Plan B — observability counter for whether the Plan A trapdoor still
+# matters once Plan B is on by default. We expect this to drop near zero
+# in production; if it does, a follow-up PR can remove the trapdoor.
+# A non-zero value indicates the trapdoor caught a case Plan B missed
+# (e.g., Stage-1 picked L5a-only and the structural gate dropped it,
+# OR Stage-1 didn't pick L5 at all but a cluster is SQL-shape).
+_FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS: int = 0
+
+
+def get_forced_synthesis_trapdoor_invocations() -> int:
+    """Return the count of trapdoor dispatches since the last reset.
+
+    Increments whenever ``dispatch_forced_structural_synthesis`` actually
+    calls ``synthesize`` (either the gate-drop path or the safety-net
+    path). Stays at zero when no L5 drops + no safety-net triggers.
+    """
+    return _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS
+
+
+def reset_forced_synthesis_trapdoor_invocations() -> None:
+    """Reset the counter to zero. Tests call this in setup; production
+    code does not call it (the counter accumulates across the run).
+    """
+    global _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS
+    _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS = 0
+
+
 @dataclass(frozen=True)
 class ForcedSynthesisDispatchResult:
     """Per-call result of ``dispatch_forced_structural_synthesis``.
@@ -196,6 +223,8 @@ def dispatch_forced_structural_synthesis(
     import logging
     logger = logging.getLogger(__name__)
 
+    global _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS
+
     attempted: list[tuple[str, str]] = []
     appended: list[dict[str, Any]] = []
     emitted: list[dict[str, Any]] = []
@@ -262,6 +291,7 @@ def dispatch_forced_structural_synthesis(
             (str(_drop_cluster.get("cluster_id") or ""), _drop_root_cause)
         )
 
+        _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS += 1
         _synth_result = synthesize(
             _drop_cluster,
             metadata_snapshot,
@@ -366,6 +396,7 @@ def dispatch_forced_structural_synthesis(
         if not isinstance(cluster, Mapping):
             continue
         attempted.append((str(cid), failure_key))
+        _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS += 1
         _synth_result = synthesize(
             dict(cluster),
             metadata_snapshot,

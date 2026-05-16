@@ -458,3 +458,176 @@ def test_safety_net_emits_nsc_when_synth_declines() -> None:
     assert nsc.get("reason_code") == "no_structural_candidate"
     assert nsc.get("cluster_id") == "H002"
     assert nsc.get("root_cause") == "plural_top_n_collapse"
+
+
+def test_trapdoor_invocation_counter_increments_on_gate_drop_dispatch() -> None:
+    """Plan B — the trapdoor stays as a safety net. The counter pins
+    how often it fires once Plan B is on by default, so we can decide
+    whether to remove it in a follow-up.
+    """
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
+        dispatch_forced_structural_synthesis,
+        get_forced_synthesis_trapdoor_invocations,
+        reset_forced_synthesis_trapdoor_invocations,
+    )
+
+    reset_forced_synthesis_trapdoor_invocations()
+    assert get_forced_synthesis_trapdoor_invocations() == 0
+
+    cluster = {
+        "cluster_id": "H001",
+        "root_cause": "plural_top_n_collapse",
+        "asi_failure_type": "wrong_aggregation",
+        "question_ids": ["gs_009"],
+    }
+    drop = {
+        "ag_id": "AG_DECOMPOSED_H001",
+        "source_clusters": ("H001",),
+        "root_causes": ("wrong_aggregation",),
+        "target_lever": 5,
+        "had_example_sqls": False,
+        "instruction_sections_dropped": True,
+        "instruction_guidance_dropped": False,
+    }
+
+    def _synthesize_success(*args, **kwargs):
+        return ClusterSynthesisResult(
+            proposal={
+                "example_question": "test",
+                "example_sql": "SELECT 1",
+                "_archetype_name": "ordered_list_by_metric",
+                "kit_id": "kit_h001",
+                "target_qids": ["gs_009"],
+                "rca_id": "rca_h001",
+                "_cluster_id": "H001",
+            },
+            attempted_archetypes=("ordered_list_by_metric",),
+            skipped_reason=None,
+        )
+
+    dispatch_forced_structural_synthesis(
+        run_id="r",
+        iteration=1,
+        ag={
+            "id": "AG_DECOMPOSED_H001",
+            "affected_questions": ["gs_009"],
+            "source_cluster_ids": ["H001"],
+        },
+        l5_ag_drops=[drop],
+        iter_source_clusters_by_id={"H001": cluster},
+        iter_rca_id_by_cluster={"H001": "rca_h001"},
+        metadata_snapshot={},
+        benchmarks=[],
+        catalog="",
+        schema="",
+        w=None,
+        spark=None,
+        lever_keys=(5,),
+        reflection_buffer=(),
+        current_iter_inputs={},
+        ag_proposals_so_far=[],
+        synthesize=_synthesize_success,
+    )
+    assert get_forced_synthesis_trapdoor_invocations() == 1
+
+
+def test_trapdoor_invocation_counter_increments_on_safety_net_dispatch() -> None:
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
+        dispatch_forced_structural_synthesis,
+        get_forced_synthesis_trapdoor_invocations,
+        reset_forced_synthesis_trapdoor_invocations,
+    )
+
+    reset_forced_synthesis_trapdoor_invocations()
+
+    cluster = {
+        "cluster_id": "H002",
+        "root_cause": "plural_top_n_collapse",
+        "asi_failure_type": "wrong_filter_condition",
+        "question_ids": ["q1"],
+    }
+
+    def _synthesize_success(*args, **kwargs):
+        return ClusterSynthesisResult(
+            proposal={
+                "example_question": "test",
+                "example_sql": "SELECT 1",
+                "_archetype_name": "single_row_top_n",
+                "kit_id": "k",
+                "target_qids": ["q1"],
+                "rca_id": "rca",
+                "_cluster_id": "H002",
+            },
+            attempted_archetypes=("single_row_top_n",),
+            skipped_reason=None,
+        )
+
+    dispatch_forced_structural_synthesis(
+        run_id="r",
+        iteration=1,
+        ag={
+            "id": "AG_DECOMPOSED_H002",
+            "affected_questions": ["q1"],
+            "source_cluster_ids": ["H002"],
+        },
+        l5_ag_drops=[],
+        iter_source_clusters_by_id={"H002": cluster},
+        iter_rca_id_by_cluster={"H002": "rca"},
+        metadata_snapshot={},
+        benchmarks=[],
+        catalog="",
+        schema="",
+        w=None,
+        spark=None,
+        lever_keys=(5,),
+        reflection_buffer=(),
+        current_iter_inputs={},
+        ag_proposals_so_far=[{"patch_type": "add_text_instruction"}],
+        synthesize=_synthesize_success,
+    )
+    assert get_forced_synthesis_trapdoor_invocations() == 1
+
+
+def test_trapdoor_invocation_counter_does_not_increment_on_skip() -> None:
+    """When neither path triggers, the counter stays at zero."""
+    from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
+        dispatch_forced_structural_synthesis,
+        get_forced_synthesis_trapdoor_invocations,
+        reset_forced_synthesis_trapdoor_invocations,
+    )
+
+    reset_forced_synthesis_trapdoor_invocations()
+
+    def _synth_must_not_run(*args, **kwargs):
+        raise AssertionError("should not be called")
+
+    dispatch_forced_structural_synthesis(
+        run_id="r",
+        iteration=1,
+        ag={
+            "id": "AG",
+            "affected_questions": [],
+            "source_cluster_ids": [],
+        },
+        l5_ag_drops=[],
+        iter_source_clusters_by_id={},
+        iter_rca_id_by_cluster={},
+        metadata_snapshot={},
+        benchmarks=[],
+        catalog="",
+        schema="",
+        w=None,
+        spark=None,
+        lever_keys=(5,),
+        reflection_buffer=(),
+        current_iter_inputs={},
+        ag_proposals_so_far=[],
+        synthesize=_synth_must_not_run,
+    )
+    assert get_forced_synthesis_trapdoor_invocations() == 0
