@@ -138,20 +138,17 @@ def test_dispatch_visits_matching_cluster_when_labels_aligned() -> None:
     assert result.emitted_decision_records == ()
 
 
-def test_label_divergence_short_circuits_dispatch() -> None:
-    """REGRESSION PIN — preserve today's bug as a passing test.
+def test_label_divergence_visits_cluster_after_canonicalization() -> None:
+    """Plan A Part 1 — replaces the legacy ``short_circuits_dispatch`` pin.
 
-    When ``cluster.root_cause`` is a RcaKind label ("plural_top_n_collapse")
-    and the L5 drop ledger stored the ``asi_failure_type`` label
-    ("wrong_aggregation"), the strict-equality lookup at
-    forced_synthesis_dispatch never matches. Dispatch visits zero
-    candidates; synthesize is never called.
-
-    Plan A fixes this and the assertion below flips: ``attempted_dispatches``
-    becomes ``(("H001", "wrong_aggregation"),)``. That test failure is
-    the gate that forces the Plan A fix to land before any prompt
-    iteration plans are written.
+    With ``cluster_failure_keys`` canonicalizing the lookup, a cluster
+    whose RcaKind ``root_cause`` differs from its ``asi_failure_type``
+    is still visited by the dispatch loop. Synthesize is called exactly
+    once.
     """
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
     from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
         dispatch_forced_structural_synthesis,
     )
@@ -172,13 +169,22 @@ def test_label_divergence_short_circuits_dispatch() -> None:
         "instruction_guidance_dropped": False,
     }
 
-    def _synthesize_must_not_run(*args, **kwargs):  # noqa: ARG001
-        raise AssertionError(
-            "BUG REGRESSION — synthesize SHOULD NOT be called today "
-            "because the strict-equality lookup short-circuits the "
-            "dispatch loop. If you are seeing this assertion, the bug "
-            "was fixed; flip the test expectation to assert that "
-            "attempted_dispatches == ((\"H001\", \"wrong_aggregation\"),)."
+    synthesize_call_count = {"n": 0}
+
+    def _synthesize_success(cluster_arg, metadata_arg, **kwargs):
+        synthesize_call_count["n"] += 1
+        return ClusterSynthesisResult(
+            proposal={
+                "example_question": "test",
+                "example_sql": "SELECT 1",
+                "_archetype_name": "ordered_list_by_metric",
+                "kit_id": "kit_h001",
+                "target_qids": ["gs_009"],
+                "rca_id": "rca_h001",
+                "_cluster_id": "H001",
+            },
+            attempted_archetypes=("ordered_list_by_metric",),
+            skipped_reason=None,
         )
 
     result = dispatch_forced_structural_synthesis(
@@ -201,8 +207,8 @@ def test_label_divergence_short_circuits_dispatch() -> None:
         lever_keys=(5,),
         reflection_buffer=(),
         current_iter_inputs={},
-        synthesize=_synthesize_must_not_run,
+        synthesize=_synthesize_success,
     )
-    assert result.attempted_dispatches == ()
-    assert result.appended_proposals == ()
-    assert result.emitted_decision_records == ()
+    assert result.attempted_dispatches == (("H001", "wrong_aggregation"),)
+    assert len(result.appended_proposals) == 1
+    assert synthesize_call_count["n"] == 1

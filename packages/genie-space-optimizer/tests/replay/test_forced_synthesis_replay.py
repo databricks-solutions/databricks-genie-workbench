@@ -151,50 +151,6 @@ def test_replay_aligned_labels_visits_cluster() -> None:
     assert iter1.appended_proposals[0]["patch_type"] == "add_example_sql"
 
 
-def test_replay_label_divergence_visits_zero_clusters() -> None:
-    """REGRESSION PIN — captures today's L5 trapdoor bug.
-
-    When the cluster's ``root_cause`` is the RcaKind label
-    ("plural_top_n_collapse") and the L5 drop ledger stored the
-    ``asi_failure_type`` label ("wrong_aggregation"), the strict-equality
-    cluster lookup at forced_synthesis_dispatch.py never matches.
-
-    Dispatch visits ZERO candidates today. The synthesize stub is
-    instrumented to raise if called, proving the stub is unreachable.
-
-    Plan A flips this assertion: once the label-canonicalization fix
-    lands, dispatch will visit one candidate and synthesize will run.
-    That test failure is the gate that forces Plan A to land BEFORE any
-    prompt-iteration plans are written.
-    """
-    from genie_space_optimizer.optimization.forced_synthesis_replay import (
-        run_forced_synthesis_replay,
-    )
-
-    synthesize_call_count = {"n": 0}
-
-    def _synthesize_must_not_run(*args, **kwargs):
-        synthesize_call_count["n"] += 1
-        raise AssertionError(
-            "BUG REGRESSION — synthesize was reached. "
-            "Today's broken dispatch should short-circuit before calling "
-            "synthesize. If you see this, the bug is fixed; flip the "
-            "test expectation."
-        )
-
-    result = run_forced_synthesis_replay(
-        fixture=_load_fixture("label_divergence_minimal"),
-        synthesize=_synthesize_must_not_run,
-    )
-    assert result.fixture_id == "label_divergence_minimal"
-    assert len(result.iterations) == 1
-    iter1 = result.iterations[0]
-    assert iter1.attempted_dispatches == ()
-    assert iter1.appended_proposals == ()
-    assert iter1.emitted_decision_records == ()
-    assert synthesize_call_count["n"] == 0
-
-
 def test_replay_label_aligned_visits_cluster() -> None:
     """Control case — when labels are aligned, dispatch visits exactly
     one cluster and synthesize is reached. This pin protects against a
