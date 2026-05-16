@@ -213,3 +213,60 @@ def test_lever_1_2_column_output_rejects_invalid_entity_type():
     raw = """{"changes": [{"table": "t", "column": "c", "entity_type": "foo", "sections": {}}], "table_changes": [], "rationale": ""}"""
     with pytest.raises(ValueError):
         validate_and_parse(raw, Lever12ColumnOutput)
+
+
+# ── Strategist family (Task 18) ───────────────────────────────────────
+
+
+def test_adaptive_strategist_output_parses_canonical_response():
+    from genie_space_optimizer.optimization.prompt_io import AdaptiveStrategistOutput
+    raw = """
+    {
+      "action_groups": [{
+        "id": "AG1",
+        "root_cause_summary": "wrong aggregation on revenue measure",
+        "source_cluster_ids": ["H001"],
+        "affected_questions": ["Q1", "Q2"],
+        "priority": 1,
+        "lever_directives": {
+          "6": {"sql_expressions": [{"snippet_type": "measure", "display_name": "X", "alias": "x", "sql": "SUM(t.c)", "synonyms": [], "instruction": "i"}]}
+        },
+        "coordination_notes": "lever 6 alone",
+        "proposals": []
+      }],
+      "global_instruction_rewrite": {
+        "PURPOSE": "Sales analytics."
+      },
+      "rationale": "single-defect AG"
+    }
+    """
+    parsed = validate_and_parse(raw, AdaptiveStrategistOutput)
+    assert len(parsed.action_groups) == 1
+    assert parsed.action_groups[0].id == "AG1"
+    assert "6" in parsed.action_groups[0].lever_directives
+    assert parsed.global_instruction_rewrite["PURPOSE"] == "Sales analytics."
+
+
+def test_strategist_triage_output_parses_minimal_response():
+    from genie_space_optimizer.optimization.prompt_io import StrategistTriageOutput
+    raw = '{"action_groups": [{"id": "AG1", "priority": 2}], "rationale": "triage"}'
+    parsed = validate_and_parse(raw, StrategistTriageOutput)
+    assert parsed.action_groups[0].priority == 2
+
+
+def test_strategist_detail_output_allows_extra_nested_fields():
+    """The permissive base allows the strategist family to grow new
+    nested fields without breaking validation."""
+    from genie_space_optimizer.optimization.prompt_io import StrategistDetailOutput
+    raw = """
+    {
+      "action_groups": [{
+        "id": "AG1",
+        "new_experimental_field": "ok",
+        "priority": 1
+      }],
+      "rationale": "detail"
+    }
+    """
+    parsed = validate_and_parse(raw, StrategistDetailOutput)
+    assert parsed.action_groups[0].id == "AG1"

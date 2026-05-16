@@ -247,3 +247,66 @@ class Lever12ColumnOutput(LLMOutputContract):
     changes: list[Lever12ColumnChange] = Field(default_factory=list)
     table_changes: list[Lever12TableChange] = Field(default_factory=list)
     rationale: str = Field(default="")
+
+
+# ── Strategist family (Task 18) ───────────────────────────────────────
+#
+# The strategist prompts emit deeply nested action_groups with
+# lever_directives keyed by string lever number ("1".."6"). Each lever's
+# directive value is shape-specific (lever 1: tables/columns; lever 4:
+# join_specs; lever 5: instruction_guidance + example_sqls; etc.). Rather
+# than pin every nested shape with Literal-checked discriminators (which
+# Databricks JSON schema flatteners would reject), we capture the
+# top-level structure and pass nested dicts through. Downstream code
+# (apply_patch_set in optimizer.py) already validates the inner shapes
+# per-lever at apply time.
+
+
+class _StrategistActionGroupBase(LLMOutputContract):
+    """Permissive base for action groups across the strategist family."""
+
+    # Permit unknown fields here because the three strategist variants
+    # carry slightly different action-group shapes (triage is leaner;
+    # detail and adaptive carry full lever_directives).
+    model_config = {"extra": "allow", "str_strip_whitespace": True}
+
+    id: str = Field(default="")
+    root_cause_summary: str = Field(default="")
+    source_cluster_ids: list[str] = Field(default_factory=list)
+    affected_questions: list[str] = Field(default_factory=list)
+    priority: int = Field(default=2)
+    lever_directives: dict[str, Any] = Field(default_factory=dict)
+    coordination_notes: str = Field(default="")
+    escalation: str = Field(default="")
+    proposals: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AdaptiveStrategistOutput(LLMOutputContract):
+    """Top-level adaptive-strategist output (loaded from
+    adaptive-strategist/SKILL.md).
+
+    Emits exactly one action group plus an optional
+    global_instruction_rewrite block keyed by canonical instruction
+    section headers (PURPOSE, ASSET ROUTING, etc.).
+    """
+
+    action_groups: list[_StrategistActionGroupBase] = Field(default_factory=list)
+    global_instruction_rewrite: dict[str, str] = Field(default_factory=dict)
+    rationale: str = Field(default="")
+
+
+class StrategistTriageOutput(LLMOutputContract):
+    """Top-level STRATEGIST_TRIAGE_PROMPT output. Triage produces a
+    sketch of action groups without full lever_directives."""
+
+    action_groups: list[_StrategistActionGroupBase] = Field(default_factory=list)
+    rationale: str = Field(default="")
+
+
+class StrategistDetailOutput(LLMOutputContract):
+    """Top-level STRATEGIST_DETAIL_PROMPT output. Detail expands one
+    triaged action group with full lever_directives."""
+
+    action_groups: list[_StrategistActionGroupBase] = Field(default_factory=list)
+    global_instruction_rewrite: dict[str, str] = Field(default_factory=dict)
+    rationale: str = Field(default="")
