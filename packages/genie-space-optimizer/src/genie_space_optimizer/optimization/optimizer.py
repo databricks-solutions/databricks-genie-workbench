@@ -10880,9 +10880,10 @@ def _call_llm_for_stage_1_discovery(
 
     cluster_briefs = _format_cluster_briefs_afs(clusters or [], top_n=5)
 
-    skill_catalogue = "\n".join(
-        f"- {sid}" for sid in sorted(_THREE_STAGE_SKILL_NAMES)
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
     )
+    skill_catalogue = _render_rich_skill_catalogue()
 
     _allowlist = _build_identifier_allowlist(metadata_snapshot)
 

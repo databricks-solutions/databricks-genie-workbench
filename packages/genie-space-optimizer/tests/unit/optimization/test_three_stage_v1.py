@@ -1363,3 +1363,93 @@ def test_render_rich_skill_catalogue_falls_back_to_bare_id_when_metadata_missing
     assert rendered == "- lever-x-no-meta", (
         f"missing-metadata fallback must be bare-id bullet, got: {rendered!r}"
     )
+
+
+def test_stage_1_discovery_prompt_render_includes_rich_catalogue_via_helper():
+    """End-to-end: format the actual STAGE_1_DISCOVERY_PROMPT with the
+    helper's output and assert the rendered prompt carries 'Pick when:'
+    for every pickable skill. This is the gate that catches a future
+    regression where someone bypasses the helper."""
+    from genie_space_optimizer.common.config import (
+        STAGE_1_DISCOVERY_PROMPT,
+        _THREE_STAGE_SKILL_NAMES,
+        format_mlflow_template,
+    )
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+    rendered = format_mlflow_template(
+        STAGE_1_DISCOVERY_PROMPT,
+        space_description="Hotel bookings analytics",
+        ag_id="AG_TEST",
+        root_cause_summary="missing join between fact_bookings and dim_hotel",
+        cluster_briefs="C1: missing_join — hotel_key not joined to dim_hotel",
+        skill_catalogue=_render_rich_skill_catalogue(),
+        identifier_allowlist="catalog.schema.fact_bookings.hotel_key",
+    )
+    assert "{{" not in rendered, "unrendered template variable"
+    for sid in _THREE_STAGE_SKILL_NAMES:
+        assert sid in rendered, f"skill {sid} missing from rendered prompt"
+    # Count the number of 'Pick when:' substrings — must equal the
+    # number of pickable skills:
+    assert rendered.count("Pick when:") == len(_THREE_STAGE_SKILL_NAMES), (
+        f"expected {len(_THREE_STAGE_SKILL_NAMES)} 'Pick when:' lines, "
+        f"got {rendered.count('Pick when:')}"
+    )
+    assert rendered.count("What:") == len(_THREE_STAGE_SKILL_NAMES), (
+        f"expected {len(_THREE_STAGE_SKILL_NAMES)} 'What:' lines, "
+        f"got {rendered.count('What:')}"
+    )
+
+
+def test_stage_1_caller_uses_rich_catalogue_helper(monkeypatch):
+    """Patch _render_rich_skill_catalogue to a sentinel; assert
+    _call_llm_for_stage_1_discovery surfaces the sentinel in the
+    rendered prompt. This catches a regression where someone
+    re-inlines the bare-id joiner at the call site.
+
+    Why patch the three_stage_pipeline module (not optimizer): the
+    Task 3 wire-in uses a function-local `from ... import
+    _render_rich_skill_catalogue` which re-reads the module
+    namespace on every call. Patching ts_mod's attribute therefore
+    takes effect on the next invocation. Same pattern applies to
+    _link_prompt_to_trace, which is function-local-imported from
+    evaluation.
+    """
+    from genie_space_optimizer.optimization import optimizer as opt_mod
+    from genie_space_optimizer.optimization import three_stage_pipeline as ts_mod
+    from genie_space_optimizer.optimization import evaluation as eval_mod
+
+    SENTINEL = "RICH_CATALOGUE_SENTINEL_XYZ_8675309"
+
+    monkeypatch.setattr(
+        ts_mod, "_render_rich_skill_catalogue",
+        lambda *a, **kw: SENTINEL,
+    )
+
+    captured: dict[str, str] = {}
+
+    def _fake_call_llm_openai(w, messages, **kwargs):
+        captured["prompt"] = messages[-1]["content"]
+        return ('{"applicable_skills": [], "discovery_rationale": "stub"}', None)
+
+    # _call_llm_openai is module-level on optimizer (alias of
+    # llm_client.call_llm), so patch directly on opt_mod:
+    monkeypatch.setattr(opt_mod, "_call_llm_openai", _fake_call_llm_openai)
+    # _link_prompt_to_trace is function-local-imported from
+    # evaluation; patch it on its origin module:
+    monkeypatch.setattr(eval_mod, "_link_prompt_to_trace", lambda *a, **kw: None)
+
+    result = opt_mod._call_llm_for_stage_1_discovery(
+        ag_id="AG_T",
+        root_cause_summary="test",
+        clusters=[],
+        metadata_snapshot={"config": {"description": "Test space"}},
+        w=None,
+    )
+    assert isinstance(result, dict)
+    assert SENTINEL in captured.get("prompt", ""), (
+        "_call_llm_for_stage_1_discovery did not route through "
+        "_render_rich_skill_catalogue — check the wire-in at "
+        "optimizer.py:~10883"
+    )
