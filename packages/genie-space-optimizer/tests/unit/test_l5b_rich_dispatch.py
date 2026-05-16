@@ -52,3 +52,89 @@ def test_flag_accepts_truthy_strings(monkeypatch: Any) -> None:
     for v in ("0", "false", "no", "off", "", "garbage"):
         monkeypatch.setenv("GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", v)
         assert rich_synthesis_primary_for_sql_shape_enabled() is False, v
+
+
+def test_routes_when_flag_on_and_root_cause_sql_shape(monkeypatch: Any) -> None:
+    monkeypatch.setenv("GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "1")
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        should_route_l5b_to_rich_synthesizer,
+    )
+    cluster = {
+        "cluster_id": "C1",
+        "root_cause": "plural_top_n_collapse",
+        "asi_failure_type": "",
+    }
+    assert should_route_l5b_to_rich_synthesizer(cluster) is True
+
+
+def test_routes_when_flag_on_and_asi_failure_type_sql_shape(monkeypatch: Any) -> None:
+    monkeypatch.setenv("GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "1")
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        should_route_l5b_to_rich_synthesizer,
+    )
+    cluster = {
+        "cluster_id": "C1",
+        "root_cause": "",
+        "asi_failure_type": "wrong_aggregation",
+    }
+    assert should_route_l5b_to_rich_synthesizer(cluster) is True
+
+
+def test_does_not_route_when_flag_off(monkeypatch: Any) -> None:
+    monkeypatch.setenv("GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "0")
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        should_route_l5b_to_rich_synthesizer,
+    )
+    cluster = {
+        "cluster_id": "C1",
+        "root_cause": "plural_top_n_collapse",
+    }
+    assert should_route_l5b_to_rich_synthesizer(cluster) is False
+
+
+def test_does_not_route_when_failure_label_not_sql_shape(monkeypatch: Any) -> None:
+    monkeypatch.setenv("GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "1")
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        should_route_l5b_to_rich_synthesizer,
+    )
+    cluster = {
+        "cluster_id": "C1",
+        "root_cause": "ambiguous_question",
+        "asi_failure_type": "ambiguity",
+    }
+    assert should_route_l5b_to_rich_synthesizer(cluster) is False
+
+
+def test_does_not_route_when_both_labels_empty(monkeypatch: Any) -> None:
+    monkeypatch.setenv("GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "1")
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        should_route_l5b_to_rich_synthesizer,
+    )
+    cluster = {"cluster_id": "C1"}
+    assert should_route_l5b_to_rich_synthesizer(cluster) is False
+
+
+def test_routes_when_either_label_is_sql_shape(monkeypatch: Any) -> None:
+    """Either ``asi_failure_type`` or ``root_cause`` being in
+    ``_SQL_SHAPE_ROOT_CAUSES`` is sufficient. Plan A's
+    ``cluster_failure_keys`` returns both."""
+    monkeypatch.setenv("GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "1")
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        should_route_l5b_to_rich_synthesizer,
+    )
+    cluster = {
+        "cluster_id": "C1",
+        "root_cause": "plural_top_n_collapse",
+        "asi_failure_type": "wrong_aggregation",
+    }
+    assert should_route_l5b_to_rich_synthesizer(cluster) is True
+
+
+def test_returns_false_for_non_dict_input(monkeypatch: Any) -> None:
+    monkeypatch.setenv("GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "1")
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        should_route_l5b_to_rich_synthesizer,
+    )
+    assert should_route_l5b_to_rich_synthesizer(None) is False
+    assert should_route_l5b_to_rich_synthesizer("not a cluster") is False
+    assert should_route_l5b_to_rich_synthesizer([]) is False
