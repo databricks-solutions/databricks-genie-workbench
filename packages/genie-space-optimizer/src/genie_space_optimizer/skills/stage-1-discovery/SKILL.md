@@ -111,24 +111,10 @@ Empty target_objects + empty cluster signal → omit the pick.
 Empty applicable_skills array is a valid output (means "no skill
 fits this AG; route to legacy fallback").
 
-## Pickable skill_ids (canonical)
-- ``lever-1-table-column-description`` — add or refine table /
-  column descriptions when the failure stems from missing or
-  ambiguous metadata on a base table.
-- ``lever-2-mv-column-refinement`` — refine metric-view column
-  metadata (definitions, synonyms, important_filters).
-- ``lever-3-tvf-routing`` — fix TVF descriptions or route through
-  the right TVF when a function call is missing or wrong.
-- ``lever-4-join-discovery`` — propose missing or fixed join_specs
-  when a query needs a relationship that does not exist.
-- ``lever-5a-instructions`` — author NEW instruction prose covering
-  routing, business definitions, disambiguation, etc. Output is
-  prose only; SQL examples are owned by lever-5b.
-- ``lever-5b-example-sql`` — synthesize ORIGINAL example_sql
-  proposals matching a structural archetype. Subject to a strict
-  benchmark-leakage firewall.
-- ``lever-6-sql-expression`` — add a reusable SQL expression
-  (measure / filter / dimension) to the knowledge store.
+## Pickable skill_ids
+See the ``## Skill Catalogue`` block above. You may ONLY pick
+skill_ids that appear in that runtime list — additions to the
+catalogue arrive automatically via the renderer.
 </instructions>
 
 <output_schema>

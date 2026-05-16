@@ -90,13 +90,28 @@ def test_stage_1_discovery_prompt_exists_and_has_required_slots():
 
 
 def test_stage_1_discovery_prompt_lists_all_pickable_skills():
-    """The prompt body must enumerate every skill_id the dispatcher
-    accepts. If a new skill is added to _THREE_STAGE_SKILL_NAMES,
-    this test fails until the prompt is updated."""
+    """After Task 4, the unrendered template no longer lists skill_ids
+    in a static block — they come from the runtime catalogue renderer.
+    This test renders the template with the real catalogue and asserts
+    every pickable skill_id surfaces post-render. Catches both
+    catalogue gaps and template-slot regressions."""
     cfg = _reload_config_with_env({})
-    p = cfg.STAGE_1_DISCOVERY_PROMPT
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+    rendered = cfg.format_mlflow_template(
+        cfg.STAGE_1_DISCOVERY_PROMPT,
+        space_description="(test)",
+        ag_id="AG_T",
+        root_cause_summary="(test)",
+        cluster_briefs="(test)",
+        skill_catalogue=_render_rich_skill_catalogue(),
+        identifier_allowlist="(test)",
+    )
     for skill_id in cfg._THREE_STAGE_SKILL_NAMES:
-        assert skill_id in p, f"skill {skill_id} missing from discovery prompt"
+        assert skill_id in rendered, (
+            f"skill {skill_id} missing from RENDERED discovery prompt"
+        )
 
 
 def test_stage_1_discovery_prompt_includes_rca_contract_header():
