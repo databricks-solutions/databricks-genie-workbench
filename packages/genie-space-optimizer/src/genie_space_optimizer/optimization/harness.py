@@ -5003,6 +5003,20 @@ def _check_proposal_stage_forbidden_ag_leakage(
     return axis
 
 
+def _bump_iteration_failure_signature_count(
+    counter: dict[str, int], signature: str,
+) -> int:
+    """Increment ``counter[signature]`` by 1 and return the value
+    *before* the increment. Callers pass the returned value as
+    ``ProposalFailureContext.prior_identical_failure_count`` so the
+    policy sees how many times this exact signature has fired before
+    in the current AG. Used by ``_emit_proposal_failure_decided`` to
+    detect Trial-5-style stalemates and escalate."""
+    prior = counter.get(signature, 0)
+    counter[signature] = prior + 1
+    return prior
+
+
 def _handle_proposal_failure_next_action(
     *,
     decision,

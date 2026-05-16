@@ -105,3 +105,28 @@ def test_handler_returns_empty_records_for_unwired_actions():
         spark=None,
     )
     assert records == []
+
+
+def test_harness_tracks_identical_failure_signatures_per_ag():
+    """The harness must increment ``prior_identical_failure_count`` in
+    the per-AG signature counter so the second emit returns
+    ESCALATE_STALEMATE."""
+    from genie_space_optimizer.optimization.harness import (
+        _bump_iteration_failure_signature_count,
+    )
+    counter: dict[str, int] = {}
+    sig = "deadbeef12345678"
+
+    # First occurrence — prior count is 0.
+    prior_1 = _bump_iteration_failure_signature_count(counter, sig)
+    assert prior_1 == 0
+    assert counter[sig] == 1
+
+    # Second occurrence — prior count is 1.
+    prior_2 = _bump_iteration_failure_signature_count(counter, sig)
+    assert prior_2 == 1
+    assert counter[sig] == 2
+
+    # Different signature — independent counter.
+    other = _bump_iteration_failure_signature_count(counter, "00000000ffffffff")
+    assert other == 0

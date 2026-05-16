@@ -51,6 +51,7 @@ class ProposalFailureNextAction(str, Enum):
         "escalate_unsupported_repair_shape"
     )
     REQUEST_EVIDENCE_GATHERING = "request_evidence_gathering"
+    ESCALATE_STALEMATE = "escalate_stalemate"
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,11 @@ class ProposalFailureContext:
     ag_source_cluster_count: int
     rca_card_grounded: bool
     prior_failure_count: int
+    prior_identical_failure_count: int = 0
+    """C4 (2026-05-16) — how many times this AG's exact
+    iteration-failure signature has fired *before* this call. The
+    stalemate branch in ``decide_next_action`` escalates when this
+    is >= 1 so the harness terminates instead of looping."""
 
 
 @dataclass(frozen=True)
@@ -93,15 +99,18 @@ def decide_next_action(ctx: ProposalFailureContext) -> ProposalFailureDecision:
 
     1. Block-by-signature when the same context has failed ``prior_failure_count
        >= 2`` times.
-    2. Escalate when every lever in ``lever_set`` is in ``tried_lever_families``
+    2. Escalate stalemate when ``prior_identical_failure_count >= 1`` —
+       the iteration-failure signature has already fired in this AG, so
+       further iterations are guaranteed loops.
+    3. Escalate when every lever in ``lever_set`` is in ``tried_lever_families``
        AND the failure is ``no_causal_applyable_patch``.
-    3. Narrow when the AG covers ``ag_source_cluster_count >= 2`` AND the
+    4. Narrow when the AG covers ``ag_source_cluster_count >= 2`` AND the
        failure is an applier/gate rejection.
-    4. Mark evidence gap when the LLM declined (force-L6) and the RCA is
+    5. Mark evidence gap when the LLM declined (force-L6) and the RCA is
        grounded (i.e. evidence reached the prompt but synthesis still failed).
-    5. Request evidence when ``rca_card_grounded`` is False on
+    6. Request evidence when ``rca_card_grounded`` is False on
        ``proposal_generation_empty``.
-    6. Rotate lever family otherwise (the default path when an untried family
+    7. Rotate lever family otherwise (the default path when an untried family
        remains).
 
     Fallback (unknown failure mode): request evidence gathering. The loop
@@ -115,6 +124,16 @@ def decide_next_action(ctx: ProposalFailureContext) -> ProposalFailureDecision:
             rationale=(
                 f"prior_failure_count={ctx.prior_failure_count} for "
                 f"signature={ctx.cluster_signature}"
+            ),
+        )
+
+    if ctx.prior_identical_failure_count >= 1:
+        return ProposalFailureDecision(
+            next_action=ProposalFailureNextAction.ESCALATE_STALEMATE,
+            rationale=(
+                f"stalemate: prior_identical_failure_count="
+                f"{ctx.prior_identical_failure_count} for signature="
+                f"{ctx.cluster_signature}"
             ),
         )
 
