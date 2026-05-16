@@ -24,11 +24,17 @@ def test_no_dropped_patches_returns_no_attempt():
 
 def test_non_collateral_drop_returns_no_attempt():
     """Drops with a reason other than ``high_collateral_risk_flagged``
-    do not trigger replacement."""
+    do not trigger replacement.
+
+    Plan C1 (2026-05-16): patch_type uses ``add_sql_snippet_filter``
+    (a production name); reason mismatches must short-circuit BEFORE
+    the patch-type dispatch, so this test still passes regardless of
+    the type vocabulary.
+    """
     result = try_narrow_replacement(
         dropped_patches=[{
             "patch_id": "p1",
-            "patch_type": "sql_snippet",
+            "patch_type": "add_sql_snippet_filter",
             "drop_reason": "applyability_failed",
         }],
         outside_target_qids=("gs_003",),
@@ -42,17 +48,26 @@ def test_non_collateral_drop_returns_no_attempt():
 
 def test_collateral_drop_l6_triggers_narrow_l6():
     """Broad L6 dropped for collateral → call build_narrow_l6_replacement
-    with protected_dependents set to outside_target_qids."""
+    with protected_dependents set to outside_target_qids.
+
+    Plan C1 (2026-05-16): patch_type uses ``add_sql_snippet_filter``
+    (a production name) rather than the legacy placeholder
+    ``"sql_snippet"``. The placeholder names never matched production
+    patches; the flip pins the post-fix contract.
+    """
     calls = []
 
     def fake_l6(**kwargs):
         calls.append(("l6", kwargs))
-        return {"patch_id": "narrow_l6", "patch_type": "narrow_l6_sql"}
+        return {
+            "patch_id": "narrow_l6",
+            "patch_type": "add_sql_snippet_filter",
+        }
 
     result = try_narrow_replacement(
         dropped_patches=[{
             "patch_id": "p1",
-            "patch_type": "sql_snippet",
+            "patch_type": "add_sql_snippet_filter",
             "drop_reason": "high_collateral_risk_flagged",
         }],
         outside_target_qids=("gs_003", "gs_005"),
@@ -63,7 +78,7 @@ def test_collateral_drop_l6_triggers_narrow_l6():
     )
     assert result.attempted is True
     assert result.replacement_patch is not None
-    assert result.replacement_patch["patch_type"] == "narrow_l6_sql"
+    assert result.replacement_patch["patch_type"] == "add_sql_snippet_filter"
     assert len(calls) == 1
     assert calls[0][1]["protected_dependents"] == ("gs_003", "gs_005")
 
@@ -96,11 +111,16 @@ def test_collateral_drop_example_sql_triggers_narrow_l5():
 def test_synthesis_returns_none_yields_no_structural_alternative():
     """When the synthesis helper returns None, the result records
     BLAST_RADIUS_REJECTED so the caller can emit the typed
-    terminal marker."""
+    terminal marker.
+
+    Plan C1 (2026-05-16): patch_type uses ``add_sql_snippet_filter``
+    (a production name) rather than the legacy placeholder
+    ``"sql_snippet"``.
+    """
     result = try_narrow_replacement(
         dropped_patches=[{
             "patch_id": "p1",
-            "patch_type": "sql_snippet",
+            "patch_type": "add_sql_snippet_filter",
             "drop_reason": "high_collateral_risk_flagged",
         }],
         outside_target_qids=("gs_003",),
@@ -112,3 +132,43 @@ def test_synthesis_returns_none_yields_no_structural_alternative():
     assert result.attempted is True
     assert result.replacement_patch is None
     assert result.terminal_reason == "blast_radius_rejected"
+
+
+def test_legacy_placeholder_patch_types_do_not_dispatch_to_l6():
+    """Plan C1 (2026-05-16) — the legacy placeholder values
+    (``"sql_snippet"``, ``"l6_sql"``, ``"broad_l6_sql"``,
+    ``"general_sql_expression"``) MUST NOT route to the L6 synthesizer.
+
+    This pin guards against future regressions where someone re-adds
+    placeholder strings to ``_BROAD_L6_TYPES``. Production patches use
+    ``add_sql_snippet_*`` names; everything else falls through to the
+    no-attempt branch.
+    """
+    for ptype in (
+        "sql_snippet", "l6_sql", "broad_l6_sql", "general_sql_expression",
+    ):
+        l6_calls = []
+        result = try_narrow_replacement(
+            dropped_patches=[{
+                "patch_id": "p",
+                "patch_type": ptype,
+                "drop_reason": "high_collateral_risk_flagged",
+            }],
+            outside_target_qids=("gs_001",),
+            cluster={"cluster_id": "c"},
+            rca_card={"root_cause": "r"},
+            synthesis_callable_l6=lambda **k: (
+                l6_calls.append(k) or {"patch_id": "x"}
+            ),
+            synthesis_callable_l5=lambda **_: None,
+        )
+        # The patch_type is not in _BROAD_L6_TYPES nor _EXAMPLE_SQL_TYPES,
+        # so the for-loop body hits the ``else: continue`` branch and
+        # the function returns ``attempted=False``.
+        assert result.attempted is False, (
+            f"placeholder patch_type={ptype} must NOT dispatch to L6"
+        )
+        assert l6_calls == [], (
+            f"L6 synthesizer must NOT be called for placeholder "
+            f"patch_type={ptype}"
+        )
