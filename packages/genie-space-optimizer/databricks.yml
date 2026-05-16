@@ -133,26 +133,27 @@ resources:
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0
-        # ── Plan 5: UI-triggered trial activation ──────────────────────
-        # As of Plan 5 (2026-05-14), Plans 1, 2, and 4 are default-on
-        # in code. A UI-triggered run picks up the new behavior with no
-        # operator action required. To roll back any plan in an
-        # emergency, edit ``run_lever_loop.py`` to set the matching env
-        # var BEFORE the harness import, then redeploy via
-        # ``./scripts/deploy.sh``:
+        # ── Production posture (post trial-4, 2026-05-16) ──────────────
+        # Plans 1, 2, 3, 4 are all default-on in
+        # ``src/genie_space_optimizer/common/config.py``. A UI-triggered
+        # run picks up the new behavior with no operator action.
         #
-        #   import os as _os
-        #   _os.environ.setdefault("GSO_RCA_CONTRACT_NARROW_V1", "0")  # Plan 1
-        #   _os.environ.setdefault("GSO_LEVER5_SPLIT_V1", "0")        # Plan 2
-        #   _os.environ.setdefault("GSO_RAW_EVIDENCE_V1", "0")        # Plan 4
+        # Emergency rollback: add a base_parameters entry to the
+        # lever_loop task below with the matching env var set to "0",
+        # then redeploy via ``./scripts/deploy.sh``. Example:
         #
-        # Plan 3 (three-stage strategist) stays default-off until the
-        # second trial run. To activate Plan 3 for trial 2, set:
+        #   base_parameters:
+        #     GSO_THREE_STAGE_V1: "0"      # roll back Plan 3 only
+        #     GSO_LEVER5_SPLIT_V1: "0"     # roll back Plan 2 only
+        #     GSO_RAW_EVIDENCE_V1: "0"     # roll back Plan 4 only
+        #     GSO_RCA_CONTRACT_NARROW_V1: "0"  # roll back Plan 1 only
         #
-        #   _os.environ.setdefault("GSO_THREE_STAGE_V1", "1")         # Plan 3
-        #
-        # See docs/prompt_improvements/2026-05-14-prompt-improvements-plan-5-...
-        # for the full trial workflow.
+        # One-off fixture-regen trial (rarely needed — the byte-stable
+        # fixtures landed in trial-4): same pattern but set the matching
+        # GSO_*_SHADOW_V1 flag to "1". WARNING: each shadow flag
+        # doubles LLM cost at its site; revert immediately after the
+        # trial. See docs/prompt_improvements/README.md and
+        # docs/prompt_improvements/2026-05-16-trial-4-results.md.
         - task_key: lever_loop
           depends_on:
             - task_key: enrichment
