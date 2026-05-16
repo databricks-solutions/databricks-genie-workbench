@@ -5048,6 +5048,14 @@ def _handle_proposal_failure_next_action(
     if decision.next_action != ProposalFailureNextAction.REQUEST_EVIDENCE_GATHERING:
         return []
 
+    # When the call-site supplies a noop context (cache=None /
+    # policy=None) the regen helper cannot be exercised safely — its
+    # first action is ``cache.last_outcome_for(signature, reason)``
+    # which raises AttributeError on None. Short-circuit so noop
+    # contexts in tests and legacy paths return [] instead of crashing.
+    if cache is None or policy is None:
+        return []
+
     return regenerate_rca_if_policy_permits(
         cluster=cluster,
         findings=findings,

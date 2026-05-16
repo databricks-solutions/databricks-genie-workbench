@@ -107,6 +107,56 @@ def test_handler_returns_empty_records_for_unwired_actions():
     assert records == []
 
 
+def test_handler_returns_empty_when_cache_is_none():
+    """When the call-site cannot supply a live cache (noop_context),
+    the handler must short-circuit instead of forwarding None into
+    ``regenerate_rca_if_policy_permits`` (which would crash on the
+    first ``cache.last_outcome_for(...)`` access)."""
+    from genie_space_optimizer.optimization.harness import (
+        _handle_proposal_failure_next_action,
+    )
+    decision = ProposalFailureDecision(
+        next_action=ProposalFailureNextAction.REQUEST_EVIDENCE_GATHERING,
+        rationale="rca_card_grounded=False",
+    )
+    records = _handle_proposal_failure_next_action(
+        decision=decision,
+        cluster={"cluster_id": "C1"},
+        findings=[],
+        evidence_snapshot={},
+        metadata_snapshot={},
+        run_id="r",
+        iteration=1,
+        cache=None,
+        policy=None,
+        spark=None,
+    )
+    assert records == []
+
+
+def test_handler_returns_empty_when_policy_is_none():
+    from genie_space_optimizer.optimization.harness import (
+        _handle_proposal_failure_next_action,
+    )
+    decision = ProposalFailureDecision(
+        next_action=ProposalFailureNextAction.REQUEST_EVIDENCE_GATHERING,
+        rationale="rca_card_grounded=False",
+    )
+    records = _handle_proposal_failure_next_action(
+        decision=decision,
+        cluster={"cluster_id": "C1"},
+        findings=[],
+        evidence_snapshot={},
+        metadata_snapshot={},
+        run_id="r",
+        iteration=1,
+        cache=MagicMock(),
+        policy=None,
+        spark=None,
+    )
+    assert records == []
+
+
 def test_harness_tracks_identical_failure_signatures_per_ag():
     """The harness must increment ``prior_identical_failure_count`` in
     the per-AG signature counter so the second emit returns
