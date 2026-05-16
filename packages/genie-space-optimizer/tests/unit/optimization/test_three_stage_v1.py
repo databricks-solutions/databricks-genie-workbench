@@ -1985,3 +1985,41 @@ def test_call_llm_for_stage_1_discovery_full_allowlist_when_env_flag_on(monkeypa
     assert "fact_unrelated" in prompt, (
         "GSO_STAGE_1_ALLOWLIST_FULL=1 must include unrelated tables"
     )
+
+
+# ── Section: Stage-1 max_tokens (Task 6) ──────────────────────────────
+
+
+def test_stage_1_discovery_passes_max_tokens_to_llm(monkeypatch):
+    """The Stage-1 LLM call must pass an explicit max_tokens=2500
+    (sized from Trial-5 stretch-case analysis: max observed compact
+    response ~850 tokens, pretty-printed ~1170, 2x headroom = 2500).
+    Databricks API best practice requires explicit max_tokens for
+    OTPM reservation predictability."""
+    from genie_space_optimizer.common.config import (
+        STAGE_1_DISCOVERY_MAX_TOKENS,
+    )
+    assert STAGE_1_DISCOVERY_MAX_TOKENS == 2500, (
+        "STAGE_1_DISCOVERY_MAX_TOKENS must be 2500 per evidence-based "
+        "sizing analysis"
+    )
+
+    from genie_space_optimizer.optimization import optimizer
+    captured_kwargs: dict = {}
+
+    def _fake_llm_openai(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="missing join",
+        clusters=[_sample_cluster()],
+        metadata_snapshot=_sample_metadata_snapshot(),
+        w=None,
+    )
+    assert captured_kwargs.get("max_tokens") == 2500, (
+        f"Stage-1 LLM call must pass max_tokens=2500; got "
+        f"max_tokens={captured_kwargs.get('max_tokens')!r}"
+    )

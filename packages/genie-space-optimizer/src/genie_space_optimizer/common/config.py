@@ -694,6 +694,16 @@ LLM_ENDPOINT = "databricks-claude-opus-4-6"
 LLM_TEMPERATURE = 0
 LLM_MAX_RETRIES = 3
 
+# Stage-1 discovery LLM output cap. Evidence-based sizing:
+# - Stretch worst case (5 picks × max-decomposition): ~1170 tokens
+#   pretty-printed (~850 compact).
+# - 2x headroom over the stretch case: 2340 -> round to 2500.
+# - At 2500 max_tokens, ~8 concurrent Stage-1 calls fit within the
+#   Databricks Claude Opus 4.6 20K OTPM endpoint reservation budget.
+# - Tune from evidence: if MLflow traces show actual P95 < 800,
+#   lower to 1500; if any trace has finish_reason=="length", raise.
+STAGE_1_DISCOVERY_MAX_TOKENS = 2500
+
 # ── 5. Benchmark Generation ────────────────────────────────────────────
 
 REQUIRE_GROUND_TRUTH_SQL: bool = True

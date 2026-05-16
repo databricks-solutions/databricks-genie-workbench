@@ -10926,6 +10926,7 @@ def _call_llm_for_stage_1_discovery(
     Capture-sink hit recorded when split or shadow flag is on.
     """
     from genie_space_optimizer.common.config import (
+        STAGE_1_DISCOVERY_MAX_TOKENS,
         STAGE_1_DISCOVERY_PROMPT,
         _THREE_STAGE_SKILL_NAMES,
     )
@@ -11011,6 +11012,7 @@ def _call_llm_for_stage_1_discovery(
                 {"role": "user", "content": prompt},
             ],
             max_retries=1,
+            max_tokens=STAGE_1_DISCOVERY_MAX_TOKENS,
             temperature=LLM_TEMPERATURE,
         )
     except Exception:
