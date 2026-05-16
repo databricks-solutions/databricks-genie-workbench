@@ -136,3 +136,133 @@ def _normalize_rich_proposal_to_l5b_shape(
         "parameters": parameters,
         "usage_guidance": usage_guidance,
     }
+
+
+def _dispatch_rich_synthesis_for_l5b(
+    *,
+    cluster: dict,
+    metadata_snapshot: dict,
+    w: Any,
+    benchmarks: list[dict] | None,
+    _synthesize: Any = None,
+) -> list[dict]:
+    """Plan B — rich-path executor for Stage-2 L5b.
+
+    Wraps ``run_cluster_driven_synthesis_for_single_cluster`` with the
+    output contract that ``_dispatch_lever_5b_for_cluster`` enforces:
+
+      - On success: returns ``[normalized_proposal_dict]`` (one entry).
+      - On decline (proposal=None OR normalize_returns_none OR
+        synthesizer raised): returns ``[]`` AND appends a record to
+        ``_L5B_RICH_PATH_DECLINES``.
+
+    The decline ledger captures everything the harness needs to emit
+    a typed ``NO_STRUCTURAL_CANDIDATE`` decision record.
+
+    ``_synthesize`` is the rich synthesizer; defaults to the production
+    callable resolved lazily to avoid circular imports. Tests pass a
+    stub.
+
+    ``benchmarks`` may be ``None`` (Stage-2 L5b's bundle does not carry
+    raw benchmarks today). The rich synthesizer accepts ``None`` and
+    degrades the leakage gate to a permissive corpus.
+    """
+    cluster_id = str((cluster or {}).get("cluster_id") or "?")
+
+    if _synthesize is None:
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            run_cluster_driven_synthesis_for_single_cluster as _default_synth,
+        )
+        _synthesize = _default_synth
+
+    try:
+        result = _synthesize(
+            cluster,
+            metadata_snapshot,
+            benchmarks=benchmarks,
+            w=w,
+        )
+    except Exception:
+        logger.exception(
+            "L5b rich-path synthesis raised for cluster=%s; recording decline",
+            cluster_id,
+        )
+        _L5B_RICH_PATH_DECLINES.append(
+            _build_decline_record(
+                cluster=cluster,
+                attempted_archetypes=(),
+                skipped_reason="exception",
+            )
+        )
+        return []
+
+    attempted = tuple(result.attempted_archetypes or ())
+
+    if result.proposal is None:
+        _L5B_RICH_PATH_DECLINES.append(
+            _build_decline_record(
+                cluster=cluster,
+                attempted_archetypes=attempted,
+                skipped_reason=str(result.skipped_reason or "no_proposal"),
+            )
+        )
+        logger.info(
+            "L5b rich-path declined cluster=%s archetypes=%s reason=%s",
+            cluster_id, attempted, result.skipped_reason,
+        )
+        return []
+
+    normalized = _normalize_rich_proposal_to_l5b_shape(result.proposal)
+    if normalized is None:
+        _L5B_RICH_PATH_DECLINES.append(
+            _build_decline_record(
+                cluster=cluster,
+                attempted_archetypes=attempted,
+                skipped_reason="normalize_returned_none",
+            )
+        )
+        logger.warning(
+            "L5b rich-path proposal missing required fields for cluster=%s "
+            "(example_question/example_sql); recording decline",
+            cluster_id,
+        )
+        return []
+
+    return [normalized]
+
+
+def _build_decline_record(
+    *,
+    cluster: dict,
+    attempted_archetypes: tuple[str, ...],
+    skipped_reason: str,
+) -> dict[str, Any]:
+    """Construct one entry for ``_L5B_RICH_PATH_DECLINES``."""
+    qids = cluster.get("question_ids") or []
+    if not isinstance(qids, (list, tuple)):
+        qids = []
+    return {
+        "cluster_id": str(cluster.get("cluster_id") or ""),
+        "root_cause": str(cluster.get("root_cause") or ""),
+        "asi_failure_type": str(cluster.get("asi_failure_type") or ""),
+        "attempted_archetypes": tuple(str(a) for a in attempted_archetypes),
+        "skipped_reason": str(skipped_reason),
+        "question_ids": tuple(str(q) for q in qids if str(q).strip()),
+    }
+
+
+def drain_l5b_rich_path_declines() -> list[dict[str, Any]]:
+    """Pop and return the current decline ledger.
+
+    The harness calls this once per iteration AFTER Stage-2 completes,
+    converts each entry into a typed ``NO_STRUCTURAL_CANDIDATE``
+    decision record, emits the corresponding
+    ``GSO_NO_STRUCTURAL_CANDIDATE_V1`` stdout marker, and continues.
+
+    Drain is destructive — once returned, the entries are removed from
+    module state. Idempotent for the harness's purposes (calling twice
+    just returns an empty list the second time).
+    """
+    drained = list(_L5B_RICH_PATH_DECLINES)
+    _L5B_RICH_PATH_DECLINES.clear()
+    return drained

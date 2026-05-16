@@ -204,3 +204,187 @@ def test_normalize_returns_none_for_missing_required_fields() -> None:
     assert _normalize_rich_proposal_to_l5b_shape({"example_question": "Q"}) is None
     assert _normalize_rich_proposal_to_l5b_shape({}) is None
     assert _normalize_rich_proposal_to_l5b_shape(None) is None
+
+
+def test_dispatch_rich_returns_normalized_proposal_on_success() -> None:
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _dispatch_rich_synthesis_for_l5b,
+        drain_l5b_rich_path_declines,
+    )
+    drain_l5b_rich_path_declines()  # reset ledger
+
+    cluster = {
+        "cluster_id": "C1",
+        "root_cause": "plural_top_n_collapse",
+        "question_ids": ["q1"],
+    }
+    call_args = {}
+
+    def _synth_stub(cluster_arg, metadata_arg, **kwargs):
+        call_args["cluster"] = cluster_arg
+        call_args["metadata"] = metadata_arg
+        call_args["kwargs"] = kwargs
+        return ClusterSynthesisResult(
+            proposal={
+                "example_question": "Show top route",
+                "example_sql": "SELECT route FROM flights LIMIT 1",
+                "parameters": [],
+                "usage_guidance": "Use for ranking.",
+                "_archetype_name": "single_row_top_n",
+            },
+            attempted_archetypes=("single_row_top_n",),
+            skipped_reason=None,
+        )
+
+    out = _dispatch_rich_synthesis_for_l5b(
+        cluster=cluster,
+        metadata_snapshot={"_space_id": "test"},
+        w=None,
+        benchmarks=[],
+        _synthesize=_synth_stub,
+    )
+    assert out == [{
+        "example_question": "Show top route",
+        "example_sql": "SELECT route FROM flights LIMIT 1",
+        "parameters": [],
+        "usage_guidance": "Use for ranking.",
+    }]
+    assert call_args["cluster"] is cluster
+    assert call_args["metadata"] == {"_space_id": "test"}
+    assert call_args["kwargs"]["benchmarks"] == []
+    assert drain_l5b_rich_path_declines() == []
+
+
+def test_dispatch_rich_appends_to_ledger_on_decline() -> None:
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _dispatch_rich_synthesis_for_l5b,
+        drain_l5b_rich_path_declines,
+    )
+    drain_l5b_rich_path_declines()
+
+    cluster = {
+        "cluster_id": "C1",
+        "root_cause": "plural_top_n_collapse",
+        "asi_failure_type": "wrong_aggregation",
+        "question_ids": ["q1", "q2"],
+    }
+
+    def _synth_decline(cluster_arg, metadata_arg, **kwargs):
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=("single_row_top_n", "ordered_list_by_metric"),
+            skipped_reason="no_viable_archetype",
+        )
+
+    out = _dispatch_rich_synthesis_for_l5b(
+        cluster=cluster,
+        metadata_snapshot={"_space_id": "test"},
+        w=None,
+        benchmarks=[],
+        _synthesize=_synth_decline,
+    )
+    assert out == []
+    declines = drain_l5b_rich_path_declines()
+    assert len(declines) == 1
+    rec = declines[0]
+    assert rec["cluster_id"] == "C1"
+    assert rec["root_cause"] == "plural_top_n_collapse"
+    assert rec["asi_failure_type"] == "wrong_aggregation"
+    assert rec["attempted_archetypes"] == (
+        "single_row_top_n", "ordered_list_by_metric",
+    )
+    assert rec["skipped_reason"] == "no_viable_archetype"
+    assert rec["question_ids"] == ("q1", "q2")
+    # Drain is destructive — second call returns empty.
+    assert drain_l5b_rich_path_declines() == []
+
+
+def test_dispatch_rich_appends_to_ledger_when_normalize_returns_none() -> None:
+    """If the rich synthesizer returns a proposal that lacks
+    example_question/example_sql, the normalizer returns None and the
+    dispatcher treats this as a decline (ledger entry with a synthetic
+    skipped_reason)."""
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _dispatch_rich_synthesis_for_l5b,
+        drain_l5b_rich_path_declines,
+    )
+    drain_l5b_rich_path_declines()
+
+    cluster = {
+        "cluster_id": "C1",
+        "root_cause": "wrong_aggregation",
+        "question_ids": ["q1"],
+    }
+
+    def _synth_malformed(cluster_arg, metadata_arg, **kwargs):
+        return ClusterSynthesisResult(
+            proposal={"example_sql": "SELECT 1"},  # missing example_question
+            attempted_archetypes=("single_row_top_n",),
+            skipped_reason=None,
+        )
+
+    out = _dispatch_rich_synthesis_for_l5b(
+        cluster=cluster,
+        metadata_snapshot={},
+        w=None,
+        benchmarks=None,
+        _synthesize=_synth_malformed,
+    )
+    assert out == []
+    declines = drain_l5b_rich_path_declines()
+    assert len(declines) == 1
+    rec = declines[0]
+    assert rec["cluster_id"] == "C1"
+    assert rec["skipped_reason"] == "normalize_returned_none"
+
+
+def test_dispatch_rich_handles_synthesizer_exception() -> None:
+    """When the rich synthesizer raises, the dispatcher logs + returns
+    [] + records a decline with skipped_reason='exception'."""
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _dispatch_rich_synthesis_for_l5b,
+        drain_l5b_rich_path_declines,
+    )
+    drain_l5b_rich_path_declines()
+
+    cluster = {
+        "cluster_id": "C1",
+        "root_cause": "wrong_aggregation",
+    }
+
+    def _synth_raises(cluster_arg, metadata_arg, **kwargs):
+        raise RuntimeError("simulated synthesizer failure")
+
+    out = _dispatch_rich_synthesis_for_l5b(
+        cluster=cluster,
+        metadata_snapshot={},
+        w=None,
+        benchmarks=None,
+        _synthesize=_synth_raises,
+    )
+    assert out == []
+    declines = drain_l5b_rich_path_declines()
+    assert len(declines) == 1
+    rec = declines[0]
+    assert rec["cluster_id"] == "C1"
+    assert rec["skipped_reason"] == "exception"
+    # No attempted archetypes when the synthesizer raised before
+    # selecting one.
+    assert rec["attempted_archetypes"] == ()
+
+
+def test_drain_returns_empty_when_no_declines() -> None:
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        drain_l5b_rich_path_declines,
+    )
+    drain_l5b_rich_path_declines()  # ensure starting empty
+    assert drain_l5b_rich_path_declines() == []
