@@ -270,3 +270,58 @@ def test_strategist_detail_output_allows_extra_nested_fields():
     """
     parsed = validate_and_parse(raw, StrategistDetailOutput)
     assert parsed.action_groups[0].id == "AG1"
+
+
+# ── Lever-4 + Lever-5 family (Task 19) ────────────────────────────────
+
+
+def test_lever_4_join_discovery_output_parses_canonical_response():
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever4JoinDiscoveryOutput,
+    )
+    raw = """
+    {
+      "join_specs": [{
+        "left": {"identifier": "catalog.schema.fact_sales", "alias": "fs"},
+        "right": {"identifier": "catalog.schema.dim_store", "alias": "ds"},
+        "sql": ["fs.store_id = ds.store_id", "--rt=inner--"],
+        "instruction": "join on store_id"
+      }],
+      "rationale": "missing join"
+    }
+    """
+    parsed = validate_and_parse(raw, Lever4JoinDiscoveryOutput)
+    assert len(parsed.join_specs) == 1
+    assert parsed.join_specs[0].left.identifier == "catalog.schema.fact_sales"
+    assert parsed.join_specs[0].sql[0] == "fs.store_id = ds.store_id"
+
+
+def test_lever_4_join_discovery_output_allows_empty_join_specs():
+    """When no valid joins are found, lever-4 returns empty join_specs."""
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever4JoinDiscoveryOutput,
+    )
+    raw = '{"join_specs": [], "rationale": "no valid pairs"}'
+    parsed = validate_and_parse(raw, Lever4JoinDiscoveryOutput)
+    assert parsed.join_specs == []
+
+
+def test_lever_5a_instruction_output_parses_prose_only():
+    from genie_space_optimizer.optimization.prompt_io import Lever5aInstructionOutput
+    raw = '{"instruction_text": "PURPOSE:\\nSales analytics.", "rationale": "added purpose section"}'
+    parsed = validate_and_parse(raw, Lever5aInstructionOutput)
+    assert parsed.instruction_text.startswith("PURPOSE:")
+
+
+def test_lever_5_instruction_output_discriminates_three_types():
+    """Lever-5 holistic emits one of three shapes; the contract pins
+    instruction_type to the closed enum."""
+    from genie_space_optimizer.optimization.prompt_io import Lever5InstructionOutput
+    for kind in ("example_sql", "text_instruction", "sql_expression"):
+        raw = f'{{"instruction_type": "{kind}", "rationale": "x"}}'
+        parsed = validate_and_parse(raw, Lever5InstructionOutput)
+        assert parsed.instruction_type == kind
+    # Unknown kind rejected:
+    bad = '{"instruction_type": "join_spec", "rationale": "x"}'
+    with pytest.raises(ValueError):
+        validate_and_parse(bad, Lever5InstructionOutput)

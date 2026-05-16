@@ -310,3 +310,48 @@ class StrategistDetailOutput(LLMOutputContract):
     action_groups: list[_StrategistActionGroupBase] = Field(default_factory=list)
     global_instruction_rewrite: dict[str, str] = Field(default_factory=dict)
     rationale: str = Field(default="")
+
+
+# ── Lever-4 join discovery (Task 19) ──────────────────────────────────
+
+
+class Lever4JoinEndpoint(LLMOutputContract):
+    identifier: str
+    alias: str = Field(default="")
+
+
+class Lever4JoinSpec(LLMOutputContract):
+    left: Lever4JoinEndpoint
+    right: Lever4JoinEndpoint
+    sql: list[str] = Field(default_factory=list)
+    instruction: str = Field(default="")
+
+
+class Lever4JoinDiscoveryOutput(LLMOutputContract):
+    join_specs: list[Lever4JoinSpec] = Field(default_factory=list)
+    rationale: str = Field(default="")
+
+
+# ── Lever-5a instructions (Task 19) ───────────────────────────────────
+
+
+class Lever5aInstructionOutput(LLMOutputContract):
+    """LEVER_5A_INSTRUCTION_PROMPT output: prose-only instruction
+    document. No example_sqls allowed."""
+
+    instruction_text: str = Field(default="")
+    rationale: str = Field(default="")
+
+
+# ── Lever-5 holistic / instruction (Task 19) ──────────────────────────
+
+
+class Lever5InstructionOutput(LLMOutputContract):
+    """LEVER_5_INSTRUCTION_PROMPT output — instruction_type discriminates
+    three shapes: example_sql, text_instruction, sql_expression.
+    Permissive base allows the variant-specific fields."""
+
+    model_config = {"extra": "allow", "str_strip_whitespace": True}
+
+    instruction_type: Literal["example_sql", "text_instruction", "sql_expression"]
+    rationale: str = Field(default="")
