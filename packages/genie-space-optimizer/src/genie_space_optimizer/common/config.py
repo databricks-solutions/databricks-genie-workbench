@@ -1614,53 +1614,43 @@ _NON_CAUSAL_PROMPT_NAMES: frozenset[str] = frozenset({
 def _rca_contract_for(prompt_name: str) -> str:
     """Return the contract header for a prompt by skill_id.
 
-    Non-causal prompts (per ``_NON_CAUSAL_PROMPT_NAMES``) get an empty
-    string when narrowing is on; everything else gets the full header.
+    Non-causal prompts (per ``_NON_CAUSAL_PROMPT_NAMES``) always get
+    the empty string; everything else gets the full header.
 
-    **Plan 5: default-on.** Setting ``GSO_RCA_CONTRACT_NARROW_V1`` to a
-    falsy value (``0``, ``false``, ``no``, ``off``) reverts to the
-    full-header posture for emergency rollback.
+    History: this used to be gated on ``GSO_RCA_CONTRACT_NARROW_V1``
+    so the contract-narrowing behavior could be rolled back in an
+    emergency. After trial-5 produced byte-stable narrowing fixtures
+    under Plan-3 default-on (committed at
+    ``tests/fixtures/narrowing_v1/``), the flag was retired by the
+    2026-05-16 dead-flag cleanup. Re-introduction of the flag is
+    guarded by ``tests/unit/test_dead_flags_removed.py``.
 
     Unknown names are treated as causal — opting out is an explicit
     registry edit, not an accident.
     """
-    # Note on evaluation timing: the prompts that call this helper are
-    # assembled at module import below, so each process resolves the
-    # branch once at import. Tests that need a different value must
-    # ``importlib.reload(cfg)`` under a patched env (see
-    # ``test_rca_contract_narrow_v1.py::_reload_config_with_env``).
-    #
-    # We inline the env check (rather than call the public
-    # ``rca_contract_narrowed_enabled``) because the canonical flag
-    # helper is defined ~3700 lines below this point; at module-import
-    # time, prompt constants below call this function during their
-    # string assembly, and a forward reference would raise NameError.
     if prompt_name in _NON_CAUSAL_PROMPT_NAMES:
-        raw = os.environ.get("GSO_RCA_CONTRACT_NARROW_V1", "").strip().lower()
-        # Plan 5 default-on: narrow unless explicitly rolled back.
-        if raw not in ("0", "false", "no", "off"):
-            _record_narrowing_hit(prompt_name)
-            return ""
+        _record_narrowing_hit(prompt_name)
+        return ""
     return _RCA_CONTRACT_HEADER
 
 
-# ── Plan 1 (Phase 1): one-shot trial-run capture for fixture pinning ──
-# Lever-loop runs are expensive (multi-hour, $$). The capture sink turns
-# the single trial run with GSO_RCA_CONTRACT_NARROW_V1=1 into the
-# definitive source of truth for two follow-up actions:
-#   1. Pin byte-stability fixtures (via scripts/export_narrowing_fixtures.py).
-#   2. Confidently flip GSO_RCA_CONTRACT_NARROW_V1 default-on.
+# ── Plan 1 (Phase 1): per-run capture sink for narrowing-fixture regen ──
+# Records one NDJSON line per non-causal-site render so the byte-stable
+# fixture set (``tests/fixtures/narrowing_v1/``) can be regenerated from
+# any production run via ``scripts/export_narrowing_fixtures.py``.
 #
-# The capture is byte-cheap: one NDJSON line per non-causal-site render
-# with no prompt content (prompt bytes live in MLflow, fetched at
-# fixture-export time). The optional coverage gate (registered via
-# atexit) fails loud if any of the 3 non-causal sites recorded zero
-# hits — preventing silent partial coverage from contaminating the
-# fixture set.
+# The capture is byte-cheap: one NDJSON line per render with no prompt
+# content (prompt bytes live in MLflow, fetched at fixture-export time).
+# The optional coverage gate (registered via atexit) fails loud if any
+# of the 3 non-causal sites recorded zero hits — preventing silent
+# partial coverage from contaminating the fixture set.
 #
-# All three behaviors (counters, NDJSON sink, coverage gate) are
-# default-off and gated on env vars so this is invisible in CI and
-# existing dev runs.
+# The historical rollout flag ``GSO_RCA_CONTRACT_NARROW_V1`` that
+# previously gated the narrowing behavior was retired by the 2026-05-16
+# dead-flag cleanup (Plan 1 is unconditionally on). The NDJSON sink and
+# coverage gate remain default-off, gated on the separate
+# ``GSO_NARROWING_CAPTURE_PATH`` / ``GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE``
+# env vars, so this is invisible in CI and existing dev runs.
 import atexit as _atexit
 import json as _json
 import threading as _threading
@@ -1704,8 +1694,7 @@ def _plan5_print(line: str) -> None:
 
 
 class _NarrowingCaptureSink:
-    """Per-process capture sink for non-causal prompt renders under
-    GSO_RCA_CONTRACT_NARROW_V1=1.
+    """Per-process capture sink for non-causal prompt renders.
 
     Plan 5 (Option B): records are accumulated in an in-memory buffer
     (``self._records``) regardless of any env var. The harness post-loop
@@ -5339,24 +5328,6 @@ def target_delta_strict_enabled() -> bool:
     Disable with ``GSO_TARGET_DELTA_STRICT=0``.
     """
     return _flag_default_on("GSO_TARGET_DELTA_STRICT")
-
-
-def rca_contract_narrowed_enabled() -> bool:
-    """Plan 1 — when on, omit ``_RCA_CONTRACT_HEADER`` from prompts whose
-    output is not subject to RCA invariants (preflight enrichment, schema-
-    grounded join discovery, snippet display-name enrichment).
-
-    **Default ON as of Plan 5** (UI-triggered trial activation). Flip to
-    OFF for emergency rollback by setting ``GSO_RCA_CONTRACT_NARROW_V1=0``
-    in ``packages/genie-space-optimizer/databricks.yml`` under the
-    lever_loop task's ``base_parameters`` (or by setting the env var on
-    the job environment) and redeploying. The flag helper still honors
-    a falsy explicit override.
-
-    See ``packages/genie-space-optimizer/docs/prompt_improvements/skill-catalogue.md``
-    for the canonical causal/non-causal classification.
-    """
-    return _flag_default_on("GSO_RCA_CONTRACT_NARROW_V1")
 
 
 def narrowing_capture_require_coverage_enabled() -> bool:

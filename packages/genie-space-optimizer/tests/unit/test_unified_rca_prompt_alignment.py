@@ -7,14 +7,13 @@ from __future__ import annotations
 #
 # Plan 1 (contract narrowing) classified three of these as NON-CAUSAL —
 # the ``_rca_contract_for(...)`` helper renders the empty string for
-# them when ``rca_contract_narrowed_enabled()`` is on. Plan 5 made the
-# narrowing flag default-on, so those three prompts no longer embed the
-# tag in their default rendering.
+# them. Plan 1 is now unconditionally on (the historical
+# ``GSO_RCA_CONTRACT_NARROW_V1`` rollback flag was retired by the
+# 2026-05-16 dead-flag cleanup), so those three prompts never embed
+# the contract tag in their resolved form.
 #
 # They live in ``NON_CAUSAL_PROMPT_NAMES_OMITTED_BY_NARROWING`` below
-# and are excluded from the always-embed assertion. They MUST still
-# embed the tag under the emergency-rollback posture — see
-# ``test_rca_contract_narrow_v1.py::test_three_non_causal_sites_keep_contract_under_emergency_rollback``.
+# and are excluded from the always-embed assertion.
 FULL_RCA_PROMPT_NAMES = (
     "ADAPTIVE_STRATEGIST_PROMPT",
     "STRATEGIST_PROMPT",
