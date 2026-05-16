@@ -19670,6 +19670,7 @@ def _run_lever_loop(
                         "cluster_id": str(c.get("cluster_id") or ""),
                         "root_cause": str(c.get("root_cause") or ""),
                         "question_ids": [str(q) for q in (c.get("question_ids") or []) if q],
+                        "asi_failure_type": str(c.get("asi_failure_type") or ""),
                     }
                     for c in (clusters or [])
                 ]
@@ -19678,6 +19679,7 @@ def _run_lever_loop(
                         "cluster_id": str(c.get("cluster_id") or ""),
                         "root_cause": str(c.get("root_cause") or ""),
                         "question_ids": [str(q) for q in (c.get("question_ids") or []) if q],
+                        "asi_failure_type": str(c.get("asi_failure_type") or ""),
                     }
                     for c in (soft_signal_clusters or [])
                 ]

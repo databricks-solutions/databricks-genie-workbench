@@ -48,6 +48,11 @@ _ALLOWED_CLUSTER_KEYS = (
     "cluster_id",
     "root_cause",
     "question_ids",
+    # L5-dispatch replay (2026-05-16) — preserve the asi_failure_type
+    # label that the structural gate stores into
+    # _LEVER5_GATE_DROPS[*].root_causes. Without this key, the replay
+    # cannot reproduce the label-divergence dispatch path.
+    "asi_failure_type",
 )
 _ALLOWED_AG_KEYS = (
     "id",
