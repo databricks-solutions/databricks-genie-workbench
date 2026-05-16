@@ -22834,6 +22834,16 @@ def _run_lever_loop(
                             lever_keys=tuple(lever_keys),
                             reflection_buffer=reflection_buffer,
                             current_iter_inputs=_current_iter_inputs,
+                            # Plan A Part 2 — pass the per-AG proposal
+                            # slate so the safety-net predicate detects
+                            # "lever 5 emitted zero proposals". Snapshot
+                            # at this point (after the AG's strategy
+                            # generators have run) is the moment the gate
+                            # would have fired; capturing later would
+                            # include forced-synthesis emissions in the
+                            # count, which would make the predicate
+                            # incorrectly return [].
+                            ag_proposals_so_far=list(all_proposals),
                         )
                         # Apply side effects at the call site.
                         for _forced_proposal in _dispatch_result.appended_proposals:
