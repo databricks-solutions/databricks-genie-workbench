@@ -222,3 +222,28 @@ class Lever1RcaBridgeOutput(LLMOutputContract):
         default_factory=list,
         description="2-5 lowercase NL phrases (column-level only; empty for table-level)",
     )
+
+
+class Lever12ColumnChange(LLMOutputContract):
+    """One column-level change in the Lever-1/2 column-description
+    proposal output."""
+
+    table: str
+    column: str
+    entity_type: Literal["column_dim", "column_measure", "column_key"]
+    sections: dict[str, str] = Field(default_factory=dict)
+
+
+class Lever12TableChange(LLMOutputContract):
+    """One table-level change in the Lever-1/2 output."""
+
+    table: str
+    sections: dict[str, str] = Field(default_factory=dict)
+
+
+class Lever12ColumnOutput(LLMOutputContract):
+    """Top-level Lever-1/2 column-description proposal output."""
+
+    changes: list[Lever12ColumnChange] = Field(default_factory=list)
+    table_changes: list[Lever12TableChange] = Field(default_factory=list)
+    rationale: str = Field(default="")

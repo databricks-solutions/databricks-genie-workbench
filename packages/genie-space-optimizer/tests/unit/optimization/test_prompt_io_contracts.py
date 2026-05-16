@@ -179,3 +179,37 @@ def test_lever_1_rca_bridge_rejects_extra_fields():
     raw = '{"description": "x", "synonyms": [], "extra_debug": "leak"}'
     with pytest.raises(ValueError):
         validate_and_parse(raw, Lever1RcaBridgeOutput)
+
+
+# ── Lever-1/2 column-description contract (Task 17) ───────────────────
+
+
+def test_lever_1_2_column_output_parses_canonical_response():
+    from genie_space_optimizer.optimization.prompt_io import Lever12ColumnOutput
+    raw = """
+    {
+      "changes": [{
+        "table": "catalog.schema.dim_store",
+        "column": "store_name",
+        "entity_type": "column_dim",
+        "sections": {"definition": "store display name", "synonyms": "store, outlet"}
+      }],
+      "table_changes": [{
+        "table": "catalog.schema.fact_sales",
+        "sections": {"purpose": "transactional sales", "grain": "per line"}
+      }],
+      "rationale": "metadata gap"
+    }
+    """
+    parsed = validate_and_parse(raw, Lever12ColumnOutput)
+    assert len(parsed.changes) == 1
+    assert parsed.changes[0].entity_type == "column_dim"
+    assert parsed.table_changes[0].sections["grain"] == "per line"
+    assert parsed.rationale == "metadata gap"
+
+
+def test_lever_1_2_column_output_rejects_invalid_entity_type():
+    from genie_space_optimizer.optimization.prompt_io import Lever12ColumnOutput
+    raw = """{"changes": [{"table": "t", "column": "c", "entity_type": "foo", "sections": {}}], "table_changes": [], "rationale": ""}"""
+    with pytest.raises(ValueError):
+        validate_and_parse(raw, Lever12ColumnOutput)
