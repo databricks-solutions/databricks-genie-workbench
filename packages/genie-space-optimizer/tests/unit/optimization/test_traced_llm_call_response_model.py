@@ -73,3 +73,14 @@ def test_no_response_model_preserves_legacy_behaviour(mock_client_factory):
     create_kwargs = fake_client.chat.completions.create.call_args.kwargs
     assert "response_format" not in create_kwargs
     assert text == "plain text"
+
+
+def test_call_llm_for_proposal_accepts_response_model_kwarg():
+    """Smoke test — _call_llm_for_proposal must accept response_model
+    as a keyword argument so Stage-2 callsites can opt into structured
+    outputs. The legacy path (response_model=None) is unchanged."""
+    import inspect
+    from genie_space_optimizer.optimization.optimizer import _call_llm_for_proposal
+    sig = inspect.signature(_call_llm_for_proposal)
+    assert "response_model" in sig.parameters
+    assert sig.parameters["response_model"].default is None

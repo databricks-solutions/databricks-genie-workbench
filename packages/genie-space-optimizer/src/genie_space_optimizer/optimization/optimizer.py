@@ -8285,6 +8285,7 @@ def _call_llm_for_proposal(
     w: WorkspaceClient | None = None,
     *,
     raw_evidence: tuple[dict, ...] = (),
+    response_model: type | None = None,
 ) -> dict:
     """Call Databricks Claude Opus 4.6 to generate proposal text.
 
@@ -8472,15 +8473,30 @@ def _call_llm_for_proposal(
     text = ""
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            text, _response = _call_llm_openai(
-                w,
-                messages=[
-                    {"role": "system", "content": _proposal_system_msg},
-                    {"role": "user", "content": prompt},
-                ],
-                max_retries=1,
-                temperature=LLM_TEMPERATURE,
-            )
+            # Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 13 —
+            # when response_model is provided, route through
+            # _traced_llm_call (which auto-wires response_format and
+            # server-side JSON-schema enforcement). Otherwise preserve the
+            # legacy _call_llm_openai path so existing callers are
+            # unaffected.
+            if response_model is not None:
+                text, _response = _traced_llm_call(
+                    w, _proposal_system_msg, prompt,
+                    span_name=f"call_llm_for_proposal_lever_{lever}",
+                    max_retries=1,
+                    temperature=LLM_TEMPERATURE,
+                    response_model=response_model,
+                )
+            else:
+                text, _response = _call_llm_openai(
+                    w,
+                    messages=[
+                        {"role": "system", "content": _proposal_system_msg},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_retries=1,
+                    temperature=LLM_TEMPERATURE,
+                )
             parsed = _extract_json(text)
             print(
                 f"│ Attempt {attempt + 1}/{LLM_MAX_RETRIES}:{'':9s} OK -- parsed JSON\n"
