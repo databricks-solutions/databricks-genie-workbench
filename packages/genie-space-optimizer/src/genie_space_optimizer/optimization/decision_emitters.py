@@ -4428,3 +4428,57 @@ def soft_signal_trend_report_record(
             "operator triage."
         ),
     )
+
+
+@dataclass(frozen=True)
+class LeverRotationDecidedRecord:
+    """2026-05-17 — emitted by ``_select_lever_for_cluster`` when the
+    selected lever differs from ``_map_to_lever``'s legacy result, i.e.
+    the matrix rotation actively chose a fallback lever instead of the
+    cluster's first-pick lever. Postmortems can group on
+    ``(cluster_id, rca_kind)`` to see the full rotation trajectory."""
+
+    run_id: str
+    iteration: int
+    cluster_id: str
+    rca_kind: str
+    selected_lever: int
+    selected_patch_type: str
+    legacy_lever: int
+    tried_lever_families: tuple[int, ...]
+
+    def to_dict(self) -> dict:
+        return {
+            "decision_type": "lever_rotation_decided",
+            "run_id": self.run_id,
+            "iteration": int(self.iteration),
+            "cluster_id": self.cluster_id,
+            "rca_kind": self.rca_kind,
+            "selected_lever": int(self.selected_lever),
+            "selected_patch_type": self.selected_patch_type,
+            "legacy_lever": int(self.legacy_lever),
+            "tried_lever_families": [int(L) for L in self.tried_lever_families],
+        }
+
+
+def lever_rotation_decided_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    rca_kind: str,
+    selected_lever: int,
+    selected_patch_type: str,
+    legacy_lever: int,
+    tried_lever_families: tuple[int, ...],
+) -> LeverRotationDecidedRecord:
+    return LeverRotationDecidedRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        cluster_id=str(cluster_id),
+        rca_kind=str(rca_kind),
+        selected_lever=int(selected_lever),
+        selected_patch_type=str(selected_patch_type),
+        legacy_lever=int(legacy_lever),
+        tried_lever_families=tuple(int(L) for L in tried_lever_families),
+    )
