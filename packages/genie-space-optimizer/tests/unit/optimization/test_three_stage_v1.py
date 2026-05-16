@@ -1468,3 +1468,91 @@ def test_stage_1_caller_uses_rich_catalogue_helper(monkeypatch):
         "_render_rich_skill_catalogue — check the wire-in at "
         "optimizer.py:~10883"
     )
+
+
+# ── Section: Stage-1 rendered-prompt byte-stability snapshot ──────────
+
+
+_STAGE_1_SNAPSHOT_PATH = (
+    __import__("pathlib").Path(__file__).resolve().parents[3]
+    / "tests" / "fixtures" / "three_stage_v1" / "stage_1_prompt_snapshot.txt"
+)
+
+_STAGE_1_SNAPSHOT_KWARGS = {
+    "space_description": "Hotel bookings analytics for revenue management.",
+    "ag_id": "AG_SNAPSHOT_FIXED",
+    "root_cause_summary": "missing join between fact_bookings and dim_hotel; ambiguous channel filter",
+    "cluster_briefs": (
+        "C1 (missing_join, 3 qids): hotel_key on fact_bookings not joined to dim_hotel\n"
+        "C2 (wrong_filter, 2 qids): channel='direct' applied but channel column is on dim_distribution"
+    ),
+    "identifier_allowlist": (
+        "catalog.schema.fact_bookings, catalog.schema.dim_hotel, "
+        "catalog.schema.dim_distribution"
+    ),
+}
+
+
+def test_stage_1_rendered_prompt_snapshot_byte_stable():
+    """Renders STAGE_1_DISCOVERY_PROMPT with fixed kwargs and the live
+    rich catalogue, then compares byte-for-byte against the committed
+    snapshot. Drift is caught immediately.
+
+    To regenerate after an intentional prompt or frontmatter change:
+        python -c 'from tests.unit.optimization.test_three_stage_v1 \
+            import _regen_stage_1_snapshot; _regen_stage_1_snapshot()'
+    """
+    from genie_space_optimizer.common.config import (
+        STAGE_1_DISCOVERY_PROMPT,
+        format_mlflow_template,
+    )
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+
+    rendered = format_mlflow_template(
+        STAGE_1_DISCOVERY_PROMPT,
+        skill_catalogue=_render_rich_skill_catalogue(),
+        **_STAGE_1_SNAPSHOT_KWARGS,
+    )
+
+    assert _STAGE_1_SNAPSHOT_PATH.is_file(), (
+        f"missing snapshot: {_STAGE_1_SNAPSHOT_PATH}. "
+        "Run _regen_stage_1_snapshot() to create it."
+    )
+    expected = _STAGE_1_SNAPSHOT_PATH.read_text(encoding="utf-8")
+    assert rendered == expected, (
+        "Rendered Stage-1 prompt drifted from snapshot. If this change "
+        "is intentional, regenerate the snapshot:\n"
+        "  python -c 'from tests.unit.optimization.test_three_stage_v1 "
+        "import _regen_stage_1_snapshot; _regen_stage_1_snapshot()'\n"
+        "Then review the diff carefully — every Stage-1 LLM call will "
+        "see the new bytes."
+    )
+
+
+def _regen_stage_1_snapshot() -> None:
+    """Regenerate the committed snapshot. Manual invocation only;
+    NOT a pytest test. Call this when:
+      * a pickable skill's description/when_to_pick changes,
+      * STAGE_1_DISCOVERY_PROMPT template body changes,
+      * _render_rich_skill_catalogue formatting changes,
+      * _THREE_STAGE_SKILL_NAMES gains or loses a skill.
+    Always inspect the resulting diff with `git diff --stat` before
+    committing.
+    """
+    from genie_space_optimizer.common.config import (
+        STAGE_1_DISCOVERY_PROMPT,
+        format_mlflow_template,
+    )
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+    rendered = format_mlflow_template(
+        STAGE_1_DISCOVERY_PROMPT,
+        skill_catalogue=_render_rich_skill_catalogue(),
+        **_STAGE_1_SNAPSHOT_KWARGS,
+    )
+    _STAGE_1_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _STAGE_1_SNAPSHOT_PATH.write_text(rendered, encoding="utf-8")
+    print(f"wrote {len(rendered)} bytes to {_STAGE_1_SNAPSHOT_PATH}")
