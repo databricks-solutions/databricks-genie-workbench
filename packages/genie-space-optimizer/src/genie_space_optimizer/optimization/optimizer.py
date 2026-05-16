@@ -11224,16 +11224,15 @@ def _call_llm_for_stage_1_discovery(
         "'discovery_rationale' (string). No prose outside the JSON."
     )
 
+    from genie_space_optimizer.optimization.prompt_io import (
+        Stage1DiscoveryOutput,
+    )
     try:
-        text, _response = _call_llm_openai(
-            w,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": prompt},
-            ],
-            max_retries=1,
+        text, _response = _traced_llm_call(
+            w, system_msg, prompt,
+            span_name="stage_1_discovery",
             max_tokens=STAGE_1_DISCOVERY_MAX_TOKENS,
-            temperature=LLM_TEMPERATURE,
+            response_model=Stage1DiscoveryOutput,
         )
     except Exception:
         logger.warning(

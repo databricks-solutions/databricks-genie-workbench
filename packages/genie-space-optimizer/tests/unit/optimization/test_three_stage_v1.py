@@ -558,7 +558,7 @@ def test_call_llm_for_stage_1_discovery_returns_applicable_skills_shape(monkeypa
             '], "discovery_rationale": "metadata gap"}',
             None,
         )
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     result = optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
@@ -588,7 +588,7 @@ def test_call_llm_for_stage_1_discovery_filters_unknown_skill_ids(monkeypatch):
             '], "discovery_rationale": "trying"}',
             None,
         )
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     result = optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
@@ -607,7 +607,7 @@ def test_call_llm_for_stage_1_discovery_records_capture_when_flag_on(monkeypatch
 
     def _fake_llm_openai(*args, **kwargs):
         return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
@@ -627,7 +627,7 @@ def test_call_llm_for_stage_1_discovery_returns_empty_on_json_parse_failure(monk
 
     def _fake_llm_openai(*args, **kwargs):
         return ("not valid json", None)
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     result = optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
@@ -645,7 +645,7 @@ def test_call_llm_for_stage_1_discovery_returns_empty_on_llm_failure(monkeypatch
 
     def _fake_llm_openai(*args, **kwargs):
         raise RuntimeError("LLM endpoint down")
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     result = optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
@@ -1477,13 +1477,13 @@ def test_stage_1_caller_uses_rich_catalogue_helper(monkeypatch):
 
     captured: dict[str, str] = {}
 
-    def _fake_call_llm_openai(w, messages, **kwargs):
-        captured["prompt"] = messages[-1]["content"]
+    def _fake_call_llm_openai(w, system_msg, prompt, **kwargs):
+        # After 2026-05-17-active-callsite-typed-output-wiring Task 8,
+        # Stage-1 routes through _traced_llm_call(w, system_msg, prompt, ...)
+        captured["prompt"] = prompt
         return ('{"applicable_skills": [], "discovery_rationale": "stub"}', None)
 
-    # _call_llm_openai is module-level on optimizer (alias of
-    # llm_client.call_llm), so patch directly on opt_mod:
-    monkeypatch.setattr(opt_mod, "_call_llm_openai", _fake_call_llm_openai)
+    monkeypatch.setattr(opt_mod, "_traced_llm_call", _fake_call_llm_openai)
     # _link_prompt_to_trace is function-local-imported from
     # evaluation; patch it on its origin module:
     monkeypatch.setattr(eval_mod, "_link_prompt_to_trace", lambda *a, **kw: None)
@@ -1740,14 +1740,10 @@ def test_call_llm_for_stage_1_discovery_passes_routing_table_kwarg(monkeypatch):
     from genie_space_optimizer.optimization import optimizer
     captured_prompt: dict = {}
 
-    def _fake_llm_openai(*args, **kwargs):
-        messages = kwargs.get("messages") or (args[1] if len(args) > 1 else [])
-        for m in messages:
-            if m.get("role") == "user":
-                captured_prompt["text"] = m["content"]
-                break
+    def _fake_llm_openai(w, system_msg, prompt, **kwargs):
+        captured_prompt["text"] = prompt
         return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
@@ -1942,14 +1938,12 @@ def test_call_llm_for_stage_1_discovery_filters_allowlist_to_blamed_objects(monk
     from genie_space_optimizer.optimization import optimizer
     captured: dict = {}
 
-    def _fake_llm_openai(*args, **kwargs):
-        messages = kwargs.get("messages") or []
-        for m in messages:
-            if m.get("role") == "user":
-                captured["text"] = m["content"]
-                break
+    def _fake_llm_openai(w, system_msg, prompt, **kwargs):
+        # After 2026-05-17-active-callsite-typed-output-wiring Task 8,
+        # Stage-1 calls _traced_llm_call(w, system_msg, prompt, ...).
+        captured["text"] = prompt
         return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     snap = _allowlist_metadata_snapshot_with_joins()
     cluster = {
@@ -1984,14 +1978,10 @@ def test_call_llm_for_stage_1_discovery_full_allowlist_when_env_flag_on(monkeypa
     monkeypatch.setenv("GSO_STAGE_1_ALLOWLIST_FULL", "1")
     captured: dict = {}
 
-    def _fake_llm_openai(*args, **kwargs):
-        messages = kwargs.get("messages") or []
-        for m in messages:
-            if m.get("role") == "user":
-                captured["text"] = m["content"]
-                break
+    def _fake_llm_openai(w, system_msg, prompt, **kwargs):
+        captured["text"] = prompt
         return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     snap = _allowlist_metadata_snapshot_with_joins()
     cluster = {
@@ -2038,7 +2028,7 @@ def test_stage_1_discovery_passes_max_tokens_to_llm(monkeypatch):
     def _fake_llm_openai(*args, **kwargs):
         captured_kwargs.update(kwargs)
         return ('{"applicable_skills": [], "discovery_rationale": ""}', None)
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
@@ -2335,7 +2325,7 @@ def test_stage_1_discovery_filters_mismatched_target_objects(monkeypatch):
             '], "discovery_rationale": "missing join"}',
             None,
         )
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     result = optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
@@ -2370,7 +2360,7 @@ def test_stage_1_discovery_drops_pick_below_min_count(monkeypatch):
             '], "discovery_rationale": "single-table"}',
             None,
         )
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     result = optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
@@ -2400,7 +2390,7 @@ def test_stage_1_discovery_passes_through_valid_picks_unchanged(monkeypatch):
             '], "discovery_rationale": "metadata gap"}',
             None,
         )
-    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_llm_openai)
 
     result = optimizer._call_llm_for_stage_1_discovery(
         ag_id="AG1",
