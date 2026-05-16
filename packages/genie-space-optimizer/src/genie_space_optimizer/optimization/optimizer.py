@@ -196,6 +196,8 @@ def _traced_llm_call(
     temperature: float = LLM_TEMPERATURE,
     max_tokens: int | None = None,
     response_validator: Callable[[str], Any] | None = None,
+    response_format: dict[str, Any] | None = None,
+    response_model: type | None = None,
 ) -> tuple[str, Any]:
     """Execute an LLM call via the OpenAI SDK with automatic MLflow tracing.
 
@@ -224,11 +226,25 @@ def _traced_llm_call(
     import mlflow
     from mlflow.entities import SpanEvent, SpanType
 
+    # Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 12 —
+    # derive response_format + response_validator from a Pydantic
+    # response_model when the caller provides one.
+    if response_model is not None:
+        from genie_space_optimizer.optimization.prompt_io import (
+            build_response_format,
+            validate_and_parse,
+        )
+        if response_format is None:
+            response_format = build_response_format(response_model)
+        if response_validator is None:
+            response_validator = lambda txt: validate_and_parse(txt, response_model)  # noqa: E731
+
     with mlflow.start_span(name=span_name, span_type=SpanType.CHAIN) as span:
         span.set_inputs({
             "model": LLM_ENDPOINT,
             "temperature": temperature,
             "prompt_chars": len(prompt),
+            "response_model": response_model.__name__ if response_model else None,
         })
 
         client = _get_openai_client(w)
@@ -254,6 +270,8 @@ def _traced_llm_call(
                 }
                 if max_tokens is not None:
                     call_kwargs["max_tokens"] = max_tokens
+                if response_format is not None:
+                    call_kwargs["response_format"] = response_format
 
                 response = client.chat.completions.create(**call_kwargs)
 
