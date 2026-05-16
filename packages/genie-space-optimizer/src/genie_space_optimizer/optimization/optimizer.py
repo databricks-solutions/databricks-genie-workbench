@@ -9484,12 +9484,22 @@ def _dispatch_lever_5b_for_cluster(
     metadata_snapshot: dict,
     w: WorkspaceClient | None,
     benchmark_corpus: Any,
+    benchmarks: list[dict] | None = None,
 ) -> list[dict]:
-    """Plan 2 — adapter that calls ``synthesis.synthesize_example_sqls``
-    for ONE cluster and returns the proposed example SQL(s) in
-    holistic-compatible shape.
+    """Plan 2 — adapter that returns the proposed example SQL(s) for ONE
+    cluster in holistic-compatible shape.
 
-    Notes on the underlying contract (do NOT relax these in this adapter):
+    Plan B (2026-05-16) — when
+    ``rich_synthesis_primary_for_sql_shape_enabled()`` is true AND the
+    cluster carries a SQL-shape failure label (per ``cluster_failure_keys``
+    ∩ ``_SQL_SHAPE_ROOT_CAUSES``), route to
+    ``run_cluster_driven_synthesis_for_single_cluster`` via
+    ``_dispatch_rich_synthesis_for_l5b``. Declines append to
+    ``_L5B_RICH_PATH_DECLINES``; the harness drains the ledger after
+    Stage-2 and emits ``NO_STRUCTURAL_CANDIDATE`` records.
+
+    Lean-path (flag off OR non-SQL-shape cluster) preserves the original
+    contract:
       * ``synthesize_example_sqls(cluster, metadata_snapshot,
         benchmark_corpus, *, archetype=None, budget=None,
         existing_example_sql_count=0, w=None, ...)`` — see
@@ -9504,7 +9514,28 @@ def _dispatch_lever_5b_for_cluster(
         the strategy's ``benchmarks`` list) is required by the L5b
         firewall for n-gram leakage checks. Pass ``None`` only in tests
         where ``synthesize_example_sqls`` is monkeypatched.
+
+    ``benchmarks`` (the raw list, not the corpus) is consumed by the
+    rich path; the lean path ignores it. Caller
+    (``_dispatch_lever_5_split``) threads it from
+    ``generate_proposals_from_strategy``'s same-named arg. Stage-2
+    bundles do not currently carry raw benchmarks; ``_stage_2_l5b``
+    passes ``benchmarks=None`` and the rich path runs with an empty
+    leakage corpus (degrades gracefully).
     """
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        should_route_l5b_to_rich_synthesizer,
+        _dispatch_rich_synthesis_for_l5b,
+    )
+
+    if should_route_l5b_to_rich_synthesizer(cluster):
+        return _dispatch_rich_synthesis_for_l5b(
+            cluster=cluster,
+            metadata_snapshot=metadata_snapshot,
+            w=w,
+            benchmarks=benchmarks,
+        )
+
     from genie_space_optimizer.optimization import synthesis
 
     try:
@@ -9601,6 +9632,7 @@ def _dispatch_lever_5_split(
                 metadata_snapshot=metadata_snapshot,
                 w=w,
                 benchmark_corpus=benchmark_corpus,
+                benchmarks=benchmarks,
             )
         )
 
