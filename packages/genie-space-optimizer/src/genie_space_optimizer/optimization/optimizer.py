@@ -8822,73 +8822,59 @@ def _call_llm_for_join_discovery(
             len(hints), len(_join_specs), len(prompt),
         )
 
-        import time
-
         system_msg = (
             "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
             "Do NOT include any explanation, analysis, or markdown outside the JSON. "
             "Your entire response must be parseable by json.loads()."
         )
 
-        text = ""
-        for attempt in range(LLM_MAX_RETRIES):
-            try:
-                text, _response = _call_llm_openai(
-                    w,
-                    messages=[
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_retries=1,
-                    temperature=LLM_TEMPERATURE,
-                )
-                result = _extract_json(text)
-                specs = result.get("join_specs", [])
-                rationale = result.get("rationale", "")
-                for s in specs:
-                    if isinstance(s, dict) and "sql" in s:
-                        s["sql"] = [
-                            _sanitize_join_sql(part) for part in s["sql"]
-                            if isinstance(part, str)
-                        ]
-                out = [
-                    {"join_spec": s, "rationale": rationale}
-                    for s in specs
-                    if isinstance(s, dict)
+        from genie_space_optimizer.optimization.prompt_io import (
+            Lever4JoinDiscoveryOutput,
+        )
+
+        try:
+            text, _response = _traced_llm_call(
+                w, system_msg, prompt,
+                span_name="lever_4_join_discovery",
+                response_model=Lever4JoinDiscoveryOutput,
+            )
+        except Exception:
+            logger.warning(
+                "Lever-4 join discovery LLM call failed after retries",
+                exc_info=True,
+            )
+            _span.set_outputs({"join_specs_returned": 0, "error": True})
+            return []
+
+        try:
+            result = _extract_json(text)
+        except json.JSONDecodeError:
+            logger.warning("JOIN_DISCOVERY non-JSON response: %.500s", text)
+            _span.set_outputs({"join_specs_returned": 0, "non_json": True})
+            return []
+        specs = result.get("join_specs", [])
+        rationale = result.get("rationale", "")
+        for s in specs:
+            if isinstance(s, dict) and "sql" in s:
+                s["sql"] = [
+                    _sanitize_join_sql(part) for part in s["sql"]
+                    if isinstance(part, str)
                 ]
-                _span.set_outputs({"join_specs_returned": len(out)})
-                logger.info(
-                    "\n"
-                    "┌─── OPTIMIZER LLM [JOIN_DISCOVERY] RESPONSE ─────────────────────────\n"
-                    "│ Join specs returned: %d\n"
-                    "│ Rationale: %s\n"
-                    "└─────────────────────────────────────────────────────────────────────────",
-                    len(out), _truncate_on_boundary(str(rationale), 300),
-                )
-                return out
-            except json.JSONDecodeError:
-                logger.warning(
-                    "JOIN_DISCOVERY non-JSON response (attempt %d/%d): %.500s",
-                    attempt + 1, LLM_MAX_RETRIES, text,
-                )
-                if attempt < LLM_MAX_RETRIES - 1:
-                    time.sleep(2**attempt)
-                    continue
-                _span.set_outputs({"join_specs_returned": 0, "non_json": True})
-                return []
-            except Exception:
-                if attempt < LLM_MAX_RETRIES - 1:
-                    time.sleep(2**attempt)
-                else:
-                    logger.exception(
-                        "\n"
-                        "┌─── OPTIMIZER LLM [JOIN_DISCOVERY] ERROR ────────────────────────────\n"
-                        "│ Prompt len: %d chars | Retries: %d\n"
-                        "└─────────────────────────────────────────────────────────────────────────",
-                        len(prompt), LLM_MAX_RETRIES,
-                    )
-                    _span.set_outputs({"join_specs_returned": 0, "error": True})
-                    return []
+        out = [
+            {"join_spec": s, "rationale": rationale}
+            for s in specs
+            if isinstance(s, dict)
+        ]
+        _span.set_outputs({"join_specs_returned": len(out)})
+        logger.info(
+            "\n"
+            "┌─── OPTIMIZER LLM [JOIN_DISCOVERY] RESPONSE ─────────────────────────\n"
+            "│ Join specs returned: %d\n"
+            "│ Rationale: %s\n"
+            "└─────────────────────────────────────────────────────────────────────────",
+            len(out), _truncate_on_boundary(str(rationale), 300),
+        )
+        return out
         _span.set_outputs({"join_specs_returned": 0, "exhausted": True})
         return []
 
