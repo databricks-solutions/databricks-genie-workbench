@@ -313,3 +313,61 @@ def test_harness_skips_invariant_marker_when_flag_off(monkeypatch) -> None:
     )
 
     assert iter_inputs["markers"] == []
+
+
+def test_record_prior_identical_failure_count_matches_counter(monkeypatch):
+    """Invariant: the emitted decision record's
+    ``prior_identical_failure_count`` MUST equal the per-AG counter's
+    value BEFORE this emit's increment. If this ever drifts, the
+    stalemate detector is reading from the wrong source."""
+    from genie_space_optimizer.optimization.harness import (
+        _emit_proposal_failure_decided,
+    )
+    from genie_space_optimizer.optimization.proposal_failure_callsite_context import (
+        ProposalFailureCallSiteContext,
+    )
+
+    monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", "1")
+
+    counter: dict[str, int] = {}
+    ctx = ProposalFailureCallSiteContext(
+        cluster={"cluster_id": "C1"},
+        findings=[], evidence_snapshot={},
+        cache=None, policy=None,
+        signatures_counter=counter,
+        metadata_snapshot={}, spark=None,
+    )
+    kwargs = dict(
+        run_id="r", ag_id="AG1",
+        cluster_id="C1", cluster_signature="sig",
+        rca_id="r-1", root_cause="wrong_aggregation",
+        failure_mode="no_causal_applyable_patch",
+        lever_set=(6,), tried_lever_families=(6,),
+        ag_source_cluster_count=1, rca_card_grounded=True,
+        prior_failure_count=0,
+        target_qids=("Q1",),
+        callsite_ctx=ctx,
+    )
+
+    for emit_idx in range(3):
+        iter_inputs: dict = {}
+        _emit_proposal_failure_decided(
+            iteration=emit_idx + 1, iter_inputs=iter_inputs, **kwargs,
+        )
+        rec = iter_inputs["decision_records"][0]
+        # The field is serialized inside ``metrics`` alongside
+        # ``prior_failure_count`` — see
+        # ``proposal_failure_decided_record`` in
+        # ``decision_emitters.py``. Read defensively so the test
+        # surfaces both placement bugs (top-level vs metrics) and
+        # missing-field bugs.
+        metrics = rec.get("metrics", {}) if isinstance(rec, dict) else {}
+        recorded = metrics.get(
+            "prior_identical_failure_count",
+            rec.get("prior_identical_failure_count"),
+        )
+        assert recorded == emit_idx, (
+            f"emit_idx={emit_idx} record_metric="
+            f"{metrics.get('prior_identical_failure_count')!r} "
+            f"top_level={rec.get('prior_identical_failure_count')!r}"
+        )
