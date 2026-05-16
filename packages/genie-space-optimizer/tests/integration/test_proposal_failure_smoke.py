@@ -215,3 +215,60 @@ def test_smoke_coverage_invariant_central_finalize_noop_on_completed(
 
     captured = capsys.readouterr()
     assert "proposal_failure_decided_coverage" not in captured.out
+
+
+def test_repeated_identical_signature_escalates_stalemate(monkeypatch):
+    """When the lever loop emits the same iteration-failure signature
+    twice in one run (the Trial-5 ``wrong_aggregation`` failure mode),
+    the second emit MUST be ESCALATE_STALEMATE — proving the
+    per-AG counter wiring works end-to-end."""
+    from genie_space_optimizer.optimization.proposal_failure_callsite_context import (
+        ProposalFailureCallSiteContext,
+    )
+    from genie_space_optimizer.optimization.harness import (
+        _emit_proposal_failure_decided,
+    )
+
+    monkeypatch.setenv("GSO_PROPOSAL_FAILURE_DECIDED", "1")
+
+    counter: dict[str, int] = {}
+    ctx = ProposalFailureCallSiteContext(
+        cluster={"cluster_id": "C1"},
+        findings=[],
+        evidence_snapshot={},
+        cache=None,
+        policy=None,
+        signatures_counter=counter,
+        metadata_snapshot={},
+        spark=None,
+    )
+
+    emit_kwargs = dict(
+        run_id="r-trial5",
+        ag_id="AG_PIPELINE",
+        cluster_id="C1",
+        cluster_signature="sig-C1",
+        rca_id="rca-1",
+        root_cause="wrong_aggregation",
+        failure_mode="no_causal_applyable_patch",
+        lever_set=(6,),
+        tried_lever_families=(6,),
+        ag_source_cluster_count=1,
+        rca_card_grounded=True,
+        prior_failure_count=0,
+        target_qids=("Q1",),
+        callsite_ctx=ctx,
+    )
+
+    iter_1: dict = {}
+    _emit_proposal_failure_decided(iteration=1, iter_inputs=iter_1, **emit_kwargs)
+    iter_2: dict = {}
+    _emit_proposal_failure_decided(iteration=2, iter_inputs=iter_2, **emit_kwargs)
+
+    rec_1 = iter_1["decision_records"][0]
+    rec_2 = iter_2["decision_records"][0]
+
+    assert rec_1["next_action"] != "escalate_stalemate"
+    assert rec_2["next_action"] == "escalate_stalemate"
+    # The counter must reflect 2 firings of the same signature.
+    assert sum(counter.values()) == 2
