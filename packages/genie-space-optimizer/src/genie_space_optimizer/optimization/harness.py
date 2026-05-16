@@ -18126,6 +18126,15 @@ def _run_lever_loop(
     # when the same signature fires twice within the run.
     _iter_failure_signatures: dict[str, int] = {}
 
+    # 2026-05-17 rotation bridge — per-run holder that accumulates the
+    # set of lever families tried-and-failed for each cluster. The
+    # ``_select_lever_for_cluster`` wedge reads this on every iteration
+    # to consult ``next_untried_repair`` from the RCA_REPAIR_MATRIX
+    # bridge; each of the 5 proposal-failure emit sites updates it via
+    # ``_mark_lever_tried`` after a failure. Survives across iterations
+    # within this run; reset on each new run.
+    _rotation_holder: dict = {"tried": {}}
+
     # Phase A — deterministic carrier for the most recent full-eval
     # result. Replaces opportunistic ``locals().get("full_result")``
     # reads in the eval-entry / post-eval / validator blocks below.
