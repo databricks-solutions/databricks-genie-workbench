@@ -184,6 +184,16 @@ each atomic concept, lever-2-mv-column-refinement for the
 grouping dimension, lever-5b-example-sql for the demonstrating
 example).
 
+## Honor each skill's `Targets:` line
+
+Each entry in the ``## Skill Catalogue`` block above carries a
+``Targets:`` line describing what kind of identifier ``target_objects``
+must contain (e.g. ``2+ base_table identifiers``, ``any metric_view``,
+``any function``). If your ``target_objects`` for a pick contain
+identifiers of the wrong kind, the optimizer will silently drop them;
+if too few remain, the entire pick is discarded. Match the
+``Targets:`` constraint exactly.
+
 ## Do NOT pick a skill if there is no concrete target
 Empty target_objects + empty cluster signal → omit the pick.
 Empty applicable_skills array is a valid output (means "no skill

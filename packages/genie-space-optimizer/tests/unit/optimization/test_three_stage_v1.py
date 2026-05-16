@@ -526,14 +526,18 @@ def test_call_llm_for_stage_1_discovery_returns_applicable_skills_shape(monkeypa
     from genie_space_optimizer.optimization import optimizer
 
     def _fake_llm_openai(*args, **kwargs):
+        # Use lever-1 (min_count=0) with a target that matches the
+        # snapshot's fact_bookings so the post-coercion allowlist
+        # contract (Task 5, 2026-05-17 target-shape-constraints plan)
+        # is satisfied.
         return (
             '{"applicable_skills": ['
-            '{"skill_id": "lever-4-join-discovery",'
-            ' "target_objects": ["catalog.schema.fact_orders"],'
+            '{"skill_id": "lever-1-table-column-description",'
+            ' "target_objects": ["catalog.schema.fact_bookings"],'
             ' "expected_impact_qids": ["Q1"],'
             ' "evidence_refs": ["trace://q1"],'
-            ' "why": "missing join", "priority": 1}'
-            '], "discovery_rationale": "missing join across fact + dim"}',
+            ' "why": "missing column description", "priority": 1}'
+            '], "discovery_rationale": "metadata gap"}',
             None,
         )
     monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
@@ -548,7 +552,7 @@ def test_call_llm_for_stage_1_discovery_returns_applicable_skills_shape(monkeypa
     assert "applicable_skills" in result
     assert isinstance(result["applicable_skills"], list)
     assert len(result["applicable_skills"]) == 1
-    assert result["applicable_skills"][0]["skill_id"] == "lever-4-join-discovery"
+    assert result["applicable_skills"][0]["skill_id"] == "lever-1-table-column-description"
     assert "discovery_rationale" in result
 
 
@@ -2240,3 +2244,148 @@ def test_coerce_drops_pick_when_empty_below_min_count():
     )
     assert coerced is None
     assert dropped == []
+
+
+# ── Section: Stage-1 coercion integration (Task 5) ────────────────────
+
+
+def _coercion_metadata_snapshot():
+    """Snapshot with two base tables + one MV — used by the integration
+    tests below to exercise coercion against a realistic allowlist."""
+    return {
+        "config": {"description": "test"},
+        "data_sources": {
+            "tables": [
+                {
+                    "identifier": "cat.sch.fact_orders",
+                    "column_configs": [{"column_name": "order_id"}],
+                    "join_specs": [],
+                },
+                {
+                    "identifier": "cat.sch.dim_product",
+                    "column_configs": [{"column_name": "product_id"}],
+                    "join_specs": [],
+                },
+            ],
+            "metric_views": [{"identifier": "cat.sch.mv_revenue_daily"}],
+            "functions": [],
+        },
+    }
+
+
+def _coercion_cluster():
+    """Cluster whose blame_set includes the test's targets so the
+    per-AG allowlist filter keeps them in scope."""
+    return {
+        "cluster_id": "C1",
+        "root_cause": "missing_join_spec",
+        "asi_blame_set": [
+            "cat.sch.fact_orders",
+            "cat.sch.dim_product",
+            "cat.sch.mv_revenue_daily",
+        ],
+        "affected_judge": "schema_accuracy",
+        "question_ids": ["Q1"],
+        "signal_type": "hard",
+    }
+
+
+def test_stage_1_discovery_filters_mismatched_target_objects(monkeypatch):
+    """An LLM response that picks lever-4-join-discovery with an MV
+    FQN must have that MV filtered out. If the post-filter count is
+    still >= target_min_count, keep the pick with the coerced list."""
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_llm_openai(*args, **kwargs):
+        return (
+            '{"applicable_skills": ['
+            '{"skill_id": "lever-4-join-discovery",'
+            ' "target_objects": ['
+            '   "cat.sch.fact_orders",'
+            '   "cat.sch.dim_product",'
+            '   "cat.sch.mv_revenue_daily"'
+            ' ],'
+            ' "expected_impact_qids": ["Q1"],'
+            ' "evidence_refs": ["trace://q1"],'
+            ' "why": "missing join", "priority": 1}'
+            '], "discovery_rationale": "missing join"}',
+            None,
+        )
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    result = optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="missing join",
+        clusters=[_coercion_cluster()],
+        metadata_snapshot=_coercion_metadata_snapshot(),
+        w=None,
+    )
+    assert len(result["applicable_skills"]) == 1
+    pick = result["applicable_skills"][0]
+    assert pick["skill_id"] == "lever-4-join-discovery"
+    # MV must be coerced out; the two base tables remain (>= min_count=2)
+    assert "cat.sch.mv_revenue_daily" not in pick["target_objects"]
+    assert len(pick["target_objects"]) == 2
+
+
+def test_stage_1_discovery_drops_pick_below_min_count(monkeypatch):
+    """An LLM response that picks lever-4 with only one valid base
+    table (after coercion) must drop the entire pick."""
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_llm_openai(*args, **kwargs):
+        return (
+            '{"applicable_skills": ['
+            '{"skill_id": "lever-4-join-discovery",'
+            ' "target_objects": ['
+            '   "cat.sch.fact_orders",'
+            '   "cat.sch.mv_revenue_daily"'
+            ' ],'
+            ' "expected_impact_qids": ["Q1"], "evidence_refs": [],'
+            ' "why": "?", "priority": 1}'
+            '], "discovery_rationale": "single-table"}',
+            None,
+        )
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    result = optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="?",
+        clusters=[_coercion_cluster()],
+        metadata_snapshot=_coercion_metadata_snapshot(),
+        w=None,
+    )
+    assert result["applicable_skills"] == [], (
+        "lever-4 with single valid base table after coercion must "
+        "be dropped (min_count=2 violated)"
+    )
+
+
+def test_stage_1_discovery_passes_through_valid_picks_unchanged(monkeypatch):
+    """A well-formed Stage-1 response with valid target_objects must
+    survive coercion byte-identical."""
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_llm_openai(*args, **kwargs):
+        return (
+            '{"applicable_skills": ['
+            '{"skill_id": "lever-1-table-column-description",'
+            ' "target_objects": ["cat.sch.fact_orders"],'
+            ' "expected_impact_qids": ["Q1"], "evidence_refs": [],'
+            ' "why": "missing column desc", "priority": 1}'
+            '], "discovery_rationale": "metadata gap"}',
+            None,
+        )
+    monkeypatch.setattr(optimizer, "_call_llm_openai", _fake_llm_openai)
+
+    result = optimizer._call_llm_for_stage_1_discovery(
+        ag_id="AG1",
+        root_cause_summary="?",
+        clusters=[_coercion_cluster()],
+        metadata_snapshot=_coercion_metadata_snapshot(),
+        w=None,
+    )
+    assert len(result["applicable_skills"]) == 1
+    assert result["applicable_skills"][0]["target_objects"] == [
+        "cat.sch.fact_orders"
+    ]

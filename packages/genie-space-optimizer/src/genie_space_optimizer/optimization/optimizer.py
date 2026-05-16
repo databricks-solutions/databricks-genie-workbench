@@ -5658,9 +5658,17 @@ def _build_identifier_allowlist(
 
     # 1-hop join neighbor expansion (only when relevant_objects given).
     if relevant_objects:
-        relevant_short = {
-            r.rsplit(".", 1)[-1].lower() for r in relevant_objects if isinstance(r, str)
-        }
+        # Column-level FQNs (4+ parts) collapse to the table's short
+        # name; 3-or-fewer-part FQNs use the last segment.
+        relevant_short: set[str] = set()
+        for r in relevant_objects:
+            if not isinstance(r, str):
+                continue
+            parts = r.split(".")
+            if len(parts) >= 4:
+                relevant_short.add(parts[-2].lower())
+            else:
+                relevant_short.add(parts[-1].lower())
         neighbors_short: set[str] = set()
         for tbl in tables_list:
             if not isinstance(tbl, dict):
@@ -11041,6 +11049,11 @@ def _call_llm_for_stage_1_discovery(
     if not isinstance(raw_picks, list):
         raw_picks = []
 
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _coerce_target_objects_for_skill,
+    )
+    from genie_space_optimizer.skills._loader import _SKILL_LOADER
+
     valid_picks: list[dict] = []
     for pick in raw_picks:
         if not isinstance(pick, dict):
@@ -11052,9 +11065,45 @@ def _call_llm_for_stage_1_discovery(
                 sid, ag_id,
             )
             continue
+
+        # Per-skill target-shape coercion.
+        try:
+            skill_meta = _SKILL_LOADER.load_metadata(sid)
+        except Exception:
+            skill_meta = {}
+        target_kind = str(skill_meta.get("target_kind", "")).strip()
+        target_min_count = int(skill_meta.get("target_min_count", 0) or 0)
+        raw_targets = pick.get("target_objects") or []
+        if target_kind:
+            coerced, dropped = _coerce_target_objects_for_skill(
+                skill_id=sid,
+                target_kind=target_kind,
+                target_min_count=target_min_count,
+                raw_targets=raw_targets,
+                allowlist=_allowlist,
+            )
+            if coerced is None:
+                logger.info(
+                    "Stage-1 discovery dropped pick %s (AG=%s): "
+                    "post-coercion target count below min_count=%d "
+                    "(dropped=%s)",
+                    sid, ag_id, target_min_count, dropped,
+                )
+                continue
+            if dropped:
+                logger.info(
+                    "Stage-1 discovery coerced pick %s (AG=%s): "
+                    "dropped %d mismatched target(s) %s",
+                    sid, ag_id, len(dropped), dropped,
+                )
+            final_targets = coerced
+        else:
+            # No target_kind in frontmatter -> conservative pass-through.
+            final_targets = list(raw_targets)
+
         valid_picks.append({
             "skill_id": sid,
-            "target_objects": pick.get("target_objects") or [],
+            "target_objects": final_targets,
             "expected_impact_qids": pick.get("expected_impact_qids") or [],
             "evidence_refs": pick.get("evidence_refs") or [],
             "why": str(pick.get("why", "")),
