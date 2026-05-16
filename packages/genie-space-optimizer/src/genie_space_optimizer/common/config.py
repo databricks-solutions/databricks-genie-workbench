@@ -6393,6 +6393,31 @@ def force_structural_synthesis_on_lever5_drop_enabled() -> bool:
     return True
 
 
+def sql_shape_overlap_gate_enabled() -> bool:
+    """Plan C2 — when true, ``_t24_counterfactual_scan`` requires both
+    table-name overlap AND at least one snippet shape token to match
+    before a benchmark is counted as a passing dependent.
+
+    Env var: ``GSO_SQL_SHAPE_OVERLAP_GATE``.
+
+    Default: ``"0"`` (off). The behaviour change is a NARROWING of the
+    scan (fewer false positives on the high-collateral-risk flag), so
+    flipping the default to ``"1"`` is the user-spec invariant, but
+    the follow-up plan at
+    ``docs/prompt_improvements/2026-05-16-plan-c-downstream-backstops-followups.md``
+    handles the flip after replay validation lands.
+
+    Accepts (case-insensitive): ``1``, ``true``, ``yes``, ``y``.
+    Anything else (including unset, ``0``, ``false``, ``no``, ``off``,
+    empty) keeps the flag off.
+
+    Read at the call site each time ``_t24_counterfactual_scan`` runs,
+    not cached, so tests can toggle via monkeypatch.
+    """
+    raw = os.environ.get("GSO_SQL_SHAPE_OVERLAP_GATE", "0").strip().lower()
+    return raw in {"1", "true", "yes", "y"}
+
+
 def rich_synthesis_primary_for_sql_shape_enabled() -> bool:
     """Plan B — when true, Stage-2 lever-5b routes SQL-shape clusters
     through ``run_cluster_driven_synthesis_for_single_cluster`` (the
