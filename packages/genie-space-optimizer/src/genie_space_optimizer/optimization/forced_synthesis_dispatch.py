@@ -20,6 +20,45 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
+def cluster_failure_keys(cluster: Any) -> tuple[str, ...]:
+    """Return the canonical set of failure-label keys for a cluster.
+
+    Bridges the label divergence between the older ``asi_failure_type``
+    classification and the newer ``root_cause`` RcaKind label. The
+    structural-gate ledger at ``optimizer.py:15346-15350`` stores
+    ``_LEVER5_GATE_DROPS[*].root_causes`` preferring ``asi_failure_type``;
+    the dispatch loop reads the cluster's ``root_cause``. When the two
+    labels disagree, strict equality silently drops the cluster.
+
+    This helper returns BOTH labels (asi_failure_type first, then
+    root_cause), de-duplicated and with empties / non-strings filtered
+    out. The dispatch loop uses ``_rc in cluster_failure_keys(cand)``
+    instead of ``cand.get("root_cause") == _rc``.
+
+    Order matters: ``asi_failure_type`` is listed first to match the
+    write-side preference at ``optimizer.py:15346-15350``. Code that
+    needs a single "canonical" key (rare) can take the first element.
+
+    Robust to:
+      - ``None`` / non-dict input (returns ``()``)
+      - missing / empty / non-string label values (filtered out)
+      - aligned labels (de-duplicated to one entry)
+    """
+    if not isinstance(cluster, dict):
+        return ()
+    out: list[str] = []
+    for key in ("asi_failure_type", "root_cause"):
+        raw = cluster.get(key)
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if not s:
+            continue
+        if s not in out:
+            out.append(s)
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class ForcedSynthesisDispatchResult:
     """Per-call result of ``dispatch_forced_structural_synthesis``.
