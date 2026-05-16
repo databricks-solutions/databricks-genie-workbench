@@ -22717,200 +22717,71 @@ def _run_lever_loop(
                             exc_info=True,
                         )
 
-                    # P3 task 3+4 wiring — force structural synthesis when
-                    # the lever-5 structural gate drops an instruction-only
-                    # proposal for a SQL-shape root cause. Closes the iter-2
-                    # / iter-5 silent-skip path in run
-                    # 2423b960-16e8-41d4-a0cb-74c563378e05. Same-iteration
-                    # injection: a synthesized add_example_sql is appended
-                    # to ``all_proposals`` so it flows through the existing
-                    # normalization / applyability / applier pipeline. On
-                    # failure, a NO_STRUCTURAL_CANDIDATE record is emitted
-                    # so the transcript shows synthesis was attempted.
+                    # P3 task 3+4 — force structural synthesis when the
+                    # lever-5 structural gate drops an instruction-only
+                    # proposal for a SQL-shape root cause. The dispatch
+                    # body lives in optimization/forced_synthesis_dispatch
+                    # so it is callable in isolation; the replay harness
+                    # exercises it with a stubbed synthesize. See
+                    # docs/prompt_improvements/2026-05-16-replay-harness-extension-l5-dispatch.md.
+                    #
+                    # Exception handling matches the original inline block
+                    # (single outer try-except that bumps the producer
+                    # exception counter and re-raises under strict mode).
                     try:
-                        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
-                            run_cluster_driven_synthesis_for_single_cluster,
+                        from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
+                            dispatch_forced_structural_synthesis,
                         )
-                        from genie_space_optimizer.optimization.decision_emitters import (
-                            no_structural_candidate_record,
+                        _dispatch_result = dispatch_forced_structural_synthesis(
+                            run_id=run_id,
+                            iteration=iteration_counter,
+                            ag=ag,
+                            l5_ag_drops=_l5_ag_drops,
+                            iter_source_clusters_by_id=_iter_source_clusters_by_id,
+                            iter_rca_id_by_cluster=_iter_rca_id_by_cluster,
+                            metadata_snapshot=metadata_snapshot,
+                            benchmarks=benchmarks,
+                            catalog=catalog,
+                            schema=schema,
+                            w=w,
+                            spark=spark,
+                            lever_keys=tuple(lever_keys),
+                            reflection_buffer=reflection_buffer,
+                            current_iter_inputs=_current_iter_inputs,
                         )
-
-                        for _drop in _l5_ag_drops:
-                            _drop_cluster: dict | None = None
-                            _drop_root_cause = ""
-                            for _rc in (_drop.get("root_causes") or ()):
-                                if not _should_force_structural_synthesis(
-                                    gate_drop_reason=(
-                                        "lever5_structural_sql_shape_no_example_sql"
-                                    ),
-                                    cluster_root_cause=str(_rc),
-                                ):
-                                    continue
-                                for _cid in (_drop.get("source_clusters") or ()):
-                                    _cand = _iter_source_clusters_by_id.get(str(_cid))
-                                    if isinstance(_cand, dict) and str(
-                                        _cand.get("root_cause") or ""
-                                    ) == str(_rc):
-                                        _drop_cluster = _cand
-                                        _drop_root_cause = str(_rc)
-                                        break
-                                if _drop_cluster is not None:
-                                    break
-                            if _drop_cluster is None:
-                                continue
-
-                            # P-E2 — observe-only: did the AG slip past
-                            # the iter-level guard at line 19752 and
-                            # arrive here with a now-forbidden identity?
-                            # The lever set may have expanded since AG
-                            # selection (RCA-execution union at line
-                            # 20098), so the collision pair is recomputed
-                            # with the latest lever_keys. No behavior
-                            # change — the synthesis call still runs.
+                        # Apply side effects at the call site.
+                        for _forced_proposal in _dispatch_result.appended_proposals:
+                            # Re-number to match the harness's
+                            # all_proposals length convention.
+                            _forced_proposal = dict(_forced_proposal)
+                            _forced_proposal["proposal_id"] = (
+                                f"P{len(all_proposals) + 1:03d}"
+                            )
+                            all_proposals.append(_forced_proposal)
+                        for _nsc_dict in _dispatch_result.emitted_decision_records:
+                            _current_iter_inputs.setdefault(
+                                "decision_records", []
+                            ).append(_nsc_dict)
+                            # Preserve the stdout marker emission for
+                            # operator observability.
                             try:
-                                _p_e2_pair = _ag_collision_key_pair(
-                                    ag=ag,
-                                    ag_root_cause=str(_drop_root_cause or ""),
-                                    ag_blame_set=ag.get("blame_set"),
-                                    lever_keys=list(lever_keys),
+                                from genie_space_optimizer.optimization.run_analysis_contract import (
+                                    no_structural_candidate_marker,
                                 )
-                                _p_e2_forbidden = _compute_forbidden_ag_set_pair(
-                                    reflection_buffer
-                                )
-                                _p_e2_sigs = sorted(
-                                    str(s).strip()
-                                    for s in (ag.get("source_cluster_signatures") or ())
-                                    if str(s).strip()
-                                )
-                                _p_e2_sig = _p_e2_sigs[0] if _p_e2_sigs else ""
-                                _check_proposal_stage_forbidden_ag_leakage(
-                                    run_id=str(run_id),
-                                    iteration=int(iteration_counter),
-                                    ag_id=str(ag_id),
-                                    cluster_id=str(
-                                        _drop_cluster.get("cluster_id") or ""
+                                print(no_structural_candidate_marker(
+                                    ag_id=str(_nsc_dict.get("ag_id") or ""),
+                                    iteration=int(_nsc_dict.get("iteration") or 0),
+                                    attempted_archetypes=(
+                                        _nsc_dict.get("metrics", {}).get(
+                                            "attempted_archetypes"
+                                        ) or ()
                                     ),
-                                    root_cause=str(_drop_root_cause or ""),
-                                    collision_pair=_p_e2_pair,
-                                    forbidden_pair=_p_e2_forbidden,
-                                    cluster_signature=_p_e2_sig,
-                                    lever_set=tuple(
-                                        int(lk) for lk in lever_keys
-                                    ),
-                                    call_site="cluster_driven_synthesis",
-                                    iter_inputs=_current_iter_inputs,
-                                )
+                                ), flush=True)
                             except Exception:
                                 logger.debug(
-                                    "P-E2 observe-only check raised at "
-                                    "cluster_driven_synthesis call site "
-                                    "(non-fatal)",
+                                    "P4: no_structural_candidate_marker emit "
+                                    "failed (non-fatal)",
                                     exc_info=True,
-                                )
-
-                            _synth_result = run_cluster_driven_synthesis_for_single_cluster(
-                                _drop_cluster,
-                                metadata_snapshot,
-                                benchmarks=benchmarks,
-                                catalog=catalog,
-                                gold_schema=schema,
-                                warehouse_id=resolve_warehouse_id(""),
-                                w=w,
-                                spark=spark,
-                            )
-                            if _synth_result.proposal is not None:
-                                _sp = _synth_result.proposal
-                                _forced_proposal = {
-                                    "proposal_id": f"P{len(all_proposals) + 1:03d}",
-                                    "cluster_id": f"{ag_id}_FORCED_SYN",
-                                    "lever": 5,
-                                    "scope": "genie_config",
-                                    "patch_type": "add_example_sql",
-                                    "change_description": (
-                                        f"[{ag_id}] Forced structural synthesis: "
-                                        f"{str(_sp.get('example_question', ''))[:80]}"
-                                    ),
-                                    "proposed_value": _sp.get("example_question", ""),
-                                    "example_question": _sp.get("example_question", ""),
-                                    "example_sql": _sp.get("example_sql", ""),
-                                    "parameters": _sp.get("parameters", []) or [],
-                                    "usage_guidance": _sp.get("usage_guidance", ""),
-                                    "rationale": (
-                                        f"Forced structural synthesis at L5 gate "
-                                        f"drop (archetype="
-                                        f"{_sp.get('_archetype_name', '?')}). "
-                                        f"Root cause: {_drop_root_cause}."
-                                    ),
-                                    "confidence": 0.85,
-                                    "questions_fixed": 1,
-                                    "questions_at_risk": 0,
-                                    "net_impact": 0.85,
-                                    "kit_id": _sp.get("kit_id", ""),
-                                    "target_qids": _sp.get("target_qids", []),
-                                    "rca_id": _sp.get("rca_id", ""),
-                                    "_archetype_name": _sp.get("_archetype_name", ""),
-                                    "_cluster_id": _sp.get("_cluster_id", ""),
-                                    "provenance": {
-                                        "synthesis_source": "forced_lever5_drop",
-                                        "drop_root_cause": _drop_root_cause,
-                                        "kit_id": _sp.get("kit_id", ""),
-                                        "target_qids": _sp.get("target_qids", []),
-                                    },
-                                }
-                                all_proposals.append(_forced_proposal)
-                                logger.info(
-                                    "P3: forced structural synthesis succeeded "
-                                    "for AG=%s root_cause=%s archetype=%s",
-                                    ag_id, _drop_root_cause,
-                                    _sp.get("_archetype_name", "?"),
-                                )
-                            else:
-                                _nsc = no_structural_candidate_record(
-                                    run_id=run_id,
-                                    iteration=iteration_counter,
-                                    ag_id=str(ag_id),
-                                    cluster_id=str(
-                                        _drop_cluster.get("cluster_id") or ""
-                                    ),
-                                    rca_id=_l5_ag_rca_id,
-                                    root_cause=_drop_root_cause,
-                                    target_qids=tuple(
-                                        str(q) for q in (
-                                            ag.get("affected_questions") or []
-                                        )
-                                        if str(q)
-                                    ),
-                                    attempted_archetypes=(
-                                        _synth_result.attempted_archetypes
-                                    ),
-                                )
-                                _current_iter_inputs.setdefault(
-                                    "decision_records", []
-                                ).append(_nsc.to_dict())
-                                try:
-                                    from genie_space_optimizer.optimization.run_analysis_contract import (
-                                        no_structural_candidate_marker,
-                                    )
-                                    print(no_structural_candidate_marker(
-                                        ag_id=str(ag_id),
-                                        iteration=iteration_counter,
-                                        attempted_archetypes=(
-                                            _synth_result.attempted_archetypes
-                                        ),
-                                    ), flush=True)
-                                except Exception:
-                                    logger.debug(
-                                        "P4: no_structural_candidate_marker emit "
-                                        "failed (non-fatal)",
-                                        exc_info=True,
-                                    )
-                                logger.info(
-                                    "P3: forced structural synthesis produced no "
-                                    "candidate for AG=%s root_cause=%s "
-                                    "skipped=%s archetypes=%s",
-                                    ag_id, _drop_root_cause,
-                                    _synth_result.skipped_reason,
-                                    _synth_result.attempted_archetypes,
                                 )
                     except Exception:
                         _phase_b_producer_exceptions[
@@ -22921,8 +22792,8 @@ def _run_lever_loop(
                             ) + 1
                         )
                         logger.debug(
-                            "P3: forced-structural-synthesis at L5 drop "
-                            "site failed (non-fatal)",
+                            "P3: forced-structural-synthesis dispatch failed "
+                            "(non-fatal)",
                             exc_info=True,
                         )
                         if _phase_b_strict_mode():
