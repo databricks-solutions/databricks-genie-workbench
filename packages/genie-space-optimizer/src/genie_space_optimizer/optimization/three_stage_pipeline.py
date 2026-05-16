@@ -34,6 +34,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
+from genie_space_optimizer.optimization.proposal_canonicalize import (
+    canonicalize_stage_2_proposal,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,7 +86,7 @@ def _stage_2_l4(bundle: "ActivationBundle", w: Any) -> dict:
         hints.append({"table": targets[0], "source": "stage_1_discovery"})
 
     try:
-        proposals = _call_llm_for_join_discovery(
+        raw_proposals = _call_llm_for_join_discovery(
             bundle.metadata_snapshot, hints, w=w,
             raw_evidence=bundle.raw_evidence,
         )
@@ -97,10 +101,18 @@ def _stage_2_l4(bundle: "ActivationBundle", w: Any) -> dict:
             "proposals": [],
             "error": "L4 LLM call failed",
         }
+    proposals = [
+        canonicalize_stage_2_proposal(
+            p, skill_id=bundle.skill_id, target="",
+            patch_type="add_join_spec",
+        )
+        for p in (raw_proposals or [])
+        if isinstance(p, dict)
+    ]
     return {
         "skill_id": bundle.skill_id,
         "ag_id": bundle.ag_id,
-        "proposals": proposals or [],
+        "proposals": proposals,
     }
 
 
@@ -134,8 +146,10 @@ def _stage_2_l1(bundle: "ActivationBundle", w: Any) -> dict:
                 )
                 continue
             if p:
-                p = {**p, "_target": target, "_patch_type": patch_type}
-                proposals.append(p)
+                proposals.append(canonicalize_stage_2_proposal(
+                    p, skill_id=bundle.skill_id, target=target,
+                    patch_type=patch_type,
+                ))
     return {
         "skill_id": bundle.skill_id,
         "ag_id": bundle.ag_id,
@@ -168,8 +182,10 @@ def _stage_2_l2(bundle: "ActivationBundle", w: Any) -> dict:
                 )
                 continue
             if p:
-                p = {**p, "_target": target}
-                proposals.append(p)
+                proposals.append(canonicalize_stage_2_proposal(
+                    p, skill_id=bundle.skill_id, target=target,
+                    patch_type="add_column_description",
+                ))
     return {
         "skill_id": bundle.skill_id,
         "ag_id": bundle.ag_id,
@@ -198,8 +214,10 @@ def _stage_2_l3(bundle: "ActivationBundle", w: Any) -> dict:
                 )
                 continue
             if p:
-                p = {**p, "_target": target}
-                proposals.append(p)
+                proposals.append(canonicalize_stage_2_proposal(
+                    p, skill_id=bundle.skill_id, target=target,
+                    patch_type="add_tvf_description",
+                ))
     return {
         "skill_id": bundle.skill_id,
         "ag_id": bundle.ag_id,
@@ -240,10 +258,15 @@ def _stage_2_l5a(bundle: "ActivationBundle", w: Any) -> dict:
     return {
         "skill_id": bundle.skill_id,
         "ag_id": bundle.ag_id,
-        "proposals": [{
-            "instruction_text": result["instruction_text"],
-            "rationale": result.get("rationale", ""),
-        }],
+        "proposals": [canonicalize_stage_2_proposal(
+            {
+                "instruction_text": result["instruction_text"],
+                "rationale": result.get("rationale", ""),
+            },
+            skill_id=bundle.skill_id,
+            target="",
+            patch_type="add_instruction",
+        )],
     }
 
 
@@ -266,7 +289,13 @@ def _stage_2_l5b(bundle: "ActivationBundle", w: Any) -> dict:
             w=w,
             benchmark_corpus=None,
         )
-        proposals.extend(per_cluster or [])
+        for sub in (per_cluster or []):
+            proposals.append(canonicalize_stage_2_proposal(
+                sub,
+                skill_id=bundle.skill_id,
+                target="",
+                patch_type="add_example_sql",
+            ))
     return {
         "skill_id": bundle.skill_id,
         "ag_id": bundle.ag_id,
@@ -313,7 +342,12 @@ def _stage_2_l6(
             )
             continue
         if p is not None:
-            proposals.append(p)
+            proposals.append(canonicalize_stage_2_proposal(
+                p,
+                skill_id=bundle.skill_id,
+                target=str(p.get("target") or ""),
+                patch_type=str(p.get("patch_type") or ""),
+            ))
     return {
         "skill_id": bundle.skill_id,
         "ag_id": bundle.ag_id,

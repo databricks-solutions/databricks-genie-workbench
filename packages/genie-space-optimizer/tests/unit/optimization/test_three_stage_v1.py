@@ -1241,8 +1241,12 @@ def test_stage_2_l6_returns_proposal_per_cluster(monkeypatch):
     def _fake_l6(cluster, metadata_snapshot, *, strategist_hints=None,
                  w=None, spark=None, catalog="", gold_schema="",
                  warehouse_id="", benchmarks=None, **kwargs):
+        # Must be a canonical proposal: contract-first hardening
+        # requires patch_type + target on every Stage-2 output.
         return {"snippet_type": "filter", "sql": "x = 1",
-                 "instruction": "for X questions"}
+                 "instruction": "for X questions",
+                 "patch_type": "add_sql_snippet_filter",
+                 "target": "mv.fact.x"}
     monkeypatch.setattr(optimizer, "_generate_lever6_proposal", _fake_l6)
 
     bundle = _sample_bundle("lever-6-sql-expression")

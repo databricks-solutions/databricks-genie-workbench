@@ -927,8 +927,12 @@ def test_stage_2_l6_forwards_raw_evidence(monkeypatch):
                   w=None, spark=None, catalog="", gold_schema="",
                   warehouse_id="", benchmarks=None, raw_evidence=()):
         received["raw_evidence"] = raw_evidence
+        # Must be a canonical proposal: contract-first hardening
+        # requires patch_type + target.
         return {"snippet_type": "filter", "sql": "x = 1",
-                 "instruction": "x"}
+                 "instruction": "x",
+                 "patch_type": "add_sql_snippet_filter",
+                 "target": "mv.fact.x"}
     monkeypatch.setattr(optimizer, "_generate_lever6_proposal", _fake_l6)
 
     triples = ({"question_id": "Q", "trace_id": "", "question": "q",
