@@ -1286,3 +1286,80 @@ def test_dump_three_stage_capture_summary_safe_when_no_state():
     assert isinstance(snap, dict)
     assert snap["discovery_calls"] == 0
     assert all(c == 0 for c in snap["skill_dispatches"].values())
+
+
+# ── Section: Rich skill_catalogue renderer ────────────────────────────
+
+
+def test_render_rich_skill_catalogue_includes_description_and_when_to_pick():
+    """Each line in the rendered catalogue must carry the skill_id,
+    the description, and the when_to_pick guidance pulled from
+    SKILL.md frontmatter."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+    rendered = _render_rich_skill_catalogue()
+    assert "lever-4-join-discovery" in rendered
+    assert "join_specs" in rendered, (
+        "lever-4 description must mention join_specs"
+    )
+    assert "Pick when:" in rendered, (
+        "every entry must carry a 'Pick when:' line"
+    )
+    assert "What:" in rendered, (
+        "every entry must carry a 'What:' line"
+    )
+
+
+def test_render_rich_skill_catalogue_emits_one_block_per_pickable_skill():
+    from genie_space_optimizer.common.config import _THREE_STAGE_SKILL_NAMES
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+    rendered = _render_rich_skill_catalogue()
+    for sid in _THREE_STAGE_SKILL_NAMES:
+        assert sid in rendered, f"skill {sid} missing from rich catalogue"
+
+
+def test_render_rich_skill_catalogue_is_deterministic_across_calls():
+    """Two back-to-back calls return byte-identical output. The loader
+    caches in-process; this guards against accidental ordering or
+    formatting non-determinism in the renderer itself."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+    a = _render_rich_skill_catalogue()
+    b = _render_rich_skill_catalogue()
+    assert a == b
+
+
+def test_render_rich_skill_catalogue_falls_back_to_bare_id_when_metadata_missing(
+    tmp_path,
+):
+    """If a skill's SKILL.md is missing description/when_to_pick (e.g.
+    a new skill landed without updating frontmatter), the renderer
+    MUST emit a bare-ID bullet for that skill instead of raising.
+    Stage-1 is more robust with bare-IDs-for-some than with a hard
+    crash."""
+    from genie_space_optimizer.skills._loader import SkillLoader
+    from genie_space_optimizer.optimization import three_stage_pipeline
+    skill_dir = tmp_path / "lever-x-no-meta"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "skill_id: lever-x-no-meta\n"
+        "prompt_constant_name: NOT_USED\n"
+        "causal_or_non_causal: causal\n"
+        "pickable_by_stage_1: true\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    test_loader = SkillLoader(root=tmp_path)
+    rendered = three_stage_pipeline._render_rich_skill_catalogue(
+        skill_ids=("lever-x-no-meta",),
+        loader=test_loader,
+    )
+    assert rendered == "- lever-x-no-meta", (
+        f"missing-metadata fallback must be bare-id bullet, got: {rendered!r}"
+    )

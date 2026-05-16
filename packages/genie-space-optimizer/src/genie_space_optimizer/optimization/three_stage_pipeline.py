@@ -41,6 +41,73 @@ from genie_space_optimizer.optimization.proposal_canonicalize import (
 logger = logging.getLogger(__name__)
 
 
+# ── Plan 3 / Stage-1 catalogue rendering ─────────────────────────────
+
+
+def _render_rich_skill_catalogue(
+    skill_ids: tuple[str, ...] | None = None,
+    loader: Any = None,
+) -> str:
+    """Render the Stage-1 ``{{ skill_catalogue }}`` slot with rich
+    per-skill routing aid.
+
+    Each pickable skill becomes a 3-line block:
+
+        - <skill_id>
+            What: <description>
+            Pick when: <when_to_pick>
+
+    When a skill's SKILL.md is missing ``description`` or
+    ``when_to_pick`` frontmatter (regression safety — a new skill
+    might land without updating its metadata), the renderer falls
+    back to a bare ``- <skill_id>`` bullet for that skill so the rest
+    of the catalogue is unaffected.
+
+    Args:
+        skill_ids: tuple of skill_ids to render. Defaults to
+            ``_THREE_STAGE_SKILL_NAMES`` (production behavior).
+            Tests can pass a synthetic tuple to exercise edge cases
+            without touching the real registry.
+        loader: ``SkillLoader`` instance. Defaults to the
+            module-level ``_SKILL_LOADER`` (production behavior).
+            Tests can pass a loader pointed at a ``tmp_path`` root.
+
+    Returns:
+        Newline-joined string suitable for substitution into the
+        Stage-1 prompt's ``{{ skill_catalogue }}`` variable.
+    """
+    from genie_space_optimizer.common.config import _THREE_STAGE_SKILL_NAMES
+    from genie_space_optimizer.skills._loader import _SKILL_LOADER
+
+    if skill_ids is None:
+        skill_ids = tuple(sorted(_THREE_STAGE_SKILL_NAMES))
+    if loader is None:
+        loader = _SKILL_LOADER
+
+    lines: list[str] = []
+    for sid in sorted(skill_ids):
+        try:
+            meta = loader.load_metadata(sid) or {}
+        except Exception:
+            logger.warning(
+                "rich skill catalogue: metadata load failed for %s — "
+                "emitting bare-id bullet", sid, exc_info=True,
+            )
+            lines.append(f"- {sid}")
+            continue
+        desc = (meta.get("description") or "").strip()
+        when = (meta.get("when_to_pick") or "").strip()
+        if desc and when:
+            lines.append(
+                f"- {sid}\n"
+                f"    What: {desc}\n"
+                f"    Pick when: {when}"
+            )
+        else:
+            lines.append(f"- {sid}")
+    return "\n".join(lines)
+
+
 # ── Stage-2 adapters ──────────────────────────────────────────────────
 
 
