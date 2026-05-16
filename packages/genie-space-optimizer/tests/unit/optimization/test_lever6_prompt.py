@@ -69,3 +69,93 @@ def test_generate_lever6_proposal_passes_max_tokens_to_llm_call(monkeypatch):
     assert captured.get("max_tokens") == config.LEVER_6_MAX_TOKENS, (
         f"Expected max_tokens={config.LEVER_6_MAX_TOKENS}, got {captured.get('max_tokens')!r}"
     )
+
+
+def test_lever6_rejects_proposal_with_affected_questions_outside_cluster(monkeypatch):
+    """A Lever-6 proposal whose affected_questions contains an ID not in the
+    cluster's question_ids must be rejected with proposal=None.
+
+    Empirical baseline (2026-05-17-lever6-empirical-baseline.md): 7/48 Trial-5
+    lever-6 calls generated valid JSON that contained ["H001", "H002"]
+    (cluster IDs) instead of real question IDs. The applier downstream
+    silently dropped these — this test forces the rejection to happen
+    inside _generate_lever6_proposal so the trace records why.
+    """
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_traced_llm_call(w, system_msg, prompt, *, span_name, **kwargs):
+        # Simulate the exact failure pattern from Trial-5: model returns
+        # valid JSON but affected_questions = ["H001", "H002"] (cluster IDs).
+        return (
+            '{"snippet_type": "measure", "display_name": "X", "alias": "x", '
+            '"sql": "SUM(tkt_document.TOTAL_FARE_USD_AMT)", "synonyms": [], '
+            '"instruction": "i", "rationale": "r", '
+            '"target_table": "tkt_document", '
+            '"affected_questions": ["H001", "H002"]}',
+            None,
+        )
+
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_traced_llm_call)
+    # Bypass SQL identifier validation — we want to test the affected_questions
+    # gate specifically, not get rejected by an unrelated validator.
+    monkeypatch.setattr(
+        optimizer, "_validate_sql_identifiers", lambda sql, allow: (True, []),
+    )
+
+    cluster = {
+        "cluster_id": "H001",
+        "root_cause": "missing_filter",
+        "question_ids": ["q42", "q43"],       # real qids — H001 is the CLUSTER id
+        "question_traces": [{"q": "q42"}, {"q": "q43"}],
+    }
+    result = optimizer._generate_lever6_proposal(
+        cluster,
+        metadata_snapshot={"data_sources": {"tables": []}},
+        w=None,
+    )
+    assert result is None, (
+        "Expected None (proposal rejected) when affected_questions contains "
+        f"IDs outside cluster.question_ids; got: {result!r}"
+    )
+
+
+def test_lever6_accepts_proposal_with_affected_questions_subset(monkeypatch):
+    """The positive complement of the above: a proposal whose affected_questions
+    is a subset of cluster.question_ids must NOT be rejected by this gate.
+    """
+    from genie_space_optimizer.optimization import optimizer
+
+    def _fake_traced_llm_call(w, system_msg, prompt, *, span_name, **kwargs):
+        return (
+            '{"snippet_type": "measure", "display_name": "X", "alias": "x", '
+            '"sql": "SUM(tkt_document.TOTAL_FARE_USD_AMT)", "synonyms": [], '
+            '"instruction": "i", "rationale": "r", '
+            '"target_table": "tkt_document", '
+            '"affected_questions": ["q42"]}',
+            None,
+        )
+
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_traced_llm_call)
+    monkeypatch.setattr(
+        optimizer, "_validate_sql_identifiers", lambda sql, allow: (True, []),
+    )
+
+    cluster = {
+        "cluster_id": "H001",
+        "root_cause": "missing_filter",
+        "question_ids": ["q42", "q43"],
+        "question_traces": [{"q": "q42"}, {"q": "q43"}],
+    }
+    result = optimizer._generate_lever6_proposal(
+        cluster,
+        metadata_snapshot={"data_sources": {"tables": []}},
+        w=None,
+    )
+    # With monkeypatched _validate_sql_identifiers we expect to reach the
+    # dedupe step which short-circuits on empty existing. Concretely: with
+    # metadata_snapshot.sql_snippets absent, dedupe is a no-op and the
+    # function returns a proposal dict, not None.
+    assert isinstance(result, dict), (
+        f"Expected dict (proposal accepted), got: {result!r}"
+    )
+    assert result["affected_questions"] == ["q42"]

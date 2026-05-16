@@ -12916,6 +12916,27 @@ def _generate_lever6_proposal(
             logger.warning("Lever 6 LLM returned invalid snippet_type: %s", snippet_type)
             return None
 
+        # G2 (2026-05-17 lever-6 hardening plan, Task 2) — reject proposals
+        # whose affected_questions contains IDs outside the cluster's
+        # question_ids. Trial-5 baseline: 15% of lever-6 proposals were
+        # post-rejected by the applier for this reason. See
+        # docs/prompt_improvements/2026-05-17-lever6-empirical-baseline.md
+        raw_aq = llm_result.get("affected_questions", []) or []
+        aq_set = {str(q).strip() for q in raw_aq if str(q).strip()}
+        valid_qids = {
+            str(q).strip()
+            for q in (cluster.get("question_ids") or [])
+            if str(q).strip()
+        }
+        if aq_set and valid_qids and not aq_set.issubset(valid_qids):
+            extra = sorted(aq_set - valid_qids)
+            logger.warning(
+                "Lever 6 [%s]: affected_questions contains IDs outside cluster.question_ids: %s "
+                "(valid: %s) — rejecting proposal",
+                cluster.get("cluster_id", "?"), extra, sorted(valid_qids),
+            )
+            return None
+
         sql_raw = llm_result.get("sql", "")
         if not sql_raw:
             logger.warning("Lever 6 LLM returned empty sql")

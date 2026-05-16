@@ -115,6 +115,7 @@ improve the identified questions.  Choose the most appropriate type:
 ```
 
 Rules:
+- ``affected_questions`` MUST be a subset of the ``question_ids`` array inside the cluster JSON shown above. The cluster's ``cluster_id`` (e.g. ``"H001"``, ``"AG_PIPELINE"``) is NOT a question ID — never put it in ``affected_questions``. If the cluster shows ``"question_ids": ["q42", "q43"]``, valid values for ``affected_questions`` are subsets of ``["q42", "q43"]``. Empty array is allowed if no specific question maps to this snippet.
 - ALL column references MUST use table_name.column_name syntax (e.g. `mv_sales.revenue`, NOT bare `revenue`). The Genie API rejects bare column names.
 - The SQL MUST reference only tables and columns that exist in the schema.
 - For measures: SQL must be a valid aggregation expression (SUM, COUNT, AVG, etc.).
