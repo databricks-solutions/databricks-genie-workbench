@@ -14272,6 +14272,53 @@ def _resolve_ag_id_for_cluster(
     return None
 
 
+def _drain_l5b_rich_path_after_stage2(
+    *,
+    run_id: str,
+    iteration: int,
+    action_groups: list[dict],
+    decision_emit_fn: Callable[[Any], None],
+) -> None:
+    """Plan B Task 7 — composition wrapper around the L5b rich-path
+    decline drain.
+
+    Called once per iteration from ``_run_lever_loop`` immediately
+    after ``action_groups`` materializes. Composes
+    :func:`_emit_l5b_rich_path_decline_records` with
+    :func:`_resolve_ag_id_for_cluster` so the iteration body only
+    has to pass its already-in-scope values:
+
+      - ``run_id``: the run identifier (a parameter of
+        ``_run_lever_loop``).
+      - ``iteration``: the current ``iteration_counter`` value.
+      - ``action_groups``: the canonically-sorted AG list emitted by
+        ``_sort_ags_rco7_site1`` upstream. The wrapper builds the
+        resolver lambda internally to ensure callers can't accidentally
+        pass a stale reference.
+      - ``decision_emit_fn``: the iteration body's ``_decision_emit``
+        closure in production; a list-append callable in tests.
+
+    The drain is a no-op when ``_L5B_RICH_PATH_DECLINES`` is empty,
+    so this call is safe to fire on every iteration regardless of the
+    ``GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE`` flag state. Under the
+    default flag-OFF the ledger is never populated, so the drain
+    short-circuits and the iteration body's behaviour is unchanged.
+
+    The wrapper does NOT mutate ``action_groups`` — it only reads
+    ``source_cluster_ids`` through the resolver helper. This invariant
+    is pinned by
+    ``test_drain_wrapper_does_not_mutate_action_groups``.
+    """
+    _emit_l5b_rich_path_decline_records(
+        run_id=run_id,
+        iteration=iteration,
+        ag_id_resolver=lambda cid: _resolve_ag_id_for_cluster(
+            cid, action_groups=action_groups,
+        ),
+        emit_decision_record=decision_emit_fn,
+    )
+
+
 def _analyze_and_distribute(
     spark: Any,
     run_id: str,
