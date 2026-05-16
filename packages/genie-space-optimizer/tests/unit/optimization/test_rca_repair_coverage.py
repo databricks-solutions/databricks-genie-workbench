@@ -49,3 +49,27 @@ def test_assert_full_coverage_raises_when_a_kind_is_missing():
 
 def test_assert_full_coverage_passes_on_real_matrix():
     assert assert_full_coverage(RCA_REPAIR_MATRIX) is None
+
+
+def test_every_lever_6_preferred_kind_has_non_lever_6_fallback():
+    """When the preferred repair is a lever-6 SQL snippet (the most
+    likely to decline because it requires the LLM to synthesize a
+    correct snippet from the RCA card), the matrix MUST also list a
+    non-lever-6 fallback. Otherwise rotation exhausts immediately and
+    the loop stalemate-escalates without ever trying a different lever.
+    """
+    offenders: list[str] = []
+    for rca_kind, pairs in RCA_REPAIR_MATRIX.items():
+        if not pairs:
+            continue
+        preferred_lever = pairs[0][0]
+        if preferred_lever != 6:
+            continue
+        non_six_levers = {lever for lever, _ in pairs[1:] if lever != 6}
+        if not non_six_levers:
+            offenders.append(rca_kind.value)
+
+    assert not offenders, (
+        f"RcaKinds with lever-6 preferred and no non-lever-6 fallback: "
+        f"{sorted(offenders)}"
+    )
