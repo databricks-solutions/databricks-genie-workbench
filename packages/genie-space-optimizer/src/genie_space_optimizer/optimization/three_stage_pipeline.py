@@ -375,6 +375,9 @@ def _stage_2_l1(bundle: "ActivationBundle", w: Any) -> dict:
     from genie_space_optimizer.optimization.optimizer import (
         _call_llm_for_proposal,
     )
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever12ColumnOutput,
+    )
     proposals: list[dict] = []
     for target in (bundle.target_objects or ("",)):
         patch_type, _ = _patch_type_for_target(target)
@@ -384,6 +387,7 @@ def _stage_2_l1(bundle: "ActivationBundle", w: Any) -> dict:
                     cluster_afs, bundle.metadata_snapshot,
                     patch_type, lever=1, w=w,
                     raw_evidence=bundle.raw_evidence,
+                    response_model=Lever12ColumnOutput,
                 )
             except Exception:
                 logger.warning(
@@ -412,6 +416,9 @@ def _stage_2_l2(bundle: "ActivationBundle", w: Any) -> dict:
     from genie_space_optimizer.optimization.optimizer import (
         _call_llm_for_proposal,
     )
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever12ColumnOutput,
+    )
     proposals: list[dict] = []
     for target in (bundle.target_objects or ("",)):
         for cluster_afs in bundle.cluster_afs:
@@ -420,6 +427,7 @@ def _stage_2_l2(bundle: "ActivationBundle", w: Any) -> dict:
                     cluster_afs, bundle.metadata_snapshot,
                     "add_column_description", lever=2, w=w,
                     raw_evidence=bundle.raw_evidence,
+                    response_model=Lever12ColumnOutput,
                 )
             except Exception:
                 logger.warning(

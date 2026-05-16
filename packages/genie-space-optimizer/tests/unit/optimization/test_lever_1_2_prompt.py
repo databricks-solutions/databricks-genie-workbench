@@ -136,3 +136,98 @@ def test_lever_1_2_prompt_drops_dead_full_schema_section():
     assert "{{ full_schema_context }}" not in prompt
     assert "## Structured Table Metadata" in prompt
     assert "## Structured Column Metadata" in prompt
+
+
+def test_lever_1_2_format_kwargs_returns_only_template_slots():
+    """The new _lever_1_2_format_kwargs helper must return ONLY the 9
+    keys the L1/L2 template references."""
+    from genie_space_optimizer.optimization.optimizer import _lever_1_2_format_kwargs
+
+    cluster = {
+        "cluster_id": "c1",
+        "asi_failure_type": "wrong_column",
+        "asi_blame_set": ["catalog.schema.dim_store.location_id"],
+        "question_ids": ["q1"],
+        "asi_counterfactual_fixes": ["Add synonym 'store id'"],
+        "structural_diff": {"wrong_columns": [{"actual": "store_id", "expected": "location_id"}]},
+    }
+    metadata_snapshot = {
+        "tables": [
+            {
+                "name": "catalog.schema.dim_store",
+                "column_configs": [
+                    {"name": "location_id", "enable_entity_matching": True}
+                ],
+            }
+        ],
+        "data_sources": {},
+        "instructions": {},
+    }
+
+    kwargs = _lever_1_2_format_kwargs(
+        cluster=cluster,
+        metadata_snapshot=metadata_snapshot,
+        lever=1,
+        raw_evidence=(),
+    )
+
+    expected_keys = {
+        "failure_type",
+        "blame_set",
+        "affected_questions",
+        "counterfactual_fixes",
+        "raw_evidence_block",
+        "sql_diffs",
+        "identifier_allowlist",
+        "structured_table_context",
+        "structured_column_context",
+    }
+    assert set(kwargs.keys()) == expected_keys, (
+        f"_lever_1_2_format_kwargs returned {set(kwargs.keys())}; "
+        f"expected exactly {expected_keys}"
+    )
+
+
+def test_lever_1_2_format_kwargs_drops_dead_weight_keys():
+    """Regression guard — none of the 17 dead-weight keys may appear."""
+    from genie_space_optimizer.optimization.optimizer import _lever_1_2_format_kwargs
+
+    cluster = {
+        "cluster_id": "c1",
+        "asi_failure_type": "wrong_column",
+        "asi_blame_set": [],
+        "question_ids": [],
+        "structural_diff": {},
+    }
+    metadata_snapshot = {"tables": [], "data_sources": {}, "instructions": {}}
+
+    kwargs = _lever_1_2_format_kwargs(
+        cluster=cluster,
+        metadata_snapshot=metadata_snapshot,
+        lever=1,
+        raw_evidence=(),
+    )
+
+    dead_keys = {
+        "severity",
+        "current_metadata",
+        "patch_type_description",
+        "failures_context",
+        "current_join_specs",
+        "table_relationships",
+        "current_column_configs",
+        "full_schema_context",
+        "string_column_count",
+        "max_value_dictionary_cols",
+        "current_dictionary_count",
+        "current_instructions",
+        "existing_example_sqls",
+        "instruction_char_budget",
+        "table_names",
+        "mv_names",
+        "tvf_names",
+    }
+    overlap = dead_keys & set(kwargs.keys())
+    assert overlap == set(), (
+        f"_lever_1_2_format_kwargs leaked dead-weight keys: {overlap}"
+    )

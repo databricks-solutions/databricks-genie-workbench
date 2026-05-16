@@ -476,6 +476,8 @@ def test_lever_1_2_prompt_renders_with_empty_raw_evidence_block():
         tvf_names=[], structured_table_context="",
         structured_column_context="",
         raw_evidence_block="",
+        # 2026-05-17-lever-1-2-column-prompt-hardening Task 4
+        counterfactual_fixes=[],
     )
     assert "{{" not in rendered, "unrendered template variable"
 
@@ -500,6 +502,8 @@ def test_lever_1_2_prompt_renders_anti_anchoring_when_evidence_provided():
         tvf_names=[], structured_table_context="",
         structured_column_context="",
         raw_evidence_block=block,
+        # 2026-05-17-lever-1-2-column-prompt-hardening Task 4
+        counterfactual_fixes=[],
     )
     assert "COMMON" in rendered
     assert "Example 1 of 3" in rendered
@@ -737,7 +741,7 @@ def test_stage_2_l1_forwards_raw_evidence(monkeypatch):
 
     received_kwargs: list[dict] = []
     def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
-               *, raw_evidence=()):
+               *, raw_evidence=(), **_):
         received_kwargs.append({"raw_evidence": raw_evidence,
                                   "lever": lever})
         return {"proposed_value": "x", "rationale": "y"}
@@ -763,7 +767,7 @@ def test_stage_2_l1_empty_raw_evidence_passes_empty_tuple(monkeypatch):
 
     received_kwargs: list[dict] = []
     def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
-               *, raw_evidence=()):
+               *, raw_evidence=(), **_):
         received_kwargs.append({"raw_evidence": raw_evidence})
         return {"proposed_value": "x", "rationale": "y"}
     monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
@@ -788,7 +792,7 @@ def test_stage_2_for_skill_uses_raw_evidence_unconditionally(monkeypatch):
 
     captured = {"on_count": 0, "off_count": 0}
     def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
-               *, raw_evidence=()):
+               *, raw_evidence=(), **_):
         if raw_evidence:
             captured["on_count"] += 1
             return {"proposed_value": "on", "rationale": "on"}
@@ -821,7 +825,7 @@ def test_stage_2_for_skill_default_off_uses_off_only(monkeypatch):
 
     captured = {"calls": 0}
     def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
-               *, raw_evidence=()):
+               *, raw_evidence=(), **_):
         captured["calls"] += 1
         return {"proposed_value": "x", "rationale": "x"}
     monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
@@ -863,7 +867,7 @@ def test_stage_2_l2_l3_forward_raw_evidence(monkeypatch):
 
     seen: list[tuple[int, tuple]] = []
     def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
-               *, raw_evidence=()):
+               *, raw_evidence=(), **_):
         seen.append((lever, raw_evidence))
         return {"proposed_value": "x", "rationale": "y"}
     monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)

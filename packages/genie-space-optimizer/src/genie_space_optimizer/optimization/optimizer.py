@@ -8277,6 +8277,63 @@ def _format_raw_evidence_block(raw_evidence: tuple[dict, ...]) -> str:
     return "\n\n".join(parts)
 
 
+def _lever_1_2_format_kwargs(
+    *,
+    cluster: dict,
+    metadata_snapshot: dict,
+    lever: int,
+    raw_evidence: tuple[dict, ...] = (),
+) -> dict[str, Any]:
+    """Build the format_kwargs for the L1/L2 column-refinement prompt.
+
+    Returns ONLY the 9 slots the LEVER_1_2_COLUMN_PROMPT template
+    references. Prunes the 17 dead-weight keys the shared
+    _call_llm_for_proposal historically supplied (failures_context,
+    current_join_specs, table_names, etc.) — they were carried over
+    from levers 3/4/5 and the L1/L2 template never used them.
+
+    Plan: 2026-05-17-lever-1-2-column-prompt-hardening.md Task 8
+    """
+    from genie_space_optimizer.optimization.afs import format_afs
+
+    _afs = format_afs(cluster)
+    sql_diffs = json.dumps(_afs.get("structural_diff", {}), default=str)
+
+    blame = cluster.get("asi_blame_set")
+    if not blame:
+        blame = _derive_blame_from_sql(cluster)
+
+    # Blame-scoped allowlist (Task 9 — restricts identifier set to objects
+    # relevant to this cluster's failure, reducing prompt token cost).
+    _relevant_objects: set[str] = set(blame) if blame else set()
+    for entry in list(_relevant_objects):
+        if isinstance(entry, str) and entry.count(".") >= 3:
+            parent_table = ".".join(entry.split(".")[:3])
+            _relevant_objects.add(parent_table)
+    _allowlist = _build_identifier_allowlist(
+        metadata_snapshot,
+        relevant_objects=_relevant_objects or None,
+    )
+
+    return {
+        "failure_type": cluster.get(
+            "asi_failure_type", cluster.get("root_cause", "")
+        ),
+        "blame_set": blame or "",
+        "affected_questions": cluster.get("question_ids", []),
+        "counterfactual_fixes": cluster.get("asi_counterfactual_fixes", []),
+        "raw_evidence_block": _format_raw_evidence_block(raw_evidence),
+        "sql_diffs": sql_diffs,
+        "identifier_allowlist": _format_identifier_allowlist(_allowlist),
+        "structured_column_context": _format_structured_column_context(
+            metadata_snapshot, blame, lever,
+        ),
+        "structured_table_context": _format_structured_table_context(
+            metadata_snapshot, blame, lever,
+        ),
+    }
+
+
 def _call_llm_for_proposal(
     cluster: dict,
     metadata_snapshot: dict,
@@ -8294,6 +8351,58 @@ def _call_llm_for_proposal(
     ``example_question``, ``example_sql``, ``target_table``, etc.
     """
     from genie_space_optimizer.optimization.applier import _get_general_instructions
+
+    # Plan 2026-05-17-lever-1-2-column-prompt-hardening Task 8 — L1/L2
+    # fast path. Builds ONLY the 9 slots the LEVER_1_2_COLUMN_PROMPT
+    # template actually references (drops 17 dead-weight keys carried
+    # over from levers 3/4/5). Uses the L1/L2-specific system message
+    # and explicit max_tokens. Routes through _traced_llm_call only when
+    # a response_model is supplied — otherwise stays on the legacy
+    # _call_llm_openai path so existing tests that mock the OpenAI
+    # client at the llm_client layer continue to work.
+    if lever in (1, 2):
+        from genie_space_optimizer.common.config import (
+            LEVER_1_2_MAX_TOKENS,
+            LEVER_1_2_SYSTEM_MSG,
+        )
+        from genie_space_optimizer.optimization.evaluation import (
+            _extract_json,
+            _link_prompt_to_trace,
+        )
+
+        format_kwargs = _lever_1_2_format_kwargs(
+            cluster=cluster,
+            metadata_snapshot=metadata_snapshot,
+            lever=lever,
+            raw_evidence=raw_evidence,
+        )
+        prompt = format_mlflow_template(LEVER_1_2_COLUMN_PROMPT, **format_kwargs)
+        _link_prompt_to_trace("lever_1_2_column")
+
+        if response_model is not None:
+            text, _response = _traced_llm_call(
+                w,
+                LEVER_1_2_SYSTEM_MSG,
+                prompt,
+                span_name=f"lever_{lever}_column_proposal",
+                max_tokens=LEVER_1_2_MAX_TOKENS,
+                response_model=response_model,
+            )
+        else:
+            text, _response = _call_llm_openai(
+                w,
+                messages=[
+                    {"role": "system", "content": LEVER_1_2_SYSTEM_MSG},
+                    {"role": "user", "content": prompt},
+                ],
+                max_retries=LLM_MAX_RETRIES,
+                temperature=LLM_TEMPERATURE,
+                max_tokens=LEVER_1_2_MAX_TOKENS,
+            )
+        parsed = _extract_json(text)
+        if isinstance(parsed, dict):
+            return parsed
+        return {"raw_text": text}
 
     prompt_map = {
         1: LEVER_1_2_COLUMN_PROMPT,
