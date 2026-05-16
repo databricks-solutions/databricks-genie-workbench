@@ -5,6 +5,8 @@ causal_or_non_causal: causal
 pickable_by_stage_1: true
 description: Add a reusable SQL expression (measure / filter / dimension) to the knowledge store.
 when_to_pick: Failure is a concrete missing measure, filter, or dimension that can be expressed as a single reusable SQL snippet at the MV level.
+target_kind: metric_view
+target_min_count: 0
 ---
 <unified_rca_engine_contract>
 ## Unified RCA engine contract

@@ -100,6 +100,38 @@ def test_loaded_lever_1_2_column_prompt_matches_loader_output():
     assert cfg.LEVER_1_2_COLUMN_PROMPT == body
 
 
+_VALID_TARGET_KINDS = {"base_table", "metric_view", "function", "mixed"}
+
+
+@pytest.mark.parametrize("skill_id", sorted([
+    "lever-1-table-column-description",
+    "lever-2-mv-column-refinement",
+    "lever-3-tvf-routing",
+    "lever-4-join-discovery",
+    "lever-5a-instructions",
+    "lever-5b-example-sql",
+    "lever-6-sql-expression",
+]))
+def test_pickable_skill_frontmatter_has_target_kind_and_min_count(skill_id: str):
+    """Every Stage-1-pickable skill must declare target_kind and
+    target_min_count. The renderer surfaces them in the Stage-1 prompt's
+    skill_catalogue slot; the Stage-1 post-validation coerces picks
+    against them. Missing keys would silently regress routing."""
+    from genie_space_optimizer.skills._loader import SkillLoader
+    loader = SkillLoader()
+    meta = loader.load_metadata(skill_id)
+    target_kind = meta.get("target_kind")
+    assert target_kind in _VALID_TARGET_KINDS, (
+        f"{skill_id} has target_kind={target_kind!r}; "
+        f"must be one of {sorted(_VALID_TARGET_KINDS)}"
+    )
+    target_min_count = meta.get("target_min_count")
+    assert isinstance(target_min_count, int) and target_min_count >= 0, (
+        f"{skill_id} has target_min_count={target_min_count!r}; "
+        f"must be a non-negative int"
+    )
+
+
 @pytest.mark.parametrize("skill_id", sorted([
     "lever-1-table-column-description",
     "lever-2-mv-column-refinement",

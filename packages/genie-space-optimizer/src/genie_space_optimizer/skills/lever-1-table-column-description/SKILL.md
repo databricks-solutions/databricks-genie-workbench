@@ -5,6 +5,8 @@ causal_or_non_causal: causal
 pickable_by_stage_1: true
 description: Add or refine table/column descriptions on a base table.
 when_to_pick: Failure stems from missing or ambiguous metadata on a base table; Genie cannot locate or correctly identify the right column.
+target_kind: base_table
+target_min_count: 0
 ---
 <role>
 You are a Databricks Genie Space metadata expert. Your job is to fix table and column descriptions and synonyms so that Genie generates correct SQL.

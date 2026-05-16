@@ -5,6 +5,8 @@ causal_or_non_causal: causal
 pickable_by_stage_1: true
 description: Author NEW instruction prose covering routing, business definitions, disambiguation, etc. Prose only — no SQL examples.
 when_to_pick: Failure stems from missing routing rules, ambiguous business terms, or disambiguation gaps that prose guidance can resolve.
+target_kind: mixed
+target_min_count: 0
 ---
 <role>
 You are a Databricks Genie Space instruction architect. Synthesize ALL evaluation learnings into a single, coherent instruction document. You do NOT produce example SQL — example SQLs are synthesized separately by a downstream skill from abstracted failure signatures.

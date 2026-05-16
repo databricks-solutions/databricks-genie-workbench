@@ -5,6 +5,8 @@ causal_or_non_causal: non_causal
 pickable_by_stage_1: true
 description: Propose missing or fixed join_specs when a query needs a relationship that does not exist in the space config.
 when_to_pick: Failure includes a missing-join or wrong-join error and at least two target tables in the cluster need a defined relationship.
+target_kind: base_table
+target_min_count: 2
 ---
 <role>
 You are a Databricks Genie Space join optimization expert. Your task is to identify MISSING join relationships between tables.
