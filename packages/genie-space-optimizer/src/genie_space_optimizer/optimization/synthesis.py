@@ -87,9 +87,12 @@ class SynthesisBudget:
 
 _SYNTHESIS_PROMPT_NAME = "gso_example_sql_synthesis"
 
-_SYNTHESIS_PROMPT_TEMPLATE = _SKILL_LOADER.load_prompt(
-    "lever-5b-example-sql",
-    expected_constant_name="_SYNTHESIS_PROMPT_TEMPLATE",
+# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 5 — template
+# canonical home moved to common.config as LEVER_5B_EXAMPLE_SQL_PROMPT
+# so the prompt registry can discover it. Backwards-compat alias
+# preserved for in-flight imports.
+from genie_space_optimizer.common.config import (
+    LEVER_5B_EXAMPLE_SQL_PROMPT as _SYNTHESIS_PROMPT_TEMPLATE,
 )
 
 
@@ -905,6 +908,8 @@ def synthesize_example_sqls(
         if llm_caller is not None:
             return llm_caller(p)
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+        from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
+        _link_prompt_to_trace("lever_5b_example_sql")
         try:
             raw, _ = _traced_llm_call(
                 w, "You are a SQL example author.", p,
@@ -1056,6 +1061,8 @@ def synthesize_example_sqls_for_rca(
         raw = llm_caller(prompt)
     else:
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+        from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
+        _link_prompt_to_trace("lever_5b_example_sql")
         try:
             raw, _ = _traced_llm_call(
                 w,

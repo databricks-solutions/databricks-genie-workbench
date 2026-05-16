@@ -180,3 +180,16 @@ def test_lever_5a_instruction_prompt_is_registered():
         "LEVER_5A_INSTRUCTION_PROMPT to LEVER_PROMPTS in common/config.py."
     )
     assert cfg.LEVER_PROMPTS["lever_5a_instructions"] is cfg.LEVER_5A_INSTRUCTION_PROMPT
+
+
+def test_lever_5b_example_sql_prompt_is_registered():
+    """The lever-5b example-SQL synthesis prompt fires for every cluster-
+    driven synthesis attempt — high volume and high blast radius.
+    """
+    assert "lever_5b_example_sql" in cfg.LEVER_PROMPTS, (
+        "_SYNTHESIS_PROMPT_TEMPLATE (loaded from "
+        "lever-5b-example-sql/SKILL.md) is the active example-SQL "
+        "synthesis prompt but is not in LEVER_PROMPTS. Import it into "
+        "common/config.py and add 'lever_5b_example_sql': "
+        "LEVER_5B_EXAMPLE_SQL_PROMPT to LEVER_PROMPTS."
+    )

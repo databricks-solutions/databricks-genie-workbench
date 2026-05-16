@@ -4708,6 +4708,16 @@ LEVER_6_SQL_EXPRESSION_PROMPT = _SKILL_LOADER.load_prompt(
 # Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 2
 LEVER_PROMPTS["lever_6_sql_expression"] = LEVER_6_SQL_EXPRESSION_PROMPT
 
+# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 5 — Lever-5b
+# example-SQL synthesis prompt lifted from optimization/synthesis.py so
+# the registry can discover it. synthesis.py re-exports the legacy alias
+# ``_SYNTHESIS_PROMPT_TEMPLATE`` for in-flight imports.
+LEVER_5B_EXAMPLE_SQL_PROMPT = _SKILL_LOADER.load_prompt(
+    "lever-5b-example-sql",
+    expected_constant_name="LEVER_5B_EXAMPLE_SQL_PROMPT",
+)
+LEVER_PROMPTS["lever_5b_example_sql"] = LEVER_5B_EXAMPLE_SQL_PROMPT
+
 # ── 24. Prose Rule Mining (multi-target; prose → structured) ──────────
 #
 # Replaces the earlier INSTRUCTION_TO_SQL_EXPRESSION_PROMPT. A single LLM

@@ -1,6 +1,6 @@
 ---
 skill_id: lever-5b-example-sql
-prompt_constant_name: _SYNTHESIS_PROMPT_TEMPLATE
+prompt_constant_name: LEVER_5B_EXAMPLE_SQL_PROMPT
 causal_or_non_causal: causal
 pickable_by_stage_1: true
 description: Synthesize ORIGINAL example_sql proposals matching a structural archetype. Subject to a strict benchmark-leakage firewall.
