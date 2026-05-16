@@ -44,6 +44,33 @@ logger = logging.getLogger(__name__)
 # ── Plan 3 / Stage-1 catalogue rendering ─────────────────────────────
 
 
+def _format_targets_line(kind: str, min_count: Any) -> str:
+    """Render the 'Targets:' bullet for the Stage-1 skill catalogue.
+
+    Combines target_kind and target_min_count into LLM-friendly prose:
+      kind='base_table', min_count=2  -> '2+ base_table identifiers'
+      kind='base_table', min_count=0  -> 'any base_table (empty = all in cluster)'
+      kind='mixed',      min_count=0  -> 'any table or metric_view (AG-wide allowed)'
+      kind='function',   min_count=0  -> 'any function (empty = all in cluster)'
+
+    Returns '' when metadata is incomplete — caller falls back to the
+    3-line block.
+    """
+    if not kind:
+        return ""
+    try:
+        n = int(min_count)
+    except (TypeError, ValueError):
+        return ""
+    if kind == "mixed":
+        if n == 0:
+            return "any table or metric_view (AG-wide allowed)"
+        return f"{n}+ tables or metric_views"
+    if n == 0:
+        return f"any {kind} (empty = all in cluster)"
+    return f"{n}+ {kind} identifiers"
+
+
 def _render_rich_skill_catalogue(
     skill_ids: tuple[str, ...] | None = None,
     loader: Any = None,
@@ -97,7 +124,18 @@ def _render_rich_skill_catalogue(
             continue
         desc = (meta.get("description") or "").strip()
         when = (meta.get("when_to_pick") or "").strip()
-        if desc and when:
+        kind = (meta.get("target_kind") or "").strip()
+        min_count = meta.get("target_min_count")
+        targets_line = _format_targets_line(kind, min_count)
+        if desc and when and targets_line:
+            lines.append(
+                f"- {sid}\n"
+                f"    What: {desc}\n"
+                f"    Pick when: {when}\n"
+                f"    Targets: {targets_line}"
+            )
+        elif desc and when:
+            # Backward compat — target metadata missing, fall back to 3-line block.
             lines.append(
                 f"- {sid}\n"
                 f"    What: {desc}\n"

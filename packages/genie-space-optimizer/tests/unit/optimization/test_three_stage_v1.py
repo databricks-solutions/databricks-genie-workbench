@@ -2023,3 +2023,58 @@ def test_stage_1_discovery_passes_max_tokens_to_llm(monkeypatch):
         f"Stage-1 LLM call must pass max_tokens=2500; got "
         f"max_tokens={captured_kwargs.get('max_tokens')!r}"
     )
+
+
+# ── Section: Targets line in skill catalogue (Task 2) ─────────────────
+
+
+def test_render_rich_skill_catalogue_emits_targets_line_per_skill():
+    """Each pickable skill block must carry a 'Targets:' line that
+    surfaces target_kind and target_min_count from frontmatter, so the
+    Stage-1 LLM sees the target-shape constraint at decision time."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+    rendered = _render_rich_skill_catalogue()
+    # lever-4 has the strongest constraint (min 2 base tables); use it
+    # as the canary case.
+    assert "    Targets: 2+ base_table" in rendered, (
+        f"lever-4 'Targets:' line missing or malformed; got:\n{rendered}"
+    )
+    # Every pickable skill must have a Targets: line.
+    n_targets_lines = rendered.count("    Targets:")
+    n_what_lines = rendered.count("    What:")
+    assert n_targets_lines == n_what_lines, (
+        f"expected one 'Targets:' line per 'What:' line; "
+        f"got {n_targets_lines} vs {n_what_lines}"
+    )
+
+
+def test_render_rich_skill_catalogue_targets_line_handles_empty_min_count():
+    """target_min_count: 0 must render as 'any base_table' (or similar) —
+    not '0+ base_table' which reads as nonsensical to the LLM."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+    rendered = _render_rich_skill_catalogue()
+    assert "0+ base_table" not in rendered, (
+        "min_count=0 must not render as '0+'; got:\n" + rendered
+    )
+    # lever-1 has target_kind=base_table, target_min_count=0 → expect
+    # 'any base_table' format.
+    assert "    Targets: any base_table" in rendered, (
+        f"lever-1 'Targets:' line malformed; got:\n{rendered}"
+    )
+
+
+def test_render_rich_skill_catalogue_targets_line_for_mixed_kind():
+    """target_kind=mixed must render with a hint that any of
+    table/MV/function is acceptable."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _render_rich_skill_catalogue,
+    )
+    rendered = _render_rich_skill_catalogue()
+    # lever-5a-instructions has target_kind=mixed, target_min_count=0
+    assert "    Targets: any table or metric_view (AG-wide allowed)" in rendered, (
+        f"lever-5a 'Targets:' line missing or malformed; got:\n{rendered}"
+    )
