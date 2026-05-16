@@ -107,3 +107,46 @@ def test_next_untried_skips_lever_4_advances_to_lever_5_when_4_tried():
         RcaKind.JOIN_SPEC_MISSING_OR_WRONG, tried=frozenset({4}),
     )
     assert pair == (5, "add_example_sql")
+
+
+def test_resolve_rca_kind_from_rca_card_kind_field():
+    """When ``cluster["rca_card"]["rca_kind"]`` is set to a valid value,
+    that's the authoritative source."""
+    from genie_space_optimizer.optimization.lever_rotation import (
+        resolve_rca_kind_for_cluster,
+    )
+    cluster = {
+        "rca_card": {"rca_kind": "measure_swap"},
+        "asi_failure_type": "different_metric",
+        "root_cause": "wrong_aggregation",
+    }
+    assert resolve_rca_kind_for_cluster(cluster) == RcaKind.MEASURE_SWAP
+
+
+def test_resolve_rca_kind_falls_back_to_asi_failure_type():
+    """No rca_kind on the card — translate from asi_failure_type."""
+    from genie_space_optimizer.optimization.lever_rotation import (
+        resolve_rca_kind_for_cluster,
+    )
+    cluster = {
+        "rca_card": {},
+        "asi_failure_type": "wrong_aggregation",
+        "root_cause": "wrong_aggregation",
+    }
+    assert resolve_rca_kind_for_cluster(cluster) == RcaKind.MEASURE_SWAP
+
+
+def test_resolve_rca_kind_returns_unknown_for_empty_cluster():
+    from genie_space_optimizer.optimization.lever_rotation import (
+        resolve_rca_kind_for_cluster,
+    )
+    assert resolve_rca_kind_for_cluster({}) == RcaKind.UNKNOWN
+
+
+def test_resolve_rca_kind_for_root_cause_only():
+    """No rca_card, no asi_failure_type — use root_cause."""
+    from genie_space_optimizer.optimization.lever_rotation import (
+        resolve_rca_kind_for_cluster,
+    )
+    cluster = {"root_cause": "missing_join_spec"}
+    assert resolve_rca_kind_for_cluster(cluster) == RcaKind.JOIN_SPEC_MISSING_OR_WRONG

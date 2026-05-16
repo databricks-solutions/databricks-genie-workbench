@@ -76,3 +76,45 @@ def next_untried_repair(
             continue
         return (int(lever), str(patch_type))
     return None
+
+
+def resolve_rca_kind_for_cluster(cluster: dict) -> RcaKind:
+    """Return the typed ``RcaKind`` for ``cluster`` by consulting (in
+    priority order):
+
+    1. ``cluster["rca_card"]["rca_kind"]`` — set by RCA card construction
+       when the card is fully grounded.
+    2. ``cluster["asi_failure_type"]`` translated via the existing
+       ``_safe_rca_kind`` vocabulary bridge.
+    3. ``cluster["root_cause"]`` translated via ``_safe_rca_kind``.
+
+    Returns ``RcaKind.UNKNOWN`` when nothing in the cluster resolves —
+    the matrix has no entry for UNKNOWN so callers fall back to
+    ``_map_to_lever``.
+
+    This is the single point of truth for the vocabulary bridge so any
+    drift in the ASI label set surfaces as a single helper test failure
+    instead of bug-fanout across consumers.
+    """
+    from genie_space_optimizer.optimization.rca import _safe_rca_kind
+
+    rca_card = cluster.get("rca_card") or {}
+    if isinstance(rca_card, dict):
+        kind_raw = rca_card.get("rca_kind")
+        if kind_raw:
+            try:
+                return RcaKind(str(kind_raw))
+            except ValueError:
+                pass
+
+    failure_type = str(cluster.get("asi_failure_type") or "").strip()
+    if failure_type:
+        kind = _safe_rca_kind(None, failure_type, cluster)
+        if kind is not RcaKind.UNKNOWN:
+            return kind
+
+    root_cause = str(cluster.get("root_cause") or "").strip()
+    if root_cause:
+        return _safe_rca_kind(None, root_cause, cluster)
+
+    return RcaKind.UNKNOWN
