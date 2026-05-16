@@ -44,3 +44,29 @@ def test_lever_1_2_system_msg_constant_exists_and_frames_domain():
         "system message must frame the Genie Space metadata-curation domain"
     )
     assert "JSON" in msg, "system message must require JSON output"
+
+
+def test_lever_1_2_prompt_contract_block_is_slim_and_l1_relevant():
+    """The inline <unified_rca_engine_contract> block must be slimmed."""
+    from genie_space_optimizer.common.config import LEVER_1_2_COLUMN_PROMPT
+
+    prompt = LEVER_1_2_COLUMN_PROMPT
+
+    assert "<unified_rca_engine_contract>" in prompt
+    assert "Leakage boundary" in prompt or "leakage boundary" in prompt
+    assert "match" in prompt.lower() and "defect" in prompt.lower()
+    assert "Precedence" in prompt or "precedence" in prompt
+
+    assert "primary_cluster_id" not in prompt, (
+        "primary_cluster_id is an action-group field; L1 LLM cannot emit it"
+    )
+    assert "regression_debt_qids" not in prompt, (
+        "regression_debt_qids is RCA-level; L1 LLM cannot reason about it"
+    )
+
+    contract_start = prompt.index("<unified_rca_engine_contract>")
+    contract_end = prompt.index("</unified_rca_engine_contract>")
+    contract_body = prompt[contract_start:contract_end]
+    assert contract_body.count("\n") < 30, (
+        f"slim contract should be < 30 lines; got {contract_body.count(chr(10))}"
+    )
