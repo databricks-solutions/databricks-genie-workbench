@@ -9217,13 +9217,12 @@ def _call_llm_for_lever_5a_instructions(
     contract. Returns ``{"instruction_text": str, "rationale": str}``
     — no ``example_sql_proposals`` key.
 
-    Capture-sink hit is recorded when either ``GSO_LEVER5_SPLIT_V1``
-    or ``GSO_LEVER5_SHADOW_V1`` is on; both are no-op default-off.
+    Capture-sink hit is unconditional; the sink itself is no-op
+    unless ``GSO_LEVER5_SPLIT_CAPTURE_PATH`` is set (separate env var,
+    not retired by the 2026-05-16 dead-flag cleanup).
     """
     from genie_space_optimizer.common.config import (
         LEVER_5A_INSTRUCTION_PROMPT,
-        lever5_shadow_enabled,
-        lever5_split_enabled,
     )
     from genie_space_optimizer.optimization.applier import _get_general_instructions
 
@@ -9286,11 +9285,11 @@ def _call_llm_for_lever_5a_instructions(
     _link_prompt_to_trace("lever_5a_instructions")
 
     # Capture-sink hit BEFORE the LLM call so a crash mid-call still
-    # records that L5a was attempted (the dispatcher uses this counter
-    # for coverage gating).
-    if lever5_split_enabled() or lever5_shadow_enabled():
-        from genie_space_optimizer.common.config import _record_lever5_skill_hit
-        _record_lever5_skill_hit("lever-5a-instructions")
+    # records that L5a was attempted. The sink is no-op unless
+    # GSO_LEVER5_SPLIT_CAPTURE_PATH is set, so the unconditional call
+    # is free in production.
+    from genie_space_optimizer.common.config import _record_lever5_skill_hit
+    _record_lever5_skill_hit("lever-5a-instructions")
 
     logger.info(
         "\n┌─── LLM Call [LEVER_5A_INSTRUCTIONS] ─────────────────────────────────\n"
@@ -9425,23 +9424,10 @@ def _dispatch_lever_5b_for_cluster(
         return []
 
     # Capture-sink hit AFTER a successful return so failed/skipped
-    # syntheses don't pad the counter. The capture-sink helper lands in
-    # Task 13; keep the import INSIDE the flag-gated branch so this
-    # function remains importable before then. The try/except guards
-    # against env-leak from sibling tests setting the flag before the
-    # capture sink exists (pre-Task-13 state).
-    from genie_space_optimizer.common.config import (
-        lever5_shadow_enabled,
-        lever5_split_enabled,
-    )
-    if lever5_split_enabled() or lever5_shadow_enabled():
-        try:
-            from genie_space_optimizer.common.config import (  # noqa: F401
-                _record_lever5_skill_hit,
-            )
-            _record_lever5_skill_hit("lever-5b-example-sql")
-        except ImportError:
-            pass  # Pre-Task-13: capture sink not yet wired.
+    # syntheses don't pad the counter. Sink is no-op unless
+    # GSO_LEVER5_SPLIT_CAPTURE_PATH is set.
+    from genie_space_optimizer.common.config import _record_lever5_skill_hit
+    _record_lever5_skill_hit("lever-5b-example-sql")
 
     return [{
         "example_question": proposal.get("example_question", ""),
@@ -9479,20 +9465,12 @@ def _dispatch_lever_5_split(
     ``generate_proposals_from_strategy``'s arg of the same name so the
     L5b leakage firewall has the corpus it needs.
 
-    Track B: this function is now the *single* shadow-emission boundary
-    for Plan 2. When ``GSO_LEVER5_SHADOW_V1`` is on, after computing
-    the split result we also run the legacy holistic path one time and
-    emit a single ``_emit_lever5_shadow_comparison`` record for this
-    AG. The split result is still what we return — production behavior
-    is unchanged. This guarantees emission for every dispatcher call,
-    regardless of whether the entry point was the legacy
-    ``_select_lever_5_holistic_path`` selector or a future Plan 3
-    routing surface that funnels through the dispatcher. The legacy
-    selector no longer emits; see ``_select_lever_5_holistic_path``
-    for the matching change.
+    Plan 2 is unconditionally on as of the 2026-05-16 dead-flag
+    cleanup. Shadow-comparison emission was a fixture-regen aid
+    driven by a now-deleted shadow rollout flag; the byte-stable
+    ``tests/fixtures/lever5_split_v1/`` fixtures are pinned in CI
+    so the emission path is no longer needed.
     """
-    from genie_space_optimizer.common.config import lever5_shadow_enabled
-
     # Build the benchmark corpus once and reuse for every cluster.
     benchmark_corpus = None
     try:
@@ -9529,22 +9507,11 @@ def _dispatch_lever_5_split(
         f"L5b: {len(example_sql_proposals)} example SQLs across "
         f"{len(all_clusters or [])} cluster(s)."
     )
-    new_result = {
+    return {
         "instruction_text": five_a.get("instruction_text", "") or "",
         "example_sql_proposals": example_sql_proposals,
         "rationale": rationale,
     }
-
-    _run_lever5_shadow_emission(
-        ag_id=str(metadata_snapshot.get("_active_ag_id", "")),
-        all_clusters=all_clusters,
-        metadata_snapshot=metadata_snapshot,
-        lever_changes=lever_changes,
-        w=w,
-        new_result=new_result,
-    )
-
-    return new_result
 
 
 def _select_lever_5_holistic_path(
@@ -9554,110 +9521,18 @@ def _select_lever_5_holistic_path(
     w: WorkspaceClient | None = None,
     benchmarks: list[dict] | None = None,
 ) -> dict:
-    """Track B: the selector now only routes; emission is owned by
-    ``_dispatch_lever_5_split``.
-
-    Precedence:
-      * ``GSO_LEVER5_SPLIT_V1=1`` → return the split result (which
-        also self-emits a shadow comparison when
-        ``GSO_LEVER5_SHADOW_V1`` is on).
-      * ``GSO_LEVER5_SHADOW_V1=1`` (split off) → run the dispatcher
-        anyway so it emits a comparison record, but apply the legacy
-        holistic result to production (zero-risk shadow mode).
-      * Both off → today's behavior: holistic only.
-    """
-    from genie_space_optimizer.common.config import (
-        lever5_shadow_enabled,
-        lever5_split_enabled,
-    )
-    split_on = lever5_split_enabled()
-    shadow_on = lever5_shadow_enabled()
-
-    if split_on:
-        return _dispatch_lever_5_split(
-            all_clusters=all_clusters,
-            metadata_snapshot=metadata_snapshot,
-            lever_changes=lever_changes,
-            w=w,
-            benchmarks=benchmarks,
-        )
-
-    if shadow_on:
-        # Run the dispatcher purely for its emission side effect; the
-        # dispatcher's shadow tail will compute the comparison record.
-        # Apply the legacy holistic result to production (zero-risk).
-        _ = _dispatch_lever_5_split(
-            all_clusters=all_clusters,
-            metadata_snapshot=metadata_snapshot,
-            lever_changes=lever_changes,
-            w=w,
-            benchmarks=benchmarks,
-        )
-        return _call_llm_for_holistic_instructions(
-            all_clusters, metadata_snapshot,
-            lever_changes=lever_changes, w=w,
-        )
-
-    return _call_llm_for_holistic_instructions(
-        all_clusters, metadata_snapshot,
-        lever_changes=lever_changes, w=w,
-    )
-
-
-def _run_lever5_shadow_emission(
-    *,
-    ag_id: str,
-    all_clusters: list[dict],
-    metadata_snapshot: dict,
-    lever_changes: list[dict] | None,
-    w: WorkspaceClient | None,
-    new_result: dict,
-) -> None:
-    """Track B+ — shared shadow-emission boundary for Plan 2.
-
-    Used by two call sites:
-      * ``_dispatch_lever_5_split`` — emits when the legacy strategist
-        routes through the L5 selector → dispatcher path.
-      * ``three_stage_pipeline.run_three_stage_pipeline_for_ag`` —
-        emits when the three-stage pipeline picks an L5 skill and
-        funnels through ``_stage_2_l5a`` / ``_stage_2_l5b`` (which
-        bypass the dispatcher).
-
-    No-op when ``GSO_LEVER5_SHADOW_V1`` is off. When on, runs one
-    holistic LLM call and records the resulting comparison; the
-    holistic exception is swallowed (empty-old payload) so a holistic
-    failure never breaks the production path that owns ``new_result``.
-
-    Cost note: when both dispatcher and pipeline fire for the same AG
-    in the same iteration (e.g. legacy strategist also routes to lever
-    5 while Plan 3 shadow is on), each path emits independently — two
-    records per AG. Deduplication is intentionally not done here; the
-    fixture-export downstream rolls up duplicates by hash and records
-    represent attempts, not unique AGs.
-    """
-    from genie_space_optimizer.common.config import lever5_shadow_enabled
-    if not lever5_shadow_enabled():
-        return
-    try:
-        old_result = _call_llm_for_holistic_instructions(
-            all_clusters, metadata_snapshot,
-            lever_changes=lever_changes, w=w,
-        )
-    except Exception:
-        logger.warning(
-            "Lever-5 shadow holistic call failed — recording "
-            "comparison with empty old payload.",
-            exc_info=True,
-        )
-        old_result = {
-            "instruction_text": "",
-            "example_sql_proposals": [],
-            "rationale": "",
-        }
-    _emit_lever5_shadow_comparison(
-        ag_id=ag_id,
-        cluster_ids=[c.get("cluster_id", "") for c in (all_clusters or [])],
-        old=old_result, new=new_result,
+    """Plan 2 is unconditionally on as of 2026-05-16 — the L5 result
+    always comes from the split dispatcher. The historical selector
+    that arbitrated between the split path, the shadow-emission
+    branch, and the legacy holistic path is gone; this thin wrapper
+    is kept so the existing call sites in
+    ``generate_metadata_proposals`` stay unchanged."""
+    return _dispatch_lever_5_split(
+        all_clusters=all_clusters,
+        metadata_snapshot=metadata_snapshot,
+        lever_changes=lever_changes,
+        w=w,
+        benchmarks=benchmarks,
     )
 
 
@@ -9669,17 +9544,15 @@ def _emit_lever5_shadow_comparison(
 ) -> None:
     """Plan 2 — emit one shadow-comparison record to the L5 capture sink.
 
-    No-op when neither GSO_LEVER5_SPLIT_V1 nor GSO_LEVER5_SHADOW_V1 is on
-    (defensive — selector's both-off branch never calls us, but a
-    future bug shouldn't pollute the sink).
-    """
+    The 2026-05-16 dead-flag cleanup removed the live callers of this
+    function (it was called from the deleted ``_run_lever5_shadow_emission``
+    helper). The body stays callable so the comparison-math unit tests
+    (Jaccard, set-overlap, structural-diff) keep their direct entry
+    point; the underlying ``_record_lever5_shadow_comparison`` sink
+    no-ops unless ``GSO_LEVER5_SPLIT_CAPTURE_PATH`` is set."""
     from genie_space_optimizer.common.config import (
         _record_lever5_shadow_comparison,
-        lever5_shadow_enabled,
-        lever5_split_enabled,
     )
-    if not (lever5_shadow_enabled() or lever5_split_enabled()):
-        return
 
     import hashlib
 

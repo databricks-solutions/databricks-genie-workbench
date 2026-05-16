@@ -1874,10 +1874,9 @@ def _record_narrowing_hit(skill_id: str) -> None:
 # ── Plan 2 (Phase 2): Lever 5 Split capture sink ──────────────────────
 # Mirrors Plan 1's _NarrowingCaptureSink with two extras: tracked
 # skill_ids are {lever-5a-instructions, lever-5b-example-sql}, and an
-# additional counter `shadow_comparisons` records how many
-# old-vs-new comparison events were emitted. The atexit gate requires
-# both skill counters to be > 0 AND shadow_comparisons > 0 (when
-# GSO_LEVER5_SHADOW_V1 is on for the run).
+# additional counter `shadow_comparisons` (kept for backward-compat
+# with the unit tests of the comparison math; no longer populated by
+# the production path now that the rollout flags have been retired).
 
 _LEVER_5_SPLIT_SKILL_NAMES: frozenset[str] = frozenset({
     "lever-5a-instructions",
@@ -1983,10 +1982,10 @@ class _LeverFiveCaptureSink:
         problems: list[str] = []
         if not snap["all_sites_exercised"]:
             problems.append(f"unhit_sites={snap['unhit_sites']}")
-        # Shadow check is gated on the shadow flag — if shadow was off
-        # for the run, no shadow comparisons are expected.
-        if _flag_enabled_inline("GSO_LEVER5_SHADOW_V1") and snap["shadow_comparisons"] == 0:
-            problems.append("zero shadow comparison records emitted")
+        # Shadow comparisons used to be tied to a rollout flag that was
+        # retired by the 2026-05-16 dead-flag cleanup; the production
+        # path no longer emits them, so the count is no longer part of
+        # the coverage gate.
         if problems:
             raise RuntimeError(
                 "lever-5 trial incomplete: "
@@ -2771,7 +2770,8 @@ LEVER_5_HOLISTIC_PROMPT = (
 # Sibling of LEVER_5_HOLISTIC_PROMPT. Produces instruction prose + rationale
 # ONLY. No example SQL is emitted by this skill — example SQLs are produced
 # downstream by the lever-5b-example-sql synthesis path (AFS-firewalled).
-# Reached only when GSO_LEVER5_SPLIT_V1=1 via _dispatch_lever_5_split.
+# Reached via _dispatch_lever_5_split (the unconditional Plan 2 path
+# since the 2026-05-16 dead-flag cleanup).
 
 LEVER_5A_INSTRUCTION_PROMPT = _SKILL_LOADER.load_prompt(
     "lever-5a-instructions",
@@ -5345,38 +5345,6 @@ def narrowing_capture_require_coverage_enabled() -> bool:
     is always False.
     """
     return False
-
-
-def lever5_split_enabled() -> bool:
-    """Plan 2 — when on, ``generate_proposals_from_strategy``'s lever-5
-    branch routes through ``_dispatch_lever_5_split`` (5a instructions
-    + per-cluster 5b example SQLs) instead of
-    ``_call_llm_for_holistic_instructions``.
-
-    **Default ON as of Plan 5** (UI-triggered trial activation). Flip to
-    OFF for emergency rollback by setting ``GSO_LEVER5_SPLIT_V1=0`` in
-    ``packages/genie-space-optimizer/databricks.yml`` under the
-    lever_loop task's ``base_parameters`` and redeploying. The flag
-    helper still honors a falsy explicit override.
-    """
-    return _flag_default_on("GSO_LEVER5_SPLIT_V1")
-
-
-def lever5_shadow_enabled() -> bool:
-    """Plan 2 — when on, the L5 branch runs BOTH the old holistic call
-    AND the new split dispatcher, applies the OLD path's result (zero
-    production risk), and emits a per-call shadow-comparison record to
-    ``GSO_LEVER5_SPLIT_CAPTURE_PATH`` if set.
-
-    Use only on the dedicated trial run. With ``GSO_LEVER5_SPLIT_V1=1``
-    also set, split mode wins (the dispatcher's result is applied) and
-    shadow comparison still runs against the deprecated holistic path.
-
-    Default OFF.
-
-    Enable with ``GSO_LEVER5_SHADOW_V1=1``.
-    """
-    return _flag_enabled("GSO_LEVER5_SHADOW_V1")
 
 
 def lever5_split_capture_require_coverage_enabled() -> bool:

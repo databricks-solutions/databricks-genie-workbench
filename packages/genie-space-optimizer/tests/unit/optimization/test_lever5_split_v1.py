@@ -40,49 +40,6 @@ def _reload_config_with_env(env: dict[str, str]):
     return importlib.reload(cfg)
 
 
-# ── Section 1: flag helpers ──────────────────────────────────────────
-
-
-def test_lever5_split_default_on_as_of_plan_5():
-    """Plan 5 flipped lever5_split_enabled to default-on. Shadow stays
-    off (zero-risk dual-path is only useful during a trial run) and the
-    require-coverage helper is forced inert in production."""
-    cfg = _reload_config_with_env({})
-    assert cfg.lever5_split_enabled() is True
-    assert cfg.lever5_shadow_enabled() is False
-    assert cfg.lever5_split_capture_require_coverage_enabled() is False
-
-
-def test_lever5_split_emergency_rollback_via_env():
-    """Operator override: GSO_LEVER5_SPLIT_V1=0 disables the split path."""
-    cfg = _reload_config_with_env({"GSO_LEVER5_SPLIT_V1": "0"})
-    assert cfg.lever5_split_enabled() is False
-    assert cfg.lever5_shadow_enabled() is False
-
-
-def test_lever5_shadow_flag_on():
-    """Shadow flag is independent of split — operator can opt into the
-    dual-path comparison during a trial."""
-    cfg = _reload_config_with_env({"GSO_LEVER5_SHADOW_V1": "1"})
-    # Split stays default-on (Plan 5 posture); shadow opt-in is additive.
-    assert cfg.lever5_split_enabled() is True
-    assert cfg.lever5_shadow_enabled() is True
-
-
-def test_lever5_split_and_shadow_are_mutually_exclusive_in_practice():
-    """Both flags can be set at the OS level, but the dispatcher MUST
-    treat split-on as authoritative (split wins, shadow ignored). This
-    test pins that contract; the dispatcher implementation in Task 10
-    must honor it."""
-    cfg = _reload_config_with_env({
-        "GSO_LEVER5_SPLIT_V1": "1",
-        "GSO_LEVER5_SHADOW_V1": "1",
-    })
-    # Both helpers return True; the dispatcher resolves the precedence:
-    assert cfg.lever5_split_enabled() is True
-    assert cfg.lever5_shadow_enabled() is True
-
-
 # ── Section 1b: L5b byte-stability ────────────────────────────────────
 
 
@@ -486,125 +443,12 @@ def test_dispatch_5b_adapter_wraps_single_dict_in_list(monkeypatch):
 # ── Section 6: routing precedence inside generate_proposals_from_strategy ──
 
 
-def test_l5_branch_calls_holistic_when_split_rolled_back(monkeypatch):
-    """Plan 5 default-on posture: to exercise the legacy holistic path
-    you must opt OUT via the emergency-rollback env var."""
-    cfg = _reload_config_with_env({"GSO_LEVER5_SPLIT_V1": "0"})
-    from genie_space_optimizer.optimization import optimizer
-
-    holistic_calls = {"n": 0}
-    dispatch_calls = {"n": 0}
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_holistic_instructions",
-        lambda *a, **kw: (holistic_calls.__setitem__("n", holistic_calls["n"] + 1)
-                           or {"instruction_text": "", "example_sql_proposals": [], "rationale": ""}),
-    )
-    monkeypatch.setattr(
-        optimizer, "_dispatch_lever_5_split",
-        lambda **kw: (dispatch_calls.__setitem__("n", dispatch_calls["n"] + 1)
-                      or {"instruction_text": "", "example_sql_proposals": [], "rationale": ""}),
-    )
-    optimizer._select_lever_5_holistic_path(
-        all_clusters=[],
-        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
-                           "metric_views": [], "functions": [],
-                           "instructions": {"text_instructions": []}},
-        lever_changes=[],
-        w=None,
-    )
-    assert holistic_calls["n"] == 1
-    assert dispatch_calls["n"] == 0
-
-
-def test_l5_branch_calls_dispatch_only_when_split_flag_on(monkeypatch):
-    cfg = _reload_config_with_env({"GSO_LEVER5_SPLIT_V1": "1"})
-    from genie_space_optimizer.optimization import optimizer
-
-    holistic_calls = {"n": 0}
-    dispatch_calls = {"n": 0}
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_holistic_instructions",
-        lambda *a, **kw: (holistic_calls.__setitem__("n", holistic_calls["n"] + 1)
-                           or {"instruction_text": "", "example_sql_proposals": [], "rationale": ""}),
-    )
-    monkeypatch.setattr(
-        optimizer, "_dispatch_lever_5_split",
-        lambda **kw: (dispatch_calls.__setitem__("n", dispatch_calls["n"] + 1)
-                      or {"instruction_text": "", "example_sql_proposals": [], "rationale": ""}),
-    )
-    optimizer._select_lever_5_holistic_path(
-        all_clusters=[],
-        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
-                           "metric_views": [], "functions": [],
-                           "instructions": {"text_instructions": []}},
-        lever_changes=[],
-        w=None,
-    )
-    assert holistic_calls["n"] == 0
-    assert dispatch_calls["n"] == 1
-
-
-def test_l5_branch_runs_both_in_shadow_mode_and_applies_holistic(monkeypatch):
-    """Shadow + split-rollback: legacy applied, comparison emitted. Plan 5
-    default-on posture for split means we must explicitly clear it for
-    this assertion to hold.
-
-    Track B contract — in shadow-only mode the selector now ALSO calls
-    ``_dispatch_lever_5_split`` (for its emission side effect) before
-    returning the legacy holistic result. The dispatcher's shadow tail
-    is the only place a comparison record is emitted; if a future patch
-    drops the dispatcher invocation here, Plan 2 fixture coverage
-    silently regresses to 0.
-    """
-    cfg = _reload_config_with_env({
-        "GSO_LEVER5_SPLIT_V1": "0",
-        "GSO_LEVER5_SHADOW_V1": "1",
-    })
-    from genie_space_optimizer.optimization import optimizer
-
-    holistic_calls = {"n": 0}
-    dispatch_calls = {"n": 0}
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_holistic_instructions",
-        lambda *a, **kw: (holistic_calls.__setitem__("n", holistic_calls["n"] + 1)
-                          or {"instruction_text": "OLD",
-                              "example_sql_proposals": [],
-                              "rationale": "old"}),
-    )
-    monkeypatch.setattr(
-        optimizer, "_dispatch_lever_5_split",
-        lambda **kw: (dispatch_calls.__setitem__("n", dispatch_calls["n"] + 1)
-                      or {"instruction_text": "NEW",
-                          "example_sql_proposals": [],
-                          "rationale": "new"}),
-    )
-    applied = optimizer._select_lever_5_holistic_path(
-        all_clusters=[],
-        metadata_snapshot={"config": {}, "data_sources": {}, "tables": [],
-                           "metric_views": [], "functions": [],
-                           "instructions": {"text_instructions": []}},
-        lever_changes=[],
-        w=None,
-    )
-    # Shadow without split → OLD path's result is applied:
-    assert applied["instruction_text"] == "OLD"
-    # Track B: dispatcher must be invoked for its emission side effect,
-    # even though its result is discarded.
-    assert dispatch_calls["n"] == 1, (
-        f"selector must invoke dispatcher in shadow-only mode for the "
-        f"emission side effect; got {dispatch_calls['n']!r}"
-    )
-    assert holistic_calls["n"] == 1, (
-        f"selector must invoke holistic once to apply the legacy result; "
-        f"got {holistic_calls['n']!r}"
-    )
-
-
-def test_l5_branch_split_wins_over_shadow_when_both_set(monkeypatch):
-    cfg = _reload_config_with_env({
-        "GSO_LEVER5_SPLIT_V1": "1",
-        "GSO_LEVER5_SHADOW_V1": "1",
-    })
+def test_l5_branch_calls_dispatch(monkeypatch):
+    """Plan 2 is unconditionally on as of the 2026-05-16 dead-flag
+    cleanup. The L5 selector is a thin trampoline that always routes
+    through ``_dispatch_lever_5_split`` and never calls the legacy
+    holistic path."""
+    cfg = _reload_config_with_env({})
     from genie_space_optimizer.optimization import optimizer
 
     monkeypatch.setattr(
@@ -625,7 +469,7 @@ def test_l5_branch_split_wins_over_shadow_when_both_set(monkeypatch):
         lever_changes=[],
         w=None,
     )
-    # Split wins; NEW is applied. Shadow comparison still happens (Task 14).
+    # Selector trampoline returns the dispatcher's result.
     assert applied["instruction_text"] == "NEW"
 
 
@@ -759,25 +603,11 @@ def test_coverage_gate_raises_when_5b_unhit():
         cfg._LEVER_FIVE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
 
 
-def test_coverage_gate_raises_when_no_shadow_comparisons():
-    import pytest
-    cfg = _reload_config_with_env({
-        "GSO_LEVER5_SHADOW_V1": "1",
-        "GSO_LEVER5_SPLIT_CAPTURE_REQUIRE_COVERAGE": "1",
-    })
-    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    cfg._record_lever5_skill_hit("lever-5a-instructions")
-    cfg._record_lever5_skill_hit("lever-5b-example-sql")
-    # No shadow comparison emitted:
-    with pytest.raises(RuntimeError, match="zero shadow comparison"):
-        cfg._LEVER_FIVE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
-
-
 # ── Section 9: _emit_lever5_shadow_comparison ─────────────────────────
 
 
 def test_emit_shadow_comparison_records_jaccard_and_overlap():
-    cfg = _reload_config_with_env({"GSO_LEVER5_SHADOW_V1": "1"})
+    cfg = _reload_config_with_env({})
     cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
     from genie_space_optimizer.optimization import optimizer
 
@@ -799,28 +629,6 @@ def test_emit_shadow_comparison_records_jaccard_and_overlap():
     )
     snap = cfg.dump_lever5_split_capture_summary()
     assert snap["shadow_comparisons"] == 1
-
-
-def test_emit_shadow_comparison_no_op_when_no_flags():
-    """When neither shadow nor split is on, _emit must not record
-    anything (defensive — _select_lever_5_holistic_path's both-off
-    branch never calls it, but a future bug shouldn't pollute the
-    sink). Plan 5 default-on posture: explicitly clear split + shadow
-    via the emergency-rollback env vars to exercise the no-op branch."""
-    cfg = _reload_config_with_env({
-        "GSO_LEVER5_SPLIT_V1": "0",
-        "GSO_LEVER5_SHADOW_V1": "0",
-    })
-    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    from genie_space_optimizer.optimization import optimizer
-
-    optimizer._emit_lever5_shadow_comparison(
-        ag_id="AG1", cluster_ids=[],
-        old={"instruction_text": "x", "example_sql_proposals": [], "rationale": ""},
-        new={"instruction_text": "y", "example_sql_proposals": [], "rationale": ""},
-    )
-    snap = cfg.dump_lever5_split_capture_summary()
-    assert snap["shadow_comparisons"] == 0
 
 
 # ── Section 10: harness summary integration ───────────────────────────
@@ -879,147 +687,3 @@ def test_capture_sink_e2e_with_synthetic_dispatcher_calls():
         assert rec["ag_id"] == "AG1"
         assert rec["instruction_text_jaccard"] == 0.7
 
-
-# ── Section 12: shadow emission moves into _dispatch_lever_5_split ─────
-
-
-def test_dispatch_lever_5_split_emits_shadow_when_flag_on(monkeypatch):
-    """Track B contract — when GSO_LEVER5_SHADOW_V1 is on, calling
-    _dispatch_lever_5_split must emit exactly one shadow comparison
-    record per AG, regardless of whether the legacy
-    _select_lever_5_holistic_path selector was invoked. This is the
-    only invariant that lets Plan 3 adapters
-    (_stage_2_l5a / _stage_2_l5b) trigger Plan 2 shadow coverage."""
-    cfg = _reload_config_with_env({
-        "GSO_LEVER5_SHADOW_V1": "1",
-    })
-    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    from genie_space_optimizer.optimization import optimizer
-
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_lever_5a_instructions",
-        lambda *a, **kw: {"instruction_text": "NEW", "rationale": "r"},
-    )
-    monkeypatch.setattr(
-        optimizer, "_dispatch_lever_5b_for_cluster",
-        lambda *a, **kw: [{"example_sql": "SELECT 1", "rationale": "r"}],
-    )
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_holistic_instructions",
-        lambda *a, **kw: {
-            "instruction_text": "OLD",
-            "example_sql_proposals": [{"example_sql": "SELECT 0",
-                                       "rationale": "r"}],
-            "rationale": "old",
-        },
-    )
-
-    out = optimizer._dispatch_lever_5_split(
-        all_clusters=[{"cluster_id": "C1", "root_cause": "rc",
-                       "question_traces": []}],
-        metadata_snapshot={"_active_ag_id": "AG1", "config": {},
-                           "data_sources": {}, "tables": [],
-                           "metric_views": [], "functions": []},
-        lever_changes=[],
-        w=None,
-        benchmarks=[],
-    )
-
-    assert (out.get("instruction_text") or "") == "NEW", (
-        "Production path must still return the split (NEW) result."
-    )
-    snap = cfg.dump_lever5_split_capture_summary()
-    assert snap["shadow_comparisons"] == 1, (
-        f"Expected exactly one shadow_comparison record, got "
-        f"{snap['shadow_comparisons']!r}; full snapshot={snap!r}"
-    )
-
-
-def test_dispatch_lever_5_split_does_not_emit_when_flags_off(monkeypatch):
-    """Defensive: when both shadow and split flags are off (default
-    legacy posture), _dispatch_lever_5_split must not emit."""
-    cfg = _reload_config_with_env({
-        "GSO_LEVER5_SHADOW_V1": "0",
-        "GSO_LEVER5_SPLIT_V1": "0",
-    })
-    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    from genie_space_optimizer.optimization import optimizer
-
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_lever_5a_instructions",
-        lambda *a, **kw: {"instruction_text": "NEW", "rationale": "r"},
-    )
-    monkeypatch.setattr(
-        optimizer, "_dispatch_lever_5b_for_cluster",
-        lambda *a, **kw: [{"example_sql": "SELECT 1", "rationale": "r"}],
-    )
-    holistic_called = {"n": 0}
-    def _record(*a, **kw):
-        holistic_called["n"] += 1
-        return {"instruction_text": "OLD", "example_sql_proposals": [],
-                "rationale": "old"}
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_holistic_instructions", _record,
-    )
-
-    optimizer._dispatch_lever_5_split(
-        all_clusters=[{"cluster_id": "C1", "root_cause": "rc",
-                       "question_traces": []}],
-        metadata_snapshot={"_active_ag_id": "AG1", "config": {},
-                           "data_sources": {}, "tables": [],
-                           "metric_views": [], "functions": []},
-        lever_changes=[],
-        w=None,
-        benchmarks=[],
-    )
-
-    snap = cfg.dump_lever5_split_capture_summary()
-    assert snap["shadow_comparisons"] == 0
-    assert holistic_called["n"] == 0, (
-        "Holistic path must not run when shadow flag is off — that "
-        "would double the L5 LLM cost in production."
-    )
-
-
-def test_select_lever_5_holistic_path_no_longer_double_emits(monkeypatch):
-    """Track B side-effect: the legacy selector must stop emitting
-    shadow comparisons itself, otherwise an AG that goes through the
-    legacy strategist's lever-5 branch (selector → dispatcher) would
-    record TWO comparisons instead of one."""
-    cfg = _reload_config_with_env({
-        "GSO_LEVER5_SHADOW_V1": "1",
-        "GSO_LEVER5_SPLIT_V1": "1",
-    })
-    cfg._LEVER_FIVE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    from genie_space_optimizer.optimization import optimizer
-
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_lever_5a_instructions",
-        lambda *a, **kw: {"instruction_text": "NEW", "rationale": "r"},
-    )
-    monkeypatch.setattr(
-        optimizer, "_dispatch_lever_5b_for_cluster",
-        lambda *a, **kw: [{"example_sql": "SELECT 1", "rationale": "r"}],
-    )
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_holistic_instructions",
-        lambda *a, **kw: {"instruction_text": "OLD",
-                          "example_sql_proposals": [], "rationale": "old"},
-    )
-
-    optimizer._select_lever_5_holistic_path(
-        all_clusters=[{"cluster_id": "C1", "root_cause": "rc",
-                       "question_traces": []}],
-        metadata_snapshot={"_active_ag_id": "AG1", "config": {},
-                           "data_sources": {}, "tables": [],
-                           "metric_views": [], "functions": []},
-        lever_changes=[],
-        w=None,
-        benchmarks=[],
-    )
-
-    snap = cfg.dump_lever5_split_capture_summary()
-    assert snap["shadow_comparisons"] == 1, (
-        f"Selector + dispatcher must emit exactly one comparison "
-        f"(not two). snapshot={snap!r}"
-    )
