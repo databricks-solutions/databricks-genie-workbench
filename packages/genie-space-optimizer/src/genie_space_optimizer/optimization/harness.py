@@ -20290,10 +20290,10 @@ def _run_lever_loop(
                             _prior_iteration_feedback_for_strategist = None
 
                         # Plan 3 — route through the three-stage selector.
-                        # When both GSO_THREE_STAGE_V1 and
-                        # GSO_THREE_STAGE_SHADOW_V1 are off (default),
-                        # the selector returns the legacy strategist
-                        # result byte-stably via legacy_strategy_full.
+                        # The selector always runs the pipeline; the
+                        # legacy strategist is only invoked as a runtime
+                        # fallback when Stage-1 produces zero picks
+                        # (pipeline_result.fallback_to_legacy == True).
                         from genie_space_optimizer.optimization.three_stage_pipeline import (
                             _select_strategy_path_for_iteration,
                             _project_pipeline_to_action_groups,
@@ -31618,8 +31618,10 @@ def _run_lever_loop(
         ),
     }
 
-    # Plan 1 — narrowing trial telemetry. No-op unless
-    # GSO_RCA_CONTRACT_NARROW_V1=1 was set for this run.
+    # Plan 1 — narrowing trial telemetry. Always emits when any
+    # non-causal prompt was rendered this iteration (Plan 1 is on
+    # unconditionally; the rollout flag was retired by the
+    # 2026-05-16 dead-flag cleanup).
     try:
         from genie_space_optimizer.common.config import dump_narrowing_capture_summary
         _narrowing_summary = dump_narrowing_capture_summary()
@@ -31636,8 +31638,10 @@ def _run_lever_loop(
         # Telemetry must never break a real run.
         logger.warning("narrowing_v1 summary emit failed: %s", _narrowing_log_exc)
 
-    # Plan 2 — L5 split / shadow trial telemetry. No-op unless one of
-    # GSO_LEVER5_SPLIT_V1 / GSO_LEVER5_SHADOW_V1 was set for this run.
+    # Plan 2 — L5 split trial telemetry. Plan 2 is on unconditionally
+    # as of the 2026-05-16 dead-flag cleanup; shadow_comparisons is
+    # always 0 for production runs (kept in the snapshot for unit
+    # tests of the comparison math).
     try:
         from genie_space_optimizer.common.config import dump_lever5_split_capture_summary
         _l5_summary = dump_lever5_split_capture_summary()
@@ -31654,8 +31658,9 @@ def _run_lever_loop(
     except Exception as _l5_log_exc:
         logger.warning("lever5_split summary emit failed: %s", _l5_log_exc)
 
-    # Plan 3 — three-stage pipeline trial telemetry. No-op unless one of
-    # GSO_THREE_STAGE_V1 / GSO_THREE_STAGE_SHADOW_V1 was set for this run.
+    # Plan 3 — three-stage pipeline trial telemetry. Plan 3 is on
+    # unconditionally; the rollout flag was retired by the 2026-05-16
+    # dead-flag cleanup.
     try:
         from genie_space_optimizer.common.config import dump_three_stage_capture_summary
         _ts_summary = dump_three_stage_capture_summary()
@@ -31675,8 +31680,9 @@ def _run_lever_loop(
     except Exception as _ts_log_exc:
         logger.warning("three_stage summary emit failed: %s", _ts_log_exc)
 
-    # Plan 4 — raw-evidence trial telemetry. No-op unless one of
-    # GSO_RAW_EVIDENCE_V1 / GSO_RAW_EVIDENCE_SHADOW_V1 was set for this run.
+    # Plan 4 — raw-evidence trial telemetry. Plan 4 is on
+    # unconditionally; the rollout flag was retired by the 2026-05-16
+    # dead-flag cleanup.
     try:
         from genie_space_optimizer.common.config import dump_raw_evidence_capture_summary
         _re_summary = dump_raw_evidence_capture_summary()

@@ -133,27 +133,16 @@ resources:
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0
-        # ── Production posture (post trial-4, 2026-05-16) ──────────────
-        # Plans 1, 2, 3, 4 are all default-on in
-        # ``src/genie_space_optimizer/common/config.py``. A UI-triggered
-        # run picks up the new behavior with no operator action.
+        # ── Post-cleanup (2026-05-16) ───────────────────────────────
+        # Plans 1, 2, 3, and 4 are unconditionally on. Their rollout
+        # flags and shadow flags were retired by the dead-flag
+        # cleanup. Reintroducing any of those env vars will not
+        # change behavior; see tests/unit/test_dead_flags_removed.py
+        # for the grep-guard.
         #
-        # Emergency rollback: add a base_parameters entry to the
-        # lever_loop task below with the matching env var set to "0",
-        # then redeploy via ``./scripts/deploy.sh``. Example:
-        #
-        #   base_parameters:
-        #     GSO_THREE_STAGE_V1: "0"      # roll back Plan 3 only
-        #     GSO_LEVER5_SPLIT_V1: "0"     # roll back Plan 2 only
-        #     GSO_RAW_EVIDENCE_V1: "0"     # roll back Plan 4 only
-        #     GSO_RCA_CONTRACT_NARROW_V1: "0"  # roll back Plan 1 only
-        #
-        # One-off fixture-regen trial (rarely needed — the byte-stable
-        # fixtures landed in trial-4): same pattern but set the matching
-        # GSO_*_SHADOW_V1 flag to "1". WARNING: each shadow flag
-        # doubles LLM cost at its site; revert immediately after the
-        # trial. See docs/prompt_improvements/README.md and
-        # docs/prompt_improvements/2026-05-16-trial-4-results.md.
+        # For emergency rollback, revert the cleanup commits or
+        # cherry-pick the relevant plan-document branches from
+        # before the 2026-05-16 cleanup PR.
         - task_key: lever_loop
           depends_on:
             - task_key: enrichment

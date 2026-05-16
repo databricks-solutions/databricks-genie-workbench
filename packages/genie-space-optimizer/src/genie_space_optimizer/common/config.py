@@ -1617,13 +1617,13 @@ def _rca_contract_for(prompt_name: str) -> str:
     Non-causal prompts (per ``_NON_CAUSAL_PROMPT_NAMES``) always get
     the empty string; everything else gets the full header.
 
-    History: this used to be gated on ``GSO_RCA_CONTRACT_NARROW_V1``
-    so the contract-narrowing behavior could be rolled back in an
-    emergency. After trial-5 produced byte-stable narrowing fixtures
-    under Plan-3 default-on (committed at
-    ``tests/fixtures/narrowing_v1/``), the flag was retired by the
-    2026-05-16 dead-flag cleanup. Re-introduction of the flag is
-    guarded by ``tests/unit/test_dead_flags_removed.py``.
+    History: this used to be gated on a rollout flag so the
+    contract-narrowing behavior could be rolled back in an emergency.
+    After trial-5 produced byte-stable narrowing fixtures under
+    Plan-3 default-on (committed at ``tests/fixtures/narrowing_v1/``),
+    the flag was retired by the 2026-05-16 dead-flag cleanup.
+    Re-introduction is guarded by
+    ``tests/unit/test_dead_flags_removed.py``.
 
     Unknown names are treated as causal — opting out is an explicit
     registry edit, not an accident.
@@ -1645,12 +1645,12 @@ def _rca_contract_for(prompt_name: str) -> str:
 # of the 3 non-causal sites recorded zero hits — preventing silent
 # partial coverage from contaminating the fixture set.
 #
-# The historical rollout flag ``GSO_RCA_CONTRACT_NARROW_V1`` that
-# previously gated the narrowing behavior was retired by the 2026-05-16
-# dead-flag cleanup (Plan 1 is unconditionally on). The NDJSON sink and
-# coverage gate remain default-off, gated on the separate
-# ``GSO_NARROWING_CAPTURE_PATH`` / ``GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE``
-# env vars, so this is invisible in CI and existing dev runs.
+# The historical rollout flag that previously gated the narrowing
+# behavior was retired by the 2026-05-16 dead-flag cleanup (Plan 1 is
+# unconditionally on). The NDJSON sink and coverage gate remain
+# default-off, gated on the separate ``GSO_NARROWING_CAPTURE_PATH`` /
+# ``GSO_NARROWING_CAPTURE_REQUIRE_COVERAGE`` env vars, so this is
+# invisible in CI and existing dev runs.
 import atexit as _atexit
 import json as _json
 import threading as _threading
