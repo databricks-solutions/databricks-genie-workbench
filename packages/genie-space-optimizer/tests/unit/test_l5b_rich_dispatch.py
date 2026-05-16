@@ -388,3 +388,83 @@ def test_drain_returns_empty_when_no_declines() -> None:
     )
     drain_l5b_rich_path_declines()  # ensure starting empty
     assert drain_l5b_rich_path_declines() == []
+
+
+def test_l5b_rich_path_decline_record_shape() -> None:
+    """The decline record converter produces a typed record consumable
+    by the harness's record-emission pipeline."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        l5b_rich_path_decline_record,
+    )
+    decline = {
+        "cluster_id": "C1",
+        "root_cause": "plural_top_n_collapse",
+        "asi_failure_type": "wrong_aggregation",
+        "attempted_archetypes": ("single_row_top_n", "ordered_list_by_metric"),
+        "skipped_reason": "no_viable_archetype",
+        "question_ids": ("q1", "q2"),
+    }
+    rec = l5b_rich_path_decline_record(
+        run_id="test_run",
+        iteration=3,
+        ag_id="AG_DECOMPOSED_C1",
+        decline=decline,
+    )
+    d = rec.to_dict()
+    assert d["decision_type"] == "NO_STRUCTURAL_CANDIDATE"
+    assert d["call_site"] == "l5b_rich_path"
+    assert d["run_id"] == "test_run"
+    assert d["iteration"] == 3
+    assert d["ag_id"] == "AG_DECOMPOSED_C1"
+    assert d["cluster_id"] == "C1"
+    # Canonical root_cause: prefer asi_failure_type (matches the
+    # structural-gate ledger convention from optimizer.py:15346-15350).
+    assert d["root_cause"] == "wrong_aggregation"
+    assert d["attempted_archetypes"] == (
+        "single_row_top_n", "ordered_list_by_metric",
+    )
+    assert d["skipped_reason"] == "no_viable_archetype"
+    assert d["target_qids"] == ("q1", "q2")
+
+
+def test_l5b_rich_path_decline_record_root_cause_falls_back_to_root_cause_key() -> None:
+    """When asi_failure_type is empty, the record uses root_cause."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        l5b_rich_path_decline_record,
+    )
+    decline = {
+        "cluster_id": "C1",
+        "root_cause": "plural_top_n_collapse",
+        "asi_failure_type": "",
+        "attempted_archetypes": ("single_row_top_n",),
+        "skipped_reason": "no_viable_archetype",
+        "question_ids": ("q1",),
+    }
+    rec = l5b_rich_path_decline_record(
+        run_id="test_run",
+        iteration=1,
+        ag_id="AG",
+        decline=decline,
+    )
+    assert rec.to_dict()["root_cause"] == "plural_top_n_collapse"
+
+
+def test_l5b_rich_path_decline_record_root_cause_empty_when_both_missing() -> None:
+    from genie_space_optimizer.optimization.decision_emitters import (
+        l5b_rich_path_decline_record,
+    )
+    decline = {
+        "cluster_id": "C1",
+        "root_cause": "",
+        "asi_failure_type": "",
+        "attempted_archetypes": (),
+        "skipped_reason": "exception",
+        "question_ids": (),
+    }
+    rec = l5b_rich_path_decline_record(
+        run_id="test_run",
+        iteration=1,
+        ag_id="AG",
+        decline=decline,
+    )
+    assert rec.to_dict()["root_cause"] == ""

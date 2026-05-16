@@ -4482,3 +4482,79 @@ def lever_rotation_decided_record(
         legacy_lever=int(legacy_lever),
         tried_lever_families=tuple(int(L) for L in tried_lever_families),
     )
+
+
+@dataclass(frozen=True)
+class NoStructuralCandidateRecord:
+    """Plan B (2026-05-16) — typed ``NO_STRUCTURAL_CANDIDATE`` record for
+    an L5b rich-path decline.
+
+    Distinct from ``no_structural_candidate_record`` which returns a
+    generic ``DecisionRecord``: this dataclass surfaces ``call_site``
+    and ``skipped_reason`` directly so the harness's drain step can
+    pivot on them. Both shapes coexist; the harness chooses based on
+    the originating call site.
+    """
+    run_id: str
+    iteration: int
+    ag_id: str
+    cluster_id: str
+    rca_id: str
+    root_cause: str
+    target_qids: tuple[str, ...]
+    attempted_archetypes: tuple[str, ...]
+    call_site: str
+    skipped_reason: str
+
+    def to_dict(self) -> dict:
+        return {
+            "decision_type": "NO_STRUCTURAL_CANDIDATE",
+            "call_site": self.call_site,
+            "run_id": self.run_id,
+            "iteration": int(self.iteration),
+            "ag_id": self.ag_id,
+            "cluster_id": self.cluster_id,
+            "rca_id": self.rca_id,
+            "root_cause": self.root_cause,
+            "target_qids": tuple(self.target_qids),
+            "attempted_archetypes": tuple(self.attempted_archetypes),
+            "skipped_reason": self.skipped_reason,
+        }
+
+
+def l5b_rich_path_decline_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    decline: dict,
+) -> NoStructuralCandidateRecord:
+    """Plan B — typed ``NO_STRUCTURAL_CANDIDATE`` record for an L5b
+    rich-path decline.
+
+    The harness drains ``_L5B_RICH_PATH_DECLINES`` after Stage-2 and
+    converts each entry through this function. The resulting record
+    flows into the same decision-record stream as the trapdoor's
+    ``no_structural_candidate_record`` output; ``call_site`` is the
+    discriminator (``"l5b_rich_path"`` for Plan B).
+
+    Root-cause canonicalization: prefers ``asi_failure_type`` over
+    ``root_cause`` to match the existing structural-gate ledger
+    convention at ``optimizer.py:15346-15350``.
+    """
+    root_cause = (
+        str(decline.get("asi_failure_type") or "").strip()
+        or str(decline.get("root_cause") or "").strip()
+    )
+    return NoStructuralCandidateRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        ag_id=str(ag_id),
+        cluster_id=str(decline.get("cluster_id") or ""),
+        rca_id="",  # Plan B does not surface RCA IDs on the L5b path yet.
+        root_cause=root_cause,
+        target_qids=tuple(decline.get("question_ids") or ()),
+        attempted_archetypes=tuple(decline.get("attempted_archetypes") or ()),
+        call_site="l5b_rich_path",
+        skipped_reason=str(decline.get("skipped_reason") or ""),
+    )
