@@ -86,3 +86,53 @@ def should_route_l5b_to_rich_synthesizer(cluster: Any) -> bool:
         if key in _SQL_SHAPE_ROOT_CAUSES:
             return True
     return False
+
+
+def _normalize_rich_proposal_to_l5b_shape(
+    proposal: Any,
+) -> dict[str, Any] | None:
+    """Adapt the rich synthesizer's proposal dict to the four-field shape
+    that ``_dispatch_lever_5b_for_cluster`` currently returns.
+
+    The lean L5b path returns dicts like::
+
+        {
+            "example_question": str,
+            "example_sql": str,
+            "parameters": list,
+            "usage_guidance": str,
+        }
+
+    The rich synthesizer returns a proposal carrying many more fields
+    (patch_type, rationale, _archetype_name, provenance, ...) that the
+    downstream Stage-2 canonicalizer adds back. We strip to the four
+    canonical fields so the upstream
+    ``canonicalize_stage_2_proposal(sub, ..., patch_type="add_example_sql")``
+    call in ``_stage_2_l5b`` works unchanged.
+
+    Falls back to ``rationale`` when ``usage_guidance`` is empty, mirroring
+    the lean path's behaviour at ``optimizer.py:9538-9539``.
+
+    Returns ``None`` when the proposal is missing required fields
+    (``example_question`` or ``example_sql``) — caller treats this as a
+    decline and appends to ``_L5B_RICH_PATH_DECLINES``.
+    """
+    if not isinstance(proposal, dict):
+        return None
+    example_question = str(proposal.get("example_question") or "").strip()
+    example_sql = str(proposal.get("example_sql") or "").strip()
+    if not example_question or not example_sql:
+        return None
+    usage_guidance = (
+        str(proposal.get("usage_guidance") or "").strip()
+        or str(proposal.get("rationale") or "").strip()
+    )
+    parameters = proposal.get("parameters") or []
+    if not isinstance(parameters, list):
+        parameters = []
+    return {
+        "example_question": example_question,
+        "example_sql": example_sql,
+        "parameters": parameters,
+        "usage_guidance": usage_guidance,
+    }

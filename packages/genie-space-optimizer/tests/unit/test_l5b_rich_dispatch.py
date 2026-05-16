@@ -138,3 +138,69 @@ def test_returns_false_for_non_dict_input(monkeypatch: Any) -> None:
     assert should_route_l5b_to_rich_synthesizer(None) is False
     assert should_route_l5b_to_rich_synthesizer("not a cluster") is False
     assert should_route_l5b_to_rich_synthesizer([]) is False
+
+
+def test_normalize_extracts_canonical_l5b_fields() -> None:
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _normalize_rich_proposal_to_l5b_shape,
+    )
+    rich = {
+        "patch_type": "add_example_sql",
+        "example_question": "Show top route",
+        "example_sql": "SELECT route FROM flights GROUP BY route LIMIT 1",
+        "parameters": [{"name": "k", "type": "int"}],
+        "usage_guidance": "Use when ranking.",
+        "rationale": "Original rationale",
+        "_archetype_name": "single_row_top_n",
+        "provenance": {"source": "cluster_driven_synthesis"},
+    }
+    out = _normalize_rich_proposal_to_l5b_shape(rich)
+    assert out == {
+        "example_question": "Show top route",
+        "example_sql": "SELECT route FROM flights GROUP BY route LIMIT 1",
+        "parameters": [{"name": "k", "type": "int"}],
+        "usage_guidance": "Use when ranking.",
+    }
+
+
+def test_normalize_uses_rationale_when_usage_guidance_empty() -> None:
+    """Mirrors the lean path's fallback at optimizer.py:9538-9539
+    (``usage_guidance or rationale``)."""
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _normalize_rich_proposal_to_l5b_shape,
+    )
+    rich = {
+        "example_question": "Q",
+        "example_sql": "SELECT 1",
+        "parameters": [],
+        "usage_guidance": "",
+        "rationale": "Rationale text",
+    }
+    out = _normalize_rich_proposal_to_l5b_shape(rich)
+    assert out["usage_guidance"] == "Rationale text"
+
+
+def test_normalize_handles_missing_parameters() -> None:
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _normalize_rich_proposal_to_l5b_shape,
+    )
+    rich = {
+        "example_question": "Q",
+        "example_sql": "SELECT 1",
+        "usage_guidance": "G",
+    }
+    out = _normalize_rich_proposal_to_l5b_shape(rich)
+    assert out["parameters"] == []
+
+
+def test_normalize_returns_none_for_missing_required_fields() -> None:
+    """A proposal without example_question or example_sql is unusable
+    downstream; the adapter returns None and the rich-path dispatcher
+    treats it as a decline."""
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _normalize_rich_proposal_to_l5b_shape,
+    )
+    assert _normalize_rich_proposal_to_l5b_shape({"example_sql": "SELECT 1"}) is None
+    assert _normalize_rich_proposal_to_l5b_shape({"example_question": "Q"}) is None
+    assert _normalize_rich_proposal_to_l5b_shape({}) is None
+    assert _normalize_rich_proposal_to_l5b_shape(None) is None
