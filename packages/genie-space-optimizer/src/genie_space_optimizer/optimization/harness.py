@@ -5070,6 +5070,82 @@ def _handle_proposal_failure_next_action(
     )
 
 
+def _build_proposal_failure_callsite_context(
+    *,
+    cluster_id: str,
+    source_clusters_by_id: dict[str, dict],
+    rca_recovery_holder: dict,
+    signatures_counter: dict[str, int],
+    findings: list,
+    metadata_snapshot: dict | None,
+    spark,
+):
+    """C4 (2026-05-17) — build the typed call-site bundle each of the
+    5 proposal-failure emit sites passes into
+    ``_emit_proposal_failure_decided``. Lazily allocates the
+    ``RcaRegenerationCache`` / ``RcaRegenerationPolicy`` on the
+    ``rca_recovery_holder`` using the same pattern as
+    ``run_rca_recovery_for_iteration``, so the noop context (empty
+    cluster, cache=None, policy=None) is returned when:
+
+    * ``cluster_id`` does not resolve in ``source_clusters_by_id``, OR
+    * the recovery-policy master flag is off.
+
+    Both branches let the downstream handler short-circuit instead of
+    crashing.
+    """
+    from genie_space_optimizer.optimization.proposal_failure_callsite_context import (
+        ProposalFailureCallSiteContext,
+        noop_context,
+    )
+    from genie_space_optimizer.common.config import (
+        rca_regen_recovery_policy_enabled,
+        rca_regen_policy_overrides,
+    )
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaRegenerationCache,
+        RcaRegenerationPolicy,
+    )
+
+    cluster = source_clusters_by_id.get(str(cluster_id or "")) or {}
+    if not cluster:
+        return noop_context()
+
+    if not rca_regen_recovery_policy_enabled():
+        return ProposalFailureCallSiteContext(
+            cluster=cluster,
+            findings=list(findings or []),
+            evidence_snapshot=dict(metadata_snapshot or {}),
+            cache=None,
+            policy=None,
+            signatures_counter=signatures_counter,
+            metadata_snapshot=dict(metadata_snapshot or {}),
+            spark=spark,
+        )
+
+    cache = rca_recovery_holder.get("rca_regen_cache")
+    if not isinstance(cache, RcaRegenerationCache):
+        cache = RcaRegenerationCache()
+        rca_recovery_holder["rca_regen_cache"] = cache
+    policy = rca_recovery_holder.get("rca_regen_policy")
+    if not isinstance(policy, RcaRegenerationPolicy):
+        policy = RcaRegenerationPolicy.from_overrides(
+            rca_regen_policy_overrides()
+        )
+        rca_recovery_holder["rca_regen_policy"] = policy
+
+    return ProposalFailureCallSiteContext(
+        cluster=cluster,
+        findings=list(findings or []),
+        evidence_snapshot=dict(metadata_snapshot or {}),
+        cache=cache,
+        policy=policy,
+        signatures_counter=signatures_counter,
+        metadata_snapshot=dict(metadata_snapshot or {}),
+        spark=spark,
+    )
+
+
 def _emit_proposal_failure_decided(
     *,
     run_id: str,
