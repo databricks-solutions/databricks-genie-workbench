@@ -146,6 +146,89 @@ def _render_rich_skill_catalogue(
     return "\n".join(lines)
 
 
+def _coerce_target_objects_for_skill(
+    skill_id: str,
+    target_kind: str,
+    target_min_count: int,
+    raw_targets: list[str],
+    allowlist: dict[str, Any],
+) -> tuple[list[str] | None, list[str]]:
+    """Filter Stage-1 picks' target_objects against the per-skill
+    target-shape contract.
+
+    Returns ``(coerced, dropped)``:
+      - ``coerced``: list of targets that match target_kind, or
+        ``None`` when post-filter count < target_min_count (caller
+        must drop the entire pick).
+      - ``dropped``: list of targets that didn't match target_kind
+        (for telemetry / logging — never silently swallowed).
+
+    target_kind vocabulary:
+      base_table  -> validate against allowlist['tables_short'];
+                     column-level FQNs (4+ dotted parts) accepted by
+                     stripping the last segment.
+      metric_view -> validate against allowlist['metric_views'] (full
+                     FQN match, since MVs are not in tables_short).
+      function    -> validate against allowlist['functions_short'].
+      mixed       -> accept any target found in any bucket; only
+                     drop targets that match no bucket at all.
+
+    Empty raw_targets is always passed through as [] when
+    target_min_count == 0; returns None when target_min_count > 0
+    (e.g. lever-4 with empty targets is degenerate).
+    """
+    tables_short: set[str] = allowlist.get("tables_short") or set()
+    metric_views: list[str] = allowlist.get("metric_views") or []
+    metric_views_set = set(metric_views)
+    funcs_short: set[str] = allowlist.get("functions_short") or set()
+
+    def _is_table(t: str) -> bool:
+        parts = t.split(".")
+        # Column FQN (4+ parts) -> last part is column; validate the table.
+        if len(parts) >= 4:
+            table_short = parts[-2].lower()
+        else:
+            table_short = parts[-1].lower()
+        return table_short in tables_short
+
+    def _is_mv(t: str) -> bool:
+        # MVs are validated as full FQN — they're already qualified
+        # in the metadata snapshot.
+        return t in metric_views_set
+
+    def _is_function(t: str) -> bool:
+        func_short = t.rsplit(".", 1)[-1].lower()
+        return func_short in funcs_short
+
+    coerced: list[str] = []
+    dropped: list[str] = []
+
+    for t in raw_targets:
+        if not isinstance(t, str) or not t.strip():
+            dropped.append(str(t))
+            continue
+        if target_kind == "base_table":
+            ok = _is_table(t)
+        elif target_kind == "metric_view":
+            ok = _is_mv(t)
+        elif target_kind == "function":
+            ok = _is_function(t)
+        elif target_kind == "mixed":
+            ok = _is_table(t) or _is_mv(t) or _is_function(t)
+        else:
+            # Unknown kind -> conservative pass-through; log at caller.
+            ok = True
+        if ok:
+            coerced.append(t)
+        else:
+            dropped.append(t)
+
+    if len(coerced) < target_min_count:
+        return None, dropped
+
+    return coerced, dropped
+
+
 # Lever number -> skill_id(s). Sourced from optimizer.py's legacy
 # lever-key mapping (see _project_pipeline_to_action_groups's
 # skill_to_legacy_key dict). Lever 5 fans out to both 5a + 5b because

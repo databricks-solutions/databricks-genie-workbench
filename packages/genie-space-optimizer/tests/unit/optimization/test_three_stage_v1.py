@@ -2078,3 +2078,165 @@ def test_render_rich_skill_catalogue_targets_line_for_mixed_kind():
     assert "    Targets: any table or metric_view (AG-wide allowed)" in rendered, (
         f"lever-5a 'Targets:' line missing or malformed; got:\n{rendered}"
     )
+
+
+# ── Section: _coerce_target_objects_for_skill (Task 4) ────────────────
+
+
+def _sample_allowlist():
+    return {
+        "tables": [
+            "cat.sch.fact_bookings",
+            "cat.sch.dim_hotel",
+            "cat.sch.dim_distribution",
+        ],
+        "tables_short": {"fact_bookings", "dim_hotel", "dim_distribution"},
+        "columns": {},
+        "columns_flat": set(),
+        "functions": ["cat.sch.tvf_revenue_by_channel"],
+        "functions_short": {"tvf_revenue_by_channel"},
+        "metric_views": ["cat.sch.mv_revenue_daily"],
+    }
+
+
+def test_coerce_filters_base_table_kind_against_tables_bucket():
+    """target_kind='base_table' must drop targets that are not in
+    allowlist['tables']. Stops Stage-1 from picking lever-1 with an
+    MV FQN or a TVF FQN."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _coerce_target_objects_for_skill,
+    )
+    coerced, dropped = _coerce_target_objects_for_skill(
+        skill_id="lever-1-table-column-description",
+        target_kind="base_table",
+        target_min_count=0,
+        raw_targets=[
+            "cat.sch.fact_bookings",       # valid base table
+            "cat.sch.mv_revenue_daily",    # WRONG — MV, not base table
+            "cat.sch.tvf_revenue_by_channel",  # WRONG — TVF
+        ],
+        allowlist=_sample_allowlist(),
+    )
+    assert coerced == ["cat.sch.fact_bookings"]
+    assert dropped == [
+        "cat.sch.mv_revenue_daily",
+        "cat.sch.tvf_revenue_by_channel",
+    ]
+
+
+def test_coerce_filters_metric_view_kind_against_metric_views_bucket():
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _coerce_target_objects_for_skill,
+    )
+    coerced, dropped = _coerce_target_objects_for_skill(
+        skill_id="lever-2-mv-column-refinement",
+        target_kind="metric_view",
+        target_min_count=0,
+        raw_targets=[
+            "cat.sch.mv_revenue_daily",
+            "cat.sch.fact_bookings",  # WRONG — base table, not MV
+        ],
+        allowlist=_sample_allowlist(),
+    )
+    assert coerced == ["cat.sch.mv_revenue_daily"]
+    assert dropped == ["cat.sch.fact_bookings"]
+
+
+def test_coerce_drops_pick_below_min_count():
+    """When post-filter count falls below target_min_count, the helper
+    signals 'drop the entire pick' by returning coerced=None."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _coerce_target_objects_for_skill,
+    )
+    coerced, dropped = _coerce_target_objects_for_skill(
+        skill_id="lever-4-join-discovery",
+        target_kind="base_table",
+        target_min_count=2,
+        raw_targets=[
+            "cat.sch.fact_bookings",  # valid
+            "cat.sch.mv_revenue_daily",  # filtered out
+        ],
+        allowlist=_sample_allowlist(),
+    )
+    assert coerced is None, (
+        "post-filter target count (1) < target_min_count (2); "
+        "helper must signal drop-entire-pick by returning None"
+    )
+    assert "cat.sch.mv_revenue_daily" in dropped
+
+
+def test_coerce_accepts_column_fqn_under_base_table_kind():
+    """Column-level FQNs (catalog.schema.table.column) must validate
+    against the table portion. Stage-2 L1 uses column FQNs for
+    add_column_description patches; we must not drop them."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _coerce_target_objects_for_skill,
+    )
+    coerced, dropped = _coerce_target_objects_for_skill(
+        skill_id="lever-1-table-column-description",
+        target_kind="base_table",
+        target_min_count=0,
+        raw_targets=["cat.sch.fact_bookings.hotel_key"],
+        allowlist=_sample_allowlist(),
+    )
+    assert coerced == ["cat.sch.fact_bookings.hotel_key"]
+    assert dropped == []
+
+
+def test_coerce_passes_through_when_kind_is_mixed():
+    """target_kind='mixed' (lever-5a-instructions) accepts any
+    identifier from any allowlist bucket."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _coerce_target_objects_for_skill,
+    )
+    coerced, dropped = _coerce_target_objects_for_skill(
+        skill_id="lever-5a-instructions",
+        target_kind="mixed",
+        target_min_count=0,
+        raw_targets=[
+            "cat.sch.fact_bookings",
+            "cat.sch.mv_revenue_daily",
+            "cat.sch.tvf_revenue_by_channel",
+        ],
+        allowlist=_sample_allowlist(),
+    )
+    assert coerced == [
+        "cat.sch.fact_bookings",
+        "cat.sch.mv_revenue_daily",
+        "cat.sch.tvf_revenue_by_channel",
+    ]
+    assert dropped == []
+
+
+def test_coerce_empty_raw_targets_passes_through_when_min_count_zero():
+    """Empty target_objects is valid when target_min_count=0 — the
+    adapter treats it as 'all relevant in cluster'."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _coerce_target_objects_for_skill,
+    )
+    coerced, dropped = _coerce_target_objects_for_skill(
+        skill_id="lever-1-table-column-description",
+        target_kind="base_table",
+        target_min_count=0,
+        raw_targets=[],
+        allowlist=_sample_allowlist(),
+    )
+    assert coerced == []
+    assert dropped == []
+
+
+def test_coerce_drops_pick_when_empty_below_min_count():
+    """Empty target_objects is invalid for lever-4 (min_count=2).
+    Helper must return None so caller drops the whole pick."""
+    from genie_space_optimizer.optimization.three_stage_pipeline import (
+        _coerce_target_objects_for_skill,
+    )
+    coerced, dropped = _coerce_target_objects_for_skill(
+        skill_id="lever-4-join-discovery",
+        target_kind="base_table",
+        target_min_count=2,
+        raw_targets=[],
+        allowlist=_sample_allowlist(),
+    )
+    assert coerced is None
+    assert dropped == []
