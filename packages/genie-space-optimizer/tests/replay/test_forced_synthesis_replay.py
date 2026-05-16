@@ -331,7 +331,10 @@ def test_replay_label_divergence_emits_nsc_when_synth_declines() -> None:
     assert iter1.appended_proposals == ()
     assert len(iter1.emitted_decision_records) == 1
     nsc = iter1.emitted_decision_records[0]
-    assert nsc.get("decision_type") == "NO_STRUCTURAL_CANDIDATE"
+    # ``decision_type`` is the PROPOSAL_GENERATED bucket; the NSC label
+    # lives on ``reason_code``. See ``no_structural_candidate_record``.
+    assert nsc.get("decision_type") == "proposal_generated"
+    assert nsc.get("reason_code") == "no_structural_candidate"
     assert nsc.get("ag_id") == "AG_DECOMPOSED_H001"
     assert nsc.get("cluster_id") == "H001"
     assert nsc.get("root_cause") == "wrong_aggregation"

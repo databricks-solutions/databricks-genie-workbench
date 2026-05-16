@@ -182,15 +182,16 @@ def dispatch_forced_structural_synthesis(
                 continue
             for _cid in (_drop.get("source_clusters") or ()):
                 _cand = iter_source_clusters_by_id.get(str(_cid))
-                # BUG PRESERVED: strict equality between
-                # _cand.get("root_cause") (RcaKind) and _rc (which
-                # came from _LEVER5_GATE_DROPS[*].root_causes — prefers
-                # asi_failure_type). Plan A fixes this; we preserve
-                # it here so the regression test in Task 11 captures
-                # the bug as a passing test.
-                if isinstance(_cand, dict) and str(
-                    _cand.get("root_cause") or ""
-                ) == str(_rc):
+                # Plan A Part 1 — canonicalized lookup. ``_rc`` came
+                # from ``_LEVER5_GATE_DROPS[*].root_causes`` which
+                # prefers ``asi_failure_type`` (per
+                # ``optimizer.py:15346-15350``). The cluster carries
+                # both ``asi_failure_type`` and ``root_cause`` (the
+                # RcaKind label). ``cluster_failure_keys`` returns
+                # both, so set-membership matches whichever the
+                # ledger picked. See
+                # ``docs/prompt_improvements/2026-05-16-plan-a-canonicalize-label-key.md``.
+                if isinstance(_cand, dict) and str(_rc) in cluster_failure_keys(_cand):
                     _drop_cluster = dict(_cand)
                     _drop_root_cause = str(_rc)
                     break
