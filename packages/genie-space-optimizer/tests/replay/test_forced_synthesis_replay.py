@@ -396,3 +396,80 @@ def test_replay_airline_iter5_h001_emits_nsc_when_synth_declines() -> None:
         "airline_ticketing_and_fare_analysis_gs_009"
         in (nsc.get("target_qids") or ())
     )
+
+
+def test_replay_driver_passes_ag_proposals_so_far_from_fixture_patches() -> None:
+    """The replay driver must derive ``ag_proposals_so_far`` from the
+    AG's ``strategist_response.action_groups[*].patches`` so the safety
+    net predicate evaluates correctly offline.
+
+    The fixture's AG has a SQL-shape source cluster AND an existing
+    ``add_example_sql`` patch (representing a lever-5 emission). The
+    safety net MUST NOT fire — lever 5 already produced a proposal.
+
+    Pre-fix: the replay driver passes no ``ag_proposals_so_far``, the
+    dispatch sees the default ``()``, the predicate sees no L5
+    emissions, the safety net incorrectly fires, and this test fails.
+
+    Post-fix: the replay driver passes ``list(ag.get("patches") or [])``
+    into the dispatch, the predicate sees the ``add_example_sql``, and
+    the safety net correctly short-circuits.
+    """
+    from genie_space_optimizer.optimization.forced_synthesis_replay import (
+        run_forced_synthesis_replay,
+    )
+
+    fixture = {
+        "fixture_id": "in_memory_safety_net_suppression_check",
+        "iterations": [{
+            "iteration": 1,
+            "strategist_response": {
+                "action_groups": [{
+                    "id": "AG_DECOMPOSED_H002",
+                    "affected_questions": ["gs_007now_024"],
+                    "source_cluster_ids": ["H002"],
+                    "patches": [
+                        {
+                            "proposal_id": "P001",
+                            "patch_type": "add_example_sql",
+                            "target_qids": ["gs_007now_024"],
+                            "cluster_id": "H002",
+                        },
+                    ],
+                }],
+            },
+            "clusters": [{
+                "cluster_id": "H002",
+                "root_cause": "plural_top_n_collapse",
+                "asi_failure_type": "wrong_filter_condition",
+                "question_ids": ["gs_007now_024"],
+            }],
+            "iter_source_clusters_by_id": {
+                "H002": {
+                    "cluster_id": "H002",
+                    "root_cause": "plural_top_n_collapse",
+                    "asi_failure_type": "wrong_filter_condition",
+                    "question_ids": ["gs_007now_024"],
+                },
+            },
+            "iter_rca_id_by_cluster": {"H002": "rca_h002"},
+            "metadata_failure_clusters": [],
+            "lever5_gate_drops": [],
+        }],
+    }
+
+    def _synthesize_must_not_run(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError(
+            "synthesize MUST NOT be called — the AG already has an "
+            "add_example_sql patch; the safety net should short-circuit."
+        )
+
+    result = run_forced_synthesis_replay(
+        fixture=fixture,
+        synthesize=_synthesize_must_not_run,
+    )
+    iter1 = result.iterations[0]
+    # Safety net must NOT fire because lever 5 already emitted a proposal.
+    assert iter1.attempted_dispatches == ()
+    assert iter1.appended_proposals == ()
+    assert iter1.emitted_decision_records == ()

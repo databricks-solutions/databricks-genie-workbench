@@ -113,6 +113,12 @@ def run_forced_synthesis_replay(
                 lever_keys=(5,),
                 reflection_buffer=(),
                 current_iter_inputs={},
+                # Plan A Part 2 — pass the AG's patch slate so the
+                # safety-net predicate can detect "lever 5 emitted zero
+                # proposals". Reads patches[*].patch_type from the
+                # fixture, since the journey fixture exporter already
+                # captures patch_type (per _ALLOWED_PATCH_KEYS).
+                ag_proposals_so_far=list(ag.get("patches") or []),
                 synthesize=synth,
             )
             iters.append(IterationReplay(
