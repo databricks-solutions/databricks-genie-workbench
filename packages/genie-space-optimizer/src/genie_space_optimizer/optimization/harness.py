@@ -14112,6 +14112,64 @@ def _run_arbiter_corrections(
     }
 
 
+def _select_lever_for_cluster(
+    cluster: dict, rotation_holder: dict,
+) -> int:
+    """Wedge in front of ``_map_to_lever`` that consults
+    ``RCA_REPAIR_MATRIX`` for typed RCA cards before falling back to
+    the legacy single-int router.
+
+    Args:
+        cluster: The cluster dict carrying ``rca_card``,
+            ``asi_failure_type``, ``root_cause``, ``asi_blame_set``,
+            ``affected_judge``.
+        rotation_holder: Per-run dict whose ``"tried"`` sub-dict maps
+            ``cluster_id`` → ``frozenset[int]`` of lever families that
+            have already been tried-and-failed in this run.
+
+    Selection order:
+
+    1. Resolve the cluster's ``RcaKind``. If ``UNKNOWN``, fall back to
+       ``_map_to_lever`` (legacy).
+    2. Read ``tried = rotation_holder["tried"].get(cluster_id, frozenset())``.
+    3. Call ``next_untried_repair(rca_kind, tried)``. If it returns a
+       pair, use the pair's lever family. Otherwise fall back to
+       ``_map_to_lever`` (legacy exhaustion).
+
+    This helper does NOT mutate ``rotation_holder``. Marking levers as
+    tried happens at the proposal-failure emit sites via
+    :func:`_mark_lever_tried`.
+    """
+    from genie_space_optimizer.optimization.lever_rotation import (
+        next_untried_repair,
+        resolve_rca_kind_for_cluster,
+    )
+    from genie_space_optimizer.optimization.optimizer import _map_to_lever
+    from genie_space_optimizer.optimization.rca import RcaKind
+
+    rca_kind = resolve_rca_kind_for_cluster(cluster)
+    if rca_kind is RcaKind.UNKNOWN:
+        return _map_to_lever(
+            cluster.get("root_cause", ""),
+            asi_failure_type=cluster.get("asi_failure_type"),
+            blame_set=cluster.get("asi_blame_set"),
+            judge=cluster.get("affected_judge"),
+        )
+
+    tried_by_cluster = rotation_holder.get("tried", {})
+    tried = tried_by_cluster.get(str(cluster.get("cluster_id") or ""), frozenset())
+    pair = next_untried_repair(rca_kind, tried=tried)
+    if pair is not None:
+        return int(pair[0])
+
+    return _map_to_lever(
+        cluster.get("root_cause", ""),
+        asi_failure_type=cluster.get("asi_failure_type"),
+        blame_set=cluster.get("asi_blame_set"),
+        judge=cluster.get("affected_judge"),
+    )
+
+
 def _analyze_and_distribute(
     spark: Any,
     run_id: str,
