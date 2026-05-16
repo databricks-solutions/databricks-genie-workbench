@@ -247,3 +247,29 @@ def test_generate_lever6_proposal_renders_routing_table_into_prompt(monkeypatch)
     assert "| `missing_filter` | `filter` |" in prompt, (
         "Routing table row not rendered correctly"
     )
+
+
+def test_lever6_prompt_has_routing_examples_section():
+    """The prompt must include a Routing Examples section with at least 4
+    canonical worked examples covering the top Trial-5 root causes.
+    """
+    from genie_space_optimizer.common.config import LEVER_6_SQL_EXPRESSION_PROMPT
+
+    text = LEVER_6_SQL_EXPRESSION_PROMPT
+    assert "### Routing examples" in text, (
+        "Lever-6 prompt missing '### Routing examples' section"
+    )
+    required_anchors = [
+        "plural_top_n_collapse",   # expression / ROW_NUMBER
+        "missing_filter",          # filter
+        "wrong_aggregation",       # measure
+        "missing_dimension",       # expression / CASE bucket
+    ]
+    for anchor in required_anchors:
+        assert text.count(anchor) >= 1, (
+            f"Routing example for {anchor!r} not present in prompt"
+        )
+    # No-fit example: shows empty proposal as a valid outcome.
+    assert "no-fit" in text.lower() or "no fit" in text.lower(), (
+        "Prompt must include a no-fit example documenting when NOT to propose"
+    )

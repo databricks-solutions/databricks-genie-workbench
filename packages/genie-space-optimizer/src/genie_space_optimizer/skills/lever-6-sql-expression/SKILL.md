@@ -102,6 +102,108 @@ improve the identified questions.  Choose the most appropriate type:
 
 {{ failure_type_routing_table }}
 
+### Routing examples
+
+These show the expected shape for the most common Trial-5 patterns. Each
+example pairs a 1-line cluster summary with the JSON proposal that should
+follow. Use them as templates, not as canon — your output should reflect
+the actual cluster you receive.
+
+**Example 1 — `plural_top_n_collapse` → `expression` (ROW_NUMBER window)**
+
+Cluster: `failure_type=plural_top_n_collapse`, `blame_set=["RANK", "coupon_count"]`, `question_ids=["q42"]`
+
+```json
+{
+  "snippet_type": "expression",
+  "display_name": "TKT_COUPON Route Rank (Top N without ties)",
+  "alias": "route_rank_no_ties",
+  "sql": "ROW_NUMBER() OVER (ORDER BY COUNT(tkt_coupon.COUPON_SEQ_NBR) DESC)",
+  "synonyms": ["top routes rank", "route ranking no ties"],
+  "instruction": "Use this expression when ranking routes to select a top N. ROW_NUMBER() returns exactly N rows; RANK() returns more when ties exist.",
+  "rationale": "RANK() produced 16 rows for 'top 10'; ROW_NUMBER() guarantees 10.",
+  "target_table": "tkt_coupon",
+  "affected_questions": ["q42"]
+}
+```
+
+**Example 2 — `missing_filter` → `filter`**
+
+Cluster: `failure_type=missing_filter`, `blame_set=["PAYMENT_STATUS_CD"]`, `question_ids=["q15", "q16"]`
+
+```json
+{
+  "snippet_type": "filter",
+  "display_name": "TKT_PAYMENT Settled Payments Only",
+  "alias": "",
+  "sql": "tkt_payment.PAYMENT_STATUS_CD = 'SETTLED'",
+  "synonyms": ["settled payments", "completed payments"],
+  "instruction": "Use this filter when the question concerns completed payments. Genie was including pending and reversed payments in the count.",
+  "rationale": "Two questions asked for 'completed payments' but the generated SQL omitted any status filter.",
+  "target_table": "tkt_payment",
+  "affected_questions": ["q15", "q16"]
+}
+```
+
+**Example 3 — `wrong_aggregation` → `measure`**
+
+Cluster: `failure_type=wrong_aggregation`, `blame_set=["FARE_AMT"]`, `question_ids=["q22"]`
+
+```json
+{
+  "snippet_type": "measure",
+  "display_name": "TKT_DOCUMENT Distinct Tickets by Fare",
+  "alias": "distinct_tickets_by_fare",
+  "sql": "COUNT(DISTINCT tkt_document.DOCUMENT_NBR_TEXT)",
+  "synonyms": ["distinct ticket count", "unique tickets"],
+  "instruction": "Use this measure when the question asks for the number of unique tickets. The generated SQL used COUNT(*) which double-counts conjunctive tickets.",
+  "rationale": "Question expects unique ticket count; SUM/COUNT(*) over fare amounts inflated the result.",
+  "target_table": "tkt_document",
+  "affected_questions": ["q22"]
+}
+```
+
+**Example 4 — `missing_dimension` → `expression` (CASE bucket)**
+
+Cluster: `failure_type=missing_dimension`, `blame_set=["TOTAL_FARE_USD_AMT"]`, `question_ids=["q33"]`
+
+```json
+{
+  "snippet_type": "expression",
+  "display_name": "TKT_DOCUMENT Fare Bucket (Low/Mid/High)",
+  "alias": "fare_bucket",
+  "sql": "CASE WHEN tkt_document.TOTAL_FARE_USD_AMT < 500 THEN 'Low' WHEN tkt_document.TOTAL_FARE_USD_AMT < 2000 THEN 'Mid' ELSE 'High' END",
+  "synonyms": ["fare tier", "price bucket"],
+  "instruction": "Use this expression to group tickets by fare tier. Genie was unable to derive the bucket boundaries without an explicit dimension.",
+  "rationale": "Question asks for distribution by fare tier; no bucket dimension existed.",
+  "target_table": "tkt_document",
+  "affected_questions": ["q33"]
+}
+```
+
+**Example 5 — no-fit case: do NOT propose**
+
+Cluster: `failure_type=other`, `blame_set=[]`, `question_ids=["q99"]`, `counterfactual_fixes=["Genie connection timed out"]`
+
+This cluster is an infrastructure failure, not a SQL-shape problem. No snippet
+can fix it. Return the LLM equivalent of "no proposal" by emitting the JSON
+with `affected_questions: []` and a `rationale` explaining why no snippet
+applies — the post-validator will drop it cleanly:
+
+```json
+{
+  "snippet_type": "expression",
+  "display_name": "n/a",
+  "alias": "",
+  "sql": "",
+  "synonyms": [],
+  "instruction": "",
+  "rationale": "Cluster reflects infrastructure failure (Genie connection timeout); no SQL snippet applies.",
+  "target_table": "",
+  "affected_questions": []
+}
+```
+
 ## Output format (strict JSON)
 
 ```json
