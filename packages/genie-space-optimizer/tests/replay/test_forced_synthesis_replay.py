@@ -473,3 +473,89 @@ def test_replay_driver_passes_ag_proposals_so_far_from_fixture_patches() -> None
     assert iter1.attempted_dispatches == ()
     assert iter1.appended_proposals == ()
     assert iter1.emitted_decision_records == ()
+
+
+def test_replay_seven_now_h002_safety_net_fires() -> None:
+    """PLAN A PART 2 GATE — exercises the 7now H002 shape.
+
+    The 7now run terminated at MERGE_GATE_GAP_NO_APPLIED_PATCHES with
+    lever 6 emitting only a weak add_text_instruction for AG_H002,
+    despite H002's root_cause being SQL-shape (``plural_top_n_collapse``).
+    The safety net must detect this and dispatch the rich synthesizer.
+
+    Variant A — synthesize returns a candidate.
+    """
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_replay import (
+        run_forced_synthesis_replay,
+    )
+
+    def _synthesize_success(cluster_arg, metadata_arg, **kwargs):
+        return ClusterSynthesisResult(
+            proposal={
+                "example_question": "Show top 1 customer by orders",
+                "example_sql": (
+                    "SELECT customer_id, COUNT(*) AS orders "
+                    "FROM orders GROUP BY customer_id "
+                    "ORDER BY orders DESC LIMIT 1"
+                ),
+                "_archetype_name": "single_row_top_n",
+                "kit_id": "kit_h002_7now",
+                "target_qids": ["gs_007now_026"],
+                "rca_id": "rca_h002_7now",
+                "_cluster_id": "H002",
+            },
+            attempted_archetypes=("single_row_top_n",),
+            skipped_reason=None,
+        )
+
+    result = run_forced_synthesis_replay(
+        fixture=_load_fixture("seven_now_iter1_h002_safety_net"),
+        synthesize=_synthesize_success,
+    )
+    iter1 = result.iterations[0]
+    assert iter1.iteration == 1
+    assert iter1.ag_id == "AG_DECOMPOSED_H002"
+    # safety net fires on the asi_failure_type (first in cluster_failure_keys order).
+    assert iter1.attempted_dispatches == (("H002", "wrong_filter_condition"),)
+    assert len(iter1.appended_proposals) == 1
+    proposal = iter1.appended_proposals[0]
+    assert proposal["patch_type"] == "add_example_sql"
+    assert proposal["provenance"]["synthesis_source"] == "rich_path_safety_net"
+    assert proposal["provenance"]["safety_net_failure_key"] == (
+        "wrong_filter_condition"
+    )
+
+
+def test_replay_seven_now_h002_safety_net_emits_nsc_when_synth_declines() -> None:
+    """Variant B — synthesize declines → NO_STRUCTURAL_CANDIDATE record."""
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_replay import (
+        run_forced_synthesis_replay,
+    )
+
+    def _synthesize_decline(*args, **kwargs):
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=("single_row_top_n",),
+            skipped_reason="no_viable_archetype",
+        )
+
+    result = run_forced_synthesis_replay(
+        fixture=_load_fixture("seven_now_iter1_h002_safety_net"),
+        synthesize=_synthesize_decline,
+    )
+    iter1 = result.iterations[0]
+    assert iter1.attempted_dispatches == (("H002", "wrong_filter_condition"),)
+    assert iter1.appended_proposals == ()
+    assert len(iter1.emitted_decision_records) == 1
+    nsc = iter1.emitted_decision_records[0]
+    assert nsc.get("decision_type") == "proposal_generated"
+    assert nsc.get("reason_code") == "no_structural_candidate"
+    assert nsc.get("ag_id") == "AG_DECOMPOSED_H002"
+    assert nsc.get("cluster_id") == "H002"
+    assert nsc.get("root_cause") == "wrong_filter_condition"
