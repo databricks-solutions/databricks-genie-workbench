@@ -14170,6 +14170,29 @@ def _select_lever_for_cluster(
     )
 
 
+def _mark_lever_tried(
+    rotation_holder: dict,
+    *,
+    cluster_id: str,
+    lever: int,
+) -> None:
+    """Add ``lever`` to ``rotation_holder["tried"][cluster_id]``.
+
+    No-op when ``cluster_id`` is empty (the harness emits with empty
+    cluster_id on some defensive code paths; we don't want to pollute
+    the holder).
+
+    Initializes the ``"tried"`` sub-dict if the caller passed a bare
+    holder.
+    """
+    cid = str(cluster_id or "")
+    if not cid:
+        return
+    tried = rotation_holder.setdefault("tried", {})
+    current = tried.get(cid, frozenset())
+    tried[cid] = current | {int(lever)}
+
+
 def _analyze_and_distribute(
     spark: Any,
     run_id: str,

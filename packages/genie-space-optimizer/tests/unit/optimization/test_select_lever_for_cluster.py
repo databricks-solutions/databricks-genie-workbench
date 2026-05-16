@@ -73,3 +73,50 @@ def test_selector_does_not_mutate_rotation_holder():
     before = {k: dict(v) if hasattr(v, "items") else v for k, v in rotation_holder.items()}
     _select_lever_for_cluster(_make_cluster(), rotation_holder)
     assert rotation_holder == before
+
+
+def test_mark_lever_tried_creates_frozenset_when_absent():
+    from genie_space_optimizer.optimization.harness import (
+        _mark_lever_tried,
+    )
+    holder = {"tried": {}}
+    _mark_lever_tried(holder, cluster_id="C1", lever=6)
+    assert holder["tried"]["C1"] == frozenset({6})
+
+
+def test_mark_lever_tried_merges_with_existing_set():
+    from genie_space_optimizer.optimization.harness import (
+        _mark_lever_tried,
+    )
+    holder = {"tried": {"C1": frozenset({6})}}
+    _mark_lever_tried(holder, cluster_id="C1", lever=2)
+    assert holder["tried"]["C1"] == frozenset({6, 2})
+
+
+def test_mark_lever_tried_idempotent_for_same_lever():
+    from genie_space_optimizer.optimization.harness import (
+        _mark_lever_tried,
+    )
+    holder = {"tried": {"C1": frozenset({6})}}
+    _mark_lever_tried(holder, cluster_id="C1", lever=6)
+    assert holder["tried"]["C1"] == frozenset({6})
+
+
+def test_mark_lever_tried_noop_on_empty_cluster_id():
+    from genie_space_optimizer.optimization.harness import (
+        _mark_lever_tried,
+    )
+    holder = {"tried": {}}
+    _mark_lever_tried(holder, cluster_id="", lever=6)
+    assert holder["tried"] == {}
+
+
+def test_mark_lever_tried_initializes_holder_when_tried_missing():
+    """Defensive — if caller passes an empty {} the helper inserts the
+    ``tried`` sub-dict instead of raising KeyError."""
+    from genie_space_optimizer.optimization.harness import (
+        _mark_lever_tried,
+    )
+    holder: dict = {}
+    _mark_lever_tried(holder, cluster_id="C1", lever=6)
+    assert holder["tried"]["C1"] == frozenset({6})
