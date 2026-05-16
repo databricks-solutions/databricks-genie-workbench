@@ -169,10 +169,14 @@ def test_phase_2_3_structural_repair_missing_fires():
 
 
 def test_phase_2_4_auto_narrow_replacement_invokes():
+    # Plan C1 (2026-05-16) — patch_type flipped from the legacy
+    # placeholder ``"sql_snippet"`` to the production name
+    # ``"add_sql_snippet_filter"``. See
+    # ``docs/prompt_improvements/2026-05-16-plan-c-downstream-backstops.md``.
     calls = []
     result = try_narrow_replacement(
         dropped_patches=[{
-            "patch_id": "p1", "patch_type": "sql_snippet",
+            "patch_id": "p1", "patch_type": "add_sql_snippet_filter",
             "drop_reason": "high_collateral_risk_flagged",
         }],
         outside_target_qids=("gs_003",),
@@ -180,7 +184,7 @@ def test_phase_2_4_auto_narrow_replacement_invokes():
         rca_card={"root_cause": "r"},
         synthesis_callable_l6=lambda **kw: (
             calls.append(kw) or
-            {"patch_id": "narrow", "patch_type": "narrow_l6_sql"}
+            {"patch_id": "narrow", "patch_type": "add_sql_snippet_filter"}
         ),
         synthesis_callable_l5=lambda **_: None,
     )
