@@ -60,11 +60,13 @@ def test_narrow_replacement_invoked_with_protected_dependents() -> None:
         dropped_patches=[
             {
                 **dropped,
-                # auto_narrow_replacement only recognizes ``sql_snippet``
-                # family for L6; the fixture's ``add_sql_snippet_measure``
-                # is the harness-level patch_type. Normalize to the L6
-                # family the helper dispatches on.
-                "patch_type": "sql_snippet",
+                # Plan C1 (2026-05-16) — the helper now dispatches on
+                # the real production patch_type names. The fixture's
+                # ``add_sql_snippet_measure`` is the harness-level
+                # patch_type; the override is preserved here so the
+                # spy_l6 callable fires identically regardless of any
+                # future fixture refactor.
+                "patch_type": "add_sql_snippet_measure",
             }
         ],
         outside_target_qids=protected,
@@ -89,7 +91,7 @@ def test_narrow_synthesis_failure_emits_blast_radius_rejected() -> None:
 
     result = try_narrow_replacement(
         dropped_patches=[
-            {**dropped, "patch_type": "sql_snippet"},
+            {**dropped, "patch_type": "add_sql_snippet_measure"},
         ],
         outside_target_qids=protected,
         cluster={"cluster_id": "c1", "target_qids": iter2["target_qids"]},
@@ -119,7 +121,7 @@ def test_narrow_synthesis_success_returns_scoped_patch() -> None:
 
     result = try_narrow_replacement(
         dropped_patches=[
-            {**dropped, "patch_type": "sql_snippet"},
+            {**dropped, "patch_type": "add_sql_snippet_measure"},
         ],
         outside_target_qids=protected,
         cluster={"cluster_id": "c1", "target_qids": iter2["target_qids"]},

@@ -18,8 +18,20 @@ from genie_space_optimizer.optimization.terminal_reason import TerminalReason
 
 COLLATERAL_DROP_REASON: str = "high_collateral_risk_flagged"
 
+# Plan C1 (2026-05-16) — production L6 patch types. These three values
+# match `harness._LEVER6_PATCH_TYPES` (the only producer of L6
+# patches), `optimizer._RCA_SQL_SNIPPET_PATCH_TYPES`, and
+# `teaching_kit.SQL_SNIPPET_PATCH_TYPES`. The pre-Plan-C version of
+# this set contained placeholder strings (``"sql_snippet"``,
+# ``"l6_sql"``, etc.) that never appeared in real proposals, which
+# meant the narrow-replacement helper was a dead code path for every
+# broad-L6 collateral drop in production. A regression pin lives at
+# ``tests/unit/test_auto_narrow_replacement.py::
+# test_legacy_placeholder_patch_types_do_not_dispatch_to_l6``.
 _BROAD_L6_TYPES: frozenset[str] = frozenset({
-    "sql_snippet", "l6_sql", "broad_l6_sql", "general_sql_expression",
+    "add_sql_snippet_expression",
+    "add_sql_snippet_measure",
+    "add_sql_snippet_filter",
 })
 
 _EXAMPLE_SQL_TYPES: frozenset[str] = frozenset({
