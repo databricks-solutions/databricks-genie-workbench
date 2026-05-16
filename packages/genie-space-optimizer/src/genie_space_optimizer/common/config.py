@@ -718,6 +718,13 @@ STAGE_1_DISCOVERY_MAX_TOKENS = 2500
 # usually a prompt-quality regression, not a cap problem.
 LEVER_6_MAX_TOKENS = 1200
 
+# Lever-1/2 column-refinement output cap. Conservative — covers
+# changes[≤3] × ~150 tokens + table_changes[≤2] × ~100 tokens +
+# rationale[≤300 chars] + JSON overhead with ~50% headroom.
+# Re-tune empirically after first Trial-N that activates the L1/L2 path.
+# Plan: 2026-05-17-lever-1-2-column-prompt-hardening.md Task 1
+LEVER_1_2_MAX_TOKENS: int = 2048
+
 # ── 5. Benchmark Generation ────────────────────────────────────────────
 
 REQUIRE_GROUND_TRUTH_SQL: bool = True
