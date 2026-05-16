@@ -5452,6 +5452,9 @@ STAGE_1_DISCOVERY_PROMPT = _SKILL_LOADER.load_prompt(
     expected_constant_name="STAGE_1_DISCOVERY_PROMPT",
 )
 
+# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 3
+LEVER_PROMPTS["stage_1_discovery"] = STAGE_1_DISCOVERY_PROMPT
+
 
 # ── Plan 3 (Phase 3): Three-Stage Pipeline capture sink ───────────────
 # Mirrors Plan 1's _NarrowingCaptureSink and Plan 2's

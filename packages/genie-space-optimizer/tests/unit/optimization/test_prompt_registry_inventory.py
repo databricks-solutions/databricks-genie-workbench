@@ -157,3 +157,14 @@ def test_lever_6_sql_expression_prompt_is_registered():
         "LEVER_PROMPTS in common/config.py."
     )
     assert cfg.LEVER_PROMPTS["lever_6_sql_expression"] is cfg.LEVER_6_SQL_EXPRESSION_PROMPT
+
+
+def test_stage_1_discovery_prompt_is_registered():
+    assert "stage_1_discovery" in cfg.LEVER_PROMPTS, (
+        "STAGE_1_DISCOVERY_PROMPT is the routing brain for the entire "
+        "three-stage pipeline (fires once per AG) but is not in "
+        "LEVER_PROMPTS, so it is never registered to MLflow Prompt "
+        "Registry. Add 'stage_1_discovery': STAGE_1_DISCOVERY_PROMPT to "
+        "LEVER_PROMPTS in common/config.py."
+    )
+    assert cfg.LEVER_PROMPTS["stage_1_discovery"] is cfg.STAGE_1_DISCOVERY_PROMPT
