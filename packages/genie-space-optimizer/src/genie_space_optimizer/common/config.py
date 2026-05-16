@@ -704,6 +704,20 @@ LLM_MAX_RETRIES = 3
 #   lower to 1500; if any trace has finish_reason=="length", raise.
 STAGE_1_DISCOVERY_MAX_TOKENS = 2500
 
+# Lever-6 SQL Expression LLM output cap. Evidence-based sizing from
+# docs/prompt_improvements/2026-05-17-lever6-empirical-baseline.md (n=48):
+#   - P50 output tokens: 369
+#   - P95 output tokens: 500
+#   - Max observed:    1,011 (lone trace emitted two snippets)
+# A cap of 1,200 = 2.4x P95 and >1,011 max with comfortable headroom.
+# At 1,200 max_tokens, ~16 concurrent lever-6 calls fit within the
+# Databricks Claude Opus 4.6 20K OTPM endpoint reservation budget
+# (vs ~4 with the implicit ~4,096 default).
+# Tune: if MLflow traces show any finish_reason=="length", raise to
+# 1,500 before increasing further; persistent length truncation is
+# usually a prompt-quality regression, not a cap problem.
+LEVER_6_MAX_TOKENS = 1200
+
 # ── 5. Benchmark Generation ────────────────────────────────────────────
 
 REQUIRE_GROUND_TRUTH_SQL: bool = True

@@ -12894,9 +12894,11 @@ def _generate_lever6_proposal(
         span.set_inputs({"root_cause": root_cause, "prompt_chars": len(prompt)})
 
         try:
+            from genie_space_optimizer.common.config import LEVER_6_MAX_TOKENS
             raw_text, _ = _traced_llm_call(
                 w, "You are a SQL expression expert.", prompt,
                 span_name="lever6_llm",
+                max_tokens=LEVER_6_MAX_TOKENS,
             )
         except Exception:
             logger.warning("Lever 6 LLM call failed for root_cause=%s", root_cause, exc_info=True)
