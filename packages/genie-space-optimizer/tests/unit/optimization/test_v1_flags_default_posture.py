@@ -90,21 +90,25 @@ def test_plan_4_emergency_rollback_via_env():
     assert cfg.raw_evidence_v1_enabled() is False
 
 
-# ── Plan 3: three_stage_enabled — locked default-off (Task 4) ────────
+# ── Plan 3: three_stage_enabled — default-on post-trial-4 ────────────
 
 
-def test_plan_3_default_off_no_env():
-    """Plan 3 stays flag-gated until the second trial produces clean
-    three-stage fixtures. Operator must explicitly set the env var to
-    activate it; do not flip the default in code without an explicit
-    follow-up plan."""
+def test_plan_3_default_on_no_env():
+    """Plan 3 — three-stage strategist pipeline — defaults ON.
+
+    Trial-4 (2026-05-16) produced byte-stable three_stage_v1 fixtures
+    (commit 9d380a89). The fixture-regression suite
+    test_three_stage_fixtures.py now gates real bytes; flipping the
+    default to ON is safe because contract drift will be caught by the
+    fixture diff in CI."""
     cfg = _reload_config_with_env({})
-    assert cfg.three_stage_enabled() is False
-
-
-def test_plan_3_opt_in_via_env():
-    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "1"})
     assert cfg.three_stage_enabled() is True
+
+
+def test_plan_3_emergency_rollback_via_env():
+    """Operator override: setting GSO_THREE_STAGE_V1=0 disables."""
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "0"})
+    assert cfg.three_stage_enabled() is False
 
 
 # ── Task 5: require-coverage helpers always False in production ──────

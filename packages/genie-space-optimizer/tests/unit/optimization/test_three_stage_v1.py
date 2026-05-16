@@ -45,12 +45,22 @@ def _reload_config_with_env(env: dict[str, str]):
 # ── Section 1: flag helpers ──────────────────────────────────────────
 
 
-def test_three_stage_default_off():
+def test_three_stage_default_on_post_trial_4():
+    """Plan 3 — default-on post-trial-4 (commit 9d380a89). The other
+    three flag helpers stay default-off (shadow path retired, capture
+    path opt-in only)."""
     cfg = _reload_config_with_env({})
-    assert cfg.three_stage_enabled() is False
+    assert cfg.three_stage_enabled() is True
     assert cfg.three_stage_shadow_enabled() is False
     assert cfg.three_stage_capture_path_set() is False
     assert cfg.three_stage_capture_require_coverage_enabled() is False
+
+
+def test_three_stage_emergency_rollback_via_env():
+    """GSO_THREE_STAGE_V1=0 restores the legacy strategist path."""
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "0"})
+    assert cfg.three_stage_enabled() is False
+    assert cfg.three_stage_shadow_enabled() is False
 
 
 def test_three_stage_pipeline_flag_on():
@@ -60,7 +70,14 @@ def test_three_stage_pipeline_flag_on():
 
 
 def test_three_stage_shadow_flag_on():
-    cfg = _reload_config_with_env({"GSO_THREE_STAGE_SHADOW_V1": "1"})
+    """Shadow path with Plan 3 explicitly rolled back via the
+    emergency-rollback env. Holds the original intent (the shadow
+    flag toggles the shadow-only path) under the new default-on
+    posture."""
+    cfg = _reload_config_with_env({
+        "GSO_THREE_STAGE_V1": "0",
+        "GSO_THREE_STAGE_SHADOW_V1": "1",
+    })
     assert cfg.three_stage_enabled() is False
     assert cfg.three_stage_shadow_enabled() is True
 
@@ -947,7 +964,11 @@ def test_pipeline_merges_duplicate_skill_picks(monkeypatch):
 
 
 def test_select_strategy_path_off_uses_legacy(monkeypatch):
-    cfg = _reload_config_with_env({})
+    """Plan 3 explicitly rolled back via the emergency env var. The
+    selector must take the legacy path (this exercises the rollback
+    contract; default-on is covered by
+    test_select_strategy_path_pipeline_uses_three_stage)."""
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "0"})
     from genie_space_optimizer.optimization import optimizer
     from genie_space_optimizer.optimization import three_stage_pipeline
 
@@ -1055,8 +1076,13 @@ def test_select_strategy_path_pipeline_fallback_runs_legacy(monkeypatch):
 
 def test_select_strategy_path_shadow_runs_both_applies_legacy(monkeypatch):
     """Shadow mode: both paths run; legacy applied; comparison emitted
-    via _emit_three_stage_shadow_comparison."""
-    cfg = _reload_config_with_env({"GSO_THREE_STAGE_SHADOW_V1": "1"})
+    via _emit_three_stage_shadow_comparison. Plan 3 must be explicitly
+    rolled back (default-on as of trial-4) so the selector lands on the
+    shadow-only branch instead of the active pipeline path."""
+    cfg = _reload_config_with_env({
+        "GSO_THREE_STAGE_V1": "0",
+        "GSO_THREE_STAGE_SHADOW_V1": "1",
+    })
     from genie_space_optimizer.optimization import optimizer
     from genie_space_optimizer.optimization import three_stage_pipeline
 
@@ -1127,7 +1153,11 @@ def test_emit_shadow_comparison_records_overlap():
 
 
 def test_emit_shadow_comparison_no_op_when_no_flags():
-    cfg = _reload_config_with_env({})
+    """Both pipeline AND shadow flags off → emit() is a no-op. Plan 3
+    is default-on as of trial-4, so the emit guard reads
+    ``three_stage_enabled() or three_stage_shadow_enabled()``; we must
+    set the emergency-rollback env to exercise the no-op branch."""
+    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "0"})
     cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
     from genie_space_optimizer.optimization import optimizer
 

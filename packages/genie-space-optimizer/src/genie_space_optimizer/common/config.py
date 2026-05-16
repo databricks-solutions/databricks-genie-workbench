@@ -5438,14 +5438,20 @@ def three_stage_enabled() -> bool:
     (Stage-1 discovery + Stage-2 per-skill activation) instead of
     ``_call_llm_for_adaptive_strategy``.
 
-    Production-affecting. Flip default-on AFTER the shadow-mode trial
-    run produces commit-ready fixtures (see Plan 3's Trial-run protocol).
+    **Default ON post-trial-4** (2026-05-16). Trial-4 produced
+    byte-stable ``three_stage_v1`` fixtures (commit ``9d380a89``);
+    contract drift is now caught by ``test_three_stage_fixtures.py``
+    in CI, so the legacy strategist path is no longer needed as a
+    safety net.
 
-    Default OFF preserves existing strategist behavior byte-for-byte.
-
-    Enable with ``GSO_THREE_STAGE_V1=1``.
+    Flip to OFF for emergency rollback by setting
+    ``GSO_THREE_STAGE_V1=0`` in
+    ``packages/genie-space-optimizer/databricks.yml`` under the
+    lever_loop task's ``base_parameters`` (or by setting the env var
+    on the job environment) and redeploying. The flag helper still
+    honors a falsy explicit override.
     """
-    return _flag_enabled("GSO_THREE_STAGE_V1")
+    return _flag_default_on("GSO_THREE_STAGE_V1")
 
 
 def three_stage_shadow_enabled() -> bool:
