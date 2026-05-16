@@ -14206,6 +14206,7 @@ def _analyze_and_distribute(
     quarantined_qids: set[str] | None = None,
     exclude_qids: set[str] | None = None,
     phase_h_anchor_run_id: str | None = None,
+    rotation_holder: dict | None = None,
 ) -> dict:
     """Analyze failures once, cluster, and distribute clusters to levers.
 
@@ -14550,13 +14551,9 @@ def _analyze_and_distribute(
     from genie_space_optimizer.optimization.judge_classes import (
         aggregate_cluster_signal_class,
     )
+    _rotation_holder_local: dict = rotation_holder if rotation_holder is not None else {"tried": {}}
     for ci, c in enumerate(clusters, 1):
-        mapped = _map_to_lever(
-            c["root_cause"],
-            asi_failure_type=c.get("asi_failure_type"),
-            blame_set=c.get("asi_blame_set"),
-            judge=c.get("affected_judge"),
-        )
+        mapped = _select_lever_for_cluster(c, _rotation_holder_local)
         c["_mapped_lever"] = mapped
         lever_assignments.setdefault(mapped, []).append(c)
         blame = c.get("asi_blame_set", c.get("blame_set", []))
@@ -19101,6 +19098,7 @@ def _run_lever_loop(
                 quarantined_qids=_correction_state["quarantined_qids"],
                 exclude_qids=escalated_gt_repair_qids,
                 phase_h_anchor_run_id=_phase_h_anchor_run_id,
+                rotation_holder=_rotation_holder,
             )
             clusters = _analysis["all_clusters"]
             soft_signal_clusters = _analysis["soft_signal_clusters"]
