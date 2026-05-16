@@ -725,6 +725,12 @@ LEVER_6_MAX_TOKENS = 1200
 # Plan: 2026-05-17-lever-1-2-column-prompt-hardening.md Task 1
 LEVER_1_2_MAX_TOKENS: int = 2048
 
+# Lever-1 RCA-bridge output cap. Conservative — covers
+# description (~75 tokens) + synonyms (≤5 × ~30 chars / ~40 tokens)
+# + JSON overhead with 100% headroom.
+# Plan: 2026-05-17-lever-1-rca-bridge-hardening.md Task 1
+LEVER_1_RCA_BRIDGE_MAX_TOKENS: int = 400
+
 # Lever-1/2 column-refinement system message. Frames the domain
 # (Genie Space metadata curation) and requires JSON-only output.
 # Plan: 2026-05-17-lever-1-2-column-prompt-hardening.md Task 2
