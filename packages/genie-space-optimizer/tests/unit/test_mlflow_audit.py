@@ -176,3 +176,32 @@ def test_audit_anchor_falls_back_to_latest_lever_loop_when_no_captures(
         client=_FakeClient(),
     )
     assert result["anchor_run_id"] == "run_b", result
+
+
+def test_audit_anchor_single_lever_loop_sibling_picks_it(monkeypatch) -> None:
+    """Single-sibling baseline — pins the most common case so the Track A
+    two-pass refactor cannot regress it."""
+    from genie_space_optimizer.tools import mlflow_audit
+
+    only = _FakeRun(
+        "run_only",
+        {"genie.run_type": "lever_loop"},
+        start_time=42,
+        artifact_paths=("gso_trial_captures/lever5_split_v1.ndjson",),
+    )
+
+    class _FakeClient:
+        def search_runs(self, *a, **k):
+            return [only]
+
+    monkeypatch.setattr(
+        mlflow_audit, "_list_artifacts_recursive",
+        lambda c, r: list(only._artifact_paths),
+    )
+
+    result = mlflow_audit.audit_optimization_run(
+        optimization_run_id="opt-1",
+        experiment_id="exp1",
+        client=_FakeClient(),
+    )
+    assert result["anchor_run_id"] == "run_only"
