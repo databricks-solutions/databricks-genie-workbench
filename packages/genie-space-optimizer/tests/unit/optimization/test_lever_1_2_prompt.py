@@ -125,3 +125,14 @@ def test_lever_1_2_prompt_has_four_canonical_examples():
     assert "missing_definition" in examples_section
     assert "wrong_table_selection" in examples_section or "table_changes" in examples_section
     assert '"changes": []' in examples_section
+
+
+def test_lever_1_2_prompt_drops_dead_full_schema_section():
+    """The L1/L2 template must NOT contain the dead '## Full Genie Space Schema' section."""
+    from genie_space_optimizer.common.config import LEVER_1_2_COLUMN_PROMPT
+
+    prompt = LEVER_1_2_COLUMN_PROMPT
+    assert "## Full Genie Space Schema" not in prompt
+    assert "{{ full_schema_context }}" not in prompt
+    assert "## Structured Table Metadata" in prompt
+    assert "## Structured Column Metadata" in prompt

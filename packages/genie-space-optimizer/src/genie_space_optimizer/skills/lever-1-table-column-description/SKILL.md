@@ -61,9 +61,6 @@ Identifier Allowlist.
 AFS-projected structural feature comparison between expected and generated SQL. May include missing/extra joins, wrong columns, wrong aggregations, etc. This is NOT raw SQL — the AFS layer strips benchmark text per the leakage boundary.
 {{ sql_diffs }}
 
-## Full Genie Space Schema
-{{ full_schema_context }}
-
 ## Identifier Allowlist (Extract-Over-Generate)
 {{ identifier_allowlist }}
 
