@@ -22719,6 +22719,90 @@ def _run_lever_loop(
                             exc_info=True,
                         )
 
+                    # L5-dispatch replay (2026-05-16) — snapshot the
+                    # inputs dispatch_forced_structural_synthesis reads,
+                    # into the per-iteration replay fixture. Append-only
+                    # observability emit, no behavior change. Without
+                    # these snapshots, optimization/forced_synthesis_replay
+                    # cannot reconstruct the dispatch state offline.
+                    try:
+                        _l5_drops_for_fixture = [
+                            {
+                                "ag_id": str(d.get("ag_id") or ""),
+                                "source_clusters": [
+                                    str(s) for s in (d.get("source_clusters") or ())
+                                ],
+                                "root_causes": [
+                                    str(r) for r in (d.get("root_causes") or ())
+                                ],
+                                "target_lever": int(d.get("target_lever") or 0),
+                                "had_example_sqls": bool(
+                                    d.get("had_example_sqls")
+                                ),
+                                "instruction_sections_dropped": bool(
+                                    d.get("instruction_sections_dropped")
+                                ),
+                                "instruction_guidance_dropped": bool(
+                                    d.get("instruction_guidance_dropped")
+                                ),
+                            }
+                            for d in _l5_ag_drops
+                        ]
+                        _current_iter_inputs.setdefault(
+                            "lever5_gate_drops", []
+                        ).extend(_l5_drops_for_fixture)
+
+                        _src_clusters_snap = {
+                            str(cid): {
+                                "cluster_id": str(c.get("cluster_id") or ""),
+                                "root_cause": str(c.get("root_cause") or ""),
+                                "question_ids": [
+                                    str(q) for q in (c.get("question_ids") or ())
+                                    if q
+                                ],
+                                "asi_failure_type": str(
+                                    c.get("asi_failure_type") or ""
+                                ),
+                            }
+                            for cid, c in _iter_source_clusters_by_id.items()
+                            if isinstance(c, dict)
+                        }
+                        _current_iter_inputs["iter_source_clusters_by_id"] = (
+                            _src_clusters_snap
+                        )
+
+                        _current_iter_inputs["iter_rca_id_by_cluster"] = {
+                            str(k): str(v)
+                            for k, v in (_iter_rca_id_by_cluster or {}).items()
+                            if v
+                        }
+
+                        _mfc = (
+                            metadata_snapshot.get("_failure_clusters")
+                            or metadata_snapshot.get("failure_clusters")
+                            or []
+                        )
+                        _current_iter_inputs["metadata_failure_clusters"] = [
+                            {
+                                "cluster_id": str(c.get("cluster_id") or ""),
+                                "root_cause": str(c.get("root_cause") or ""),
+                                "question_ids": [
+                                    str(q) for q in (c.get("question_ids") or ())
+                                    if q
+                                ],
+                                "asi_failure_type": str(
+                                    c.get("asi_failure_type") or ""
+                                ),
+                            }
+                            for c in _mfc
+                            if isinstance(c, dict)
+                        ]
+                    except Exception:
+                        logger.debug(
+                            "L5-dispatch replay: fixture-emit failed (non-fatal)",
+                            exc_info=True,
+                        )
+
                     # P3 task 3+4 — force structural synthesis when the
                     # lever-5 structural gate drops an instruction-only
                     # proposal for a SQL-shape root cause. The dispatch
