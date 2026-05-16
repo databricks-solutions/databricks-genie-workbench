@@ -38,6 +38,25 @@ _ALLOWED_ITERATION_KEYS = (
     "post_eval_passing_qids",
     "journey_validation",
     "decision_records",
+    # L5-dispatch replay (2026-05-16) — four new keys captured just
+    # before the forced-synthesis dispatch fires. These reconstruct the
+    # exact inputs dispatch_forced_structural_synthesis reads, so an
+    # offline replay can reproduce dispatch decisions byte-for-byte.
+    "lever5_gate_drops",
+    "iter_source_clusters_by_id",
+    "metadata_failure_clusters",
+    "iter_rca_id_by_cluster",
+)
+
+
+_ALLOWED_L5_DROP_KEYS = (
+    "ag_id",
+    "source_clusters",
+    "root_causes",
+    "target_lever",
+    "had_example_sqls",
+    "instruction_sections_dropped",
+    "instruction_guidance_dropped",
 )
 _ALLOWED_EVAL_ROW_KEYS = (
     "question_id",
@@ -178,6 +197,36 @@ def _strip_iteration(it: dict[str, Any]) -> dict[str, Any]:
             if d is not None:
                 _coerced.append(_strip_dict(d, _ALLOWED_DECISION_RECORD_KEYS))
         out["decision_records"] = _coerced
+    if "lever5_gate_drops" in out:
+        out["lever5_gate_drops"] = [
+            _strip_dict(d, _ALLOWED_L5_DROP_KEYS)
+            for d in (out.get("lever5_gate_drops") or [])
+            if isinstance(d, dict)
+        ]
+    if "iter_source_clusters_by_id" in out:
+        # Dict keyed by cluster_id; each value is a small cluster dict
+        # with the same shape as ``clusters[*]`` (incl. asi_failure_type).
+        src = out.get("iter_source_clusters_by_id") or {}
+        out["iter_source_clusters_by_id"] = {
+            str(k): _strip_dict(v, _ALLOWED_CLUSTER_KEYS)
+            for k, v in src.items()
+            if isinstance(v, dict)
+        }
+    if "iter_rca_id_by_cluster" in out:
+        # Dict[str, str].
+        src = out.get("iter_rca_id_by_cluster") or {}
+        out["iter_rca_id_by_cluster"] = {
+            str(k): str(v) for k, v in src.items() if v is not None
+        }
+    if "metadata_failure_clusters" in out:
+        # List of cluster dicts shaped like the clusters key. The full
+        # ``metadata_snapshot._failure_clusters`` payload can be large;
+        # we keep only the fields the dispatch reads.
+        out["metadata_failure_clusters"] = [
+            _strip_dict(c, _ALLOWED_CLUSTER_KEYS)
+            for c in (out.get("metadata_failure_clusters") or [])
+            if isinstance(c, dict)
+        ]
     return out
 
 
