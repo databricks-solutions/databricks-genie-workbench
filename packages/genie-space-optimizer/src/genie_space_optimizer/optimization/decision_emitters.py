@@ -3084,6 +3084,9 @@ def proposal_failure_decided_record(
         ProposalFailureNextAction.REQUEST_EVIDENCE_GATHERING: (
             ReasonCode.REQUEST_EVIDENCE_GATHERING
         ),
+        ProposalFailureNextAction.ESCALATE_STALEMATE: (
+            ReasonCode.ESCALATE_STALEMATE
+        ),
     }
 
     reason_code = _NEXT_ACTION_TO_REASON_CODE[decision.next_action]
@@ -3137,6 +3140,9 @@ def proposal_failure_decided_record(
             ),
             "rca_card_grounded": bool(context.rca_card_grounded),
             "prior_failure_count": int(context.prior_failure_count or 0),
+            "prior_identical_failure_count": int(
+                getattr(context, "prior_identical_failure_count", 0) or 0
+            ),
         },
     )
 

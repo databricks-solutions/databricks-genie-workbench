@@ -357,6 +357,7 @@ class ReasonCode(str, Enum):
         "escalate_unsupported_repair_shape"
     )
     REQUEST_EVIDENCE_GATHERING = "request_evidence_gathering"
+    ESCALATE_STALEMATE = "escalate_stalemate"
 
 
 class RejectReason(str, Enum):

@@ -5163,6 +5163,7 @@ def _emit_proposal_failure_decided(
     prior_failure_count: int,
     target_qids: tuple,
     iter_inputs: dict,
+    callsite_ctx=None,
 ) -> None:
     """Plan P-F (2026-05-12) — single harness entry point that
     builds the ``ProposalFailureContext``, invokes the policy,
@@ -5170,6 +5171,26 @@ def _emit_proposal_failure_decided(
     ``iter_inputs["decision_records"]``, and prints one
     ``GSO_PROPOSAL_FAILURE_DECIDED_V1`` marker into
     ``iter_inputs["markers"]``.
+
+    C4 wiring (2026-05-17) — when ``callsite_ctx`` is supplied, also:
+
+    1. Compute the iteration-failure signature via
+       ``iteration_failure_signature(...)`` over the call's typed
+       fields.
+    2. Bump ``callsite_ctx.signatures_counter[signature]`` and read
+       the *prior* value into ``prior_identical_failure_count`` on
+       the policy context. This is the field
+       ``decide_next_action`` checks before emitting
+       ``ESCALATE_STALEMATE``.
+    3. After the record is emitted, forward the decision to
+       ``_handle_proposal_failure_next_action`` so
+       REQUEST_EVIDENCE_GATHERING actually drives a regen instead
+       of being a no-op label.
+
+    When ``callsite_ctx`` is ``None`` (legacy callers) the helper
+    behaves exactly as before — the noop context is used so the
+    counter is empty, ``prior_identical_failure_count`` is 0, and
+    the handler short-circuits.
 
     Flag-off (``GSO_PROPOSAL_FAILURE_DECIDED=0`` / unset) is a hard
     no-op so pre-P-F replay fixtures stay byte-stable.
@@ -5206,6 +5227,12 @@ def _emit_proposal_failure_decided(
         from genie_space_optimizer.optimization.run_analysis_contract import (
             proposal_failure_decided_marker,
         )
+        from genie_space_optimizer.optimization.iteration_signature import (
+            iteration_failure_signature,
+        )
+        from genie_space_optimizer.optimization.proposal_failure_callsite_context import (
+            noop_context,
+        )
     except Exception:
         logger.debug(
             "Plan P-F: emitter import failed (non-fatal)",
@@ -5213,6 +5240,36 @@ def _emit_proposal_failure_decided(
         )
         return
 
+    if callsite_ctx is None:
+        callsite_ctx = noop_context()
+
+    # C4 (2026-05-17) — compute the signature BEFORE building ctx so
+    # we can populate prior_identical_failure_count from the per-run
+    # counter. Bumping happens here too so the value we read is the
+    # count of PRIOR firings (not including this one).
+    try:
+        signature = iteration_failure_signature(
+            ag_id=str(ag_id),
+            failure_mode=str(failure_mode),
+            root_cause=str(root_cause or ""),
+            lever_set=tuple(int(L) for L in (lever_set or ())),
+            tried_lever_families=tuple(
+                int(L) for L in (tried_lever_families or ())
+            ),
+            cluster_signature=str(cluster_signature or ""),
+        )
+        prior_identical = _bump_iteration_failure_signature_count(
+            callsite_ctx.signatures_counter, signature,
+        )
+    except Exception:
+        logger.debug(
+            "Plan P-F: signature compute/bump failed (non-fatal)",
+            exc_info=True,
+        )
+        signature = ""
+        prior_identical = 0
+
+    decision = None
     try:
         ctx = ProposalFailureContext(
             failure_mode=str(failure_mode),
@@ -5228,6 +5285,7 @@ def _emit_proposal_failure_decided(
             ag_source_cluster_count=int(ag_source_cluster_count or 0),
             rca_card_grounded=bool(rca_card_grounded),
             prior_failure_count=int(prior_failure_count or 0),
+            prior_identical_failure_count=int(prior_identical),
         )
         decision = decide_next_action(ctx)
         rec = proposal_failure_decided_record(
@@ -5250,6 +5308,32 @@ def _emit_proposal_failure_decided(
     except Exception:
         logger.debug(
             "Plan P-F: proposal_failure_decided emit failed (non-fatal)",
+            exc_info=True,
+        )
+        return
+
+    # C4 wiring — forward to the handler so REQUEST_EVIDENCE_GATHERING
+    # actually triggers a regen attempt. Handler short-circuits when
+    # decision.next_action != REQUEST_EVIDENCE_GATHERING or when
+    # cache/policy are None (noop context).
+    try:
+        handler_records = _handle_proposal_failure_next_action(
+            decision=decision,
+            cluster=callsite_ctx.cluster,
+            findings=callsite_ctx.findings,
+            evidence_snapshot=callsite_ctx.evidence_snapshot,
+            metadata_snapshot=callsite_ctx.metadata_snapshot,
+            run_id=str(run_id),
+            iteration=int(iteration),
+            cache=callsite_ctx.cache,
+            policy=callsite_ctx.policy,
+            spark=callsite_ctx.spark,
+        )
+        if handler_records:
+            iter_inputs.setdefault("decision_records", []).extend(handler_records)
+    except Exception:
+        logger.debug(
+            "Plan P-F: handler invocation failed (non-fatal)",
             exc_info=True,
         )
 
