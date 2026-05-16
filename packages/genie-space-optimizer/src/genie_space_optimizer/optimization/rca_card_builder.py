@@ -85,20 +85,38 @@ def grounding_terms_from_asi(asi_by_qid: Mapping[str, dict]) -> frozenset[str]:
     """Aggregate every ``blame_set`` entry across cluster qids into a
     deduplicated frozenset of grounding terms.
 
-    Skips entries whose metadata is not a dict, whose ``blame_set`` is
-    missing/empty, or whose entries are non-string. Empty input
+    Also unions in aggregation / filter atoms from any per-qid
+    ``sql_diff`` payload — Trial-5 Run A's ``wrong_aggregation``
+    clusters had non-empty SqlDiff data but the builder produced
+    empty ``grounding_terms``, leading to ``rca_card_grounded=False``
+    and the C3 stalemate. SqlDiff atoms are checked against
+    generated / reference SQL by ``self_grounding_check`` downstream,
+    so non-matching atoms simply fail self-grounding (the existing
+    contract) — they never silently corrupt a card.
+
+    Skips entries whose metadata is not a dict, whose ``blame_set``
+    is missing/empty, or whose entries are non-string. Empty input
     returns an empty frozenset.
     """
+    from genie_space_optimizer.optimization.sql_diff_grounding import (
+        extract_aggregation_terms,
+        extract_filter_terms,
+    )
+
     out: set[str] = set()
     for metadata in asi_by_qid.values():
         if not isinstance(metadata, dict):
             continue
         blame = metadata.get("blame_set")
-        if not blame:
-            continue
-        for term in blame:
-            if isinstance(term, str) and term:
-                out.add(term)
+        if blame:
+            for term in blame:
+                if isinstance(term, str) and term:
+                    out.add(term)
+        sql_diff = metadata.get("sql_diff")
+        for term in extract_aggregation_terms(sql_diff):
+            out.add(term)
+        for term in extract_filter_terms(sql_diff):
+            out.add(term)
     return frozenset(out)
 
 
