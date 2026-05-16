@@ -47,6 +47,13 @@ Precedence:
 - Blamed objects: {{ blame_set }}
 - Affected questions: {{ affected_questions }}
 
+## Counterfactual Fix Hints
+RCA inferred these specific fix shapes from the failed eval rows. Use them
+as a high-priority starting point; reject only if the structured table or
+column metadata below contradicts them or if they fall outside the
+Identifier Allowlist.
+{{ counterfactual_fixes }}
+
 ## Raw Failure Evidence
 {{ raw_evidence_block }}
 
@@ -107,6 +114,7 @@ Provide sections from: purpose, best_for, grain, scd, relationships.
 - Do NOT repeat synonyms already in the metadata.
 - Be specific — reference actual table/column names from the SQL diffs.
 - You MUST ONLY reference tables and columns from the Identifier Allowlist. Any name not in the allowlist is INVALID and will be rejected.
+- If `Counterfactual Fix Hints` are non-empty, your proposal SHOULD implement at least one of them — RCA had access to the same failure signature you do. If none of the hints are actionable (e.g., all blame_set entries fall outside the Identifier Allowlist), return `{"changes": [], "table_changes": [], "rationale": "<why none of the hints are actionable>"}`.
 </instructions>
 
 <output_schema>

@@ -70,3 +70,13 @@ def test_lever_1_2_prompt_contract_block_is_slim_and_l1_relevant():
     assert contract_body.count("\n") < 30, (
         f"slim contract should be < 30 lines; got {contract_body.count(chr(10))}"
     )
+
+
+def test_lever_1_2_prompt_has_counterfactual_fix_hints_section():
+    """L1/L2 template must render the counterfactual_fixes slot."""
+    from genie_space_optimizer.common.config import LEVER_1_2_COLUMN_PROMPT
+
+    prompt = LEVER_1_2_COLUMN_PROMPT
+    assert "## Counterfactual Fix Hints" in prompt
+    assert "{{ counterfactual_fixes }}" in prompt
+    assert "Counterfactual Fix Hints" in prompt or "counterfactual" in prompt.lower()
