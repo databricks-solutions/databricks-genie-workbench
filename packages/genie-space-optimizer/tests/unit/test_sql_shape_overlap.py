@@ -151,3 +151,131 @@ def test_extract_shape_tokens_lowercases() -> None:
     # No casing leakage.
     assert "Revenue" not in tokens
     assert "Price" not in tokens
+
+
+def test_benchmark_overlap_returns_false_for_empty_shape_tokens() -> None:
+    """When shape tokens are empty, the caller falls back to
+    table-only matching. The predicate returns False to signal "shape
+    check did not match" — the caller composes this with the existing
+    table-name check via the convention "empty shape tokens means
+    skip shape gate"."""
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+    )
+    benchmark = {
+        "id": "gs_001",
+        "required_columns": ["orders.total"],
+        "expected_response": "SELECT total FROM orders",
+    }
+    assert benchmark_has_shape_overlap(benchmark, frozenset()) is False
+
+
+def test_benchmark_overlap_matches_required_columns_tail() -> None:
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+    )
+    benchmark = {
+        "id": "gs_001",
+        "required_columns": ["catalog.schema.orders.total"],
+        "expected_response": "",
+    }
+    assert benchmark_has_shape_overlap(
+        benchmark, frozenset({"total"}),
+    ) is True
+
+
+def test_benchmark_overlap_matches_required_columns_exact() -> None:
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+    )
+    benchmark = {
+        "id": "gs_001",
+        "required_columns": ["total"],
+        "expected_response": "",
+    }
+    assert benchmark_has_shape_overlap(
+        benchmark, frozenset({"total"}),
+    ) is True
+
+
+def test_benchmark_overlap_matches_expected_sql() -> None:
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+    )
+    benchmark = {
+        "id": "gs_001",
+        "required_columns": [],
+        "expected_response": (
+            "SELECT SUM(price * quantity) FROM orders"
+        ),
+    }
+    assert benchmark_has_shape_overlap(
+        benchmark, frozenset({"quantity"}),
+    ) is True
+    assert benchmark_has_shape_overlap(
+        benchmark, frozenset({"price"}),
+    ) is True
+
+
+def test_benchmark_overlap_matches_expected_sql_via_alias() -> None:
+    """The benchmark may carry the expected SQL under
+    ``expected_sql`` or ``ground_truth_sql`` instead of
+    ``expected_response``. All three are checked."""
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+    )
+    benchmark = {
+        "id": "gs_001",
+        "required_columns": [],
+        "ground_truth_sql": "SELECT revenue FROM orders",
+    }
+    assert benchmark_has_shape_overlap(
+        benchmark, frozenset({"revenue"}),
+    ) is True
+
+
+def test_benchmark_overlap_returns_false_when_no_tokens_match() -> None:
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+    )
+    benchmark = {
+        "id": "gs_001",
+        "required_columns": ["orders.customer_id"],
+        "expected_response": "SELECT customer_id FROM orders",
+    }
+    assert benchmark_has_shape_overlap(
+        benchmark, frozenset({"revenue", "discount"}),
+    ) is False
+
+
+def test_benchmark_overlap_word_boundary_in_sql() -> None:
+    """Substring matches in SQL must be word-boundary-aware so a token
+    ``status`` doesn't match ``order_status_history``. Implementation
+    matches via regex with ``\\b`` boundaries."""
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+    )
+    benchmark = {
+        "id": "gs_001",
+        "required_columns": [],
+        "expected_response": (
+            "SELECT * FROM order_status_history WHERE event_type='paid'"
+        ),
+    }
+    # ``status`` is contained in ``order_status_history`` but only as a
+    # SUBSTRING, not as a standalone token. Must NOT match.
+    assert benchmark_has_shape_overlap(
+        benchmark, frozenset({"status"}),
+    ) is False
+    # ``event_type`` IS a standalone token. Must match.
+    assert benchmark_has_shape_overlap(
+        benchmark, frozenset({"event_type"}),
+    ) is True
+
+
+def test_benchmark_overlap_handles_non_dict_benchmark() -> None:
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+    )
+    assert benchmark_has_shape_overlap(None, frozenset({"x"})) is False
+    assert benchmark_has_shape_overlap("not a dict", frozenset({"x"})) is False
