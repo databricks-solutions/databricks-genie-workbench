@@ -12964,6 +12964,17 @@ def _generate_lever6_proposal(
             metadata_snapshot,
             relevant_objects=_relevant or None,
         )
+
+        # G7 (Task 6) — render the cluster-filtered identifier allowlist so
+        # the LLM sees an explicit list of valid identifiers (functions and
+        # metric views included, which the schema dump omits). Reuses the
+        # Task 5 _relevant set for consistency.
+        _allowlist = _build_identifier_allowlist(
+            metadata_snapshot,
+            relevant_objects=_relevant or None,
+        )
+        identifier_allowlist = _format_identifier_allowlist(_allowlist)
+
         existing_snippets = _format_existing_sql_snippets(metadata_snapshot)
 
         hints_text = "(No strategist hints.)"
@@ -12979,6 +12990,7 @@ def _generate_lever6_proposal(
             strategist_hints=hints_text,
             raw_evidence_block=_format_raw_evidence_block(raw_evidence),
             failure_type_routing_table=_render_failure_type_to_snippet_type_table(),
+            identifier_allowlist=identifier_allowlist,
         )
 
         span.set_inputs({"root_cause": root_cause, "prompt_chars": len(prompt)})

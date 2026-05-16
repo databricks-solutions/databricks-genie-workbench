@@ -77,6 +77,12 @@ shows the root cause is: **{{ root_cause }}**
 ### Current schema
 {{ schema_context }}
 
+### Identifier allowlist (cluster-relevant subset)
+You MUST reference only these tables, columns, functions, and metric views in
+your `sql`. Any identifier outside this list will fail post-validation.
+
+{{ identifier_allowlist }}
+
 ### Existing SQL Expressions (do NOT duplicate these)
 {{ existing_sql_snippets }}
 

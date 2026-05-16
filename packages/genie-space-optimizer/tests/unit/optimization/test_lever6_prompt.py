@@ -408,3 +408,66 @@ def test_generate_lever6_proposal_filters_schema_to_blame_set(monkeypatch):
         f"Schema filter regression: tkt_coupon leaked into schema dump "
         f"despite not being in blame_set: {schema_lines}"
     )
+
+
+def test_lever6_prompt_template_has_identifier_allowlist_slot():
+    """The prompt template must include the {{ identifier_allowlist }} slot."""
+    from genie_space_optimizer.common.config import LEVER_6_SQL_EXPRESSION_PROMPT
+    assert "{{ identifier_allowlist }}" in LEVER_6_SQL_EXPRESSION_PROMPT
+
+
+def test_generate_lever6_proposal_renders_filtered_allowlist(monkeypatch):
+    """_generate_lever6_proposal must render an identifier allowlist that
+    is also filtered by cluster blame_set (consistent with Task 5).
+    """
+    from genie_space_optimizer.optimization import optimizer
+
+    captured: dict = {}
+
+    def _fake_traced_llm_call(w, system_msg, prompt, *, span_name, **kwargs):
+        captured["prompt"] = prompt
+        return (
+            '{"snippet_type": "filter", "display_name": "X", "alias": "", '
+            '"sql": "tkt_payment.PAYMENT_AMT > 0", "synonyms": [], '
+            '"instruction": "i", "rationale": "r", "target_table": "tkt_payment", '
+            '"affected_questions": []}',
+            None,
+        )
+
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_traced_llm_call)
+    monkeypatch.setattr(
+        optimizer, "_validate_sql_identifiers", lambda sql, allow: (False, ["stop"]),
+    )
+
+    metadata = {
+        "data_sources": {
+            "tables": [
+                {"identifier": "cat.sch.tkt_document",
+                 "column_configs": [{"column_name": "DOC_NBR", "data_type": "STRING"}]},
+                {"identifier": "cat.sch.tkt_payment",
+                 "column_configs": [{"column_name": "PAYMENT_AMT", "data_type": "DECIMAL"}]},
+            ]
+        }
+    }
+    cluster = {
+        "cluster_id": "c1", "root_cause": "missing_filter",
+        "question_ids": ["q1"], "question_traces": [{"q": "q1"}],
+        "asi_blame_set": ["tkt_payment"],
+    }
+    optimizer._generate_lever6_proposal(
+        cluster, metadata_snapshot=metadata, w=None,
+    )
+    prompt = captured["prompt"]
+    # The allowlist banner from _format_identifier_allowlist must appear.
+    assert "VALID TABLES" in prompt, (
+        "Identifier allowlist not rendered into prompt"
+    )
+    # Allowlist must be filtered: tkt_payment present, tkt_document absent.
+    allow_start = prompt.index("VALID TABLES")
+    next_section = prompt.find("###", allow_start)
+    allow_block = prompt[allow_start: next_section if next_section > 0 else None]
+    assert "tkt_payment" in allow_block
+    assert "tkt_document" not in allow_block, (
+        "Allowlist filter regression: tkt_document leaked into VALID TABLES "
+        "section despite not being in cluster blame_set"
+    )
