@@ -4591,6 +4591,7 @@ def _emit_force_l6_outcome(
     cluster_signature: str = "",
     reflection_buffer: list | None = None,
     callsite_ctx=None,
+    rotation_holder: dict | None = None,
 ) -> None:
     """Cycle 10 W3.4 — record typed outcomes for the Cycle 7 N3
     force-Lever-6 path. Emits two records when ``outcome="declined"``
@@ -4683,6 +4684,19 @@ def _emit_force_l6_outcome(
                     "emit failed (non-fatal)",
                     exc_info=True,
                 )
+            if rotation_holder is not None:
+                try:
+                    _mark_lever_tried(
+                        rotation_holder,
+                        cluster_id=str(cluster_id or ""),
+                        lever=6,
+                    )
+                except Exception:
+                    logger.debug(
+                        "rotation bridge: mark_lever_tried for force-L6 "
+                        "failed (non-fatal)",
+                        exc_info=True,
+                    )
             try:
                 marker = lever6_force_llm_declined_marker(
                     run_id=run_id, iteration=iteration, ag_id=ag_id,
@@ -4735,6 +4749,7 @@ def _maybe_force_lever6_with_cache(
     cluster_signature: str = "",
     forbidden_pair=None,
     callsite_ctx=None,
+    rotation_holder: dict | None = None,
 ) -> dict | None:
     """P-E1 — wrap the force-L6 LLM call with an iteration-scoped
     decline cache.
@@ -4849,6 +4864,7 @@ def _maybe_force_lever6_with_cache(
                     original_decline_iteration=int(prior_iteration),
                     cluster_signature=sig,
                     callsite_ctx=callsite_ctx,
+                    rotation_holder=rotation_holder,
                 )
                 return None
 
@@ -4872,6 +4888,7 @@ def _maybe_force_lever6_with_cache(
         original_decline_iteration=None,
         cluster_signature=sig,
         callsite_ctx=callsite_ctx,
+        rotation_holder=rotation_holder,
     )
     if cache_on:
         key = _l6_decline_cache_key(collision_pair, snippet_type=snippet_type)
@@ -22997,6 +23014,7 @@ def _run_lever_loop(
                                 metadata_snapshot=metadata_snapshot,
                                 spark=spark,
                             ),
+                            rotation_holder=_rotation_holder,
                         )
                         if _forced_l6 is None:
                             _force_outcome = "declined"
@@ -23109,6 +23127,7 @@ def _run_lever_loop(
                                     metadata_snapshot=metadata_snapshot,
                                     spark=spark,
                                 ),
+                                rotation_holder=_rotation_holder,
                             )
             except Exception as _forced_lever6_n3_exc:
                 try:
@@ -23734,6 +23753,19 @@ def _run_lever_loop(
                             logger.debug(
                                 "Plan P-F: proposal_generation_empty "
                                 "taxonomy emit failed (non-fatal)",
+                                exc_info=True,
+                            )
+                        try:
+                            for _lk in lever_keys:
+                                _mark_lever_tried(
+                                    _rotation_holder,
+                                    cluster_id=_this_cluster_id,
+                                    lever=int(_lk),
+                                )
+                        except Exception:
+                            logger.debug(
+                                "rotation bridge: mark_lever_tried after "
+                                "proposal_generation_empty failed (non-fatal)",
                                 exc_info=True,
                             )
                 except Exception:
@@ -26761,6 +26793,19 @@ def _run_lever_loop(
                                 "taxonomy emit failed (non-fatal)",
                                 exc_info=True,
                             )
+                        try:
+                            for _lk in lever_keys:
+                                _mark_lever_tried(
+                                    _rotation_holder,
+                                    cluster_id=_this_cluster_id,
+                                    lever=int(_lk),
+                                )
+                        except Exception:
+                            logger.debug(
+                                "rotation bridge: mark_lever_tried after "
+                                "no_causal_applyable_patch failed (non-fatal)",
+                                exc_info=True,
+                            )
                         patches = []
                         _patch_cap_decisions = []
                     else:
@@ -27777,6 +27822,20 @@ def _run_lever_loop(
                             "taxonomy emit failed (non-fatal)",
                             exc_info=True,
                         )
+                    try:
+                        for _lk in lever_keys:
+                            _mark_lever_tried(
+                                _rotation_holder,
+                                cluster_id=_this_cluster_id,
+                                lever=int(_lk),
+                            )
+                    except Exception:
+                        logger.debug(
+                            "rotation bridge: mark_lever_tried after "
+                            "all_selected_patches_dropped_by_applier "
+                            "failed (non-fatal)",
+                            exc_info=True,
+                        )
                 logger.warning(
                     "[%s] Skipping acceptance eval: %s",
                     ag_id,
@@ -27967,6 +28026,19 @@ def _run_lever_loop(
                     logger.debug(
                         "Plan P-F: no_applied_patches taxonomy emit "
                         "failed (non-fatal)",
+                        exc_info=True,
+                    )
+                try:
+                    for _lk in lever_keys:
+                        _mark_lever_tried(
+                            _rotation_holder,
+                            cluster_id=_this_cluster_id,
+                            lever=int(_lk),
+                        )
+                except Exception:
+                    logger.debug(
+                        "rotation bridge: mark_lever_tried after "
+                        "no_applied_patches failed (non-fatal)",
                         exc_info=True,
                     )
                 _render_current_journey()
