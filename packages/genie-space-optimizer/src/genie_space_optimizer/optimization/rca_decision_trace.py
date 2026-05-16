@@ -796,6 +796,10 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     # record + the typed next-action label adjacent in Stage 6
     # (Proposal Generation).
     DecisionType.PROPOSAL_FAILURE_DECIDED: SECTION_PROPOSAL_SURVIVAL,
+    # 2026-05-17 rotation bridge — lever_rotation_decided fires at the
+    # cluster-distribute step (before proposals are generated) so it
+    # belongs in the AG-Decisions section alongside strategist outputs.
+    DecisionType.LEVER_ROTATION_DECIDED: SECTION_AG_DECISIONS,
     DecisionType.GATE_DECISION: SECTION_PROPOSAL_SURVIVAL,
     DecisionType.PATCH_APPLIED: SECTION_APPLIED_PATCHES,
     DecisionType.PATCH_SKIPPED: SECTION_APPLIED_PATCHES,
