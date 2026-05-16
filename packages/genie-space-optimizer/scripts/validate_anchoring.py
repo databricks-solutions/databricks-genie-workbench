@@ -51,9 +51,12 @@ def _summarize_proposal(proposal: dict) -> str:
 
 def _run_one(cluster: dict, metadata_snapshot: dict, skill_id: str,
               n: int, w: Any) -> list[dict]:
-    """Build the bundle, run the L1 adapter, return its proposals."""
+    """Build the bundle, run the L1 adapter, return its proposals.
+
+    The historical raw-evidence rollout flag was retired by the
+    2026-05-16 dead-flag cleanup, so we only set the sample-size env
+    var here."""
     import os as _os
-    _os.environ["GSO_RAW_EVIDENCE_V1"] = "1"
     _os.environ["GSO_RAW_EVIDENCE_N"] = str(n)
     import importlib
     from genie_space_optimizer.common import config as cfg

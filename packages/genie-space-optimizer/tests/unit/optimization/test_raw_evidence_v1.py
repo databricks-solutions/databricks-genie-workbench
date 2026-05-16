@@ -46,31 +46,14 @@ def _reload_config_with_env(env: dict[str, str]):
 # ── Section 1: flag helpers ──────────────────────────────────────────
 
 
-def test_raw_evidence_v1_default_posture_as_of_plan_5():
-    """Plan 5 flipped raw_evidence_v1_enabled to default-on. Shadow stays
-    off (used only on trial runs); capture-path is unset (the new
-    default-path resolution is tested separately in
-    test_capture_sink_default_paths.py); require-coverage is forced inert."""
+def test_raw_evidence_capture_path_set_when_var_present():
+    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_CAPTURE_PATH": "/tmp/x.ndjson"})
+    assert cfg.raw_evidence_capture_path_set() is True
+
+
+def test_raw_evidence_capture_require_coverage_inert_in_prod():
     cfg = _reload_config_with_env({})
-    assert cfg.raw_evidence_v1_enabled() is True
-    assert cfg.raw_evidence_v1_shadow_enabled() is False
-    assert cfg.raw_evidence_capture_path_set() is False
     assert cfg.raw_evidence_capture_require_coverage_enabled() is False
-
-
-def test_raw_evidence_v1_emergency_rollback_via_env():
-    """Operator override: GSO_RAW_EVIDENCE_V1=0 disables raw-evidence
-    injection. Plan 4 path becomes byte-stable with Plan 3 again."""
-    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "0"})
-    assert cfg.raw_evidence_v1_enabled() is False
-
-
-def test_raw_evidence_v1_shadow_flag_on():
-    """Shadow flag is independent of the V1 flag; Plan 5 default-on
-    posture means both stay on when shadow is enabled."""
-    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_SHADOW_V1": "1"})
-    assert cfg.raw_evidence_v1_enabled() is True  # default-on
-    assert cfg.raw_evidence_v1_shadow_enabled() is True
 
 
 def test_raw_evidence_n_default_3():
@@ -461,18 +444,6 @@ def test_coverage_gate_raises_when_zero_projections():
         cfg._RAW_EVIDENCE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
 
 
-def test_coverage_gate_raises_when_no_shadow_in_shadow_mode():
-    import pytest
-    cfg = _reload_config_with_env({
-        "GSO_RAW_EVIDENCE_SHADOW_V1": "1",
-        "GSO_RAW_EVIDENCE_CAPTURE_REQUIRE_COVERAGE": "1",
-    })
-    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    cfg._record_raw_evidence_projection("lever-1-table-column-description")
-    with pytest.raises(RuntimeError, match="zero shadow comparison"):
-        cfg._RAW_EVIDENCE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
-
-
 # ── Section 2: anti-anchoring header + raw_evidence slot ──────────────
 
 
@@ -548,29 +519,8 @@ def _sample_metadata_snapshot() -> dict:
     }
 
 
-def test_build_bundle_emergency_rollback_keeps_raw_evidence_empty():
-    """Plan 5 made raw-evidence default-on. To exercise the empty
-    raw_evidence path (byte-stable with Plan 3), the operator emergency-
-    rollback env var must be set."""
-    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "0"})
-    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    from genie_space_optimizer.optimization.activation_bundle import (
-        build_activation_bundle,
-    )
-    pick = {"skill_id": "lever-1-table-column-description",
-             "target_objects": ["catalog.schema.dim_store"],
-             "evidence_refs": [], "expected_impact_qids": [],
-             "why": "x", "priority": 1}
-    bundle = build_activation_bundle(
-        pick=pick, ag_id="AG1",
-        clusters=[_sample_cluster_with_traces()],
-        metadata_snapshot=_sample_metadata_snapshot(),
-    )
-    assert bundle.raw_evidence == ()
-
-
-def test_build_bundle_flag_on_populates_raw_evidence_for_l1():
-    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "1"})
+def test_build_bundle_populates_raw_evidence_for_l1():
+    cfg = _reload_config_with_env({})
     cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
     from genie_space_optimizer.optimization.activation_bundle import (
         build_activation_bundle,
@@ -828,42 +778,10 @@ def test_stage_2_l1_empty_raw_evidence_passes_empty_tuple(monkeypatch):
 # ── Section 10: shadow comparison ────────────────────────────────────
 
 
-def test_stage_2_for_skill_shadow_runs_both_paths(monkeypatch):
-    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_SHADOW_V1": "1"})
-    cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    from genie_space_optimizer.optimization import optimizer
-    from genie_space_optimizer.optimization import three_stage_pipeline
-
-    captured = {"on_count": 0, "off_count": 0}
-    def _fake(cluster, metadata_snapshot, patch_type, lever, w=None,
-               *, raw_evidence=()):
-        if raw_evidence:
-            captured["on_count"] += 1
-            return {"proposed_value": "with_evidence", "rationale": "on"}
-        else:
-            captured["off_count"] += 1
-            return {"proposed_value": "no_evidence", "rationale": "off"}
-    monkeypatch.setattr(optimizer, "_call_llm_for_proposal", _fake)
-
-    triples = ({"question_id": "Q1", "trace_id": "", "question": "q",
-                  "actual_sql": "a", "expected_sql": "e",
-                  "judge_rationale": "r"},)
-    bundle = _bundle_with_raw_evidence(
-        "lever-1-table-column-description", triples,
-    )
-    out = three_stage_pipeline._stage_2_for_skill(bundle, w=None)
-    assert captured["off_count"] >= 1, "OFF (applied) path must run"
-    assert captured["on_count"] >= 1, "ON (shadow) path must run"
-    snap = cfg.dump_raw_evidence_capture_summary()
-    assert snap["shadow_comparisons"] >= 1
-    # Applied result is the OFF result:
-    assert out["proposals"][0]["proposed_value"] == "no_evidence"
-
-
-def test_stage_2_for_skill_pipeline_mode_uses_on_only(monkeypatch):
-    """Pipeline mode (V1=1, SHADOW_V1=0) runs ONLY the raw-evidence-on
-    path. No shadow comparison emitted."""
-    cfg = _reload_config_with_env({"GSO_RAW_EVIDENCE_V1": "1"})
+def test_stage_2_for_skill_uses_raw_evidence_unconditionally(monkeypatch):
+    """Plan 4 is unconditionally on. Stage-2 dispatch always runs the
+    raw-evidence-on path with the bundle as-is — no shadow A/B."""
+    cfg = _reload_config_with_env({})
     cfg._RAW_EVIDENCE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
     from genie_space_optimizer.optimization import optimizer
     from genie_space_optimizer.optimization import three_stage_pipeline

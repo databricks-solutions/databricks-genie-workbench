@@ -339,26 +339,13 @@ _STAGE_2_DISPATCH_TABLE: dict[str, Callable[..., dict]] = {
 def _stage_2_for_skill(bundle: "ActivationBundle", w: Any) -> dict:
     """Dispatch one ActivationBundle to its skill's executor.
 
-    Plan 4 wraps Plan 3's dispatcher with shadow-mode logic:
-
-      * Default off (no Plan 4 flags) → single call with bundle as-is.
-        Byte-stable with Plan 3.
-      * Pipeline mode (``GSO_RAW_EVIDENCE_V1=1``) → single call with
-        bundle as-is (which now has populated raw_evidence per
-        Plan 4 Task 6).
-      * Shadow mode (``GSO_RAW_EVIDENCE_SHADOW_V1=1``) → TWO calls.
-        The "OFF" call uses a clone of the bundle with raw_evidence=();
-        the "ON" call uses the bundle as-is. The OFF result is
-        applied (zero production risk); the comparison record is
-        emitted via _emit_raw_evidence_shadow_comparison.
-
-    ``lever-5b-example-sql`` always runs once (its bundle's
-    raw_evidence is always () by projector design — there's nothing
-    to compare). Same for any unknown skill_id.
+    Plan 4 (raw-evidence projection) is unconditionally on as of the
+    2026-05-16 dead-flag cleanup; ``ActivationBundle.raw_evidence`` is
+    populated by ``build_activation_bundle`` and the dispatcher runs
+    once with the bundle as-is.
     """
     from genie_space_optimizer.common.config import (
         _record_three_stage_skill_dispatch,
-        raw_evidence_v1_shadow_enabled,
     )
 
     adapter = _STAGE_2_DISPATCH_TABLE.get(bundle.skill_id)
@@ -375,35 +362,6 @@ def _stage_2_for_skill(bundle: "ActivationBundle", w: Any) -> dict:
         }
 
     _record_three_stage_skill_dispatch(bundle.skill_id)
-
-    # Plan 4 shadow: only meaningful when bundle has raw evidence to
-    # toggle off. Empty raw_evidence (lever-5b, unknown skill,
-    # cluster with no failed-judge questions, GSO_RAW_EVIDENCE_N=0)
-    # falls through to the single-call path.
-    if raw_evidence_v1_shadow_enabled() and bundle.raw_evidence:
-        from dataclasses import replace
-        # OFF path: clone bundle with empty evidence; this is what gets applied.
-        off_bundle = replace(bundle, raw_evidence=())
-        off_result = adapter(off_bundle, w)
-        # ON path: bundle as-is; observability only.
-        try:
-            on_result = adapter(bundle, w)
-        except Exception:
-            logger.warning(
-                "Stage-2 raw-evidence ON path failed (AG=%s skill=%s) "
-                "— applying OFF result, no comparison emitted",
-                bundle.ag_id, bundle.skill_id, exc_info=True,
-            )
-            return off_result
-        _emit_raw_evidence_shadow_comparison(
-            ag_id=bundle.ag_id,
-            skill_id=bundle.skill_id,
-            n_evidence=len(bundle.raw_evidence),
-            off_proposals=off_result.get("proposals") or [],
-            on_proposals=on_result.get("proposals") or [],
-        )
-        return off_result
-
     return adapter(bundle, w)
 
 
@@ -416,7 +374,11 @@ def _emit_raw_evidence_shadow_comparison(
 ) -> None:
     """Plan 4 — emit one shadow-comparison record per Stage-2 dispatch.
 
-    No-op when neither raw-evidence flag is on.
+    The 2026-05-16 dead-flag cleanup removed the live callers of this
+    function (the dispatch-time shadow A/B is gone). The body stays
+    callable for the structural-diff classifier unit tests; the
+    underlying ``_record_raw_evidence_shadow_comparison`` sink no-ops
+    unless ``GSO_RAW_EVIDENCE_CAPTURE_PATH`` is set.
 
     Schema:
       {
@@ -432,11 +394,7 @@ def _emit_raw_evidence_shadow_comparison(
     """
     from genie_space_optimizer.common.config import (
         _record_raw_evidence_shadow_comparison,
-        raw_evidence_v1_enabled,
-        raw_evidence_v1_shadow_enabled,
     )
-    if not (raw_evidence_v1_enabled() or raw_evidence_v1_shadow_enabled()):
-        return
 
     def _proposal_signature(props: list) -> tuple:
         return tuple(

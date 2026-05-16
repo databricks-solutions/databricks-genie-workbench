@@ -141,12 +141,12 @@ def build_activation_bundle(
     """Translate one Stage-1 ``skill_pick`` + AG context → a typed
     ``ActivationBundle`` ready for Stage-2 dispatch.
 
-    Plan 4: when ``raw_evidence_v1_enabled()`` is True,
-    ``ActivationBundle.raw_evidence`` is populated with up to
-    ``raw_evidence_n()`` (default 3) diverse triples per
-    ``optimization.raw_evidence.project_evidence_for_skill``. When
-    the flag is False, behavior is byte-stable with Plan 3
-    (``raw_evidence=()``).
+    Plan 4: ``ActivationBundle.raw_evidence`` is populated
+    unconditionally with up to ``raw_evidence_n()`` (default 3)
+    diverse triples per
+    ``optimization.raw_evidence.project_evidence_for_skill``. The
+    historical rollback flag was retired by the 2026-05-16 dead-flag
+    cleanup.
 
     The optional ``w`` kwarg is forwarded to the diverse-sampling
     layer so embedding-based selection can run when the workspace
@@ -169,30 +169,28 @@ def build_activation_bundle(
     if priority not in _VALID_PRIORITIES:
         priority = 3
 
-    raw_evidence: tuple[dict, ...] = ()
     skill_id = str(pick.get("skill_id", ""))
     from genie_space_optimizer.common.config import (
-        raw_evidence_n, raw_evidence_v1_enabled,
+        raw_evidence_n,
         _record_raw_evidence_projection,
     )
-    if raw_evidence_v1_enabled():
-        from genie_space_optimizer.optimization.raw_evidence import (
-            project_evidence_for_skill,
-        )
-        raw_evidence = project_evidence_for_skill(
-            skill_id=skill_id,
-            clusters=clusters or [],
-            w=w,
-            n=raw_evidence_n(),
-        )
-        if raw_evidence:
-            # Capture-sink hit ONLY when projection actually returned
-            # evidence — empty projections don't count toward the
-            # coverage gate (lever-5b returns empty by design; an
-            # empty projection from a projectable skill means the
-            # cluster had no failed-judge questions, which we don't
-            # want to count either).
-            _record_raw_evidence_projection(skill_id)
+    from genie_space_optimizer.optimization.raw_evidence import (
+        project_evidence_for_skill,
+    )
+    raw_evidence = project_evidence_for_skill(
+        skill_id=skill_id,
+        clusters=clusters or [],
+        w=w,
+        n=raw_evidence_n(),
+    )
+    if raw_evidence:
+        # Capture-sink hit ONLY when projection actually returned
+        # evidence — empty projections don't count toward the
+        # coverage gate (lever-5b returns empty by design; an
+        # empty projection from a projectable skill means the
+        # cluster had no failed-judge questions, which we don't
+        # want to count either).
+        _record_raw_evidence_projection(skill_id)
 
     return ActivationBundle(
         skill_id=skill_id,

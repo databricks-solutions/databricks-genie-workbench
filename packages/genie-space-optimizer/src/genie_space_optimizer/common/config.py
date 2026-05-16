@@ -5596,37 +5596,6 @@ def dump_three_stage_capture_summary() -> dict:
     return _THREE_STAGE_CAPTURE_SINK.snapshot()
 
 
-def raw_evidence_v1_enabled() -> bool:
-    """Plan 4 — when on, ``optimization.activation_bundle.build_activation_bundle``
-    populates ``ActivationBundle.raw_evidence`` with ``raw_evidence_n()``
-    diverse ``(question, actual_sql, expected_sql, judge_rationale)``
-    triples per cluster, for every Stage-2 skill EXCEPT
-    ``lever-5b-example-sql``. Per-skill prompts render the
-    ``{{ raw_evidence_block }}`` slot.
-
-    **Default ON as of Plan 5** (UI-triggered trial activation). Flip to
-    OFF for emergency rollback by setting ``GSO_RAW_EVIDENCE_V1=0`` in
-    ``packages/genie-space-optimizer/databricks.yml`` under the
-    lever_loop task's ``base_parameters`` and redeploying. The flag
-    helper still honors a falsy explicit override.
-    """
-    return _flag_default_on("GSO_RAW_EVIDENCE_V1")
-
-
-def raw_evidence_v1_shadow_enabled() -> bool:
-    """Plan 4 — when on, BOTH raw-evidence-on and raw-evidence-off
-    prompts run for each Stage-2 dispatch; the OFF result is applied
-    (zero production risk); a comparison record is captured to
-    ``GSO_RAW_EVIDENCE_CAPTURE_PATH`` when set.
-
-    Doubles LLM cost during the trial. Use only on the dedicated
-    trial run.
-
-    Enable with ``GSO_RAW_EVIDENCE_SHADOW_V1=1``.
-    """
-    return _flag_enabled("GSO_RAW_EVIDENCE_SHADOW_V1")
-
-
 def raw_evidence_capture_path_set() -> bool:
     """True when ``GSO_RAW_EVIDENCE_CAPTURE_PATH`` is set to a non-empty
     path. The shadow-comparison emitter writes one NDJSON record per
@@ -5659,9 +5628,9 @@ def raw_evidence_n() -> int:
     """Plan 4 — number of diverse `(question, actual_sql, expected_sql,
     judge_rationale)` triples per cluster.
 
-    Defaults to 3. ``0`` disables raw evidence (useful for ablation
-    even when ``GSO_RAW_EVIDENCE_V1=1``). Values >10 are clamped to
-    10. Negative or non-integer values fall back to 3.
+    Defaults to 3. ``0`` disables raw evidence (useful for ablation).
+    Values >10 are clamped to 10. Negative or non-integer values fall
+    back to 3.
 
     Read from ``GSO_RAW_EVIDENCE_N``.
     """
@@ -5815,8 +5784,9 @@ class _RawEvidenceCaptureSink:
                 "zero raw-evidence projections recorded for any "
                 "projectable skill"
             )
-        if _flag_enabled("GSO_RAW_EVIDENCE_SHADOW_V1") and snap["shadow_comparisons"] == 0:
-            problems.append("zero shadow comparison records emitted")
+        # shadow_comparisons used to gate on a now-retired rollout
+        # flag; the dispatch-time A/B is gone and the counter is
+        # no longer part of the coverage gate.
         if problems:
             raise RuntimeError(
                 "raw-evidence trial incomplete: "
