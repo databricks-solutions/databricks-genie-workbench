@@ -1,0 +1,38 @@
+{
+  "fixture_id": "c2_sql_shape_overlap_false_positive",
+  "description": "Pre-fix: three benchmarks share the target table 'orders' with the snippet patch but none reference the snippet's column 'is_refunded'. The flag-off scan stamps high_collateral_risk (a false positive). The flag-on scan does NOT stamp (the bug fix).",
+  "ag": {
+    "id": "AG_DECOMPOSED_FALSE_POS",
+    "affected_questions": ["gs_001"]
+  },
+  "prev_failure_qids": ["gs_001"],
+  "proposals": [
+    {
+      "type": "add_sql_snippet_filter",
+      "proposal_id": "P_FALSE_POS",
+      "target": "catalog.schema.orders",
+      "column": "is_refunded",
+      "sql": "is_refunded = TRUE"
+    }
+  ],
+  "benchmarks": [
+    {
+      "id": "gs_010",
+      "required_tables": ["catalog.schema.orders"],
+      "required_columns": ["orders.customer_id"],
+      "expected_response": "SELECT customer_id, COUNT(*) FROM orders GROUP BY customer_id"
+    },
+    {
+      "id": "gs_020",
+      "required_tables": ["catalog.schema.orders"],
+      "required_columns": ["orders.total"],
+      "expected_response": "SELECT SUM(total) FROM orders WHERE customer_id = 5"
+    },
+    {
+      "id": "gs_030",
+      "required_tables": ["catalog.schema.orders"],
+      "required_columns": [],
+      "expected_response": "SELECT order_status_history.event_type FROM orders JOIN order_status_history USING (order_id)"
+    }
+  ]
+}
