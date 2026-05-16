@@ -42,7 +42,7 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from collections import Counter
 
@@ -14208,6 +14208,68 @@ def _mark_lever_tried(
     tried = rotation_holder.setdefault("tried", {})
     current = tried.get(cid, frozenset())
     tried[cid] = current | {int(lever)}
+
+
+def _emit_l5b_rich_path_decline_records(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id_resolver: Callable[[str], str | None],
+    emit_decision_record: Callable[[Any], None],
+) -> None:
+    """Plan B (2026-05-16) — drain ``_L5B_RICH_PATH_DECLINES`` and emit
+    one typed ``NO_STRUCTURAL_CANDIDATE`` decision record per declined
+    cluster.
+
+    Called by the per-iteration loop after Stage-2 completes. Each
+    record produces a ``GSO_NO_STRUCTURAL_CANDIDATE_V1`` stdout marker
+    downstream (the same marker emitted by Plan A's trapdoor), so
+    operators see "lever 5 tried these archetypes and declined" rather
+    than a silent skip.
+
+    ``ag_id_resolver`` maps ``cluster_id -> ag_id`` by inspecting the
+    iteration's action_groups (one cluster maps to exactly one AG via
+    ``ag.source_cluster_ids``). Returns ``None`` if no AG owns the
+    cluster; the record's ag_id is then set to ``UNKNOWN_AG``
+    (observability before silence — operators see the cluster's
+    decline even when the AG resolution misfires).
+    """
+    from genie_space_optimizer.optimization.decision_emitters import (
+        l5b_rich_path_decline_record,
+    )
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        drain_l5b_rich_path_declines,
+    )
+
+    for decline in drain_l5b_rich_path_declines():
+        cluster_id = str(decline.get("cluster_id") or "")
+        ag_id = ag_id_resolver(cluster_id) or "UNKNOWN_AG"
+        record = l5b_rich_path_decline_record(
+            run_id=run_id,
+            iteration=iteration,
+            ag_id=ag_id,
+            decline=decline,
+        )
+        emit_decision_record(record)
+
+
+def _resolve_ag_id_for_cluster(
+    cluster_id: str,
+    *,
+    action_groups,
+) -> str | None:
+    """Look up the AG that owns ``cluster_id`` for the current iteration.
+
+    Plan B's drain step uses this to attribute a rich-path decline back
+    to its strategist action group so downstream tooling can join on
+    ``ag_id``. Returns ``None`` when no AG claims the cluster (defensive;
+    drain helper records ``UNKNOWN_AG`` in that case).
+    """
+    for ag in (action_groups or []):
+        for src in (ag.get("source_cluster_ids") or ()):
+            if str(src) == str(cluster_id):
+                return str(ag.get("id") or "")
+    return None
 
 
 def _analyze_and_distribute(
