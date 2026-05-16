@@ -141,3 +141,42 @@ shared Python module) is tracked in epic #173.
 - Near-term epic: #87 (this doc + #89 Create Agent + #90 Fix Agent)
 - Full unification epic: #173 (Workbench 0.1)
 - IQ Scanner check this schema supports: `backend/services/scanner.py` check #4 (text-instructions length + SQL-in-text)
+
+## Stage-1 target-shape contract
+
+Each Stage-1-pickable skill declares two scalar frontmatter keys
+that constrain what `target_objects` may contain:
+
+| Key | Type | Vocabulary |
+|---|---|---|
+| `target_kind` | string | `base_table` \| `metric_view` \| `function` \| `mixed` |
+| `target_min_count` | int (≥0) | Minimum post-coercion target count; pick is dropped below this |
+
+Per-skill values (sourced from `packages/genie-space-optimizer/src/genie_space_optimizer/skills/lever-*/SKILL.md`):
+
+| Skill | `target_kind` | `target_min_count` | Adapter rationale |
+|---|---|---:|---|
+| `lever-1-table-column-description` | `base_table` | 0 | Empty = all tables in cluster |
+| `lever-2-mv-column-refinement` | `metric_view` | 0 | Empty = all MVs in cluster |
+| `lever-3-tvf-routing` | `function` | 0 | Empty = all TVFs in cluster |
+| `lever-4-join-discovery` | `base_table` | 2 | Pairwise hint generation requires ≥2 tables |
+| `lever-5a-instructions` | `mixed` | 0 | AG-wide instruction; target_objects ignored |
+| `lever-5b-example-sql` | `base_table` | 0 | Tables = SQL subject |
+| `lever-6-sql-expression` | `metric_view` | 0 | Adapter derives target from proposal |
+
+**Enforcement chain:**
+
+1. `_render_rich_skill_catalogue()` in `optimization/three_stage_pipeline.py`
+   emits a `Targets:` line per skill block in the Stage-1 prompt,
+   teaching the LLM the constraint in-context.
+2. `_coerce_target_objects_for_skill()` in the same module filters
+   each Stage-1 pick's `target_objects` against the right allowlist
+   bucket; mismatched targets are dropped with INFO log. Picks
+   falling below `target_min_count` are dropped entirely.
+3. `_stage_2_for_skill()` dispatcher re-validates as a belt-and-
+   suspenders guard for non-Stage-1 callers.
+
+When adding a new pickable skill, choose `target_kind` and
+`target_min_count` based on what the Stage-2 adapter expects in
+`bundle.target_objects`. Failure to declare these keys will fail
+`test_pickable_skill_frontmatter_has_target_kind_and_min_count`.
