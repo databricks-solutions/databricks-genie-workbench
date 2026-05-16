@@ -124,3 +124,143 @@ def test_drain_uses_unknown_ag_when_resolver_returns_none() -> None:
     )
     assert len(emitted) == 1
     assert emitted[0].ag_id == "UNKNOWN_AG"
+
+
+def test_drain_wrapper_routes_through_decision_emit_fn() -> None:
+    """The ``_drain_l5b_rich_path_after_stage2`` wrapper must build a
+    resolver from ``action_groups`` and pass it to the underlying
+    drain helper. Records flow through the caller-supplied
+    ``decision_emit_fn`` (a list-append lambda in tests, the
+    iteration body's ``_decision_emit`` closure in production)."""
+    from genie_space_optimizer.optimization.harness import (
+        _drain_l5b_rich_path_after_stage2,
+    )
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _L5B_RICH_PATH_DECLINES, drain_l5b_rich_path_declines,
+    )
+    drain_l5b_rich_path_declines()
+    _L5B_RICH_PATH_DECLINES.append({
+        "cluster_id": "C_ALPHA",
+        "root_cause": "wrong_aggregation",
+        "asi_failure_type": "wrong_aggregation",
+        "attempted_archetypes": ("single_row_top_n",),
+        "skipped_reason": "no_viable_archetype",
+        "question_ids": ("q1",),
+    })
+
+    action_groups = [
+        {"id": "AG_DECOMPOSED_C_ALPHA", "source_cluster_ids": ["C_ALPHA"]},
+    ]
+    emitted: list = []
+    _drain_l5b_rich_path_after_stage2(
+        run_id="run_t1",
+        iteration=2,
+        action_groups=action_groups,
+        decision_emit_fn=emitted.append,
+    )
+    assert len(emitted) == 1
+    record = emitted[0]
+    assert record.cluster_id == "C_ALPHA"
+    assert record.ag_id == "AG_DECOMPOSED_C_ALPHA"
+    assert record.call_site == "l5b_rich_path"
+    assert record.run_id == "run_t1"
+    assert record.iteration == 2
+
+
+def test_drain_wrapper_no_op_when_ledger_empty() -> None:
+    """A no-op call is the default-flag-OFF path. The wrapper must
+    accept an empty ledger without raising and without emitting any
+    record — this is the invariant that lets the wiring land before
+    the default-on flip."""
+    from genie_space_optimizer.optimization.harness import (
+        _drain_l5b_rich_path_after_stage2,
+    )
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        drain_l5b_rich_path_declines,
+    )
+    drain_l5b_rich_path_declines()  # ensure empty
+
+    emitted: list = []
+    _drain_l5b_rich_path_after_stage2(
+        run_id="run_empty",
+        iteration=0,
+        action_groups=[{"id": "AG_X", "source_cluster_ids": ["C_X"]}],
+        decision_emit_fn=emitted.append,
+    )
+    assert emitted == []
+
+
+def test_drain_wrapper_records_unknown_ag_when_cluster_orphaned() -> None:
+    """When no AG in ``action_groups`` owns the cluster, the wrapper
+    must still emit the record with ``ag_id="UNKNOWN_AG"`` rather
+    than silently dropping it. This matches the underlying drain
+    helper's contract — observability before silence."""
+    from genie_space_optimizer.optimization.harness import (
+        _drain_l5b_rich_path_after_stage2,
+    )
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _L5B_RICH_PATH_DECLINES, drain_l5b_rich_path_declines,
+    )
+    drain_l5b_rich_path_declines()
+    _L5B_RICH_PATH_DECLINES.append({
+        "cluster_id": "C_ORPHAN",
+        "root_cause": "wrong_aggregation",
+        "asi_failure_type": "",
+        "attempted_archetypes": ("single_row_top_n",),
+        "skipped_reason": "no_viable_archetype",
+        "question_ids": ("q1",),
+    })
+
+    emitted: list = []
+    # action_groups holds an AG whose source_cluster_ids does NOT
+    # include C_ORPHAN — the resolver returns None and the drain
+    # helper falls back to "UNKNOWN_AG".
+    _drain_l5b_rich_path_after_stage2(
+        run_id="run_orphan",
+        iteration=4,
+        action_groups=[
+            {"id": "AG_OTHER", "source_cluster_ids": ["C_DIFFERENT"]},
+        ],
+        decision_emit_fn=emitted.append,
+    )
+    assert len(emitted) == 1
+    assert emitted[0].ag_id == "UNKNOWN_AG"
+    assert emitted[0].cluster_id == "C_ORPHAN"
+
+
+def test_drain_wrapper_does_not_mutate_action_groups() -> None:
+    """The wrapper passes ``action_groups`` to the resolver but must
+    not mutate the list or its contents. Pin this invariant so a
+    future "enrich AG with decline info" refactor can't silently
+    corrupt the iteration's strategist output."""
+    from genie_space_optimizer.optimization.harness import (
+        _drain_l5b_rich_path_after_stage2,
+    )
+    from genie_space_optimizer.optimization.l5b_rich_dispatch import (
+        _L5B_RICH_PATH_DECLINES, drain_l5b_rich_path_declines,
+    )
+    import copy
+
+    drain_l5b_rich_path_declines()
+    _L5B_RICH_PATH_DECLINES.append({
+        "cluster_id": "C_MUT",
+        "root_cause": "x",
+        "asi_failure_type": "x",
+        "attempted_archetypes": ("a",),
+        "skipped_reason": "r",
+        "question_ids": ("q1",),
+    })
+
+    action_groups = [
+        {"id": "AG_M", "source_cluster_ids": ["C_MUT"]},
+    ]
+    snapshot = copy.deepcopy(action_groups)
+    _drain_l5b_rich_path_after_stage2(
+        run_id="r",
+        iteration=1,
+        action_groups=action_groups,
+        decision_emit_fn=lambda _: None,
+    )
+    assert action_groups == snapshot, (
+        "wrapper must not mutate action_groups"
+    )
