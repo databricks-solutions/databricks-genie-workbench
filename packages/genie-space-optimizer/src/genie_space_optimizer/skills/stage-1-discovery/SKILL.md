@@ -146,6 +146,158 @@ skill_ids that appear in that runtime list — additions to the
 catalogue arrive automatically via the renderer.
 </instructions>
 
+<routing_examples>
+## Canonical routing examples
+
+Each example shows: input cluster brief shape → JSON output → one-line
+rationale. Use these as anchors when your candidate output doesn't fit
+a clear pattern.
+
+### Example 1: Single-defect cluster → 1 pick
+
+Cluster brief:
+```
+### C001: missing_join (3 questions, judge: schema_accuracy)
+Blamed objects: cat.sch.fact_orders, cat.sch.dim_product
+Question IDs: Q12, Q14, Q19
+```
+
+Output:
+```json
+{
+  "applicable_skills": [
+    {
+      "skill_id": "lever-4-join-discovery",
+      "target_objects": ["cat.sch.fact_orders", "cat.sch.dim_product"],
+      "expected_impact_qids": ["Q12", "Q14", "Q19"],
+      "evidence_refs": ["C001"],
+      "why": "fact_orders.product_key should join to dim_product.product_id but no join_spec is declared.",
+      "priority": 1
+    }
+  ],
+  "discovery_rationale": "Single missing-join defect; routing table preferred skill is lever-4."
+}
+```
+Why this routing: failure_type=missing_join → routing table → lever-4-join-discovery; both blamed tables become target_objects (lever-4 needs ≥2).
+
+### Example 2: Counterintuitive route → wrong_aggregation goes to lever-6, NOT lever-2
+
+Cluster brief:
+```
+### C001: wrong_aggregation (2 questions, judge: result_accuracy)
+Blamed objects: cat.sch.mv_revenue_daily
+Question IDs: Q22, Q23
+Suggested fixes:
+  - Add sql_snippet_measure for gross_revenue at booking-line grain
+```
+
+Output:
+```json
+{
+  "applicable_skills": [
+    {
+      "skill_id": "lever-6-sql-expression",
+      "target_objects": ["cat.sch.mv_revenue_daily"],
+      "expected_impact_qids": ["Q22", "Q23"],
+      "evidence_refs": ["C001"],
+      "why": "Missing measure on mv_revenue_daily; sql_snippet_measure adds the gross_revenue expression Genie needs.",
+      "priority": 1
+    }
+  ],
+  "discovery_rationale": "wrong_aggregation routes to lever-6, not lever-2 — lever-2 can only update MV descriptions; it cannot add a measure."
+}
+```
+Why this routing: lever-2-mv-column-refinement is tempting because the blame is an MV, but it can only rename/describe existing columns. wrong_aggregation needs a NEW reusable expression — that's lever-6's job.
+
+### Example 3: Compound failure → 3 picks
+
+Cluster briefs:
+```
+### C001: missing_filter (1 question, judge: result_accuracy)
+Blamed objects: cat.sch.fact_bookings
+Question IDs: Q31
+
+### C002: wrong_aggregation (1 question, judge: result_accuracy)
+Blamed objects: cat.sch.mv_revenue_daily
+Question IDs: Q32
+
+### C003: missing_dimension (1 question, judge: schema_accuracy)
+Blamed objects: cat.sch.mv_revenue_daily
+Question IDs: Q33
+```
+
+Output:
+```json
+{
+  "applicable_skills": [
+    {
+      "skill_id": "lever-6-sql-expression",
+      "target_objects": ["cat.sch.fact_bookings"],
+      "expected_impact_qids": ["Q31"],
+      "evidence_refs": ["C001"],
+      "why": "Missing filter on fact_bookings; sql_snippet_filter adds the channel='direct' predicate.",
+      "priority": 1
+    },
+    {
+      "skill_id": "lever-6-sql-expression",
+      "target_objects": ["cat.sch.mv_revenue_daily"],
+      "expected_impact_qids": ["Q32", "Q33"],
+      "evidence_refs": ["C002", "C003"],
+      "why": "Missing measure (gross_revenue) and dimension (channel) on mv_revenue_daily; both need new sql_snippet definitions.",
+      "priority": 1
+    },
+    {
+      "skill_id": "lever-5b-example-sql",
+      "target_objects": ["cat.sch.fact_bookings", "cat.sch.mv_revenue_daily"],
+      "expected_impact_qids": ["Q31", "Q32", "Q33"],
+      "evidence_refs": ["C001", "C002", "C003"],
+      "why": "Demonstrating example_sql teaches the canonical 'filtered revenue by channel' pattern across all three failures.",
+      "priority": 2
+    }
+  ],
+  "discovery_rationale": "Three distinct defects → three picks; lever-5b adds a teaching example to generalize."
+}
+```
+Why this routing: each cluster's failure_type maps to its own preferred skill via the routing table; lever-5b is added as a priority-2 picks to teach the pattern across all three.
+
+### Example 4: No-fit cluster → empty applicable_skills
+
+Cluster brief:
+```
+### C001: extra_columns_only (1 question, judge: cosmetic)
+Blamed objects: (none)
+Question IDs: Q88
+Judge verdict pattern: cosmetic=FAIL(1)
+```
+
+Output:
+```json
+{
+  "applicable_skills": [],
+  "discovery_rationale": "extra_columns_only is lever=0 in the routing table — no actionable skill, route to legacy fallback."
+}
+```
+Why this routing: lever=0 entries in `_ROOT_CAUSE_LEVER_MAP` intentionally have no preferred skill. Returning empty is the correct answer.
+
+### Example 5: Soft cluster only → skip
+
+Cluster brief:
+```
+### Correct-but-Suboptimal Patterns (arbiter: correct, individual judges: failed)
+#### S001: format_difference (2 questions, judge: format_accuracy)
+Blamed objects: cat.sch.mv_revenue_daily
+```
+
+Output:
+```json
+{
+  "applicable_skills": [],
+  "discovery_rationale": "Only soft signals present; per the RCA engine contract, soft clusters cannot starve mandatory work — no picks emitted."
+}
+```
+Why this routing: soft signals are advisory. When no hard cluster needs work, Stage-1 returns empty rather than fabricating a priority-3 pick.
+</routing_examples>
+
 <output_schema>
 Return ONLY this JSON object:
 {

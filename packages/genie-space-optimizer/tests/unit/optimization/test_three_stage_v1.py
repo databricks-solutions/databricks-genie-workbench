@@ -1768,3 +1768,45 @@ def test_stage_1_prompt_includes_how_to_read_cluster_briefs_section():
         assert needle in STAGE_1_DISCOVERY_PROMPT, (
             f"missing output slot {needle!r} in how_to_read_cluster_briefs"
         )
+
+
+# ── Section: <routing_examples> (Task 4) ──────────────────────────────
+
+
+def test_stage_1_prompt_includes_routing_examples_covering_decision_boundaries():
+    """The Stage-1 prompt must include canonical worked examples
+    covering distinct decision boundaries: single-defect, counterintuitive
+    route, compound failure, no-fit empty pick, soft-cluster skip."""
+    from genie_space_optimizer.common.config import STAGE_1_DISCOVERY_PROMPT
+    assert "<routing_examples>" in STAGE_1_DISCOVERY_PROMPT
+    # Five boundary cases, identified by unique anchor strings.
+    for needle in [
+        "### Example 1: Single-defect cluster",
+        "### Example 2: Counterintuitive route",
+        "### Example 3: Compound failure",
+        "### Example 4: No-fit cluster",
+        "### Example 5: Soft cluster only",
+    ]:
+        assert needle in STAGE_1_DISCOVERY_PROMPT, (
+            f"missing routing example: {needle!r}"
+        )
+    # Example 2 must cover wrong_aggregation -> lever-6 (NOT lever-2)
+    # to reinforce the Task 2 routing table's counterintuitive entry.
+    assert "wrong_aggregation" in STAGE_1_DISCOVERY_PROMPT
+    assert "lever-6-sql-expression" in STAGE_1_DISCOVERY_PROMPT
+
+
+def test_stage_1_prompt_routing_examples_each_include_json_output():
+    """Each example must include a concrete JSON output block matching
+    the output_schema, so the model has a complete worked sample."""
+    from genie_space_optimizer.common.config import STAGE_1_DISCOVERY_PROMPT
+    routing_block_start = STAGE_1_DISCOVERY_PROMPT.find("<routing_examples>")
+    routing_block_end = STAGE_1_DISCOVERY_PROMPT.find("</routing_examples>")
+    assert routing_block_start != -1 and routing_block_end != -1
+    block = STAGE_1_DISCOVERY_PROMPT[routing_block_start:routing_block_end]
+    # Each example's JSON output begins with '"applicable_skills":'
+    n_outputs = block.count('"applicable_skills":')
+    assert n_outputs >= 5, (
+        f"expected >=5 JSON output blocks in <routing_examples>; "
+        f"got {n_outputs}"
+    )
