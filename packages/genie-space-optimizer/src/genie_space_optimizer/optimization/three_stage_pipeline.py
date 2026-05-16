@@ -571,12 +571,29 @@ def _stage_2_l6(
     from genie_space_optimizer.optimization.optimizer import (
         _generate_lever6_proposal,
     )
+    # G10 (2026-05-17 lever-6 hardening plan, Task 7) — pipe Stage-1's
+    # target_objects into the lever-6 strategist_hints slot so Stage-1's
+    # identifier picks reach the lever-6 prompt. Empirical baseline showed
+    # 48/48 lever-6 prompts had '(No strategist hints.)' because this
+    # field was hard-coded to None.
+    _bundle_targets = list(getattr(bundle, "target_objects", []) or [])
+    _strategist_hints: list[dict] | None = None
+    if _bundle_targets:
+        _strategist_hints = [{
+            "kind": "stage_1_target_objects",
+            "objects": _bundle_targets,
+            "note": (
+                "Stage-1 selected these identifiers as relevant to the AG. "
+                "Prefer them as the SQL's target_table / column references "
+                "when they fit the cluster's blame_set."
+            ),
+        }]
     proposals: list[dict] = []
     for cluster_afs in bundle.cluster_afs:
         try:
             p = _generate_lever6_proposal(
                 dict(cluster_afs), bundle.metadata_snapshot,
-                strategist_hints=None,
+                strategist_hints=_strategist_hints,
                 w=w, spark=spark, catalog=catalog,
                 gold_schema=gold_schema, warehouse_id=warehouse_id,
                 benchmarks=benchmarks,

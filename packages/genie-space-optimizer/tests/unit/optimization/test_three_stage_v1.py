@@ -2460,3 +2460,85 @@ def test_stage_2_dispatcher_rejects_bundle_with_target_kind_mismatch(caplog):
         "target_kind mismatch" in record.message.lower()
         for record in caplog.records
     )
+
+
+# ── Section: Stage-2 lever-6 strategist_hints wiring (lever-6 plan Task 7) ─
+
+
+def test_stage_2_l6_pipes_target_objects_to_strategist_hints(monkeypatch):
+    """G10 (2026-05-17 lever-6 hardening plan, Task 7) — _stage_2_l6 must
+    extract bundle.target_objects and forward as strategist_hints so
+    Stage-1's identifier picks reach lever-6.
+
+    Empirical baseline: 48/48 Trial-5 lever-6 prompts showed
+    '(No strategist hints.)' — Stage-1 picks were silently discarded.
+    """
+    from genie_space_optimizer.optimization import three_stage_pipeline as tsp
+    from genie_space_optimizer.optimization import optimizer
+
+    captured: dict = {}
+
+    def _fake_generate(cluster, metadata_snapshot, **kwargs):
+        captured["strategist_hints"] = kwargs.get("strategist_hints")
+        return None  # short-circuit; we only care about the kwarg
+
+    monkeypatch.setattr(
+        optimizer, "_generate_lever6_proposal", _fake_generate,
+    )
+
+    from types import SimpleNamespace
+    bundle = SimpleNamespace(
+        skill_id="lever-6-sql-expression",
+        ag_id="AG1",
+        cluster_afs=[{"cluster_id": "c1", "root_cause": "missing_filter"}],
+        metadata_snapshot={"data_sources": {"tables": []}},
+        raw_evidence=(),
+        target_objects=[
+            "cat.sch.tkt_payment",
+            "cat.sch.tkt_payment.PAYMENT_AMT",
+        ],
+    )
+
+    tsp._stage_2_l6(bundle, w=None)
+
+    hints = captured.get("strategist_hints")
+    assert hints is not None, (
+        "_stage_2_l6 must pass non-None strategist_hints when bundle has target_objects"
+    )
+    serialized = str(hints)
+    assert "tkt_payment" in serialized
+    assert "PAYMENT_AMT" in serialized
+
+
+def test_stage_2_l6_passes_none_strategist_hints_when_no_target_objects(monkeypatch):
+    """When bundle.target_objects is empty, _stage_2_l6 must pass None
+    (NOT an empty list / string) so _generate_lever6_proposal's
+    placeholder fallback ('(No strategist hints.)') still renders.
+    """
+    from genie_space_optimizer.optimization import three_stage_pipeline as tsp
+    from genie_space_optimizer.optimization import optimizer
+
+    captured: dict = {}
+
+    def _fake_generate(cluster, metadata_snapshot, **kwargs):
+        captured["strategist_hints"] = kwargs.get("strategist_hints")
+        return None
+
+    monkeypatch.setattr(
+        optimizer, "_generate_lever6_proposal", _fake_generate,
+    )
+
+    from types import SimpleNamespace
+    bundle = SimpleNamespace(
+        skill_id="lever-6-sql-expression",
+        ag_id="AG1",
+        cluster_afs=[{"cluster_id": "c1", "root_cause": "missing_filter"}],
+        metadata_snapshot={"data_sources": {"tables": []}},
+        raw_evidence=(),
+        target_objects=[],
+    )
+
+    tsp._stage_2_l6(bundle, w=None)
+    assert captured["strategist_hints"] is None, (
+        f"Expected None for empty target_objects, got {captured['strategist_hints']!r}"
+    )
