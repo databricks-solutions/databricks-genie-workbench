@@ -207,3 +207,44 @@ def test_lever_1_rca_bridge_prompt_is_loaded_and_registered():
         "LEVER_1_RCA_BRIDGE_PROMPT is not in LEVER_PROMPTS."
     )
     assert cfg.LEVER_PROMPTS["lever_1_rca_bridge"] is cfg.LEVER_1_RCA_BRIDGE_PROMPT
+
+
+def test_lever_2_skill_md_is_metadata_only():
+    """L2's SKILL.md body was byte-identical dead code that nobody
+    loaded — optimizer.py routes both lever=1 and lever=2 to
+    LEVER_1_2_COLUMN_PROMPT (the L1 body)."""
+    l2_path = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "src" / "genie_space_optimizer" / "skills"
+        / "lever-2-mv-column-refinement" / "SKILL.md"
+    )
+    body = l2_path.read_text()
+    assert "<role>" not in body, (
+        "L2 SKILL.md still contains a <role> body. The L2 body is dead "
+        "code because optimizer.py routes lever=2 to LEVER_1_2_COLUMN_PROMPT "
+        "(the L1 body). Delete the body and leave only frontmatter + the "
+        "explanatory comment. See plan "
+        "2026-05-17-prompt-registry-and-typed-io-hygiene.md Task 10."
+    )
+    assert (
+        "shared with lever-1-table-column-description" in body
+        or "shared with LEVER_1_2_COLUMN_PROMPT" in body
+    ), (
+        "L2 SKILL.md must contain an explanatory comment naming the "
+        "shared template (LEVER_1_2_COLUMN_PROMPT)."
+    )
+
+
+def test_no_phantom_LEVER_1_2_COLUMN_PROMPT_FOR_L2_references():
+    """The constant LEVER_1_2_COLUMN_PROMPT_FOR_L2 was referenced by L2's
+    SKILL.md frontmatter and CATALOGUE.md but never defined in code."""
+    src = pathlib.Path(__file__).resolve().parents[3] / "src"
+    skills = src / "genie_space_optimizer" / "skills"
+    bad = []
+    for f in skills.rglob("*.md"):
+        if "LEVER_1_2_COLUMN_PROMPT_FOR_L2" in f.read_text():
+            bad.append(str(f.relative_to(src.parent)))
+    assert not bad, (
+        f"Phantom constant LEVER_1_2_COLUMN_PROMPT_FOR_L2 still "
+        f"referenced in: {bad}. It is never defined in code."
+    )
