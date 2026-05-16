@@ -231,3 +231,47 @@ def test_lever_1_2_format_kwargs_drops_dead_weight_keys():
     assert overlap == set(), (
         f"_lever_1_2_format_kwargs leaked dead-weight keys: {overlap}"
     )
+
+
+def test_lever_1_2_format_kwargs_uses_blame_scoped_allowlist(monkeypatch):
+    """When the blame_set names specific objects, _lever_1_2_format_kwargs
+    must scope the identifier_allowlist to those objects (plus parent
+    tables). Passing the full space allowlist leaks 3-30K tokens per
+    call on enterprise spaces.
+    """
+    from genie_space_optimizer.optimization import optimizer
+
+    captured: dict = {}
+
+    real_build = optimizer._build_identifier_allowlist
+
+    def _spy_build(metadata, **kwargs):
+        captured["kwargs"] = kwargs
+        return real_build(metadata, **kwargs)
+
+    monkeypatch.setattr(optimizer, "_build_identifier_allowlist", _spy_build)
+
+    cluster = {
+        "cluster_id": "c1",
+        "asi_failure_type": "wrong_column",
+        "asi_blame_set": ["catalog.schema.dim_store.location_id"],
+        "question_ids": [],
+        "structural_diff": {},
+    }
+    metadata_snapshot = {"tables": [], "data_sources": {}, "instructions": {}}
+
+    _ = optimizer._lever_1_2_format_kwargs(
+        cluster=cluster,
+        metadata_snapshot=metadata_snapshot,
+        lever=1,
+        raw_evidence=(),
+    )
+
+    assert "relevant_objects" in captured["kwargs"], (
+        "_lever_1_2_format_kwargs must pass relevant_objects to "
+        "_build_identifier_allowlist for blame-scoped allowlist"
+    )
+    relevant = captured["kwargs"]["relevant_objects"]
+    assert "catalog.schema.dim_store.location_id" in relevant
+    # Parent table must be included for table-level patches
+    assert "catalog.schema.dim_store" in relevant
