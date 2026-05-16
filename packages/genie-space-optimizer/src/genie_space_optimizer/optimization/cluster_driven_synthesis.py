@@ -954,10 +954,18 @@ def run_cluster_driven_synthesis_for_single_cluster(
         # prompt directly. Mirrors ``synthesize_preflight_candidate``'s
         # internal LLM call but with our AFS-prepended prompt.
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+        from genie_space_optimizer.optimization.evaluation import (
+            _link_prompt_to_trace,
+        )
+        from genie_space_optimizer.optimization.prompt_io import (
+            Lever5bExampleSqlOutput,
+        )
+        _link_prompt_to_trace("lever_5b_example_sql")
         try:
             raw, _ = _traced_llm_call(
                 w, "You are a SQL example author.", cluster_prompt,
                 span_name="cluster_driven_example_synthesis",
+                response_model=Lever5bExampleSqlOutput,
             )
         except Exception:
             logger.warning(
@@ -1066,10 +1074,14 @@ def run_cluster_driven_synthesis_for_single_cluster(
             )
             if llm_caller is None:
                 from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+                from genie_space_optimizer.optimization.prompt_io import (
+                    Lever5bExampleSqlOutput,
+                )
                 try:
                     retry_raw, _ = _traced_llm_call(
                         w, "You are a SQL example author.", retry_prompt,
                         span_name="cluster_driven_example_synthesis_retry",
+                        response_model=Lever5bExampleSqlOutput,
                     )
                 except Exception:
                     logger.warning(

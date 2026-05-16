@@ -909,11 +909,15 @@ def synthesize_example_sqls(
             return llm_caller(p)
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
         from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
+        from genie_space_optimizer.optimization.prompt_io import (
+            Lever5bExampleSqlOutput,
+        )
         _link_prompt_to_trace("lever_5b_example_sql")
         try:
             raw, _ = _traced_llm_call(
                 w, "You are a SQL example author.", p,
                 span_name="lever_5b_example_sql",
+                response_model=Lever5bExampleSqlOutput,
             )
             return raw
         except Exception:
@@ -1062,6 +1066,9 @@ def synthesize_example_sqls_for_rca(
     else:
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
         from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
+        from genie_space_optimizer.optimization.prompt_io import (
+            Lever5bExampleSqlOutput,
+        )
         _link_prompt_to_trace("lever_5b_example_sql")
         try:
             raw, _ = _traced_llm_call(
@@ -1069,6 +1076,7 @@ def synthesize_example_sqls_for_rca(
                 "You are a SQL example author.",
                 prompt,
                 span_name="lever_5b_example_sql_for_rca",
+                response_model=Lever5bExampleSqlOutput,
             )
         except Exception:
             logger.warning("RCA example SQL synthesis LLM call failed", exc_info=True)
