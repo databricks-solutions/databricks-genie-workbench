@@ -12672,6 +12672,87 @@ def _filter_rca_synonyms(
     return out
 
 
+def _render_rca_bridge_slots(
+    *,
+    is_table_level: bool,
+    table: str,
+    column: str,
+    afs_projections: list[dict],
+    expected_objects: list[str],
+    actual_objects: list[str],
+    existing_synonyms: list[str],
+) -> dict[str, Any]:
+    """Pre-render RCA-bridge prompt slots as clean strings.
+
+    The SKILL.md template uses simple {{ name }} slots; this helper does
+    the shape adaptation (Python list -> joined string, JSON list ->
+    structured markdown) so the template stays declarative and the model
+    never sees Python repr artifacts.
+
+    Plan: 2026-05-17-lever-1-rca-bridge-hardening.md Task 4
+    """
+    import json as _json
+
+    target_label = (
+        f"table {table}" if is_table_level else f"column {table}.{column}"
+    )
+
+    expected_joined = ", ".join(expected_objects) if expected_objects else "(none)"
+    actual_joined = ", ".join(actual_objects) if actual_objects else "(none)"
+
+    if not afs_projections:
+        afs_rendered = "(no failure clusters)"
+    else:
+        lines: list[str] = []
+        for i, proj in enumerate(afs_projections, start=1):
+            failure_type = str(proj.get("failure_type", "(unknown)"))
+            blame_list = proj.get("blame_set", []) or []
+            blame_joined = ", ".join(str(b) for b in blame_list) if blame_list else "(none)"
+            structural_diff = proj.get("structural_diff", {}) or {}
+            lines.append(f"### Cluster {i}")
+            lines.append(f"- failure_type: {failure_type}")
+            lines.append(f"- blame_set: {blame_joined}")
+            if structural_diff:
+                lines.append(
+                    f"- structural_diff: {_json.dumps(structural_diff, default=str)}"
+                )
+            lines.append("")
+        afs_rendered = "\n".join(lines).rstrip()
+
+    if existing_synonyms:
+        existing_syn_rendered = "\n".join(f"- {s}" for s in existing_synonyms)
+    else:
+        existing_syn_rendered = "(none)"
+
+    if is_table_level:
+        synonyms_instruction_rule = ""
+        output_schema_block = (
+            'Table-level output (NO synonyms key):\n'
+            '{"description": "<1-3 sentences, max 300 chars>"}'
+        )
+    else:
+        synonyms_instruction_rule = (
+            "- **Synonyms must NOT be SQL identifiers.** No snake_case "
+            "(containing `_`), no ALL_CAPS, no single-character entries."
+        )
+        output_schema_block = (
+            'Column-level output:\n'
+            '{"description": "<1-3 sentences, max 300 chars>",\n'
+            ' "synonyms": ["<lowercase NL phrase 1>", "<lowercase NL phrase 2>", "..."]}'
+        )
+
+    return {
+        "target_label": target_label,
+        "is_table_level": is_table_level,
+        "expected_objects_joined": expected_joined,
+        "actual_objects_joined": actual_joined,
+        "afs_projections_rendered": afs_rendered,
+        "existing_synonyms_rendered": existing_syn_rendered,
+        "synonyms_instruction_rule": synonyms_instruction_rule,
+        "output_schema_block": output_schema_block,
+    }
+
+
 def _generate_lever1_rca_proposal(
     theme: Any,
     patch: dict,
@@ -12763,44 +12844,40 @@ def _generate_lever1_rca_proposal(
                         existing_synonyms = list(col.get("synonyms") or [])
                         break
 
-    # Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 9 — inline
-    # f-string replaced with template render against LEVER_1_RCA_BRIDGE_PROMPT
-    # (loaded from lever-1-rca-bridge/SKILL.md).
-    from genie_space_optimizer.common.config import LEVER_1_RCA_BRIDGE_PROMPT
-    from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
-    if is_table_level:
-        _target_str = f"table {table}"
-        synonyms_instruction_block = ""
-        synonyms_schema_field = ""
-    else:
-        _target_str = f"{table}.{column}"
-        synonyms_instruction_block = (
-            '- `synonyms`: a list of 2-5 lowercase NL phrases users might '
-            'say that should route to this column. Derive from FAILURE '
-            'CONTEXT phrases and EXPECTED/ACTUAL identifiers. Do not '
-            'include phrases already in EXISTING SYNONYMS. Avoid SQL '
-            'identifiers (snake_case, ALL_CAPS).'
-        )
-        synonyms_schema_field = ',"synonyms": ["term1", "term2"]'
-
-    prompt = format_mlflow_template(
+    # Plan 2026-05-17-lever-1-rca-bridge-hardening Tasks 3, 5, 6, 7, 8 —
+    # drop existing_description[:300] truncation; route slot-rendering
+    # through _render_rca_bridge_slots; pass max_tokens, response_model,
+    # and the domain-framed system message.
+    from genie_space_optimizer.common.config import (
+        LEVER_1_2_SYSTEM_MSG,
+        LEVER_1_RCA_BRIDGE_MAX_TOKENS,
         LEVER_1_RCA_BRIDGE_PROMPT,
-        target=_target_str,
-        intent=intent,
-        expected_objects=expected_objects,
-        actual_objects=actual_objects,
-        failure_context_json=_json.dumps(afs_projections, default=str),
-        existing_description=existing_description[:300],
-        existing_synonyms=existing_synonyms,
-        synonyms_instruction_block=synonyms_instruction_block,
-        synonyms_schema_field=synonyms_schema_field,
     )
+    from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
+    from genie_space_optimizer.optimization.prompt_io import Lever1RcaBridgeOutput
+
+    format_kwargs = {
+        **_render_rca_bridge_slots(
+            is_table_level=is_table_level,
+            table=table,
+            column=column,
+            afs_projections=afs_projections,
+            expected_objects=expected_objects,
+            actual_objects=actual_objects,
+            existing_synonyms=existing_synonyms,
+        ),
+        "intent": intent,
+        "existing_description": existing_description,
+    }
+    prompt = format_mlflow_template(LEVER_1_RCA_BRIDGE_PROMPT, **format_kwargs)
     _link_prompt_to_trace("lever_1_rca_bridge")
 
     try:
         raw_text, _ = _traced_llm_call(
-            w, "You are a metadata curator.", prompt,
+            w, LEVER_1_2_SYSTEM_MSG, prompt,
             span_name="lever1_rca_proposal",
+            max_tokens=LEVER_1_RCA_BRIDGE_MAX_TOKENS,
+            response_model=Lever1RcaBridgeOutput,
         )
     except Exception:
         logger.warning(
