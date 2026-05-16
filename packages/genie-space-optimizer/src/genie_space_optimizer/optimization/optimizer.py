@@ -5605,16 +5605,49 @@ def _format_full_schema_context(
     return "\n".join(lines) if lines else "(no schema available)"
 
 
-def _format_schema_index(metadata_snapshot: dict) -> str:
+def _format_schema_index(
+    metadata_snapshot: dict,
+    *,
+    relevant_objects: set[str] | None = None,
+) -> str:
     """Compact table-of-contents for the triage strategist.
 
     Each table gets a single line with column names and types — no descriptions,
     no synonyms. Keeps the prompt small while giving full schema awareness.
+
+    When ``relevant_objects`` is a non-empty set of identifiers (FQN or short
+    name), only tables matching any entry's short name are included. Column-
+    level FQNs (4+ dot-separated parts) are mapped to their parent table's
+    short name; 3-or-fewer-part FQNs use the last segment. Empty set / None
+    falls back to the full schema (backward-compatible).
+
+    G3 (2026-05-17 lever-6 hardening plan, Task 5) — schema dump consumed
+    34% of the Trial-5 lever-6 prompt budget; filtering by cluster-blame
+    targets drops it to ~5% for typical 1-3 table blame sets.
     """
     ds = metadata_snapshot.get("data_sources", {})
     if not isinstance(ds, dict):
         ds = {}
     tables = ds.get("tables", []) or metadata_snapshot.get("tables", [])
+
+    if relevant_objects:
+        # Normalize relevant_objects to a set of table short names. Same
+        # logic as _build_identifier_allowlist for cross-helper consistency.
+        relevant_short: set[str] = set()
+        for r in relevant_objects:
+            if not isinstance(r, str) or not r:
+                continue
+            parts = r.split(".")
+            if len(parts) >= 4:
+                relevant_short.add(parts[-2].lower())
+            else:
+                relevant_short.add(parts[-1].lower())
+        tables = [
+            t for t in tables
+            if isinstance(t, dict)
+            and (t.get("identifier") or t.get("name") or "")
+                .rsplit(".", 1)[-1].lower() in relevant_short
+        ]
 
     lines: list[str] = []
     for tbl in tables:
@@ -12921,7 +12954,16 @@ def _generate_lever6_proposal(
         from genie_space_optimizer.optimization.afs import format_afs
         _afs_ctx = format_afs(cluster)
         cluster_context = _json.dumps(_afs_ctx, indent=2, default=str)
-        schema_context = _format_schema_index(metadata_snapshot)
+
+        # G3 (Task 5) — derive relevant_objects from the cluster's blame_set
+        # so the schema dump only carries cluster-relevant tables. Falls back
+        # to the full schema when blame_set is empty.
+        _blame = _afs_ctx.get("blame_set") or []
+        _relevant: set[str] = {str(b).strip() for b in _blame if str(b).strip()}
+        schema_context = _format_schema_index(
+            metadata_snapshot,
+            relevant_objects=_relevant or None,
+        )
         existing_snippets = _format_existing_sql_snippets(metadata_snapshot)
 
         hints_text = "(No strategist hints.)"

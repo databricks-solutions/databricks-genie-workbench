@@ -273,3 +273,138 @@ def test_lever6_prompt_has_routing_examples_section():
     assert "no-fit" in text.lower() or "no fit" in text.lower(), (
         "Prompt must include a no-fit example documenting when NOT to propose"
     )
+
+
+def test_format_schema_index_filters_by_relevant_objects():
+    """_format_schema_index must accept a relevant_objects set and emit
+    only the matching tables. Empty / None falls back to full schema.
+    """
+    from genie_space_optimizer.optimization.optimizer import _format_schema_index
+
+    metadata = {
+        "data_sources": {
+            "tables": [
+                {"identifier": "cat.sch.tkt_document",
+                 "column_configs": [{"column_name": "DOC_NBR", "data_type": "STRING"}]},
+                {"identifier": "cat.sch.tkt_coupon",
+                 "column_configs": [{"column_name": "COUPON_SEQ_NBR", "data_type": "INT"}]},
+                {"identifier": "cat.sch.tkt_payment",
+                 "column_configs": [{"column_name": "PAYMENT_AMT", "data_type": "DECIMAL"}]},
+            ]
+        }
+    }
+
+    # Full schema (no filter) — all 3 tables present.
+    full = _format_schema_index(metadata)
+    assert "tkt_document" in full
+    assert "tkt_coupon" in full
+    assert "tkt_payment" in full
+
+    # Filtered — only tkt_coupon present.
+    filtered = _format_schema_index(
+        metadata, relevant_objects={"cat.sch.tkt_coupon"},
+    )
+    assert "tkt_coupon" in filtered
+    assert "tkt_document" not in filtered
+    assert "tkt_payment" not in filtered
+
+    # Empty set falls back to full.
+    empty_fallback = _format_schema_index(metadata, relevant_objects=set())
+    assert "tkt_document" in empty_fallback
+    assert "tkt_coupon" in empty_fallback
+    assert "tkt_payment" in empty_fallback
+
+    # None also falls back (backward-compatible — existing callers
+    # don't pass the parameter).
+    none_fallback = _format_schema_index(metadata, relevant_objects=None)
+    assert "tkt_document" in none_fallback
+    assert "tkt_payment" in none_fallback
+
+
+def test_format_schema_index_short_name_match():
+    """relevant_objects entries may be column FQNs (4+ parts) or table
+    FQNs (3 parts) or short names. _format_schema_index must match by
+    table short name so blame_set entries like 'tkt_payment.PAYMENT_AMT'
+    correctly include tkt_payment in the filtered schema.
+    """
+    from genie_space_optimizer.optimization.optimizer import _format_schema_index
+
+    metadata = {
+        "data_sources": {
+            "tables": [
+                {"identifier": "cat.sch.tkt_document",
+                 "column_configs": [{"column_name": "X", "data_type": "STRING"}]},
+                {"identifier": "cat.sch.tkt_payment",
+                 "column_configs": [{"column_name": "PAYMENT_AMT", "data_type": "DECIMAL"}]},
+            ]
+        }
+    }
+    # Column-level FQN should map to its parent table's short name.
+    filtered = _format_schema_index(
+        metadata, relevant_objects={"cat.sch.tkt_payment.PAYMENT_AMT"},
+    )
+    assert "tkt_payment" in filtered
+    assert "tkt_document" not in filtered
+
+
+def test_generate_lever6_proposal_filters_schema_to_blame_set(monkeypatch):
+    """_generate_lever6_proposal must compute relevant_objects from the
+    cluster's blame_set and pass it to _format_schema_index so the prompt
+    only carries cluster-relevant tables.
+    """
+    from genie_space_optimizer.optimization import optimizer
+
+    captured: dict = {}
+
+    def _fake_traced_llm_call(w, system_msg, prompt, *, span_name, **kwargs):
+        captured["prompt"] = prompt
+        return (
+            '{"snippet_type": "filter", "display_name": "X", "alias": "", '
+            '"sql": "tkt_payment.PAYMENT_AMT > 0", "synonyms": [], '
+            '"instruction": "i", "rationale": "r", "target_table": "tkt_payment", '
+            '"affected_questions": []}',
+            None,
+        )
+
+    monkeypatch.setattr(optimizer, "_traced_llm_call", _fake_traced_llm_call)
+    monkeypatch.setattr(
+        optimizer, "_validate_sql_identifiers", lambda sql, allow: (False, ["stop"]),
+    )
+
+    metadata = {
+        "data_sources": {
+            "tables": [
+                {"identifier": "cat.sch.tkt_document",
+                 "column_configs": [{"column_name": "DOC_NBR", "data_type": "STRING"}]},
+                {"identifier": "cat.sch.tkt_coupon",
+                 "column_configs": [{"column_name": "COUPON_SEQ_NBR", "data_type": "INT"}]},
+                {"identifier": "cat.sch.tkt_payment",
+                 "column_configs": [{"column_name": "PAYMENT_AMT", "data_type": "DECIMAL"}]},
+            ]
+        }
+    }
+    cluster = {
+        "cluster_id": "c1", "root_cause": "missing_filter",
+        "question_ids": ["q1"], "question_traces": [{"q": "q1"}],
+        # Stage-1 catalogue-enrichment plan: format_afs reads asi_blame_set
+        # and exposes it as blame_set in the AFS projection.
+        "asi_blame_set": ["tkt_payment.PAYMENT_AMT", "tkt_payment"],
+    }
+    optimizer._generate_lever6_proposal(
+        cluster, metadata_snapshot=metadata, w=None,
+    )
+    prompt = captured["prompt"]
+    # Isolate the schema section (rendered as "- <fqn> (N cols: ...)" lines)
+    # since canonical routing examples may legitimately mention other tables.
+    schema_lines = [ln for ln in prompt.splitlines() if ln.startswith("- cat.sch.")]
+    assert any("tkt_payment" in ln for ln in schema_lines), (
+        f"tkt_payment missing from rendered schema: {schema_lines}"
+    )
+    assert not any("tkt_document" in ln for ln in schema_lines), (
+        f"Schema filter regression: tkt_document leaked into schema dump "
+        f"despite not being in blame_set: {schema_lines}"
+    )
+    assert not any("tkt_coupon" in ln for ln in schema_lines), (
+        f"Schema filter regression: tkt_coupon leaked into schema dump "
+        f"despite not being in blame_set: {schema_lines}"
+    )
