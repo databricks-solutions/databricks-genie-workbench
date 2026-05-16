@@ -10837,12 +10837,16 @@ def _call_llm_for_adaptive_strategy(
     )
 
     try:
+        from genie_space_optimizer.optimization.prompt_io import (
+            AdaptiveStrategistOutput,
+        )
         text, _response = _traced_llm_call(
             w,
             system_msg,
             prompt,
             span_name="adaptive_strategy",
             response_validator=_adaptive_strategist_response_validator,
+            response_model=AdaptiveStrategistOutput,
         )
     except Exception:
         logger.exception("Adaptive strategist LLM call failed after retries")
@@ -11471,8 +11475,12 @@ def _call_llm_for_triage(
     )
 
     try:
+        from genie_space_optimizer.optimization.prompt_io import (
+            StrategistTriageOutput,
+        )
         text, _response = _traced_llm_call(
             w, system_msg, prompt, span_name="phase_1a_triage",
+            response_model=StrategistTriageOutput,
         )
     except Exception:
         logger.exception("Triage LLM call failed after retries (prompt len: %d)", len(prompt))
@@ -11626,9 +11634,13 @@ def _call_llm_for_ag_detail(
     )
 
     try:
+        from genie_space_optimizer.optimization.prompt_io import (
+            StrategistDetailOutput,
+        )
         text, _response = _traced_llm_call(
             w, system_msg, prompt,
             span_name=f"phase_1b_detail_{ag_id}",
+            response_model=StrategistDetailOutput,
         )
     except Exception:
         logger.exception("AG detail LLM call failed after retries for %s", ag_id)
