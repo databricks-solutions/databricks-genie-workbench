@@ -265,8 +265,15 @@ class TestOptimizerLlmMigrated:
         ws.serving_endpoints.query.assert_not_called()
         assert result.get("proposed_value") == "new desc"
 
+    @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
     @patch("genie_space_optimizer.optimization.llm_client.get_openai_client")
-    def test_call_llm_for_join_discovery_uses_openai(self, mock_get_client):
+    def test_call_llm_for_join_discovery_uses_openai(
+        self, mock_get_client, mock_opt_get_client,
+    ):
+        # After 2026-05-17-active-callsite-typed-output-wiring Task 9,
+        # join_discovery routes through _traced_llm_call which calls
+        # the optimizer-level alias _get_openai_client. Patch both
+        # entry points so cached clients from earlier tests do not leak.
         from genie_space_optimizer.optimization.optimizer import _call_llm_for_join_discovery
 
         mock_client = MagicMock()
@@ -274,6 +281,7 @@ class TestOptimizerLlmMigrated:
             '{"join_specs": [], "rationale": "none found"}'
         )
         mock_get_client.return_value = mock_client
+        mock_opt_get_client.return_value = mock_client
 
         ws = _make_mock_ws()
         result = _call_llm_for_join_discovery(
