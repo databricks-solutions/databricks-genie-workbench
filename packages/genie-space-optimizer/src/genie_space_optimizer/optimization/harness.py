@@ -23607,6 +23607,15 @@ def _run_lever_loop(
                                 prior_failure_count=_pfc,
                                 target_qids=_this_target_qids,
                                 iter_inputs=_current_iter_inputs,
+                                callsite_ctx=_build_proposal_failure_callsite_context(
+                                    cluster_id=_this_cluster_id,
+                                    source_clusters_by_id=_iter_source_clusters_by_id,
+                                    rca_recovery_holder=_rca_recovery_holder,
+                                    signatures_counter=_iter_failure_signatures,
+                                    findings=[],
+                                    metadata_snapshot=metadata_snapshot,
+                                    spark=spark,
+                                ),
                             )
                         except Exception:
                             logger.debug(
@@ -26623,6 +26632,15 @@ def _run_lever_loop(
                                 prior_failure_count=_pfc,
                                 target_qids=_this_target_qids,
                                 iter_inputs=_current_iter_inputs,
+                                callsite_ctx=_build_proposal_failure_callsite_context(
+                                    cluster_id=_this_cluster_id,
+                                    source_clusters_by_id=_iter_source_clusters_by_id,
+                                    rca_recovery_holder=_rca_recovery_holder,
+                                    signatures_counter=_iter_failure_signatures,
+                                    findings=[],
+                                    metadata_snapshot=metadata_snapshot,
+                                    spark=spark,
+                                ),
                             )
                         except Exception:
                             logger.debug(
@@ -27630,6 +27648,15 @@ def _run_lever_loop(
                             prior_failure_count=_pfc,
                             target_qids=_this_target_qids,
                             iter_inputs=_current_iter_inputs,
+                            callsite_ctx=_build_proposal_failure_callsite_context(
+                                cluster_id=_this_cluster_id,
+                                source_clusters_by_id=_iter_source_clusters_by_id,
+                                rca_recovery_holder=_rca_recovery_holder,
+                                signatures_counter=_iter_failure_signatures,
+                                findings=[],
+                                metadata_snapshot=metadata_snapshot,
+                                spark=spark,
+                            ),
                         )
                     except Exception:
                         logger.debug(
@@ -27813,6 +27840,15 @@ def _run_lever_loop(
                         prior_failure_count=_pfc,
                         target_qids=_this_target_qids,
                         iter_inputs=_current_iter_inputs,
+                        callsite_ctx=_build_proposal_failure_callsite_context(
+                            cluster_id=_this_cluster_id,
+                            source_clusters_by_id=_iter_source_clusters_by_id,
+                            rca_recovery_holder=_rca_recovery_holder,
+                            signatures_counter=_iter_failure_signatures,
+                            findings=[],
+                            metadata_snapshot=metadata_snapshot,
+                            spark=spark,
+                        ),
                     )
                 except Exception:
                     logger.debug(
