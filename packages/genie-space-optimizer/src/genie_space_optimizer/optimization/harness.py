@@ -155,6 +155,9 @@ from genie_space_optimizer.optimization.preflight import run_preflight
 from genie_space_optimizer.optimization.prior_failure_count import (
     compute_prior_failure_count,
 )
+from genie_space_optimizer.optimization.rca import (
+    regenerate_rca_if_policy_permits,
+)
 from genie_space_optimizer.optimization.repeatability import run_repeatability_test
 from genie_space_optimizer.optimization.report import generate_report
 from genie_space_optimizer.optimization.scorers import make_all_scorers
@@ -4998,6 +5001,51 @@ def _check_proposal_stage_forbidden_ag_leakage(
     print(marker, flush=True)
 
     return axis
+
+
+def _handle_proposal_failure_next_action(
+    *,
+    decision,
+    cluster: dict,
+    findings: list,
+    evidence_snapshot: dict,
+    metadata_snapshot: dict,
+    run_id: str,
+    iteration: int,
+    cache,
+    policy,
+    spark,
+) -> list[dict]:
+    """C4 wiring — dispatch on ``decision.next_action`` and return any
+    decision-record payload dicts the caller should append to
+    ``_current_iter_inputs["decision_records"]``.
+
+    Only ``REQUEST_EVIDENCE_GATHERING`` is wired by this helper today —
+    the other actions (ROTATE_LEVER_FAMILY, NARROW_AG_SCOPE,
+    BLOCK_AG_RETRY_BY_CLUSTER_SIGNATURE, ESCALATE_UNSUPPORTED_REPAIR_SHAPE,
+    MARK_EVIDENCE_GAP, ESCALATE_STALEMATE) are handled elsewhere in
+    the harness. This helper returns ``[]`` for those so the caller can
+    invoke it unconditionally.
+    """
+    from genie_space_optimizer.optimization.proposal_failure_policy import (
+        ProposalFailureNextAction,
+    )
+
+    if decision.next_action != ProposalFailureNextAction.REQUEST_EVIDENCE_GATHERING:
+        return []
+
+    return regenerate_rca_if_policy_permits(
+        cluster=cluster,
+        findings=findings,
+        evidence_snapshot=evidence_snapshot,
+        cache=cache,
+        policy=policy,
+        run_id=run_id,
+        iteration=iteration,
+        attempt_driver=None,
+        metadata_snapshot=metadata_snapshot,
+        spark=spark,
+    )
 
 
 def _emit_proposal_failure_decided(
