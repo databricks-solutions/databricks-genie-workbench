@@ -78,19 +78,74 @@ Columns relevant to the failure. [EDITABLE] may be updated; [LOCKED] must not.
 
 <examples>
 <example>
-Input: wrong_column failure — Genie selects "store_id" instead of "location_id"
-Blamed: catalog.schema.dim_store.location_id
-SQL diff: Expected "WHERE ds.location_id = 42" vs Generated "WHERE ds.store_id = 42"
+Branch 1 — wrong_column failure with synonym fix
+Input:
+- failure_type: wrong_column
+- blame_set: ["catalog.schema.dim_store.location_id"]
+- Structural Diff Features: { "wrong_columns": [{"actual": "store_id", "expected": "location_id"}] }
+- Counterfactual Fix Hints: ["Add synonym 'store id' to dim_store.location_id"]
 
 Output:
 {"changes": [
   {"table": "catalog.schema.dim_store", "column": "location_id",
     "entity_type": "column_key",
-    "sections": {"synonyms": "store id, store number, store identifier",
-                  "definition": "Unique numeric identifier for a store location"}}
+    "sections": {"synonyms": "store id, store number, store identifier"}}
 ],
 "table_changes": [],
-"rationale": "Genie confused store_id (which does not exist) with location_id. Adding store id as a synonym will resolve the ambiguity."}
+"rationale": "Genie confused store_id (which does not exist) with location_id. Adding 'store id' as a synonym implements the RCA hint and resolves the ambiguity."}
+</example>
+
+<example>
+Branch 2 — missing_definition failure with definition repair
+Input:
+- failure_type: missing_definition
+- blame_set: ["catalog.schema.fact_orders.order_status"]
+- Structural Diff Features: { "wrong_filters": [{"column": "order_status", "actual": "= 'fulfilled'", "expected": "IN ('shipped', 'delivered')"}] }
+- Counterfactual Fix Hints: ["Define order_status values: pending, shipped, delivered, cancelled"]
+
+Output:
+{"changes": [
+  {"table": "catalog.schema.fact_orders", "column": "order_status",
+    "entity_type": "column_dim",
+    "sections": {"definition": "Lifecycle state of an order. Values: pending, shipped, delivered, cancelled. Fulfilled orders are shipped OR delivered."}}
+],
+"table_changes": [],
+"rationale": "Genie filtered 'fulfilled' as a literal but no such value exists. Defining the actual values and the meaning of 'fulfilled' (shipped OR delivered) enables correct filtering."}
+</example>
+
+<example>
+Branch 3 — wrong_table_selection failure with table-level change
+Input:
+- failure_type: wrong_table_selection
+- blame_set: ["catalog.schema.dim_customer", "catalog.schema.dim_account"]
+- affected_questions: ["q47: count active customers by region"]
+- Counterfactual Fix Hints: ["Clarify that dim_customer is the entity hub (one row per person); dim_account is one-to-many with customers (one row per signed contract)"]
+
+Output:
+{"changes": [],
+"table_changes": [
+  {"table": "catalog.schema.dim_customer",
+    "sections": {"purpose": "Entity hub for natural persons. One row per unique customer.",
+                  "best_for": "Counting unique customers, customer-centric segmentation, demographics analysis."}},
+  {"table": "catalog.schema.dim_account",
+    "sections": {"purpose": "Contract/account dimension. One row per signed contract; a customer may have multiple accounts over time.",
+                  "best_for": "Account-revenue analysis, contract-lifecycle reporting. NOT for counting unique customers (use dim_customer)."}}
+],
+"rationale": "Genie joined dim_account to count 'customers', inflating counts (one-to-many fanout). Clarifying that dim_customer is the entity hub steers Genie to the correct table for customer counts."}
+</example>
+
+<example>
+Branch 4 — no-op response when no in-allowlist target is actionable
+Input:
+- failure_type: wrong_aggregation
+- blame_set: ["catalog.schema.fact_orders.revenue"]
+- Identifier Allowlist: { "tables": ["catalog.schema.dim_customer"], "columns": ["catalog.schema.dim_customer.customer_id"] }  (does NOT include fact_orders)
+- Counterfactual Fix Hints: ["Use SUM(revenue), not AVG(revenue)"]
+
+Output:
+{"changes": [],
+"table_changes": [],
+"rationale": "Blame is on fact_orders.revenue, which is not in the Identifier Allowlist for this skill. The aggregation fix is a Lever-6 (SQL expression) concern, not a column-metadata concern. Returning no-op so the optimizer can route this failure to Lever 6."}
 </example>
 </examples>
 

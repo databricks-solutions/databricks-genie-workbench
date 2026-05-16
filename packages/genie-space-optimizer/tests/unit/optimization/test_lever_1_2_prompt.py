@@ -104,3 +104,24 @@ def test_lever_1_2_prompt_renames_sql_diffs_section():
     prompt = LEVER_1_2_COLUMN_PROMPT
     assert "## Structural Diff Features" in prompt
     assert "## SQL Diffs (Expected vs Generated)" not in prompt
+
+
+def test_lever_1_2_prompt_has_four_canonical_examples():
+    """The L1/L2 template <examples> block must contain four canonical
+    examples that cover the four decision boundaries."""
+    from genie_space_optimizer.common.config import LEVER_1_2_COLUMN_PROMPT
+
+    prompt = LEVER_1_2_COLUMN_PROMPT
+    example_count = prompt.count("<example>")
+    assert example_count == 4, (
+        f"expected 4 canonical examples, got {example_count}"
+    )
+
+    examples_section_start = prompt.index("<examples>")
+    examples_section_end = prompt.index("</examples>")
+    examples_section = prompt[examples_section_start:examples_section_end]
+
+    assert "wrong_column" in examples_section and "synonyms" in examples_section
+    assert "missing_definition" in examples_section
+    assert "wrong_table_selection" in examples_section or "table_changes" in examples_section
+    assert '"changes": []' in examples_section
