@@ -168,3 +168,15 @@ def test_stage_1_discovery_prompt_is_registered():
         "LEVER_PROMPTS in common/config.py."
     )
     assert cfg.LEVER_PROMPTS["stage_1_discovery"] is cfg.STAGE_1_DISCOVERY_PROMPT
+
+
+def test_lever_5a_instruction_prompt_is_registered():
+    # Key matches the existing _link_prompt_to_trace("lever_5a_instructions")
+    # call at optimizer.py:9387 (plural form).
+    assert "lever_5a_instructions" in cfg.LEVER_PROMPTS, (
+        "LEVER_5A_INSTRUCTION_PROMPT is the Plan-2 split path for "
+        "instructions (separate from LEVER_5_HOLISTIC_PROMPT) but is not "
+        "in LEVER_PROMPTS. Add 'lever_5a_instructions': "
+        "LEVER_5A_INSTRUCTION_PROMPT to LEVER_PROMPTS in common/config.py."
+    )
+    assert cfg.LEVER_PROMPTS["lever_5a_instructions"] is cfg.LEVER_5A_INSTRUCTION_PROMPT

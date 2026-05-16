@@ -2801,6 +2801,9 @@ LEVER_5A_INSTRUCTION_PROMPT = _SKILL_LOADER.load_prompt(
     "lever-5a-instructions",
     expected_constant_name="LEVER_5A_INSTRUCTION_PROMPT",
 )
+# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 4 —
+# registry entry added below at LEVER_PROMPTS definition (constant
+# defined before that dict). Listed here for grep-discoverability.
 
 # ── 5b. Holistic Strategist Prompt ────────────────────────────────────
 
@@ -4467,6 +4470,7 @@ LEVER_PROMPTS: dict[str, str] = {
     "lever_4_join_discovery": LEVER_4_JOIN_DISCOVERY_PROMPT,
     "lever_5_instruction": LEVER_5_INSTRUCTION_PROMPT,
     "lever_5_holistic": LEVER_5_HOLISTIC_PROMPT,
+    "lever_5a_instructions": LEVER_5A_INSTRUCTION_PROMPT,
     "proposal_generation": PROPOSAL_GENERATION_PROMPT,
     "description_enrichment": DESCRIPTION_ENRICHMENT_PROMPT,
     "table_description_enrichment": TABLE_DESCRIPTION_ENRICHMENT_PROMPT,
