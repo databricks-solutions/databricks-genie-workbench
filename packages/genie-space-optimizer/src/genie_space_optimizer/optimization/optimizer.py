@@ -9535,28 +9535,14 @@ def _dispatch_lever_5_split(
         "rationale": rationale,
     }
 
-    if lever5_shadow_enabled():
-        try:
-            old_result = _call_llm_for_holistic_instructions(
-                all_clusters, metadata_snapshot,
-                lever_changes=lever_changes, w=w,
-            )
-        except Exception:
-            logger.warning(
-                "Lever-5 shadow holistic call failed — recording "
-                "comparison with empty old payload.",
-                exc_info=True,
-            )
-            old_result = {
-                "instruction_text": "",
-                "example_sql_proposals": [],
-                "rationale": "",
-            }
-        _emit_lever5_shadow_comparison(
-            ag_id=str(metadata_snapshot.get("_active_ag_id", "")),
-            cluster_ids=[c.get("cluster_id", "") for c in (all_clusters or [])],
-            old=old_result, new=new_result,
-        )
+    _run_lever5_shadow_emission(
+        ag_id=str(metadata_snapshot.get("_active_ag_id", "")),
+        all_clusters=all_clusters,
+        metadata_snapshot=metadata_snapshot,
+        lever_changes=lever_changes,
+        w=w,
+        new_result=new_result,
+    )
 
     return new_result
 
@@ -9615,6 +9601,63 @@ def _select_lever_5_holistic_path(
     return _call_llm_for_holistic_instructions(
         all_clusters, metadata_snapshot,
         lever_changes=lever_changes, w=w,
+    )
+
+
+def _run_lever5_shadow_emission(
+    *,
+    ag_id: str,
+    all_clusters: list[dict],
+    metadata_snapshot: dict,
+    lever_changes: list[dict] | None,
+    w: WorkspaceClient | None,
+    new_result: dict,
+) -> None:
+    """Track B+ — shared shadow-emission boundary for Plan 2.
+
+    Used by two call sites:
+      * ``_dispatch_lever_5_split`` — emits when the legacy strategist
+        routes through the L5 selector → dispatcher path.
+      * ``three_stage_pipeline.run_three_stage_pipeline_for_ag`` —
+        emits when the three-stage pipeline picks an L5 skill and
+        funnels through ``_stage_2_l5a`` / ``_stage_2_l5b`` (which
+        bypass the dispatcher).
+
+    No-op when ``GSO_LEVER5_SHADOW_V1`` is off. When on, runs one
+    holistic LLM call and records the resulting comparison; the
+    holistic exception is swallowed (empty-old payload) so a holistic
+    failure never breaks the production path that owns ``new_result``.
+
+    Cost note: when both dispatcher and pipeline fire for the same AG
+    in the same iteration (e.g. legacy strategist also routes to lever
+    5 while Plan 3 shadow is on), each path emits independently — two
+    records per AG. Deduplication is intentionally not done here; the
+    fixture-export downstream rolls up duplicates by hash and records
+    represent attempts, not unique AGs.
+    """
+    from genie_space_optimizer.common.config import lever5_shadow_enabled
+    if not lever5_shadow_enabled():
+        return
+    try:
+        old_result = _call_llm_for_holistic_instructions(
+            all_clusters, metadata_snapshot,
+            lever_changes=lever_changes, w=w,
+        )
+    except Exception:
+        logger.warning(
+            "Lever-5 shadow holistic call failed — recording "
+            "comparison with empty old payload.",
+            exc_info=True,
+        )
+        old_result = {
+            "instruction_text": "",
+            "example_sql_proposals": [],
+            "rationale": "",
+        }
+    _emit_lever5_shadow_comparison(
+        ag_id=ag_id,
+        cluster_ids=[c.get("cluster_id", "") for c in (all_clusters or [])],
+        old=old_result, new=new_result,
     )
 
 

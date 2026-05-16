@@ -539,6 +539,14 @@ def run_three_stage_pipeline_for_ag(
         result = _stage_2_for_skill(bundle, w=w)
         stage_2_results.append(result)
 
+    _maybe_emit_lever5_shadow_for_pipeline(
+        ag_id=ag_id,
+        clusters=clusters or [],
+        metadata_snapshot=metadata_snapshot,
+        stage_2_results=stage_2_results,
+        w=w,
+    )
+
     return {
         "ag_id": ag_id,
         "stage_1_picks": merged_picks,
@@ -546,6 +554,97 @@ def run_three_stage_pipeline_for_ag(
         "stage_2_results": stage_2_results,
         "fallback_to_legacy": False,
     }
+
+
+def _maybe_emit_lever5_shadow_for_pipeline(
+    *,
+    ag_id: str,
+    clusters: list[dict],
+    metadata_snapshot: dict,
+    stage_2_results: list[dict],
+    w: Any,
+) -> None:
+    """Track B+ — Plan 2 shadow emission for the three-stage pipeline.
+
+    Closes the gap left by Track B: the pipeline's stage-2 adapters
+    (:func:`_stage_2_l5a`, :func:`_stage_2_l5b`) call the L5 skill
+    functions directly and bypass :func:`_dispatch_lever_5_split`, so
+    the dispatcher's shadow tail never fires for AGs routed through
+    the pipeline. Trial-3 ran with Plan 3 shadow on, the L5 skill hit
+    counters incremented, but ``shadow_comparisons`` stayed at 0.
+
+    Behavior:
+      * If ``GSO_LEVER5_SHADOW_V1`` is off → no-op (skip the holistic
+        cost). The shared helper enforces this too; we early-out here
+        to also skip aggregation work when not needed.
+      * If no L5 skill was picked (only L1/L2/L3/L4/L6 in
+        ``stage_2_results``) → no-op. Otherwise every AG would pay
+        the holistic LLM cost regardless of whether L5 is in scope.
+      * Otherwise aggregate the L5a (``instruction_text``) and L5b
+        (``example_sql_proposals``) stage-2 outputs into the same
+        envelope shape ``_run_lever5_shadow_emission`` expects, and
+        delegate.
+
+    Cost trade-off: when an iteration runs BOTH the legacy strategist
+    (selector → dispatcher path with split or shadow on) AND the
+    three-stage pipeline (shadow mode), each path emits its own
+    record for the same AG. We do not deduplicate at the emission
+    boundary because:
+      1. The shadow_comparisons counter measures emission attempts,
+         not unique AGs — useful for diagnosing pipeline coverage.
+      2. The fixture exporter downstream rolls up by content hash,
+         so duplicate records do not pollute the byte-stability
+         fixture set.
+    """
+    from genie_space_optimizer.common.config import lever5_shadow_enabled
+    if not lever5_shadow_enabled():
+        return
+
+    l5_skill_ids = ("lever-5a-instructions", "lever-5b-example-sql")
+    l5_results = [
+        r for r in (stage_2_results or [])
+        if r.get("skill_id") in l5_skill_ids
+    ]
+    if not l5_results:
+        return
+
+    instruction_text = ""
+    rationale_parts: list[str] = []
+    example_sql_proposals: list[dict] = []
+    for r in l5_results:
+        proposals = r.get("proposals") or []
+        if r.get("skill_id") == "lever-5a-instructions":
+            for p in proposals:
+                txt = (p.get("instruction_text") or "").strip()
+                if txt and not instruction_text:
+                    instruction_text = txt
+                if p.get("rationale"):
+                    rationale_parts.append(f"L5a: {p['rationale']}")
+        elif r.get("skill_id") == "lever-5b-example-sql":
+            example_sql_proposals.extend(
+                p for p in proposals if isinstance(p, dict)
+            )
+            rationale_parts.append(
+                f"L5b: {len(example_sql_proposals)} example SQLs"
+            )
+
+    new_result = {
+        "instruction_text": instruction_text,
+        "example_sql_proposals": example_sql_proposals,
+        "rationale": " | ".join(rationale_parts),
+    }
+
+    from genie_space_optimizer.optimization.optimizer import (
+        _run_lever5_shadow_emission,
+    )
+    _run_lever5_shadow_emission(
+        ag_id=ag_id,
+        all_clusters=clusters,
+        metadata_snapshot=metadata_snapshot,
+        lever_changes=None,
+        w=w,
+        new_result=new_result,
+    )
 
 
 def _select_strategy_path_for_iteration(
