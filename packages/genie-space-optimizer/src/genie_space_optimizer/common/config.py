@@ -6346,6 +6346,34 @@ def force_structural_synthesis_on_lever5_drop_enabled() -> bool:
     return True
 
 
+def rich_synthesis_primary_for_sql_shape_enabled() -> bool:
+    """Plan B — when true, Stage-2 lever-5b routes SQL-shape clusters
+    through ``run_cluster_driven_synthesis_for_single_cluster`` (the
+    rich synthesizer with AFS block, failure_contexts, teaching-kit
+    contract, 5 gates, arbiter) instead of the lean
+    ``synthesize_example_sqls`` adapter.
+
+    Env var: ``GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE``.
+
+    Default: ``"0"`` (off). The byte-stable fixtures in
+    ``tests/fixtures/lever5_split_v1/`` pin the lean-path output; the
+    follow-up plan documented at
+    ``docs/prompt_improvements/2026-05-16-plan-b-rich-synthesis-primary-path-followups.md``
+    flips the default to ``"1"`` and regenerates those fixtures.
+
+    Accepts (case-insensitive): ``1``, ``true``, ``yes``, ``y``. Anything
+    else (including unset, ``0``, ``false``, ``no``, ``off``, empty)
+    keeps the flag off.
+
+    Read at the call site each time ``_dispatch_lever_5b_for_cluster``
+    runs, not cached, so tests can toggle via monkeypatch.
+    """
+    raw = os.environ.get(
+        "GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "0",
+    ).strip().lower()
+    return raw in {"1", "true", "yes", "y"}
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Cycle 9 — Patch-Acceptance Reliability flag accessors (default-on).
 # Anchor runs: 1099b152 (anchor) + 2afb0be2 596465849524605 (variance).
