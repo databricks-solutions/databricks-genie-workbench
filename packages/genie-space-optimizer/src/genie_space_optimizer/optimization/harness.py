@@ -4590,6 +4590,7 @@ def _emit_force_l6_outcome(
     original_decline_iteration: int | None = None,
     cluster_signature: str = "",
     reflection_buffer: list | None = None,
+    callsite_ctx=None,
 ) -> None:
     """Cycle 10 W3.4 — record typed outcomes for the Cycle 7 N3
     force-Lever-6 path. Emits two records when ``outcome="declined"``
@@ -4674,6 +4675,7 @@ def _emit_force_l6_outcome(
                     prior_failure_count=_pfc,
                     target_qids=qids,
                     iter_inputs=iter_inputs,
+                    callsite_ctx=callsite_ctx,
                 )
             except Exception:
                 logger.debug(
@@ -4732,6 +4734,7 @@ def _maybe_force_lever6_with_cache(
     target_qids: tuple[str, ...],
     cluster_signature: str = "",
     forbidden_pair=None,
+    callsite_ctx=None,
 ) -> dict | None:
     """P-E1 — wrap the force-L6 LLM call with an iteration-scoped
     decline cache.
@@ -4845,6 +4848,7 @@ def _maybe_force_lever6_with_cache(
                     cached=True,
                     original_decline_iteration=int(prior_iteration),
                     cluster_signature=sig,
+                    callsite_ctx=callsite_ctx,
                 )
                 return None
 
@@ -4867,6 +4871,7 @@ def _maybe_force_lever6_with_cache(
         cached=False,
         original_decline_iteration=None,
         cluster_signature=sig,
+        callsite_ctx=callsite_ctx,
     )
     if cache_on:
         key = _l6_decline_cache_key(collision_pair, snippet_type=snippet_type)
@@ -22895,6 +22900,15 @@ def _run_lever_loop(
                             target_qids=_force_target_qids,
                             cluster_signature=_force_signature,
                             forbidden_pair=_forbidden_pair,
+                            callsite_ctx=_build_proposal_failure_callsite_context(
+                                cluster_id=str(_force_cluster.get("cluster_id", "")),
+                                source_clusters_by_id=_iter_source_clusters_by_id,
+                                rca_recovery_holder=_rca_recovery_holder,
+                                signatures_counter=_iter_failure_signatures,
+                                findings=[],
+                                metadata_snapshot=metadata_snapshot,
+                                spark=spark,
+                            ),
                         )
                         if _forced_l6 is None:
                             _force_outcome = "declined"
@@ -22996,6 +23010,17 @@ def _run_lever_loop(
                                 target_qids=_force_target_qids,
                                 exception_repr=_force_exception_repr,
                                 iter_inputs=_current_iter_inputs,
+                                callsite_ctx=_build_proposal_failure_callsite_context(
+                                    cluster_id=str(
+                                        _force_cluster.get("cluster_id", "")
+                                    ),
+                                    source_clusters_by_id=_iter_source_clusters_by_id,
+                                    rca_recovery_holder=_rca_recovery_holder,
+                                    signatures_counter=_iter_failure_signatures,
+                                    findings=[],
+                                    metadata_snapshot=metadata_snapshot,
+                                    spark=spark,
+                                ),
                             )
             except Exception as _forced_lever6_n3_exc:
                 try:
