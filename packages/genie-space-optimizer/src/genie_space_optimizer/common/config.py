@@ -5370,42 +5370,6 @@ def lever5_split_capture_require_coverage_enabled() -> bool:
     return False
 
 
-def three_stage_enabled() -> bool:
-    """Plan 3 — when on, the per-iteration strategist call in
-    ``optimization.harness._run_lever_loop`` routes through
-    ``three_stage_pipeline.run_three_stage_pipeline_for_ag``
-    (Stage-1 discovery + Stage-2 per-skill activation) instead of
-    ``_call_llm_for_adaptive_strategy``.
-
-    **Default ON post-trial-4** (2026-05-16). Trial-4 produced
-    byte-stable ``three_stage_v1`` fixtures (commit ``9d380a89``);
-    contract drift is now caught by ``test_three_stage_fixtures.py``
-    in CI, so the legacy strategist path is no longer needed as a
-    safety net.
-
-    Flip to OFF for emergency rollback by setting
-    ``GSO_THREE_STAGE_V1=0`` in
-    ``packages/genie-space-optimizer/databricks.yml`` under the
-    lever_loop task's ``base_parameters`` (or by setting the env var
-    on the job environment) and redeploying. The flag helper still
-    honors a falsy explicit override.
-    """
-    return _flag_default_on("GSO_THREE_STAGE_V1")
-
-
-def three_stage_shadow_enabled() -> bool:
-    """Plan 3 — when on, BOTH the legacy strategist AND the new
-    three-stage pipeline run for each iteration; the LEGACY result is
-    applied (zero production risk); the comparison record is captured
-    to ``GSO_THREE_STAGE_CAPTURE_PATH`` when set.
-
-    Use only on the dedicated trial run. Default OFF.
-
-    Enable with ``GSO_THREE_STAGE_SHADOW_V1=1``.
-    """
-    return _flag_enabled("GSO_THREE_STAGE_SHADOW_V1")
-
-
 def three_stage_capture_path_set() -> bool:
     """True when ``GSO_THREE_STAGE_CAPTURE_PATH`` is set to a non-empty
     path. The shadow-comparison emitter writes one NDJSON record per AG
@@ -5582,8 +5546,10 @@ class _ThreeStageCaptureSink:
             problems.append("zero Stage-1 discovery calls recorded")
         if not any(c > 0 for c in snap["skill_dispatches"].values()):
             problems.append("zero Stage-2 dispatch records across all skills")
-        if _flag_enabled("GSO_THREE_STAGE_SHADOW_V1") and snap["shadow_comparisons"] == 0:
-            problems.append("zero shadow comparison records emitted")
+        # The shadow-comparison counter is no longer tied to a
+        # production-side env gate (the rollout flag that drove it was
+        # retired by the 2026-05-16 dead-flag cleanup); it stays in the
+        # snapshot for the comparison-math tests but is not enforced.
         if problems:
             raise RuntimeError(
                 "three-stage trial incomplete: "

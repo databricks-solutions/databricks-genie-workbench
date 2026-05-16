@@ -45,43 +45,6 @@ def _reload_config_with_env(env: dict[str, str]):
 # ── Section 1: flag helpers ──────────────────────────────────────────
 
 
-def test_three_stage_default_on_post_trial_4():
-    """Plan 3 — default-on post-trial-4 (commit 9d380a89). The other
-    three flag helpers stay default-off (shadow path retired, capture
-    path opt-in only)."""
-    cfg = _reload_config_with_env({})
-    assert cfg.three_stage_enabled() is True
-    assert cfg.three_stage_shadow_enabled() is False
-    assert cfg.three_stage_capture_path_set() is False
-    assert cfg.three_stage_capture_require_coverage_enabled() is False
-
-
-def test_three_stage_emergency_rollback_via_env():
-    """GSO_THREE_STAGE_V1=0 restores the legacy strategist path."""
-    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "0"})
-    assert cfg.three_stage_enabled() is False
-    assert cfg.three_stage_shadow_enabled() is False
-
-
-def test_three_stage_pipeline_flag_on():
-    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "1"})
-    assert cfg.three_stage_enabled() is True
-    assert cfg.three_stage_shadow_enabled() is False
-
-
-def test_three_stage_shadow_flag_on():
-    """Shadow path with Plan 3 explicitly rolled back via the
-    emergency-rollback env. Holds the original intent (the shadow
-    flag toggles the shadow-only path) under the new default-on
-    posture."""
-    cfg = _reload_config_with_env({
-        "GSO_THREE_STAGE_V1": "0",
-        "GSO_THREE_STAGE_SHADOW_V1": "1",
-    })
-    assert cfg.three_stage_enabled() is False
-    assert cfg.three_stage_shadow_enabled() is True
-
-
 def test_three_stage_capture_path_set_when_var_present():
     cfg = _reload_config_with_env({"GSO_THREE_STAGE_CAPTURE_PATH": "/tmp/x.ndjson"})
     assert cfg.three_stage_capture_path_set() is True
@@ -752,19 +715,6 @@ def test_three_stage_coverage_gate_raises_when_no_skill_dispatched():
         cfg._THREE_STAGE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
 
 
-def test_three_stage_coverage_gate_raises_when_no_shadow_in_shadow_mode():
-    import pytest
-    cfg = _reload_config_with_env({
-        "GSO_THREE_STAGE_SHADOW_V1": "1",
-        "GSO_THREE_STAGE_CAPTURE_REQUIRE_COVERAGE": "1",
-    })
-    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    cfg._record_three_stage_discovery_call("AG1")
-    cfg._record_three_stage_skill_dispatch("lever-4-join-discovery")
-    with pytest.raises(RuntimeError, match="zero shadow comparison"):
-        cfg._THREE_STAGE_CAPTURE_SINK.enforce_coverage_or_raise()  # noqa: SLF001
-
-
 # ── Section 7: _stage_2_for_skill (L4 first) ──────────────────────────
 
 
@@ -963,52 +913,8 @@ def test_pipeline_merges_duplicate_skill_picks(monkeypatch):
 # ── Section 9: harness selector ───────────────────────────────────────
 
 
-def test_select_strategy_path_off_uses_legacy(monkeypatch):
-    """Plan 3 explicitly rolled back via the emergency env var. The
-    selector must take the legacy path (this exercises the rollback
-    contract; default-on is covered by
-    test_select_strategy_path_pipeline_uses_three_stage)."""
-    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "0"})
-    from genie_space_optimizer.optimization import optimizer
-    from genie_space_optimizer.optimization import three_stage_pipeline
-
-    legacy_calls = {"n": 0}
-    pipeline_calls = {"n": 0}
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_adaptive_strategy",
-        lambda **kw: (legacy_calls.__setitem__("n", legacy_calls["n"] + 1)
-                       or {"action_groups": [{"id": "AG1"}],
-                           "global_instruction_rewrite": {"text": "GIR"},
-                           "rationale": "legacy rationale"}),
-    )
-    monkeypatch.setattr(
-        three_stage_pipeline, "run_three_stage_pipeline_for_ag",
-        lambda **kw: (pipeline_calls.__setitem__("n", pipeline_calls["n"] + 1)
-                      or {"ag_id": "AG1", "stage_2_results": [], "fallback_to_legacy": False}),
-    )
-
-    out = three_stage_pipeline._select_strategy_path_for_iteration(
-        legacy_kwargs={
-            "clusters": [], "soft_signal_clusters": [],
-            "metadata_snapshot": _sample_metadata_snapshot(),
-            "reflection_buffer": [], "priority_ranking": [],
-            "tried_patches": set(), "w": None,
-        },
-        clusters_for_pipeline=[_sample_cluster()],
-    )
-    assert legacy_calls["n"] == 1
-    assert pipeline_calls["n"] == 0
-    assert out["source"] == "legacy_strategist"
-    # Divergence from plan: selector also returns legacy_strategy_full
-    # (the full dict) so the harness can byte-stably restore
-    # global_instruction_rewrite/rationale when flags are off.
-    assert "legacy_strategy_full" in out
-    assert out["legacy_strategy_full"]["action_groups"] == out["legacy_action_groups"]
-    assert out["legacy_strategy_full"]["rationale"] == "legacy rationale"
-
-
 def test_select_strategy_path_pipeline_uses_three_stage(monkeypatch):
-    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "1"})
+    cfg = _reload_config_with_env({})
     from genie_space_optimizer.optimization import optimizer
     from genie_space_optimizer.optimization import three_stage_pipeline
 
@@ -1074,62 +980,11 @@ def test_select_strategy_path_pipeline_fallback_runs_legacy(monkeypatch):
     assert out["legacy_strategy_full"]["rationale"] == "fb-rationale"
 
 
-def test_select_strategy_path_shadow_runs_both_applies_legacy(monkeypatch):
-    """Shadow mode: both paths run; legacy applied; comparison emitted
-    via _emit_three_stage_shadow_comparison. Plan 3 must be explicitly
-    rolled back (default-on as of trial-4) so the selector lands on the
-    shadow-only branch instead of the active pipeline path."""
-    cfg = _reload_config_with_env({
-        "GSO_THREE_STAGE_V1": "0",
-        "GSO_THREE_STAGE_SHADOW_V1": "1",
-    })
-    from genie_space_optimizer.optimization import optimizer
-    from genie_space_optimizer.optimization import three_stage_pipeline
-
-    legacy_calls = {"n": 0}
-    pipeline_calls = {"n": 0}
-    emit_calls = {"n": 0}
-    monkeypatch.setattr(
-        optimizer, "_call_llm_for_adaptive_strategy",
-        lambda **kw: (legacy_calls.__setitem__("n", legacy_calls["n"] + 1)
-                       or {"action_groups": [{"id": "AG_LEG"}],
-                           "global_instruction_rewrite": {},
-                           "rationale": "sh-rationale"}),
-    )
-    monkeypatch.setattr(
-        three_stage_pipeline, "run_three_stage_pipeline_for_ag",
-        lambda **kw: (pipeline_calls.__setitem__("n", pipeline_calls["n"] + 1)
-                      or {"ag_id": "AG1", "stage_1_picks": [], "stage_2_results": [],
-                          "fallback_to_legacy": False}),
-    )
-    monkeypatch.setattr(
-        optimizer, "_emit_three_stage_shadow_comparison",
-        lambda **kw: emit_calls.__setitem__("n", emit_calls["n"] + 1),
-    )
-
-    out = three_stage_pipeline._select_strategy_path_for_iteration(
-        legacy_kwargs={
-            "clusters": [], "soft_signal_clusters": [],
-            "metadata_snapshot": _sample_metadata_snapshot(),
-            "reflection_buffer": [], "priority_ranking": [],
-            "tried_patches": set(), "w": None,
-        },
-        clusters_for_pipeline=[_sample_cluster()],
-    )
-    assert legacy_calls["n"] == 1
-    assert pipeline_calls["n"] == 1
-    assert emit_calls["n"] == 1
-    assert out["source"] == "legacy_strategist_shadow"
-    # Divergence: shadow mode also preserves legacy_strategy_full for
-    # byte-stable downstream use.
-    assert out["legacy_strategy_full"]["rationale"] == "sh-rationale"
-
-
 # ── Section 9b: _emit_three_stage_shadow_comparison ───────────────────
 
 
 def test_emit_shadow_comparison_records_overlap():
-    cfg = _reload_config_with_env({"GSO_THREE_STAGE_SHADOW_V1": "1"})
+    cfg = _reload_config_with_env({})
     cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
     from genie_space_optimizer.optimization import optimizer
 
@@ -1152,23 +1007,6 @@ def test_emit_shadow_comparison_records_overlap():
     assert snap["shadow_comparisons"] == 1
 
 
-def test_emit_shadow_comparison_no_op_when_no_flags():
-    """Both pipeline AND shadow flags off → emit() is a no-op. Plan 3
-    is default-on as of trial-4, so the emit guard reads
-    ``three_stage_enabled() or three_stage_shadow_enabled()``; we must
-    set the emergency-rollback env to exercise the no-op branch."""
-    cfg = _reload_config_with_env({"GSO_THREE_STAGE_V1": "0"})
-    cfg._THREE_STAGE_CAPTURE_SINK.reset_for_test()  # noqa: SLF001
-    from genie_space_optimizer.optimization import optimizer
-
-    optimizer._emit_three_stage_shadow_comparison(
-        ag_id="AG1",
-        stage_1_picks=[],
-        legacy_action_groups=[],
-        pipeline_stage_2_results=[],
-    )
-    snap = cfg.dump_three_stage_capture_summary()
-    assert snap["shadow_comparisons"] == 0
 
 
 def test_emit_shadow_comparison_includes_overlap_metrics():

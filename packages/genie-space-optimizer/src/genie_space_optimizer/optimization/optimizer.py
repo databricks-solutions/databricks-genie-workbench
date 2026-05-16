@@ -10867,8 +10867,6 @@ def _call_llm_for_stage_1_discovery(
     from genie_space_optimizer.common.config import (
         STAGE_1_DISCOVERY_PROMPT,
         _THREE_STAGE_SKILL_NAMES,
-        three_stage_enabled,
-        three_stage_shadow_enabled,
     )
     from genie_space_optimizer.optimization.evaluation import (
         _extract_json,
@@ -10900,14 +10898,10 @@ def _call_llm_for_stage_1_discovery(
     prompt = format_mlflow_template(STAGE_1_DISCOVERY_PROMPT, **format_kwargs)
     _link_prompt_to_trace("stage_1_discovery")
 
-    if three_stage_enabled() or three_stage_shadow_enabled():
-        # Forward-reference safety: the capture-sink symbol lands in
-        # Task 9. Import lazily inside the gate so this function stays
-        # importable when only Task 8 has shipped.
-        from genie_space_optimizer.common.config import (
-            _record_three_stage_discovery_call,
-        )
-        _record_three_stage_discovery_call(ag_id)
+    from genie_space_optimizer.common.config import (
+        _record_three_stage_discovery_call,
+    )
+    _record_three_stage_discovery_call(ag_id)
 
     logger.info(
         "\n┌─── LLM Call [STAGE_1_DISCOVERY] ─────────────────────────────────\n"
@@ -10992,8 +10986,12 @@ def _emit_three_stage_shadow_comparison(
 ) -> None:
     """Plan 3 — emit one shadow-comparison record per AG.
 
-    No-op when neither GSO_THREE_STAGE_V1 nor GSO_THREE_STAGE_SHADOW_V1
-    is on (defensive — selector's both-off branch never calls us).
+    The 2026-05-16 dead-flag cleanup removed the live callers of this
+    function (it was called from ``_select_strategy_path_for_iteration``
+    only on the shadow branch, which is gone). The body stays
+    callable so the comparison-math unit tests keep their direct entry
+    point; the underlying ``_record_three_stage_shadow_comparison``
+    sink no-ops unless ``GSO_THREE_STAGE_CAPTURE_PATH`` is set.
 
     Maps legacy ``lever_directives.keys()`` → canonical skill_ids
     using the static legacy→skill table below; computes set overlap
@@ -11002,11 +11000,7 @@ def _emit_three_stage_shadow_comparison(
     """
     from genie_space_optimizer.common.config import (
         _record_three_stage_shadow_comparison,
-        three_stage_enabled,
-        three_stage_shadow_enabled,
     )
-    if not (three_stage_enabled() or three_stage_shadow_enabled()):
-        return
 
     # Legacy lever-directive key → canonical skill_id (one or many).
     # When a legacy key maps to multiple skills (lever 5 → 5a + 5b),
