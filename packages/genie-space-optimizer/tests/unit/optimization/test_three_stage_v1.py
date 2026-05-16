@@ -1735,3 +1735,36 @@ def test_call_llm_for_stage_1_discovery_passes_routing_table_kwarg(monkeypatch):
     assert "lever-4-join-discovery" in captured_prompt["text"], (
         "routing table must include skill_ids"
     )
+
+
+# ── Section: <how_to_read_cluster_briefs> (Task 3) ────────────────────
+
+
+def test_stage_1_prompt_includes_how_to_read_cluster_briefs_section():
+    """The Stage-1 prompt must explain which AFS field feeds which
+    output slot. Without this section the model has to guess (e.g.
+    'should suggested_fix_summary go in why or rationale?')."""
+    from genie_space_optimizer.common.config import STAGE_1_DISCOVERY_PROMPT
+    assert "<how_to_read_cluster_briefs>" in STAGE_1_DISCOVERY_PROMPT
+    # Each AFS field must be explicitly mapped to an output slot.
+    for needle in [
+        "failure_type",
+        "Blamed objects",
+        "Suggested fixes",
+        "Question IDs",
+        "Judge verdict pattern",
+    ]:
+        assert needle in STAGE_1_DISCOVERY_PROMPT, (
+            f"missing AFS field {needle!r} in how_to_read_cluster_briefs"
+        )
+    # Each output slot must be referenced.
+    for needle in [
+        "skill_id",
+        "target_objects",
+        "why",
+        "expected_impact_qids",
+        "priority",
+    ]:
+        assert needle in STAGE_1_DISCOVERY_PROMPT, (
+            f"missing output slot {needle!r} in how_to_read_cluster_briefs"
+        )

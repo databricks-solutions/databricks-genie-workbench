@@ -93,6 +93,26 @@ Target objects MUST come from this allowlist:
 {{ identifier_allowlist }}
 </context>
 
+<how_to_read_cluster_briefs>
+## How to map each cluster brief field to a Stage-1 output slot
+
+Each cluster brief above carries a fixed set of fields. Map them to
+your output slots like this:
+
+| Cluster brief field | Stage-1 output slot | Notes |
+|---|---|---|
+| `failure_type` | `skill_id` (via routing table) | Primary signal; look up the preferred skill_id(s) in the Failure-Type → Skill Routing Table |
+| `Blamed objects` | `target_objects` | Filter to identifiers that appear in the Identifier Allowlist; per-skill target-shape constraints apply (see catalogue ``Targets:`` lines) |
+| `Question IDs` | `expected_impact_qids` | Constrained source — every entry MUST come from this line |
+| `Suggested fixes` | `why` | Compress to one sentence; do not copy verbatim |
+| `Structural signature` / `Typed failure features` | tie-breaker | Use when two skills could apply (e.g. distinguish lever-2 vs lever-6 for an MV-column issue) |
+| `Judge verdict pattern` | `priority` | Multiple-judge FAIL → priority 1; single soft FAIL → priority 2 or 3 |
+| `Suggested fixes` (counterfactuals) | confidence signal | Strong counterfactuals → higher priority; weak/none → lower priority |
+
+When two clusters in the same AG share a failure_type, pick the
+SINGLE skill that addresses both rather than emitting duplicate picks.
+</how_to_read_cluster_briefs>
+
 <instructions>
 ## Pick the smallest set of skills that addresses the failures
 For each pick, specify:
