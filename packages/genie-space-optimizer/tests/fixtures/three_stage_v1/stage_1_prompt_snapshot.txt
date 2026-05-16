@@ -75,24 +75,31 @@ You may only pick skill_ids from this list:
 - lever-1-table-column-description
     What: Add or refine table/column descriptions on a base table.
     Pick when: Failure stems from missing or ambiguous metadata on a base table; Genie cannot locate or correctly identify the right column.
+    Targets: any base_table (empty = all in cluster)
 - lever-2-mv-column-refinement
     What: Refine metric-view column metadata — definitions, synonyms, important_filters.
     Pick when: Failure stems from missing or weak metric-view metadata; the right MV column exists but Genie picks the wrong one or applies wrong filter semantics.
+    Targets: any metric_view (empty = all in cluster)
 - lever-3-tvf-routing
     What: Fix TVF descriptions or route through the right TVF when a function call is missing or wrong.
     Pick when: Failure stems from missing or misrouted user-defined function calls; Genie should call a TVF but doesn't, or calls the wrong one.
+    Targets: any function (empty = all in cluster)
 - lever-4-join-discovery
     What: Propose missing or fixed join_specs when a query needs a relationship that does not exist in the space config.
     Pick when: Failure includes a missing-join or wrong-join error and at least two target tables in the cluster need a defined relationship.
+    Targets: 2+ base_table identifiers
 - lever-5a-instructions
     What: Author NEW instruction prose covering routing, business definitions, disambiguation, etc. Prose only — no SQL examples.
     Pick when: Failure stems from missing routing rules, ambiguous business terms, or disambiguation gaps that prose guidance can resolve.
+    Targets: any table or metric_view (AG-wide allowed)
 - lever-5b-example-sql
     What: Synthesize ORIGINAL example_sql proposals matching a structural archetype. Subject to a strict benchmark-leakage firewall.
     Pick when: Failure shows a structural SQL pattern Genie can't generalize from existing examples; a NEW demonstrating example_sql would teach the pattern.
+    Targets: any base_table (empty = all in cluster)
 - lever-6-sql-expression
     What: Add a reusable SQL expression (measure / filter / dimension) to the knowledge store.
     Pick when: Failure is a concrete missing measure, filter, or dimension that can be expressed as a single reusable SQL snippet at the MV level.
+    Targets: any metric_view (empty = all in cluster)
 
 ## Failure-Type → Skill Routing Table
 Deterministic prior: each cluster's ``failure_type`` maps to one or
