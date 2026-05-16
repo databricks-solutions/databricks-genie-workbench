@@ -79,6 +79,11 @@ class DecisionType(str, Enum):
     # decision_emitters.proposal_failure_decided_record. Policy:
     # optimization.proposal_failure_policy.decide_next_action.
     PROPOSAL_FAILURE_DECIDED = "proposal_failure_decided"
+    # 2026-05-17 — emitted by ``_select_lever_for_cluster`` when the
+    # RCA_REPAIR_MATRIX rotation actively chose a fallback lever instead
+    # of the cluster's first-pick lever. Producer:
+    # ``decision_emitters.lever_rotation_decided_record``.
+    LEVER_ROTATION_DECIDED = "lever_rotation_decided"
 
 
 class DecisionOutcome(str, Enum):
