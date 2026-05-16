@@ -3,6 +3,8 @@ skill_id: lever-6-sql-expression
 prompt_constant_name: LEVER_6_SQL_EXPRESSION_PROMPT
 causal_or_non_causal: causal
 pickable_by_stage_1: true
+description: Add a reusable SQL expression (measure / filter / dimension) to the knowledge store.
+when_to_pick: Failure is a concrete missing measure, filter, or dimension that can be expressed as a single reusable SQL snippet at the MV level.
 ---
 <unified_rca_engine_contract>
 ## Unified RCA engine contract

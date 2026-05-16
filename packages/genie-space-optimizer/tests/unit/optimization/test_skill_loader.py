@@ -98,3 +98,31 @@ def test_loaded_lever_1_2_column_prompt_matches_loader_output():
         expected_constant_name="LEVER_1_2_COLUMN_PROMPT",
     )
     assert cfg.LEVER_1_2_COLUMN_PROMPT == body
+
+
+@pytest.mark.parametrize("skill_id", sorted([
+    "lever-1-table-column-description",
+    "lever-2-mv-column-refinement",
+    "lever-3-tvf-routing",
+    "lever-4-join-discovery",
+    "lever-5a-instructions",
+    "lever-5b-example-sql",
+    "lever-6-sql-expression",
+]))
+def test_pickable_skill_frontmatter_has_description_and_when_to_pick(skill_id: str):
+    """Every Stage-1-pickable skill must carry routing-aid metadata
+    in its SKILL.md frontmatter. The renderer in three_stage_pipeline
+    inlines these fields into the Stage-1 prompt's skill_catalogue
+    slot — empty values would silently regress Stage-1 routing."""
+    from genie_space_optimizer.skills._loader import SkillLoader
+    loader = SkillLoader()
+    meta = loader.load_metadata(skill_id)
+    assert isinstance(meta.get("description"), str) and meta["description"].strip(), (
+        f"{skill_id} missing 'description' frontmatter"
+    )
+    assert isinstance(meta.get("when_to_pick"), str) and meta["when_to_pick"].strip(), (
+        f"{skill_id} missing 'when_to_pick' frontmatter"
+    )
+    assert meta.get("pickable_by_stage_1") is True, (
+        f"{skill_id} not marked pickable_by_stage_1 — fix the registry or this test"
+    )

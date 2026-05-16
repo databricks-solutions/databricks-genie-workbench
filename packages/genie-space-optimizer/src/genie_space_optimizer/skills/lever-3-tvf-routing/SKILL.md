@@ -3,6 +3,8 @@ skill_id: lever-3-tvf-routing
 prompt_constant_name: PROPOSAL_GENERATION_PROMPT
 causal_or_non_causal: causal
 pickable_by_stage_1: true
+description: Fix TVF descriptions or route through the right TVF when a function call is missing or wrong.
+when_to_pick: Failure stems from missing or misrouted user-defined function calls; Genie should call a TVF but doesn't, or calls the wrong one.
 ---
 <role>
 You are a Databricks metadata optimization expert. Your job is to fix a Genie Space so that it generates correct SQL for user questions.

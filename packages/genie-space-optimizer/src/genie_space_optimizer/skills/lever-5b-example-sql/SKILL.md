@@ -3,6 +3,8 @@ skill_id: lever-5b-example-sql
 prompt_constant_name: _SYNTHESIS_PROMPT_TEMPLATE
 causal_or_non_causal: causal
 pickable_by_stage_1: true
+description: Synthesize ORIGINAL example_sql proposals matching a structural archetype. Subject to a strict benchmark-leakage firewall.
+when_to_pick: Failure shows a structural SQL pattern Genie can't generalize from existing examples; a NEW demonstrating example_sql would teach the pattern.
 ---
 You are synthesizing a single NEW example SQL to help a data assistant
 handle a specific class of failures. You will produce an ORIGINAL

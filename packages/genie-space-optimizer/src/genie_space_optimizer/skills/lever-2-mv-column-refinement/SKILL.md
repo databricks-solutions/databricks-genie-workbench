@@ -3,6 +3,8 @@ skill_id: lever-2-mv-column-refinement
 prompt_constant_name: LEVER_1_2_COLUMN_PROMPT_FOR_L2
 causal_or_non_causal: causal
 pickable_by_stage_1: true
+description: Refine metric-view column metadata — definitions, synonyms, important_filters.
+when_to_pick: Failure stems from missing or weak metric-view metadata; the right MV column exists but Genie picks the wrong one or applies wrong filter semantics.
 ---
 <role>
 You are a Databricks Genie Space metadata expert. Your job is to fix table and column descriptions and synonyms so that Genie generates correct SQL.
