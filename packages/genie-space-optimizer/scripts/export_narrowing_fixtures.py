@@ -19,6 +19,11 @@ Writes:
     "captured_at", "source_span_id"}``.
   * A summary printed to stdout listing files emitted, files skipped,
     and any captures that could not be matched to an MLflow span.
+    Unmatched captures are partitioned into "informational" (no
+    MLflow trace exists at all for the skill — LLM was not called
+    this run) and "failure" (trace exists but extraction failed).
+    The script exits rc=2 only on the failure partition; rc=0 with
+    informational-only unmatched.
 
 Span model
 ----------
@@ -249,6 +254,50 @@ def _match_trace_for_record(
     )
 
 
+def _partition_unmatched(
+    *,
+    unmatched: list[dict[str, Any]],
+    traces_by_root_name: dict[str, list[Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Track B (2026-05-16): split unmatched records by whether any
+    MLflow trace exists at all for the skill's candidate root names in
+    this experiment.
+
+    Returns ``(informational, failure)``:
+
+    * ``informational`` — capture record exists (sink fired during
+      prompt assembly) but ZERO traces with any of the skill's
+      candidate root names were found. The LLM was demonstrably not
+      called this run (e.g. airline space's lever-4 join discovery is
+      gated on ``discovery_hints``). Not a regen blocker.
+    * ``failure`` — at least one trace exists for the skill, but the
+      exporter could not pair this record with any of them. That is
+      a real bug: either the time-match heuristic is off, the
+      ``Completions`` child span is missing, the prompt bytes were
+      empty, or (for an unknown skill_id) the catalogue is stale.
+
+    Unknown skill_ids always land in ``failure`` — they have no
+    candidate root names, so the zero-trace check is meaningless and
+    silent-pass would mask a typo or a catalogue drift.
+    """
+    informational: list[dict[str, Any]] = []
+    failure: list[dict[str, Any]] = []
+    for record in unmatched:
+        skill_id = record.get("skill_id", "")
+        candidate_root_names = SKILL_TO_ROOT_TRACE_NAMES.get(skill_id, ())
+        if not candidate_root_names:
+            failure.append(record)
+            continue
+        traces_for_skill = sum(
+            len(traces_by_root_name.get(name, ())) for name in candidate_root_names
+        )
+        if traces_for_skill == 0:
+            informational.append(record)
+        else:
+            failure.append(record)
+    return informational, failure
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--narrowing-capture-path", required=True, type=Path)
@@ -332,14 +381,26 @@ def main(argv: list[str] | None = None) -> int:
                                 encoding="utf-8")
         written += 1
 
+    informational, failure = _partition_unmatched(
+        unmatched=unmatched,
+        traces_by_root_name=traces_by_root_name,
+    )
     print(json.dumps({
         "captures_read": len(records),
         "fixtures_written": written,
         "fixtures_skipped_existing": skipped_existing,
         "captures_unmatched": len(unmatched),
         "unmatched_skills": sorted({r["skill_id"] for r in unmatched}),
+        # Track B (2026-05-16): split unmatched by whether the LLM was
+        # demonstrably called this run.
+        "unmatched_informational_skills": sorted(
+            {r["skill_id"] for r in informational}
+        ),
+        "unmatched_failure_skills": sorted(
+            {r["skill_id"] for r in failure}
+        ),
     }, indent=2))
-    return 0 if not unmatched else 2
+    return 0 if not failure else 2
 
 
 if __name__ == "__main__":
