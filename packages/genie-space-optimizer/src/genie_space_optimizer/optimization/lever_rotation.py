@@ -49,3 +49,30 @@ def lever_set_for_rca_kind(rca_kind: RcaKind) -> tuple[int, ...]:
         seen.add(lever)
         result.append(int(lever))
     return tuple(result)
+
+
+def next_untried_repair(
+    rca_kind: RcaKind,
+    *,
+    tried: frozenset[int],
+) -> RepairPair | None:
+    """Return the next ``(lever, patch_type)`` pair from
+    ``RCA_REPAIR_MATRIX[rca_kind]`` whose ``lever`` is not in ``tried``.
+
+    Rotation is at the **lever family** granularity — when ``tried`` is
+    ``{4}`` and the matrix has two consecutive lever-4 pairs, BOTH are
+    skipped (the strategist already proved lever 4 cannot produce a
+    proposal for this cluster's RCA card; the second lever-4 patch_type
+    is unlikely to succeed where the first failed).
+
+    Returns ``None`` when:
+
+    * ``rca_kind`` is ``UNKNOWN`` (no matrix entry), OR
+    * every lever in the matrix entry is already in ``tried``.
+    """
+    pairs = RCA_REPAIR_MATRIX.get(rca_kind, ())
+    for lever, patch_type in pairs:
+        if lever in tried:
+            continue
+        return (int(lever), str(patch_type))
+    return None
