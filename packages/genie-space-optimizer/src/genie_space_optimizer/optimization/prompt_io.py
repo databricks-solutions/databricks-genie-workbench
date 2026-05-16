@@ -81,10 +81,21 @@ def build_response_format(model_cls: type[BaseModel]) -> dict[str, Any]:
 
     Returns the dict you pass directly to
     ``openai.chat.completions.create(..., response_format=...)``.
+
+    Strict-mode rules:
+      * Models inheriting ``extra: forbid`` (the LLMOutputContract default)
+        emit ``strict: True`` and have ``additionalProperties: False``
+        injected at every object node — Databricks strict-mode requires
+        this combo.
+      * Models that override to ``extra: allow`` emit ``strict: False``
+        so Databricks does not reject the request before the LLM runs.
+      * A model that is strict at the top level but contains a nested
+        permissive child also emits ``strict: False`` — strict mode
+        cannot coexist with any additionalProperties: True descendant.
+
+    Plan: 2026-05-17-active-callsite-typed-output-wiring.md Task 1
     """
     schema = model_cls.model_json_schema()
-    # Pydantic emits $defs for nested models; inline them shallowly by
-    # walking refs once.
     defs = schema.pop("$defs", {})
 
     def _inline(node: Any) -> Any:
@@ -102,14 +113,57 @@ def build_response_format(model_cls: type[BaseModel]) -> dict[str, Any]:
     schema = _inline(schema)
     schema = _strip_unsupported(schema)
     schema.setdefault("type", "object")
+
+    permissive = _schema_has_permissive_node(schema)
+    if not permissive:
+        _inject_additional_properties_false(schema)
+
     return {
         "type": "json_schema",
         "json_schema": {
             "name": model_cls.__name__,
             "schema": schema,
-            "strict": True,
+            "strict": not permissive,
         },
     }
+
+
+def _schema_has_permissive_node(node: Any) -> bool:
+    """Return True if any object node in the schema declares
+    ``additionalProperties`` as anything other than False — including
+    True, a dict (subschema), or absent.
+
+    For the absent case, we treat it as permissive only when the node is
+    an object with declared properties (a real model node, not a leaf
+    primitive declaration).
+    """
+    if isinstance(node, dict):
+        if node.get("type") == "object" and "properties" in node:
+            ap = node.get("additionalProperties", None)
+            if ap is None or ap is True or isinstance(ap, dict):
+                return True
+        for v in node.values():
+            if _schema_has_permissive_node(v):
+                return True
+    elif isinstance(node, list):
+        for item in node:
+            if _schema_has_permissive_node(item):
+                return True
+    return False
+
+
+def _inject_additional_properties_false(node: Any) -> None:
+    """Walk the schema and set ``additionalProperties: False`` on every
+    object node that does not already declare it. Required for strict
+    mode."""
+    if isinstance(node, dict):
+        if node.get("type") == "object" and "properties" in node:
+            node.setdefault("additionalProperties", False)
+        for v in node.values():
+            _inject_additional_properties_false(v)
+    elif isinstance(node, list):
+        for item in node:
+            _inject_additional_properties_false(item)
 
 
 _JSON_BRACE_RE = re.compile(r"\{[\s\S]*\}")
