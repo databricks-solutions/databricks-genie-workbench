@@ -9542,70 +9542,51 @@ def _call_llm_for_lever_5a_instructions(
         "you include it."
     )
 
-    text = ""
-    for attempt in range(LLM_MAX_RETRIES):
-        try:
-            text, _response = _call_llm_openai(
-                w,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": prompt},
-                ],
-                max_retries=1,
-                temperature=LLM_TEMPERATURE,
-            )
-            try:
-                result = _extract_json(text)
-            except json.JSONDecodeError:
-                result = _repair_truncated_holistic_json(text)
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever5aInstructionsOutput,
+    )
 
-            instruction_text = result.get("instruction_text", "")
-            if instruction_text:
-                instruction_text = _sanitize_plaintext_instructions(instruction_text)
-            rationale = result.get("rationale", "")
+    try:
+        text, _response = _traced_llm_call(
+            w, system_msg, prompt,
+            span_name="lever_5a_instructions",
+            response_model=Lever5aInstructionsOutput,
+        )
+    except Exception:
+        logger.exception(
+            "L5a LLM call failed after retries (prompt len: %d)", len(prompt),
+        )
+        return {"instruction_text": "", "rationale": "LLM call failed"}
 
-            if instruction_text and len(instruction_text) > MAX_HOLISTIC_INSTRUCTION_CHARS:
-                logger.warning(
-                    "L5a instruction text exceeds %d chars (%d), truncating",
-                    MAX_HOLISTIC_INSTRUCTION_CHARS, len(instruction_text),
-                )
-                instruction_text = instruction_text[:MAX_HOLISTIC_INSTRUCTION_CHARS]
+    try:
+        result = _extract_json(text)
+    except json.JSONDecodeError:
+        result = _repair_truncated_holistic_json(text)
 
-            candidate = {
-                "instruction_text": instruction_text,
-                "rationale": rationale,
-            }
-            ok, reject_reason = _validate_lever_5a_no_sql_output(candidate)
-            if not ok:
-                logger.warning(
-                    "GSO_LEVER5A_REJECTED_V1: L5a output rejected by no-SQL gate "
-                    "on attempt %d: %s",
-                    attempt + 1, reject_reason,
-                )
-                if attempt < LLM_MAX_RETRIES - 1:
-                    # Repair retry: prepend the rejection reason to the
-                    # next prompt attempt so the LLM has direct feedback.
-                    text = ""
-                    continue
-                return {"instruction_text": "", "rationale": f"5a rejected: {reject_reason}"}
-            return candidate
-        except json.JSONDecodeError:
-            logger.warning(
-                "L5a LLM response was not valid JSON (attempt %d): %.500s",
-                attempt + 1, text,
-            )
-            if attempt >= LLM_MAX_RETRIES - 1:
-                return {"instruction_text": "", "rationale": "JSON parse failed"}
-        except Exception:
-            if attempt < LLM_MAX_RETRIES - 1:
-                time.sleep(2**attempt)
-            else:
-                logger.exception(
-                    "L5a LLM call failed after %d retries (prompt len: %d)",
-                    LLM_MAX_RETRIES, len(prompt),
-                )
-                return {"instruction_text": "", "rationale": "LLM call failed"}
-    return {"instruction_text": "", "rationale": "All retries exhausted"}
+    instruction_text = result.get("instruction_text", "")
+    if instruction_text:
+        instruction_text = _sanitize_plaintext_instructions(instruction_text)
+    rationale = result.get("rationale", "")
+
+    if instruction_text and len(instruction_text) > MAX_HOLISTIC_INSTRUCTION_CHARS:
+        logger.warning(
+            "L5a instruction text exceeds %d chars (%d), truncating",
+            MAX_HOLISTIC_INSTRUCTION_CHARS, len(instruction_text),
+        )
+        instruction_text = instruction_text[:MAX_HOLISTIC_INSTRUCTION_CHARS]
+
+    candidate = {
+        "instruction_text": instruction_text,
+        "rationale": rationale,
+    }
+    ok, reject_reason = _validate_lever_5a_no_sql_output(candidate)
+    if not ok:
+        logger.warning(
+            "GSO_LEVER5A_REJECTED_V1: L5a output rejected by no-SQL gate: %s",
+            reject_reason,
+        )
+        return {"instruction_text": "", "rationale": f"5a rejected: {reject_reason}"}
+    return candidate
 
 
 def _dispatch_lever_5b_for_cluster(
