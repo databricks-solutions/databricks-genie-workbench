@@ -200,13 +200,6 @@ def dispatch_forced_structural_synthesis(
     appended: list[dict[str, Any]] = []
     emitted: list[dict[str, Any]] = []
 
-    if not l5_ag_drops:
-        return ForcedSynthesisDispatchResult(
-            attempted_dispatches=(),
-            appended_proposals=(),
-            emitted_decision_records=(),
-        )
-
     # Resolve the synthesize callable lazily to avoid circular imports.
     if synthesize is None:
         from genie_space_optimizer.optimization.cluster_driven_synthesis import (
@@ -350,6 +343,109 @@ def dispatch_forced_structural_synthesis(
                 "forced structural synthesis produced no candidate "
                 "for AG=%s root_cause=%s skipped=%s archetypes=%s",
                 ag_id, _drop_root_cause,
+                _synth_result.skipped_reason,
+                _synth_result.attempted_archetypes,
+            )
+
+    # Plan A Part 2 — rich-path safety net for "L5 emitted zero proposals".
+    # Fires when the gate-drop loop above did not run (l5_ag_drops empty)
+    # AND lever 5 emitted no proposals for this AG AND a source cluster
+    # has a SQL-shape failure label. Same synthesizer, same output shape;
+    # provenance.synthesis_source identifies the originating path. The
+    # predicate ``_should_invoke_safety_net`` returns at most one trigger
+    # per source cluster; we dispatch each trigger independently and
+    # accumulate proposals.
+    safety_net_triggers = _should_invoke_safety_net(
+        ag=ag,
+        l5_ag_drops=l5_ag_drops,
+        iter_source_clusters_by_id=iter_source_clusters_by_id,
+        ag_proposals_so_far=ag_proposals_so_far,
+    )
+    for (cid, failure_key) in safety_net_triggers:
+        cluster = iter_source_clusters_by_id.get(cid)
+        if not isinstance(cluster, Mapping):
+            continue
+        attempted.append((str(cid), failure_key))
+        _synth_result = synthesize(
+            dict(cluster),
+            metadata_snapshot,
+            benchmarks=benchmarks,
+            catalog=catalog,
+            gold_schema=schema,
+            warehouse_id=resolve_warehouse_id(""),
+            w=w,
+            spark=spark,
+        )
+        if _synth_result.proposal is not None:
+            _sp = _synth_result.proposal
+            _safety_net_proposal = {
+                "proposal_id": f"P{len(appended) + 1:03d}_SAFETY_NET",
+                "cluster_id": f"{ag_id}_SAFETY_NET_SYN",
+                "lever": 5,
+                "scope": "genie_config",
+                "patch_type": "add_example_sql",
+                "change_description": (
+                    f"[{ag_id}] Rich-path safety net: "
+                    f"{str(_sp.get('example_question', ''))[:80]}"
+                ),
+                "proposed_value": _sp.get("example_question", ""),
+                "example_question": _sp.get("example_question", ""),
+                "example_sql": _sp.get("example_sql", ""),
+                "parameters": _sp.get("parameters", []) or [],
+                "usage_guidance": _sp.get("usage_guidance", ""),
+                "rationale": (
+                    f"Rich-path safety net: lever 5 emitted zero proposals "
+                    f"for an AG with SQL-shape failure key '{failure_key}' "
+                    f"on cluster {cid} (archetype="
+                    f"{_sp.get('_archetype_name', '?')})."
+                ),
+                "confidence": 0.85,
+                "questions_fixed": 1,
+                "questions_at_risk": 0,
+                "net_impact": 0.85,
+                "kit_id": _sp.get("kit_id", ""),
+                "target_qids": _sp.get("target_qids", []),
+                "rca_id": _sp.get("rca_id", ""),
+                "_archetype_name": _sp.get("_archetype_name", ""),
+                "_cluster_id": _sp.get("_cluster_id", ""),
+                "provenance": {
+                    "synthesis_source": "rich_path_safety_net",
+                    "safety_net_failure_key": failure_key,
+                    "kit_id": _sp.get("kit_id", ""),
+                    "target_qids": _sp.get("target_qids", []),
+                },
+            }
+            appended.append(_safety_net_proposal)
+            logger.info(
+                "rich-path safety net synthesized example_sql for AG=%s "
+                "cluster=%s failure_key=%s archetype=%s",
+                ag_id, cid, failure_key,
+                _sp.get("_archetype_name", "?"),
+            )
+        else:
+            _safety_net_rca_id = str(
+                iter_rca_id_by_cluster.get(cid) or ""
+            )
+            _nsc = no_structural_candidate_record(
+                run_id=run_id,
+                iteration=iteration,
+                ag_id=str(ag_id),
+                cluster_id=str(cid),
+                rca_id=_safety_net_rca_id,
+                root_cause=failure_key,
+                target_qids=tuple(
+                    str(q) for q in (
+                        ag.get("affected_questions") or []
+                    )
+                    if str(q)
+                ),
+                attempted_archetypes=_synth_result.attempted_archetypes,
+            )
+            emitted.append(_nsc.to_dict())
+            logger.info(
+                "rich-path safety net produced no candidate for AG=%s "
+                "cluster=%s failure_key=%s skipped=%s archetypes=%s",
+                ag_id, cid, failure_key,
                 _synth_result.skipped_reason,
                 _synth_result.attempted_archetypes,
             )
