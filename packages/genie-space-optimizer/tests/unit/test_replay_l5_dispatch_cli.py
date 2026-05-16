@@ -42,5 +42,10 @@ def test_cli_emits_one_line_summary(tmp_path: Path) -> None:
     payload = json.loads(proc.stdout.strip())
     assert payload["fixture_id"] == "label_divergence_minimal"
     assert payload["iterations"] == 1
-    assert payload["total_attempted_dispatches"] == 0
+    # Plan A canonicalized the label-key lookup, so the divergent-labels
+    # fixture now reaches the rich synthesizer. The default replay stub
+    # returns proposal=None, so dispatch is attempted but no proposal is
+    # appended; a NO_STRUCTURAL_CANDIDATE record is emitted instead.
+    assert payload["total_attempted_dispatches"] == 1
     assert payload["total_appended_proposals"] == 0
+    assert payload["total_emitted_decision_records"] == 1
