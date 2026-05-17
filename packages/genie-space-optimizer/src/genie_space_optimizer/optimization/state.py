@@ -29,6 +29,9 @@ from genie_space_optimizer.common.config import (
     TABLE_STAGES,
     TABLE_SUGGESTIONS,
 )
+from genie_space_optimizer.optimization.state_json import (
+    dumps_state_json,
+)
 from genie_space_optimizer.common.delta_helpers import (
     _fqn,
     execute_delta_write_with_retry,
@@ -521,7 +524,7 @@ def write_stage(
                 started_ts = started_ts.tz_localize("UTC")
             duration_seconds = (now - started_ts.to_pydatetime()).total_seconds()
 
-    detail_json = json.dumps(detail) if detail else None
+    detail_json = dumps_state_json(detail) if detail else None
     _safe_err = error_message.replace("'", "''") if error_message else None
 
     col_names = (
