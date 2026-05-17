@@ -268,6 +268,15 @@ TYPED_OUTPUT_DEFERRED_ALLOWLIST: frozenset[str] = frozenset({
     "instruction_to_sql_expression",
     "preflight_example_synthesis",
     "proposal_generation",
+    # Cluster-driven teaching-kit synthesis — dormant in production
+    # (0 calls/30 days). The prompt's <output_schema> emits a nested
+    # teaching-kit shape (kit_summary + example_sql + supporting_changes)
+    # that requires a TeachingKitOutput Pydantic model to enforce
+    # server-side. Building that model is deferred per
+    # 2026-05-17-cluster-driven-example-synthesis-hardening.md Tasks 1+5.
+    # The call site is wired with the legacy Lever5bExampleSqlOutput for
+    # client-side validation as a stopgap.
+    "cluster_driven_example_synthesis",
     # Strategist family monolith — superseded by triage+detail split
     # which are contracted (StrategistTriageOutput / StrategistDetailOutput):
     "strategist",

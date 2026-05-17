@@ -953,6 +953,20 @@ def run_cluster_driven_synthesis_for_single_cluster(
         # Production path: call through the traced LLM with the wrapped
         # prompt directly. Mirrors ``synthesize_preflight_candidate``'s
         # internal LLM call but with our AFS-prepended prompt.
+        # Plan 2026-05-17-cluster-driven-example-synthesis-hardening
+        # Task 7: fix mis-key (was "lever_5b_example_sql"). The prompt's
+        # actual registry name is "cluster_driven_example_synthesis".
+        # Task 4: pass max_tokens=LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS.
+        # Note: response_model=Lever5bExampleSqlOutput is technically the
+        # wrong contract (the prompt's <output_schema> emits a nested
+        # teaching-kit shape, not a flat example_sql) — but the prompt
+        # is DORMANT in production today (0 calls/30 days). Replacing
+        # with a TeachingKitOutput Pydantic model is deferred per the
+        # hardening plan's Tasks 1+5; cluster_driven_example_synthesis
+        # is in TYPED_OUTPUT_DEFERRED_ALLOWLIST until that lands.
+        from genie_space_optimizer.common.config import (
+            LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
+        )
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
         from genie_space_optimizer.optimization.evaluation import (
             _link_prompt_to_trace,
@@ -960,11 +974,12 @@ def run_cluster_driven_synthesis_for_single_cluster(
         from genie_space_optimizer.optimization.prompt_io import (
             Lever5bExampleSqlOutput,
         )
-        _link_prompt_to_trace("lever_5b_example_sql")
+        _link_prompt_to_trace("cluster_driven_example_synthesis")
         try:
             raw, _ = _traced_llm_call(
                 w, "You are a SQL example author.", cluster_prompt,
                 span_name="cluster_driven_example_synthesis",
+                max_tokens=LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
                 response_model=Lever5bExampleSqlOutput,
             )
         except Exception:
@@ -1073,14 +1088,25 @@ def run_cluster_driven_synthesis_for_single_cluster(
                 retry_feedback=feedback,
             )
             if llm_caller is None:
+                # Plan 2026-05-17-cluster-driven-example-synthesis-hardening
+                # Task 7: add _link_prompt_to_trace on the retry path too.
+                # Task 4: pass max_tokens.
+                from genie_space_optimizer.common.config import (
+                    LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
+                )
                 from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+                from genie_space_optimizer.optimization.evaluation import (
+                    _link_prompt_to_trace,
+                )
                 from genie_space_optimizer.optimization.prompt_io import (
                     Lever5bExampleSqlOutput,
                 )
+                _link_prompt_to_trace("cluster_driven_example_synthesis")
                 try:
                     retry_raw, _ = _traced_llm_call(
                         w, "You are a SQL example author.", retry_prompt,
                         span_name="cluster_driven_example_synthesis_retry",
+                        max_tokens=LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
                         response_model=Lever5bExampleSqlOutput,
                     )
                 except Exception:

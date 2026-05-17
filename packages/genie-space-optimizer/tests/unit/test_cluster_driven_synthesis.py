@@ -827,3 +827,52 @@ class TestObservability:
         ]
         assert any("outcome=gate_fail" in m for m in summary_lines)
         assert any("skipped_reason=gate:execute" in m for m in summary_lines)
+
+
+class TestHardening:
+    """Plan 2026-05-17-cluster-driven-example-synthesis-hardening — only
+    the production-correctness fixes from this plan are tested here.
+    The heavyweight typed-IO + content + observability tasks are
+    deferred (the prompt is dormant in production)."""
+
+    def test_lever_5b_cluster_driven_max_tokens_constant_exists_and_is_sized(self):
+        """Task 4: max_tokens=1000 cap for cluster-driven synthesis."""
+        from genie_space_optimizer.common import config
+
+        assert hasattr(config, "LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS")
+        assert isinstance(config.LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS, int)
+        assert 600 <= config.LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS <= 1500
+
+    def test_cluster_driven_link_prompt_to_trace_uses_correct_key(self):
+        """Task 7: the cluster-driven call site MUST link to the
+        'cluster_driven_example_synthesis' registry key — NOT the
+        legacy 'lever_5b_example_sql' mis-key.
+        """
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "genie_space_optimizer" / "optimization"
+            / "cluster_driven_synthesis.py"
+        )
+        body = src.read_text()
+        # The mis-key must be gone
+        assert '_link_prompt_to_trace("lever_5b_example_sql")' not in body, (
+            "cluster_driven_synthesis.py still has the legacy mis-key — "
+            "Task 7 of the hardening plan should have replaced it."
+        )
+        # And the correct key must be present, at least once
+        assert '_link_prompt_to_trace("cluster_driven_example_synthesis")' in body, (
+            "cluster_driven_synthesis.py must link to "
+            "'cluster_driven_example_synthesis' (its actual registry name)."
+        )
+
+    def test_cluster_driven_is_in_typed_output_deferred_allowlist(self):
+        """The prompt's typed-output contract is deferred (the kit
+        shape requires a TeachingKitOutput Pydantic model that hasn't
+        been built yet — Task 1 of the hardening plan)."""
+        from tests.unit.optimization.test_prompt_registry_inventory import (
+            TYPED_OUTPUT_DEFERRED_ALLOWLIST,
+        )
+
+        assert "cluster_driven_example_synthesis" in TYPED_OUTPUT_DEFERRED_ALLOWLIST

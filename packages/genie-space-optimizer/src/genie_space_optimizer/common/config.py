@@ -739,6 +739,14 @@ LEVER_1_RCA_BRIDGE_MAX_TOKENS: int = 400
 # Plan: 2026-05-17-preflight-example-synthesis-hardening.md Task 1
 LEVER_5B_PREFLIGHT_MAX_TOKENS: int = 600
 
+# Plan 2026-05-17-cluster-driven-example-synthesis-hardening Task 4 —
+# cluster-driven teaching-kit synthesis output cap. Estimate-based
+# (the prompt has been dormant in production, n=0 traces). A
+# 1-example-no-supporting-changes kit emits ~250 tokens; a
+# 1-example + 3-supporting-changes kit emits ~600-900 tokens. The
+# cap of 1000 is conservative; re-tune after Trial-N empirical data.
+LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS: int = 1000
+
 # Plan 2026-05-17-preflight-example-synthesis-hardening Task 12 — shared
 # system message for the Lever-5b example-SQL family (preflight,
 # AFS-driven lever-5b, cluster-driven). Anchors the closed-loop role
