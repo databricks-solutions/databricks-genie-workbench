@@ -32,19 +32,18 @@ from genie_space_optimizer.optimization import harness
 #       later in the cleanup tail).
 _REFLECTION_WRITE_WHITELIST: frozenset[int] = frozenset({
     # (a) Pre-AG-selection — no AG in scope.
-    18688,  # blast_radius_rejected, reserved-recovery early-terminate
-    20170,  # no_structural_candidate, no_actionable_clusters
-    21878,  # no_action_group_emitted, strategy_zero_ags
+    18880,  # blast_radius_rejected, reserved-recovery early-terminate
+    20362,  # no_structural_candidate, no_actionable_clusters
+    22070,  # no_action_group_emitted, strategy_zero_ags
     # (b) Per-AG, reflection write precedes the typed marker emit.
-    22124,  # ag_collision_with_forbidden_set, write at ~22056
-    24110,  # proposal_generation_empty, write at ~23874
-    25585,  # no_rca_ground, write at ~25503
-    28483,  # no_applied_patches DOA, write at ~28287
-    28783,  # patch_deploy_failed, write at ~28746
+    22337,  # ag_collision_with_forbidden_set
+    24339,  # proposal_generation_empty
+    25814,  # no_rca_ground
+    28712,  # no_applied_patches DOA
+    29012,  # patch_deploy_failed
     # (b) Full-eval path: gate result handling, reflection write
-    # happens later in the rollback (~29606) or accept (~30057)
-    # paths.
-    28975,  # full_eval_regression / accepted, write in gate-result branch
+    # happens later in the rollback or accept paths.
+    29204,  # full_eval_regression / accepted, write in gate-result branch
 })
 
 

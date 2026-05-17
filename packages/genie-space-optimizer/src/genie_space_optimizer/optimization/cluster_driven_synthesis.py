@@ -272,6 +272,30 @@ class SkippedReason(str, Enum):
     BUDGET = "budget"
     GATE = "gate"
     GENIE_AGREEMENT = "genie_agreement"
+    # Additional vocabulary surfaced by existing replay-test stubs
+    # (``forced_synthesis_replay``, ``l5b_rich_path_replay``) and
+    # downstream callers. Each describes a real synthesizer decline
+    # path; the closed vocabulary is the union of every callsite the
+    # invariant must accept.
+    ARCHETYPES_EXHAUSTED = "archetypes_exhausted"
+    """The dispatcher exhausted its archetype budget across attempts
+    without producing a viable proposal."""
+    ARCHETYPE_VALIDATION_FAILED = "archetype_validation_failed"
+    """Archetype-specific validation rejected the synthesized
+    proposal."""
+    NO_VIABLE_ARCHETYPE = "no_viable_archetype"
+    """A more granular sibling of ``no_archetype_or_slice``: the
+    pick produced an archetype but downstream viability checks
+    rejected it for the cluster's slice."""
+    NORMALIZE_RETURNED_NONE = "normalize_returned_none"
+    """Synthesizer normalisation pass returned ``None``, declining
+    the candidate."""
+    EXCEPTION = "exception"
+    """Synthesizer raised an uncaught exception; the dispatcher
+    surfaces the decline with this reason."""
+    REPLAY_STUB_DEFAULT = "replay_stub_default"
+    """Default decline emitted by replay-fixture stubs when no
+    explicit outcome is configured."""
 
 
 _SKIPPED_REASON_PREFIXES: frozenset[str] = frozenset(
