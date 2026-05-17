@@ -18287,6 +18287,15 @@ def _run_lever_loop(
     noise_floor = min(100.0 / max(len(benchmarks), 1), MAX_NOISE_FLOOR)
 
     reflection_buffer: list[dict] = resume_state.get("reflection_buffer", [])
+    # Phase 2 (2026-05-16) Task 8 — loop-scoped forbidden set,
+    # populated across iterations by the iteration_terminal_policy
+    # router. Replaces the observe-only empty-prior-set literal at
+    # the router call site so the pre-iteration pivot logic and the
+    # idempotency rule see real prior-iteration signatures.
+    from genie_space_optimizer.optimization.terminal_signature import (
+        TerminalSignature as _TerminalSignature_for_forbidden_set,
+    )
+    _forbidden_set: set[_TerminalSignature_for_forbidden_set] = set()
     # Cycle 9 W4 — per-run, per-AG fingerprint buffer for patches
     # rolled back when ``_control_plane_decision.target_still_hard_qids``
     # is non-empty. The strategist preprocessing prunes any candidate
@@ -31211,14 +31220,19 @@ def _run_lever_loop(
                         _router_action = decide_iteration_terminal_action(
                             terminal_reason=_tr_enum,
                             signature=_tsig_for_router,
-                            # Observe-only: empty prior set so the
-                            # idempotency rule never fires during the
-                            # observation window. The forbidden-set
-                            # mutation remains gated for a future flip.
-                            prior_forbidden_set=frozenset(),
+                            # Phase 2 (2026-05-16) Task 8 — thread the
+                            # loop-scoped forbidden set so the
+                            # idempotency rule and the pre-iteration
+                            # pivot logic see prior retired signatures.
+                            prior_forbidden_set=frozenset(_forbidden_set),
                             iteration_index=int(_iter_num),
                             iteration_budget=int(max_iterations or 0),
                         )
+                        # Phase 2 (2026-05-16) Task 8 — grow the
+                        # loop-scoped forbidden set so subsequent
+                        # iterations see this iteration's signature.
+                        if _router_action.add_to_forbidden_set:
+                            _forbidden_set.add(_tsig_for_router)
                         print(iteration_terminal_decided_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(_iter_num),
@@ -31230,10 +31244,10 @@ def _run_lever_loop(
                             add_to_forbidden_set=bool(
                                 _router_action.add_to_forbidden_set
                             ),
-                            # Observe-only — we did not actually grow the
-                            # forbidden set, so the "after" size equals
-                            # the empty prior set's size.
-                            forbidden_set_size_after=0,
+                            # Phase 2 (2026-05-16) Task 8 — report the
+                            # actual post-admission size of the loop-
+                            # scoped forbidden set.
+                            forbidden_set_size_after=len(_forbidden_set),
                         ), flush=True)
             except Exception:
                 logger.debug(
