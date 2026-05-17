@@ -11855,6 +11855,7 @@ def _build_reflection_entry(
     source_cluster_ids: list[str] | None = None,
     source_cluster_signatures: list[str] | None = None,
     acceptance_delta_pp: float | None = None,
+    terminal_signature: Any = None,
     extra: dict | None = None,
 ) -> dict:
     """Build a structured reflection dict for the adaptive loop memory.
@@ -11876,6 +11877,23 @@ def _build_reflection_entry(
     from genie_space_optimizer.optimization.rollback_class import (
         classify_rollback_reason,
     )
+    # Phase 2 (2026-05-16) — typed kwarg for the reflection-buffer
+    # TerminalSignature. Promoted from the ``extra`` back-channel.
+    # When non-None the helper inserts ``"terminal_signature"`` into
+    # the entry dict so ``compute_retired_signatures`` can hash-match
+    # the AG across iterations.
+    from genie_space_optimizer.optimization.terminal_signature import (
+        TerminalSignature,
+    )
+    if (
+        terminal_signature is not None
+        and not isinstance(terminal_signature, TerminalSignature)
+    ):
+        raise TypeError(
+            f"_build_reflection_entry: terminal_signature must be a "
+            f"TerminalSignature NamedTuple or None, got "
+            f"{type(terminal_signature).__name__}"
+        )
 
     score_deltas = {
         k: new_scores.get(k, 0.0) - prev_scores.get(k, 0.0)
@@ -11981,6 +11999,13 @@ def _build_reflection_entry(
         # "the same cluster" joins across iterations.
         "source_cluster_signatures": list(source_cluster_signatures or []),
     }
+    # Phase 2 (2026-05-16) — surface the TerminalSignature so
+    # ``compute_retired_signatures`` (forbidden_ag_set_v2) admits
+    # non-accepted entries. Accepted entries omit the key because
+    # acceptance retirement uses the AcceptanceTier vocabulary
+    # instead (spec Section 3.2).
+    if terminal_signature is not None:
+        entry["terminal_signature"] = terminal_signature
     if extra:
         entry.update(extra)
     return entry
