@@ -16852,20 +16852,18 @@ def _run_gate_checks(
             # lever-loop's DOA-fingerprint capture can read
             # ``target_still_hard_qids`` without re-deriving it from
             # ``regressions[0]``. Mirrors the accept-path return above.
-            "acceptance_decision": {
-                "accepted": False,
-                "reason": _control_plane_decision.reason_code,
-                "target_qids": list(_control_plane_decision.target_qids),
-                "target_fixed_qids": list(
-                    _control_plane_decision.target_fixed_qids
-                ),
-                "target_still_hard_qids": list(
-                    _control_plane_decision.target_still_hard_qids
-                ),
-                "out_of_target_regressed_qids": list(
-                    _control_plane_decision.out_of_target_regressed_qids
-                ),
-            },
+            # Phase 1 (2026-05-16) — Acceptance Unification Task 5. The
+            # rollback-path dict was historically built inline and
+            # omitted ``_canonical`` (Bug 5 Surface 3 — Phase H
+            # acceptance writer recomputed and could disagree with the
+            # canonical decision, surfacing false-positive
+            # GSO_PHASE_H_ACCEPTANCE_DRIFT_V1 markers). The serialiser
+            # produces the same shape as the pass-path literal below
+            # and unconditionally carries ``_canonical`` so Phase H
+            # short-circuits via AcceptanceInput.canonical_decisions_by_ag_id.
+            "acceptance_decision": _acceptance_decision_dict(
+                _acceptance_outcome
+            ),
         }
 
     # ── PASSED ────────────────────────────────────────────────────────
@@ -17052,41 +17050,16 @@ def _run_gate_checks(
         # field, the default False produced a false-positive
         # ``GSO_PHASE_H_ACCEPTANCE_DRIFT_V1`` marker on every accepted
         # iteration (witnessed on 2314bb2c iter 1).
-        "acceptance_decision": {
-            "accepted": True,
-            "reason": _control_plane_decision.reason_code,
-            "target_qids": list(_control_plane_decision.target_qids),
-            "target_fixed_qids": list(_control_plane_decision.target_fixed_qids),
-            "target_still_hard_qids": list(
-                _control_plane_decision.target_still_hard_qids
-            ),
-            "out_of_target_regressed_qids": list(
-                _control_plane_decision.out_of_target_regressed_qids
-            ),
-            "regression_debt_qids": list(
-                _control_plane_decision.regression_debt_qids
-            ),
-            "soft_to_hard_regressed_qids": list(
-                _control_plane_decision.soft_to_hard_regressed_qids
-            ),
-            "passing_to_hard_regressed_qids": list(
-                _control_plane_decision.passing_to_hard_regressed_qids
-            ),
-            # Cycle 14-C T6: surface unresolved-target-debt qids so
-            # the iteration body can plumb them into metadata_snapshot
-            # for the next strategist call.
-            "unresolved_target_debt_qids": list(
-                getattr(_control_plane_decision, "unresolved_target_debt_qids", ()) or ()
-            ),
-            # Plan P-C — sibling typed instance so the per-iteration
-            # AcceptanceInput construction site can pass the canonical
-            # decision to stages.acceptance.decide via
-            # ``canonical_decisions_by_ag_id`` instead of letting it
-            # recompute. Eliminates reason-code drift between the
-            # canonical and Phase-H writer paths (anchor: ccf1d60d
-            # iter 1).
-            "_canonical": _control_plane_decision,
-        },
+        # Phase 1 (2026-05-16) — Acceptance Unification Task 5. Pass
+        # and rollback paths share the same serialiser so the Phase H
+        # acceptance writer reads byte-equivalent dicts regardless of
+        # which fork fired. The historical pass-path literal already
+        # carried ``_canonical``; this assignment preserves that and
+        # adds the new ``unresolved_target_debt_qids`` key from the
+        # serialiser.
+        "acceptance_decision": _acceptance_decision_dict(
+            _acceptance_outcome
+        ),
     }
 
 
