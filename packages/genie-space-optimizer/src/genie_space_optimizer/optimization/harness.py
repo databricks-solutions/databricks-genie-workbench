@@ -11352,6 +11352,7 @@ def _run_enrichment(
                             benchmarks=_full_firewall_corpus,
                             catalog=catalog, schema=schema,
                             warehouse_id=resolve_warehouse_id(""),
+                            preflight_path="unified_fallback",
                         )
                         if preflight_example_result.get("applied", 0) > 0:
                             config, metadata_snapshot = _refresh_config_preserving_mv_state(
@@ -17987,6 +17988,7 @@ def _run_lever_loop(
                         benchmarks=benchmarks,
                         catalog=catalog, schema=schema,
                         warehouse_id=resolve_warehouse_id(""),
+                        preflight_path="legacy_path",
                     )
                     if legacy_preflight_result.get("applied", 0) > 0:
                         from genie_space_optimizer.common.genie_client import fetch_space_config

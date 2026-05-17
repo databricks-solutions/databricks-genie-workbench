@@ -333,3 +333,211 @@ def test_render_preflight_prompt_wraps_retry_feedback_in_xml():
     assert "</retry_feedback>" in prompt
     assert "## Retry feedback" not in prompt
     assert "Your last SQL returned 0 rows." in prompt
+
+
+# ── Task 7: retry_reason kwarg + span tagging ──
+
+
+def test_synthesize_preflight_candidate_accepts_retry_reason_kwarg():
+    """Task 7: ``synthesize_preflight_candidate`` must accept a
+    ``retry_reason`` kwarg so the orchestrator can tag retries by
+    their root cause (empty_result, qualification, measure_function,
+    categorical_cast). The kwarg is informational only — no behavior
+    change on the prompt or proposal."""
+    import inspect
+
+    from genie_space_optimizer.optimization import preflight_synthesis as ps
+
+    sig = inspect.signature(ps.synthesize_preflight_candidate)
+    assert "retry_reason" in sig.parameters, (
+        "Task 7: synthesize_preflight_candidate must accept retry_reason"
+    )
+
+
+def test_synthesize_preflight_candidate_tags_span_with_retry_reason(monkeypatch):
+    """Task 7: when retry_reason is non-None, the helper must tag the
+    current span via _set_preflight_span_tag so MLflow / OTel traces
+    can filter retries by class."""
+    from genie_space_optimizer.optimization import preflight_synthesis as ps
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        ARCHETYPES,
+        AssetSlice,
+    )
+
+    # The helper must exist (and ideally be callable).
+    assert hasattr(ps, "_set_preflight_span_tag"), (
+        "Task 7: define _set_preflight_span_tag helper so the retry tag "
+        "wiring lives in one place."
+    )
+
+    tag_calls: list[tuple[str, str]] = []
+
+    def _capture(key: str, value: str) -> None:
+        tag_calls.append((key, value))
+
+    monkeypatch.setattr(ps, "_set_preflight_span_tag", _capture)
+
+    slice_ = AssetSlice(
+        tables=[{"identifier": "cat.sch.t"}],
+        columns=[("cat.sch.t", "region")],
+    )
+    # Use a stub llm_caller so we don't hit the network.
+    ps.synthesize_preflight_candidate(
+        ARCHETYPES[0],
+        slice_,
+        [],
+        llm_caller=lambda _prompt: "",  # empty raw → returns None
+        retry_reason="empty_result",
+    )
+
+    keys = {k for k, _ in tag_calls}
+    assert "is_retry" in keys
+    assert "retry_reason" in keys
+    # And the values are what we passed.
+    for k, v in tag_calls:
+        if k == "retry_reason":
+            assert v == "empty_result"
+        if k == "is_retry":
+            assert v in {"true", "True", "1"}
+
+
+# ── Task 8: retry feedback dedup — don't embed allowlist twice ──
+
+
+# ── Task 13: harness-side span tagging ──
+
+
+def test_run_preflight_example_synthesis_accepts_preflight_path_kwarg():
+    """Task 13: ``run_preflight_example_synthesis`` must accept a
+    ``preflight_path`` kwarg so the harness can tag traces with which
+    of the two harness entry points fired (the modern fallback vs the
+    legacy path)."""
+    import inspect
+
+    from genie_space_optimizer.optimization import preflight_synthesis as ps
+
+    sig = inspect.signature(ps.run_preflight_example_synthesis)
+    assert "preflight_path" in sig.parameters, (
+        "Task 13: run_preflight_example_synthesis must accept preflight_path"
+    )
+
+
+def test_run_preflight_example_synthesis_tags_span_with_path(monkeypatch):
+    """Task 13: when called with ``preflight_path``, the entry tags the
+    active span with both ``preflight_path`` and ``leak_safe_header_enabled``.
+    The latter is recorded as a documented fact about the prompt: the
+    contract header that prevents benchmark leakage is unconditionally
+    enabled today."""
+    from genie_space_optimizer.optimization import preflight_synthesis as ps
+
+    tag_calls: list[tuple[str, str]] = []
+
+    def _capture(key: str, value: str) -> None:
+        tag_calls.append((key, value))
+
+    monkeypatch.setattr(ps, "_set_preflight_span_tag", _capture)
+
+    result = ps.run_preflight_example_synthesis(
+        w=None,
+        spark=None,
+        run_id="r1",
+        space_id="s1",
+        config={"_parsed_space": {"instructions": {"example_question_sqls": []}}},
+        metadata_snapshot={
+            "instructions": {"example_question_sqls": []},
+            "data_sources": {"tables": []},
+        },
+        benchmarks=[],
+        catalog="cat",
+        schema="sch",
+        target=0,  # short-circuit before any LLM
+        preflight_path="modern_fallback",
+    )
+    assert result["applied"] == 0  # short-circuited
+
+    tagged = dict(tag_calls)
+    assert tagged.get("preflight_path") == "modern_fallback"
+    assert tagged.get("leak_safe_header_enabled") in {"true", "True", "1"}
+
+
+def test_qualification_retry_feedback_does_not_embed_allowlist_when_rendered():
+    """Task 8: when rendered into the prompt, the qualification retry
+    feedback must NOT carry a full second copy of the allowlist — the
+    <schema> section above already contains it. Instead the feedback
+    references the existing allowlist."""
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        AssetSlice,
+        ARCHETYPES,
+        _render_preflight_retry_feedback,
+        render_preflight_prompt,
+    )
+
+    # Build a qualification-feedback-shaped block; the helper should
+    # strip the duplicate allowlist before it's wrapped.
+    slice_ = AssetSlice(
+        tables=[{"identifier": "cat.sch.distinctive_table_name_42"}],
+        columns=[("cat.sch.distinctive_table_name_42", "region")],
+    )
+    raw_feedback = (
+        "Your previous query failed validation:\n"
+        "  UNRESOLVED_TABLE\n\n"
+        "Your SQL was:\n"
+        "  SELECT * FROM dim_date\n\n"
+        "The ONLY legal table identifiers for this example are:\n"
+        "- `cat`.`sch`.`distinctive_table_name_42` "
+        "(columns: `region`)\n\n"
+        "Regenerate the example_sql ..."
+    )
+
+    dedup = _render_preflight_retry_feedback(raw_feedback)
+    # The redundant allowlist line is gone.
+    assert "distinctive_table_name_42" not in dedup
+    # Reference text replaces it.
+    assert "<schema>" in dedup
+
+    prompt = render_preflight_prompt(
+        ARCHETYPES[0],
+        slice_,
+        [],
+        retry_feedback=dedup,
+    )
+    # In the final prompt, the table identifier appears (in <schema>)
+    # but the dedup'd retry block does NOT carry its own copy.
+    retry_start = prompt.index("<retry_feedback>")
+    retry_end = prompt.index("</retry_feedback>")
+    retry_section = prompt[retry_start:retry_end]
+    assert "distinctive_table_name_42" not in retry_section
+
+
+def test_synthesize_preflight_candidate_no_retry_tags_on_first_call(monkeypatch):
+    """When ``retry_reason`` is None (first attempt), the helper must
+    NOT tag the span as a retry. Tags only fire on actual retries."""
+    from genie_space_optimizer.optimization import preflight_synthesis as ps
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        ARCHETYPES,
+        AssetSlice,
+    )
+
+    tag_calls: list[tuple[str, str]] = []
+
+    def _capture(key: str, value: str) -> None:
+        tag_calls.append((key, value))
+
+    monkeypatch.setattr(ps, "_set_preflight_span_tag", _capture)
+
+    slice_ = AssetSlice(
+        tables=[{"identifier": "cat.sch.t"}],
+        columns=[("cat.sch.t", "region")],
+    )
+    ps.synthesize_preflight_candidate(
+        ARCHETYPES[0],
+        slice_,
+        [],
+        llm_caller=lambda _prompt: "",
+        # no retry_reason kwarg
+    )
+
+    keys = {k for k, _ in tag_calls}
+    assert "retry_reason" not in keys, (
+        "first attempt must not tag retry_reason — only retries do"
+    )

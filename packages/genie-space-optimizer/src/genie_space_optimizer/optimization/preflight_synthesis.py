@@ -1942,6 +1942,65 @@ def render_preflight_prompt(
     )
 
 
+def _render_preflight_retry_feedback(feedback: str | None) -> str | None:
+    """Strip duplicate allowlist content from a qualification-retry
+    feedback block before it's wrapped in ``<retry_feedback>``.
+
+    Plan 2026-05-17-preflight-example-synthesis-hardening Task 8 — the
+    rendered prompt's ``<schema>`` section already lists the legal
+    identifiers; the qualification feedback embedded a SECOND copy that
+    bloated the prompt and gave the LLM two places to look. This helper
+    replaces the embedded allowlist with a reference text so the LLM
+    is pointed back to the single source of truth.
+
+    Returns the feedback unchanged when no embedded allowlist is found
+    (defensive — empty-result / measure-function / categorical-cast
+    feedback should pass through verbatim).
+    """
+    if not feedback:
+        return feedback
+    marker = "The ONLY legal table identifiers for this example are:"
+    idx = feedback.find(marker)
+    if idx < 0:
+        return feedback
+    # Find the blank line that ends the embedded allowlist block.
+    # The qualification feedback templates always end the block with
+    # ``\n\nRegenerate the example_sql ...``.
+    after_marker = idx + len(marker)
+    blank = feedback.find("\n\n", after_marker)
+    if blank < 0:
+        # Conservative — don't strip if we can't find the boundary.
+        return feedback
+    return (
+        feedback[:idx]
+        + "Use the allowlist from <schema> above — those are the ONLY "
+        + "legal table identifiers."
+        + feedback[blank:]
+    )
+
+
+def _set_preflight_span_tag(key: str, value: str) -> None:
+    """Best-effort set an attribute on the current MLflow / OTel span.
+
+    Plan 2026-05-17-preflight-example-synthesis-hardening Task 7 — the
+    orchestrator's retry-classification path tags the active span with
+    ``is_retry`` + ``retry_reason`` so traces can be filtered by retry
+    class (empty_result / qualification / measure_function /
+    categorical_cast / other). Failures here are silently swallowed —
+    tagging is observability, not correctness.
+    """
+    try:
+        import mlflow
+
+        active = mlflow.tracing.fluent.get_current_active_span()
+        if active is not None:
+            active.set_attribute(key, value)
+    except Exception:
+        # Tracing is best-effort. A missing mlflow / inactive span /
+        # backend hiccup must NOT break synthesis.
+        return
+
+
 def synthesize_preflight_candidate(
     archetype: Archetype,
     context: AssetSlice,
@@ -1951,6 +2010,7 @@ def synthesize_preflight_candidate(
     llm_caller: Callable[[str], str] | None = None,
     data_profile: dict | None = None,
     retry_feedback: str | None = None,
+    retry_reason: str | None = None,
 ) -> dict | None:
     """One LLM call, one candidate. Returns a proposal dict or ``None``.
 
@@ -1968,7 +2028,22 @@ def synthesize_preflight_candidate(
     :func:`render_preflight_prompt`; the retry path (R6) uses
     ``retry_feedback`` to ask the LLM to regenerate after an
     EMPTY_RESULT on the first attempt.
+
+    ``retry_reason`` (Plan 2026-05-17-preflight-example-synthesis-
+    hardening Task 7): when set, tags the active MLflow / OTel span
+    with ``is_retry=true`` and ``retry_reason=<class>`` so retries can
+    be filtered in observability. The reason classes mirror the
+    orchestrator's retry-routing logic: ``empty_result``,
+    ``qualification``, ``measure_function``, ``categorical_cast``,
+    ``other``.
     """
+    # Task 7: tag the active span when this is a retry call. Tagging
+    # happens before render/LLM so even an empty proposal carries the
+    # retry classification in the trace.
+    if retry_reason:
+        _set_preflight_span_tag("is_retry", "true")
+        _set_preflight_span_tag("retry_reason", str(retry_reason))
+
     prompt = render_preflight_prompt(
         archetype,
         context,
@@ -2160,6 +2235,7 @@ def run_preflight_example_synthesis(
     genie_ask: Callable[[Any, str, str], dict] | None = None,
     warehouse_executor: Callable[[str], list[dict]] | None = None,
     arbiter: Callable[..., dict] | None = None,
+    preflight_path: str = "default",
 ) -> dict:
     """Run pre-flight synthesis to fill example_question_sqls up to target.
 
@@ -2198,6 +2274,15 @@ def run_preflight_example_synthesis(
     from genie_space_optimizer.common.config import (
         PREFLIGHT_EXAMPLE_SQL_TARGET as CFG_TARGET,
     )
+    # Task 13: tag observability anchors at the entry point so traces
+    # for short-circuited runs (need == 0) still carry the path label.
+    # ``leak_safe_header_enabled`` records the documented fact that the
+    # contract header at the top of every preflight prompt is always on
+    # today; if that ever becomes conditional, the value here is the
+    # single point that should flip.
+    _set_preflight_span_tag("preflight_path", preflight_path)
+    _set_preflight_span_tag("leak_safe_header_enabled", "true")
+
     effective_target = CFG_TARGET if target is None else target
 
     existing_sqls = _existing_example_sqls(metadata_snapshot)
@@ -2483,6 +2568,7 @@ def run_preflight_example_synthesis(
                     w=w, llm_caller=llm_caller,
                     data_profile=data_profile,
                     retry_feedback=feedback,
+                    retry_reason="empty_result",
                 )
                 if retry_proposal is not None:
                     proposal = retry_proposal
@@ -2522,11 +2608,15 @@ def run_preflight_example_synthesis(
                         (current_fail.reason or "") if current_fail else "",
                         offending_identifiers=offenders,
                     ) or None
+                    # Task 8: strip the embedded duplicate allowlist —
+                    # <schema> in the rendered prompt already lists it.
+                    feedback = _render_preflight_retry_feedback(feedback)
                     retry_proposal = synthesize_preflight_candidate(
                         archetype, slice_, anti_dup_questions,
                         w=w, llm_caller=llm_caller,
                         data_profile=data_profile,
                         retry_feedback=feedback,
+                        retry_reason="qualification",
                     )
                     if retry_proposal is None:
                         break
@@ -2597,6 +2687,7 @@ def run_preflight_example_synthesis(
                         w=w, llm_caller=llm_caller,
                         data_profile=data_profile,
                         retry_feedback=feedback,
+                        retry_reason="measure_function",
                     )
                     if retry_proposal is None:
                         break
@@ -2661,6 +2752,7 @@ def run_preflight_example_synthesis(
                     w=w, llm_caller=llm_caller,
                     data_profile=data_profile,
                     retry_feedback=feedback,
+                    retry_reason="categorical_cast",
                 )
                 if retry_proposal is not None:
                     proposal = retry_proposal
