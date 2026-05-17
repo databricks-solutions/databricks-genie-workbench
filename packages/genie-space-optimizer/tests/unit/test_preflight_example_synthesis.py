@@ -75,3 +75,16 @@ def test_lever_5b_preflight_max_tokens_constant_exists_and_is_sized():
     assert hasattr(config, "LEVER_5B_PREFLIGHT_MAX_TOKENS")
     assert isinstance(config.LEVER_5B_PREFLIGHT_MAX_TOKENS, int)
     assert 550 <= config.LEVER_5B_PREFLIGHT_MAX_TOKENS <= 800
+
+
+def test_preflight_example_synthesis_system_msg_constant_exists():
+    """PREFLIGHT_EXAMPLE_SYNTHESIS_SYSTEM_MSG must exist and contain
+    the role anchors required by Anthropic context-engineering."""
+    from genie_space_optimizer.common import config
+
+    assert hasattr(config, "PREFLIGHT_EXAMPLE_SYNTHESIS_SYSTEM_MSG")
+    msg = config.PREFLIGHT_EXAMPLE_SYNTHESIS_SYSTEM_MSG
+    assert isinstance(msg, str) and len(msg) >= 200
+    assert "example_sqls" in msg
+    assert "benchmark" in msg.lower()
+    assert "JSON" in msg

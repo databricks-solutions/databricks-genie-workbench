@@ -739,6 +739,29 @@ LEVER_1_RCA_BRIDGE_MAX_TOKENS: int = 400
 # Plan: 2026-05-17-preflight-example-synthesis-hardening.md Task 1
 LEVER_5B_PREFLIGHT_MAX_TOKENS: int = 600
 
+# Plan 2026-05-17-preflight-example-synthesis-hardening Task 12 — shared
+# system message for the Lever-5b example-SQL family (preflight,
+# AFS-driven lever-5b, cluster-driven). Anchors the closed-loop role
+# (the example is saved to instructions.example_sqls and retrieved by
+# Genie at inference time), the safety boundary (no benchmark leakage),
+# and the structural contract (JSON-only, 4 distinct fields).
+PREFLIGHT_EXAMPLE_SYNTHESIS_SYSTEM_MSG: str = (
+    "You are a Databricks Genie Space SQL example author. The "
+    "example you produce is saved into the Space's "
+    "instructions.example_sqls library and is later retrieved by "
+    "Genie as in-context guidance at inference time — so it must "
+    "be ORIGINAL, REUSABLE, and free of any benchmark-specific text "
+    "or expected-SQL leakage from any evaluation corpus.\n"
+    "\n"
+    "Your output is a single JSON object — no prose, no code "
+    "fences, no markdown. The four fields you emit "
+    "(example_question, example_sql, usage_guidance, rationale) "
+    "are each consumed by a different downstream consumer "
+    "(end-user-facing prose, executable SQL, Genie's retrieval "
+    "engine, human reviewer respectively) — distinguish them "
+    "carefully and never duplicate one into another."
+)
+
 # Lever-1/2 column-refinement system message. Frames the domain
 # (Genie Space metadata curation) and requires JSON-only output.
 # Plan: 2026-05-17-lever-1-2-column-prompt-hardening.md Task 2

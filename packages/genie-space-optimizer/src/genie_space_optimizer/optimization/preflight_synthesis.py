@@ -1939,6 +1939,7 @@ def synthesize_preflight_candidate(
             return llm_caller(prompt)
         from genie_space_optimizer.common.config import (
             LEVER_5B_PREFLIGHT_MAX_TOKENS,
+            PREFLIGHT_EXAMPLE_SYNTHESIS_SYSTEM_MSG,
         )
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
         from genie_space_optimizer.optimization.evaluation import (
@@ -1950,7 +1951,7 @@ def synthesize_preflight_candidate(
         _link_prompt_to_trace("preflight_example_synthesis")
         try:
             raw, _ = _traced_llm_call(
-                w, "You are a SQL example author.", prompt,
+                w, PREFLIGHT_EXAMPLE_SYNTHESIS_SYSTEM_MSG, prompt,
                 span_name="preflight_example_synthesis",
                 max_tokens=LEVER_5B_PREFLIGHT_MAX_TOKENS,
                 response_model=Lever5bExampleSqlOutput,
