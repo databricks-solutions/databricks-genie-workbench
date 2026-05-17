@@ -124,3 +124,30 @@ def test_preflight_examples_block_precedes_instructions():
     instructions_open = prompt.index("<instructions>")
 
     assert context_close < examples_open < instructions_open
+
+
+def test_preflight_worked_example_uses_real_identifier_pattern():
+    """Worked-example BAD line must use a realistic identifier pattern
+    — NOT the literal 'mv_<domain>_dim_date' placeholder which is not
+    a real identifier in any production schema."""
+    from genie_space_optimizer.common.config import (
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+    )
+
+    assert "mv_<domain>_dim_date" not in PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT
+
+
+def test_preflight_output_schema_no_literal_double_braces():
+    """The <output_schema> block must NOT contain a literal `{{...}}`
+    JSON sketch (Task 3 replaced it with a field-by-field description)."""
+    from genie_space_optimizer.common.config import (
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+    )
+
+    prompt = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT
+    start = prompt.index("<output_schema>")
+    end = prompt.index("</output_schema>")
+    schema_body = prompt[start:end]
+
+    assert "{{" not in schema_body
+    assert "}}" not in schema_body

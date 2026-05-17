@@ -5252,7 +5252,9 @@ alias you haven't declared for THIS query.
 
 Worked example (identifier = ``{{ schema_example_identifier }}``):
 - BAD   SELECT d.day_of_week FROM dim_date d
-- BAD   SELECT mv_<domain>_dim_date.day_of_week FROM mv_<domain>_dim_date
+        (uses a bare identifier 'dim_date' that is not in the allowlist)
+- BAD   SELECT t.day_of_week FROM {{ schema_example_identifier }}
+        (omits the table alias declaration — must declare 't' in FROM)
 - GOOD  SELECT t.day_of_week
         FROM {{ schema_example_identifier }} t
 
@@ -5332,10 +5334,10 @@ allowlist — any unknown identifier is a hallucination.
 Respond with a SINGLE JSON object, no prose, no code fences. All four fields
 are required:
 
-{{"example_question": "<customer-style business question>",
- "example_sql": "<valid Databricks SQL query, no trailing semicolon>",
- "usage_guidance": "<one-sentence explanation of when this example applies; 1-2 sentences max>",
- "rationale": "<one-sentence reference to the archetype + coverage focus that motivated this example>"}}
+- example_question: customer-style business question (string)
+- example_sql: valid Databricks SQL query, no trailing semicolon (string)
+- usage_guidance: one-sentence explanation of when this example applies (1-2 sentences max, string)
+- rationale: one-sentence reference to the archetype + coverage focus that motivated this example (string)
 </output_schema>"""
 
 PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT = (
