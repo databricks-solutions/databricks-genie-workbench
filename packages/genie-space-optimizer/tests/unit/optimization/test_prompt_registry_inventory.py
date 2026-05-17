@@ -303,3 +303,43 @@ def test_every_active_lever_prompt_has_typed_output_contract():
         f"to TYPED_OUTPUT_DEFERRED_ALLOWLIST with a documented rationale "
         f"in 2026-05-17-prompt-registry-and-typed-io-hygiene.md Task 20."
     )
+
+
+# ── Plan 2026-05-17-lever-5a-instructions-hardening.md Task 1 ──
+
+
+def test_lever_5a_instructions_prompt_is_registered():
+    """LEVER_5A_INSTRUCTION_PROMPT is the Plan-2 split path for L5a
+    (separate from the legacy LEVER_5_HOLISTIC_PROMPT). Cross-cutting
+    plan Task 4 specified the singular key 'lever_5a_instruction' but
+    the code at optimizer.py:9516 uses the PLURAL key
+    'lever_5a_instructions' for _link_prompt_to_trace. This test
+    enforces the plural spelling to match the code.
+    """
+    from genie_space_optimizer.common import config as cfg
+
+    assert "lever_5a_instructions" in cfg.LEVER_PROMPTS, (
+        "LEVER_5A_INSTRUCTION_PROMPT must be registered under the "
+        "PLURAL key 'lever_5a_instructions' to match the spelling "
+        "used by _link_prompt_to_trace at optimizer.py:9516."
+    )
+    assert (
+        cfg.LEVER_PROMPTS["lever_5a_instructions"]
+        is cfg.LEVER_5A_INSTRUCTION_PROMPT
+    )
+
+
+def test_lever_5a_instructions_prompt_uses_plural_not_singular():
+    """Defensive: the cross-cutting plan's singular spelling
+    'lever_5a_instruction' MUST NOT appear in the registry. If it
+    does, the executor used the plan's outdated spelling instead of
+    matching the active code at optimizer.py:9516.
+    """
+    from genie_space_optimizer.common import config as cfg
+
+    assert "lever_5a_instruction" not in cfg.LEVER_PROMPTS, (
+        "Found singular 'lever_5a_instruction' in LEVER_PROMPTS. "
+        "The active code uses PLURAL 'lever_5a_instructions' at "
+        "optimizer.py:9516 and class name Lever5aInstructionsOutput. "
+        "Remove the singular entry."
+    )

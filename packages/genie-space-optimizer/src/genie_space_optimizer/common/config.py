@@ -2864,9 +2864,13 @@ LEVER_5A_INSTRUCTION_PROMPT = _SKILL_LOADER.load_prompt(
     "lever-5a-instructions",
     expected_constant_name="LEVER_5A_INSTRUCTION_PROMPT",
 )
-# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 4 —
-# registry entry added below at LEVER_PROMPTS definition (constant
-# defined before that dict). Listed here for grep-discoverability.
+# Plan 2026-05-17-lever-5a-instructions-hardening.md Task 1 —
+# Registry entry exists in the LEVER_PROMPTS dict literal at line
+# ~4540 with the PLURAL key 'lever_5a_instructions' to match
+# (a) the _link_prompt_to_trace call at optimizer.py:9516, and
+# (b) the Pydantic class name Lever5aInstructionsOutput.
+# The cross-cutting plan originally documented the SINGULAR key
+# but the active code never matched; do NOT re-introduce it.
 
 # ── 5b. Holistic Strategist Prompt ────────────────────────────────────
 
@@ -3816,6 +3820,39 @@ INSTRUCTION_PROMPT_ALIAS = "latest"
 MAX_PATCH_OBJECTS = 5
 MAX_INSTRUCTION_TEXT_CHARS = 2000
 MAX_HOLISTIC_INSTRUCTION_CHARS = 8000
+
+# Lever-5a instruction output cap. Synthetic-derived from the post-
+# call truncation cap (MAX_HOLISTIC_INSTRUCTION_CHARS = 8000 chars)
+# / ~3.6 chars/token x 1.08 headroom = ~2,400 tokens.
+#
+# Empirically observed in the 24-hour post-migration window
+# (2026-05-16 -> 2026-05-17, n=2 across 10 GSO experiments):
+#   output_tokens: 1,896 and 1,999
+# The 1,999 figure was suspiciously close to a flat 2,000 implicit
+# cap, suggesting the Databricks default reservation was the active
+# constraint. With this explicit cap, the LLM has 400 extra tokens
+# of headroom and the OTPM reservation is predictable.
+#
+# Re-tune after 1-2 weeks of post-migration production data accrue
+# (see 2026-05-17-lever-5a-instructions-baseline.md §9 Q5).
+LEVER_5A_INSTRUCTION_MAX_TOKENS: int = 2400
+
+# Tag schema for lever_5a_instructions MLflow spans. Added per
+# 2026-05-17-lever-5a-instructions-hardening.md Task 4 to surface
+# the L5a post-call pipeline state in MLflow's Linked-Prompts UI.
+#
+# Tag keys MUST stay stable across reverts/forwards so dashboards
+# can chart rates over the migration window.
+LEVER_5A_OBSERVABILITY_TAG_KEYS: tuple[str, ...] = (
+    "validate_no_sql_result",
+    "post_call_truncated",
+    "repair_used",
+    "sanitize_made_changes",
+    "system_msg_version",
+    "clusters_truncated",
+    "rca_contract_version",
+    "max_section_chars",
+)
 
 PROMPT_TOKEN_BUDGET = 70_000
 """Token budget for LLM prompts.  Claude Opus 4.6 supports 200k tokens;

@@ -9279,6 +9279,54 @@ def _repair_truncated_holistic_json(text: str) -> dict:
     }
 
 
+def _repair_truncated_l5a_json(text: str) -> dict:
+    """Extract instruction_text + rationale from a truncated L5a JSON.
+
+    The L5a output schema is Lever5aInstructionsOutput
+    (prompt_io.py) with ONLY two fields. This function differs
+    from _repair_truncated_holistic_json in that it does NOT look
+    for or include example_sql_proposals — that field belongs to a
+    different schema and including it would cause the downstream
+    no-SQL gate to false-positive.
+
+    Added per 2026-05-17-lever-5a-instructions-hardening.md Task 5
+    (baseline §6.A2).
+    """
+    instruction_text = ""
+    rationale = ""
+
+    # Extract instruction_text via regex (handles truncation mid-string)
+    m_instr = re.search(
+        r'"instruction_text"\s*:\s*"((?:[^"\\]|\\.)*)',
+        text, re.DOTALL,
+    )
+    if m_instr:
+        raw = m_instr.group(1)
+        instruction_text = (
+            raw.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+        )
+
+    # Extract rationale via regex (may also be truncated)
+    m_rat = re.search(
+        r'"rationale"\s*:\s*"((?:[^"\\]|\\.)*)',
+        text, re.DOTALL,
+    )
+    if m_rat:
+        raw = m_rat.group(1)
+        rationale = (
+            raw.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+        )
+
+    if not instruction_text:
+        logger.warning(
+            "L5a JSON repair found no instruction_text in truncated "
+            "response (len=%d): %.200s",
+            len(text), text,
+        )
+
+    return {"instruction_text": instruction_text, "rationale": rationale}
+
+
 def _call_llm_for_holistic_instructions(
     all_clusters: list[dict],
     metadata_snapshot: dict,
@@ -9545,12 +9593,16 @@ def _call_llm_for_lever_5a_instructions(
     from genie_space_optimizer.optimization.prompt_io import (
         Lever5aInstructionsOutput,
     )
+    from genie_space_optimizer.common.config import (
+        LEVER_5A_INSTRUCTION_MAX_TOKENS,
+    )
 
     try:
         text, _response = _traced_llm_call(
             w, system_msg, prompt,
             span_name="lever_5a_instructions",
             response_model=Lever5aInstructionsOutput,
+            max_tokens=LEVER_5A_INSTRUCTION_MAX_TOKENS,
         )
     except Exception:
         logger.exception(
@@ -9558,28 +9610,68 @@ def _call_llm_for_lever_5a_instructions(
         )
         return {"instruction_text": "", "rationale": "LLM call failed"}
 
+    _repair_used = False
     try:
         result = _extract_json(text)
     except json.JSONDecodeError:
-        result = _repair_truncated_holistic_json(text)
+        # Task 5 — L5a-specific repair. Replaces the prior
+        # _repair_truncated_holistic_json call which looked for
+        # example_sql_proposals (wrong shape for L5a, see
+        # baseline §6.A2).
+        result = _repair_truncated_l5a_json(text)
+        _repair_used = True
+    if result is None or not isinstance(result, dict):
+        # _extract_json returns None (not raises) on truncated / malformed
+        # JSON in non-strict mode — fall through to the L5a repair so the
+        # truncation case is still observable via _repair_used.
+        result = _repair_truncated_l5a_json(text or "")
+        _repair_used = True
 
     instruction_text = result.get("instruction_text", "")
+    _sanitize_made_changes = False
     if instruction_text:
+        _pre_sanitize = instruction_text
         instruction_text = _sanitize_plaintext_instructions(instruction_text)
+        _sanitize_made_changes = (instruction_text != _pre_sanitize)
     rationale = result.get("rationale", "")
 
+    _post_call_truncated = False
     if instruction_text and len(instruction_text) > MAX_HOLISTIC_INSTRUCTION_CHARS:
         logger.warning(
             "L5a instruction text exceeds %d chars (%d), truncating",
             MAX_HOLISTIC_INSTRUCTION_CHARS, len(instruction_text),
         )
         instruction_text = instruction_text[:MAX_HOLISTIC_INSTRUCTION_CHARS]
+        _post_call_truncated = True
 
     candidate = {
         "instruction_text": instruction_text,
         "rationale": rationale,
     }
     ok, reject_reason = _validate_lever_5a_no_sql_output(candidate)
+
+    # Task 4 — observability tags. Mirrors preflight Task 13 / cluster-
+    # driven Task 8. Stay in sync with LEVER_5A_OBSERVABILITY_TAG_KEYS
+    # in common/config.py.
+    import mlflow as _mlflow
+    try:
+        _mlflow.update_current_trace(tags={
+            "validate_no_sql_result": (
+                "pass" if ok else f"rejected:{(reject_reason or '')[:60]}"
+            ),
+            "post_call_truncated": "true" if _post_call_truncated else "false",
+            "repair_used": "true" if _repair_used else "false",
+            "sanitize_made_changes": (
+                "true" if _sanitize_made_changes else "false"
+            ),
+            "system_msg_version": "v1",  # bumped to "v2-slim" by Task 6
+            "clusters_truncated": str(max(0, len(focus_clusters) - 5)),
+            "rca_contract_version": "v1",
+            "max_section_chars": "0",  # placeholder — populated by Task 9.4b
+        })
+    except Exception:
+        logger.debug("L5a observability tag emission failed", exc_info=True)
+
     if not ok:
         logger.warning(
             "GSO_LEVER5A_REJECTED_V1: L5a output rejected by no-SQL gate: %s",
