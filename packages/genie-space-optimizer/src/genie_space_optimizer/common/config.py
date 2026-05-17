@@ -5275,8 +5275,13 @@ allowlist — any unknown identifier is a hallucination.
 </instructions>
 
 <output_schema>
-Respond with a SINGLE JSON object, no prose, no code fences:
-{{"example_question": "...", "example_sql": "...", "rationale": "..."}}
+Respond with a SINGLE JSON object, no prose, no code fences. All four fields
+are required:
+
+{{"example_question": "<customer-style business question>",
+ "example_sql": "<valid Databricks SQL query, no trailing semicolon>",
+ "usage_guidance": "<one-sentence explanation of when this example applies; 1-2 sentences max>",
+ "rationale": "<one-sentence reference to the archetype + coverage focus that motivated this example>"}}
 </output_schema>"""
 
 PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT = (

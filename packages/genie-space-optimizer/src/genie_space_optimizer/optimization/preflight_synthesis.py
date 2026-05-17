@@ -1937,15 +1937,23 @@ def synthesize_preflight_candidate(
     def _call() -> str:
         if llm_caller is not None:
             return llm_caller(prompt)
+        from genie_space_optimizer.common.config import (
+            LEVER_5B_PREFLIGHT_MAX_TOKENS,
+        )
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
         from genie_space_optimizer.optimization.evaluation import (
             _link_prompt_to_trace,
+        )
+        from genie_space_optimizer.optimization.prompt_io import (
+            Lever5bExampleSqlOutput,
         )
         _link_prompt_to_trace("preflight_example_synthesis")
         try:
             raw, _ = _traced_llm_call(
                 w, "You are a SQL example author.", prompt,
                 span_name="preflight_example_synthesis",
+                max_tokens=LEVER_5B_PREFLIGHT_MAX_TOKENS,
+                response_model=Lever5bExampleSqlOutput,
             )
             return raw
         except Exception:
@@ -1963,13 +1971,11 @@ def synthesize_preflight_candidate(
         return None
 
     # Shape defaults so ``validate_synthesis_proposal`` sees the fields it
-    # expects. ``patch_type`` must match the archetype; ``usage_guidance``
-    # is surfaced by the harness applier as the example's instruction text.
+    # expects. ``patch_type`` must match the archetype. After Task 3 of the
+    # preflight hardening plan, ``usage_guidance`` is required in the
+    # prompt's <output_schema>, so the LLM emits it directly — the
+    # rationale-backfill that used to mask this drift is no longer needed.
     proposal.setdefault("patch_type", archetype.patch_type)
-    if "usage_guidance" not in proposal:
-        # Fall back to rationale when the LLM omitted usage_guidance —
-        # the applier surfaces this to Genie as query-selection guidance.
-        proposal["usage_guidance"] = str(proposal.get("rationale") or "").strip()
     return proposal
 
 
