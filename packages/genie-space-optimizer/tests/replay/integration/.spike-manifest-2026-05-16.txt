@@ -1,0 +1,18 @@
+# Phase 4.5 spike manifest — Run B (59a173d3)
+# Total recorded I/O paths: 13
+# Termination: crashed:MlflowException
+# Exception (if any): MlflowException("Detected out-of-date database schema (found version 1b5f0d9ad7c1, but expected c3d6457b6d8a). Take a backup of your database, then run 'mlflow db upgrade <database_uri>' to migrate your database to the latest schema. NOTE: schema migration may result in database downtime - please co
+
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
+spark.sql(1 args, [])
