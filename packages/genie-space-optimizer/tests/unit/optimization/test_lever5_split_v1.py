@@ -75,8 +75,11 @@ def test_render_synthesis_prompt_byte_stable_after_plan_2():
     assert "Failure Type: missing_filter" in rendered
     assert "temporal_filter_archetype" in rendered
     assert "{{" not in rendered  # all template variables substituted
-    # Pin the output_format header so structural-template changes are caught:
-    assert "Output format (strict JSON)" in rendered
+    # Per Plan 2026-05-17-lever-5b-example-sql-hardening Task 6, the
+    # "# Output format (strict JSON)" Markdown header was replaced by
+    # a `<output_schema>` XML block (cross-prompt convention).
+    assert "<output_schema>" in rendered
+    assert "</output_schema>" in rendered
 
 
 def test_lever_5b_skill_id_accessor():

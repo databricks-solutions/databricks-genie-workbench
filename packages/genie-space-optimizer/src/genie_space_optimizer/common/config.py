@@ -3837,6 +3837,32 @@ MAX_HOLISTIC_INSTRUCTION_CHARS = 8000
 # (see 2026-05-17-lever-5a-instructions-baseline.md §9 Q5).
 LEVER_5A_INSTRUCTION_MAX_TOKENS: int = 2400
 
+# Lever-5b example-SQL synthesis output cap. Conservative — covers
+# Trial-5 observed P95=267 / max=267 output tokens (n=20 across two
+# spaces) with ~50% headroom. Reserves ~2.5x less OTPM than the
+# Databricks default (~1000 for Claude Opus 4 / Sonnet 4) and lets
+# more concurrent synthesis fan-out calls fit in the endpoint budget.
+# Re-tune empirically after first Trial-N MLflow probe of
+# span_name=lever_5b_example_sql traces post-hardening.
+LEVER_5B_EXAMPLE_SQL_MAX_TOKENS: int = 400
+
+# Lever-5b example-SQL synthesis system message. Frames:
+#  - the closed-loop role (output is saved into the Space's example_sql
+#    library and retrieved by Genie at inference time),
+#  - the safety boundary (no benchmark text echo),
+#  - the strict-JSON output contract.
+# Trial-5 had only "You are a SQL example author." (6 words) here — the
+# model was effectively unanchored. Plan 2026-05-17-lever-5b-example-sql-
+# hardening.md Task 7.
+LEVER_5B_EXAMPLE_SQL_SYSTEM_MSG: str = (
+    "You are a Databricks Genie Space SQL example author. Your output is "
+    "saved into the Space's example_sql library and is later retrieved by "
+    "Genie as in-context guidance at inference time — so it must be "
+    "ORIGINAL, REUSABLE, and free of any benchmark-specific text. "
+    "Respond with strict JSON matching the requested output schema; no "
+    "analysis or commentary outside the JSON object."
+)
+
 # Tag schema for lever_5a_instructions MLflow spans. Added per
 # 2026-05-17-lever-5a-instructions-hardening.md Task 4 to surface
 # the L5a post-call pipeline state in MLflow's Linked-Prompts UI.

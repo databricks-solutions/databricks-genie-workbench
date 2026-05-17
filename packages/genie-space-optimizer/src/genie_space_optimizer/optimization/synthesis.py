@@ -114,32 +114,226 @@ def register_synthesis_prompt(w: Any = None) -> None:
         logger.debug("MLflow prompt registration skipped", exc_info=True)
 
 
+# Per-fix length cap inside the counterfactual_fixes block. 200 chars
+# is enough for a one-sentence fix; longer entries get truncated with
+# an ellipsis marker.
+_LEVER_5B_COUNTERFACTUAL_FIX_MAX_CHARS: int = 200
+
+# Max number of counterfactual_fixes bullets to include in the rendered
+# AFS block. Judges produce one fix per failed question; clusters of N
+# questions yield N near-paraphrases.
+_LEVER_5B_COUNTERFACTUAL_FIX_MAX_BULLETS: int = 3
+
+
+def _dedupe_counterfactual_fixes(fixes: list[str]) -> list[str]:
+    """Return a deduplicated copy of ``fixes`` that:
+      - drops exact duplicates (case-insensitive, whitespace-collapsed),
+      - drops entries that are a substring of a kept entry (the longer
+        paraphrase wins when one is a prefix of another),
+      - preserves first-seen order otherwise.
+    """
+    if not fixes:
+        return []
+    normalized: list[tuple[str, str]] = []
+    for raw in fixes:
+        if not isinstance(raw, str):
+            continue
+        s = raw.strip()
+        if not s:
+            continue
+        key = " ".join(s.lower().split())
+        skip = False
+        for j, (_, existing_key) in enumerate(list(normalized)):
+            if key == existing_key:
+                skip = True
+                break
+            if existing_key in key:
+                normalized[j] = (s, key)
+                skip = True
+                break
+            if key in existing_key:
+                skip = True
+                break
+        if not skip:
+            normalized.append((s, key))
+    return [orig for orig, _ in normalized]
+
+
+def _render_lever_5b_afs_block(afs: dict) -> str:
+    """Render the AFS section of the lever-5b prompt.
+
+    Only fields with real content are emitted. Empty / unknown / zero /
+    empty-dict / empty-list values are silently dropped. Trial-5
+    observed 6 of 9 slots empty in the captured trace; rendering them
+    as ``unknown`` / ``(none)`` / ``{}`` misled the model into treating
+    the cluster as a no-op.
+
+    Plan 2026-05-17-lever-5b-example-sql-hardening.md Task 3.
+    """
+    cluster_id = str(afs.get("cluster_id") or "?")
+    lines: list[str] = [f"Cluster ID: {cluster_id}"]
+
+    failure_type = str(afs.get("failure_type") or "").strip()
+    if failure_type and failure_type.lower() != "unknown":
+        lines.append(f"Failure Type: {failure_type}")
+
+    affected_judge = str(afs.get("affected_judge") or "").strip()
+    if affected_judge and affected_judge.lower() != "unknown":
+        lines.append(f"Affected Judge: {affected_judge}")
+
+    question_count = afs.get("question_count")
+    if isinstance(question_count, int) and question_count > 0:
+        lines.append(f"Affected Questions: {question_count}")
+
+    blame_set = [b for b in (afs.get("blame_set") or []) if str(b).strip()]
+    if blame_set:
+        lines.append(f"Blamed Objects: {', '.join(blame_set)}")
+
+    judge_verdict_pattern = str(afs.get("judge_verdict_pattern") or "").strip()
+    if judge_verdict_pattern:
+        lines.append(f"Judge Verdict Pattern: {judge_verdict_pattern}")
+
+    suggested_fix_summary = str(afs.get("suggested_fix_summary") or "").strip()
+    if (
+        suggested_fix_summary
+        and suggested_fix_summary.lower() not in ("unknown", "root cause: unknown")
+    ):
+        lines.append(f"Summary: {suggested_fix_summary}")
+
+    structural_diff = afs.get("structural_diff")
+    if isinstance(structural_diff, dict) and structural_diff:
+        lines.append("Structural Diff Classification:")
+        lines.append(json.dumps(structural_diff, indent=2))
+
+    fixes = _dedupe_counterfactual_fixes(afs.get("counterfactual_fixes") or [])
+    fixes = fixes[:_LEVER_5B_COUNTERFACTUAL_FIX_MAX_BULLETS]
+    if fixes:
+        lines.append("Counterfactual Fixes (deduplicated, from judges):")
+        for f in fixes:
+            if len(f) > _LEVER_5B_COUNTERFACTUAL_FIX_MAX_CHARS:
+                f = f[:_LEVER_5B_COUNTERFACTUAL_FIX_MAX_CHARS].rstrip() + "..."
+            lines.append(f"  - {f}")
+
+    return "\n".join(lines)
+
+
+def _build_lever_5b_scoped_allowlist(
+    metadata_snapshot: dict, afs: dict,
+) -> str:
+    """Render a blame-scoped identifier_allowlist for the L5b prompt.
+
+    Derives ``relevant_objects`` from ``afs.blame_set`` plus the parent
+    tables of any column-scoped blame entries (so the LLM can propose
+    column-level changes on the owning table even when blame is column-
+    scoped). When the AFS has no usable blame_set, falls back to the
+    full unscoped allowlist for safety.
+
+    Plan 2026-05-17-lever-5b-example-sql-hardening.md Task 4.
+    """
+    from genie_space_optimizer.optimization.optimizer import (
+        _build_identifier_allowlist, _format_identifier_allowlist,
+    )
+
+    relevant_objects: set[str] = set()
+    for entry in (afs.get("blame_set") or []):
+        s = str(entry or "").strip()
+        if not s:
+            continue
+        relevant_objects.add(s)
+        # If the entry looks column-scoped (``cat.sch.tbl.col``), also
+        # add the parent table FQN so the LLM has table-level scope.
+        parts = s.split(".")
+        if len(parts) == 4:
+            relevant_objects.add(".".join(parts[:3]))
+
+    try:
+        if relevant_objects:
+            allowlist = _build_identifier_allowlist(
+                metadata_snapshot, relevant_objects=relevant_objects,
+            )
+        else:
+            allowlist = _build_identifier_allowlist(metadata_snapshot)
+        return _format_identifier_allowlist(allowlist)
+    except Exception:
+        return "(identifier allowlist unavailable)"
+
+
+_LEVER_5B_RETRY_REJECTED_SQL_MAX_CHARS: int = 300
+
+
+def _render_lever_5b_retry_feedback(
+    *,
+    gate: str,
+    reason: str,
+    rejected_proposal: dict,
+) -> str:
+    """Render the retry feedback block appended to the original prompt
+    on a single-shot rejection.
+
+    Plan 2026-05-17-lever-5b-example-sql-hardening.md Task 9. Wraps
+    the rejection in ``<retry_feedback>`` XML tags. Echoes the rejected
+    ``example_sql`` truncated to
+    :data:`_LEVER_5B_RETRY_REJECTED_SQL_MAX_CHARS` chars so the model
+    knows what to NOT repeat, without ballooning the retry prompt past
+    the ``max_tokens`` reservation.
+    """
+    rejected_sql = str(rejected_proposal.get("example_sql") or "").strip()
+    if len(rejected_sql) > _LEVER_5B_RETRY_REJECTED_SQL_MAX_CHARS:
+        rejected_sql = (
+            rejected_sql[:_LEVER_5B_RETRY_REJECTED_SQL_MAX_CHARS].rstrip() + "..."
+        )
+
+    rejected_question = str(rejected_proposal.get("example_question") or "").strip()
+
+    parts: list[str] = [
+        "<retry_feedback>",
+        f"## Previous attempt rejected by the {gate} gate",
+        f"Rejection reason: {reason}",
+    ]
+    if rejected_question:
+        parts.append(f"Rejected example_question: {rejected_question[:300]}")
+    if rejected_sql:
+        parts.append("Rejected example_sql (head):")
+        parts.append(rejected_sql)
+    parts.append(
+        "Generate a DIFFERENT original proposal that addresses this "
+        "rejection. Do NOT echo any rejected tokens verbatim. The new "
+        "proposal must still match the archetype's Shape Contract and "
+        "use only allowlisted identifiers."
+    )
+    parts.append("</retry_feedback>")
+    return "\n".join(parts)
+
+
 def render_synthesis_prompt(afs: dict, archetype: Any, identifier_allowlist: str) -> str:
     """Render the prompt from AFS + archetype + schema allowlist.
 
     Never includes raw benchmark text — AFS is already scrubbed and
-    ``identifier_allowlist`` is schema-derived.
-    """
-    from genie_space_optimizer.common.config import format_mlflow_template
+    ``identifier_allowlist`` is schema-derived. The rendered prompt is
+    prefixed with ``_EXAMPLE_SYNTHESIS_CONTRACT_HEADER`` so this path
+    has the same leak-safe contract header as the sibling
+    ``PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT``.
 
-    return format_mlflow_template(
+    The AFS body is pre-rendered by :func:`_render_lever_5b_afs_block`
+    (Task 3) so empty / sentinel slots are suppressed and
+    ``counterfactual_fixes`` is deduped + capped before the template
+    is filled. Plan 2026-05-17-lever-5b-example-sql-hardening.md
+    Tasks 2 + 5.
+    """
+    from genie_space_optimizer.common.config import (
+        _EXAMPLE_SYNTHESIS_CONTRACT_HEADER,
+        format_mlflow_template,
+    )
+
+    body = format_mlflow_template(
         _SYNTHESIS_PROMPT_TEMPLATE,
-        cluster_id=afs.get("cluster_id", "?"),
-        failure_type=afs.get("failure_type", "unknown"),
-        affected_judge=afs.get("affected_judge", "unknown"),
-        question_count=afs.get("question_count", 0),
-        blame_set=", ".join(afs.get("blame_set") or []) or "(none)",
-        counterfactual_fixes="\n".join(
-            f"  - {f}" for f in (afs.get("counterfactual_fixes") or [])
-        ) or "  (none provided by judges)",
-        structural_diff=json.dumps(afs.get("structural_diff") or {}, indent=2),
-        judge_verdict_pattern=afs.get("judge_verdict_pattern", ""),
-        suggested_fix_summary=afs.get("suggested_fix_summary", ""),
+        afs_block=_render_lever_5b_afs_block(afs),
         archetype_name=archetype.name,
         archetype_output_shape=json.dumps(archetype.output_shape),
         archetype_prompt_template=archetype.prompt_template,
         identifier_allowlist=identifier_allowlist,
     )
+    return _EXAMPLE_SYNTHESIS_CONTRACT_HEADER + body
 
 
 # ── Skill identity (Plan 2 — Lever 5 Split) ───────────────────────────
@@ -907,6 +1101,10 @@ def synthesize_example_sqls(
     def _call_llm(p: str) -> str:
         if llm_caller is not None:
             return llm_caller(p)
+        from genie_space_optimizer.common.config import (
+            LEVER_5B_EXAMPLE_SQL_MAX_TOKENS,
+            LEVER_5B_EXAMPLE_SQL_SYSTEM_MSG,
+        )
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
         from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
         from genie_space_optimizer.optimization.prompt_io import (
@@ -915,9 +1113,10 @@ def synthesize_example_sqls(
         _link_prompt_to_trace("lever_5b_example_sql")
         try:
             raw, _ = _traced_llm_call(
-                w, "You are a SQL example author.", p,
+                w, LEVER_5B_EXAMPLE_SQL_SYSTEM_MSG, p,
                 span_name="lever_5b_example_sql",
                 response_model=Lever5bExampleSqlOutput,
+                max_tokens=LEVER_5B_EXAMPLE_SQL_MAX_TOKENS,
             )
             return raw
         except Exception:
@@ -940,14 +1139,12 @@ def synthesize_example_sqls(
     )
 
     if not passed:
-        # Single retry with rejection reason fed back as additional constraint.
+        # Single retry with structured rejection feedback (Task 9).
         fail = next((g for g in gate_results if not g.passed), None)
-        reason = fail.reason if fail else "unknown"
-        retry_prompt = (
-            prompt
-            + f"\n\n# Previous attempt was rejected by the {fail.gate if fail else '?'} "
-            f"gate: {reason}. Generate a DIFFERENT original proposal that "
-            "addresses this rejection. Do NOT echo any rejected tokens."
+        retry_prompt = prompt + "\n\n" + _render_lever_5b_retry_feedback(
+            gate=fail.gate if fail else "?",
+            reason=fail.reason if fail else "unknown",
+            rejected_proposal=proposal,
         )
         raw = _call_llm(retry_prompt)
         proposal = _extract_json_proposal(raw) or {}
@@ -963,6 +1160,25 @@ def synthesize_example_sqls(
         )
 
     if not passed:
+        # Task 10: attach gate-failure provenance to the active MLflow
+        # span so post-hoc analysis can attribute rejections without
+        # re-running the synthesis. Best-effort — no-op if mlflow is
+        # not active or get_current_active_span is unavailable.
+        try:
+            import mlflow as _mlflow
+            _active_span = _mlflow.get_current_active_span()
+            if _active_span is not None:
+                fail = next((g for g in gate_results if not g.passed), None)
+                if fail is not None:
+                    _active_span.set_attribute(
+                        "lever_5b.gate_failure",
+                        f"{fail.gate}: {fail.reason}",
+                    )
+        except Exception:
+            logger.debug(
+                "lever-5b: failed to record gate_failure provenance",
+                exc_info=True,
+            )
         if budget is not None:
             budget.record_failure()
         return None
@@ -1064,6 +1280,10 @@ def synthesize_example_sqls_for_rca(
     if llm_caller is not None:
         raw = llm_caller(prompt)
     else:
+        from genie_space_optimizer.common.config import (
+            LEVER_5B_EXAMPLE_SQL_MAX_TOKENS,
+            LEVER_5B_EXAMPLE_SQL_SYSTEM_MSG,
+        )
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
         from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
         from genie_space_optimizer.optimization.prompt_io import (
@@ -1073,10 +1293,11 @@ def synthesize_example_sqls_for_rca(
         try:
             raw, _ = _traced_llm_call(
                 w,
-                "You are a SQL example author.",
+                LEVER_5B_EXAMPLE_SQL_SYSTEM_MSG,
                 prompt,
                 span_name="lever_5b_example_sql_for_rca",
                 response_model=Lever5bExampleSqlOutput,
+                max_tokens=LEVER_5B_EXAMPLE_SQL_MAX_TOKENS,
             )
         except Exception:
             logger.warning("RCA example SQL synthesis LLM call failed", exc_info=True)
