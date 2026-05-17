@@ -63,3 +63,15 @@ def test_preflight_synthesis_returns_accepted_examples(monkeypatch):
 
     assert result["applied"] == 1
     assert result["accepted_examples"] == [proposal]
+
+
+# ── Preflight hardening tests (2026-05-17-preflight-example-synthesis-hardening) ──
+
+
+def test_lever_5b_preflight_max_tokens_constant_exists_and_is_sized():
+    """LEVER_5B_PREFLIGHT_MAX_TOKENS must exist and be sized per baseline."""
+    from genie_space_optimizer.common import config
+
+    assert hasattr(config, "LEVER_5B_PREFLIGHT_MAX_TOKENS")
+    assert isinstance(config.LEVER_5B_PREFLIGHT_MAX_TOKENS, int)
+    assert 550 <= config.LEVER_5B_PREFLIGHT_MAX_TOKENS <= 800

@@ -731,6 +731,14 @@ LEVER_1_2_MAX_TOKENS: int = 2048
 # Plan: 2026-05-17-lever-1-rca-bridge-hardening.md Task 1
 LEVER_1_RCA_BRIDGE_MAX_TOKENS: int = 400
 
+# Preflight example-SQL synthesis output cap. Conservative — covers
+# Trial-5 observed P95=403 / max=544 output tokens (n=311) with ~10%
+# headroom over max and ~49% over P95. Reserves 40% less OTPM than the
+# Databricks default 1000 (Claude Sonnet 4 / Opus 4.6) and lets more
+# concurrent preflight fan-out calls fit in the endpoint budget.
+# Plan: 2026-05-17-preflight-example-synthesis-hardening.md Task 1
+LEVER_5B_PREFLIGHT_MAX_TOKENS: int = 600
+
 # Lever-1/2 column-refinement system message. Frames the domain
 # (Genie Space metadata curation) and requires JSON-only output.
 # Plan: 2026-05-17-lever-1-2-column-prompt-hardening.md Task 2
