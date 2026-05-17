@@ -598,7 +598,11 @@ def no_structural_candidate_record(
             "Regenerate RCA with sharper grounding, or escalate to "
             "operator review."
         ),
-        metrics={"proposals_total": 0, "synthesis_attempted": True},
+        metrics={
+            "proposals_total": 0,
+            "synthesis_attempted": True,
+            "attempted_archetypes": list(attempted_archetypes or ()),
+        },
     )
 
 

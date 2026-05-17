@@ -174,3 +174,55 @@ def test_marker_round_trip_no_structural_candidate() -> None:
     )
     parsed = parse_no_structural_candidate_marker(line)
     assert parsed["attempted_archetypes"] == ["ordered_list_by_metric"]
+
+
+def test_no_structural_candidate_record_metrics_contains_attempted_archetypes() -> None:
+    """Phase 0.5 (Bug 3) — the metrics dict must surface attempted_archetypes
+    so the marker emit site at harness.py:23035-23043 can read it via
+    record.metrics["attempted_archetypes"] instead of falling back to ()."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        no_structural_candidate_record,
+    )
+
+    rec = no_structural_candidate_record(
+        run_id="r1",
+        iteration=2,
+        ag_id="AG_COVERAGE_H002",
+        cluster_id="H002",
+        rca_id="rca_h002",
+        root_cause="missing_filter",
+        target_qids=("gs_021",),
+        attempted_archetypes=("ordered_list_by_metric", "single_row_top_n"),
+    )
+
+    assert rec.metrics.get("attempted_archetypes") == [
+        "ordered_list_by_metric", "single_row_top_n",
+    ], (
+        "Bug 3 fix: producer must surface attempted_archetypes in metrics "
+        "so the harness marker emit can route it to the stdout marker payload."
+    )
+    # Defense: existing keys must remain.
+    assert rec.metrics.get("proposals_total") == 0
+    assert rec.metrics.get("synthesis_attempted") is True
+
+
+def test_no_structural_candidate_record_metrics_empty_archetypes_list_not_missing_key() -> None:
+    """Defense: when no archetypes were attempted, the key must still be
+    present with an empty list — not absent."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        no_structural_candidate_record,
+    )
+
+    rec = no_structural_candidate_record(
+        run_id="r1",
+        iteration=2,
+        ag_id="AG_COVERAGE_H002",
+        attempted_archetypes=(),
+    )
+
+    assert "attempted_archetypes" in rec.metrics, (
+        "Key must be present even when the tuple is empty — absence vs. "
+        "empty-list is the difference between 'producer never tried "
+        "anything' and 'producer tried zero archetypes'."
+    )
+    assert rec.metrics["attempted_archetypes"] == []
