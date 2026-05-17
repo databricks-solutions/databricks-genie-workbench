@@ -1313,6 +1313,176 @@ class TestHardening:
         prompt = render_cluster_driven_prompt(arch, ctx, [])
         assert "Prefer aggregating on region" in prompt
 
+    # ── Task 8: fixture-driven controlled trial of the typed contract ──
+
+    def test_typed_contract_end_to_end_on_airline_replay_fixture(self):
+        """Plan 2026-05-17-cluster-driven-example-synthesis-hardening
+        Task 8 — controlled trial. Rather than operationally flipping
+        ``GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE=true`` on a workspace,
+        drive ``run_cluster_driven_synthesis_for_single_cluster`` against
+        a cluster shape pulled from the byte-stable replay fixtures and
+        assert the typed teaching-kit contract works end to end (kit
+        parsing -> normalize_teaching_kit -> kit_id / supporting wiring).
+
+        The fixture provides realistic cluster metadata (cluster_id,
+        root_cause, asi_failure_type, question_ids). We augment it with
+        an ``asi_blame_set`` pointing at the test snapshot's table so
+        ``format_afs`` -> ``_derive_asset_slice_from_afs`` succeeds; the
+        rest of the cluster shape mirrors what the strategist sees in
+        production.
+        """
+        import json as _json
+        from pathlib import Path
+
+        fixture_path = (
+            Path(__file__).resolve().parents[1]
+            / "replay"
+            / "fixtures"
+            / "forced_synthesis"
+            / "airline_iter5_l5b_rich_path.json"
+        )
+        fixture = _json.loads(fixture_path.read_text())
+        iter1 = fixture["iterations"][0]
+        cluster_id, fixture_cluster = next(
+            iter(iter1["iter_source_clusters_by_id"].items())
+        )
+
+        # Cluster shape pulled from the fixture; asi_blame_set added so
+        # _derive_asset_slice_from_afs has a table to anchor on.
+        cluster = {
+            "cluster_id": cluster_id,
+            "root_cause": fixture_cluster["root_cause"],
+            "asi_failure_type": fixture_cluster["asi_failure_type"],
+            "affected_judge": "answer_correctness",
+            "asi_blame_set": ["cat.sch.fact_sales"],
+            "question_ids": list(fixture_cluster["question_ids"]),
+        }
+        snap = _mk_snapshot()
+
+        # The LLM returns a typed teaching-kit JSON — same shape
+        # TeachingKitOutput / normalize_teaching_kit expect.
+        def fake_kit_llm(prompt: str) -> str:
+            # Sanity-check the cluster-driven prompt was assembled with
+            # the new XML markup + footer (i.e. the typed-contract
+            # pipeline is live, not the legacy free-form).
+            assert "<failure_signature>" in prompt, (
+                "trial prompt missing <failure_signature> — the typed "
+                "cluster-driven path is not active"
+            )
+            assert "kit_summary" in prompt, (
+                "trial prompt missing kit_contract footer"
+            )
+            return (
+                '{"kit_summary": "Aggregate by route, not per-row", '
+                '"example_sql": {'
+                '"example_question": "Which routes had the most tickets sold?", '
+                '"example_sql": "SELECT route, SUM(ticket_count) '
+                'FROM cat.sch.fact_sales GROUP BY route ORDER BY 2 DESC", '
+                '"usage_guidance": "Use for top-N route aggregations."'
+                '}, '
+                '"supporting_changes": ['
+                '{"patch_type": "add_column_synonym", '
+                '"table": "cat.sch.fact_sales", "column": "route", '
+                '"synonyms": ["flight route", "trip"]}'
+                ']}'
+            )
+
+        with patch(
+            "genie_space_optimizer.optimization.cluster_driven_synthesis."
+            "validate_synthesis_proposal",
+            side_effect=_all_gates_pass,
+        ), patch(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "_gate_genie_agreement",
+            side_effect=_genie_agreement_passes,
+        ):
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
+                cluster, snap, benchmarks=[], llm_caller=fake_kit_llm,
+            )
+
+        result = synthesis.proposal
+        assert result is not None, (
+            "Task 8 trial: typed kit pipeline returned no proposal for "
+            f"cluster {cluster_id}; skipped_reason={synthesis.skipped_reason!r}"
+        )
+        # The kit primary is shaped as an add_example_sql proposal …
+        assert result["patch_type"] == "add_example_sql"
+        # … carries the cluster's identity (kit_id traces back to it) …
+        assert result["kit_id"].startswith(f"kit_{cluster_id}_")
+        assert cluster_id in result.get("_cluster_id", "")
+        # … and the supporting changes survived normalize_teaching_kit.
+        supporting = result.get("_supporting_proposals", [])
+        assert [p["patch_type"] for p in supporting] == [
+            "add_column_synonym",
+        ], "supporting_changes lost during normalization"
+        assert supporting[0]["kit_id"] == result["kit_id"]
+        # Trial passed: the typed contract handles a real fixture cluster.
+
+    def test_typed_contract_end_to_end_on_seven_now_replay_fixture(self):
+        """Task 8 trial — second cluster shape from a different fixture
+        (``seven_now_iter1_l5b_rich_path``: ``plural_top_n_collapse`` +
+        ``wrong_filter_condition``). Ensures the typed pipeline holds
+        on more than the airline cluster.
+        """
+        import json as _json
+        from pathlib import Path
+
+        fixture_path = (
+            Path(__file__).resolve().parents[1]
+            / "replay"
+            / "fixtures"
+            / "forced_synthesis"
+            / "seven_now_iter1_l5b_rich_path.json"
+        )
+        fixture = _json.loads(fixture_path.read_text())
+        iter1 = fixture["iterations"][0]
+        cluster_id, fixture_cluster = next(
+            iter(iter1["iter_source_clusters_by_id"].items())
+        )
+        cluster = {
+            "cluster_id": cluster_id,
+            "root_cause": fixture_cluster["root_cause"],
+            "asi_failure_type": fixture_cluster["asi_failure_type"],
+            "affected_judge": "answer_correctness",
+            "asi_blame_set": ["cat.sch.fact_sales"],
+            "question_ids": list(fixture_cluster["question_ids"]),
+        }
+        snap = _mk_snapshot()
+
+        def fake_kit_llm(prompt: str) -> str:
+            return (
+                '{"kit_summary": "Filter on top brand by sales", '
+                '"example_sql": {'
+                '"example_question": "Top 3 brands by sales last month?", '
+                '"example_sql": "SELECT brand, SUM(amount) '
+                'FROM cat.sch.fact_sales WHERE month = \'last\' '
+                'GROUP BY brand ORDER BY 2 DESC LIMIT 3", '
+                '"usage_guidance": "Use for top-N brand aggregation."'
+                '}, '
+                '"supporting_changes": []}'
+            )
+
+        with patch(
+            "genie_space_optimizer.optimization.cluster_driven_synthesis."
+            "validate_synthesis_proposal",
+            side_effect=_all_gates_pass,
+        ), patch(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "_gate_genie_agreement",
+            side_effect=_genie_agreement_passes,
+        ):
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
+                cluster, snap, benchmarks=[], llm_caller=fake_kit_llm,
+            )
+
+        result = synthesis.proposal
+        assert result is not None
+        assert result["patch_type"] == "add_example_sql"
+        assert result["kit_id"].startswith(f"kit_{cluster_id}_")
+        # Empty supporting_changes is a valid kit shape — kit teaches
+        # the example_sql alone, no extra patches.
+        assert result.get("_supporting_proposals", []) == []
+
     def test_cluster_driven_call_sites_wire_teaching_kit_output(self):
         """Task 5: both primary and retry cluster-driven LLM call sites
         must wire ``response_model=TeachingKitOutput`` — not the legacy
