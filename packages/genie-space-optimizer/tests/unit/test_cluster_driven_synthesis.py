@@ -867,15 +867,51 @@ class TestHardening:
             "'cluster_driven_example_synthesis' (its actual registry name)."
         )
 
-    def test_cluster_driven_is_in_typed_output_deferred_allowlist(self):
-        """The prompt's typed-output contract is deferred (the kit
-        shape requires a TeachingKitOutput Pydantic model that hasn't
-        been built yet — Task 1 of the hardening plan)."""
+    def test_cluster_driven_registered_in_lever_prompts(self):
+        """Task 3: the prompt must be registered in LEVER_PROMPTS so
+        observability / inventory tests can see it, and so trace
+        linking via _link_prompt_to_trace resolves to a real entry."""
+        from genie_space_optimizer.common import config
+
+        assert "cluster_driven_example_synthesis" in config.LEVER_PROMPTS
+        entry = config.LEVER_PROMPTS["cluster_driven_example_synthesis"]
+        # The registered entry is the kit-contract footer — the dynamic
+        # cluster-driven prompt is built by render_cluster_driven_prompt
+        # at runtime, but the footer is the cluster-specific contract
+        # the LLM is anchored to.
+        assert isinstance(entry, str) and "kit_summary" in entry
+
+    def test_cluster_driven_off_deferred_allowlist(self):
+        """Once TeachingKitOutput exists, cluster_driven_example_synthesis
+        no longer needs to be deferred — it has a typed contract."""
         from tests.unit.optimization.test_prompt_registry_inventory import (
             TYPED_OUTPUT_DEFERRED_ALLOWLIST,
         )
 
-        assert "cluster_driven_example_synthesis" in TYPED_OUTPUT_DEFERRED_ALLOWLIST
+        assert (
+            "cluster_driven_example_synthesis" not in TYPED_OUTPUT_DEFERRED_ALLOWLIST
+        ), (
+            "TeachingKitOutput exists (Task 1), the call sites are wired "
+            "(Task 5), and the prompt is registered (Task 3) — remove "
+            "cluster_driven_example_synthesis from the deferred allowlist."
+        )
+
+    def test_cluster_driven_example_synthesis_output_alias_exists(self):
+        """The inventory test derives a CamelCase model name from the
+        registry key (cluster_driven_example_synthesis ->
+        ClusterDrivenExampleSynthesisOutput). Expose that name as an
+        alias for TeachingKitOutput so the inventory check finds it.
+        """
+        from genie_space_optimizer.optimization import prompt_io as pio
+
+        assert hasattr(pio, "ClusterDrivenExampleSynthesisOutput"), (
+            "Task 3: expose a ClusterDrivenExampleSynthesisOutput alias "
+            "in prompt_io.py so the inventory test can map the registry "
+            "name to a Pydantic model."
+        )
+        assert (
+            pio.ClusterDrivenExampleSynthesisOutput is pio.TeachingKitOutput
+        ), "the alias must point at TeachingKitOutput"
 
     # ── Tasks 1 + 5: TeachingKitOutput Pydantic model + call-site wiring ──
 
@@ -957,6 +993,160 @@ class TestHardening:
             assert forbidden not in body, (
                 f"response_format contains FM-API-forbidden keyword {forbidden!r}"
             )
+
+    # ── Task 2: KIT_CONTRACT_PROMPT_FOOTER extracted as a named constant ──
+
+    def test_kit_contract_prompt_footer_constant_exists(self):
+        """Task 2: the kit contract Markdown block previously inlined in
+        ``render_cluster_driven_prompt`` must be available as a named
+        ``KIT_CONTRACT_PROMPT_FOOTER`` constant on ``common.config``."""
+        from genie_space_optimizer.common import config
+
+        assert hasattr(config, "KIT_CONTRACT_PROMPT_FOOTER")
+        footer = config.KIT_CONTRACT_PROMPT_FOOTER
+        assert isinstance(footer, str) and len(footer) > 200
+        # Sanity: it really is the kit contract.
+        assert "kit_summary" in footer
+        assert "supporting_changes" in footer
+        assert "patch_type" in footer
+
+    def test_cluster_driven_prompt_no_inline_kit_contract(self):
+        """The kit contract must no longer be hard-coded inline in
+        ``cluster_driven_synthesis.py`` — it lives in ``common/config.py``."""
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "genie_space_optimizer" / "optimization"
+            / "cluster_driven_synthesis.py"
+        )
+        body = src.read_text()
+        # The inline literal would contain this distinctive line.
+        assert (
+            '"kit_summary": "short explanation of the failure pattern taught"'
+            not in body
+        ), (
+            "Task 2: kit_contract is still hard-coded in "
+            "cluster_driven_synthesis.py — import "
+            "KIT_CONTRACT_PROMPT_FOOTER from common.config instead."
+        )
+
+    # ── Task 14: base <output_schema> stripped when kit_contract appended ──
+
+    def test_cluster_driven_prompt_strips_base_output_schema_when_kit_appended(self):
+        """When the cluster-driven prompt appends the kit_contract footer
+        (because AFS / failure context / mining hints are present), the
+        base preflight prompt's ``<output_schema>`` block must be
+        stripped — keeping both is duplicate guidance that confuses
+        the LLM about which contract to follow.
+        """
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterContext,
+            render_cluster_driven_prompt,
+        )
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            ARCHETYPES,
+            AssetSlice,
+        )
+
+        arch = next(a for a in ARCHETYPES if a.name == "top_n_by_metric")
+        slice_ = AssetSlice(
+            tables=[{"identifier": "cat.sch.t"}],
+            columns=[("cat.sch.t", "region")],
+        )
+        ctx = ClusterContext(
+            afs={
+                "cluster_id": "C1",
+                "failure_type": "WRONG_QUALIFICATION",
+                "affected_qids": ["q1"],
+            },
+            asset_slice=slice_,
+        )
+        prompt = render_cluster_driven_prompt(arch, ctx, [])
+
+        # Kit contract present.
+        assert "kit_summary" in prompt
+        # The base's <output_schema> was stripped — only the kit_contract
+        # footer's <output_schema> remains. Exactly one open + close.
+        assert prompt.count("<output_schema>") == 1
+        assert prompt.count("</output_schema>") == 1
+        # And the surviving schema is the kit_contract one.
+        schema_start = prompt.index("<output_schema>")
+        schema_end = prompt.index("</output_schema>")
+        schema_body = prompt[schema_start:schema_end]
+        assert "kit_summary" in schema_body
+        # The base preflight schema would have called out these four
+        # flat fields — they must not appear in the surviving schema.
+        for legacy_field in (
+            "example_question: customer-style",
+            "example_sql: valid Databricks",
+            "usage_guidance: one-sentence",
+            "rationale: one-sentence",
+        ):
+            assert legacy_field not in schema_body, (
+                f"base preflight <output_schema> field {legacy_field!r} "
+                f"survived the strip"
+            )
+
+    def test_cluster_driven_prompt_keeps_base_output_schema_when_no_kit(self):
+        """Byte-equivalence: when AFS+failure+hints are all empty,
+        render_cluster_driven_prompt returns the preflight base verbatim
+        — including its ``<output_schema>`` block."""
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterContext,
+            render_cluster_driven_prompt,
+        )
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            ARCHETYPES,
+            AssetSlice,
+        )
+
+        arch = next(a for a in ARCHETYPES if a.name == "top_n_by_metric")
+        slice_ = AssetSlice(
+            tables=[{"identifier": "cat.sch.t"}],
+            columns=[("cat.sch.t", "region")],
+        )
+        # Cluster context with only cluster_id — render_afs_block returns
+        # empty for this, no failure contexts, no hints. The base path
+        # is preserved verbatim.
+        ctx = ClusterContext(afs={"cluster_id": "C1"}, asset_slice=slice_)
+        prompt = render_cluster_driven_prompt(arch, ctx, [])
+        assert "<output_schema>" in prompt
+        assert "</output_schema>" in prompt
+
+    # ── Task 13: CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG ──
+
+    def test_cluster_driven_system_msg_constant_exists(self):
+        """Task 13: dedicated system message — sister-parallel to
+        PREFLIGHT_EXAMPLE_SYNTHESIS_SYSTEM_MSG."""
+        from genie_space_optimizer.common import config
+
+        assert hasattr(config, "CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG")
+        msg = config.CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG
+        assert isinstance(msg, str) and len(msg) >= 150
+        # The closed-loop role anchors required by Anthropic context-engineering.
+        assert "kit_summary" in msg or "teaching kit" in msg.lower()
+        assert "JSON" in msg
+
+    def test_cluster_driven_call_sites_wire_system_msg(self):
+        """Both call sites must pass the named system_msg constant —
+        not the legacy inline ``"You are a SQL example author."``."""
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "genie_space_optimizer" / "optimization"
+            / "cluster_driven_synthesis.py"
+        )
+        body = src.read_text()
+        assert "You are a SQL example author." not in body, (
+            "Task 13: legacy inline system message still present — "
+            "use CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG instead."
+        )
+        assert "CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG" in body, (
+            "Task 13: CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG must be "
+            "wired at both cluster-driven LLM call sites."
+        )
 
     def test_cluster_driven_call_sites_wire_teaching_kit_output(self):
         """Task 5: both primary and retry cluster-driven LLM call sites

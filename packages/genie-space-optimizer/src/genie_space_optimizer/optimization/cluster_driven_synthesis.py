@@ -377,45 +377,44 @@ def render_cluster_driven_prompt(
     # Kit contract is appended only on cluster-driven paths (where AFS or
     # failure evidence is present). This keeps the legacy byte-equivalence
     # contract intact for the no-AFS preflight path.
-    kit_contract = (
-        "\n\n## Output contract\n"
-        "Return one JSON object for a teaching kit:\n"
-        "{\n"
-        "  \"kit_summary\": \"short explanation of the failure pattern taught\",\n"
-        "  \"example_sql\": {\n"
-        "    \"example_question\": \"new counterfactual business question, not a paraphrase of any failed input\",\n"
-        "    \"example_sql\": \"valid SQL over the allowed assets\",\n"
-        "    \"usage_guidance\": \"when Genie should reuse this example\"\n"
-        "  },\n"
-        "  \"supporting_changes\": [\n"
-        "    {\n"
-        "      \"patch_type\": \"add_instruction\",\n"
-        "      \"section_name\": \"QUERY CONSTRUCTION\",\n"
-        "      \"new_text\": \"one narrow instruction that helps retrieve or apply the example\"\n"
-        "    },\n"
-        "    {\n"
-        "      \"patch_type\": \"add_column_synonym\",\n"
-        "      \"table\": \"fully.qualified.table\",\n"
-        "      \"column\": \"column_name\",\n"
-        "      \"synonyms\": [\"natural language term\"]\n"
-        "    },\n"
-        "    {\n"
-        "      \"patch_type\": \"add_sql_snippet_measure|add_sql_snippet_filter|add_sql_snippet_expression\",\n"
-        "      \"display_name\": \"short name\",\n"
-        "      \"sql\": \"reusable SQL expression\",\n"
-        "      \"instruction\": \"when to use it\",\n"
-        "      \"target_table\": \"fully.qualified.table\",\n"
-        "      \"synonyms\": [\"optional natural language trigger\"]\n"
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
-        "Rules:\n"
-        "- Always include exactly one example_sql object.\n"
-        "- Include supporting_changes only when they directly help the example fix the RCA failure.\n"
-        "- Prefer zero to three supporting changes.\n"
-        "- Do not output unsupported patch types.\n"
+    #
+    # Task 14: strip the base preflight prompt's <output_schema> block
+    # since the kit_contract footer carries its own (different) contract.
+    # Keeping both would give the LLM two conflicting output schemas.
+    from genie_space_optimizer.common.config import KIT_CONTRACT_PROMPT_FOOTER
+
+    base_no_schema = _strip_output_schema_block(base)
+    return (
+        "\n\n".join(prefix_parts)
+        + "\n\n"
+        + base_no_schema
+        + "\n\n"
+        + KIT_CONTRACT_PROMPT_FOOTER
     )
-    return "\n\n".join(prefix_parts) + "\n\n" + base + kit_contract
+
+
+def _strip_output_schema_block(prompt: str) -> str:
+    """Remove the ``<output_schema>...</output_schema>`` block from
+    ``prompt``. Used by :func:`render_cluster_driven_prompt` to avoid
+    emitting two competing output contracts on the AFS path.
+
+    Returns ``prompt`` unchanged when no <output_schema> block is found
+    (defensive — callers that don't need the strip get a no-op).
+    """
+    open_tag = "<output_schema>"
+    close_tag = "</output_schema>"
+    start = prompt.find(open_tag)
+    if start < 0:
+        return prompt
+    end = prompt.find(close_tag, start)
+    if end < 0:
+        return prompt
+    end += len(close_tag)
+    # Also trim a trailing blank line so the seam between the stripped
+    # region and the appended footer doesn't double up newlines.
+    while end < len(prompt) and prompt[end] == "\n":
+        end += 1
+    return (prompt[:start] + prompt[end:]).rstrip()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -962,6 +961,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
         # supporting_changes). The dormancy note no longer applies —
         # the contract is now correctly typed.
         from genie_space_optimizer.common.config import (
+            CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG,
             LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
         )
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
@@ -974,7 +974,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
         _link_prompt_to_trace("cluster_driven_example_synthesis")
         try:
             raw, _ = _traced_llm_call(
-                w, "You are a SQL example author.", cluster_prompt,
+                w, CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG, cluster_prompt,
                 span_name="cluster_driven_example_synthesis",
                 max_tokens=LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
                 response_model=TeachingKitOutput,
@@ -1089,6 +1089,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
                 # Task 7: add _link_prompt_to_trace on the retry path too.
                 # Task 4: pass max_tokens.
                 from genie_space_optimizer.common.config import (
+                    CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG,
                     LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
                 )
                 from genie_space_optimizer.optimization.optimizer import _traced_llm_call
@@ -1101,7 +1102,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
                 _link_prompt_to_trace("cluster_driven_example_synthesis")
                 try:
                     retry_raw, _ = _traced_llm_call(
-                        w, "You are a SQL example author.", retry_prompt,
+                        w, CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG, retry_prompt,
                         span_name="cluster_driven_example_synthesis_retry",
                         max_tokens=LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
                         response_model=TeachingKitOutput,

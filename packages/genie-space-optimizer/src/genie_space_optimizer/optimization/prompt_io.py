@@ -503,6 +503,13 @@ class TeachingKitOutput(LLMOutputContract):
     )
 
 
+# Alias matching the inventory test's CamelCase derivation from the
+# registry key ``cluster_driven_example_synthesis``. Lets the registry
+# inventory test find a Pydantic model under its derived name without
+# renaming the canonical TeachingKitOutput.
+ClusterDrivenExampleSynthesisOutput = TeachingKitOutput
+
+
 # ── Lever-5 holistic / instruction (Task 19) ──────────────────────────
 
 

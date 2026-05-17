@@ -5365,6 +5365,82 @@ PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT = (
 LEVER_PROMPTS["preflight_example_synthesis"] = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT
 
 
+# ── Cluster-driven teaching-kit contract footer
+#    (Plan 2026-05-17-cluster-driven-example-synthesis-hardening Task 2) ──
+#
+# Appended by ``render_cluster_driven_prompt`` to the pre-flight base
+# prompt ONLY when AFS / failure context / mining hints are present.
+# This footer replaces the base prompt's <output_schema> block (which
+# render_cluster_driven_prompt strips on the AFS path) so the LLM
+# receives exactly one contract: the teaching-kit shape.
+KIT_CONTRACT_PROMPT_FOOTER = """\
+<output_schema>
+Return one JSON object for a teaching kit:
+{
+  "kit_summary": "short explanation of the failure pattern taught",
+  "example_sql": {
+    "example_question": "new counterfactual business question, not a paraphrase of any failed input",
+    "example_sql": "valid SQL over the allowed assets",
+    "usage_guidance": "when Genie should reuse this example"
+  },
+  "supporting_changes": [
+    {
+      "patch_type": "add_instruction",
+      "section_name": "QUERY CONSTRUCTION",
+      "new_text": "one narrow instruction that helps retrieve or apply the example"
+    },
+    {
+      "patch_type": "add_column_synonym",
+      "table": "fully.qualified.table",
+      "column": "column_name",
+      "synonyms": ["natural language term"]
+    },
+    {
+      "patch_type": "add_sql_snippet_measure|add_sql_snippet_filter|add_sql_snippet_expression",
+      "display_name": "short name",
+      "sql": "reusable SQL expression",
+      "instruction": "when to use it",
+      "target_table": "fully.qualified.table",
+      "synonyms": ["optional natural language trigger"]
+    }
+  ]
+}
+
+Rules:
+- Always include exactly one example_sql object.
+- Include supporting_changes only when they directly help the example fix the RCA failure.
+- Prefer zero to three supporting changes.
+- Do not output unsupported patch types.
+</output_schema>"""
+
+# Plan 2026-05-17-cluster-driven-example-synthesis-hardening Task 3 —
+# register so MLflow trace linking (_link_prompt_to_trace), the
+# observability inventory test, and other registry consumers see the
+# cluster-driven prompt's existence. The dynamic body is assembled at
+# runtime by render_cluster_driven_prompt; what's registered here is
+# the cluster-specific contract footer that always appears verbatim
+# at the bottom of the assembled prompt.
+LEVER_PROMPTS["cluster_driven_example_synthesis"] = KIT_CONTRACT_PROMPT_FOOTER
+
+
+# Sister-parallel to PREFLIGHT_EXAMPLE_SYNTHESIS_SYSTEM_MSG. Anchors the
+# closed-loop role for the cluster-driven path: the LLM is producing a
+# teaching kit to remediate a *specific* RCA failure cluster, not just
+# generating a generic example.
+CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG = (
+    "You are an expert Databricks SQL author producing a teaching kit "
+    "for a Genie Space that just failed on a specific RCA failure "
+    "cluster. Your output is a SINGLE JSON object with three fields: "
+    "kit_summary, example_sql, and supporting_changes. The example_sql "
+    "must be a counterfactual question + SQL pair that, if Genie had "
+    "known it, would have prevented the cluster's failure pattern. "
+    "Supporting_changes are zero to three short, narrow patches that "
+    "complement the example. Never reference benchmark questions, "
+    "evaluation prompts, or test queries. Output strict JSON only — "
+    "no prose, no code fences."
+)
+
+
 # ── 27. Cluster-driven example_sql synthesis (Bug #4 Phase 3 — reactive) ──
 #
 # Reactive counterpart to pre-flight. Triggered from within the lever loop
