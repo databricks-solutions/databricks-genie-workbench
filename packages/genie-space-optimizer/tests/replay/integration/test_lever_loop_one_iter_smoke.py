@@ -9,6 +9,68 @@ spec for Tasks 3-5 (stub design) and the decision data for Task 2.
 The test exits via a sentinel exception after the recorder captures
 ~200 unique I/O paths so we get the manifest without running the
 full loop.
+
+----------------------------------------------------------------------
+STATUS (2026-05-16): Phase 4.5 was ABANDONED after this spike. The
+plan file (``docs/prompt_improvements/2026-05-16-phase-4-5-harness-
+integration-stubbed-io.md``) and the decision doc (``docs/prompt_
+improvements/2026-05-16-phase-4-5-decision.md``) record the rationale.
+This file remains as documentation of the I/O surface so a future
+harness refactor can be measured against it.
+
+KNOWN ENVIRONMENTAL CAVEAT — read before interpreting a re-run.
+
+The spike wraps the ``w`` (WorkspaceClient) and ``spark`` (SparkSession)
+parameters with ``_RecordingProxy``, but it does NOT intercept the
+module-level ``mlflow`` import at ``harness.py:49``. When ``_run_
+lever_loop`` makes its first ``mlflow.*`` call (e.g. ``mlflow.get_
+experiment_by_name`` or ``_mlflow.start_run``), it talks to the real
+mlflow library, which connects to whatever tracking store
+``MLFLOW_TRACKING_URI`` points at on the executor's machine.
+
+If that store is a stale local ``mlflow.db`` SQLite file with an
+out-of-date schema, the first mlflow call raises ``MlflowException``
+with a message like:
+
+    Detected out-of-date database schema (found version <X>, but
+    expected <Y>) ... run 'mlflow db upgrade'
+
+That is what happened on the 2026-05-16 spike run: termination
+``crashed:MlflowException`` after 13 ``spark.sql`` calls. The
+crash is **environmental**, not architectural — it does not by
+itself prove anything about the harness's stubbability.
+
+To take a clean I/O measurement on a future re-run, redirect mlflow
+to a throwaway file-store BEFORE calling ``_run_lever_loop``, using
+the same pattern as ``tests/integration/test_mlflow_smoke_one_
+iteration.py:19``::
+
+    mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns_spike")
+    mlflow.set_experiment("phase_4_5_spike")
+
+With that override in place, expect ONE of two outcomes depending
+on whether the fixture provides realistic ``benchmarks``:
+
+  * Empty ``benchmarks=[]`` (the current 2026-05-16 default from
+    ``load_run_b_59a173d3()``):
+      The harness short-circuits via the no-benchmarks early exit
+      and reports ``termination=completed_iteration`` with
+      ``iteration_counter=0``. The 35 captured calls are run-start
+      logging (~13) + run-end / Phase H / contract-health
+      emit (~22). **The iteration body was never entered**, so
+      this number does NOT measure the architectural cost driver.
+      Reading this manifest as "stubbing cost is low" is a category
+      error — the spike never reached the cost surface.
+
+  * Fixture-derived non-empty ``benchmarks`` plus structured
+    returns from ``w.genie.fetch_space(...)`` and
+    ``spark.sql(...).collect()``:
+      The spike crashes a few hundred calls later when a MagicMock
+      surfaces where a typed ``Row`` / serialized space proto is
+      expected. THAT is the architectural cost driver the
+      abandonment decision is grounded in (~1,200-1,500 LoC of
+      structured-data fixture wiring).
+----------------------------------------------------------------------
 """
 from __future__ import annotations
 
@@ -65,14 +127,32 @@ class _RecordingProxy:
         return child
 
 
-def test_spike_records_lever_loop_io_surface_for_run_b():
+def test_spike_records_lever_loop_io_surface_for_run_b(tmp_path):
     """Spike instrumentation — records WorkspaceClient + SparkSession
     + LLM call manifest for the first iteration of Run B and writes
     it to a deterministic location. The test passes as long as the
     spike terminates cleanly OR captures non-zero I/O before the
     harness throws.
+
+    Per the docstring caveat above, mlflow is redirected to a fresh
+    file-store at ``tmp_path/mlruns_spike`` BEFORE the harness call
+    so the environmental schema-mismatch on a stale local
+    ``mlflow.db`` does not mask the real architectural I/O surface.
     """
     pytest.importorskip("genie_space_optimizer.optimization.harness")
+
+    # Redirect mlflow to a throwaway file-store so the spike measures
+    # the harness's structured-data surface, not whatever stale local
+    # tracking store happens to be configured on the executor.
+    import mlflow
+    mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns_spike")
+    try:
+        mlflow.set_experiment("phase_4_5_spike")
+    except Exception:
+        # set_experiment can raise if the new store is not yet
+        # writable; we don't care — the harness will re-create the
+        # experiment on demand.
+        pass
 
     from genie_space_optimizer.optimization import harness as _h
     from tests.replay.active._postmortem_fixtures import (
