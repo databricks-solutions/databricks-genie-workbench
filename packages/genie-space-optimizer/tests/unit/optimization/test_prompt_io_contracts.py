@@ -313,6 +313,47 @@ def test_lever_5a_instruction_output_parses_prose_only():
     assert parsed.instruction_text.startswith("PURPOSE:")
 
 
+# ── L5a hardening Task 7: max_length validator ──
+
+
+def test_lever_5a_instructions_output_enforces_max_length():
+    """Lever5aInstructionsOutput.instruction_text MUST reject input
+    exceeding MAX_HOLISTIC_INSTRUCTION_CHARS at Pydantic parse time.
+    """
+    from pydantic import ValidationError
+    from genie_space_optimizer.common.config import MAX_HOLISTIC_INSTRUCTION_CHARS
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever5aInstructionsOutput,
+    )
+
+    too_long = "A" * (MAX_HOLISTIC_INSTRUCTION_CHARS + 1)
+    with pytest.raises(ValidationError):
+        Lever5aInstructionsOutput(instruction_text=too_long, rationale="x")
+
+
+def test_lever_5a_instructions_output_allows_exact_max_length():
+    """Boundary case: exactly MAX_HOLISTIC_INSTRUCTION_CHARS chars
+    must be accepted (only N+1 fails)."""
+    from genie_space_optimizer.common.config import MAX_HOLISTIC_INSTRUCTION_CHARS
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever5aInstructionsOutput,
+    )
+
+    exact = "B" * MAX_HOLISTIC_INSTRUCTION_CHARS
+    parsed = Lever5aInstructionsOutput(instruction_text=exact, rationale="x")
+    assert len(parsed.instruction_text) == MAX_HOLISTIC_INSTRUCTION_CHARS
+
+
+def test_lever_5a_instructions_output_allows_empty_instruction_text():
+    """Empty string is the L5a "no fix this iteration" sentinel —
+    must remain valid even with the new max_length validator."""
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever5aInstructionsOutput,
+    )
+    parsed = Lever5aInstructionsOutput(instruction_text="", rationale="no fix")
+    assert parsed.instruction_text == ""
+
+
 def test_lever_5b_example_sql_output_parses_canonical_response():
     from genie_space_optimizer.optimization.prompt_io import Lever5bExampleSqlOutput
     raw = """

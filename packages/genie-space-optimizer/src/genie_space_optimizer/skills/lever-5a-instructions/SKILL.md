@@ -68,31 +68,46 @@ Precedence:
 
 <context>
 
-## Raw Failure Evidence
+<raw_failure_evidence>
 {{ raw_evidence_block }}
-## Genie Space Purpose
+</raw_failure_evidence>
+
+<space_description>
 {{ space_description }}
+</space_description>
 
-## Evaluation Summary
+<eval_summary>
 {{ eval_summary }}
+</eval_summary>
 
-## Failure Clusters from Evaluation
+<failure_clusters>
 Clusters group related failures by root cause and blamed objects. "Correct-but-Suboptimal" clusters produced correct results but used fragile approaches — use for best-practice guidance, not fixes.
+
 {{ cluster_briefs }}
+</failure_clusters>
 
-## Changes Already Applied by Earlier Levers
+<lever_summary>
 Levers 1-4 applied these fixes. Your instructions should COMPLEMENT, not duplicate them.
+
 {{ lever_summary }}
+</lever_summary>
 
-## Current Text Instructions
+<current_instructions>
 {{ current_instructions }}
+</current_instructions>
 
-## Existing Example SQL Queries
+<existing_example_sqls>
 Read-only context: these example SQLs already exist on the space. Do NOT propose new example SQL here — a separate skill handles that. Use this list to AVOID writing instruction prose that merely restates an existing example.
-{{ existing_example_sqls }}
 
-## Identifier Allowlist (Extract-Over-Generate)
+{{ existing_example_sqls }}
+</existing_example_sqls>
+
+<identifier_allowlist>
+Extract-Over-Generate: use ONLY identifiers from this list.
+
 {{ identifier_allowlist }}
+</identifier_allowlist>
+
 </context>
 
 <examples>
@@ -103,6 +118,26 @@ Output:
 {
   "instruction_text": "PURPOSE:\nThis Genie Space covers hotel booking analytics.\n\nASSET ROUTING:\n- Booking summaries: use catalog.schema.get_booking_summary TVF\n- Detailed bookings: use catalog.schema.fact_bookings\n\nFUNCTION ROUTING:\n- For booking summaries, use get_booking_summary TVF with start_date and end_date params\n\nTEMPORAL FILTERS:\n- Always filter fact_bookings by booking_date for performance\n\nDATA QUALITY NOTES:\n- Use is_current = true when joining dim_hotel",
   "rationale": "Routing rules and temporal-filter guidance added; example SQL deferred to the synthesis skill."
+}
+</example>
+
+<example>
+Input: 2 failure clusters — H001: ambiguous "same store" term (two columns mean different things); H002: VP-ranking query returns only top 1 instead of all, requires join from fact to dim for the VP name.
+
+Output:
+{
+  "instruction_text": "BUSINESS DEFINITIONS:\n- same_store_7now = 7NOW same-store flag in mv_7now_fact_sales (Y/N); NOT interchangeable with is_finance_monthly_same_store\n- is_finance_monthly_same_store = finance same-store flag in mv_esr_dim_location\n- zone_vp_name = VP responsible for a zone, available ONLY in mv_esr_dim_location (requires join)\n\nDISAMBIGUATION:\n- When the user mentions \"same store\", clarify whether they mean same_store_7now or is_finance_monthly_same_store before responding.\n\nJOIN GUIDANCE:\n- To get zone_vp_name for fact-level data, join mv_7now_fact_sales to mv_esr_dim_location on location_number, then group by zone_vp_name.\n\nQUERY RULES:\n- When the user asks to rank or list ALL items in a dimension (e.g., all zone VPs), do NOT apply a LIMIT unless explicitly requested.",
+  "rationale": "H001: surfaced the same-store ambiguity in DISAMBIGUATION + BUSINESS DEFINITIONS. H002: added JOIN GUIDANCE for the fact->dim hop and a QUERY RULE preventing the implicit LIMIT-1."
+}
+</example>
+
+<example>
+Input: 0 failure clusters resolved this iteration — all earlier-lever fixes already covered the failure modes; no new prose guidance is actionable.
+
+Output:
+{
+  "instruction_text": "",
+  "rationale": "No actionable prose fix this iteration; earlier levers already addressed all failure clusters in scope."
 }
 </example>
 </examples>
@@ -143,8 +178,10 @@ Non-regressive rules:
 - AUGMENT each section with new learnings.
 - EVERY bullet must reference a specific asset (table, column, function).
 - NEVER include generic domain guidance without referencing an actual asset.
-- Target 30-80 lines. Prefer bullets over paragraphs.
-- Budget: {{ instruction_char_budget }} chars MAXIMUM.
+- Target 30-60 lines. Use bullets, NOT paragraphs.
+- Each bullet ≤ 200 chars.
+- Output budget: {{ instruction_output_char_budget }} chars MAXIMUM (hard cap; post-call truncation will silently cut anything past it).
+- Soft per-section guidance: most sections fit in ~800 chars; BUSINESS DEFINITIONS and QUERY PATTERNS may legitimately need more space (up to ~1,400 chars each) when many entities need disambiguation or many multi-step patterns must be documented. If a section grows beyond its soft guidance AND contains low-impact bullets, prefer trimming the lowest-impact ones first.
 - Omit sections with no actionable content.
 
 ## Scope Boundary (CRITICAL)

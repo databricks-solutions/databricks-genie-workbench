@@ -9481,6 +9481,50 @@ def _call_llm_for_holistic_instructions(
     return {"instruction_text": "", "example_sql_proposals": [], "rationale": "All retries exhausted"}
 
 
+# Canonical L5a section headers. MUST stay in sync with the
+# <instructions> block in lever-5a-instructions/SKILL.md and the
+# LEVER_5A_CANONICAL_SECTIONS tuple in
+# tests/unit/optimization/test_lever_5a_instructions_prompt.py.
+_LEVER_5A_SECTION_HEADERS: tuple[str, ...] = (
+    "PURPOSE:", "ASSET ROUTING:", "BUSINESS DEFINITIONS:",
+    "DISAMBIGUATION:", "AGGREGATION RULES:", "FUNCTION ROUTING:",
+    "JOIN GUIDANCE:", "QUERY RULES:", "QUERY PATTERNS:",
+    "TEMPORAL FILTERS:", "DATA QUALITY NOTES:", "CONSTRAINTS:",
+)
+
+
+def _compute_max_section_chars_for_l5a(instruction_text: str) -> int:
+    """Return the size (in chars) of the longest canonical section
+    in an L5a instruction document.
+
+    Used by the max_section_chars MLflow tag (Task 9 of
+    2026-05-17-lever-5a-instructions-hardening.md) to surface per-
+    section density without re-deploying. Empty / un-sectioned input
+    returns 0.
+    """
+    if not isinstance(instruction_text, str) or not instruction_text:
+        return 0
+
+    header_positions: list[tuple[str, int]] = []
+    for header in _LEVER_5A_SECTION_HEADERS:
+        idx = instruction_text.find(header)
+        if idx >= 0:
+            header_positions.append((header, idx))
+    if not header_positions:
+        return 0
+    header_positions.sort(key=lambda t: t[1])
+
+    max_chars = 0
+    for i, (_, start) in enumerate(header_positions):
+        end = (
+            header_positions[i + 1][1]
+            if i + 1 < len(header_positions)
+            else len(instruction_text)
+        )
+        max_chars = max(max_chars, end - start)
+    return max_chars
+
+
 def _call_llm_for_lever_5a_instructions(
     all_clusters: list[dict],
     metadata_snapshot: dict,
@@ -9547,7 +9591,8 @@ def _call_llm_for_lever_5a_instructions(
         "lever_summary": _format_lever_summary(lever_changes),
         "current_instructions": current_instructions or "(No current instructions.)",
         "existing_example_sqls": existing_example_sqls,
-        "instruction_char_budget": LEVER_5A_INSTRUCTION_BUDGET,
+        "instruction_char_budget": LEVER_5A_INSTRUCTION_BUDGET,  # INPUT budget (deprecated 2026-05-17 per Task 9; kept for back-compat)
+        "instruction_output_char_budget": MAX_HOLISTIC_INSTRUCTION_CHARS,  # OUTPUT budget (Task 9)
         "identifier_allowlist": _format_identifier_allowlist(_allowlist),
         "raw_evidence_block": _format_raw_evidence_block(raw_evidence),
     }
@@ -9580,15 +9625,10 @@ def _call_llm_for_lever_5a_instructions(
     import time
     from genie_space_optimizer.optimization.evaluation import _extract_json
 
-    system_msg = (
-        "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
-        "Do NOT include any explanation, analysis, or markdown outside the JSON. "
-        "Your entire response must be parseable by json.loads(). "
-        "The JSON must contain an 'instruction_text' string field. "
-        "It MUST NOT contain an 'example_sql_proposals' field — that field "
-        "belongs to a separate skill and your output will be rejected if "
-        "you include it."
+    from genie_space_optimizer.common.config import (
+        LEVER_5A_INSTRUCTION_SYSTEM_MSG,
     )
+    system_msg = LEVER_5A_INSTRUCTION_SYSTEM_MSG
 
     from genie_space_optimizer.optimization.prompt_io import (
         Lever5aInstructionsOutput,
@@ -9650,6 +9690,11 @@ def _call_llm_for_lever_5a_instructions(
     }
     ok, reject_reason = _validate_lever_5a_no_sql_output(candidate)
 
+    # Task 9.4b: compute per-section sizes from the post-sanitize,
+    # post-truncate instruction_text so the max_section_chars tag
+    # reflects what the space actually receives.
+    _max_section_chars = _compute_max_section_chars_for_l5a(instruction_text)
+
     # Task 4 — observability tags. Mirrors preflight Task 13 / cluster-
     # driven Task 8. Stay in sync with LEVER_5A_OBSERVABILITY_TAG_KEYS
     # in common/config.py.
@@ -9664,10 +9709,10 @@ def _call_llm_for_lever_5a_instructions(
             "sanitize_made_changes": (
                 "true" if _sanitize_made_changes else "false"
             ),
-            "system_msg_version": "v1",  # bumped to "v2-slim" by Task 6
+            "system_msg_version": "v2-slim",  # bumped from "v1" by Task 6
             "clusters_truncated": str(max(0, len(focus_clusters) - 5)),
             "rca_contract_version": "v1",
-            "max_section_chars": "0",  # placeholder — populated by Task 9.4b
+            "max_section_chars": str(_max_section_chars),
         })
     except Exception:
         logger.debug("L5a observability tag emission failed", exc_info=True)

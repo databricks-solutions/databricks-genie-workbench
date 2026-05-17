@@ -3854,6 +3854,33 @@ LEVER_5A_OBSERVABILITY_TAG_KEYS: tuple[str, ...] = (
     "max_section_chars",
 )
 
+# Lever-5a system message — V1 (deprecated 2026-05-17 per Task 6 of
+# 2026-05-17-lever-5a-instructions-hardening.md). The last 3
+# sentences are obsolete with strict: true typed-IO +
+# additionalProperties: false (cross-cutting plan Task 19). Kept
+# exported for one release for grep-discoverability and rollback.
+LEVER_5A_INSTRUCTION_SYSTEM_MSG_V1_DEPRECATED: str = (
+    "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
+    "Do NOT include any explanation, analysis, or markdown outside the JSON. "
+    "Your entire response must be parseable by json.loads(). "
+    "The JSON must contain an 'instruction_text' string field. "
+    "It MUST NOT contain an 'example_sql_proposals' field — that field "
+    "belongs to a separate skill and your output will be rejected if "
+    "you include it."
+)
+
+# Lever-5a system message — V2 (active). Removes the obsolete
+# example_sql_proposals guard (~95 tokens x every L5a call) and
+# adds an explicit plain-text guard to reduce the rate at which
+# _sanitize_plaintext_instructions has to strip Markdown
+# (baseline §6.D3).
+LEVER_5A_INSTRUCTION_SYSTEM_MSG: str = (
+    "You are a JSON API. Respond with a single JSON object matching "
+    "the provided schema. Output plain text only inside "
+    "instruction_text — no Markdown formatting, no code fences, "
+    "no backticks."
+)
+
 PROMPT_TOKEN_BUDGET = 70_000
 """Token budget for LLM prompts.  Claude Opus 4.6 supports 200k tokens;
 we target ~70k to stay in the quality sweet-spot while leaving headroom

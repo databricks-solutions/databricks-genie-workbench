@@ -396,10 +396,33 @@ class Lever5aInstructionsOutput(LLMOutputContract):
     Class name matches the registry key ``lever_5a_instructions``
     (plural) so the auto-derived class-name convention in
     ``test_every_active_lever_prompt_has_typed_output_contract`` finds it.
-    """
 
-    instruction_text: str = Field(default="")
-    rationale: str = Field(default="")
+    ``instruction_text`` is constrained by Pydantic's ``max_length``
+    to ``MAX_HOLISTIC_INSTRUCTION_CHARS`` (=8000). This catches
+    silent post-call truncation at parse time. Note: the FM-API
+    JSON-schema subset does NOT support ``maxLength`` so this
+    constraint is client-side post-LLM only. The system message
+    + SKILL.md output-budget guidance (Task 9) communicates the
+    budget to the model.
+    """
+    # Lazy import inside the class body to avoid circulars at module
+    # load time (config imports prompt_io for related contracts).
+    from genie_space_optimizer.common.config import (
+        MAX_HOLISTIC_INSTRUCTION_CHARS as _MAX_L5A_CHARS,
+    )
+
+    instruction_text: str = Field(
+        default="",
+        max_length=_MAX_L5A_CHARS,
+        description=(
+            "Plain-text instruction document using ALL-CAPS section "
+            "headers. Empty string means no fix this iteration."
+        ),
+    )
+    rationale: str = Field(
+        default="",
+        description="Brief per-cluster explanation of changes made.",
+    )
 
 
 # Backwards-compat alias for callers that may have imported the singular form.
