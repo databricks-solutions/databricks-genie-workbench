@@ -23,9 +23,29 @@ import re
 from genie_space_optimizer.optimization import harness
 
 
-# Sites that do NOT require an adjacent reflection-buffer write.
-# Add anchors here ONLY with a comment justifying the exemption.
-_REFLECTION_WRITE_WHITELIST: frozenset[int] = frozenset()
+# Sites that do NOT require a +60-forward reflection write.
+# Each entry has a comment justifying the exemption. Two classes:
+#   (a) Pre-AG-selection terminals — no AG to retire.
+#   (b) Per-AG terminals whose reflection_buffer.append happens
+#       earlier in the SAME conditional block (the harness pattern is
+#       reflection-first, then the typed marker emit ~60-300 lines
+#       later in the cleanup tail).
+_REFLECTION_WRITE_WHITELIST: frozenset[int] = frozenset({
+    # (a) Pre-AG-selection — no AG in scope.
+    18679,  # blast_radius_rejected, reserved-recovery early-terminate
+    20161,  # no_structural_candidate, no_actionable_clusters
+    21869,  # no_action_group_emitted, strategy_zero_ags
+    # (b) Per-AG, reflection write precedes the typed marker emit.
+    22115,  # ag_collision_with_forbidden_set, write at ~22047
+    24101,  # proposal_generation_empty, write at ~23865
+    25576,  # no_rca_ground, write at ~25494
+    28474,  # no_applied_patches DOA, write at ~28278
+    28774,  # patch_deploy_failed, write at ~28737
+    # (b) Full-eval path: gate result handling, reflection write
+    # happens later in the rollback (~29597) or accept (~30048)
+    # paths.
+    28966,  # full_eval_regression / accepted, write in gate-result branch
+})
 
 
 _TERMINAL_EMIT_RE = re.compile(

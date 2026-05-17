@@ -26610,6 +26610,40 @@ def _run_lever_loop(
                                     "_marker emit failed (non-fatal)",
                                     exc_info=True,
                                 )
+                            # Phase 2 (2026-05-16) Task 7 — leave a
+                            # reflection-buffer trace so the
+                            # forbidden-set retires this AG's
+                            # signature in subsequent iterations.
+                            reflection_buffer.append(_build_reflection_entry(
+                                iteration=iteration_counter,
+                                ag_id=ag_id,
+                                accepted=False,
+                                levers=[int(lk) for lk in (lever_keys or [])],
+                                target_objects=list(
+                                    _iter_target_qids_for_ledger or ()
+                                ),
+                                prev_scores=best_scores,
+                                new_scores=best_scores,
+                                rollback_reason=(
+                                    "structural_gate_dropped_instruction_only"
+                                ),
+                                patches=[],
+                                affected_question_ids=list(
+                                    _iter_target_qids_for_ledger or ()
+                                ),
+                                prev_failure_qids=prev_failure_qids,
+                                new_failure_qids=prev_failure_qids,
+                                reflection_text=(
+                                    "Structural-repair gate dropped every "
+                                    "proposal as instruction-only."
+                                ),
+                                refinement_mode="out_of_plan",
+                                terminal_signature=_terminal_signature_for_iteration(
+                                    iter_locals=_ag_context_snapshot,
+                                    terminal_reason=_TerminalReason.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY,
+                                ),
+                                **_ag_identity_kwargs,
+                            ))
                         patches = []
             except Exception:
                 logger.debug(
@@ -27620,6 +27654,38 @@ def _run_lever_loop(
                             "marker emit failed (non-fatal)",
                             exc_info=True,
                         )
+                    # Phase 2 (2026-05-16) Task 7 — leave a reflection-
+                    # buffer trace so the forbidden-set retires this
+                    # DOA AG signature.
+                    reflection_buffer.append(_build_reflection_entry(
+                        iteration=iteration_counter,
+                        ag_id=ag_id,
+                        accepted=False,
+                        levers=[int(lk) for lk in (lever_keys or [])],
+                        target_objects=list(
+                            _iter_target_qids_for_ledger or ()
+                        ),
+                        prev_scores=best_scores,
+                        new_scores=best_scores,
+                        rollback_reason="no_applied_patches",
+                        patches=[],
+                        affected_question_ids=list(
+                            _iter_target_qids_for_ledger or ()
+                        ),
+                        prev_failure_qids=prev_failure_qids,
+                        new_failure_qids=prev_failure_qids,
+                        reflection_text=(
+                            "Dead-on-arrival: AG signature matched a "
+                            "prior no_applied_patches; applier would "
+                            "deterministically drop every proposal."
+                        ),
+                        refinement_mode="out_of_plan",
+                        terminal_signature=_terminal_signature_for_iteration(
+                            iter_locals=_ag_context_snapshot,
+                            terminal_reason=_TerminalReason.NO_APPLIED_PATCHES,
+                        ),
+                        **_ag_identity_kwargs,
+                    ))
                 continue
 
             # T3.3: shadow apply. When enabled, the intent is to clone the
@@ -27765,6 +27831,37 @@ def _run_lever_loop(
                             "failed (non-fatal)",
                             exc_info=True,
                         )
+                    # Phase 2 (2026-05-16) Task 7 — leave a reflection-
+                    # buffer trace for the pre-AG-snapshot infrastructure
+                    # failure so the forbidden-set retires this AG.
+                    reflection_buffer.append(_build_reflection_entry(
+                        iteration=iteration_counter,
+                        ag_id=ag_id,
+                        accepted=False,
+                        levers=[int(lk) for lk in (lever_keys or [])],
+                        target_objects=list(
+                            _iter_target_qids_for_ledger or ()
+                        ),
+                        prev_scores=best_scores,
+                        new_scores=best_scores,
+                        rollback_reason="pre_ag_snapshot_failed",
+                        patches=[],
+                        affected_question_ids=list(
+                            _iter_target_qids_for_ledger or ()
+                        ),
+                        prev_failure_qids=prev_failure_qids,
+                        new_failure_qids=prev_failure_qids,
+                        reflection_text=(
+                            "Infrastructure: pre-AG snapshot capture "
+                            "failed; AG could not reach applier."
+                        ),
+                        refinement_mode="out_of_plan",
+                        terminal_signature=_terminal_signature_for_iteration(
+                            iter_locals=_ag_context_snapshot,
+                            terminal_reason=_TerminalReason.UNKNOWN,
+                        ),
+                        **_ag_identity_kwargs,
+                    ))
                 continue
 
             metadata_snapshot = _pre_ag_snapshot_capture["snapshot"]
@@ -29786,6 +29883,40 @@ def _run_lever_loop(
                             "failed (non-fatal)",
                             exc_info=True,
                         )
+                    # Phase 2 (2026-05-16) Task 7 — leave a reflection-
+                    # buffer trace for slice_gate / p0_gate rollbacks
+                    # (the full_eval path's write at ~29500 only fires
+                    # for full_eval:-prefixed rollback reasons). The
+                    # forbidden-set retires this AG's signature.
+                    reflection_buffer.append(_build_reflection_entry(
+                        iteration=iteration_counter,
+                        ag_id=ag_id,
+                        accepted=False,
+                        levers=[int(lk) for lk in (lever_keys or [])],
+                        target_objects=list(
+                            _iter_target_qids_for_ledger or ()
+                        ),
+                        prev_scores=best_scores,
+                        new_scores=best_scores,
+                        rollback_reason=(
+                            str(gate_result.get("rollback_reason") or "")
+                            or "slice_or_p0_gate_rollback"
+                        ),
+                        patches=patches,
+                        affected_question_ids=ag.get("affected_questions", []),
+                        prev_failure_qids=prev_failure_qids,
+                        new_failure_qids=prev_failure_qids,
+                        reflection_text=(
+                            "Slice or p0 gate rejected the candidate "
+                            "after patches were applied."
+                        ),
+                        refinement_mode="out_of_plan",
+                        terminal_signature=_terminal_signature_for_iteration(
+                            iter_locals=_ag_context_snapshot,
+                            terminal_reason=_TerminalReason.UNKNOWN,
+                        ),
+                        **_ag_identity_kwargs,
+                    ))
                 continue
 
             # ── Accept action group ──────────────────────────────────────
