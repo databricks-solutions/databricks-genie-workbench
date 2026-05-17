@@ -1938,6 +1938,10 @@ def synthesize_preflight_candidate(
         if llm_caller is not None:
             return llm_caller(prompt)
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+        from genie_space_optimizer.optimization.evaluation import (
+            _link_prompt_to_trace,
+        )
+        _link_prompt_to_trace("preflight_example_synthesis")
         try:
             raw, _ = _traced_llm_call(
                 w, "You are a SQL example author.", prompt,
