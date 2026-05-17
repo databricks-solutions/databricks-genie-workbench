@@ -21893,6 +21893,13 @@ def _run_lever_loop(
             from genie_space_optimizer.optimization.iteration_ag_context import (
                 capture_iter_ag_context as _capture_iter_ag_context,
             )
+            # Phase 2 (2026-05-16) Task 5 — TerminalSignature wiring.
+            from genie_space_optimizer.optimization.terminal_signature_iter import (
+                terminal_signature_for_iteration as _terminal_signature_for_iteration,
+            )
+            from genie_space_optimizer.optimization.terminal_reason import (
+                TerminalReason as _TerminalReason,
+            )
             _ag_context_snapshot = _capture_iter_ag_context(ag=ag, ag_id=str(ag_id))
             _iter_ag_id_for_ledger = _ag_context_snapshot["ag_id"]
             _iter_cluster_ids_for_ledger = _ag_context_snapshot["cluster_ids"]
@@ -22044,6 +22051,10 @@ def _run_lever_loop(
                     affected_question_ids=ag.get("affected_questions", []),
                     prev_failure_qids=prev_failure_qids,
                     new_failure_qids=prev_failure_qids,
+                    terminal_signature=_terminal_signature_for_iteration(
+                        iter_locals=_ag_context_snapshot,
+                        terminal_reason=_TerminalReason.AG_COLLISION_WITH_FORBIDDEN_SET,
+                    ),
                     **_ag_identity_kwargs,
                 ))
                 _render_current_journey()
@@ -22229,6 +22240,10 @@ def _run_lever_loop(
                         prev_failure_qids=prev_failure_qids,
                         new_failure_qids=prev_failure_qids,
                         escalation_handled=True,
+                        terminal_signature=_terminal_signature_for_iteration(
+                            iter_locals=_ag_context_snapshot,
+                            terminal_reason=_TerminalReason.NO_APPLIED_PATCHES,
+                        ),
                         **_ag_identity_kwargs,
                     ))
                     continue
@@ -22266,6 +22281,10 @@ def _run_lever_loop(
                             prev_failure_qids=prev_failure_qids,
                             new_failure_qids=prev_failure_qids,
                             escalation_handled=True,
+                            terminal_signature=_terminal_signature_for_iteration(
+                                iter_locals=_ag_context_snapshot,
+                                terminal_reason=_TerminalReason.NO_APPLIED_PATCHES,
+                            ),
                             **_ag_identity_kwargs,
                         ))
                     continue
@@ -23875,6 +23894,10 @@ def _run_lever_loop(
                     affected_question_ids=ag.get("affected_questions", []),
                     prev_failure_qids=prev_failure_qids,
                     new_failure_qids=prev_failure_qids,
+                    terminal_signature=_terminal_signature_for_iteration(
+                        iter_locals=_ag_context_snapshot,
+                        terminal_reason=_TerminalReason.PROPOSAL_GENERATION_EMPTY,
+                    ),
                     **_ag_identity_kwargs,
                 ))
                 # Cycle 13 T6 — emit a typed
@@ -25490,6 +25513,10 @@ def _run_lever_loop(
                             repeated_count=1,
                         ),
                     },
+                    terminal_signature=_terminal_signature_for_iteration(
+                        iter_locals=_ag_context_snapshot,
+                        terminal_reason=_TerminalReason.NO_APPLIED_PATCHES,
+                    ),
                     **_ag_identity_kwargs,
                 ))
                 _render_current_journey()
@@ -28179,6 +28206,10 @@ def _run_lever_loop(
                         "apply_failure_stage": "post_apply",
                         "apply_failure_reason": _apply_skip.reason_code,
                     },
+                    terminal_signature=_terminal_signature_for_iteration(
+                        iter_locals=_ag_context_snapshot,
+                        terminal_reason=_TerminalReason.NO_APPLIED_PATCHES,
+                    ),
                     **_ag_identity_kwargs,
                 ))
                 # Phase A — Replay-fixture capture: like the dead-on-arrival
@@ -28613,6 +28644,10 @@ def _run_lever_loop(
                     affected_question_ids=ag.get("affected_questions", []),
                     prev_failure_qids=prev_failure_qids,
                     new_failure_qids=prev_failure_qids,
+                    terminal_signature=_terminal_signature_for_iteration(
+                        iter_locals=_ag_context_snapshot,
+                        terminal_reason=_TerminalReason.UNKNOWN,
+                    ),
                     **_ag_identity_kwargs,
                 ))
                 # Phase 0.3 Task 10 — typed terminal marker for the
@@ -29508,6 +29543,10 @@ def _run_lever_loop(
                     new_failure_qids=_rb_fail_qids or prev_failure_qids,
                     reflection_text=_rb_reflection,
                     refinement_mode=_rb_refinement,
+                    terminal_signature=_terminal_signature_for_iteration(
+                        iter_locals=_ag_context_snapshot,
+                        terminal_reason=_TerminalReason.CONTENT_REGRESSION_ROLLBACK,
+                    ),
                     **_ag_identity_kwargs,
                 )
                 reflection["sql_shape_deltas"] = _sql_deltas

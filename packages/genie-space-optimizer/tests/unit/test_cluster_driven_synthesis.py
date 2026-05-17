@@ -766,7 +766,7 @@ class TestLeakSafety:
         )
         block = render_failure_context_block(ctx.failure_contexts)
 
-        assert "## RCA failure evidence" in rendered
+        assert "<rca_failure_evidence>" in rendered
         assert "Genie generated SQL" in rendered
         assert "SELECT store_id" in rendered
         assert "Group by zone_vp_name" in rendered
@@ -1147,6 +1147,171 @@ class TestHardening:
             "Task 13: CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_SYSTEM_MSG must be "
             "wired at both cluster-driven LLM call sites."
         )
+
+    # ── Tasks 10 + 15: XML migration of remaining markdown + sentinel suppression ──
+
+    def test_cluster_driven_afs_block_uses_xml_tag(self):
+        """Task 15: the AFS block must be wrapped in <failure_signature>
+        instead of the legacy ``## Failure signature (AFS)`` markdown
+        header. Aligns with the surrounding XML contract."""
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterContext,
+            render_cluster_driven_prompt,
+        )
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            ARCHETYPES,
+            AssetSlice,
+        )
+
+        arch = next(a for a in ARCHETYPES if a.name == "top_n_by_metric")
+        slice_ = AssetSlice(
+            tables=[{"identifier": "cat.sch.t"}],
+            columns=[("cat.sch.t", "region")],
+        )
+        ctx = ClusterContext(
+            afs={
+                "cluster_id": "C1",
+                "failure_type": "WRONG_QUALIFICATION",
+                "affected_judge": "structural_judge",
+                "blame_set": ["cat.sch.t"],
+                "suggested_fix_summary": "Add table qualifier.",
+            },
+            asset_slice=slice_,
+        )
+        prompt = render_cluster_driven_prompt(arch, ctx, [])
+
+        assert "<failure_signature>" in prompt
+        assert "</failure_signature>" in prompt
+        assert "## Failure signature (AFS)" not in prompt
+
+    def test_cluster_driven_failure_context_block_uses_xml_tag(self):
+        """Task 15: the RCA failure-evidence block must be wrapped in
+        <rca_failure_evidence> instead of the legacy markdown header."""
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            render_failure_context_block,
+        )
+
+        block = render_failure_context_block([
+            {
+                "question_id": "q1",
+                "root_cause": "missing_qualifier",
+                "rationales": ["judge note 1"],
+            }
+        ])
+        assert "<rca_failure_evidence>" in block
+        assert "</rca_failure_evidence>" in block
+        assert "## RCA failure evidence" not in block
+
+    def test_cluster_driven_afs_block_suppresses_sentinels(self):
+        """Task 10: when AFS fields are 'unknown' / '(none)' / '?',
+        render_afs_block must SKIP them rather than emit the sentinel
+        as if it were data. Sentinels add no signal and crowd the
+        prompt."""
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            render_afs_block,
+        )
+
+        # Only cluster_id present; all other fields would be sentinels.
+        block = render_afs_block({"cluster_id": "C1"})
+        assert "Cluster ID: C1" in block
+        # The legacy sentinels must not appear.
+        for sentinel in (
+            "Failure type: unknown",
+            "Affected judge: unknown",
+            "Blamed objects: (none)",
+        ):
+            assert sentinel not in block, (
+                f"render_afs_block still emits sentinel {sentinel!r}"
+            )
+
+    # ── Task 6: normalize_teaching_kit on retry path ──
+
+    def test_cluster_driven_retry_path_calls_normalize_teaching_kit(self):
+        """Task 6: the retry path must run the LLM's raw teaching kit
+        through normalize_teaching_kit so the retry's supporting_changes
+        and primary are validated/typed the same way as the primary
+        path. Without this, the retry can produce a half-validated
+        teaching kit that bypasses the normal patch-type filtering."""
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "genie_space_optimizer" / "optimization"
+            / "cluster_driven_synthesis.py"
+        )
+        body = src.read_text()
+        # Find the retry block: starts after "Phase 3.R6" comment, ends
+        # before the next gate validation. We assert normalize_teaching_kit
+        # appears AFTER the retry _traced_llm_call.
+        retry_call_idx = body.find('span_name="cluster_driven_example_synthesis_retry"')
+        assert retry_call_idx > 0, "retry call site landmark missing"
+        # The next normalize_teaching_kit reference after the retry call
+        # must appear before the next ``# ──`` section break — i.e. inside
+        # the retry handling.
+        next_normalize = body.find("normalize_teaching_kit", retry_call_idx)
+        assert next_normalize > retry_call_idx, (
+            "Task 6: normalize_teaching_kit is not invoked on the retry "
+            "path — the retry proposal bypasses kit normalization."
+        )
+
+    # ── Task 9: leak-safety of regression_mining_hints ──
+
+    def test_cluster_driven_rejects_unsafe_regression_mining_hints(self):
+        """Task 9: regression_mining_hints must be AFS-sanitized before
+        being appended to the prompt. If the hints carry forbidden
+        benchmark tokens (expected_sql / benchmark question /
+        inputs.question), rendering must raise rather than leak them."""
+        import pytest
+
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterContext,
+            render_cluster_driven_prompt,
+        )
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            ARCHETYPES,
+            AssetSlice,
+        )
+
+        arch = next(a for a in ARCHETYPES if a.name == "top_n_by_metric")
+        slice_ = AssetSlice(
+            tables=[{"identifier": "cat.sch.t"}],
+            columns=[("cat.sch.t", "region")],
+        )
+        ctx = ClusterContext(
+            afs={"cluster_id": "C1", "failure_type": "wrong_qualification"},
+            asset_slice=slice_,
+            regression_mining_hints=(
+                "Look at the expected_sql for this case: SELECT region FROM x"
+            ),
+        )
+        with pytest.raises(ValueError, match="forbidden"):
+            render_cluster_driven_prompt(arch, ctx, [])
+
+    def test_cluster_driven_safe_regression_mining_hints_render(self):
+        """Clean hints (no benchmark tokens) must render normally."""
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterContext,
+            render_cluster_driven_prompt,
+        )
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            ARCHETYPES,
+            AssetSlice,
+        )
+
+        arch = next(a for a in ARCHETYPES if a.name == "top_n_by_metric")
+        slice_ = AssetSlice(
+            tables=[{"identifier": "cat.sch.t"}],
+            columns=[("cat.sch.t", "region")],
+        )
+        ctx = ClusterContext(
+            afs={"cluster_id": "C1", "failure_type": "wrong_qualification"},
+            asset_slice=slice_,
+            regression_mining_hints=(
+                "Prefer aggregating on region — past failures used dim_date."
+            ),
+        )
+        prompt = render_cluster_driven_prompt(arch, ctx, [])
+        assert "Prefer aggregating on region" in prompt
 
     def test_cluster_driven_call_sites_wire_teaching_kit_output(self):
         """Task 5: both primary and retry cluster-driven LLM call sites

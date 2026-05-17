@@ -100,18 +100,25 @@ def render_afs_block(afs: dict) -> str:
     if not afs:
         return ""
     lines: list[str] = []
-    cluster_id = str(afs.get("cluster_id") or "?")
-    failure_type = str(afs.get("failure_type") or "unknown")
-    affected_judge = str(afs.get("affected_judge") or "unknown")
+    # Task 10: render only fields with real signal. Sentinels like
+    # ``unknown``, ``(none)`` and ``?`` add no information and crowd
+    # the prompt — skip them rather than emit them.
+    cluster_id = str(afs.get("cluster_id") or "").strip()
+    failure_type = str(afs.get("failure_type") or "").strip()
+    affected_judge = str(afs.get("affected_judge") or "").strip()
     blame = afs.get("blame_set") or []
-    blame_str = ", ".join(str(b) for b in blame if b) if blame else "(none)"
+    blame_str = ", ".join(str(b) for b in blame if b) if blame else ""
     suggested_fix = str(afs.get("suggested_fix_summary") or "").strip()
     counterfactuals = afs.get("counterfactual_fixes") or []
 
-    lines.append(f"  Cluster ID: {cluster_id}")
-    lines.append(f"  Failure type: {failure_type}")
-    lines.append(f"  Affected judge: {affected_judge}")
-    lines.append(f"  Blamed objects: {blame_str}")
+    if cluster_id and cluster_id != "?":
+        lines.append(f"  Cluster ID: {cluster_id}")
+    if failure_type and failure_type.lower() != "unknown":
+        lines.append(f"  Failure type: {failure_type}")
+    if affected_judge and affected_judge.lower() != "unknown":
+        lines.append(f"  Affected judge: {affected_judge}")
+    if blame_str:
+        lines.append(f"  Blamed objects: {blame_str}")
     if suggested_fix:
         lines.append(f"  Suggested fix: {suggested_fix}")
     if counterfactuals:
@@ -140,7 +147,7 @@ def render_failure_context_block(failure_contexts: list[dict] | None) -> str:
     if not contexts:
         return ""
     lines = [
-        "## RCA failure evidence",
+        "<rca_failure_evidence>",
         "Use this to understand what Genie misunderstood. Do not imitate any failed input prompt.",
     ]
     for idx, ctx in enumerate(contexts[:3], 1):
@@ -171,6 +178,7 @@ def render_failure_context_block(failure_contexts: list[dict] | None) -> str:
             lines.append(generated_sql[:4000])
             lines.append("```")
 
+    lines.append("</rca_failure_evidence>")
     rendered = "\n".join(lines)
     forbidden_tokens = ("expected_sql", "benchmark question", "inputs.question")
     if any(token in rendered.lower() for token in forbidden_tokens):
@@ -357,6 +365,18 @@ def render_cluster_driven_prompt(
     afs_block = render_afs_block(context.afs)
     failure_block = render_failure_context_block(context.failure_contexts)
     hints = (context.regression_mining_hints or "").strip()
+    # Task 9: leak-safety guard. ``regression_mining_hints`` is built by
+    # the harness from past run telemetry — if it ever carries benchmark
+    # tokens, surface that loudly here rather than silently leaking the
+    # tokens into the prompt. Same forbidden-token set as
+    # ``render_failure_context_block``.
+    if hints:
+        _forbidden = ("expected_sql", "benchmark question", "inputs.question")
+        if any(tok in hints.lower() for tok in _forbidden):
+            raise ValueError(
+                "regression_mining_hints contains forbidden benchmark field — "
+                "refusing to render cluster-driven prompt"
+            )
     # Byte-equivalence contract: with neither AFS nor hints, the
     # pre-flight prompt renders verbatim. Hints are placed AFTER the
     # AFS block so the existing AFS test fixtures stay valid; the
@@ -365,8 +385,10 @@ def render_cluster_driven_prompt(
     prefix_parts: list[str] = []
     if afs_block:
         prefix_parts.append(
-            "## Failure signature (AFS) — this example must address this failure\n"
-            f"{afs_block}"
+            "<failure_signature>\n"
+            "This example must address the failure described below.\n"
+            f"{afs_block}\n"
+            "</failure_signature>"
         )
     if failure_block:
         prefix_parts.append(failure_block)
@@ -1115,9 +1137,23 @@ def run_cluster_driven_synthesis_for_single_cluster(
                     retry_raw = ""
             else:
                 retry_raw = llm_caller(retry_prompt)
-            retry_proposal = (
+            retry_raw_proposal = (
                 _extract_json_proposal(retry_raw) if retry_raw else None
             )
+            # Task 6: run the retry's raw kit through normalize_teaching_kit
+            # so its supporting_changes (and primary example) get the same
+            # discriminator/type filtering that the primary path applies.
+            # Without this, the retry can produce supporting patches with
+            # unsupported patch_types that slip past the primary-path
+            # validation.
+            retry_kit = normalize_teaching_kit(
+                retry_raw_proposal or {},
+                kit_id=kit_id,
+                target_qids=target_qids,
+                rca_id=str(cluster.get("rca_id") or ""),
+            )
+            retry_proposal = retry_kit.primary or None
+            retry_supporting = list(retry_kit.supporting)
             if retry_proposal is not None:
                 retry_proposal.setdefault("patch_type", archetype.patch_type)
                 if "usage_guidance" not in retry_proposal:
@@ -1125,6 +1161,27 @@ def run_cluster_driven_synthesis_for_single_cluster(
                         retry_proposal.get("rationale") or "",
                     ).strip()
                 proposal = retry_proposal
+                # Replace the primary-path's supporting proposals with the
+                # retry's normalized set — the retry is the authoritative
+                # response if it succeeded.
+                supporting_proposals = []
+                for support in retry_supporting:
+                    if str(support.get("patch_type") or "").startswith(
+                        "add_sql_snippet_"
+                    ):
+                        validated = _validate_supporting_sql_snippet(
+                            support,
+                            metadata_snapshot=metadata_snapshot,
+                            spark=spark,
+                            catalog=catalog,
+                            gold_schema=gold_schema,
+                            w=w,
+                            warehouse_id=warehouse_id,
+                        )
+                        if validated is not None:
+                            supporting_proposals.append(validated)
+                    else:
+                        supporting_proposals.append(support)
                 passed, gate_results = validate_synthesis_proposal(
                     retry_proposal,
                     archetype=archetype,
