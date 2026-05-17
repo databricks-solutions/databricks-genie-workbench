@@ -12,16 +12,29 @@ from __future__ import annotations
 from typing import Any
 
 
-def test_flag_defaults_off(monkeypatch: Any) -> None:
-    """Default state: rich-path routing is OFF. Byte-stable fixtures
-    continue to pin the lean path."""
+def test_flag_defaults_on(monkeypatch: Any) -> None:
+    """Phase 0.5 (2026-05-16) — flipped the default from "0" to "1".
+
+    Plan B's rich-path routing sends SQL-shape clusters through
+    ``run_cluster_driven_synthesis_for_single_cluster`` (AFS block,
+    failure_contexts, teaching-kit contract, 5 gates, arbiter)
+    instead of the lean ``synthesize_example_sqls`` adapter. The
+    byte-stable fixtures in ``tests/fixtures/lever5_split_v1/`` and
+    the replay suite at ``tests/replay/test_l5b_rich_path_replay.py``
+    pin both flag states. Every production / test caller uses an
+    explicit ``monkeypatch.setenv``, so flipping the implicit
+    default is safe."""
     monkeypatch.delenv(
         "GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", raising=False,
     )
     from genie_space_optimizer.common.config import (
         rich_synthesis_primary_for_sql_shape_enabled,
     )
-    assert rich_synthesis_primary_for_sql_shape_enabled() is False
+    assert rich_synthesis_primary_for_sql_shape_enabled() is True, (
+        "Phase 0.5 must flip the default to '1'. If this assert fires "
+        "after the flip lands, somebody reverted config.py. See "
+        "docs/prompt_improvements/2026-05-16-phase-0-5-cheap-independent-wins.md"
+    )
 
 
 def test_flag_on_when_env_var_set_to_one(monkeypatch: Any) -> None:

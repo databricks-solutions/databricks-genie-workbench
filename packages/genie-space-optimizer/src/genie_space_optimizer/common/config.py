@@ -6511,11 +6511,13 @@ def rich_synthesis_primary_for_sql_shape_enabled() -> bool:
 
     Env var: ``GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE``.
 
-    Default: ``"0"`` (off). The byte-stable fixtures in
-    ``tests/fixtures/lever5_split_v1/`` pin the lean-path output; the
-    follow-up plan documented at
-    ``docs/prompt_improvements/2026-05-16-plan-b-rich-synthesis-primary-path-followups.md``
-    flips the default to ``"1"`` and regenerates those fixtures.
+    Default: ``"1"`` (on) as of Phase 0.5 (2026-05-16). Both flag
+    states are replay-pinned by
+    ``tests/replay/test_l5b_rich_path_replay.py`` (and the lean-path
+    byte-stable fixtures in ``tests/fixtures/lever5_split_v1/`` cover
+    the legacy route). Every production / test caller uses an
+    explicit ``monkeypatch.setenv``, so flipping the implicit default
+    is safe. See ``docs/prompt_improvements/2026-05-16-phase-0-5-cheap-independent-wins.md``.
 
     Accepts (case-insensitive): ``1``, ``true``, ``yes``, ``y``. Anything
     else (including unset, ``0``, ``false``, ``no``, ``off``, empty)
@@ -6525,7 +6527,7 @@ def rich_synthesis_primary_for_sql_shape_enabled() -> bool:
     runs, not cached, so tests can toggle via monkeypatch.
     """
     raw = os.environ.get(
-        "GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "0",
+        "GSO_RICH_SYNTHESIS_PRIMARY_FOR_SQL_SHAPE", "1",
     ).strip().lower()
     return raw in {"1", "true", "yes", "y"}
 
