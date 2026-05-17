@@ -11,12 +11,25 @@ from __future__ import annotations
 from typing import Any
 
 
-def test_flag_defaults_off(monkeypatch: Any) -> None:
+def test_flag_defaults_on(monkeypatch: Any) -> None:
+    """Phase 0.5 (2026-05-16) — flipped the default from "0" to "1".
+
+    The Plan C2 SQL-shape-overlap gate is a NARROWING of the
+    high-collateral-risk scan (fewer false positives on the
+    table-only overlap path). The gate is replay-pinned in both
+    states by ``tests/replay/test_c2_sql_shape_overlap_replay.py``;
+    flipping the default to ``"1"`` is the user-spec invariant per
+    the original docstring."""
     monkeypatch.delenv("GSO_SQL_SHAPE_OVERLAP_GATE", raising=False)
     from genie_space_optimizer.common.config import (
         sql_shape_overlap_gate_enabled,
     )
-    assert sql_shape_overlap_gate_enabled() is False
+    assert sql_shape_overlap_gate_enabled() is True, (
+        "Phase 0.5 must flip the default to '1'. If this assert fires "
+        "after the flip lands, somebody reverted "
+        "config.py. See "
+        "docs/prompt_improvements/2026-05-16-phase-0-5-cheap-independent-wins.md"
+    )
 
 
 def test_flag_on_when_env_var_set_to_one(monkeypatch: Any) -> None:

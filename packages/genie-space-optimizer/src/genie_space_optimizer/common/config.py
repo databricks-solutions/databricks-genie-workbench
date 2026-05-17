@@ -6483,12 +6483,13 @@ def sql_shape_overlap_gate_enabled() -> bool:
 
     Env var: ``GSO_SQL_SHAPE_OVERLAP_GATE``.
 
-    Default: ``"0"`` (off). The behaviour change is a NARROWING of the
-    scan (fewer false positives on the high-collateral-risk flag), so
-    flipping the default to ``"1"`` is the user-spec invariant, but
-    the follow-up plan at
-    ``docs/prompt_improvements/2026-05-16-plan-c-downstream-backstops-followups.md``
-    handles the flip after replay validation lands.
+    Default: ``"1"`` (on) as of Phase 0.5 (2026-05-16). The behaviour
+    change is a NARROWING of the scan (fewer false positives on the
+    high-collateral-risk flag). Both states are replay-pinned by
+    ``tests/replay/test_c2_sql_shape_overlap_replay.py`` and every
+    production / test caller uses an explicit ``monkeypatch.setenv``
+    rather than the implicit default, so the flip is safe. See
+    ``docs/prompt_improvements/2026-05-16-phase-0-5-cheap-independent-wins.md``.
 
     Accepts (case-insensitive): ``1``, ``true``, ``yes``, ``y``.
     Anything else (including unset, ``0``, ``false``, ``no``, ``off``,
@@ -6497,7 +6498,7 @@ def sql_shape_overlap_gate_enabled() -> bool:
     Read at the call site each time ``_t24_counterfactual_scan`` runs,
     not cached, so tests can toggle via monkeypatch.
     """
-    raw = os.environ.get("GSO_SQL_SHAPE_OVERLAP_GATE", "0").strip().lower()
+    raw = os.environ.get("GSO_SQL_SHAPE_OVERLAP_GATE", "1").strip().lower()
     return raw in {"1", "true", "yes", "y"}
 
 
