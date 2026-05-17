@@ -175,14 +175,20 @@ def _failed_judges(cluster: dict) -> list[str]:
 def _counterfactual_fixes(cluster: dict) -> list[str]:
     """Pull judge-supplied counterfactual fixes. These are short human-readable
     guidance strings (``"use sum() not count()"``, ``"partition by quarter"``)
-    and are the synthesis LLM's primary signal after AFS removes raw SQL."""
+    and are the synthesis LLM's primary signal after AFS removes raw SQL.
+
+    Per-suggestion truncation cap raised 2026-05-17 per lever-5a
+    hardening Task 13 (baseline §6.C6). The 200-char cap was cutting
+    suggested-fix lines mid-sentence; 400 chars preserves more
+    actionable signal while still bounding pathological inputs.
+    """
     raw = cluster.get("asi_counterfactual_fixes") or cluster.get("counterfactual_fixes")
     if not raw:
         return []
     if isinstance(raw, list):
-        return [str(f)[:200] for f in raw[:10]]
+        return [str(f)[:400] for f in raw[:10]]
     if isinstance(raw, str):
-        return [raw[:200]]
+        return [raw[:400]]
     return []
 
 

@@ -9336,7 +9336,22 @@ def _call_llm_for_holistic_instructions(
     """Single LLM call to synthesize ALL evaluation learnings into holistic instructions.
 
     Returns ``{"instruction_text": str, "example_sql_proposals": list, "rationale": str}``.
+
+    DEPRECATED 2026-05-17 (Plan 2026-05-17-lever-5a-instructions-
+    hardening.md Task 16, baseline §6.E1). The L5 holistic path was
+    superseded by ``_dispatch_lever_5_split`` (Plan 2; unconditionally
+    on as of 2026-05-16). No production caller invokes this function
+    today; it is retained for one release for emergency rollback +
+    test_llm_client.py exercise. To remove permanently, delete this
+    function, the ``LEVER_5_HOLISTIC_PROMPT`` constant, the
+    ``LEVER_PROMPTS["lever_5_holistic"]`` registry entry, and update
+    the test in tests/unit/test_llm_client.py.
     """
+    logger.warning(
+        "DEPRECATED: _call_llm_for_holistic_instructions invoked. "
+        "Use _dispatch_lever_5_split instead. Tracked by "
+        "2026-05-17-lever-5a-instructions-hardening.md Task 16."
+    )
     from genie_space_optimizer.optimization.applier import _get_general_instructions
 
     ds = metadata_snapshot.get("data_sources", {})
@@ -9851,48 +9866,67 @@ def _dispatch_lever_5_split(
     ``tests/fixtures/lever5_split_v1/`` fixtures are pinned in CI
     so the emission path is no longer needed.
     """
-    # Build the benchmark corpus once and reuse for every cluster.
-    benchmark_corpus = None
-    try:
-        from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
-        benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks or [])
-    except Exception:
-        logger.warning(
-            "L5 split: unable to construct BenchmarkCorpus from "
-            "%d benchmarks; L5b firewall will run with empty corpus",
-            len(benchmarks or []),
-            exc_info=True,
-        )
+    # Task 13: wrap the dispatcher in an MLflow span so the 5a + 5b
+    # fan-out is visible as a single parent in traces. Without this,
+    # the lever_5a_instructions and lever_5b_example_sql spans appear
+    # as siblings under a generic optimization span with no dispatch
+    # context (cluster counts, dispatched_5a/5b flags).
+    import mlflow as _mlflow
 
-    five_a = _call_llm_for_lever_5a_instructions(
-        all_clusters=all_clusters,
-        metadata_snapshot=metadata_snapshot,
-        lever_changes=lever_changes,
-        w=w,
-    )
+    cluster_list = list(all_clusters or [])
+    _dispatched_5a = True  # always fires (one merged call for the AG)
+    _dispatched_5b = len(cluster_list) > 0  # one call per cluster
 
-    example_sql_proposals: list[dict] = []
-    for cluster in (all_clusters or []):
-        example_sql_proposals.extend(
-            _dispatch_lever_5b_for_cluster(
-                cluster=cluster,
-                metadata_snapshot=metadata_snapshot,
-                w=w,
-                benchmark_corpus=benchmark_corpus,
-                benchmarks=benchmarks,
+    with _mlflow.start_span(
+        name="lever_5_dispatch",
+        attributes={
+            "cluster_count": len(cluster_list),
+            "dispatched_5a": _dispatched_5a,
+            "dispatched_5b": _dispatched_5b,
+        },
+    ):
+        # Build the benchmark corpus once and reuse for every cluster.
+        benchmark_corpus = None
+        try:
+            from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
+            benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks or [])
+        except Exception:
+            logger.warning(
+                "L5 split: unable to construct BenchmarkCorpus from "
+                "%d benchmarks; L5b firewall will run with empty corpus",
+                len(benchmarks or []),
+                exc_info=True,
             )
+
+        five_a = _call_llm_for_lever_5a_instructions(
+            all_clusters=all_clusters,
+            metadata_snapshot=metadata_snapshot,
+            lever_changes=lever_changes,
+            w=w,
         )
 
-    rationale = (
-        f"L5a: {five_a.get('rationale', '') or '(none)'}. "
-        f"L5b: {len(example_sql_proposals)} example SQLs across "
-        f"{len(all_clusters or [])} cluster(s)."
-    )
-    return {
-        "instruction_text": five_a.get("instruction_text", "") or "",
-        "example_sql_proposals": example_sql_proposals,
-        "rationale": rationale,
-    }
+        example_sql_proposals: list[dict] = []
+        for cluster in cluster_list:
+            example_sql_proposals.extend(
+                _dispatch_lever_5b_for_cluster(
+                    cluster=cluster,
+                    metadata_snapshot=metadata_snapshot,
+                    w=w,
+                    benchmark_corpus=benchmark_corpus,
+                    benchmarks=benchmarks,
+                )
+            )
+
+        rationale = (
+            f"L5a: {five_a.get('rationale', '') or '(none)'}. "
+            f"L5b: {len(example_sql_proposals)} example SQLs across "
+            f"{len(cluster_list)} cluster(s)."
+        )
+        return {
+            "instruction_text": five_a.get("instruction_text", "") or "",
+            "example_sql_proposals": example_sql_proposals,
+            "rationale": rationale,
+        }
 
 
 def _select_lever_5_holistic_path(
@@ -12451,14 +12485,22 @@ def _validate_lever_5a_no_sql_output(result: dict) -> tuple[bool, str]:
 
     The output schema in ``LEVER_5A_INSTRUCTION_PROMPT`` already
     forbids ``example_sql_proposals`` and SQL blocks. This validator
-    catches the LLM going off-script.
+    catches the LLM going off-script AND defends against post-LLM
+    code-path bugs that might re-introduce the forbidden key.
 
     Returns ``(ok, reason)``. ``ok=True`` means the result is publishable.
 
     Detectors (in order, first match wins):
       1. Forbidden top-level key ``example_sql_proposals`` in the dict.
+         **Sentinel post commit 70968193**: with ``strict: true``
+         typed-IO + ``additionalProperties: false`` enforced server-
+         side, the LLM cannot emit this key. This detector now
+         catches code-path bugs where someone tries to inject the
+         field post-LLM. Monitor the rate via the
+         ``validate_no_sql_result`` MLflow span tag — any
+         "rejected:forbidden_key" hit is a code bug, not an LLM issue.
       2. Fenced ```sql code block in ``instruction_text`` (case-insensitive).
-      3. ``SELECT ... FROM ...`` pattern of ≥40 chars in ``instruction_text``
+      3. ``SELECT ... FROM ...`` pattern of >=40 chars in ``instruction_text``
          that resembles an actual query (heuristic; tuned to avoid prose
          like "select the right table").
     """

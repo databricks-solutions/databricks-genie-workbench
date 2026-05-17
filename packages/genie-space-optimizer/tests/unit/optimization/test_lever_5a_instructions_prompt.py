@@ -690,3 +690,120 @@ def test_skill_md_examples_cover_distinct_pattern_keywords():
         "At least one example MUST demonstrate the empty-output case "
         "(instruction_text=\"\") to ground the no-fix sentinel."
     )
+
+
+# ── Task 13: Cluster-briefs truncation + dispatcher span ──
+
+
+def test_format_cluster_briefs_surfaces_truncation_count():
+    """When len(focus_clusters) > top_n, _format_cluster_briefs_afs
+    MUST surface the dropped count so the LLM knows it's looking at
+    a truncated view. Baseline §6.C5."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _format_cluster_briefs_afs,
+    )
+
+    clusters = [
+        {
+            "cluster_id": f"H{i:03d}", "root_cause": "unknown",
+            "judge": "schema_accuracy", "affected_questions": [f"q{i}"],
+            "suggested_fixes": [f"fix{i}"],
+        }
+        for i in range(1, 8)
+    ]
+    rendered = _format_cluster_briefs_afs(clusters, top_n=5)
+    assert "2 more" in rendered or "2 additional" in rendered, (
+        "Rendered cluster_briefs MUST surface truncation count "
+        "(2 dropped) to the model. Pre-Task-13 was silent drop."
+    )
+
+
+def test_format_cluster_briefs_does_not_emit_truncation_when_under_top_n():
+    """No truncation footer when there's nothing to truncate."""
+    from genie_space_optimizer.optimization.optimizer import (
+        _format_cluster_briefs_afs,
+    )
+    clusters = [
+        {
+            "cluster_id": "H001", "root_cause": "unknown",
+            "judge": "schema_accuracy", "affected_questions": ["q1"],
+            "suggested_fixes": ["fix1"],
+        },
+    ]
+    rendered = _format_cluster_briefs_afs(clusters, top_n=5)
+    assert "Additional hard-failure" not in rendered
+
+
+def test_counterfactual_fixes_per_suggestion_cap_raised_to_400():
+    """Per-suggestion truncation cap raised from 200 to 400 chars
+    (baseline §6.C6 — suggested-fix lines are the most actionable
+    per-cluster signal). Verified at the afs._counterfactual_fixes
+    layer since _format_cluster_briefs_afs delegates rendering."""
+    from genie_space_optimizer.optimization.afs import _counterfactual_fixes
+
+    long_fix = "A" * 350
+    fixes = _counterfactual_fixes({"asi_counterfactual_fixes": [long_fix]})
+    assert fixes[0].startswith("A" * 300), (
+        "Per-suggestion truncation cap should accommodate >=300-char "
+        "suggestions after Task 13 raises it from 200 to 400."
+    )
+
+
+def test_dispatch_lever_5_split_emits_mlflow_span(monkeypatch):
+    """_dispatch_lever_5_split MUST wrap its body in an mlflow.start_span
+    so per-dispatch decisions are visible in traces. Baseline §6.E2."""
+    import mlflow
+    from genie_space_optimizer.optimization import optimizer as opt
+
+    span_calls: list[dict] = []
+
+    class _FakeSpan:
+        def __init__(self, name, **kw):
+            span_calls.append({"name": name, **kw})
+            self.attributes = dict(kw.get("attributes") or {})
+
+        def set_attributes(self, attrs):
+            self.attributes.update(attrs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_start_span(name, **kw):
+        return _FakeSpan(name, **kw)
+
+    monkeypatch.setattr(mlflow, "start_span", _fake_start_span)
+    monkeypatch.setattr(
+        opt, "_call_llm_for_lever_5a_instructions",
+        lambda *a, **kw: {"instruction_text": "", "rationale": ""},
+    )
+    monkeypatch.setattr(
+        opt, "_dispatch_lever_5b_for_cluster",
+        lambda *a, **kw: [],
+    )
+
+    opt._dispatch_lever_5_split(
+        all_clusters=[{"cluster_id": "H001"}],
+        metadata_snapshot={
+            "data_sources": {"tables": [], "metric_views": [], "functions": []},
+            "config": {"description": ""},
+            "general_instructions": [],
+        },
+        lever_changes=[],
+        w=None,
+        benchmarks=None,
+    )
+
+    span_names = [s["name"] for s in span_calls]
+    assert "lever_5_dispatch" in span_names, (
+        "_dispatch_lever_5_split MUST emit an mlflow span named "
+        "'lever_5_dispatch' so per-dispatch routing is observable."
+    )
+    # And the span attributes include dispatch flags.
+    dispatch_span = next(s for s in span_calls if s["name"] == "lever_5_dispatch")
+    attrs = dispatch_span.get("attributes") or {}
+    assert attrs.get("dispatched_5a") is True
+    assert attrs.get("dispatched_5b") is True
+    assert attrs.get("cluster_count") == 1

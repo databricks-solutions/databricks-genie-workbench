@@ -69,6 +69,8 @@ Precedence:
 <context>
 
 <raw_failure_evidence>
+Per-cluster failure records. Some fields (question, actual_sql, expected_sql) may be empty when upstream evidence collection did not capture them; rely on judge_rationale and the cluster summary for those cases. Do NOT echo the raw SQL verbatim in your output — paraphrase the failure pattern.
+
 {{ raw_evidence_block }}
 </raw_failure_evidence>
 
@@ -126,7 +128,7 @@ Input: 2 failure clusters — H001: ambiguous "same store" term (two columns mea
 
 Output:
 {
-  "instruction_text": "BUSINESS DEFINITIONS:\n- same_store_7now = 7NOW same-store flag in mv_7now_fact_sales (Y/N); NOT interchangeable with is_finance_monthly_same_store\n- is_finance_monthly_same_store = finance same-store flag in mv_esr_dim_location\n- zone_vp_name = VP responsible for a zone, available ONLY in mv_esr_dim_location (requires join)\n\nDISAMBIGUATION:\n- When the user mentions \"same store\", clarify whether they mean same_store_7now or is_finance_monthly_same_store before responding.\n\nJOIN GUIDANCE:\n- To get zone_vp_name for fact-level data, join mv_7now_fact_sales to mv_esr_dim_location on location_number, then group by zone_vp_name.\n\nQUERY RULES:\n- When the user asks to rank or list ALL items in a dimension (e.g., all zone VPs), do NOT apply a LIMIT unless explicitly requested.",
+  "instruction_text": "BUSINESS DEFINITIONS:\n- same_store_flag_retail = retail same-store flag in <fact-table> (Y/N); NOT interchangeable with finance_same_store_flag\n- finance_same_store_flag = finance same-store flag in <dim-location-table>\n- zone_vp_name = VP responsible for a zone, available ONLY in <dim-location-table> (requires join)\n\nDISAMBIGUATION:\n- When the user mentions \"same store\", clarify whether they mean same_store_flag_retail or finance_same_store_flag before responding.\n\nJOIN GUIDANCE:\n- To get zone_vp_name for fact-level data, join <fact-table> to <dim-location-table> on location_number, then group by zone_vp_name.\n\nQUERY RULES:\n- When the user asks to rank or list ALL items in a dimension (e.g., all zone VPs), do NOT apply a LIMIT unless explicitly requested.",
   "rationale": "H001: surfaced the same-store ambiguity in DISAMBIGUATION + BUSINESS DEFINITIONS. H002: added JOIN GUIDANCE for the fact->dim hop and a QUERY RULE preventing the implicit LIMIT-1."
 }
 </example>

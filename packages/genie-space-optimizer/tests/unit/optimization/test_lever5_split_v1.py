@@ -94,6 +94,12 @@ def test_lever_5a_instruction_prompt_exists_and_has_required_slots():
     p = cfg.LEVER_5A_INSTRUCTION_PROMPT
     # Required template slots — these are what _call_llm_for_lever_5a_instructions
     # will fill in Task 7.
+    # NOTE: `instruction_char_budget` was renamed to
+    # `instruction_output_char_budget` per 2026-05-17-lever-5a-instructions-
+    # hardening.md Task 9 (the old name described the INPUT prompt budget;
+    # the new name describes the OUTPUT cap that the LLM is actually bound
+    # by). The kwarg is still supplied for back-compat but no longer
+    # referenced from the template.
     for slot in (
         "{{ space_description }}",
         "{{ eval_summary }}",
@@ -102,7 +108,7 @@ def test_lever_5a_instruction_prompt_exists_and_has_required_slots():
         "{{ current_instructions }}",
         "{{ existing_example_sqls }}",
         "{{ identifier_allowlist }}",
-        "{{ instruction_char_budget }}",
+        "{{ instruction_output_char_budget }}",
     ):
         assert slot in p, slot
 
@@ -130,13 +136,20 @@ def test_lever_5a_instruction_prompt_keeps_existing_example_sqls_as_context():
     """Existing example SQLs are still passed AS CONTEXT (so L5a knows
     what's already there and avoids duplicating instruction guidance for
     them). This is different from instructing the LLM to PRODUCE example
-    SQLs in its output."""
+    SQLs in its output.
+
+    NOTE: After 2026-05-17-lever-5a-instructions-hardening.md Task 8,
+    the ``## Existing Example SQL Queries`` Markdown header was
+    replaced by an ``<existing_example_sqls>`` XML wrapper. Both the
+    slot and its wrapper must survive future refactors.
+    """
     cfg = _reload_config_with_env({})
     p = cfg.LEVER_5A_INSTRUCTION_PROMPT
     # Slot for read-only context:
     assert "{{ existing_example_sqls }}" in p
-    # And the contextual header that introduces it:
-    assert "Existing Example SQL Queries" in p
+    # And the XML wrapper that introduces it:
+    assert "<existing_example_sqls>" in p
+    assert "</existing_example_sqls>" in p
 
 
 def test_lever_5a_instruction_prompt_output_schema_is_instruction_only():
@@ -160,7 +173,11 @@ def test_lever_5a_instruction_prompt_renders_with_realistic_kwargs():
         "current_instructions": "PURPOSE:\nHotel bookings.\n",
         "existing_example_sqls": "(none)",
         "identifier_allowlist": "catalog.schema.fact_bookings.booking_date",
+        # `instruction_char_budget` (INPUT budget) kept for back-compat
+        # but no longer referenced; `instruction_output_char_budget`
+        # (OUTPUT budget) is the active slot per hardening Task 9.
         "instruction_char_budget": "20000",
+        "instruction_output_char_budget": "8000",
         # Plan 4 slot — render-time placeholder for raw evidence.
         "raw_evidence_block": "(no raw evidence)",
     }
