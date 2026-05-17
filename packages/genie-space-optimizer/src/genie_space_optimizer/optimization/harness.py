@@ -11798,6 +11798,17 @@ def _format_rollback_reflection(
         # admission axis (see ``classify_rollback_reason`` in
         # rollback_class.py).
         "no_applied_patches": "no_applied_patches",
+        # Phase 0.5 (2026-05-16) — canonicalise the no-grounded-
+        # patches label on the same axis. Producer at
+        # ``harness.py:12297-12301`` emits the rollback-reason string
+        # when proposal grounding drops every patch and no candidate
+        # state exists. Without this entry the else-branch fallback
+        # would still produce ``"no_grounded_patches"`` (label equals
+        # raw reason because there's no ``:`` separator), but the
+        # explicit entry locks the contract and lets the
+        # ``inspect.getsource`` defense in
+        # ``test_rollback_classify_no_grounded_patches.py`` pin it.
+        "no_grounded_patches": "no_grounded_patches",
     }
     if control_plane_reason in label_map:
         label = label_map[control_plane_reason]

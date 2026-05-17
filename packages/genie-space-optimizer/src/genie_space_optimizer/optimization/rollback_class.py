@@ -41,10 +41,14 @@ errors:
   this reason names the diagnosis honestly so the postmortem can
   act on it (instead of silently falling back to ``OTHER``).
 
-* ``NO_ACTION`` — Cycle 13. The iteration emitted no patches
-  (``no_proposals``) or was intercepted by the strategist
-  collision guard (``ag_collision_with_forbidden_set``). Not a
-  rollback in the strict sense; the enum is the
+* ``NO_ACTION`` — Cycle 13 + Defect Plan 2 + Phase 0.5. The
+  iteration emitted no patches: either the strategist generated
+  zero proposals (``no_proposals``), was intercepted by the
+  collision guard (``ag_collision_with_forbidden_set``), grounded
+  proposals but the applier dropped every patch via blast-radius
+  (``no_applied_patches``), or the grounder itself dropped every
+  patch and no candidate state exists (``no_grounded_patches``).
+  Not a rollback in the strict sense; the enum is the
   reflection-classification axis used by the forbidden-AG
   admission predicate so a same-signature AG is not
   unconditionally retried with zero proposals on the next
@@ -162,11 +166,11 @@ def classify_rollback_reason(reason: str | None) -> RollbackClass:
         # content / infra budgets.
         return RollbackClass.OTHER
 
-    # Cycle 13 / Defect Plan 2 (2026-05-12) — reflection-axis
-    # classifications. The iteration produced no patch-applying action
-    # (no candidate state reached the gate). They route to NO_ACTION so
-    # the forbidden-AG admission predicate picks them up when
-    # GSO_FORBIDDEN_AG_ADMITS_NO_ACTION is enabled.
+    # Cycle 13 / Defect Plan 2 (2026-05-12) / Phase 0.5 (2026-05-16) —
+    # reflection-axis classifications. The iteration produced no
+    # patch-applying action (no candidate state reached the gate). They
+    # route to NO_ACTION so the forbidden-AG admission predicate picks
+    # them up when GSO_FORBIDDEN_AG_ADMITS_NO_ACTION is enabled.
     #
     # Producers admitted on this axis:
     #
@@ -180,10 +184,16 @@ def classify_rollback_reason(reason: str | None) -> RollbackClass:
     #   Defect-2 this fell to OTHER, leaving the airline reflection out
     #   of the forbidden set and letting the same AG re-emit on the next
     #   iteration. See run 31ecd96f-5d56-4b5a-af8e-38e9e5c549af.
+    # * ``no_grounded_patches`` (Phase 0.5) — proposals were generated
+    #   but the grounder dropped every patch and no candidate state
+    #   exists (producer at ``harness.py:12297-12301``). Pre-Phase-0.5
+    #   this fell to OTHER, closing the same repetition pattern as
+    #   ``no_applied_patches`` but on the grounding-failure axis.
     if lowered in {
         "no_proposals",
         "ag_collision_with_forbidden_set",
         "no_applied_patches",
+        "no_grounded_patches",
     }:
         return RollbackClass.NO_ACTION
 
