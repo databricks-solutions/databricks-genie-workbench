@@ -10,9 +10,10 @@ from __future__ import annotations
 import pytest
 
 
-def test_directive_outcome_code_vocabulary_is_exactly_six() -> None:
-    """The closed vocabulary has exactly six entries. Any future addition
-    requires updating this assertion + the invariant + the inventory doc."""
+def test_directive_outcome_code_vocabulary_is_exactly_seven() -> None:
+    """The closed vocabulary has exactly seven entries (Phase 6.5 added
+    ``SYNTHESIS_ATTEMPTED_EMPTY``). Any future addition requires
+    updating this assertion + the invariant + the inventory doc."""
     from genie_space_optimizer.optimization.directive_outcome import (
         DirectiveOutcomeCode,
     )
@@ -21,6 +22,7 @@ def test_directive_outcome_code_vocabulary_is_exactly_six() -> None:
         [
             "proposal_emitted",
             "no_structural_candidate",
+            "synthesis_attempted_empty",
             "force_llm_declined",
             "applyability_rejected",
             "collateral_rejected",

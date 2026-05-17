@@ -552,6 +552,7 @@ def no_structural_candidate_record(
     root_cause: str = "",
     target_qids: tuple[str, ...] = (),
     attempted_archetypes: tuple[str, ...] = (),
+    skipped_reason: str = "",
 ) -> DecisionRecord:
     """P4 — emit one PROPOSAL_GENERATED/DROPPED record when synthesis
     was attempted (lever-5 structural gate fired and a structural
@@ -561,6 +562,11 @@ def no_structural_candidate_record(
     Distinct from PROPOSAL_GENERATION_EMPTY (proposer never tried
     synthesis) and STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY (gate
     dropped a non-structural proposal but no fallback was attempted).
+
+    Phase 6.5 (2026-05-17) — ``skipped_reason`` is the named cause
+    from ``ClusterSynthesisResult.skipped_reason`` (e.g.
+    ``"no_top_n_archetype"``). Surfaced in the ``metrics`` dict so
+    postmortem readers no longer have to log-scrape for the cause.
     """
     evidence_refs = tuple(
         v for v in (
@@ -602,6 +608,7 @@ def no_structural_candidate_record(
             "proposals_total": 0,
             "synthesis_attempted": True,
             "attempted_archetypes": list(attempted_archetypes or ()),
+            "skipped_reason": str(skipped_reason or ""),
         },
     )
 

@@ -1059,9 +1059,16 @@ def no_structural_candidate_marker(
     ag_id: str,
     iteration: int,
     attempted_archetypes: Sequence[str] | None = None,
+    skipped_reason: str = "",
 ) -> str:
     """P4 — stdout marker emitted when synthesis was attempted but no
     archetype produced a viable structural candidate.
+
+    Phase 6.5 (2026-05-17) — adds ``skipped_reason``, a short closed-
+    vocabulary string indicating WHY synthesis returned no candidate
+    (e.g. ``"no_top_n_archetype"``, ``"format_afs_failed"``,
+    ``"validate_afs_rejected"``, ``"safety_cap_reached"``). Empty
+    string means "no specific cause recorded".
     """
     return marker_line(
         "GSO_NO_STRUCTURAL_CANDIDATE_V1",
@@ -1069,6 +1076,7 @@ def no_structural_candidate_marker(
             "ag_id": str(ag_id),
             "iteration": int(iteration),
             "attempted_archetypes": list(attempted_archetypes or ()),
+            "skipped_reason": str(skipped_reason or ""),
         },
     )
 

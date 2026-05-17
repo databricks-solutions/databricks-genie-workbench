@@ -35,6 +35,11 @@ class DirectiveOutcomeCode(str, Enum):
 
     PROPOSAL_EMITTED = "proposal_emitted"
     NO_STRUCTURAL_CANDIDATE = "no_structural_candidate"
+    # Phase 6.5 (2026-05-17) — distinguish "synthesis ran and returned
+    # no candidate" from "synthesis was never invoked". Pre-Phase-6
+    # the zero-proposal default branch conflated the two, which masked
+    # the L5-gate failure mode (Run B H002).
+    SYNTHESIS_ATTEMPTED_EMPTY = "synthesis_attempted_empty"
     FORCE_LLM_DECLINED = "force_llm_declined"
     APPLYABILITY_REJECTED = "applyability_rejected"
     COLLATERAL_REJECTED = "collateral_rejected"
@@ -55,6 +60,14 @@ class LeverProposalSnapshot:
     applyability_drop_count: int
     collateral_drop_count: int
     force_llm_declined: bool
+    attempted_synthesis: bool = False
+    """Phase 6.5 (2026-05-17) — True iff
+    ``run_cluster_driven_synthesis_for_single_cluster`` was invoked
+    for at least one source cluster of this AG. Distinguishes
+    ``SYNTHESIS_ATTEMPTED_EMPTY`` (synthesis ran and produced no
+    candidate) from ``NO_STRUCTURAL_CANDIDATE`` (synthesis never
+    ran). Default ``False`` preserves pre-Phase-6 behavior for
+    every existing call site that omits the field."""
 
 
 @dataclass(frozen=True)
@@ -129,6 +142,10 @@ def classify_lever_proposal_outcome(
             return DirectiveOutcomeCode.COLLATERAL_REJECTED
         return DirectiveOutcomeCode.PROPOSAL_EMITTED
 
+    # Phase 6.5 (2026-05-17) — disambiguate "never attempted" from
+    # "attempted and empty".
+    if bool(snapshot.attempted_synthesis):
+        return DirectiveOutcomeCode.SYNTHESIS_ATTEMPTED_EMPTY
     return DirectiveOutcomeCode.NO_STRUCTURAL_CANDIDATE
 
 
