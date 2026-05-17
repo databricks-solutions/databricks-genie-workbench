@@ -5374,6 +5374,23 @@ LEVER_PROMPTS["preflight_example_synthesis"] = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMP
 # render_cluster_driven_prompt strips on the AFS path) so the LLM
 # receives exactly one contract: the teaching-kit shape.
 KIT_CONTRACT_PROMPT_FOOTER = """\
+<examples>
+<example>
+Failure: Genie returned one row of total sales when asked for sales by region.
+Minimal kit (1 supporting change) — example anchors the GROUP BY shape,
+synonym lets the natural-language phrasing route to the right column.
+{"kit_summary": "Aggregate by region with GROUP BY, not a single total", "example_sql": {"example_question": "What are total sales by region?", "example_sql": "SELECT region, SUM(amount) AS total_sales FROM cat.demo.fact_sales GROUP BY region ORDER BY total_sales DESC", "usage_guidance": "Use when the user asks for a metric broken down by a single dimension."}, "supporting_changes": [{"patch_type": "add_column_synonym", "table": "cat.demo.fact_sales", "column": "region", "synonyms": ["sales region", "geo"]}]}
+</example>
+<example>
+Failure: Genie picked the wrong join key and skipped a required time filter.
+Rich kit (3 supporting changes) — example shows the canonical join +
+month filter, supporting changes pin the join semantics, the term-to-
+column mapping, and the reusable SUM snippet so future variants
+inherit the shape.
+{"kit_summary": "Join orders to customers on customer_id and filter to current month before aggregating", "example_sql": {"example_question": "What were premium-customer sales this month?", "example_sql": "SELECT SUM(o.amount) AS premium_sales FROM cat.demo.orders o INNER JOIN cat.demo.customers c ON o.customer_id = c.customer_id WHERE c.tier = 'premium' AND DATE_TRUNC('month', o.order_date) = DATE_TRUNC('month', CURRENT_DATE)", "usage_guidance": "Use when the user asks for a tier-segmented metric in the current month."}, "supporting_changes": [{"patch_type": "add_instruction", "section_name": "QUERY CONSTRUCTION", "new_text": "When joining orders to customers, always use customer_id; never customer_name."}, {"patch_type": "add_column_synonym", "table": "cat.demo.customers", "column": "tier", "synonyms": ["customer level", "membership"]}, {"patch_type": "add_sql_snippet_measure", "display_name": "Premium Sales", "sql": "SUM(CASE WHEN c.tier = 'premium' THEN o.amount ELSE 0 END)", "instruction": "Use as the canonical premium-customer sales measure.", "target_table": "cat.demo.orders"}]}
+</example>
+</examples>
+
 <output_schema>
 Return one JSON object for a teaching kit:
 {

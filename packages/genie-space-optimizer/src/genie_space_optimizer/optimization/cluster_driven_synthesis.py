@@ -78,6 +78,24 @@ from genie_space_optimizer.optimization.synthesis import (
 logger = logging.getLogger(__name__)
 
 
+def _set_cluster_driven_span_tag(key: str, value: str) -> None:
+    """Best-effort set an attribute on the current MLflow / OTel span.
+
+    Plan 2026-05-17-cluster-driven-example-synthesis-hardening Tasks 11
+    + 16 — sister-parallel to ``preflight_synthesis._set_preflight_span_tag``.
+    Tagging is observability, not correctness; failures here are
+    silently swallowed.
+    """
+    try:
+        import mlflow
+
+        active = mlflow.tracing.fluent.get_current_active_span()
+        if active is not None:
+            active.set_attribute(key, value)
+    except Exception:
+        return
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # AFS block rendering (leak-safe — input is a format_afs output only)
 # ═══════════════════════════════════════════════════════════════════════
@@ -110,6 +128,21 @@ def render_afs_block(afs: dict) -> str:
     blame_str = ", ".join(str(b) for b in blame if b) if blame else ""
     suggested_fix = str(afs.get("suggested_fix_summary") or "").strip()
     counterfactuals = afs.get("counterfactual_fixes") or []
+
+    # Task 11: a cluster_id alone is not failure signal — it's just a
+    # label. Treat the AFS as effectively empty when no other field
+    # carries actionable content, so render_cluster_driven_prompt can
+    # take the byte-equivalence path.
+    has_signal = bool(
+        (failure_type and failure_type.lower() != "unknown")
+        or (affected_judge and affected_judge.lower() != "unknown")
+        or blame_str
+        or suggested_fix
+        or counterfactuals
+        or (afs.get("structural_diff") or {})
+    )
+    if not has_signal:
+        return ""
 
     if cluster_id and cluster_id != "?":
         lines.append(f"  Cluster ID: {cluster_id}")
@@ -395,10 +428,19 @@ def render_cluster_driven_prompt(
     if hints:
         prefix_parts.append(hints)
     if not prefix_parts:
+        # Task 11: tag the active span so operators can distinguish the
+        # byte-equivalence fallback from the AFS-driven kit_contract
+        # path. Byte-equivalence here means "no AFS / failure / hints
+        # were present" — the cluster-driven helper returns the
+        # preflight prompt verbatim.
+        _set_cluster_driven_span_tag(
+            "cluster_driven_path", "byte_equivalent_preflight",
+        )
         return base
     # Kit contract is appended only on cluster-driven paths (where AFS or
     # failure evidence is present). This keeps the legacy byte-equivalence
     # contract intact for the no-AFS preflight path.
+    _set_cluster_driven_span_tag("cluster_driven_path", "kit_contract_appended")
     #
     # Task 14: strip the base preflight prompt's <output_schema> block
     # since the kit_contract footer carries its own (different) contract.
@@ -1199,6 +1241,19 @@ def run_cluster_driven_synthesis_for_single_cluster(
             f"gate:{first_fail.gate if first_fail else '?'}:"
             f"{first_fail.reason if first_fail else ''}"
         )
+        # Task 16: tag the active span with the gate that rejected the
+        # proposal so traces can be filtered by gate (parse / execute /
+        # structural / firewall / arbiter / etc.). The cluster_id is
+        # tagged too so a span filter can drill into one cluster's
+        # rejection history.
+        if first_fail is not None:
+            _set_cluster_driven_span_tag(
+                "rejected_by_gate", str(first_fail.gate or "?"),
+            )
+            _set_cluster_driven_span_tag(
+                "rejected_reason", str(first_fail.reason or "")[:200],
+            )
+        _set_cluster_driven_span_tag("cluster_id", cluster_id)
         _log_summary(
             "cluster", cluster_id=cluster_id, archetype=archetype.name,
             outcome="gate_fail",

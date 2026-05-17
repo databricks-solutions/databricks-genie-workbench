@@ -1206,15 +1206,28 @@ class TestHardening:
         """Task 10: when AFS fields are 'unknown' / '(none)' / '?',
         render_afs_block must SKIP them rather than emit the sentinel
         as if it were data. Sentinels add no signal and crowd the
-        prompt."""
+        prompt.
+
+        Per Task 11: a cluster_id alone is treated as no-signal — the
+        block returns empty so render_cluster_driven_prompt can take
+        the byte-equivalence path. With a real failure_type the
+        cluster_id is included alongside.
+        """
         from genie_space_optimizer.optimization.cluster_driven_synthesis import (
             render_afs_block,
         )
 
-        # Only cluster_id present; all other fields would be sentinels.
-        block = render_afs_block({"cluster_id": "C1"})
+        # cluster_id alone is not actionable — block is empty.
+        assert render_afs_block({"cluster_id": "C1"}) == ""
+
+        # With at least one signal field, the cluster_id appears and
+        # the sentinels are suppressed.
+        block = render_afs_block({
+            "cluster_id": "C1",
+            "failure_type": "WRONG_QUALIFICATION",
+        })
         assert "Cluster ID: C1" in block
-        # The legacy sentinels must not appear.
+        assert "Failure type: WRONG_QUALIFICATION" in block
         for sentinel in (
             "Failure type: unknown",
             "Affected judge: unknown",
@@ -1482,6 +1495,193 @@ class TestHardening:
         # Empty supporting_changes is a valid kit shape — kit teaches
         # the example_sql alone, no extra patches.
         assert result.get("_supporting_proposals", []) == []
+
+    # ── Task 11: byte-equivalence span tag ──
+
+    def test_render_cluster_driven_prompt_tags_byte_equivalent_on_no_afs_path(
+        self, monkeypatch,
+    ):
+        """Task 11: when ``render_cluster_driven_prompt`` returns the
+        preflight prompt verbatim (no AFS, no failure context, no
+        regression-mining hints), the active span must be tagged with
+        ``cluster_driven_path=byte_equivalent_preflight`` so operators
+        can tell which path fired in the trace."""
+        from genie_space_optimizer.optimization import cluster_driven_synthesis as cds
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterContext,
+            render_cluster_driven_prompt,
+        )
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            ARCHETYPES,
+            AssetSlice,
+        )
+
+        assert hasattr(cds, "_set_cluster_driven_span_tag"), (
+            "Task 11: define _set_cluster_driven_span_tag helper so the "
+            "byte-equivalence tag wiring lives in one place."
+        )
+
+        tag_calls: list[tuple[str, str]] = []
+
+        def _capture(key: str, value: str) -> None:
+            tag_calls.append((key, value))
+
+        monkeypatch.setattr(cds, "_set_cluster_driven_span_tag", _capture)
+
+        slice_ = AssetSlice(
+            tables=[{"identifier": "cat.sch.t"}],
+            columns=[("cat.sch.t", "region")],
+        )
+        # Only cluster_id — no failure_type, no blame_set => AFS block
+        # is empty, no failure contexts, no hints => byte-equivalence
+        # path fires.
+        ctx = ClusterContext(afs={"cluster_id": "C1"}, asset_slice=slice_)
+        prompt = render_cluster_driven_prompt(ARCHETYPES[0], ctx, [])
+        # Byte-equivalence held: kit_contract footer NOT appended.
+        assert "kit_summary" not in prompt
+
+        tagged = dict(tag_calls)
+        assert tagged.get("cluster_driven_path") == "byte_equivalent_preflight"
+
+    def test_render_cluster_driven_prompt_tags_kit_appended_on_afs_path(
+        self, monkeypatch,
+    ):
+        """Symmetric to the byte-equivalence test: when AFS / failure /
+        hints are present, the helper appends kit_contract and the
+        span is tagged ``kit_contract_appended``."""
+        from genie_space_optimizer.optimization import cluster_driven_synthesis as cds
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterContext,
+            render_cluster_driven_prompt,
+        )
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            ARCHETYPES,
+            AssetSlice,
+        )
+
+        tag_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            cds, "_set_cluster_driven_span_tag",
+            lambda k, v: tag_calls.append((k, v)),
+        )
+
+        slice_ = AssetSlice(
+            tables=[{"identifier": "cat.sch.t"}],
+            columns=[("cat.sch.t", "region")],
+        )
+        ctx = ClusterContext(
+            afs={
+                "cluster_id": "C1",
+                "failure_type": "WRONG_QUALIFICATION",
+                "blame_set": ["cat.sch.t"],
+            },
+            asset_slice=slice_,
+        )
+        prompt = render_cluster_driven_prompt(ARCHETYPES[0], ctx, [])
+        assert "kit_summary" in prompt
+
+        tagged = dict(tag_calls)
+        assert tagged.get("cluster_driven_path") == "kit_contract_appended"
+
+    # ── Task 12: canonical worked <examples> in kit_contract footer ──
+
+    def test_kit_contract_footer_has_examples_block(self):
+        """Task 12: the kit_contract footer must include an <examples>
+        block with two worked few-shot examples — one kit with 1
+        supporting change, one with 3 supporting changes — so the LLM
+        sees what a valid teaching kit looks like before it has to
+        produce one."""
+        from genie_space_optimizer.common import config
+
+        footer = config.KIT_CONTRACT_PROMPT_FOOTER
+        assert "<examples>" in footer and "</examples>" in footer
+        start = footer.index("<examples>")
+        end = footer.index("</examples>")
+        body = footer[start:end]
+        assert body.count("<example>") == 2
+        assert body.count("</example>") == 2
+        # Each example must show the four-field kit shape.
+        assert body.count('"kit_summary":') == 2
+        assert body.count('"example_sql":') >= 2
+        assert body.count('"supporting_changes":') == 2
+        # And the supporting_changes counts: 1 in the first example,
+        # 3 in the second (the canonical "minimal" + "rich" worked pair).
+        # Crude but adequate: count `"patch_type":` total — 1 + 3 = 4.
+        assert body.count('"patch_type":') == 4
+
+    def test_kit_contract_examples_render_into_assembled_prompt(self):
+        """When the kit_contract footer is appended (AFS path), the
+        <examples> block must appear in the final assembled prompt
+        BEFORE the <output_schema> contract so the few-shots anchor
+        the LLM before it sees the contract."""
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterContext,
+            render_cluster_driven_prompt,
+        )
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            ARCHETYPES,
+            AssetSlice,
+        )
+
+        slice_ = AssetSlice(
+            tables=[{"identifier": "cat.sch.t"}],
+            columns=[("cat.sch.t", "region")],
+        )
+        ctx = ClusterContext(
+            afs={
+                "cluster_id": "C1",
+                "failure_type": "WRONG_QUALIFICATION",
+                "blame_set": ["cat.sch.t"],
+            },
+            asset_slice=slice_,
+        )
+        prompt = render_cluster_driven_prompt(ARCHETYPES[0], ctx, [])
+
+        # examples block present.
+        assert "<examples>" in prompt
+        # And located in the kit_contract footer at the END — before
+        # the surviving <output_schema>.
+        examples_idx = prompt.rindex("<examples>")
+        schema_idx = prompt.rindex("<output_schema>")
+        assert examples_idx < schema_idx, (
+            "<examples> must appear before <output_schema> in the "
+            "assembled cluster-driven prompt"
+        )
+
+    # ── Task 16: gate_results on rejection span tagging ──
+
+    def test_cluster_driven_tags_rejection_gate_on_failure(self, monkeypatch):
+        """Task 16: when validate_synthesis_proposal rejects a
+        candidate, the cluster-driven orchestrator must tag the active
+        span with the name of the gate that fired the rejection so
+        operators can filter rejections by gate in observability."""
+        from genie_space_optimizer.optimization import cluster_driven_synthesis as cds
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            run_cluster_driven_synthesis_for_single_cluster,
+        )
+
+        tag_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            cds, "_set_cluster_driven_span_tag",
+            lambda k, v: tag_calls.append((k, v)),
+        )
+
+        snap = _mk_snapshot()
+        with patch(
+            "genie_space_optimizer.optimization.cluster_driven_synthesis."
+            "validate_synthesis_proposal",
+            side_effect=_gate_fails_at("execute"),
+        ):
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
+                _mk_cluster(), snap, benchmarks=[], llm_caller=_fake_llm,
+            )
+        assert synthesis.proposal is None
+
+        tagged = dict(tag_calls)
+        # Span tags carry which gate killed the proposal.
+        assert tagged.get("rejected_by_gate") == "execute"
+        # And the cluster_id for cross-referencing.
+        assert tagged.get("cluster_id") == "C1"
 
     def test_cluster_driven_call_sites_wire_teaching_kit_output(self):
         """Task 5: both primary and retry cluster-driven LLM call sites
