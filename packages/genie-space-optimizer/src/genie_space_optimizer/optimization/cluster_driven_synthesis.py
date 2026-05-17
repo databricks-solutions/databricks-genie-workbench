@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable
 
 from genie_space_optimizer.common.config import (
@@ -224,20 +225,98 @@ def render_failure_context_block(failure_contexts: list[dict] | None) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+class SkippedReason(str, Enum):
+    """Phase 8.1 (2026-05-17) — closed vocabulary of cluster-synthesis
+    decline causes. Every early-exit in
+    ``run_cluster_driven_synthesis_for_single_cluster`` MUST emit a
+    member of this enum (or a dynamic-detail string whose prefix up
+    to the first ``:`` matches a member) on its
+    ``ClusterSynthesisResult.skipped_reason``.
+
+    Values appear in ``GSO_NO_STRUCTURAL_CANDIDATE_V1`` markers and
+    are consumed by postmortem tooling. Adding a value is backwards
+    compatible; renaming a value is a breaking change.
+    """
+
+    SAFETY_CAP_REACHED = "safety_cap_reached"
+    """The per-iteration safety cap on synthesis invocations was
+    reached before this cluster's synthesis call. Detail past the
+    colon may carry the count comparison (``safety_cap:5>=5``)."""
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    """The per-iteration budget on archetype attempts was exhausted
+    inside this cluster's synthesis call. Detail past the colon may
+    carry the count comparison (``budget:3>=2``)."""
+    FORMAT_AFS_FAILED = "format_afs_failed"
+    """``format_afs`` returned an error / empty block for this
+    cluster's selected archetype."""
+    VALIDATE_AFS_REJECTED = "validate_afs_rejected"
+    """``validate_afs`` rejected the formatted AFS block (leak,
+    malformed, or coverage gap)."""
+    NO_ARCHETYPE_OR_SLICE = "no_archetype_or_slice"
+    """``pick_archetype`` returned None for this cluster's
+    blame_set / root_cause combination."""
+    NO_TOP_N_ARCHETYPE = "no_top_n_archetype"
+    """Phase 8.2 — specialised case of NO_ARCHETYPE_OR_SLICE for
+    ``plural_top_n_collapse`` clusters that need a TOP-N archetype
+    which the archetype catalog does not yet expose."""
+    SYNTH_NONE = "synth_none"
+    """The LLM synthesis returned no proposal for the chosen
+    archetype + cluster combination."""
+    MISSING_SPACE_ID = "missing_space_id"
+    """The space-id required for the genie-agreement arbiter gate is
+    missing from the metadata snapshot."""
+    # Dynamic-prefix variants. The codebase carries detail past the
+    # colon (``gate:rowcount:mismatch``, ``genie_agreement:reason``);
+    # the ``__post_init__`` invariant accepts these via prefix match.
+    SAFETY_CAP = "safety_cap"
+    BUDGET = "budget"
+    GATE = "gate"
+    GENIE_AGREEMENT = "genie_agreement"
+
+
+_SKIPPED_REASON_PREFIXES: frozenset[str] = frozenset(
+    r.value for r in SkippedReason
+)
+
+
 @dataclass(frozen=True)
 class ClusterSynthesisResult:
-    """P3 — typed return from run_cluster_driven_synthesis_for_single_cluster.
+    """P3 — typed return from
+    ``run_cluster_driven_synthesis_for_single_cluster``.
 
     Replaces the old ``dict | None`` contract. ``proposal`` carries
-    the legacy payload (or None on miss). ``attempted_archetypes``
+    the legacy payload (or ``None`` on miss). ``attempted_archetypes``
     is the ordered tuple of archetypes that were considered before
-    the result. ``skipped_reason`` is set when proposal is None and
-    documents which guard fired (budget, safety cap, archetype
-    mismatch, arbiter gate).
+    the result.
+
+    Phase 8.1 (2026-05-17) — ``skipped_reason`` is documented by the
+    closed :class:`SkippedReason` enum. The ``__post_init__`` invariant
+    accepts either an empty string (success path) or a value whose
+    prefix up to the first ``:`` matches a member of the enum. This
+    accommodates dynamic-detail variants (``safety_cap:5>=5``,
+    ``gate:rowcount:mismatch``) while still rejecting unknown
+    free-form strings.
     """
+
     proposal: dict | None
     attempted_archetypes: tuple[str, ...] = ()
     skipped_reason: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.skipped_reason:
+            return
+        prefix = str(self.skipped_reason).split(":", 1)[0]
+        if (
+            self.skipped_reason in _SKIPPED_REASON_PREFIXES
+            or prefix in _SKIPPED_REASON_PREFIXES
+        ):
+            return
+        raise ValueError(
+            f"invalid skipped_reason {self.skipped_reason!r}; must "
+            f"be empty, an enum member of SkippedReason, or a "
+            f"colon-prefixed variant whose prefix matches one of: "
+            f"{sorted(_SKIPPED_REASON_PREFIXES)}"
+        )
 
 
 @dataclass
