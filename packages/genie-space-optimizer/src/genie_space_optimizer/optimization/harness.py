@@ -12816,6 +12816,52 @@ class _CollisionKeyPair:
     terminal_signature_keys: tuple = ()
 
 
+def _consume_terminal_action(
+    *,
+    action,  # TerminalAction
+    terminal_reason_value: str,
+    iteration: int,
+    iteration_budget: int,
+) -> tuple[bool, str]:
+    """Phase 6.2 (2026-05-17) — translate a ``TerminalAction`` into
+    a loop-control signal.
+
+    Returns ``(should_break, abort_reason)``. The harness calls this
+    after ``decide_iteration_terminal_action(...)`` returns and
+    consults the boolean to decide whether to break out of the
+    ``for _iter_num in range(...)`` loop.
+
+    ``abort_reason`` is one of:
+
+    * ``"terminal_router_decision"`` — routing-table abort (e.g.
+      ``INVARIANT_VIOLATION``).
+    * ``"iteration_budget_exhausted"`` — budget-boundary rule
+      collapsed a retry to abort_run on the final iteration index.
+
+    Flag-gated by ``GSO_ABORT_RUN_AUTHORITATIVE_ENABLED`` (default
+    on). When off the function always returns ``(False, "")`` so
+    pre-Phase-6 byte-stable replay is preserved.
+    """
+    from genie_space_optimizer.common.config import (
+        abort_run_authoritative_enabled,
+    )
+    if not abort_run_authoritative_enabled():
+        return (False, "")
+    if str(action.next_step) != "abort_run":
+        return (False, "")
+
+    # Distinguish budget-boundary collapse from explicit routing-
+    # table abort: the routing table only yields abort_run for
+    # ``invariant_violation`` directly. Any other terminal_reason
+    # arriving with next_step=abort_run is the budget-boundary rule
+    # collapsing a retry on the final iteration index.
+    if str(terminal_reason_value) == "invariant_violation":
+        return (True, "terminal_router_decision")
+    if int(iteration) >= int(iteration_budget) - 1:
+        return (True, "iteration_budget_exhausted")
+    return (True, "terminal_router_decision")
+
+
 def _compute_forbidden_ag_set_pair(
     reflection_buffer: list[dict],
 ) -> _ForbiddenSetPair:
@@ -18657,6 +18703,15 @@ def _run_lever_loop(
         iteration_terminal_marker_enabled,
     )
     _iter_marker_active = iteration_terminal_marker_enabled()
+
+    # Phase 6.2 (2026-05-17) — sentinel for authoritative abort_run.
+    # Set inside the iteration body by ``_consume_terminal_action``;
+    # consumed at the bottom of each iteration body to break the
+    # for-loop. Default values are no-op so the legacy flow (flag
+    # off, no abort) is byte-stable.
+    _loop_should_abort: bool = False
+    _loop_abort_reason: str = ""
+    _loop_abort_terminal_reason: str = ""
 
     for _iter_num in range(1, max_iterations + 1):
         # Risk-1 mitigation — clear the consecutive counter if the
@@ -31344,6 +31399,31 @@ def _run_lever_loop(
                             # scoped forbidden set.
                             forbidden_set_size_after=len(_forbidden_set),
                         ), flush=True)
+                        # Phase 6.2 (2026-05-17) — consume the router
+                        # decision. When next_step == "abort_run",
+                        # emit the GSO_RUN_ABORTED_V1 marker and set
+                        # the loop-tail abort sentinel so the for-loop
+                        # breaks at the next iteration boundary.
+                        _abort_break, _abort_reason = _consume_terminal_action(
+                            action=_router_action,
+                            terminal_reason_value=_tr_enum.value,
+                            iteration=int(_iter_num),
+                            iteration_budget=int(max_iterations or 0),
+                        )
+                        if _abort_break:
+                            from genie_space_optimizer.optimization.run_analysis_contract import (
+                                run_aborted_marker,
+                            )
+                            print(run_aborted_marker(
+                                optimization_run_id=str(run_id or ""),
+                                iteration=int(_iter_num),
+                                terminal_reason=_tr_enum.value,
+                                next_step=str(_router_action.next_step),
+                                reason=_abort_reason,
+                            ), flush=True)
+                            _loop_should_abort = True
+                            _loop_abort_reason = _abort_reason
+                            _loop_abort_terminal_reason = _tr_enum.value
             except Exception:
                 logger.debug(
                     "Phase 1.2: iteration_terminal_policy router "
@@ -31438,6 +31518,28 @@ def _run_lever_loop(
                     "(non-fatal)",
                     exc_info=True,
                 )
+            # Phase 6.2 (2026-05-17) — consume the abort sentinel
+            # set inside the iteration body by
+            # ``_consume_terminal_action``. The break is the LAST
+            # statement in the for-loop body so the candidate-ledger
+            # emit and every other iteration-tail observability emit
+            # still fire on the aborting iteration. The post-loop
+            # ``write_stage("LEVER_LOOP_STARTED", "COMPLETE")`` below
+            # still runs because it sits OUTSIDE the for-loop.
+            if _loop_should_abort:
+                write_stage(
+                    spark, run_id, "LEVER_LOOP_ABORTED", "COMPLETE",
+                    task_key="lever_loop",
+                    iteration=int(_iter_num),
+                    detail={
+                        "abort_reason": _loop_abort_reason,
+                        "terminal_reason": _loop_abort_terminal_reason,
+                        "iteration_index": int(_iter_num),
+                        "iteration_budget": int(max_iterations or 0),
+                    },
+                    catalog=catalog, schema=schema,
+                )
+                break
     write_stage(
         spark, run_id, "LEVER_LOOP_STARTED", "COMPLETE",
         task_key="lever_loop",

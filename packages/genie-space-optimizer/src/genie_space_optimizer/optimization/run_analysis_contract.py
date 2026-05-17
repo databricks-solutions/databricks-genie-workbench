@@ -1073,6 +1073,39 @@ def no_structural_candidate_marker(
     )
 
 
+def run_aborted_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    terminal_reason: str,
+    next_step: str,
+    reason: str,
+) -> str:
+    """Phase 6.2 (2026-05-17) — stdout marker emitted when
+    ``TerminalAction.next_step == "abort_run"`` and the harness
+    consequently breaks the lever loop.
+
+    ``reason`` is a short cause string for the marker consumer
+    (postmortem, dashboards). Today's writer uses one of:
+
+    * ``"terminal_router_decision"`` — the router decided abort_run
+      from the routing table (e.g. ``INVARIANT_VIOLATION``).
+    * ``"iteration_budget_exhausted"`` — the budget-boundary rule in
+      ``decide_iteration_terminal_action`` collapsed a non-abort
+      next_step to abort_run on the final iteration index.
+    """
+    return marker_line(
+        "GSO_RUN_ABORTED_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "terminal_reason": str(terminal_reason),
+            "next_step": str(next_step),
+            "reason": str(reason),
+        },
+    )
+
+
 def structural_repair_decision_marker(
     *,
     optimization_run_id: str,
