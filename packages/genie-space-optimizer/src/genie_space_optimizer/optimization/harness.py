@@ -12862,6 +12862,69 @@ def _consume_terminal_action(
     return (True, "terminal_router_decision")
 
 
+def _maybe_dispatch_forced_structural_synthesis(
+    *,
+    ag: dict,
+    ag_id: str,
+    iteration_counter: int,
+    l5_ag_drops: list,
+    reflection_buffer: list,
+    clusters_by_id: dict,
+    workspace_client,
+    benchmarks: list,
+    run_id: str,
+    **dispatcher_kwargs,
+):
+    """Phase 6.4 (2026-05-17) — call
+    ``dispatch_forced_structural_synthesis`` unconditionally (subject
+    to ``GSO_FORCED_SYNTHESIS_UNCONDITIONAL_ENABLED``); the
+    dispatcher's own ``_should_invoke_safety_net`` predicate decides
+    whether synthesis actually runs.
+
+    Pre-Phase-6 the harness wrapped the dispatch in
+    ``if _l5_ag_drops:``, so the safety-net branch (gated on EMPTY
+    drops + SQL-shape cluster) was unreachable from the live harness.
+
+    When the flag is off and ``l5_ag_drops`` is empty, returns
+    ``None`` without invoking the dispatcher — preserving
+    pre-Phase-6 behavior. The live wiring also retains its own
+    ``if _l5_ag_drops or forced_synthesis_unconditional_enabled():``
+    guard so the surrounding observability block stays predicated
+    on either drops or the flag.
+
+    The helper passes through any additional ``**dispatcher_kwargs``
+    so the live call site can supply the full
+    ``dispatch_forced_structural_synthesis`` signature
+    (``iter_source_clusters_by_id``, ``metadata_snapshot``,
+    ``catalog``, ``schema``, ``spark``, ``lever_keys``,
+    ``current_iter_inputs``, etc.) without the helper needing to
+    know each name. The unit test passes only the small subset
+    relevant to the flag-gating decision.
+    """
+    from genie_space_optimizer.common.config import (
+        forced_synthesis_unconditional_enabled,
+    )
+    from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
+        dispatch_forced_structural_synthesis,
+    )
+    flag_on = forced_synthesis_unconditional_enabled()
+    drops_empty = not l5_ag_drops
+    if drops_empty and not flag_on:
+        return None
+    return dispatch_forced_structural_synthesis(
+        ag=ag,
+        ag_id=ag_id,
+        iteration=iteration_counter,
+        l5_ag_drops=list(l5_ag_drops or ()),
+        reflection_buffer=list(reflection_buffer or ()),
+        iter_source_clusters_by_id=dict(clusters_by_id or {}),
+        w=workspace_client,
+        benchmarks=list(benchmarks or ()),
+        run_id=str(run_id or ""),
+        **dispatcher_kwargs,
+    )
+
+
 def _compute_forbidden_ag_set_pair(
     reflection_buffer: list[dict],
 ) -> _ForbiddenSetPair:
@@ -23051,7 +23114,23 @@ def _run_lever_loop(
                     d for d in _l5_all_drops
                     if str(d.get("ag_id") or "") == str(ag_id)
                 ]
-                if _l5_ag_drops:
+                # Phase 6.4 (2026-05-17) — also enter the dispatch
+                # block when the unconditional-synthesis flag is on so
+                # the safety-net branch (empty drops + SQL-shape
+                # cluster) becomes reachable from the live harness.
+                # The dispatcher's own ``_should_invoke_safety_net``
+                # predicate gates whether synthesis actually runs; the
+                # surrounding observability blocks iterate over
+                # ``_l5_ag_drops`` so they are natural no-ops on
+                # empty drops.
+                from genie_space_optimizer.common.config import (
+                    forced_synthesis_unconditional_enabled as
+                    _forced_synthesis_unconditional_enabled,
+                )
+                if (
+                    _l5_ag_drops
+                    or _forced_synthesis_unconditional_enabled()
+                ):
                     _l5_ag_root_cause = ""
                     _l5_ag_rca_id = ""
                     for _cid in (ag.get("source_cluster_ids") or []):
