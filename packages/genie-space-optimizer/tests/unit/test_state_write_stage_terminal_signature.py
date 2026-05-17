@@ -110,3 +110,38 @@ def test_write_stage_serializes_terminal_signature_without_crashing():
         f"Expected sorted list form for target_qids in detail_json. "
         f"Got: {inserts[0]}"
     )
+
+
+def test_opt_json_helper_uses_state_encoder():
+    """``write_iteration`` builds its INSERT row with an inline
+    ``_opt_json`` closure (state.py:~624). The reflection-buffer
+    entry persisted per-iteration via ``reflection_json`` flows
+    through this closure and must serialize TerminalSignatures.
+
+    Phase 2 Hotfix extracts the closure into a module-level
+    ``_serialize_optional_json`` helper that uses ``GsoJsonEncoder``.
+    """
+    from genie_space_optimizer.optimization.state import (
+        _serialize_optional_json,
+    )
+
+    sig = build_terminal_signature(
+        root_cause="propagation_lag",
+        blame_set=(),
+        lever_set=[5],
+        target_qids=["gs_009"],
+        terminal_reason=TerminalReason.NO_APPLIED_PATCHES,
+    )
+    # None → "NULL"
+    assert _serialize_optional_json(None) == "NULL"
+    # Empty dict still serializes to a quoted JSON literal.
+    out_empty = _serialize_optional_json({})
+    assert out_empty == "'{}'"
+    # Dict with NamedTuple field.
+    out = _serialize_optional_json({"terminal_signature": sig})
+    assert out.startswith("'")
+    assert out.endswith("'")
+    inner = out[1:-1].replace("''", "'")  # un-escape SQL single quotes
+    decoded = json.loads(inner)
+    assert decoded["terminal_signature"]["lever_set"] == [5]
+    assert decoded["terminal_signature"]["target_qids"] == ["gs_009"]

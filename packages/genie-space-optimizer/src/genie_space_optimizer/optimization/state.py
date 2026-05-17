@@ -482,6 +482,25 @@ def update_run_status(
     )
 
 
+def _serialize_optional_json(val: Any) -> str:
+    """SQL-literal serializer for nullable JSON columns.
+
+    * ``None`` → ``"NULL"`` (a SQL literal, NOT a JSON string).
+    * Anything else → ``"'<escaped-json>'"`` using
+      :func:`dumps_state_json` so frozensets and NamedTuples (e.g.
+      ``TerminalSignature``) serialize correctly.
+
+    Phase 2 Hotfix (2026-05-17) — extracted from the inline
+    ``_opt_json`` closure in ``write_iteration`` so the encoder is
+    applied uniformly at every JSON-bearing column write.
+    """
+    if val is None:
+        return "NULL"
+    raw = dumps_state_json(val)
+    escaped = raw.replace("\\", "\\\\").replace("'", "''")
+    return f"'{escaped}'"
+
+
 def write_stage(
     spark: SparkSession,
     run_id: str,
@@ -624,10 +643,10 @@ def write_iteration(
     def _esc(s: str) -> str:
         return s.replace("\\", "\\\\").replace("'", "''")
 
-    def _opt_json(val: Any) -> str:
-        if val is None:
-            return "NULL"
-        return f"'{_esc(json.dumps(val))}'"
+    # Phase 2 Hotfix (2026-05-17) — route through the module-level
+    # helper so the encoder is applied uniformly across every
+    # JSON-bearing column write (reflection_json, failures, etc.).
+    _opt_json = _serialize_optional_json
 
     mlflow_run_id = eval_result.get("mlflow_run_id")
 
