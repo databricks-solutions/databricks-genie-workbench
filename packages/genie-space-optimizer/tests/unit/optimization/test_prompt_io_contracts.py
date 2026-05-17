@@ -279,12 +279,16 @@ def test_lever_4_join_discovery_output_parses_canonical_response():
     from genie_space_optimizer.optimization.prompt_io import (
         Lever4JoinDiscoveryOutput,
     )
+    # Per L4 hardening Task 3, the sql list must include a real Genie
+    # relationship-type sentinel (FROM_RELATIONSHIP_TYPE_*); the legacy
+    # "--rt=inner--" placeholder was a fixture-only sentinel and is no
+    # longer accepted by the Pydantic validator.
     raw = """
     {
       "join_specs": [{
         "left": {"identifier": "catalog.schema.fact_sales", "alias": "fs"},
         "right": {"identifier": "catalog.schema.dim_store", "alias": "ds"},
-        "sql": ["fs.store_id = ds.store_id", "--rt=inner--"],
+        "sql": ["fs.store_id = ds.store_id", "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],
         "instruction": "join on store_id"
       }],
       "rationale": "missing join"

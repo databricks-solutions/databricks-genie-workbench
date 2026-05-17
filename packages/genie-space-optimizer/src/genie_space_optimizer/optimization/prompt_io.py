@@ -207,7 +207,7 @@ def validate_and_parse(raw_text: str, model_cls: type[_T]) -> _T:
 # Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Phase F.
 
 from typing import Literal  # noqa: E402
-from pydantic import Field  # noqa: E402
+from pydantic import Field, field_validator  # noqa: E402
 
 
 class Stage1SkillPick(LLMOutputContract):
@@ -374,11 +374,62 @@ class Lever4JoinEndpoint(LLMOutputContract):
     alias: str = Field(default="")
 
 
+# Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 3 —
+# whitelist of relationship-type sentinels embedded in Lever4JoinSpec
+# `sql` entries. The Genie API accepts only these three values.
+_LEVER_4_VALID_RT_SENTINELS: tuple[str, ...] = (
+    "FROM_RELATIONSHIP_TYPE_MANY_TO_ONE",
+    "FROM_RELATIONSHIP_TYPE_ONE_TO_MANY",
+    "FROM_RELATIONSHIP_TYPE_ONE_TO_ONE",
+)
+_LEVER_4_RT_REGEX = "|".join(re.escape(s) for s in _LEVER_4_VALID_RT_SENTINELS)
+
+
 class Lever4JoinSpec(LLMOutputContract):
+    """Wire contract for a single join spec emitted by L4.
+
+    Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 3.
+    Accepts ``instruction`` as either ``str`` or ``list[str]`` (Trial-5
+    trace-0 evidence: model emits ``list[str]`` 1/2 traces). The list
+    form is coerced to a newline-joined string at the boundary so
+    downstream Genie API patch consumers see the canonical single-
+    string shape.
+
+    The ``sql`` list must contain BOTH the equijoin predicate AND a
+    ``--rt=FROM_RELATIONSHIP_TYPE_*--`` sentinel from the whitelist.
+    """
+
     left: Lever4JoinEndpoint
     right: Lever4JoinEndpoint
     sql: list[str] = Field(default_factory=list)
     instruction: str = Field(default="")
+
+    @field_validator("instruction", mode="before")
+    @classmethod
+    def _coerce_instruction_to_str(cls, v: Any) -> str:
+        if isinstance(v, list):
+            return "\n".join(str(x) for x in v if x is not None)
+        if v is None:
+            return ""
+        return str(v)
+
+    @field_validator("sql")
+    @classmethod
+    def _require_predicate_and_sentinel(cls, v: list[str]) -> list[str]:
+        if len(v) < 2:
+            raise ValueError(
+                "sql must contain at least 2 elements: the equijoin "
+                "predicate and the --rt=FROM_RELATIONSHIP_TYPE_*-- sentinel"
+            )
+        if not any(
+            re.search(rf"--rt=({_LEVER_4_RT_REGEX})--", str(s))
+            for s in v
+        ):
+            raise ValueError(
+                "sql must contain a relationship-type sentinel of the form "
+                f"--rt=<one of: {', '.join(_LEVER_4_VALID_RT_SENTINELS)}>--"
+            )
+        return v
 
 
 class Lever4JoinDiscoveryOutput(LLMOutputContract):

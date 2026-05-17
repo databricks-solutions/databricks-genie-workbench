@@ -95,7 +95,7 @@ export function LeversStage() {
         <div className="space-y-3 text-sm">
           <p><strong>L1 & L2:</strong> Use <code className="rounded bg-db-gray-bg px-1.5 py-0.5">LEVER_1_2_COLUMN_PROMPT</code> for structured metadata changes. L1: table/column descriptions, synonyms, visibility. L2: MV-specific (aggregation, filters, MEASURE).</p>
           <p><strong>L3:</strong> TVF docs + <code className="rounded bg-db-gray-bg px-1.5 py-0.5">remove_tvf</code> for persistently failing TVFs.</p>
-          <p><strong>L4:</strong> <code className="rounded bg-db-gray-bg px-1.5 py-0.5">LEVER_4_JOIN_SPEC_PROMPT</code> — analyzes SQL diffs for missing/incorrect JOINs, generates Genie-format join specs.</p>
+          <p><strong>L4:</strong> <code className="rounded bg-db-gray-bg px-1.5 py-0.5">LEVER_4_JOIN_DISCOVERY_PROMPT</code> — validates heuristic FK-overlap hints and the CTE-first pattern for metric-view joins; generates Genie-format join_specs.</p>
           <p><strong>L5:</strong> Instruction rewrites + example SQL. Budget-aware, respects character limits.</p>
           <p><strong>L6:</strong> SQL Expressions — reusable measures, filters, and dimensions. Adds structured business concept definitions to the knowledge store (no instruction budget cost).</p>
         </div>

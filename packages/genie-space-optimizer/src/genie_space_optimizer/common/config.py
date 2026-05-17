@@ -2602,6 +2602,7 @@ LEVER_4_JOIN_DISCOVERY_PROMPT = (
     '\n'
     '<examples>\n'
     '<example>\n'
+    'Plain INT FK (rule-1 baseline):\n'
     'Input hint: "fact_sales and dim_region share region_id columns (both INT)"\n'
     'Current join specs: [fact_sales↔dim_product]\n'
     '\n'
@@ -2610,11 +2611,66 @@ LEVER_4_JOIN_DISCOVERY_PROMPT = (
     '  {"left": {"identifier": "catalog.schema.fact_sales", "alias": "fact_sales"},\n'
     '    "right": {"identifier": "catalog.schema.dim_region", "alias": "dim_region"},\n'
     '    "sql": ["`fact_sales`.`region_id` = `dim_region`.`region_id`", '
-    '"--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"]}\n'
-    '], "rationale": "Both tables have region_id (INT). fact_sales has many rows per region. '
-    'This join is not already defined."}\n'
+    '"--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],\n'
+    '    "instruction": "Use this when a query needs region attributes '
+    '(region_name, region_manager) not present in fact_sales."}\n'
+    '], "rationale": "Both tables have region_id (INT). fact_sales has many '
+    'rows per region. This join is not already defined."}\n'
+    '</example>\n'
+    '<example>\n'
+    'Metric View <-> dim (CTE-first):\n'
+    'Input hint: "mv_store_sales and dim_location share location_number columns (both BIGINT)"\n'
+    'Current join specs: []\n'
+    '\n'
+    'Output:\n'
+    '{"join_specs": [\n'
+    '  {"left": {"identifier": "catalog.schema.mv_store_sales", "alias": "mv_store_sales"},\n'
+    '    "right": {"identifier": "catalog.schema.dim_location", "alias": "dim_location"},\n'
+    '    "sql": ["`mv_store_sales`.`location_number` = `dim_location`.`location_number`", '
+    '"--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],\n'
+    '    "instruction": "METRIC VIEW JOIN: Do NOT use a direct SQL JOIN — '
+    'direct joins on metric views cause METRIC_VIEW_JOIN_NOT_SUPPORTED. '
+    'Materialize mv_store_sales in a CTE (WITH clause) using MEASURE() and '
+    'GROUP BY ALL, then JOIN the CTE to dim_location on location_number. '
+    'Use this join when a query needs dimension attributes (region_name, '
+    'manager_name) not present in mv_store_sales."}\n'
+    '], "rationale": "mv_store_sales is a metric view; direct joins are not '
+    'supported. CTE-first pattern materializes the aggregation before the join."}\n'
+    '</example>\n'
+    '<example>\n'
+    'Mixed-type rejection (do NOT propose):\n'
+    'Input hint: "fact_orders.customer_id (STRING) and dim_customer.customer_id (BIGINT)"\n'
+    'Current join specs: []\n'
+    '\n'
+    'Output:\n'
+    '{"join_specs": [], "rationale": "INVALID — incompatible types: '
+    'fact_orders.customer_id is STRING, dim_customer.customer_id is BIGINT. '
+    'A schema fix is required before this join can be defined; the optimizer '
+    'should NOT auto-propose this join."}\n'
     '</example>\n'
     '</examples>\n'
+    '\n'
+    '<metric_view_rule>\n'
+    'CRITICAL — Metric view joins use the CTE-first pattern:\n'
+    '\n'
+    '- If EITHER table is a metric view (name starts with mv_ or its columns '
+    'use MEASURE()), a direct SQL JOIN causes the runtime error '
+    'METRIC_VIEW_JOIN_NOT_SUPPORTED.\n'
+    '- Instead: materialize the metric view in a CTE (WITH clause) using '
+    'MEASURE() and GROUP BY ALL, then JOIN the CTE to the other table.\n'
+    '- You MUST set the "instruction" field on the join_spec to explain the '
+    'CTE-first pattern for downstream Genie queries.\n'
+    '\n'
+    'See Example 2 in <examples> for the canonical CTE-first instruction phrasing.\n'
+    '</metric_view_rule>\n'
+    '\n'
+    '<empty_evidence_directive>\n'
+    'If the "## Raw Failure Evidence" section is empty or says '
+    '"(No raw failure evidence ...)", rely on the heuristic hints and the full '
+    'schema context alone. Do NOT invent failure narratives. If you cannot '
+    'validate a hint with high confidence from the schema alone, omit it from '
+    'the output rather than guessing.\n'
+    '</empty_evidence_directive>\n'
     '\n'
     '<instructions>\n'
     'Review hints alongside the full schema context. For each hint, validate:\n'
@@ -2629,18 +2685,13 @@ LEVER_4_JOIN_DISCOVERY_PROMPT = (
     'You MUST ONLY reference tables and columns from the Identifier Allowlist. '
     'Any table or column not in the allowlist is INVALID and will be rejected.\n'
     '\n'
-    '## Metric View Join Rule\n'
-    'If either table is a metric view (name starts with mv_ or uses MEASURE()), '
-    'the join cannot be used as a direct SQL JOIN. Genie must use a CTE-first pattern. '
-    'Set the "instruction" field to explain this constraint.\n'
-    '\n'
     '## Join Spec Format\n'
     '- alias: unqualified table name (last segment of identifier)\n'
     '- join condition: backtick-quoted aliases\n'
     '- relationship_type: one of FROM_RELATIONSHIP_TYPE_MANY_TO_ONE, '
     'FROM_RELATIONSHIP_TYPE_ONE_TO_MANY, FROM_RELATIONSHIP_TYPE_ONE_TO_ONE\n'
     '- instruction: usage guidance (REQUIRED — explain when/how to use, '
-    'CTE-first for metric view joins)\n'
+    'CTE-first for metric view joins; see <metric_view_rule>)\n'
     '</instructions>\n'
     '\n'
     '<output_schema>\n'
@@ -3846,6 +3897,41 @@ LEVER_5A_INSTRUCTION_MAX_TOKENS: int = 2400
 # span_name=lever_5b_example_sql traces post-hardening.
 LEVER_5B_EXAMPLE_SQL_MAX_TOKENS: int = 400
 
+# Lever-4 join discovery output cap. Plan 2026-05-17-lever-4-join-
+# discovery-hardening.md Task 5. Empirical ceiling per the baseline
+# (Trial-5 P95): ~531 output tokens. 1500 gives ~3x headroom against
+# future enterprise spaces with larger join_specs[] payloads while
+# staying well below the platform default that would over-reserve
+# OTPM. At 20K OTPM on databricks-claude-opus-4-6, ~13 concurrent L4
+# calls fit; at 60K OTPM on databricks-claude-sonnet-4-6, ~40 fit.
+LEVER_4_MAX_TOKENS: int = 1500
+
+# Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 10 —
+# soft cap on per-spec instruction length. Legitimately long MV-CTE
+# guidance can exceed; we truncate-and-tag, not reject. Trial-5
+# observed: trace-0 instruction ~800 chars (MV-CTE with dimension
+# attributes). 600 is a reasonable single-paragraph target; over-cap
+# emits the `instruction_truncated` tag for analysis.
+LEVER_4_INSTRUCTION_SOFT_CAP: int = 600
+
+# Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 13 —
+# cap on heuristic hint count to keep the <discovery_hints> block
+# bounded. Trial-5 observed hints=1 in both traces; 20 is well above
+# the observed working range. Raise if production evidence shows
+# higher hint counts being legitimately useful.
+LEVER_4_HINTS_TOP_K: int = 20
+
+# Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 15.
+# Deprecated prompts: kept in LEVER_PROMPTS so historical MLflow
+# traces remain looked-up-able, but no active _traced_llm_call site
+# should reference them. Enforced by per-prompt dormant regression
+# tests (e.g. test_lever_4_join_spec_dormant.py).
+_DEPRECATED_PROMPT_NAMES: frozenset[str] = frozenset({
+    "lever_5_instruction",  # superseded by lever_5a_instructions
+    "lever_5_holistic",     # legacy holistic path
+    "lever_4_join_spec",    # superseded by lever_4_join_discovery
+})
+
 # Lever-5b example-SQL synthesis system message. Frames:
 #  - the closed-loop role (output is saved into the Space's example_sql
 #    library and retrieved by Genie at inference time),
@@ -3879,6 +3965,33 @@ LEVER_5A_OBSERVABILITY_TAG_KEYS: tuple[str, ...] = (
     "rca_contract_version",
     "max_section_chars",
 )
+
+# ── Lever-4 join discovery observability tag suite ────────────────
+# Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 1.
+# Single source of truth for the closed set of MLflow tags emitted
+# per lever_4_join_discovery call. Adding a new tag requires:
+#   (a) extending this frozenset,
+#   (b) extending test_l4_observability_tag_keys_are_closed in
+#       tests/unit/optimization/test_lever_4_join_discovery_callsite.py,
+#   (c) populating the tag in `_set_l4_observability_tags()`
+#       (see optimization/optimizer.py).
+LEVER_4_OBSERVABILITY_TAG_KEYS: frozenset[str] = frozenset({
+    "prompt_version",
+    "system_msg_version",
+    "pydantic_validation_status",
+    "markdown_fence_stripped",
+    "instruction_coerced_to_string",
+    "input_truncated",
+    "sanitize_made_changes",
+    "mv_join_emitted",
+    "existing_specs_rendered_chars",
+    "hints_truncated",
+    "raw_evidence_block_version",
+    "repair_used",
+    "rca_contract_version",
+    "alias_overridden",
+    "relationship_type_invalid",
+})
 
 # Lever-5a system message — V1 (deprecated 2026-05-17 per Task 6 of
 # 2026-05-17-lever-5a-instructions-hardening.md). The last 3

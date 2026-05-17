@@ -8407,6 +8407,10 @@ def _call_llm_for_proposal(
     prompt_map = {
         1: LEVER_1_2_COLUMN_PROMPT,
         2: LEVER_1_2_COLUMN_PROMPT,
+        # LEVER_4_JOIN_SPEC_PROMPT is deprecated (see
+        # _DEPRECATED_PROMPT_NAMES in common/config.py) — superseded by
+        # LEVER_4_JOIN_DISCOVERY_PROMPT and only reachable via this
+        # legacy holistic-proposal path which is itself deprecated.
         4: LEVER_4_JOIN_SPEC_PROMPT,
         5: LEVER_5_INSTRUCTION_PROMPT,
     }
@@ -8737,6 +8741,214 @@ def _sanitize_join_sql(sql_str: str) -> str:
     return equijoin_only if equijoin_only else cleaned
 
 
+# Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 6 —
+# trim the verbose JSON-API guard now that typed-IO (response_model)
+# enforces the JSON contract upstream. v2 is the active version;
+# system_msg_version="v2" is emitted as an observability tag.
+_LEVER_4_SYSTEM_MSG_VERSION = "v2"
+_LEVER_4_SYSTEM_MSG = (
+    "You are a Databricks Genie Space join-relationship expert. "
+    "Return only the join_specs JSON requested by the prompt."
+)
+
+
+def _normalize_instruction(value: Any) -> tuple[str, bool, bool]:
+    """Coerce + sanitize an L4 instruction field at the boundary.
+
+    Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 10.
+
+    Returns (normalized, changed, truncated) where:
+      - normalized: the canonical str shape
+      - changed: True if input shape required coercion (list -> str)
+                 or sanitization (markdown stripped)
+      - truncated: True if output was truncated past
+                   LEVER_4_INSTRUCTION_SOFT_CAP
+    """
+    from genie_space_optimizer.common.config import (
+        LEVER_4_INSTRUCTION_SOFT_CAP,
+    )
+
+    changed = False
+    if isinstance(value, list):
+        value = "\n".join(str(x) for x in value if x is not None)
+        changed = True
+    elif value is None:
+        return "", True, False
+    elif not isinstance(value, str):
+        value = str(value)
+
+    original = value
+    value = re.sub(r"^```[a-z]*\s*\n", "", value)
+    value = re.sub(r"\n```\s*$", "", value)
+    value = re.sub(r"\*\*([^*]+)\*\*", r"\1", value)
+    value = value.strip()
+    if value != original:
+        changed = True
+
+    truncated = False
+    if len(value) > LEVER_4_INSTRUCTION_SOFT_CAP:
+        value = value[:LEVER_4_INSTRUCTION_SOFT_CAP] + " […truncated]"
+        truncated = True
+
+    return value, changed, truncated
+
+
+def _normalize_join_endpoint(
+    ep: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Derive alias from identifier; override any model-provided value.
+
+    Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 11.
+
+    Returns (normalized, overridden) where:
+      - normalized: dict with canonical alias
+      - overridden: True if the model's alias did NOT match the
+                    derivation (signal for prompt-tuning)
+    """
+    if not isinstance(ep, dict):
+        return ep, False
+    identifier = ep.get("identifier", "")
+    if not isinstance(identifier, str) or not identifier:
+        return ep, False
+    canonical_alias = identifier.split(".")[-1]
+    model_alias = ep.get("alias")
+    out = dict(ep)
+    out["alias"] = canonical_alias
+    return out, (model_alias != canonical_alias)
+
+
+def _format_existing_join_specs_compact(specs: list[dict]) -> str:
+    """Render existing join_specs as 1 line per spec.
+
+    Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 12.
+    Token-efficient vs json.dumps for large spaces.
+
+    Format: ``<l_alias> <-> <r_alias> on <predicate> (rt=<sentinel>)``
+    """
+    if not specs:
+        return "(none)"
+    lines: list[str] = []
+    for s in specs:
+        if not isinstance(s, dict):
+            continue
+        left = (s.get("left") or {}) if isinstance(s.get("left"), dict) else {}
+        right = (
+            (s.get("right") or {}) if isinstance(s.get("right"), dict) else {}
+        )
+        l_alias = (
+            left.get("alias")
+            or left.get("identifier", "?").split(".")[-1]
+        )
+        r_alias = (
+            right.get("alias")
+            or right.get("identifier", "?").split(".")[-1]
+        )
+        sql_parts = s.get("sql") or []
+        predicate = ""
+        rt = ""
+        for part in sql_parts:
+            if not isinstance(part, str):
+                continue
+            m = re.search(r"--rt=(FROM_RELATIONSHIP_TYPE_[A-Z_]+)--", part)
+            if m:
+                rt = m.group(1)
+            elif "=" in part and "--rt=" not in part:
+                predicate = part.strip()
+        lines.append(f"{l_alias} <-> {r_alias} on {predicate} (rt={rt})")
+    return "\n".join(lines) if lines else "(none)"
+
+
+def _cap_discovery_hints(hints: list[dict]) -> tuple[list[dict], bool]:
+    """Cap heuristic hint count at LEVER_4_HINTS_TOP_K.
+
+    Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 13.
+    """
+    from genie_space_optimizer.common.config import LEVER_4_HINTS_TOP_K
+
+    if len(hints) <= LEVER_4_HINTS_TOP_K:
+        return hints, False
+    return hints[:LEVER_4_HINTS_TOP_K], True
+
+
+def _l4_response_appears_truncated(text: str) -> bool:
+    """Heuristic: detect mid-spec truncation in an L4 LLM response.
+
+    Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 14.
+    """
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        if "\n" in stripped:
+            stripped = stripped.split("\n", 1)[1]
+    stripped = stripped.strip("`").strip()
+    if not stripped.endswith("}") and not stripped.endswith("]"):
+        return True
+    opens = stripped.count("{")
+    closes = stripped.count("}")
+    if opens > closes:
+        return True
+    return False
+
+
+def _set_l4_observability_tags(
+    span: Any,
+    *,
+    prompt_version: str = "v1",
+    system_msg_version: str = "v1",
+    pydantic_validation_status: str = "unknown",
+    markdown_fence_stripped: bool = False,
+    instruction_coerced_to_string: bool = False,
+    input_truncated: bool = False,
+    sanitize_made_changes: bool = False,
+    mv_join_emitted: bool = False,
+    existing_specs_rendered_chars: int = 0,
+    hints_truncated: bool = False,
+    raw_evidence_block_version: str = "v1",
+    repair_used: bool = False,
+    rca_contract_version: str = "non_causal_v1",
+    alias_overridden: bool = False,
+    relationship_type_invalid: bool = False,
+) -> None:
+    """Emit the closed set of L4 join-discovery observability tags.
+
+    Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 1.
+    Single point of MLflow tag emission for lever_4_join_discovery.
+    Adding a new tag requires extending
+    ``LEVER_4_OBSERVABILITY_TAG_KEYS`` (config.py) and the
+    ``test_l4_observability_tag_keys_are_closed`` regression guard.
+
+    Tagging is best-effort: failures here MUST NOT break the call
+    path. The ``span`` argument is allowed to be ``None`` for the
+    no-MLflow code paths (legacy test stubs).
+    """
+    if span is None:
+        return
+    tags = {
+        "prompt_version": prompt_version,
+        "system_msg_version": system_msg_version,
+        "pydantic_validation_status": pydantic_validation_status,
+        "markdown_fence_stripped": str(markdown_fence_stripped).lower(),
+        "instruction_coerced_to_string": str(instruction_coerced_to_string).lower(),
+        "input_truncated": str(input_truncated).lower(),
+        "sanitize_made_changes": str(sanitize_made_changes).lower(),
+        "mv_join_emitted": str(mv_join_emitted).lower(),
+        "existing_specs_rendered_chars": str(existing_specs_rendered_chars),
+        "hints_truncated": str(hints_truncated).lower(),
+        "raw_evidence_block_version": raw_evidence_block_version,
+        "repair_used": str(repair_used).lower(),
+        "rca_contract_version": rca_contract_version,
+        "alias_overridden": str(alias_overridden).lower(),
+        "relationship_type_invalid": str(relationship_type_invalid).lower(),
+    }
+    try:
+        for k, v in tags.items():
+            span.set_attribute(f"l4.{k}", v)
+    except Exception:
+        # Best-effort: tracing failures must not break L4 dispatch.
+        logger.debug("L4 observability tag emission failed", exc_info=True)
+
+
 def _call_llm_for_join_discovery(
     metadata_snapshot: dict,
     hints: list[dict],
@@ -8762,6 +8974,9 @@ def _call_llm_for_join_discovery(
         or ds.get("join_specs", [])
     )
 
+    # Task 13: cap hints at top-K so the <discovery_hints> block stays bounded.
+    hints, _hints_truncated = _cap_discovery_hints(hints)
+
     hint_tables: set[str] = set()
     for h in hints:
         for k in ("left_table", "right_table", "table", "source_table", "target_table"):
@@ -8776,10 +8991,12 @@ def _call_llm_for_join_discovery(
 
     _allowlist = _build_identifier_allowlist(metadata_snapshot)
 
+    # Task 12: compact current_join_specs rendering replaces raw json.dumps.
+    _compact_specs = _format_existing_join_specs_compact(_join_specs)
     format_kwargs: dict[str, Any] = {
         "full_schema_context": scoped_schema,
         "identifier_allowlist": _format_identifier_allowlist(_allowlist),
-        "current_join_specs": json.dumps(_join_specs, default=str),
+        "current_join_specs": _compact_specs,
         "discovery_hints": _format_discovery_hints(
             hints,
             join_overlaps=metadata_snapshot.get("_join_overlaps"),
@@ -8808,6 +9025,9 @@ def _call_llm_for_join_discovery(
             "hints": len(hints),
             "existing_join_specs": len(_join_specs),
         })
+        # Task 1: emit the full L4 tag suite with defaults. Subsequent
+        # tasks replace defaults with computed values as they land.
+        _set_l4_observability_tags(_span)
 
         from genie_space_optimizer.optimization.evaluation import _link_prompt_to_trace
         _link_prompt_to_trace("lever_4_join_discovery")
@@ -8822,20 +9042,21 @@ def _call_llm_for_join_discovery(
             len(hints), len(_join_specs), len(prompt),
         )
 
-        system_msg = (
-            "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
-            "Do NOT include any explanation, analysis, or markdown outside the JSON. "
-            "Your entire response must be parseable by json.loads()."
-        )
+        # Task 6: trimmed system message (v2). Typed-IO upstream enforces
+        # the JSON contract — the verbose JSON-API guard was redundant.
+        system_msg = _LEVER_4_SYSTEM_MSG
 
         from genie_space_optimizer.optimization.prompt_io import (
             Lever4JoinDiscoveryOutput,
         )
+        from genie_space_optimizer.common.config import LEVER_4_MAX_TOKENS
 
+        _pydantic_status = "ok"
         try:
             text, _response = _traced_llm_call(
                 w, system_msg, prompt,
                 span_name="lever_4_join_discovery",
+                max_tokens=LEVER_4_MAX_TOKENS,
                 response_model=Lever4JoinDiscoveryOutput,
             )
         except Exception:
@@ -8843,28 +9064,104 @@ def _call_llm_for_join_discovery(
                 "Lever-4 join discovery LLM call failed after retries",
                 exc_info=True,
             )
+            _set_l4_observability_tags(
+                _span, pydantic_validation_status="llm_call_failed",
+            )
             _span.set_outputs({"join_specs_returned": 0, "error": True})
             return []
 
-        try:
-            result = _extract_json(text)
-        except json.JSONDecodeError:
-            logger.warning("JOIN_DISCOVERY non-JSON response: %.500s", text)
-            _span.set_outputs({"join_specs_returned": 0, "non_json": True})
-            return []
-        specs = result.get("join_specs", [])
-        rationale = result.get("rationale", "")
+        # Task 4: prefer the validated Pydantic model over re-parsing
+        # raw text. Falls back to _extract_json only if the response
+        # was non-conformant.
+        if isinstance(_response, Lever4JoinDiscoveryOutput):
+            result = _response.model_dump()
+        else:
+            _pydantic_status = "bypass_used"
+            try:
+                result = _extract_json(text) or {}
+                if not isinstance(result, dict):
+                    result = {}
+            except json.JSONDecodeError:
+                logger.warning("JOIN_DISCOVERY non-JSON response: %.500s", text)
+                _set_l4_observability_tags(
+                    _span, pydantic_validation_status="bypass_failed",
+                )
+                _span.set_outputs({"join_specs_returned": 0, "non_json": True})
+                return []
+        specs = result.get("join_specs", []) or []
+        rationale = result.get("rationale", "") or ""
+
+        # Tasks 10 + 11 — boundary normalization per spec.
+        _any_instruction_changed = False
+        _any_instruction_truncated = False
+        _any_alias_overridden = False
+        _any_mv_join_emitted = False
+        for s in specs:
+            if not isinstance(s, dict):
+                continue
+            # Task 10: instruction shape + soft cap
+            raw_instr = s.get("instruction", "")
+            norm_instr, instr_changed, instr_truncated = _normalize_instruction(
+                raw_instr,
+            )
+            s["instruction"] = norm_instr
+            _any_instruction_changed = (
+                _any_instruction_changed or instr_changed
+            )
+            _any_instruction_truncated = (
+                _any_instruction_truncated or instr_truncated
+            )
+            # Task 11: alias derivation per endpoint
+            for side in ("left", "right"):
+                ep = s.get(side, {})
+                norm_ep, alias_overridden = _normalize_join_endpoint(ep)
+                s[side] = norm_ep
+                _any_alias_overridden = (
+                    _any_alias_overridden or alias_overridden
+                )
+            # MV-join detection: an emitted spec touches a metric view
+            # when either endpoint identifier starts with mv_ (last
+            # segment heuristic mirrors the prompt rule).
+            for side in ("left", "right"):
+                ep = s.get(side, {}) if isinstance(s.get(side), dict) else {}
+                ident = str(ep.get("identifier") or "")
+                last = ident.split(".")[-1] if ident else ""
+                if last.startswith("mv_"):
+                    _any_mv_join_emitted = True
+                    break
+
+        _any_sanitize_changes = False
         for s in specs:
             if isinstance(s, dict) and "sql" in s:
+                original_sql = list(s.get("sql") or [])
                 s["sql"] = [
                     _sanitize_join_sql(part) for part in s["sql"]
                     if isinstance(part, str)
                 ]
+                if s["sql"] != original_sql:
+                    _any_sanitize_changes = True
         out = [
             {"join_spec": s, "rationale": rationale}
             for s in specs
             if isinstance(s, dict)
         ]
+
+        # Final tag emission with computed values from this call. The
+        # earlier _set_l4_observability_tags(_span) at span entry seeded
+        # defaults; here we overwrite with the real values.
+        _set_l4_observability_tags(
+            _span,
+            prompt_version="v1",
+            system_msg_version=_LEVER_4_SYSTEM_MSG_VERSION,
+            pydantic_validation_status=_pydantic_status,
+            instruction_coerced_to_string=_any_instruction_changed,
+            input_truncated=_any_instruction_truncated,
+            sanitize_made_changes=_any_sanitize_changes,
+            mv_join_emitted=_any_mv_join_emitted,
+            existing_specs_rendered_chars=len(_compact_specs),
+            hints_truncated=_hints_truncated,
+            alias_overridden=_any_alias_overridden,
+        )
         _span.set_outputs({"join_specs_returned": len(out)})
         logger.info(
             "\n"

@@ -3,6 +3,9 @@ skill_id: lever-4-join-spec
 prompt_constant_name: LEVER_4_JOIN_SPEC_PROMPT
 causal_or_non_causal: causal
 pickable_by_stage_1: false
+deprecated: true
+deprecated_in_favor_of: lever-4-join-discovery
+deprecated_since: 2026-05-17
 ---
 <role>
 You are a Databricks Genie Space join optimization expert.

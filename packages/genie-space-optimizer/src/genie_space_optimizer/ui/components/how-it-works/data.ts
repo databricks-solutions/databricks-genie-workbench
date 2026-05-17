@@ -353,7 +353,7 @@ export const LEVERS: Lever[] = [
     number: 4,
     name: "Join Specifications",
     description:
-      "Optimizes join specs between tables using LEVER_4_JOIN_SPEC_PROMPT. Analyzes SQL diffs for missing/incorrect JOINs, validates column type compatibility, and generates Genie-format join specs.",
+      "Discovers and validates missing join_specs between tables using LEVER_4_JOIN_DISCOVERY_PROMPT. Reviews heuristic FK-name overlap hints, validates column data-type compatibility, applies the CTE-first pattern for metric-view joins, and generates Genie-format join_specs with usage guidance.",
     patchTypes: ["add_join_spec", "update_join_spec"],
     failureTypes: ["wrong_join", "missing_join_spec", "wrong_join_spec"],
     ownedSections: ["relationships", "join"],
