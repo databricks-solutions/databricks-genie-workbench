@@ -16646,38 +16646,29 @@ def _run_gate_checks(
             ", ".join(_per_question_blocking_qids[:10]),
         )
 
-    if not _strict_decision.accepted:
-        # Translate the typed acceptance reason into a regression entry
-        # so the existing rejection block downstream rolls back the AG
-        # without needing a parallel code path.
-        regressions.append({
-            "judge": f"acceptance_gate ({_strict_decision.reason_code})",
-            "previous": _strict_decision.post_arbiter_baseline,
-            "current": _strict_decision.post_arbiter_candidate,
-            "drop": -_strict_decision.delta_pp,
-        })
-
-    if (
-        ENABLE_CONTROL_PLANE_ACCEPTANCE
-        and not _control_plane_decision.accepted
-    ):
-        regressions.append({
-            "judge": "control_plane_acceptance",
-            "previous": _control_plane_decision.baseline_accuracy,
-            "current": _control_plane_decision.candidate_accuracy,
-            "delta": _control_plane_decision.delta_pp,
-            "severity": "critical",
-            "reason": _control_plane_decision.reason_code,
-            "detail": format_control_plane_acceptance_detail(_control_plane_decision),
-            "target_qids": list(_control_plane_decision.target_qids),
-            "target_fixed_qids": list(_control_plane_decision.target_fixed_qids),
-            "target_still_hard_qids": list(
-                _control_plane_decision.target_still_hard_qids
-            ),
-            "out_of_target_regressed_qids": list(
-                _control_plane_decision.out_of_target_regressed_qids
-            ),
-        })
+    # Phase 1 (2026-05-16) — Acceptance Unification Task 3. Replace the
+    # historical inline construction of the ``regressions`` list (one
+    # entry per failing sub-criterion) with a single typed
+    # ``AcceptanceOutcome``. The outcome is the canonical view of this
+    # iteration's accept/reject verdict; every downstream surface
+    # (marker payload, ``acceptance_decision`` dict, ``Action:`` print
+    # line, Phase H slate) reads from this object instead of
+    # re-deriving from ``_strict_decision`` / ``_control_plane_decision``
+    # independently.
+    from genie_space_optimizer.optimization.acceptance_outcome import (
+        acceptance_decision_dict as _acceptance_decision_dict,
+        build_acceptance_outcome as _build_acceptance_outcome,
+    )
+    _acceptance_outcome = _build_acceptance_outcome(
+        strict_decision=_strict_decision,
+        control_plane_decision=_control_plane_decision,
+        enable_control_plane_acceptance=ENABLE_CONTROL_PLANE_ACCEPTANCE,
+    )
+    # Mirror the historical regressions-list assembly. The downstream
+    # ``if regressions:`` block renders these via the existing
+    # ``_fmt_reg`` helper without modification, so the FULL EVAL FAIL
+    # print block stays byte-equivalent for the same decision.
+    regressions.extend(_acceptance_outcome.regression_attribution)
 
     # Under the single-criterion model the legacy noise filter and
     # hard accuracy guard are no longer needed: ``regressions`` is
