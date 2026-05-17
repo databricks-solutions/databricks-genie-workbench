@@ -88,8 +88,12 @@ def test_collision_pair_matches_on_terminal_signature_axis(monkeypatch):
         target_qids=("gs_007", "gs_013"),
     )]
     forbidden_pair = _compute_forbidden_ag_set_pair(refl)
+    # Phase 0.1 (2026-05-17) — production AGs carry the qids in
+    # ``affected_questions``; ``source_cluster_ids`` holds cluster
+    # labels like ``H001``.
     candidate_ag = {
-        "source_cluster_ids": ["gs_007", "gs_013"],
+        "source_cluster_ids": ["H001"],
+        "affected_questions": ["gs_007", "gs_013"],
         "source_cluster_signatures": [],
     }
     candidate_pair = _ag_collision_key_pair(
@@ -118,8 +122,13 @@ def test_collision_pair_matches_blocks_renamed_root_cause_with_same_signature(
         target_qids=("gs_007",),
     )]
     forbidden_pair = _compute_forbidden_ag_set_pair(refl)
+    # Phase 0.1 (2026-05-17) — production AGs carry the qids in
+    # ``affected_questions``; ``source_cluster_ids`` holds cluster
+    # labels like ``H001``. The candidate key now reads
+    # ``affected_questions``, so the fixture must follow.
     candidate_ag_renamed = {
-        "source_cluster_ids": ["gs_007"],
+        "source_cluster_ids": ["H001"],
+        "affected_questions": ["gs_007"],
         "source_cluster_signatures": [],
     }
     candidate_pair = _ag_collision_key_pair(

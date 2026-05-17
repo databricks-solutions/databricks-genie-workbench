@@ -13042,16 +13042,33 @@ def _ag_collision_key_pair(
         if s
     )
 
-    # Phase 6.1 — terminal-signature axis candidate keys. The AG's
-    # ``source_cluster_ids`` map to the ``target_qids`` frozenset
-    # the retired-signature axis is keyed on. Emit one tuple per AG
-    # (the full set of cluster ids) so the candidate's
-    # (target_qids, lever_set) pair can match the producer's
-    # projection regardless of how ``root_cause`` text drifted.
-    source_cluster_ids = ag.get("source_cluster_ids") or []
-    if source_cluster_ids and lever_keys:
+    # Phase 0.1 (2026-05-17) — terminal-signature axis candidate
+    # keys must use the same identity space as the retired-signature
+    # producer in ``_compute_forbidden_ag_set_pair``. The producer
+    # keys retired signatures on ``target_qids`` (question
+    # identifiers like ``..._gs_013``). The canonical production
+    # field carrying those qids on the AG dict is
+    # ``affected_questions`` — confirmed by
+    # ``forced_synthesis_dispatch.no_structural_candidate_record``
+    # call sites which already read ``ag.get("affected_questions")``
+    # for the same purpose. Legacy AGs without that field fall back
+    # to ``target_qids``; if neither is present, the terminal-
+    # signature axis is skipped (keeps byte-stable replay for
+    # legacy fixtures).
+    #
+    # Pre-Phase-0.1 the key was built from
+    # ``ag.get("source_cluster_ids")`` (cluster labels like H001).
+    # Two live runs (airline 59a173d3, 7now ab65fefe) re-attempted
+    # the same retired AG four times each because that namespace
+    # never matched the retired-side qids.
+    affected = (
+        ag.get("affected_questions")
+        or ag.get("target_qids")
+        or []
+    )
+    if affected and lever_keys:
         target_qids_frozen = frozenset(
-            str(c) for c in source_cluster_ids if c
+            str(q) for q in affected if q
         )
         terminal_signature_keys: tuple = (
             (target_qids_frozen, lever_frozen),
