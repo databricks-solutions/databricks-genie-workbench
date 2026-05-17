@@ -16739,7 +16739,14 @@ def _run_gate_checks(
                     _control_plane_decision,
                     ag_id=str(ag_id),
                     iteration=int(iteration_counter),
-                    accepted_label="FAIL (REGRESSION)",
+                    # Phase 1 (2026-05-16) — Acceptance Unification Task
+                    # 4. Replaces the historical hardcode so the marker
+                    # payload's ``accepted_label`` matches the canonical
+                    # reason code embedded in the same payload. Run A
+                    # iter 1 anchor (target_fixed=[gs_013],
+                    # post_arbiter_delta=0, pre_arbiter_delta=+13.1pp)
+                    # replays to ``accepted_label="PASS"`` after this fix.
+                    accepted_label=_acceptance_outcome.accepted_label,
                 )
                 print(full_eval_marker(
                     optimization_run_id=run_id,

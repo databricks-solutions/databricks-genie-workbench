@@ -64,3 +64,29 @@ def test_no_strict_decision_accepted_branch_appends_regression_inline():
         f"{len(matches)} inline `if not _strict_decision.accepted: "
         f"regressions.append(...)` block(s)."
     )
+
+
+def test_no_hardcoded_accepted_label_in_full_eval_marker_emit():
+    """Bug 5 Surface 2 regression guard. The harness must NOT pass a
+    string literal ``"FAIL (REGRESSION)"`` to
+    ``format_full_eval_marker_payload``. The marker payload's
+    ``accepted_label`` must come from
+    ``_acceptance_outcome.accepted_label``.
+    """
+    src = HARNESS_PATH.read_text()
+
+    matches = [
+        i for i, line in enumerate(src.splitlines(), start=1)
+        if 'accepted_label="FAIL (REGRESSION)"' in line
+        or "accepted_label='FAIL (REGRESSION)'" in line
+    ]
+    code_matches = [
+        m for m in matches
+        if not src.splitlines()[m - 1].lstrip().startswith("#")
+    ]
+
+    assert not code_matches, (
+        f"Bug 5 Surface 2 regression — found hardcoded "
+        f"`accepted_label=\"FAIL (REGRESSION)\"` at "
+        f"harness.py:{code_matches}."
+    )
