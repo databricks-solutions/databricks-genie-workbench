@@ -167,7 +167,7 @@ class TestPhase2PromptQualification:
         arch = next(a for a in ARCHETYPES if a.name == "top_n_by_metric")
         slice_ = _mk_slice()
         prompt = render_preflight_prompt(arch, slice_, [])
-        assert "## Constraint: identifier qualification" in prompt
+        assert "<identifier_qualification_constraint>" in prompt
         # The worked example renders the first slice identifier verbatim.
         assert "cat.sch.mv_esr_dim_date" in prompt
         assert "BAD" in prompt and "GOOD" in prompt

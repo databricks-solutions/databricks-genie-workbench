@@ -316,19 +316,23 @@ class TestPhase2PromptGrounding:
         prompt = render_preflight_prompt(
             arch, slice_, [], data_profile=_profile_fixture(),
         )
-        assert "Column value profile" in prompt
+        assert "<column_value_profile>" in prompt
         assert "'CA'" in prompt
         assert "range=[0, 99999]" in prompt
 
     def test_prompt_falls_back_when_profile_missing(self):
-        """No crash + no fabricated values when data_profile=None."""
+        """No crash + no fabricated values + no noisy placeholder
+        when ``data_profile=None``. The section is dropped entirely
+        rather than rendering ``(no profile available)`` which only
+        confused the LLM."""
         arch = next(a for a in ARCHETYPES if a.name == "top_n_by_metric")
         slice_ = AssetSlice(
             tables=[_mk_table("cat.sch.t")],
             columns=[("cat.sch.t", "region")],
         )
         prompt = render_preflight_prompt(arch, slice_, [])
-        assert "Column value profile" in prompt
+        assert "<column_value_profile>" not in prompt
+        assert "(no profile available)" not in prompt
         assert "'CA'" not in prompt
 
     def test_prompt_includes_column_descriptions_when_present(self):
@@ -388,7 +392,7 @@ class TestPhase2PromptGrounding:
             data_profile=_profile_fixture(),
         )
         prompt = render_cluster_driven_prompt(arch, ctx, [])
-        assert "Column value profile" in prompt
+        assert "<column_value_profile>" in prompt
         assert "'CA'" in prompt
 
 
@@ -638,7 +642,7 @@ class TestPhase3RetryPreflight:
 
         # Second prompt must carry the Retry-feedback block driven from
         # the _data_profile value list.
-        retry_prompts = [p for p in llm.prompts if "## Retry feedback" in p]
+        retry_prompts = [p for p in llm.prompts if "<retry_feedback>" in p]
         assert retry_prompts, "retry prompt should include feedback section"
         assert "'CA'" in retry_prompts[0]
 
@@ -791,7 +795,7 @@ class TestPhase3RetryClusterDriven:
             f"validator called {validator.calls} times; expected exactly "
             "one retry on the cluster-driven path"
         )
-        retry_prompts = [p for p in llm.prompts if "## Retry feedback" in p]
+        retry_prompts = [p for p in llm.prompts if "<retry_feedback>" in p]
         assert retry_prompts, "cluster-driven retry must carry feedback block"
 
 

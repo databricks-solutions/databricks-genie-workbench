@@ -240,7 +240,7 @@ def test_preflight_example_synthesis_prompt_renders_with_double_brace_substituti
         slice_metric_views="(none)",
         slice_join_spec="(none)",
         slice_columns="cat.sch.sales.cy_sales",
-        slice_data_profile="(none)",
+        data_profile_section="",
         schema_example_identifier="cat.sch.sales",
         metric_view_contract="",
         archetype_name="top_n_by_metric",

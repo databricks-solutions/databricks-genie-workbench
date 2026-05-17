@@ -151,3 +151,185 @@ def test_preflight_output_schema_no_literal_double_braces():
 
     assert "{{" not in schema_body
     assert "}}" not in schema_body
+
+
+# ── Task 10: XML migration of <context> sub-headers ──
+
+
+def test_preflight_context_uses_xml_subtags():
+    """The <context> block must use XML sub-tags, not Markdown ## headers.
+
+    This is the structural correctness anchor for Anthropic context-
+    engineering: a model recognizes nested XML tags much more reliably
+    than free-text Markdown sub-headers, especially when the surrounding
+    contract is also in XML.
+    """
+    from genie_space_optimizer.common.config import (
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+    )
+
+    prompt = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT
+    ctx_start = prompt.index("<context>")
+    ctx_end = prompt.index("</context>")
+    ctx = prompt[ctx_start:ctx_end]
+
+    # Required XML sub-tags inside <context>.
+    for tag in (
+        "<coverage_focus>",
+        "</coverage_focus>",
+        "<identifier_qualification_constraint>",
+        "</identifier_qualification_constraint>",
+        "<filter_values_constraint>",
+        "</filter_values_constraint>",
+        "<archetype>",
+        "</archetype>",
+        "<schema>",
+        "</schema>",
+        "<existing_questions>",
+        "</existing_questions>",
+    ):
+        assert tag in ctx, f"missing XML sub-tag {tag} in <context>"
+
+    # The migrated ## sub-headers must be gone from <context>.
+    for legacy_header in (
+        "## Coverage focus",
+        "## Constraint: identifier qualification",
+        "## Constraint: filter values",
+        "## Archetype",
+        "## Schema",
+        "## Existing questions",
+    ):
+        assert legacy_header not in ctx, (
+            f"legacy markdown header {legacy_header!r} still in <context>"
+        )
+
+
+# ── Task 9.4: data_profile_section is conditional + never emits "(no profile available)" ──
+
+
+def test_preflight_body_uses_data_profile_section_placeholder():
+    """The body template must use ``{{ data_profile_section }}`` rather
+    than ``## Column value profile`` + ``{{ slice_data_profile }}`` — the
+    helper now wraps the profile in ``<column_value_profile>`` only when
+    a real profile is present, and emits an empty string otherwise.
+    """
+    from genie_space_optimizer.common.config import (
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+    )
+
+    prompt = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT
+    assert "{{ data_profile_section }}" in prompt
+    assert "{{ slice_data_profile }}" not in prompt
+    # The static markdown header must be gone — the helper renders its
+    # own XML wrapper when a profile is present.
+    assert "## Column value profile" not in prompt
+
+
+def test_render_preflight_prompt_omits_no_profile_available_when_no_profile():
+    """When ``data_profile`` is ``None``, the rendered prompt must NOT
+    contain the literal ``(no profile available)`` — that placeholder
+    only confuses the LLM. The new helper drops the section entirely.
+    """
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        AssetSlice,
+        ARCHETYPES,
+        render_preflight_prompt,
+    )
+
+    slice_ = AssetSlice(
+        tables=[{"identifier": "cat.sch.stores"}],
+        columns=[("cat.sch.stores", "region")],
+    )
+    prompt = render_preflight_prompt(ARCHETYPES[0], slice_, [])
+
+    assert "(no profile available)" not in prompt
+    assert "<column_value_profile>" not in prompt
+
+
+def test_render_preflight_prompt_wraps_profile_in_xml_when_present():
+    """When ``data_profile`` IS supplied, the helper must wrap the
+    profile in ``<column_value_profile>`` so the LLM can locate it.
+    """
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        AssetSlice,
+        ARCHETYPES,
+        render_preflight_prompt,
+    )
+
+    slice_ = AssetSlice(
+        tables=[{"identifier": "cat.sch.stores"}],
+        columns=[("cat.sch.stores", "region")],
+    )
+    data_profile = {
+        "cat.sch.stores": {
+            "columns": {
+                "region": {"distinct_values": ["NA", "EMEA", "APAC"]},
+            },
+        }
+    }
+    prompt = render_preflight_prompt(
+        ARCHETYPES[0], slice_, [], data_profile=data_profile,
+    )
+
+    assert "<column_value_profile>" in prompt
+    assert "</column_value_profile>" in prompt
+    # Profile content survives inside the wrapper.
+    assert "NA" in prompt
+
+
+# ── Task 9.3: empty-slice assertion ──
+
+
+def test_render_preflight_prompt_raises_on_empty_slice():
+    """Rendering with an empty slice is a programming error — the
+    planner should never produce a slice with no assets. We want a
+    loud failure now rather than a confusing LLM output later.
+    """
+    import pytest
+
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        AssetSlice,
+        ARCHETYPES,
+        render_preflight_prompt,
+    )
+
+    empty_slice = AssetSlice(tables=[])
+    with pytest.raises(ValueError, match="empty slice"):
+        render_preflight_prompt(ARCHETYPES[0], empty_slice, [])
+
+
+# ── Task 10: retry feedback wrapped in <retry_feedback> ──
+
+
+def test_render_preflight_prompt_wraps_retry_feedback_in_xml():
+    """When ``retry_feedback`` is supplied, the rendered prompt must
+    wrap it in ``<retry_feedback>...</retry_feedback>`` rather than the
+    legacy ``## Retry feedback`` markdown heading.
+    """
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        AssetSlice,
+        ARCHETYPES,
+        render_preflight_prompt,
+    )
+
+    slice_ = AssetSlice(
+        tables=[
+            {
+                "identifier": "cat.sch.stores",
+                "column_configs": [
+                    {"identifier": "region", "data_type": "STRING"},
+                ],
+            }
+        ]
+    )
+    prompt = render_preflight_prompt(
+        ARCHETYPES[0],
+        slice_,
+        [],
+        retry_feedback="Your last SQL returned 0 rows.",
+    )
+
+    assert "<retry_feedback>" in prompt
+    assert "</retry_feedback>" in prompt
+    assert "## Retry feedback" not in prompt
+    assert "Your last SQL returned 0 rows." in prompt

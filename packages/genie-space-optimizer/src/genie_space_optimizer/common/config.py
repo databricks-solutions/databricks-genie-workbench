@@ -5236,7 +5236,9 @@ Genie can learn the query shape for similar user questions.
 </role>
 
 <context>
-## Coverage focus (this example MUST reference these assets)
+<coverage_focus>
+This example MUST reference these assets.
+
 Tables:
 {{ slice_tables }}
 
@@ -5248,15 +5250,14 @@ Join spec to exercise:
 
 Columns to prioritize:
 {{ slice_columns }}
+</coverage_focus>
 
-## Column value profile (use ONLY these values when building filters)
-{{ slice_data_profile }}
-
-## Constraint: identifier qualification (HARD)
-Every table reference in FROM, JOIN, and column-qualifier position MUST \
-be the EXACT identifier shown in the ``## Schema`` allowlist below. \
-Never a short name, never an inferred name, never a benchmark-style \
-alias you haven't declared for THIS query.
+{{ data_profile_section }}
+<identifier_qualification_constraint>
+HARD constraint: every table reference in FROM, JOIN, and column-\
+qualifier position MUST be the EXACT identifier shown in the \
+<schema> allowlist below. Never a short name, never an inferred name, \
+never a benchmark-style alias you haven't declared for THIS query.
 
 Worked example (identifier = ``{{ schema_example_identifier }}``):
 - BAD   SELECT d.day_of_week FROM dim_date d
@@ -5269,24 +5270,33 @@ Worked example (identifier = ``{{ schema_example_identifier }}``):
 SQL aliases (``t``, ``f``, etc.) are allowed ONLY when declared in \
 THIS query's FROM clause. Never carry an alias over from another \
 query, a benchmark example, or an archetype snippet.
+</identifier_qualification_constraint>
 
-## Constraint: filter values
+<filter_values_constraint>
 When writing filter predicates, quote values EXACTLY from the value \
 profile above. Do not invent values. For numeric columns, use values \
 within the stated range. When filter values are not in the profile \
 (high-cardinality columns), omit the filter instead of guessing.
+</filter_values_constraint>
 
 {{ metric_view_contract }}
-## Archetype
+<archetype>
 Name: {{ archetype_name }}
 Shape guidance: {{ archetype_prompt_template }}
 Output contract: {{ archetype_output_shape }}
+</archetype>
 
-## Schema (identifier allowlist — ONLY these identifiers may appear)
+<schema>
+Identifier allowlist — ONLY these identifiers may appear.
+
 {{ identifier_allowlist }}
+</schema>
 
-## Existing questions in this space (avoid duplicating intent)
+<existing_questions>
+Avoid duplicating the intent of any question listed below.
+
 {{ existing_questions_list }}
+</existing_questions>
 
 {{ retry_feedback }}
 </context>
@@ -5327,7 +5337,7 @@ Produce ONE example. Rules:
 
 - ``example_question`` is a clean, customer-style business question.
 - ``example_sql`` is a valid Databricks SQL query. Identifier \
-qualification is enforced in ``## Constraint: identifier qualification`` \
+qualification is enforced in <identifier_qualification_constraint> \
 above — obey that section exactly.
 - Match the archetype's shape contract.
 - The question MUST reference the coverage focus naturally — use the \

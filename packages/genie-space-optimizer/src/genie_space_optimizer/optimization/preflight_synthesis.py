@@ -1182,6 +1182,36 @@ def _format_slice_data_profile(
     return "\n".join(out)
 
 
+def _render_preflight_data_profile_section(
+    slice_: AssetSlice, data_profile: dict | None,
+) -> str:
+    """Build the ``<column_value_profile>`` section for the prompt.
+
+    Returns an empty string when there's no useful profile content to
+    show. Otherwise wraps the rendered profile bullet block in a
+    ``<column_value_profile>`` XML tag so the LLM can locate it. The
+    legacy ``(no profile available)`` placeholder is NEVER rendered —
+    it added noise without information and the LLM is best served by
+    simply omitting the section.
+    """
+    body = _format_slice_data_profile(slice_, data_profile)
+    if not body:
+        return ""
+    # `_format_slice_data_profile` falls back to bracket-sentinels
+    # (``(no profile available)``, ``(no columns to profile)``) when
+    # there's nothing useful. Treat those as "no profile" and drop the
+    # section entirely.
+    if body.startswith("("):
+        return ""
+    return (
+        "<column_value_profile>\n"
+        "Use ONLY these values when building filters.\n"
+        "\n"
+        f"{body}\n"
+        "</column_value_profile>"
+    )
+
+
 def _build_empty_result_feedback(
     proposal: dict,
     data_profile: dict | None,
@@ -1837,7 +1867,7 @@ def render_preflight_prompt(
     the first section dropped (see ``_truncate_to_budget`` priority list).
 
     ``retry_feedback`` (optional): rendered into the prompt as a
-    ``## Retry feedback`` section. Used by the :ref:`R6 retry` path when
+    ``<retry_feedback>`` section. Used by the :ref:`R6 retry` path when
     the first attempt returned 0 rows — carries the previous SQL plus
     the actual column values from the profile so the LLM can self-correct.
 
@@ -1847,16 +1877,38 @@ def render_preflight_prompt(
     with the slice's attributes (``AssetSlice`` is the only shipped
     implementor today).
     """
+    # Defensive guard: an empty slice means the planner produced no
+    # assets — rendering it would emit a prompt with no schema, which
+    # the LLM cannot satisfy. Fail loudly here so the bug shows up at
+    # the planner, not as a confusing downstream LLM rejection.
+    asset_ids_fn = getattr(context, "asset_ids", None)
+    if callable(asset_ids_fn):
+        asset_ids_val = asset_ids_fn()
+    else:
+        asset_ids_val = (
+            list(getattr(context, "tables", []) or [])
+            + list(getattr(context, "metric_views", []) or [])
+        )
+    if not asset_ids_val:
+        raise ValueError(
+            "render_preflight_prompt called with empty slice — "
+            "planner contract violated"
+        )
+
     retry_block = ""
     if retry_feedback:
-        retry_block = "## Retry feedback\n" + str(retry_feedback).strip()
+        retry_block = (
+            "<retry_feedback>\n" + str(retry_feedback).strip() + "\n</retry_feedback>"
+        )
 
     format_kwargs: dict[str, Any] = {
         "slice_tables": _format_slice_tables(context),
         "slice_metric_views": _format_slice_metric_views(context),
         "slice_join_spec": _format_slice_join_spec(context),
         "slice_columns": _format_slice_columns(context),
-        "slice_data_profile": _format_slice_data_profile(context, data_profile),
+        "data_profile_section": _render_preflight_data_profile_section(
+            context, data_profile,
+        ),
         "schema_example_identifier": _first_asset_identifier(context),
         "metric_view_contract": _format_metric_view_contract(context),
         "archetype_name": archetype.name,
@@ -1879,7 +1931,7 @@ def render_preflight_prompt(
         format_kwargs,
         PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
         priority_keys=[
-            "slice_data_profile",
+            "data_profile_section",
             "existing_questions_list",
             "retry_feedback",
         ],
