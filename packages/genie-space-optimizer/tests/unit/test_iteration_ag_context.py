@@ -25,6 +25,9 @@ def test_full_ag_populates_all_five_fields():
         "target_qids": ("gs_013",),
         "levers": (1, 6),  # sorted ascending
         "root_cause": "Missing join in customers→orders path",
+        # Phase 2 (2026-05-16) — blame_set defaults to () when neither
+        # ``blame_set`` nor ``blamed_assets`` is present on the AG.
+        "blame_set": (),
     }
 
 
@@ -54,6 +57,8 @@ def test_empty_ag_yields_defaults():
         "target_qids": (),
         "levers": (),
         "root_cause": "",
+        # Phase 2 (2026-05-16) — blame_set always present in helper output.
+        "blame_set": (),
     }
 
 

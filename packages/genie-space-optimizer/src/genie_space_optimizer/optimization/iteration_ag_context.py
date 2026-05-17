@@ -45,6 +45,10 @@ def capture_iter_ag_context(*, ag: Mapping[str, Any], ag_id: str) -> dict:
       ``ag["lever_directives"]`` keys. Keys are typically strings.
     * ``root_cause`` — ``ag["root_cause"]`` or
       ``ag["root_cause_summary"]``.
+    * ``blame_set`` — canonically-sorted tuple of stringified
+      ``ag["blame_set"]`` (or ``ag["blamed_assets"]``) entries. Empty
+      tuple when neither field is present. Phase 2 (2026-05-16) wires
+      this into ``TerminalSignature.blame_set_norm``.
     """
     raw_cluster_ids = ag.get("source_cluster_ids") or ()
     cluster_ids = tuple(
@@ -69,10 +73,17 @@ def capture_iter_ag_context(*, ag: Mapping[str, Any], ag_id: str) -> dict:
         ag_id or ag.get("id") or ag.get("ag_id") or ""
     )
 
+    raw_blame = ag.get("blame_set") or ag.get("blamed_assets") or ()
+    blame_set = tuple(sorted(
+        str(b).strip() for b in raw_blame
+        if b is not None and str(b).strip()
+    ))
+
     return {
         "ag_id": resolved_ag_id,
         "cluster_ids": cluster_ids,
         "target_qids": target_qids,
         "levers": levers,
         "root_cause": root_cause,
+        "blame_set": blame_set,
     }
