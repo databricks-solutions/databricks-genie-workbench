@@ -5281,6 +5281,37 @@ Output contract: {{ archetype_output_shape }}
 {{ retry_feedback }}
 </context>
 
+<examples>
+<example>
+<input>
+  Archetype: simple_enumerate
+  Coverage focus: stores (single table, geographical breakdown)
+  Schema:
+    - cat.demo.stores
+        - region (string)
+        - store_id (bigint)
+</input>
+<output>
+{{"example_question": "How many stores does each region operate?", "example_sql": "SELECT region, COUNT(*) AS store_count FROM cat.demo.stores GROUP BY region ORDER BY store_count DESC", "usage_guidance": "Use when the user asks for store counts broken down by geography (region, country, district).", "rationale": "Exercises simple_enumerate via GROUP BY over a single dimension column with a meaningful ORDER BY."}}
+</output>
+</example>
+<example>
+<input>
+  Archetype: segment_compare
+  Coverage focus: orders + customers (2 tables, join required)
+  Schema:
+    - cat.demo.orders
+        - customer_id (bigint), order_amt (decimal), order_date (date)
+    - cat.demo.customers
+        - customer_id (bigint), tier (string)
+  Join: orders.customer_id = customers.customer_id
+</input>
+<output>
+{{"example_question": "For each month, what was the total order amount from premium customers vs standard customers?", "example_sql": "SELECT DATE_TRUNC('month', o.order_date) AS month, SUM(CASE WHEN c.tier = 'premium' THEN o.order_amt ELSE 0 END) AS premium_total, SUM(CASE WHEN c.tier = 'standard' THEN o.order_amt ELSE 0 END) AS standard_total FROM cat.demo.orders o INNER JOIN cat.demo.customers c ON o.customer_id = c.customer_id GROUP BY DATE_TRUNC('month', o.order_date) ORDER BY month", "usage_guidance": "Use when the user asks to compare aggregate metrics between two customer segments grouped by a time bucket.", "rationale": "Exercises segment_compare via SUM(CASE) over two tier values, with the required join and time-bucket grouping."}}
+</output>
+</example>
+</examples>
+
 <instructions>
 Produce ONE example. Rules:
 

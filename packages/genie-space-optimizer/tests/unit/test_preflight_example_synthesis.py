@@ -88,3 +88,39 @@ def test_preflight_example_synthesis_system_msg_constant_exists():
     assert "example_sqls" in msg
     assert "benchmark" in msg.lower()
     assert "JSON" in msg
+
+
+def test_preflight_prompt_has_two_canonical_examples():
+    """The <examples> block must contain 2 worked few-shot examples
+    each demonstrating the 4-field JSON output shape."""
+    from genie_space_optimizer.common.config import (
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+    )
+
+    prompt = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT
+
+    assert "<examples>" in prompt and "</examples>" in prompt
+    start = prompt.index("<examples>")
+    end = prompt.index("</examples>")
+    examples_body = prompt[start:end]
+
+    assert examples_body.count("<example>") == 2
+    assert examples_body.count("</example>") == 2
+    assert examples_body.count('"example_question":') == 2
+    assert examples_body.count('"example_sql":') == 2
+    assert examples_body.count('"usage_guidance":') == 2
+    assert examples_body.count('"rationale":') == 2
+
+
+def test_preflight_examples_block_precedes_instructions():
+    """The <examples> block must appear AFTER </context> but BEFORE <instructions>."""
+    from genie_space_optimizer.common.config import (
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+    )
+
+    prompt = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT
+    context_close = prompt.index("</context>")
+    examples_open = prompt.index("<examples>")
+    instructions_open = prompt.index("<instructions>")
+
+    assert context_close < examples_open < instructions_open
