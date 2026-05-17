@@ -16864,6 +16864,15 @@ def _run_gate_checks(
             "acceptance_decision": _acceptance_decision_dict(
                 _acceptance_outcome
             ),
+            # Phase 1 (2026-05-16) Task 6 — Acceptance Unification:
+            # forward the gate's ``_gate_thresholds_met`` so the
+            # lever-loop's downstream ``AcceptanceInput`` carries it
+            # into ``stages.acceptance.decide``. Without this, the
+            # control-plane attribution-drift rejection branch sees
+            # the AcceptanceInput default (``True``) and silently
+            # disables itself even when ``GSO_TARGET_AWARE_ACCEPTANCE``
+            # is on and the candidate failed the overall bar.
+            "thresholds_met": _gate_thresholds_met,
         }
 
     # ── PASSED ────────────────────────────────────────────────────────
@@ -17060,6 +17069,12 @@ def _run_gate_checks(
         "acceptance_decision": _acceptance_decision_dict(
             _acceptance_outcome
         ),
+        # Phase 1 (2026-05-16) Task 6 — see rollback-path return above
+        # for rationale. The pass-path return also forwards
+        # ``_gate_thresholds_met`` so the lever-loop's downstream
+        # ``AcceptanceInput`` carries it consistently across fork
+        # paths.
+        "thresholds_met": _gate_thresholds_met,
     }
 
 
@@ -28760,6 +28775,20 @@ def _run_lever_loop(
                 cumulative_regression_debt=_cumulative_regression_debt,
             )
 
+            # Phase 1 (2026-05-16) Task 6 — Acceptance Unification:
+            # extract the gate's ``thresholds_met`` decision into a
+            # loop-local so the downstream ``AcceptanceInput``
+            # construction can forward it. The gate (see
+            # ``_run_gate_checks``) sets this from the
+            # ``GSO_TARGET_AWARE_ACCEPTANCE`` overall-accuracy bar; if
+            # the gate's two return paths ever omit the key (e.g., a
+            # future early-exit path), the local falls back to ``True``
+            # which matches the AcceptanceInput dataclass default and
+            # preserves legacy behaviour.
+            _iter_thresholds_met = bool(
+                (gate_result or {}).get("thresholds_met", True)
+            )
+
             # Phase 0.3 Task 9 — terminal-marker exhaustiveness. The
             # ``_run_gate_checks`` helper emits ``GSO_FULL_EVAL_V1`` from
             # two paths: PASS (line ~16334) when ``passed=True``, and FAIL
@@ -29060,6 +29089,13 @@ def _run_lever_loop(
                         canonical_decisions_by_ag_id=(
                             _canonical_decisions_for_phase_h
                         ),
+                        # Phase 1 (2026-05-16) Task 6 — Acceptance
+                        # Unification. Forward the gate's
+                        # ``thresholds_met`` decision so the
+                        # control-plane attribution-drift rejection
+                        # branch sees the real flag instead of the
+                        # AcceptanceInput dataclass default.
+                        thresholds_met=_iter_thresholds_met,
                     )
                 except Exception as _accept_inp_exc:
                     from genie_space_optimizer.optimization.stage_io_capture import (
