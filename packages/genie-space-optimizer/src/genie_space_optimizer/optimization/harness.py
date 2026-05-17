@@ -12771,23 +12771,32 @@ def _ag_collision_key(
 
 @dataclass(frozen=True)
 class _ForbiddenSetPair:
-    """Defect Plan 1 G2 — paired forbidden set.
+    """Defect Plan 1 G2 / Phase 6.1 — paired forbidden set.
 
     ``by_root_cause`` is the legacy lookup keyed on
     ``(root_cause, blame, frozenset(lever_set))`` for byte-stability
     with pre-defect-plan-1 fixtures.
 
-    ``by_signature`` is the new lookup keyed on
+    ``by_signature`` is the Defect-Plan-1 lookup keyed on
     ``(source_cluster_signature, frozenset(lever_set))`` — stable
     across LLM-regenerated root_cause text.
+
+    ``by_terminal_signature`` is the Phase 6.1 lookup keyed on
+    ``(target_qids, frozenset(lever_set))`` — consumes the terminal
+    signature carried on every non-accepted reflection entry so the
+    live AG collision guard blocks any candidate whose
+    (source_cluster_ids, lever_keys) pair matches a retired
+    ``TerminalSignature``'s (target_qids, lever_set), regardless of
+    how the strategist's ``root_cause`` label has drifted.
     """
     by_root_cause: frozenset
     by_signature: frozenset
+    by_terminal_signature: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
 class _CollisionKeyPair:
-    """Defect Plan 1 G2 — paired collision-key candidate.
+    """Defect Plan 1 G2 / Phase 6.1 — paired collision-key candidate.
 
     ``root_cause_key`` is the legacy single key (None when the AG
     lacks enough identity to participate; the legacy code returned
@@ -12796,9 +12805,15 @@ class _CollisionKeyPair:
     ``signature_keys`` is a tuple of ``(signature, frozenset(
     lever_set))`` — one per ``source_cluster_signature`` on the AG.
     Empty tuple when the AG has no signatures.
+
+    ``terminal_signature_keys`` is the Phase 6.1 candidate-side
+    projection: one tuple per AG of
+    ``(target_qids_frozen, frozenset(lever_set))``, matched against
+    ``_ForbiddenSetPair.by_terminal_signature``.
     """
     root_cause_key: tuple | None
     signature_keys: tuple
+    terminal_signature_keys: tuple = ()
 
 
 def _compute_forbidden_ag_set_pair(
@@ -12830,13 +12845,20 @@ def _compute_forbidden_ag_set_pair(
     from genie_space_optimizer.common.config import (
         forbidden_ag_admits_no_action_enabled,
         forbidden_ag_collision_by_cluster_signature_enabled,
+        forbidden_set_terminal_signature_axis_enabled,
     )
 
     admit_no_action = forbidden_ag_admits_no_action_enabled()
     by_signature_on = forbidden_ag_collision_by_cluster_signature_enabled()
+    by_terminal_signature_on = (
+        forbidden_set_terminal_signature_axis_enabled()
+    )
 
     by_root_cause: set[tuple[str, Any, frozenset[int]]] = set()
     by_signature: set[tuple[str, frozenset[int]]] = set()
+    by_terminal_signature: set[
+        tuple[frozenset[str], frozenset[int]]
+    ] = set()
     for r in reflection_buffer:
         if not _reflection_admitted_to_forbidden_set(
             r, admit_no_action=admit_no_action
@@ -12853,9 +12875,28 @@ def _compute_forbidden_ag_set_pair(
                 if not sig:
                     continue
                 by_signature.add((str(sig), lever_frozen))
+
+    # Phase 6.1 — terminal-signature axis. Consult the same producer
+    # (``compute_retired_signatures``) the helper-only path consults,
+    # but project onto (target_qids, lever_set) so the live AG
+    # selection path can match without itself constructing a
+    # TerminalSignature for the candidate.
+    if by_terminal_signature_on:
+        from genie_space_optimizer.optimization.forbidden_ag_set_v2 import (
+            compute_retired_signatures,
+        )
+        retired = compute_retired_signatures(
+            reflection_buffer=reflection_buffer or (),
+        )
+        for sig in retired:
+            by_terminal_signature.add(
+                (sig.target_qids, sig.lever_set)
+            )
+
     return _ForbiddenSetPair(
         by_root_cause=frozenset(by_root_cause),
         by_signature=frozenset(by_signature),
+        by_terminal_signature=frozenset(by_terminal_signature),
     )
 
 
@@ -12891,9 +12932,28 @@ def _ag_collision_key_pair(
         for s in sigs
         if s
     )
+
+    # Phase 6.1 — terminal-signature axis candidate keys. The AG's
+    # ``source_cluster_ids`` map to the ``target_qids`` frozenset
+    # the retired-signature axis is keyed on. Emit one tuple per AG
+    # (the full set of cluster ids) so the candidate's
+    # (target_qids, lever_set) pair can match the producer's
+    # projection regardless of how ``root_cause`` text drifted.
+    source_cluster_ids = ag.get("source_cluster_ids") or []
+    if source_cluster_ids and lever_keys:
+        target_qids_frozen = frozenset(
+            str(c) for c in source_cluster_ids if c
+        )
+        terminal_signature_keys: tuple = (
+            (target_qids_frozen, lever_frozen),
+        )
+    else:
+        terminal_signature_keys = ()
+
     return _CollisionKeyPair(
         root_cause_key=root_cause_key,
         signature_keys=signature_keys,
+        terminal_signature_keys=terminal_signature_keys,
     )
 
 
@@ -12901,24 +12961,38 @@ def _collision_pair_matches(
     candidate: _CollisionKeyPair,
     forbidden: _ForbiddenSetPair,
 ) -> bool:
-    """Defect Plan 1 G2 — return True iff EITHER axis matches.
+    """Defect Plan 1 G2 / Phase 6.1 — True iff ANY of the three axes
+    matches.
 
-    Pure function. Short-circuits on the legacy axis so the existing
-    code path's behaviour is preserved when the new signature axis is
-    empty (flag off).
+    Short-circuit order: legacy (lowest cost), source_cluster_signature
+    (medium), terminal_signature (newest). The legacy axis remains
+    first so byte-stable replay against pre-Phase-6 fixtures matches
+    the legacy axis before the new axis even runs.
     """
     if (
         candidate.root_cause_key is not None
         and candidate.root_cause_key in forbidden.by_root_cause
     ):
         return True
-    if not candidate.signature_keys:
-        return False
-    if not forbidden.by_signature:
-        return False
-    return any(
-        k in forbidden.by_signature for k in candidate.signature_keys
-    )
+    if (
+        candidate.signature_keys
+        and forbidden.by_signature
+        and any(
+            k in forbidden.by_signature
+            for k in candidate.signature_keys
+        )
+    ):
+        return True
+    if (
+        candidate.terminal_signature_keys
+        and forbidden.by_terminal_signature
+        and any(
+            k in forbidden.by_terminal_signature
+            for k in candidate.terminal_signature_keys
+        )
+    ):
+        return True
+    return False
 
 
 def _l6_decline_cache_key(
@@ -22015,12 +22089,23 @@ def _run_lever_loop(
             )
             if _collision_pair_matches(_collision_pair, _forbidden_pair):
                 # Derive the human-readable identity for the operator
-                # transcript — prefer the legacy root_cause/blame/lever
-                # when available, fall back to the signature axis.
-                if _collision_pair.root_cause_key is not None:
+                # transcript by checking which axis actually matched.
+                # Phase 6.1 — the terminal-signature axis is the
+                # third possible match path.
+                if (
+                    _collision_pair.root_cause_key is not None
+                    and _collision_pair.root_cause_key
+                    in _forbidden_pair.by_root_cause
+                ):
                     _rc_k, _blame_k, _lever_k = _collision_pair.root_cause_key
                     _collision_axis = "root_cause"
-                else:
+                elif (
+                    _collision_pair.signature_keys
+                    and any(
+                        k in _forbidden_pair.by_signature
+                        for k in _collision_pair.signature_keys
+                    )
+                ):
                     _rc_k = _ag_root_cause or "(empty)"
                     _blame_k = _normalise_blame(_ag_blame_set)
                     _lever_k = (
@@ -22029,6 +22114,16 @@ def _run_lever_loop(
                         else frozenset()
                     )
                     _collision_axis = "cluster_signature"
+                else:
+                    # Phase 6.1 — terminal-signature axis match.
+                    _rc_k = _ag_root_cause or "(retired_terminal_signature)"
+                    _blame_k = _normalise_blame(_ag_blame_set)
+                    _lever_k = (
+                        frozenset(int(lk) for lk in lever_keys)
+                        if lever_keys
+                        else frozenset()
+                    )
+                    _collision_axis = "terminal_signature"
                 print(
                     _section(f"[{ag_id}] AG COLLISION — skipping", "!") + "\n"
                     + _kv("Root cause", _rc_k) + "\n"
