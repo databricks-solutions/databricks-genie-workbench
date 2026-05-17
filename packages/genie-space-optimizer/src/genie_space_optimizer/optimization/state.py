@@ -778,7 +778,7 @@ def update_iteration_reflection(
     def _esc(s: str) -> str:
         return s.replace("\\", "\\\\").replace("'", "''")
 
-    payload = _esc(json.dumps(reflection_json))
+    payload = _esc(dumps_state_json(reflection_json))
     stmt = (
         f"UPDATE {fqn} SET reflection_json = '{payload}' "
         f"WHERE run_id = '{run_id}' AND iteration = {iteration} "
