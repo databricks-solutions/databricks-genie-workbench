@@ -21870,6 +21870,25 @@ def _run_lever_loop(
             ags_attempted.append(ag_id)
             lever_keys = sorted(ag.get("lever_directives", {}).keys())
 
+            # Phase 1 (2026-05-16) — Acceptance Unification Task 2. Hoist
+            # the candidate-ledger iter-locals out of the per-terminal-
+            # emit blocks (Bug 4: full-eval path emitted ``_iter_terminal_
+            # emitted = True`` BEFORE the late capture could fire) and out
+            # of the iter-top default declarations (Bug 1: three of the
+            # five fields were declared but never assigned anywhere in
+            # the file). One ``capture_iter_ag_context`` call populates
+            # all five at AG-selection time, strictly before any
+            # terminal-emit predicate.
+            from genie_space_optimizer.optimization.iteration_ag_context import (
+                capture_iter_ag_context as _capture_iter_ag_context,
+            )
+            _ag_context_snapshot = _capture_iter_ag_context(ag=ag, ag_id=str(ag_id))
+            _iter_ag_id_for_ledger = _ag_context_snapshot["ag_id"]
+            _iter_cluster_ids_for_ledger = _ag_context_snapshot["cluster_ids"]
+            _iter_target_qids_for_ledger = _ag_context_snapshot["target_qids"]
+            _iter_levers_for_ledger = _ag_context_snapshot["levers"]
+            _iter_root_cause_for_ledger = _ag_context_snapshot["root_cause"]
+
             # Phase A — capture strategist AG snapshot for replay-fixture export.
             try:
                 _current_iter_inputs["strategist_response"]["action_groups"].append({
