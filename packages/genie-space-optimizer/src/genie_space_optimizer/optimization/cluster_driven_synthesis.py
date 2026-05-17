@@ -957,13 +957,10 @@ def run_cluster_driven_synthesis_for_single_cluster(
         # Task 7: fix mis-key (was "lever_5b_example_sql"). The prompt's
         # actual registry name is "cluster_driven_example_synthesis".
         # Task 4: pass max_tokens=LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS.
-        # Note: response_model=Lever5bExampleSqlOutput is technically the
-        # wrong contract (the prompt's <output_schema> emits a nested
-        # teaching-kit shape, not a flat example_sql) — but the prompt
-        # is DORMANT in production today (0 calls/30 days). Replacing
-        # with a TeachingKitOutput Pydantic model is deferred per the
-        # hardening plan's Tasks 1+5; cluster_driven_example_synthesis
-        # is in TYPED_OUTPUT_DEFERRED_ALLOWLIST until that lands.
+        # Tasks 1+5: response_model=TeachingKitOutput matches the
+        # prompt's <output_schema> (kit_summary + example_sql +
+        # supporting_changes). The dormancy note no longer applies —
+        # the contract is now correctly typed.
         from genie_space_optimizer.common.config import (
             LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
         )
@@ -972,7 +969,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
             _link_prompt_to_trace,
         )
         from genie_space_optimizer.optimization.prompt_io import (
-            Lever5bExampleSqlOutput,
+            TeachingKitOutput,
         )
         _link_prompt_to_trace("cluster_driven_example_synthesis")
         try:
@@ -980,7 +977,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
                 w, "You are a SQL example author.", cluster_prompt,
                 span_name="cluster_driven_example_synthesis",
                 max_tokens=LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
-                response_model=Lever5bExampleSqlOutput,
+                response_model=TeachingKitOutput,
             )
         except Exception:
             logger.warning(
@@ -1099,7 +1096,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
                     _link_prompt_to_trace,
                 )
                 from genie_space_optimizer.optimization.prompt_io import (
-                    Lever5bExampleSqlOutput,
+                    TeachingKitOutput,
                 )
                 _link_prompt_to_trace("cluster_driven_example_synthesis")
                 try:
@@ -1107,7 +1104,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
                         w, "You are a SQL example author.", retry_prompt,
                         span_name="cluster_driven_example_synthesis_retry",
                         max_tokens=LEVER_5B_CLUSTER_DRIVEN_MAX_TOKENS,
-                        response_model=Lever5bExampleSqlOutput,
+                        response_model=TeachingKitOutput,
                     )
                 except Exception:
                     logger.warning(

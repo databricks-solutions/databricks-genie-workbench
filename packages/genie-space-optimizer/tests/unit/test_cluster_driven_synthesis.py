@@ -876,3 +876,108 @@ class TestHardening:
         )
 
         assert "cluster_driven_example_synthesis" in TYPED_OUTPUT_DEFERRED_ALLOWLIST
+
+    # ── Tasks 1 + 5: TeachingKitOutput Pydantic model + call-site wiring ──
+
+    def test_teaching_kit_output_model_exists(self):
+        """Task 1: TeachingKitOutput must exist with nested _KitExampleSql
+        and _SupportingChange and be exported from prompt_io."""
+        from genie_space_optimizer.optimization import prompt_io as pio
+
+        assert hasattr(pio, "TeachingKitOutput"), (
+            "Task 1: TeachingKitOutput must be defined in prompt_io.py"
+        )
+        cls = pio.TeachingKitOutput
+        fields = cls.model_fields
+        assert "kit_summary" in fields
+        assert "example_sql" in fields
+        assert "supporting_changes" in fields
+
+    def test_teaching_kit_output_parses_valid_payload(self):
+        """The model must accept the four-field kit shape the prompt
+        emits — including discriminated supporting_changes variants."""
+        from genie_space_optimizer.optimization.prompt_io import TeachingKitOutput
+
+        payload = {
+            "kit_summary": "Teach segmentation by tier when filters fail",
+            "example_sql": {
+                "example_question": "How many orders per tier last month?",
+                "example_sql": (
+                    "SELECT c.tier, COUNT(*) FROM cat.sch.orders o "
+                    "INNER JOIN cat.sch.customers c "
+                    "ON o.customer_id = c.customer_id GROUP BY c.tier"
+                ),
+                "usage_guidance": "When user asks for per-tier order counts.",
+            },
+            "supporting_changes": [
+                {
+                    "patch_type": "add_instruction",
+                    "section_name": "QUERY CONSTRUCTION",
+                    "new_text": "Join orders to customers on customer_id.",
+                },
+                {
+                    "patch_type": "add_column_synonym",
+                    "table": "cat.sch.customers",
+                    "column": "tier",
+                    "synonyms": ["membership level", "loyalty tier"],
+                },
+                {
+                    "patch_type": "add_sql_snippet_measure",
+                    "display_name": "order_count",
+                    "sql": "COUNT(*)",
+                    "instruction": "Use for total order volume.",
+                    "target_table": "cat.sch.orders",
+                    "synonyms": ["orders", "purchases"],
+                },
+            ],
+        }
+        kit = TeachingKitOutput.model_validate(payload)
+        assert kit.kit_summary.startswith("Teach segmentation")
+        assert kit.example_sql.example_question.startswith("How many")
+        assert len(kit.supporting_changes) == 3
+        assert kit.supporting_changes[0].patch_type == "add_instruction"
+
+    def test_teaching_kit_output_response_format_is_databricks_safe(self):
+        """``build_response_format(TeachingKitOutput)`` must produce a
+        payload that Databricks FM APIs accept — no anyOf/oneOf/pattern
+        in the schema. Supporting-change variants are modeled via
+        nullable-variant-fields so the kit_summary + example_sql
+        nesting stays type-safe."""
+        from genie_space_optimizer.optimization.prompt_io import (
+            TeachingKitOutput,
+            build_response_format,
+        )
+
+        rf = build_response_format(TeachingKitOutput)
+        import json as _json
+
+        body = _json.dumps(rf)
+        # Match JSON keywords (as quoted keys), not free text inside descriptions.
+        for forbidden in ('"anyOf":', '"oneOf":', '"allOf":', '"pattern":', '"$ref":'):
+            assert forbidden not in body, (
+                f"response_format contains FM-API-forbidden keyword {forbidden!r}"
+            )
+
+    def test_cluster_driven_call_sites_wire_teaching_kit_output(self):
+        """Task 5: both primary and retry cluster-driven LLM call sites
+        must wire ``response_model=TeachingKitOutput`` — not the legacy
+        ``Lever5bExampleSqlOutput`` stopgap that ships today."""
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "genie_space_optimizer" / "optimization"
+            / "cluster_driven_synthesis.py"
+        )
+        body = src.read_text()
+        # The legacy stopgap must be gone from cluster-driven.
+        assert "response_model=Lever5bExampleSqlOutput" not in body, (
+            "Task 5: cluster_driven_synthesis.py still wires the legacy "
+            "Lever5bExampleSqlOutput — replace with TeachingKitOutput."
+        )
+        # The correct contract must appear at the call sites — once for
+        # the primary call, once for the retry call.
+        assert body.count("response_model=TeachingKitOutput") >= 2, (
+            "Task 5: TeachingKitOutput must be wired at both the primary "
+            "and retry cluster-driven LLM call sites."
+        )

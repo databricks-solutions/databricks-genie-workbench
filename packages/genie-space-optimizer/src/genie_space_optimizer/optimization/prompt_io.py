@@ -417,6 +417,92 @@ class Lever5bExampleSqlOutput(LLMOutputContract):
     rationale: str = Field(default="")
 
 
+# ── Cluster-driven teaching-kit synthesis (Task 1 of
+#    2026-05-17-cluster-driven-example-synthesis-hardening.md) ──
+#
+# Models the nested teaching-kit shape the cluster-driven prompt's
+# <output_schema> emits:
+#   {
+#     "kit_summary": "...",
+#     "example_sql": { example_question, example_sql, usage_guidance },
+#     "supporting_changes": [<patch>, <patch>, ...]
+#   }
+#
+# Variant-specific fields for ``supporting_changes`` are modeled with the
+# nullable-variant-fields workaround: the FM-API JSON-schema subset
+# rejects ``oneOf``/``anyOf`` so we cannot discriminate the patch
+# variants via a Union at the JSON-Schema layer. Instead, every variant-
+# specific field is declared as ``Optional`` on a single
+# ``_SupportingChange`` model and the model is permissive (extra: allow)
+# so the LLM can include the variant fields without forcing a schema
+# union. Runtime validators (``normalize_teaching_kit`` and friends)
+# enforce the discriminator post-hoc.
+
+
+class _KitExampleSql(LLMOutputContract):
+    """Nested example_sql under :class:`TeachingKitOutput`. Strict — the
+    teaching-kit's example is always exactly one shape."""
+
+    example_question: str = Field(
+        description="Customer-style NL question the example answers."
+    )
+    example_sql: str = Field(
+        description="Valid Databricks SQL teaching the pattern; no semicolon."
+    )
+    usage_guidance: str = Field(
+        default="",
+        description="Short note on when Genie should reuse this example.",
+    )
+
+
+class _SupportingChange(BaseModel):
+    """One entry in ``supporting_changes``. Permissive so the FM-API
+    schema does not require oneOf/anyOf to express the variant shapes."""
+
+    model_config = {"extra": "allow", "str_strip_whitespace": True}
+
+    patch_type: Literal[
+        "add_instruction",
+        "add_column_synonym",
+        "add_sql_snippet_measure",
+        "add_sql_snippet_filter",
+        "add_sql_snippet_expression",
+    ]
+
+    # add_instruction
+    section_name: str | None = None
+    new_text: str | None = None
+    # add_column_synonym
+    table: str | None = None
+    column: str | None = None
+    synonyms: list[str] | None = None
+    # add_sql_snippet_*
+    display_name: str | None = None
+    sql: str | None = None
+    instruction: str | None = None
+    target_table: str | None = None
+
+
+class TeachingKitOutput(LLMOutputContract):
+    """Cluster-driven teaching-kit shape emitted by
+    :data:`CLUSTER_DRIVEN_EXAMPLE_SYNTHESIS_PROMPT`. One example_sql
+    surrounded by short, narrowly-scoped supporting changes — the
+    reactive counterpart to pre-flight that addresses a specific RCA
+    failure cluster.
+    """
+
+    kit_summary: str = Field(
+        description="Short explanation of the failure pattern this kit teaches."
+    )
+    example_sql: _KitExampleSql = Field(
+        description="Exactly one example_sql object."
+    )
+    supporting_changes: list[_SupportingChange] = Field(
+        default_factory=list,
+        description="0-3 supporting patches that complement the example.",
+    )
+
+
 # ── Lever-5 holistic / instruction (Task 19) ──────────────────────────
 
 
