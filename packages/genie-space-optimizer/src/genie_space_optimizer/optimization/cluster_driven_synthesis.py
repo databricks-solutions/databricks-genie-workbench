@@ -1495,6 +1495,40 @@ def narrow_replacement_diagnosis(
     }
 
 
+# Phase 3 (2026-05-16) — when a narrow-scope replacement is
+# synthesised from a broad patch dropped at blast-radius, the
+# broad patch's counterfactual-scan stamps (``high_collateral_risk``,
+# ``passing_dependents``, and the surfaced ``...outside_target``
+# copy) describe the broad predicate's footprint. Copying them
+# onto the narrowed variant via ``{**original_patch, ...}`` mis-
+# informs ``patch_blast_radius_is_safe`` (proposal_grounding.py:
+# ~556, 562), which then re-rejects the narrowed candidate on the
+# same grounds that failed the broad one. The strip drops only
+# the four gate-driving stamps; benign metadata (patch_type,
+# target, where_predicate, qid_predicate_column, proposal_id,
+# rca_id, root_cause) survives unchanged.
+_STALE_BLAST_RADIUS_STAMPS: frozenset[str] = frozenset({
+    "high_collateral_risk",
+    "high_collateral_risk_flagged",
+    "passing_dependents",
+    "passing_dependents_outside_target",
+})
+
+
+def _strip_blast_radius_stamps(patch: dict) -> dict:
+    """Return a shallow copy of ``patch`` with the four
+    counterfactual-scan / blast-radius stamps removed.
+
+    Pure — no mutation of the input. Used by
+    :func:`build_narrow_l6_replacement` to prevent stale stamps
+    from polluting the retest at ``harness.py:25813-25828``.
+    """
+    return {
+        k: v for k, v in (patch or {}).items()
+        if k not in _STALE_BLAST_RADIUS_STAMPS
+    }
+
+
 def build_narrow_l6_replacement(
     *,
     original_patch: dict,
@@ -1567,7 +1601,11 @@ def build_narrow_l6_replacement(
     if narrowed == base_predicate:
         return None
     return {
-        **original_patch,
+        # Phase 3 (2026-05-16) — strip stale blast-radius stamps
+        # before re-stamping the narrow-replacement metadata so the
+        # retest at harness.py:~25881 evaluates fresh dependency
+        # data instead of inheriting the broad patch's verdict.
+        **_strip_blast_radius_stamps(original_patch),
         "proposal_id": (
             f"{original_patch.get('proposal_id') or 'P_L6'}#NARROW"
         ),
