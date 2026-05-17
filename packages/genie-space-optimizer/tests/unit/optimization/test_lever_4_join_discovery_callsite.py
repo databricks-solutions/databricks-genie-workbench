@@ -232,3 +232,133 @@ def test_repair_l4_detects_truncation():
     assert _l4_response_appears_truncated(
         '{"join_specs": [{"left": {"identifier": "cat.sch.a", "alias": "a"},',
     )
+
+
+def test_repair_l4_truncated_json_concatenates_continuation(monkeypatch):
+    """_repair_l4_truncated_json sends a continuation prompt and
+    concatenates the returned text with the partial response."""
+    from genie_space_optimizer.optimization import optimizer as opt
+
+    partial = '{"join_specs": [{"left": {"identifier": "cat.sch.a", "alias": "a"},'
+    # The continuation completes the partial into a parseable JSON.
+    continuation = (
+        ' "right": {"identifier": "cat.sch.b", "alias": "b"},'
+        ' "sql": ["`a`.`x` = `b`.`x`", "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],'
+        ' "instruction": "join on x"}], "rationale": "recovered"}'
+    )
+
+    def _fake_traced_llm_call(w, system_msg, prompt, **kwargs):
+        # Verify the repair prompt instructs the model to return only
+        # missing trailing content.
+        assert "missing trailing content" in prompt
+        return continuation, None
+
+    monkeypatch.setattr(opt, "_traced_llm_call", _fake_traced_llm_call)
+
+    out = opt._repair_l4_truncated_json(
+        w=None, system_msg="sys", partial_text=partial,
+    )
+    assert out is not None
+    assert out.startswith(partial)
+    assert out.endswith("}")
+    # And the merged text is now Pydantic-parseable.
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever4JoinDiscoveryOutput,
+    )
+    parsed = Lever4JoinDiscoveryOutput.model_validate_json(out)
+    assert len(parsed.join_specs) == 1
+    assert parsed.rationale == "recovered"
+
+
+def test_repair_l4_truncated_json_returns_none_on_traced_call_failure(monkeypatch):
+    """If the repair LLM call raises, helper returns None so the
+    callsite degrades gracefully to the _extract_json fallback."""
+    from genie_space_optimizer.optimization import optimizer as opt
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated traced_llm_call failure")
+
+    monkeypatch.setattr(opt, "_traced_llm_call", _boom)
+
+    out = opt._repair_l4_truncated_json(
+        w=None,
+        system_msg="sys",
+        partial_text='{"join_specs": [',
+    )
+    assert out is None
+
+
+def test_callsite_triggers_repair_path_on_truncated_response(monkeypatch):
+    """Integration: when Pydantic rejects the response AND the text
+    looks truncated, the callsite calls _repair_l4_truncated_json and
+    re-attempts Pydantic validation. On success, repair_used=true is
+    tagged."""
+    import mlflow
+    from genie_space_optimizer.optimization import optimizer as opt
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever4JoinDiscoveryOutput,
+    )
+
+    captured_tags: dict[str, object] = {}
+
+    # Stub span — just record set_attribute calls and provide
+    # set_inputs/set_outputs no-ops.
+    class _StubSpan:
+        def set_attribute(self, k, v):
+            captured_tags[k] = v
+        def set_inputs(self, *a, **kw):
+            pass
+        def set_outputs(self, *a, **kw):
+            pass
+
+    class _StubSpanCM:
+        def __enter__(self):
+            return _StubSpan()
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        mlflow, "start_span", lambda *a, **kw: _StubSpanCM(),
+    )
+
+    # Simulated truncated response on first call; valid continuation
+    # on the repair call.
+    partial = '{"join_specs": [{"left": {"identifier": "cat.sch.a", "alias": "a"},'
+    continuation = (
+        ' "right": {"identifier": "cat.sch.b", "alias": "b"},'
+        ' "sql": ["`a`.`x` = `b`.`x`", "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],'
+        ' "instruction": "join on x"}], "rationale": "recovered"}'
+    )
+    calls: list[str] = []
+
+    def _fake_traced_llm_call(w, system_msg, prompt, **kwargs):
+        # First call: primary (truncated, no Pydantic _response).
+        # Second call: repair continuation.
+        span_name = kwargs.get("span_name", "")
+        calls.append(span_name)
+        if span_name == "lever_4_join_discovery":
+            return partial, None  # _response=None => Pydantic bypass path
+        if span_name == "lever_4_join_discovery_repair":
+            return continuation, None
+        raise AssertionError(f"unexpected span_name={span_name!r}")
+
+    monkeypatch.setattr(opt, "_traced_llm_call", _fake_traced_llm_call)
+
+    metadata_snapshot = {
+        "data_sources": {"tables": [], "metric_views": [], "functions": []},
+        "instructions": {"join_specs": []},
+    }
+    result = opt._call_llm_for_join_discovery(
+        metadata_snapshot=metadata_snapshot,
+        hints=[],
+        w=None,
+    )
+
+    # Repair branch fired.
+    assert "lever_4_join_discovery_repair" in calls
+    # And surfaced via the tag.
+    assert captured_tags.get("l4.repair_used") == "true"
+    # And the recovered join_spec made it through.
+    assert len(result) == 1
+    assert result[0]["join_spec"]["left"]["identifier"] == "cat.sch.a"
+    assert result[0]["rationale"] == "recovered"

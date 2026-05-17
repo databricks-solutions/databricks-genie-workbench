@@ -8891,6 +8891,46 @@ def _l4_response_appears_truncated(text: str) -> bool:
     return False
 
 
+def _repair_l4_truncated_json(
+    w: Any,
+    system_msg: str,
+    partial_text: str,
+) -> str | None:
+    """Request a single-shot continuation to recover truncated output.
+
+    Plan 2026-05-17-lever-4-join-discovery-hardening.md Task 14.
+    Asks the model for the missing trailing content needed to complete
+    the JSON object it already started, then concatenates with the
+    partial response. Returns ``None`` on repair failure so the caller
+    can degrade gracefully (the existing `_extract_json` fallback path
+    still applies).
+    """
+    from genie_space_optimizer.common.config import LEVER_4_MAX_TOKENS
+
+    repair_prompt = (
+        "Your previous response was truncated mid-way. Return ONLY the "
+        "missing trailing content needed to complete the JSON object you "
+        "started below. Do not repeat any content that is already present.\n\n"
+        "Partial response so far:\n"
+        + partial_text[-2000:]
+    )
+    try:
+        text, _ = _traced_llm_call(
+            w, system_msg, repair_prompt,
+            span_name="lever_4_join_discovery_repair",
+            max_tokens=LEVER_4_MAX_TOKENS,
+        )
+    except Exception:
+        logger.warning(
+            "L4 repair _traced_llm_call failed; returning None",
+            exc_info=True,
+        )
+        return None
+    if not isinstance(text, str):
+        return None
+    return partial_text + text
+
+
 def _set_l4_observability_tags(
     span: Any,
     *,
@@ -9073,21 +9113,60 @@ def _call_llm_for_join_discovery(
         # Task 4: prefer the validated Pydantic model over re-parsing
         # raw text. Falls back to _extract_json only if the response
         # was non-conformant.
+        _repair_used = False
         if isinstance(_response, Lever4JoinDiscoveryOutput):
             result = _response.model_dump()
         else:
             _pydantic_status = "bypass_used"
-            try:
-                result = _extract_json(text) or {}
-                if not isinstance(result, dict):
-                    result = {}
-            except json.JSONDecodeError:
-                logger.warning("JOIN_DISCOVERY non-JSON response: %.500s", text)
-                _set_l4_observability_tags(
-                    _span, pydantic_validation_status="bypass_failed",
+            result = None
+
+            # Task 14: detect mid-spec truncation BEFORE falling back
+            # to _extract_json. If the response looks cut off, ask the
+            # model for the missing trailing content, concatenate, and
+            # retry Pydantic validation. The bypass path still applies
+            # if repair fails.
+            if _l4_response_appears_truncated(text):
+                repaired_text = _repair_l4_truncated_json(
+                    w, system_msg, text,
                 )
-                _span.set_outputs({"join_specs_returned": 0, "non_json": True})
-                return []
+                _repair_used = True
+                if repaired_text:
+                    try:
+                        repaired_model = (
+                            Lever4JoinDiscoveryOutput.model_validate_json(
+                                repaired_text,
+                            )
+                        )
+                        result = repaired_model.model_dump()
+                        _pydantic_status = "ok_after_repair"
+                    except Exception:
+                        logger.debug(
+                            "L4 repair succeeded but Pydantic validation "
+                            "still failed; falling back to _extract_json",
+                            exc_info=True,
+                        )
+                        # Reassign so the bypass path has the repaired
+                        # payload to grep through.
+                        text = repaired_text
+
+            if result is None:
+                try:
+                    result = _extract_json(text) or {}
+                    if not isinstance(result, dict):
+                        result = {}
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "JOIN_DISCOVERY non-JSON response: %.500s", text,
+                    )
+                    _set_l4_observability_tags(
+                        _span,
+                        pydantic_validation_status="bypass_failed",
+                        repair_used=_repair_used,
+                    )
+                    _span.set_outputs(
+                        {"join_specs_returned": 0, "non_json": True},
+                    )
+                    return []
         specs = result.get("join_specs", []) or []
         rationale = result.get("rationale", "") or ""
 
@@ -9161,6 +9240,7 @@ def _call_llm_for_join_discovery(
             existing_specs_rendered_chars=len(_compact_specs),
             hints_truncated=_hints_truncated,
             alias_overridden=_any_alias_overridden,
+            repair_used=_repair_used,
         )
         _span.set_outputs({"join_specs_returned": len(out)})
         logger.info(
