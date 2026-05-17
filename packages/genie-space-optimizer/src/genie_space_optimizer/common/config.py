@@ -6586,6 +6586,46 @@ def forbidden_ag_admits_no_action_enabled() -> bool:
     return _flag_default_on("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION")
 
 
+def forbidden_set_terminal_signature_axis_enabled() -> bool:
+    """Phase 6.1 (2026-05-17) — when on, the live AG collision guard
+    (``_compute_forbidden_ag_set_pair``) consumes terminal signatures
+    from the reflection buffer via ``compute_retired_signatures``.
+
+    Default: on. Flip to ``"0"`` for emergency rollback to the pre-
+    Phase-6 behavior where terminal signatures were populated but
+    never consulted by the live AG selection path.
+    """
+    return _flag_default_on(
+        "GSO_FORBIDDEN_SET_TERMINAL_SIGNATURE_AXIS_ENABLED",
+    )
+
+
+def abort_run_authoritative_enabled() -> bool:
+    """Phase 6.2 (2026-05-17) — when on,
+    ``TerminalAction.next_step == "abort_run"`` breaks the lever
+    loop. When off, the marker is emitted but the loop continues
+    (pre-Phase-6 behavior).
+
+    Default: on.
+    """
+    return _flag_default_on("GSO_ABORT_RUN_AUTHORITATIVE_ENABLED")
+
+
+def forced_synthesis_unconditional_enabled() -> bool:
+    """Phase 6.4 (2026-05-17) — when on,
+    ``dispatch_forced_structural_synthesis`` is called unconditionally
+    after proposal generation completes, not just when ``_l5_ag_drops``
+    is non-empty. The dispatcher's own ``_should_invoke_safety_net``
+    predicate gates whether synthesis actually runs. When off, the
+    pre-Phase-6 outer ``if _l5_ag_drops:`` guard is preserved.
+
+    Default: on.
+    """
+    return _flag_default_on(
+        "GSO_FORCED_SYNTHESIS_UNCONDITIONAL_ENABLED",
+    )
+
+
 def ag_emit_grounding_gate_enabled() -> bool:
     """Defect Plan 1 (2026-05-12) — runtime gate that blocks AG
     emission for open hard clusters whose ``rca_card`` is falsy.
