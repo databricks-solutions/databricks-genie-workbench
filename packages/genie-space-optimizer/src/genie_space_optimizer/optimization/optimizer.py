@@ -8055,6 +8055,45 @@ _SQL_SHAPE_ROOT_CAUSES = frozenset({
 })
 
 
+def _ag_structural_root_causes_for_clusters(
+    *,
+    source_clusters: list[str],
+    clusters_by_id: dict,
+) -> set[str]:
+    """Phase 6.3 (2026-05-17) — return the set of SQL-shape root
+    causes across an AG's source clusters.
+
+    Previously inlined at the L5 structural gate (around lines
+    16271-16282). The pre-Phase-6 logic used Python's ``or`` short-
+    circuit::
+
+        _rc = (_c.get("asi_failure_type") or _c.get("root_cause") or "")
+
+    which silently dropped the legitimate ``root_cause`` whenever
+    ``asi_failure_type`` was truthy but non-SQL-shape (the Run B H002
+    regression: ``asi_failure_type="other"``,
+    ``root_cause="plural_top_n_collapse"`` — gate missed the
+    SQL-shape label).
+
+    The fix evaluates BOTH labels via :func:`cluster_failure_keys`
+    (which already returns both, de-duplicated, with empties
+    filtered) and set-intersects against
+    :data:`_SQL_SHAPE_ROOT_CAUSES`.
+    """
+    from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
+        cluster_failure_keys,
+    )
+    rcs: set[str] = set()
+    for sid in (source_clusters or ()):
+        cluster = clusters_by_id.get(sid)
+        if not isinstance(cluster, dict):
+            continue
+        for key in cluster_failure_keys(cluster):
+            if key in _SQL_SHAPE_ROOT_CAUSES:
+                rcs.add(key)
+    return rcs
+
+
 _ACTIONABLE_ROOT_CAUSES: frozenset[str] = _SQL_SHAPE_ROOT_CAUSES | frozenset({
     "column_disambiguation",
     "missing_filter",
@@ -16258,7 +16297,6 @@ def generate_proposals_from_strategy(
             # synthesis) carry the fix. This prevents Q004-class
             # mis-diagnoses where the strategist's counterfactual came
             # from the NL-text judge but the failure is structural.
-            _ag_structural_root_causes: set[str] = set()
             _failure_clusters = (
                 metadata_snapshot.get("_failure_clusters")
                 or metadata_snapshot.get("failure_clusters")
@@ -16268,17 +16306,19 @@ def generate_proposals_from_strategy(
                 c.get("cluster_id"): c
                 for c in _failure_clusters if isinstance(c, dict)
             }
-            for _sid in source_clusters:
-                _c = _cluster_by_id.get(_sid)
-                if not isinstance(_c, dict):
-                    continue
-                _rc = (
-                    _c.get("asi_failure_type")
-                    or _c.get("root_cause")
-                    or ""
+            # Phase 6.3 (2026-05-17) — wire the existing
+            # ``cluster_failure_keys`` helper so the L5 structural
+            # gate evaluates BOTH ``asi_failure_type`` and
+            # ``root_cause``, not just the first truthy one. The
+            # pre-Phase-6 ``or`` short-circuit missed SQL-shape
+            # ``root_cause`` whenever ``asi_failure_type`` was a
+            # non-SQL-shape label like ``"other"``.
+            _ag_structural_root_causes: set[str] = (
+                _ag_structural_root_causes_for_clusters(
+                    source_clusters=source_clusters,
+                    clusters_by_id=_cluster_by_id,
                 )
-                if _rc in _SQL_SHAPE_ROOT_CAUSES:
-                    _ag_structural_root_causes.add(_rc)
+            )
 
             _l5_structural_gate_blocked = bool(
                 _ag_structural_root_causes and not example_sqls_list
