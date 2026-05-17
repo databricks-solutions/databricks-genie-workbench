@@ -1021,14 +1021,30 @@ def run_cluster_driven_synthesis_for_single_cluster(
     # ── Archetype + slice derivation (Invariant D fallback inside) ─
     derived = _derive_asset_slice_from_afs(afs, metadata_snapshot)
     if derived is None:
+        # Phase 8.2 (2026-05-17) — when the missing archetype matches
+        # a TOP-N shape cluster, emit the more specific
+        # ``NO_TOP_N_ARCHETYPE`` so postmortem tooling can route to
+        # the archetype-catalog backlog. Other RCAs route to the
+        # generic ``NO_ARCHETYPE_OR_SLICE``.
+        from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
+            cluster_failure_keys,
+        )
+        _is_top_n_cluster = (
+            "plural_top_n_collapse" in cluster_failure_keys(cluster)
+        )
+        _skipped_reason_value = (
+            SkippedReason.NO_TOP_N_ARCHETYPE.value
+            if _is_top_n_cluster
+            else SkippedReason.NO_ARCHETYPE_OR_SLICE.value
+        )
         _log_summary(
             "cluster", cluster_id=cluster_id, archetype="",
-            outcome="skipped", skipped_reason="no_archetype_or_slice",
+            outcome="skipped", skipped_reason=_skipped_reason_value,
         )
         return ClusterSynthesisResult(
             proposal=None,
             attempted_archetypes=tuple(_attempted_archetypes_so_far),
-            skipped_reason="no_archetype_or_slice",
+            skipped_reason=_skipped_reason_value,
         )
     slice_, archetype = derived
     # P3: archetype was successfully picked; record provenance so
