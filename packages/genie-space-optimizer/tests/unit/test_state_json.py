@@ -105,3 +105,30 @@ def test_unsortable_set_falls_back_to_repr():
     result = dumps_state_json({"mixed": frozenset([1, "a"])})
     decoded = json.loads(result)
     assert sorted(decoded["mixed"], key=repr) == decoded["mixed"]
+
+
+def test_encoder_terminal_signature_matches_canonical_to_jsonable():
+    """The encoder's NamedTuple path MUST produce the same dict shape
+    as ``terminal_signature.to_jsonable`` (spec Section 4.4). This
+    pins the contract so any future change to ``to_jsonable`` (or
+    the encoder) surfaces as a single failing test instead of
+    silent drift between GSO's JSON surfaces.
+    """
+    from genie_space_optimizer.optimization.terminal_signature import (
+        to_jsonable,
+    )
+
+    sig = build_terminal_signature(
+        root_cause="instruction_not_scoped_to_qid",
+        blame_set=["cat.sch.tbl_a.col", "cat.sch.tbl_b.col"],
+        lever_set=[5, 6, 7],
+        target_qids=["gs_001", "gs_002", "gs_003"],
+        terminal_reason=TerminalReason.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY,
+    )
+    canonical = to_jsonable(sig)
+    encoded = json.loads(dumps_state_json(sig))
+    assert encoded == canonical, (
+        "GsoJsonEncoder's TerminalSignature output drifted from "
+        "terminal_signature.to_jsonable. Both surfaces must produce "
+        "the same Section 4.4 shape."
+    )
