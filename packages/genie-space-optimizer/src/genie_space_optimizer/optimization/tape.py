@@ -29,6 +29,55 @@ from typing import Literal
 MissPolicy = Literal["raise", "warn"]
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Phase 3.5 (2026-05-17) — closed stage vocabulary.
+#
+# Every production ``span_name`` literal in ``src/genie_space_optimizer``
+# MUST appear in this frozenset. Tapes referencing an unknown stage
+# load successfully (forward compat for new call sites added between
+# captures and replays) but emit a WARNING. The CI gate
+# (``tests/ci/test_known_stages_matches_source.py``) re-derives the
+# production set via grep and refuses to merge if drift exceeds zero.
+#
+# Source-of-truth derivation:
+#   grep -ro 'span_name="[^"]*"' src/genie_space_optimizer/
+# ──────────────────────────────────────────────────────────────────────
+_KNOWN_STAGES: frozenset[str] = frozenset({
+    # Stage 1 (three-stage pipeline)
+    "stage_1_discovery",
+    # Stage 2 / per-lever (some are stale / future; kept for forward
+    # compat against older or newer tapes)
+    "lever_1_table_column_description",
+    "lever_2_mv_column_refinement",
+    "lever_3_tvf_routing",
+    "lever_4_join_discovery",
+    "lever_4_join_discovery_repair",
+    "lever_5a_instructions",
+    "lever_5b_example_sql",
+    "lever_5b_example_sql_for_rca",
+    "lever_6_sql_expression",
+    # Synthesis-stage callers
+    "cluster_driven_example_synthesis",
+    "cluster_driven_example_synthesis_retry",
+    "cluster_driven_synthesis",  # legacy/test alias
+    "preflight_example_synthesis",
+    "archetype_learning.synthesize_provisional",
+    # Legacy strategist (fallback when Stage-1 returns zero picks)
+    "adaptive_strategy",
+    "monolithic_strategy_fallback",
+    # Proposal-stage callers outside the three-stage pipeline
+    "phase_1a_triage",
+    "lever1_rca_proposal",
+    "lever6_llm",
+    "prose_rule_mining",
+    "prose_rule_mining_retry",
+    "sql_expression_seeding_llm",
+    # Space-setup callers (create flow)
+    "generate_space_description",
+    "generate_sample_questions",
+})
+
+
 def prompt_sha256(prompt: str) -> str:
     """Return the canonical hex SHA256 of a prompt string."""
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -101,6 +150,18 @@ class LeverLoopTape:
                     response_text=str(raw.get("response_text", "")),
                     response_metadata=dict(raw.get("response_metadata", {})),
                 )
+            )
+        # Phase 3.5 (2026-05-17) — emit WARNING on unknown stages
+        # (forward-compat: loading still succeeds, but capture-side
+        # typos or new-call-site drift are visible at load time).
+        unknown_stages: set[str] = {
+            e.key.stage for e in entries if e.key.stage not in _KNOWN_STAGES
+        }
+        if unknown_stages:
+            logging.getLogger(__name__).warning(
+                "LeverLoopTape: unknown stage(s) in tape: %s "
+                "(tape may be from a newer or stale capture; loading anyway)",
+                sorted(unknown_stages),
             )
         return cls(
             tape_id=str(payload.get("tape_id", "")),
