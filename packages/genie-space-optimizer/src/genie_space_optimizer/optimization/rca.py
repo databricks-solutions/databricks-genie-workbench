@@ -417,6 +417,11 @@ def _top_n_collapse_metadata_override(
 
 
 def _safe_rca_kind(value: Any, failure_type: str = "", metadata: dict | None = None) -> RcaKind:
+    from genie_space_optimizer.common.config import (
+        rca_card_grain_text_matcher_enabled,
+        rca_card_top_n_text_matcher_enabled,
+    )
+
     raw = str(value or "").strip()
     if raw:
         try:
@@ -432,6 +437,22 @@ def _safe_rca_kind(value: Any, failure_type: str = "", metadata: dict | None = N
         str(metadata.get(k) or "")
         for k in ("counterfactual_fix", "rationale", "wrong_clause")
     )
+
+    # Plan 4a — top-N text matcher MUST run before the defensive-
+    # filter matcher. gs_009's fix prose mentions BOTH top-N
+    # rewrites and IS-NOT-NULL filter removal; the dominant signal
+    # is top-N collapse (row delta 10→16 is cardinality, not filter).
+    if rca_card_top_n_text_matcher_enabled() and _mentions_top_n_collapse(fix_text):
+        return RcaKind.TOP_N_CARDINALITY_COLLAPSE
+
+    # Plan 4a — grain / grouping mismatch matcher. Runs before
+    # filter matchers so "Remove X from GROUP BY" is not mis-routed
+    # as filter removal.
+    if rca_card_grain_text_matcher_enabled() and _mentions_grain_or_grouping_mismatch(
+        fix_text
+    ):
+        return RcaKind.GRAIN_OR_GROUPING_MISMATCH
+
     if _mentions_remove_defensive_filter(f"{failure} {fix_text}"):
         return RcaKind.EXTRA_DEFENSIVE_FILTER
     if _value_contains_function_or_tvf(
