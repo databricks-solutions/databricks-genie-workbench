@@ -120,6 +120,32 @@ def test_empty_admitted_slate_pivots_iteration():
     assert decision.action.value == "skip_ag"
 
 
+def test_blocked_cluster_via_patches_fallback_skips_ag():
+    """When ag.source_cluster_ids is empty but ag.patches[*].cluster_id
+    intersects blocked_cluster_ids, the decision still SKIPs. Mirrors
+    the export shape where historic action_groups dropped
+    source_cluster_ids but kept patches."""
+    ag = {
+        "id": "AG_DECOMPOSED_H001",
+        "source_cluster_ids": None,
+        "patches": [{"cluster_id": "H001", "patch_type": "add_sql_snippet"}],
+    }
+    admission = AdmissionResult(
+        admitted_ags=[ag],
+        denied_ag_ids=(),
+        pivot_signal=False,
+        first_ag_retired_id="",
+    )
+    decision = decide_slate_action(
+        ag=ag,
+        slate_admitted_ags=(ag,),
+        admission_result=admission,
+        blocked_cluster_ids=("H001",),
+    )
+    assert decision.action.value == "skip_ag"
+    assert decision.reason == "cluster_blocked_no_rca"
+
+
 def test_retired_pivot_signal_promotes_skip_to_pivot():
     ag = {"id": "AG_RETIRED_H001", "source_cluster_ids": ["H001"]}
     admission = AdmissionResult(
