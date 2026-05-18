@@ -93,8 +93,10 @@ class TapeBackedLLMCaller:
             span_name, "rebuild_and_match",
         )
 
-        if replay_mode == "historic_inject":
-            entry = self._historic_inject_lookup(span_name, prompt)
+        if replay_mode in ("historic_inject", "historic_inject_cluster_only"):
+            entry = self._historic_inject_lookup(
+                span_name, prompt, mode=replay_mode,
+            )
         else:
             try:
                 entry = self._tape.lookup(
@@ -131,7 +133,9 @@ class TapeBackedLLMCaller:
 
         return text, {"tape_metadata": dict(entry.response_metadata)}
 
-    def _historic_inject_lookup(self, span_name: str, prompt: str):
+    def _historic_inject_lookup(
+        self, span_name: str, prompt: str, *, mode: str,
+    ):
         """Phase 3.7 — resolve a tape entry by binding (no prompt SHA).
 
         For lever6_llm, the cluster_id comes from the prompt's AFS
@@ -140,6 +144,15 @@ class TapeBackedLLMCaller:
         inner ``for cluster in eligible_clusters`` loop iterates
         through ALL clusters of the AG, so the binding does not
         identify the *current* cluster.
+
+        Phase 3.7 §2.3 amendment — when ``mode ==
+        "historic_inject_cluster_only"``, the lookup drops the
+        iteration dimension. Used for stages where the run's
+        in-loop iteration counter is not recoverable from the
+        captured trace tree (empirical finding for lever6_llm
+        on the airline + 7now anchor tapes — see
+        ``docs/architecture/stage-prompt-fidelity-audit.md``
+        §Forward risk).
 
         Future historic_inject stages will need their own per-stage
         cluster_id resolver here. Today there is only one.
@@ -160,6 +173,11 @@ class TapeBackedLLMCaller:
             )
             cluster_id = self._binding.cluster_id
 
+        if mode == "historic_inject_cluster_only":
+            return self._tape.lookup_by_cluster_only(
+                stage=span_name,
+                cluster_id=cluster_id,
+            )
         return self._tape.lookup_by_binding(
             stage=span_name,
             iteration=self._binding.iteration,

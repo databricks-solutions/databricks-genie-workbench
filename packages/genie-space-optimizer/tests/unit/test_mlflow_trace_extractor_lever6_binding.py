@@ -89,6 +89,26 @@ def _export_with(cluster_id: str, iteration: int, ag_id: str) -> dict:
     }
 
 
+def _anchor_shape_export(*, iters: list[tuple[int, str, list[str]]]) -> dict:
+    """Build an export matching the 7now-shape (one AG per iter, empty
+    patches, iter_source_clusters_by_id empty, clusters[] carries the
+    cluster pool). ``iters`` is a list of (iteration_1_indexed, ag_id,
+    cluster_ids)."""
+    iterations = []
+    for raw_iter, ag_id, cluster_ids in iters:
+        iterations.append({
+            "iteration": raw_iter,
+            "iter_source_clusters_by_id": {},
+            "clusters": [{"cluster_id": cid} for cid in cluster_ids],
+            "strategist_response": {
+                "action_groups": [
+                    {"id": ag_id, "source_cluster_ids": None, "patches": []},
+                ],
+            },
+        })
+    return {"iterations": iterations}
+
+
 # ── Tests ─────────────────────────────────────────────────────────────
 
 
@@ -105,10 +125,13 @@ def test_extract_cluster_id_returns_none_when_missing():
 
 
 def test_reconcile_binding_pairs_iter_and_ag():
+    """The reconciler converts the export's 1-indexed iteration to
+    0-indexed to match the live ``_RECORDER_BINDING`` semantics."""
     export = _export_with("cl_42", iteration=3, ag_id="AG_lever6")
+    # export.iteration=3 → tape.iteration=2 (0-indexed)
     assert mte.reconcile_lever6_binding_from_export(
         cluster_id="cl_42", export_payload=export
-    ) == (3, "AG_lever6")
+    ) == (2, "AG_lever6")
 
 
 def test_reconcile_binding_returns_minus1_when_cluster_unknown():
@@ -116,6 +139,79 @@ def test_reconcile_binding_returns_minus1_when_cluster_unknown():
     assert mte.reconcile_lever6_binding_from_export(
         cluster_id="not_in_export", export_payload=export
     ) == (-1, "")
+
+
+def test_reconcile_binding_uses_iteration_override():
+    """1A — when iteration_override is supplied, the reconciler scans
+    only that iteration. Critical for runs whose cluster appears in
+    multiple iterations' source pools (the anchor shape)."""
+    export = _anchor_shape_export(iters=[
+        (1, "AG_DECOMPOSED_H001", ["H001", "H002"]),
+        (2, "AG_DECOMPOSED_H002", ["H001", "H002"]),
+        (3, "AG_DECOMPOSED_H001", ["H001", "H002"]),
+    ])
+    # H001 appears in every iter's pool. Without override, we'd get
+    # iter 0 (the first match). With override=2 (0-indexed), we get
+    # iter 2's specific AG.
+    assert mte.reconcile_lever6_binding_from_export(
+        cluster_id="H001", export_payload=export,
+        iteration_override=2,
+    ) == (2, "AG_DECOMPOSED_H001")
+    # And iter 1 returns its different AG.
+    assert mte.reconcile_lever6_binding_from_export(
+        cluster_id="H001", export_payload=export,
+        iteration_override=1,
+    ) == (1, "AG_DECOMPOSED_H002")
+
+
+def test_reconcile_binding_iter_clusters_fallback_when_patches_empty():
+    """1B — the 7now anchor shape has empty patches and empty
+    iter_source_clusters_by_id; the cluster pool is `clusters[]`. The
+    reconciler must fall back to the AG processing every cluster in
+    the iter (one-AG-per-iter pattern)."""
+    export = _anchor_shape_export(iters=[
+        (1, "AG_DECOMPOSED_H001", ["H001", "H002"]),
+    ])
+    assert mte.reconcile_lever6_binding_from_export(
+        cluster_id="H001", export_payload=export,
+        iteration_override=0,
+    ) == (0, "AG_DECOMPOSED_H001")
+    # Same AG handles the other cluster (one-AG-per-iter):
+    assert mte.reconcile_lever6_binding_from_export(
+        cluster_id="H002", export_payload=export,
+        iteration_override=0,
+    ) == (0, "AG_DECOMPOSED_H001")
+
+
+def test_reconcile_binding_falls_back_to_patches_cluster_id():
+    """The airline + 7now anchor exports carry cluster linkage on
+    patches[*].cluster_id rather than action_groups[*].source_cluster_ids.
+    The reconciler must accept both shapes."""
+    cid = "H002"
+    export = {
+        "iterations": [
+            {
+                "iteration": 2,
+                "iter_source_clusters_by_id": {cid: {"cluster_id": cid}},
+                "strategist_response": {
+                    "action_groups": [
+                        {
+                            "id": "AG_DECOMPOSED_H002",
+                            "affected_questions": ["q1"],
+                            # NO source_cluster_ids — only patches:
+                            "patches": [
+                                {"cluster_id": cid, "patch_type": "x"},
+                            ],
+                        },
+                    ],
+                },
+            },
+        ],
+    }
+    # iter=2 in export → iter=1 in tape (0-indexed)
+    assert mte.reconcile_lever6_binding_from_export(
+        cluster_id=cid, export_payload=export,
+    ) == (1, "AG_DECOMPOSED_H002")
 
 
 def test_extractor_backfills_lever6_binding_from_export():
@@ -137,7 +233,8 @@ def test_extractor_backfills_lever6_binding_from_export():
     assert len(calls) == 1
     c = calls[0]
     assert c["span_name"] == "lever6_llm"
-    assert c["iteration"] == 2
+    # 0-indexed (export's iter=2 → tape iter=1)
+    assert c["iteration"] == 1
     assert c["ag_id"] == "AG_xyz"
     assert c["cluster_id"] == cid
 

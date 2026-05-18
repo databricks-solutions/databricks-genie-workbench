@@ -40,15 +40,114 @@ def _build_mlflow_client():
     return MlflowClient()
 
 
+def _read_export_payload(export_path: Path) -> dict:
+    """Phase 3.7 — return the parsed export JSON (or empty dict).
+
+    Used both for side-table assembly AND for the Phase 3.7
+    lever6 binding reconciliation in extract_llm_calls_from_traces.
+    """
+    if not export_path or not export_path.exists():
+        return {}
+    return json.loads(export_path.read_text(encoding="utf-8"))
+
+
+def _backfill_source_cluster_ids_in_place(payload: dict) -> dict:
+    """Phase 3.7 §2.3 (1B) — populate source_cluster_ids on every AG
+    in every iteration's strategist_response.
+
+    Priority chain (matches the production-time semantics empirically
+    observed in the anchor exports — see
+    ``docs/architecture/stage-prompt-fidelity-audit.md``):
+
+      1. keep existing non-empty source_cluster_ids
+      2. single AG in the iter → use the iter pool
+         (iter_source_clusters_by_id keys ∪ clusters[*].cluster_id).
+         Rationale: in the anchor exports the lone AG processed every
+         cluster, but its ``patches[]`` only carry the clusters for
+         which lever6 actually emitted a proposal — patches under-
+         represent source_cluster_ids.
+      3. multiple AGs → use that AG's ``patches[*].cluster_id``
+         (each AG carries its own patch set, so patches identify the
+         AG-to-cluster partition).
+      4. multiple AGs with empty patches → iter pool fallback.
+
+    The capture script applies this before writing iteration_payloads
+    into the tape, so the replay harness reads a populated
+    source_cluster_ids and lever6's eligible_clusters resolves to the
+    real cluster dicts (not the synthetic ``{cluster_id: ag_id}``
+    fallback in optimizer.py:17142).
+    """
+    if not isinstance(payload, dict):
+        return payload
+    for it in (payload.get("iterations") or []):
+        if not isinstance(it, dict):
+            continue
+        pool: set[str] = set()
+        src = it.get("iter_source_clusters_by_id") or {}
+        if isinstance(src, dict):
+            pool.update(str(k) for k in src.keys())
+        for c in (it.get("clusters") or []):
+            if isinstance(c, dict) and c.get("cluster_id"):
+                pool.add(str(c["cluster_id"]))
+        ag_groups = (
+            (it.get("strategist_response") or {}).get("action_groups") or []
+        )
+        single_ag_in_iter = len(ag_groups) == 1
+        for ag in ag_groups:
+            if not isinstance(ag, dict):
+                continue
+            scids = ag.get("source_cluster_ids") or []
+            scids_str = [str(s) for s in scids if str(s).strip()]
+            if scids_str:
+                ag["source_cluster_ids"] = scids_str
+                continue
+            if single_ag_in_iter and pool:
+                ag["source_cluster_ids"] = sorted(pool)
+                continue
+            patches = ag.get("patches") or []
+            patch_cids = sorted({
+                str(p.get("cluster_id") or "").strip()
+                for p in patches
+                if isinstance(p, dict) and p.get("cluster_id")
+            })
+            patch_cids = [c for c in patch_cids if c]
+            if patch_cids:
+                ag["source_cluster_ids"] = patch_cids
+            elif pool:
+                ag["source_cluster_ids"] = sorted(pool)
+    return payload
+
+
+def _read_iteration_tag(client, run_id: str) -> int | None:
+    """Phase 3.7 §2.3 (1A) — return the run's ``genie.iteration`` as a
+    0-indexed int, or None if the tag is missing.
+
+    Production lever-loop sibling runs are tagged with
+    ``genie.iteration: "01" | "02" | ...``; we shift by -1 to match
+    the live ``_RECORDER_BINDING`` semantics.
+    """
+    try:
+        run = client.get_run(run_id)
+    except Exception:
+        return None
+    tags = (run.data.tags if hasattr(run.data, "tags") else {}) or {}
+    raw = tags.get("genie.iteration")
+    if raw is None:
+        return None
+    try:
+        return max(0, int(str(raw)) - 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def _read_export_side_tables(
-    export_path: Path,
+    payload: dict,
 ) -> tuple[dict, dict, dict]:
     evals_by_iter: dict[str, list] = {}
     clusters_by_iter: dict[str, list] = {}
     iter_payloads: dict[str, dict] = {}
-    if not export_path or not export_path.exists():
+    if not payload:
         return evals_by_iter, clusters_by_iter, iter_payloads
-    payload = json.loads(export_path.read_text(encoding="utf-8"))
     for it in (payload.get("iterations") or []):
         # Phase 3.6.1 (2026-05-18) — the production export uses
         # 1-indexed iteration counters (human-readable, matches the
@@ -200,7 +299,35 @@ def main(argv: list[str] | None = None) -> int:
         "--tape-id", default=None,
         help="Override the tape id (default: derived from --out stem)",
     )
+    parser.add_argument(
+        "--replay-mode", action="append", default=[],
+        metavar="STAGE=MODE",
+        help=(
+            "Phase 3.7 — set per-stage replay mode in the tape's "
+            "replay_mode_by_stage dict. Repeatable. Format: STAGE=MODE. "
+            "Currently supported modes: rebuild_and_match (default), "
+            "historic_inject (lever6_llm only today — see "
+            "docs/architecture/stage-prompt-fidelity-audit.md)."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    replay_mode_by_stage: dict[str, str] = {}
+    from genie_space_optimizer.optimization.tape import _VALID_REPLAY_MODES
+    for spec in args.replay_mode:
+        if "=" not in spec:
+            parser.error(
+                f"--replay-mode must be STAGE=MODE, got {spec!r}"
+            )
+        stage, mode = spec.split("=", 1)
+        stage = stage.strip()
+        mode = mode.strip()
+        if mode not in _VALID_REPLAY_MODES:
+            parser.error(
+                f"--replay-mode {spec!r}: unsupported mode {mode!r} "
+                f"(valid: {sorted(_VALID_REPLAY_MODES)})"
+            )
+        replay_mode_by_stage[stage] = mode
 
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s: %(message)s",
@@ -227,37 +354,53 @@ def main(argv: list[str] | None = None) -> int:
         len(run_ids),
     )
 
-    # Iterate and concatenate traces in run-id order.
-    traces: list = []
+    # 2. Read + backfill the complementary export payload BEFORE we
+    # use it for either extraction (1A iteration backfill) or
+    # iteration_payloads write-back (so the replay harness sees AGs
+    # with source_cluster_ids populated; 1B).
+    export_payload = _read_export_payload(export_path)
+    _backfill_source_cluster_ids_in_place(export_payload)
+
+    # 3. Iterate per-run, threading each run's iteration tag into the
+    # extractor (1A) so lever6_llm calls in that run are bound to the
+    # correct (iteration, ag) tuple. Non-tagged runs (e.g.
+    # enrichment_snapshot) get None and fall back to the
+    # iteration_scan path.
+    from genie_space_optimizer.optimization.mlflow_trace_extractor import (
+        extract_llm_calls_from_trace,
+    )
+    calls: list[dict] = []
+    total_traces = 0
     for rid in run_ids:
         rid_traces = client.search_traces(
             experiment_ids=[args.experiment_id],
             run_id=rid,
             max_results=10000,
         )
+        total_traces += len(rid_traces)
         logger.info(
             "Phase 3.6 capture: %d trace(s) for run %s",
             len(rid_traces), rid,
         )
-        traces.extend(rid_traces)
+        iter_override = _read_iteration_tag(client, rid)
+        for trace in rid_traces:
+            calls.extend(extract_llm_calls_from_trace(
+                trace,
+                export_payload=export_payload,
+                iteration_override=iter_override,
+            ))
     logger.info(
         "Phase 3.6 capture: total %d trace(s) across %d run(s)",
-        len(traces), len(run_ids),
+        total_traces, len(run_ids),
     )
-
-    # 2. Extract LLM calls.
-    from genie_space_optimizer.optimization.mlflow_trace_extractor import (
-        extract_llm_calls_from_traces,
-    )
-    calls = list(extract_llm_calls_from_traces(traces))
     logger.info(
         "Phase 3.6 capture: extracted %d LLM call(s) from traces.",
         len(calls),
     )
 
-    # 3. Read complementary export side-tables.
+    # 4. Build side-tables from the export payload.
     evals_by_iter, clusters_by_iter, iter_payloads = (
-        _read_export_side_tables(export_path)
+        _read_export_side_tables(export_payload)
     )
     logger.info(
         "Phase 3.6 capture: complementary export contributed %d "
@@ -265,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
         len(evals_by_iter),
     )
 
-    # 4. Assemble + write tape.
+    # 5. Assemble + write tape.
     from genie_space_optimizer.optimization.tape import TAPE_FORMAT_VERSION
 
     tape_payload = {
@@ -279,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         "iteration_payloads": iter_payloads,
         "rca_cards_by_cluster": {},
         "miss_policy": args.miss_policy,
+        "replay_mode_by_stage": replay_mode_by_stage,
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(

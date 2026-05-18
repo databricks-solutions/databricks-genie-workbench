@@ -15,12 +15,13 @@ from genie_space_optimizer.optimization.tape import (
 
 
 def _v4_payload(replay_mode_by_stage: dict | None = None) -> dict:
-    """Build a minimum-valid v4 tape payload."""
+    """Build a minimum-valid v5 tape payload (named _v4 for legacy
+    test-symbol stability)."""
     payload = {
-        "tape_id": "v4-test",
+        "tape_id": "v5-test",
         "source_run_id": "run-xyz",
         "captured_at": "2026-05-18T00:00:00Z",
-        "format_version": 4,
+        "format_version": 5,
         "entries": [],
         "iteration_payloads": {
             "0": {"rows_json": "[]", "scores_json": "{}"},
@@ -32,21 +33,25 @@ def _v4_payload(replay_mode_by_stage: dict | None = None) -> dict:
     return payload
 
 
-def test_tape_format_version_is_4():
-    assert TAPE_FORMAT_VERSION == 4
-    assert 4 in _SUPPORTED_FORMAT_VERSIONS
-    # v1/v2/v3 still load (backward compat)
-    assert {1, 2, 3, 4}.issubset(_SUPPORTED_FORMAT_VERSIONS)
+def test_tape_format_version_is_5():
+    assert TAPE_FORMAT_VERSION == 5
+    assert 5 in _SUPPORTED_FORMAT_VERSIONS
+    # v1/v2/v3/v4 still load (backward compat)
+    assert {1, 2, 3, 4, 5}.issubset(_SUPPORTED_FORMAT_VERSIONS)
 
 
 def test_v4_tape_loads_replay_mode_by_stage(tmp_path: Path):
     path = tmp_path / "tape.json"
     path.write_text(json.dumps(_v4_payload(
-        replay_mode_by_stage={"lever6_llm": "historic_inject"},
+        replay_mode_by_stage={
+            "lever6_llm": "historic_inject_cluster_only",
+        },
     )))
     tape = LeverLoopTape.from_json_file(path)
-    assert tape.format_version == 4
-    assert tape.replay_mode_by_stage == {"lever6_llm": "historic_inject"}
+    assert tape.format_version == 5
+    assert tape.replay_mode_by_stage == {
+        "lever6_llm": "historic_inject_cluster_only",
+    }
 
 
 def test_v3_tape_loads_with_empty_replay_mode(tmp_path: Path):
@@ -72,4 +77,8 @@ def test_invalid_replay_mode_raises(tmp_path: Path):
 
 def test_valid_replay_modes_vocab_is_closed():
     """Lock in the typed vocabulary today."""
-    assert _VALID_REPLAY_MODES == {"rebuild_and_match", "historic_inject"}
+    assert _VALID_REPLAY_MODES == {
+        "rebuild_and_match",
+        "historic_inject",
+        "historic_inject_cluster_only",
+    }

@@ -167,6 +167,44 @@ def test_inner_loop_cluster_resolves_via_prompt_not_binding():
     assert text == "RESP_SECOND"
 
 
+def test_historic_inject_cluster_only_drops_iter_and_ag_dims():
+    """Phase 3.7 §2.3 — under historic_inject_cluster_only, lookup
+    matches on (stage, cluster) ignoring iteration AND ag_id.
+    Multiple captured entries (one per production iteration) match →
+    first wins. Used for stages whose in-loop iteration counter and
+    per-call AG can't be recovered from the captured trace tree
+    (lever6_llm on the airline + 7now anchor tapes — see
+    stage-prompt-fidelity-audit.md)."""
+    tape = _tape(
+        [
+            _entry("lever6_llm", iteration=0, ag_id="AG_X",
+                   cluster_id="C1", prompt=_lever6_prompt("C1"),
+                   response_text="RESP_ITER0"),
+            _entry("lever6_llm", iteration=1, ag_id="AG_Y",  # different AG
+                   cluster_id="C1", prompt=_lever6_prompt("C1"),
+                   response_text="RESP_ITER1"),
+            _entry("lever6_llm", iteration=2, ag_id="AG_Z",
+                   cluster_id="C1", prompt=_lever6_prompt("C1"),
+                   response_text="RESP_ITER2"),
+        ],
+        replay_mode_by_stage={
+            "lever6_llm": "historic_inject_cluster_only",
+        },
+    )
+    # binding's (iter, ag) is wildly different from any tape entry,
+    # but cluster_only mode ignores both and returns the first match.
+    binding = _Binding(iteration=5, ag_id="AG_TOTALLY_DIFFERENT",
+                       cluster_id="other_cluster")
+    caller = TapeBackedLLMCaller(tape, binding)
+    text, _ = caller.call(
+        w=None, system_msg="", prompt=_lever6_prompt("C1"),
+        span_name="lever6_llm", max_retries=1, temperature=0.0,
+        max_tokens=None, response_validator=None, response_format=None,
+        response_model=None,
+    )
+    assert text == "RESP_ITER0"  # first match wins
+
+
 def test_response_validator_still_runs_in_historic_inject():
     tape = _tape(
         [_entry(

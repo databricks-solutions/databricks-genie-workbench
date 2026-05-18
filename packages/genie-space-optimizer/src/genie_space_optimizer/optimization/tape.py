@@ -129,20 +129,35 @@ class TapeEntry:
 #   v4 — Phase 3.7 (2026-05-18) adds replay_mode_by_stage: a
 #        per-stage dispatch hint consumed by TapeBackedLLMCaller.
 #        Unset stages default to "rebuild_and_match" (SHA-based
-#        lookup, the v1–v3 behaviour). The single use today is
+#        lookup, the v1–v3 behaviour). Initial use:
 #        {"lever6_llm": "historic_inject"} for anchor tapes
 #        whose lever6 prompts cannot be byte-for-byte rebuilt
 #        under replay (see
 #        docs/architecture/stage-prompt-fidelity-audit.md).
-TAPE_FORMAT_VERSION = 4
-_SUPPORTED_FORMAT_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4})
+#   v5 — Phase 3.7 §2.3 amendment (2026-05-18) widens the
+#        typed vocabulary with ``historic_inject_cluster_only``
+#        — used for stages where the run's per-iteration binding
+#        cannot be reliably recovered from the trace tree
+#        (lever6_llm on pre-Task-2 captures, where the lever
+#        loop's internal iter counter is invisible to MLflow's
+#        run-level genie.iteration tag — empirical finding logged
+#        in stage-prompt-fidelity-audit.md §Forward risk). Drops
+#        the iteration dimension from the lookup key.
+TAPE_FORMAT_VERSION = 5
+_SUPPORTED_FORMAT_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5})
 
 # Phase 3.7 (2026-05-18) — typed replay-mode vocabulary. New modes
 # require a code change here AND in TapeBackedLLMCaller's dispatch.
-ReplayMode = Literal["rebuild_and_match", "historic_inject"]
-_VALID_REPLAY_MODES: frozenset[str] = frozenset(
-    {"rebuild_and_match", "historic_inject"}
-)
+ReplayMode = Literal[
+    "rebuild_and_match",
+    "historic_inject",
+    "historic_inject_cluster_only",
+]
+_VALID_REPLAY_MODES: frozenset[str] = frozenset({
+    "rebuild_and_match",
+    "historic_inject",
+    "historic_inject_cluster_only",
+})
 
 
 @dataclass
@@ -415,5 +430,59 @@ class LeverLoopTape:
                 "lookup_by_binding: %d entries match (stage=%s "
                 "iter=%d ag=%s cluster=%s); returning the first.",
                 len(matches), stage, iteration, ag_id, cluster_id,
+            )
+        return matches[0]
+
+    def lookup_by_cluster_only(
+        self,
+        *,
+        stage: str,
+        cluster_id: str,
+    ) -> TapeEntry:
+        """Phase 3.7 §2.3 amendment — find an entry for
+        (stage, cluster_id), ignoring iteration AND ag_id AND prompt_sha256.
+
+        Used by ``TapeBackedLLMCaller`` under
+        ``historic_inject_cluster_only`` mode for stages whose
+        per-iteration binding cannot be reliably recovered from the
+        captured trace tree (today: ``lever6_llm`` on the airline +
+        7now anchor tapes; see
+        ``docs/architecture/stage-prompt-fidelity-audit.md``
+        §Forward risk).
+
+        Why ag_id is dropped too: on the anchor exports the same
+        cluster is processed under different AG names across
+        iterations (iter 1 → AG_DECOMPOSED_H001, iter 2 →
+        AG_DECOMPOSED_H002), but the captured tape entries can only
+        record the FIRST iteration's AG (since iteration cannot be
+        recovered per-call). Matching on ag would force a tape miss
+        on every iteration except the one whose AG happens to match
+        the first capture. Cluster-only is the honest key.
+
+        Multiple captured entries match (one per production iteration);
+        the first match wins, which means every replay iteration of a
+        given cluster gets the same response. For the anchor regression
+        tests this is sufficient: their assertions are at the
+        terminal-signature / per-AG NSC layer, which is cluster-level
+        and not per-iteration. A warning is logged on multiple matches
+        so the trade-off is visible at runtime.
+        """
+        matches: list[TapeEntry] = []
+        for entry in self.entries:
+            k = entry.key
+            if k.stage == stage and k.cluster_id == cluster_id:
+                matches.append(entry)
+        if not matches:
+            raise TapeMissError(
+                f"No tape entry for cluster-only binding "
+                f"stage={stage!r} cluster_id={cluster_id!r} "
+                f"(historic_inject_cluster_only mode)."
+            )
+        if len(matches) > 1:
+            logging.getLogger(__name__).warning(
+                "lookup_by_cluster_only: %d entries match "
+                "(stage=%s cluster=%s); returning first "
+                "(historic_inject_cluster_only collapses iters/ags).",
+                len(matches), stage, cluster_id,
             )
         return matches[0]
