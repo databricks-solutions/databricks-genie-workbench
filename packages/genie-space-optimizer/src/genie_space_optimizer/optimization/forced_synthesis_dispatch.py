@@ -344,8 +344,18 @@ def dispatch_forced_structural_synthesis(
             continue
 
         _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS += 1
+        # Phase 1.3 (2026-05-17) — convert the legacy cluster + ag
+        # dicts into a single typed FailureCluster at this boundary.
+        # The synthesizer accepts both forms (Phase 1.2) but the
+        # typed view is the canonical input going forward; building
+        # it here also raises FailureClusterIdentityError if the
+        # cluster/ag identity disagrees.
+        from genie_space_optimizer.optimization.failure_cluster import (
+            FailureCluster,
+        )
+        _failure_cluster = FailureCluster.from_legacy(_drop_cluster, ag=ag)
         _synth_result = synthesize(
-            _drop_cluster,
+            _failure_cluster,
             metadata_snapshot,
             benchmarks=benchmarks,
             catalog=catalog,
@@ -491,8 +501,15 @@ def dispatch_forced_structural_synthesis(
             continue
 
         _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS += 1
+        # Phase 1.3 (2026-05-17) — typed conversion at the safety-net
+        # boundary mirrors the gate-drop branch above. Same identity
+        # reconciliation rules apply.
+        from genie_space_optimizer.optimization.failure_cluster import (
+            FailureCluster,
+        )
+        _failure_cluster = FailureCluster.from_legacy(cluster, ag=ag)
         _synth_result = synthesize(
-            dict(cluster),
+            _failure_cluster,
             metadata_snapshot,
             benchmarks=benchmarks,
             catalog=catalog,

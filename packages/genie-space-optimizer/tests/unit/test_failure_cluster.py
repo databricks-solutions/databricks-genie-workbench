@@ -173,6 +173,80 @@ def test_synthesizer_accepts_failure_cluster_input():
     )
 
 
+def test_dispatcher_passes_failure_cluster_to_synthesizer():
+    """Phase 1.3 — dispatch_forced_structural_synthesis must build
+    a FailureCluster at entry and pass it to the synthesizer.
+
+    Verified by spying on the synthesize callable: its first
+    positional argument must be a FailureCluster, not a raw dict.
+    """
+    from unittest.mock import MagicMock
+    from genie_space_optimizer.optimization import forced_synthesis_dispatch
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
+
+    received_first_args: list = []
+
+    def _spy_synth(cluster_arg, *args, **kwargs):
+        received_first_args.append(cluster_arg)
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=(),
+            skipped_reason="no_archetype_or_slice",
+        )
+
+    cluster = {
+        "cluster_id": "H001",
+        "question_ids": ["7now_delivery_analytics_space_gs_013"],
+        "root_cause": "wrong_filter_condition",
+        "asi_failure_type": "wrong_filter_condition",
+        "rca_card": {"id": "rca-1", "root_cause_summary": "test"},
+    }
+    ag = {
+        "id": "AG_DECOMPOSED_H001",
+        "source_cluster_ids": ["H001"],
+        "affected_questions": ["7now_delivery_analytics_space_gs_013"],
+    }
+    drop = {
+        "drop_reason": "lever5_structural_sql_shape_no_example_sql",
+        "root_causes": ["wrong_filter_condition"],
+        "source_clusters": ["H001"],
+    }
+
+    forced_synthesis_dispatch.dispatch_forced_structural_synthesis(
+        ag=ag,
+        run_id="test-run",
+        iteration=1,
+        l5_ag_drops=[drop],
+        reflection_buffer=[],
+        iter_source_clusters_by_id={"H001": cluster},
+        iter_rca_id_by_cluster={"H001": "rca-1"},
+        w=MagicMock(),
+        benchmarks=[],
+        metadata_snapshot={
+            "data_sources": {"tables": [], "metric_views": []},
+        },
+        catalog="",
+        schema="",
+        spark=None,
+        lever_keys=[5],
+        current_iter_inputs={},
+        synthesize=_spy_synth,
+        ag_proposals_so_far=[],
+    )
+
+    assert received_first_args, "synthesize callable was not invoked"
+    assert isinstance(received_first_args[0], FailureCluster), (
+        f"dispatcher must pass a FailureCluster to synthesize; "
+        f"got type={type(received_first_args[0]).__name__}"
+    )
+    assert received_first_args[0].cluster_id == "H001"
+    assert received_first_args[0].target_qids == (
+        "7now_delivery_analytics_space_gs_013",
+    )
+
+
 def test_nsc_marker_payload_passes_with_skipped_reason():
     """Positive case: a typed skipped_reason is sufficient."""
     fc = FailureCluster(
