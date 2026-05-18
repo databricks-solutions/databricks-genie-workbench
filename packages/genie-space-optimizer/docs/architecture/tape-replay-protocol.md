@@ -280,3 +280,30 @@ Anchor tapes MUST NOT be hand-edited. Treat them as captured artifacts.
 
 - That production accuracy improves. The tape is fixed; the only behavior under test is the harness's reaction to it.
 - That LLM responses captured at time T remain valid at time T+ΔT. Prompt drift surfaces as a ``TapeMissError`` — that is intentional and is the user's signal to refresh the tape.
+
+## Slate consumption authoritativeness (2026-05-18 — WU-1/WU-2 foundation)
+
+Phase 5 (`docs/prompt_improvements/2026-05-18-authoritative-rca-grounding-and-slate-consumption.md`) landed the typed-contract foundation for authoritative slate consumption:
+
+- ``SlateAction`` enum (``PROCEED`` / ``SKIP_AG`` / ``PIVOT_ITERATION``) and ``SlateDecision`` frozen dataclass in ``optimization/slate_consumption.py``.
+- ``decide_slate_action`` pure function with precedence: pivot_signal → denied_ag_ids → blocked source_cluster_ids → proceed. Falls back to ``ag.patches[*].cluster_id`` when ``ag.source_cluster_ids`` is empty (mirrors the Phase 3.7 §2.3 1B backfill).
+- ``DecisionType.SLATE_AUTHORITATIVE_SKIP`` typed record + ``GSO_SLATE_AUTHORITATIVE_SKIP_V1`` stdout marker.
+- ``DecisionType.RCA_REGEN_RETRY_VERDICT`` typed record + ``GSO_RCA_REGEN_RETRY_VERDICT_V1`` stdout marker (paired with a single-shot RCA regeneration helper at ``optimization/rca_regen_retry.py``).
+- Four config flags (all default-ON): ``GSO_SLATE_CONSUMPTION_AUTHORITATIVE``, ``GSO_RCA_REGEN_RETRY``, ``GSO_PRE_ARBITER_REQUIRES_NO_POST_REGRESSION``, ``GSO_REPLAY_FIXTURE_DUAL_EMIT``.
+
+**Harness wiring (Phase 5 Task 5 + Task 9) is DEFERRED** pending a control-flow audit of ``_run_lever_loop``. Two empirical investigation passes showed the planned insertion sites are not reachable under the airline anchor tape because lever-6 emits at ``harness.py:23791`` BEFORE ``collect_blocked_clusters`` runs at ``harness.py:25113``. The pre-proposal-generation gate the plan envisaged requires either restructuring the harness or finding a tape-replay-reachable site through a dedicated control-flow audit. Until that audit lands, the foundation pieces (typed records, markers, flags, ``decide_slate_action``, ``retry_rca_regeneration_for_blocked``) are all callable but the harness still falls through ``forced_synthesis_dispatch._cluster_is_grounded`` as the de-facto gate.
+
+## Pre-arbiter acceptance tightening (2026-05-18 — WU-4)
+
+``decide_control_plane_acceptance``'s ``accepted_pre_arbiter_improvement`` branch now requires (under ``GSO_PRE_ARBITER_REQUIRES_NO_POST_REGRESSION``, default-ON):
+
+1. ``delta >= 0`` — post-arbiter accuracy did NOT regress.
+2. ``has_causal_fix=True`` — at least one declared target qid flipped from hard to non-hard.
+
+Failure modes get two new typed reason codes: ``post_arbiter_regressed_pre_arbiter_only`` and ``pre_arbiter_improvement_without_causal_fix``. Closes the 7now iter-1 acceptance-drift bug documented in ``docs/runid_analysis/ab65fefe-9bb5-411c-9818-f62633ec9cfd/postmortem.md``.
+
+## Replay fixture marker hygiene (2026-05-18 — WU-5)
+
+``optimization/replay_fixture_marker.py`` emits the replay fixture as both plain-JSON markers (legacy) AND base64-encoded markers (immune to in-band pollution from concurrent prompt/source prints). The ``tools/marker_parser.extract_replay_fixture`` extractor honours both channels with precedence: plain_json → base64_fallback → missing. Postmortems that previously failed with ``extractor_succeeded=False, json_parseable=False, contains_prompt_source=True`` now recover via the base64 channel.
+
+Gate: ``GSO_REPLAY_FIXTURE_DUAL_EMIT`` (default-ON). Legacy plain-only emission is preserved when explicitly OFF.
