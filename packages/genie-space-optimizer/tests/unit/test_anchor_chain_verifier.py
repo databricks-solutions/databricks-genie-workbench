@@ -660,3 +660,85 @@ def test_verifier_passes_synthetic_post_fix_payload() -> None:
         f"global={result.global_failures}"
     )
     assert result.best_of_n_structural_fire_count == 2
+
+
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+SEVEN_NOW_RUNID_DIR = (
+    _PACKAGE_ROOT / "docs" / "runid_analysis"
+    / "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+)
+AIRLINE_RUNID_DIR = (
+    _PACKAGE_ROOT / "docs" / "runid_analysis"
+    / "59a173d3-f71f-4901-90ad-e10f1084cd7f"
+)
+
+
+@pytest.mark.parametrize(
+    "runid_dir,expected_failing_qid_suffixes",
+    [
+        (SEVEN_NOW_RUNID_DIR, ("gs_013", "gs_026")),
+        (AIRLINE_RUNID_DIR, ("gs_009", "gs_024")),
+    ],
+)
+def test_verifier_fails_canonical_pre_fix_runs(
+    runid_dir: Path, expected_failing_qid_suffixes: tuple[str, ...]
+) -> None:
+    """The two canonical pre-fix runs MUST FAIL the verifier with
+    missing_rca_card-style failures on the anchor qids. If they
+    pass, the verifier has a false-negative and is unsafe to
+    point at a live deploy postmortem.
+
+    This is the load-bearing WU-C self-test: if a future commit
+    laxes the classifier or detector logic, the canonical pre-fix
+    runs start passing, this test fails, and the laxer verifier
+    never reaches a live deploy postmortem."""
+    if not (runid_dir / "postmortem.json").exists():
+        pytest.skip(
+            f"Canonical postmortem not present at {runid_dir} — "
+            f"if the runid_analysis dir was moved/cleaned, update "
+            f"the path constants."
+        )
+    from genie_space_optimizer.verification import verify_runid_dir
+
+    result = verify_runid_dir(runid_dir)
+    assert result.passed is False, (
+        f"Verifier wrongly PASSED canonical pre-fix run "
+        f"{runid_dir.name}. The classifier has a false-negative "
+        f"on the missing_rca_card / empty-intent signatures that "
+        f"this plan was designed to detect."
+    )
+
+    failed_suffixes = {
+        av.qid_suffix for av in result.anchor_verdicts if not av.passed
+    }
+    for suffix in expected_failing_qid_suffixes:
+        assert suffix in failed_suffixes, (
+            f"Pre-fix run {runid_dir.name} did not flag anchor "
+            f"{suffix} as failing. Failed suffixes: "
+            f"{sorted(failed_suffixes)}. The verifier's anchor "
+            f"matcher may have regressed."
+        )
+
+    # The two canonical bug signatures must each be detected
+    # somewhere in the run — either per-anchor missing_rca_card,
+    # or globally for best-of-n-never-fired.
+    missing_rca_anchors = [
+        av for av in result.anchor_verdicts
+        if not av.passed and any("missing_rca_card" in r for r in av.reasons)
+    ]
+    assert missing_rca_anchors, (
+        f"Pre-fix run {runid_dir.name} carried no "
+        f"missing_rca_card-tagged anchor failures, but that is the "
+        f"canonical pre-WU-3.5 signature for both canonical runs. "
+        f"All failures: {[(av.qid_suffix, av.reasons) for av in result.anchor_verdicts if not av.passed]}"
+    )
+    assert any(
+        "best_of_n_structural_never_fired" in f
+        for f in result.global_failures
+    ), (
+        f"Pre-fix run {runid_dir.name} did not flag "
+        f"best_of_n_structural_never_fired. Pre-WU-3.5 this marker "
+        f"never fired in production; if it's now firing, the "
+        f"transcript may have been mutated or the marker counter "
+        f"regressed."
+    )
