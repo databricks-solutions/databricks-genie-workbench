@@ -614,3 +614,49 @@ def test_cli_main_returns_nonzero_for_failing_runid_dir(tmp_path: Path) -> None:
     }))
     exit_code = cli.main(["--runid-dir", str(runid_dir)])
     assert exit_code == 1
+
+
+def test_verifier_passes_synthetic_post_fix_payload() -> None:
+    """A synthetic payload where every anchor takes Path A or
+    Path B and GSO_BEST_OF_N_RANKED_V1 fires for structural intent
+    must PASS. Positive control for WU-C."""
+    from genie_space_optimizer.verification import AnchorChainVerifier
+    pm = {
+        "iteration_summary": [
+            {
+                "iteration": 1,
+                "ag_id": "AG_DECOMPOSED_H001",
+                "cluster_ids": ["H001"],
+                "target_qids": ["7now_..._gs_013"],
+                "directive_outcome": {"6": "proposal_emitted"},
+                "no_structural_candidate": {},
+                "terminal_reason": "",
+                "next_step": "continue",
+            },
+            {
+                "iteration": 3,
+                "ag_id": "AG_DECOMPOSED_H002",
+                "cluster_ids": ["H002"],
+                "target_qids": ["7now_..._gs_026"],
+                "directive_outcome": {"5": "no_structural_candidate"},
+                "no_structural_candidate": {
+                    "skipped_reason": "no_top_n_archetype",
+                    "attempted_archetypes": ["top_n", "filter_removal"],
+                },
+                "terminal_reason": "proposal_generation_empty",
+                "next_step": "retry_strategy_switch",
+            },
+        ]
+    }
+    transcript = (
+        'GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural","samples_emitted":3}\n'
+        'GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural","samples_emitted":2}\n'
+    )
+    result = AnchorChainVerifier(
+        postmortem=pm, transcript_text=transcript
+    ).run()
+    assert result.passed is True, (
+        f"verdicts={result.anchor_verdicts}, "
+        f"global={result.global_failures}"
+    )
+    assert result.best_of_n_structural_fire_count == 2
