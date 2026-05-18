@@ -22280,9 +22280,55 @@ def _run_lever_loop(
             # 7now-trial defect where iterations 2-5 re-admitted the
             # same AG family after the LLM regenerated root_cause text.
             _forbidden_pair = _compute_forbidden_ag_set_pair(reflection_buffer)
-            _collision_pair = _ag_collision_key_pair(
-                ag, _ag_root_cause, _ag_blame_set, lever_keys,
+            # Phase 1.6 (2026-05-17) — build the typed view at the
+            # collision-guard boundary so identity reconciliation
+            # (cluster.question_ids vs ag.affected_questions) happens
+            # here, before the candidate key is built. Falls back to
+            # the legacy helper if no source cluster is available for
+            # the AG (e.g. legacy or strategist-emitted AGs).
+            from collections.abc import Mapping as _Mapping
+            from genie_space_optimizer.optimization.failure_cluster import (
+                FailureCluster as _FailureCluster,
+                FailureClusterIdentityError as _FailureClusterIdentityError,
             )
+
+            _source_cluster_for_typed = None
+            for _scid in (ag.get("source_cluster_ids") or []):
+                _candidate_cluster = (
+                    _iter_source_clusters_by_id.get(str(_scid))
+                    if _iter_source_clusters_by_id
+                    else None
+                )
+                if isinstance(_candidate_cluster, _Mapping):
+                    _source_cluster_for_typed = _candidate_cluster
+                    break
+            try:
+                _failure_cluster_for_collision = (
+                    _FailureCluster.from_legacy(
+                        _source_cluster_for_typed, ag=ag,
+                    )
+                    if _source_cluster_for_typed is not None
+                    else None
+                )
+            except _FailureClusterIdentityError as _identity_err:
+                logger.warning(
+                    "FailureCluster identity mismatch at collision "
+                    "guard for ag_id=%s: %s",
+                    ag.get("id"), _identity_err,
+                )
+                _failure_cluster_for_collision = None
+            if _failure_cluster_for_collision is not None:
+                _collision_pair = _ag_collision_key_pair_from_failure_cluster(
+                    _failure_cluster_for_collision,
+                    ag=ag,
+                    ag_root_cause=_ag_root_cause,
+                    ag_blame_set=_ag_blame_set,
+                    lever_keys=lever_keys,
+                )
+            else:
+                _collision_pair = _ag_collision_key_pair(
+                    ag, _ag_root_cause, _ag_blame_set, lever_keys,
+                )
             if _collision_pair_matches(_collision_pair, _forbidden_pair):
                 # Derive the human-readable identity for the operator
                 # transcript by checking which axis actually matched.

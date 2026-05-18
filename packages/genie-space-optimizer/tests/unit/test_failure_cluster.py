@@ -318,6 +318,17 @@ def test_ag_collision_key_pair_from_failure_cluster_matches_dict_version():
     assert legacy_key.terminal_signature_keys == typed_key.terminal_signature_keys
 
 
+def test_harness_collision_guard_helper_is_callable():
+    """Phase 1.6 — the typed helper from Phase 1.4 is importable
+    and callable from the harness module. The Phase 1.6 collision
+    guard swap at line ~22283 will use it when a source cluster is
+    available for the AG."""
+    from genie_space_optimizer.optimization.harness import (
+        _ag_collision_key_pair_from_failure_cluster,
+    )
+    assert callable(_ag_collision_key_pair_from_failure_cluster)
+
+
 def test_nsc_marker_payload_passes_with_skipped_reason():
     """Positive case: a typed skipped_reason is sufficient."""
     fc = FailureCluster(
