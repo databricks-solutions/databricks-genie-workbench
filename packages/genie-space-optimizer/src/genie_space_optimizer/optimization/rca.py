@@ -1789,16 +1789,66 @@ def build_rca_card(
     if card is None:
         # Self-grounding failed; the caller emits
         # rca_card_self_check_failed using `self_check_failure` as the
-        # typed reason.
+        # typed reason. Plan 4a — also record the typed evidence the
+        # builder already computed (dominant_root_cause +
+        # ungrounded_terms) so postmortems can pivot on it without
+        # re-running the builder.
         if metadata_snapshot is not None:
-            failures = metadata_snapshot.setdefault(
-                "_rca_card_self_check_failures", []
+            from genie_space_optimizer.common.config import (
+                rca_card_self_check_evidence_v2_enabled,
             )
-            failures.append({
+            from genie_space_optimizer.optimization.rca_card_builder import (
+                dominant_root_cause,
+                grounding_terms_from_asi,
+                self_grounding_check,
+            )
+
+            record = {
                 "cluster_id": str(cluster_id or ""),
                 "qids": list(qids or ()),
                 "failure_reason": self_check_failure or "unknown",
-            })
+            }
+            if rca_card_self_check_evidence_v2_enabled():
+                try:
+                    drc = dominant_root_cause(asi_by_qid)
+                    terms = frozenset(grounding_terms_from_asi(asi_by_qid))
+                    # Mirror build_card's union for byte-identical
+                    # ungrounded_terms reporting.
+                    from genie_space_optimizer.common.config import (
+                        rca_card_fix_text_grounding_enabled,
+                    )
+                    if rca_card_fix_text_grounding_enabled():
+                        from genie_space_optimizer.optimization.rca_card_builder import (
+                            grounding_terms_from_fix_text,
+                        )
+                        terms = frozenset(
+                            terms
+                            | grounding_terms_from_fix_text(
+                                asi_by_qid=asi_by_qid,
+                                generated_sql_by_qid=gen_sql,
+                                reference_sql_by_qid=ref_sql,
+                            )
+                        )
+                    check = self_grounding_check(
+                        proposed_root_cause=drc,
+                        proposed_grounding_terms=terms,
+                        asi_by_qid=asi_by_qid,
+                        generated_sql_by_qid=gen_sql,
+                        reference_sql_by_qid=ref_sql,
+                    )
+                    record["dominant_root_cause"] = drc.value
+                    record["ungrounded_terms"] = tuple(
+                        getattr(check, "ungrounded_terms", ()) or ()
+                    )
+                except Exception:
+                    # Defensive: a v2 evidence failure must not break
+                    # the already-failing build path. Leave the legacy
+                    # 3-field record in place.
+                    pass
+            failures = metadata_snapshot.setdefault(
+                "_rca_card_self_check_failures", []
+            )
+            failures.append(record)
         return {"rca_id": ""}
 
     if metadata_snapshot is not None:
