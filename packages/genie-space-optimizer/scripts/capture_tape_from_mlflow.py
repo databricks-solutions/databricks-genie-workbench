@@ -74,12 +74,73 @@ def _calls_to_entries(calls: Iterable[dict]) -> list[dict]:
     return out
 
 
+def _resolve_run_ids(
+    client,
+    experiment_id: str,
+    *,
+    run_ids: list[str],
+    filter_string: str | None,
+) -> list[str]:
+    """Resolve the set of MLflow run ids to capture from.
+
+    Phase 3.6 (2026-05-18) — runs that belong to a single optimization
+    run live under multiple sibling MLflow runs (one per iteration
+    "strategy" stage, plus the "enrichment_snapshot" stage, plus
+    others). A single ``--run-id`` therefore captures only a slice of
+    the lever loop's LLM activity.
+
+    Two ways to widen the capture:
+      - ``--run-id ID --run-id ID2 ...`` (repeatable, explicit set)
+      - ``--filter-string 'tags."key" = "value"'`` (an MLflow
+        ``search_runs`` filter expression; commonly used with
+        ``genie.optimization_run_id`` to fetch every run for a
+        single optimization)
+
+    Both are accepted simultaneously; the resolved set is the union.
+    """
+    resolved: list[str] = list(run_ids or [])
+    if filter_string:
+        results = client.search_runs(
+            experiment_ids=[experiment_id],
+            filter_string=filter_string,
+            max_results=10000,
+        )
+        for r in results:
+            resolved.append(r.info.run_id)
+    if not resolved:
+        raise SystemExit(
+            "No MLflow runs resolved. Provide --run-id (repeatable) "
+            "or --filter-string."
+        )
+    # De-duplicate while preserving order.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for rid in resolved:
+        if rid in seen:
+            continue
+        seen.add(rid)
+        deduped.append(rid)
+    return deduped
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment-id", required=True)
     parser.add_argument(
-        "--run-id", required=True,
-        help="MLflow run id for the lever-loop task",
+        "--run-id", action="append", default=[],
+        help=(
+            "MLflow run id for the lever-loop task. Repeatable to "
+            "capture from multiple sibling runs (e.g. enrichment + "
+            "per-iteration strategy runs)."
+        ),
+    )
+    parser.add_argument(
+        "--filter-string", default=None,
+        help=(
+            "MLflow ``search_runs`` filter expression. Typical use: "
+            "``tags.\"genie.optimization_run_id\" = \"<run-uuid>\"`` "
+            "to capture every run belonging to one optimization."
+        ),
     )
     parser.add_argument(
         "--export-json", required=True,
@@ -109,19 +170,40 @@ def main(argv: list[str] | None = None) -> int:
     export_path = Path(args.export_json)
     out_path = Path(args.out)
 
-    # 1. Pull traces. Uses the ``run_id=`` keyword (matching
-    #    ``scripts/export_three_stage_fixtures.py``); the alternative
-    #    ``filter_string`` form works too but is more brittle across
-    #    MLflow client versions.
+    # 1. Resolve the set of MLflow run ids to capture from. A single
+    #    optimization run lives under many sibling MLflow runs (one
+    #    enrichment_snapshot + one per iteration's strategy stage,
+    #    plus per-attempt repeats). The ``_resolve_run_ids`` helper
+    #    combines explicit ``--run-id`` flags and the optional
+    #    ``--filter-string`` MLflow search expression.
     client = _build_mlflow_client()
-    traces = client.search_traces(
-        experiment_ids=[args.experiment_id],
-        run_id=args.run_id,
-        max_results=10000,
+    run_ids = _resolve_run_ids(
+        client,
+        args.experiment_id,
+        run_ids=args.run_id,
+        filter_string=args.filter_string,
     )
     logger.info(
-        "Phase 3.6 capture: fetched %d trace(s) for run %s",
-        len(traces), args.run_id,
+        "Phase 3.6 capture: resolved %d MLflow run id(s)",
+        len(run_ids),
+    )
+
+    # Iterate and concatenate traces in run-id order.
+    traces: list = []
+    for rid in run_ids:
+        rid_traces = client.search_traces(
+            experiment_ids=[args.experiment_id],
+            run_id=rid,
+            max_results=10000,
+        )
+        logger.info(
+            "Phase 3.6 capture: %d trace(s) for run %s",
+            len(rid_traces), rid,
+        )
+        traces.extend(rid_traces)
+    logger.info(
+        "Phase 3.6 capture: total %d trace(s) across %d run(s)",
+        len(traces), len(run_ids),
     )
 
     # 2. Extract LLM calls.
