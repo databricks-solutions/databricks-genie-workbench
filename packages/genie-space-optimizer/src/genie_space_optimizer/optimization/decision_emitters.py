@@ -3468,6 +3468,44 @@ def slate_authoritative_skip_record(
     )
 
 
+def rca_regen_retry_verdict_record(
+    *,
+    run_id: str,
+    iteration: int,
+    attempt,
+) -> DecisionRecord:
+    """WU-2 (2026-05-18) — emit one record per blocked cluster after
+    the single-shot RCA regeneration retry. ``attempt`` is a
+    ``rca_regen_retry.RcaRegenAttempt`` instance.
+    """
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.RCA_REGEN_RETRY_VERDICT,
+        outcome=(
+            DecisionOutcome.ACCEPTED
+            if bool(getattr(attempt, "succeeded", False))
+            else DecisionOutcome.SKIPPED
+        ),
+        reason_code=ReasonCode.NONE,
+        cluster_id=str(getattr(attempt, "cluster_id", "") or ""),
+        rca_id=str(getattr(attempt, "rca_id", "") or ""),
+        ag_id="",
+        target_qids=(),
+        root_cause="",
+        next_action=(
+            "AG-emit grounding gate will refresh blocked_cluster_ids "
+            "against the post-retry cluster view"
+        ),
+        metrics={
+            "succeeded": bool(getattr(attempt, "succeeded", False)),
+            "attempted_sources": list(
+                getattr(attempt, "attempted_sources", ()) or ()
+            ),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Plan P-G — Stage 4 strategist context boundary
 # ---------------------------------------------------------------------------
