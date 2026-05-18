@@ -132,6 +132,47 @@ def test_nsc_marker_payload_refuses_when_synthesizer_reported_nothing():
     assert "H001" in msg
 
 
+def test_synthesizer_accepts_failure_cluster_input():
+    """Phase 1.2 — run_cluster_driven_synthesis_for_single_cluster
+    must accept a FailureCluster in addition to the legacy dict.
+
+    The new signature is positional-compatible (FailureCluster OR
+    Mapping). Internally the function calls
+    FailureCluster.from_legacy() if a Mapping was passed."""
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        run_cluster_driven_synthesis_for_single_cluster,
+    )
+
+    fc = FailureCluster(
+        cluster_id="H001",
+        target_qids=("7now_delivery_analytics_space_gs_013",),
+        root_cause="wrong_filter_condition",
+        asi_failure_type="other",
+        failure_keys=("wrong_filter_condition",),
+        blame_set_raw=("[FILTER]",),
+        blame_set_normalized=(),
+        rca_card_id="rca-test",
+        rca_card_summary="test",
+        is_grounded=True,
+    )
+    # Use the function with empty downstream context so it should
+    # short-circuit with a typed skipped_reason. We are not asserting
+    # the specific reason here — just that the function accepts a
+    # FailureCluster input without raising a TypeError.
+    result = run_cluster_driven_synthesis_for_single_cluster(
+        fc,
+        metadata_snapshot={"data_sources": {"tables": [], "metric_views": []}},
+        benchmarks=None,
+    )
+    # ClusterSynthesisResult is the return type; it must have a
+    # non-empty skipped_reason when proposal is None.
+    assert result.proposal is None
+    assert result.skipped_reason != "", (
+        "When proposal is None, skipped_reason must be non-empty "
+        "per the Phase 1 refuse-on-empty invariant."
+    )
+
+
 def test_nsc_marker_payload_passes_with_skipped_reason():
     """Positive case: a typed skipped_reason is sufficient."""
     fc = FailureCluster(

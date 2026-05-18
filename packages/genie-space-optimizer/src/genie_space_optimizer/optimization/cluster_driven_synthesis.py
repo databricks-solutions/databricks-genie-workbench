@@ -909,8 +909,33 @@ def _validate_supporting_sql_snippet(
     }
 
 
+def _failure_cluster_to_legacy_dict(fc: Any) -> dict:
+    """Phase 1.2 (2026-05-17) migration shim — reconstruct the
+    legacy cluster dict from a FailureCluster so the unmigrated body
+    of ``run_cluster_driven_synthesis_for_single_cluster`` keeps
+    working. Removed in a future phase once the body reads from the
+    typed view directly."""
+    return {
+        "cluster_id": fc.cluster_id,
+        "question_ids": list(fc.target_qids),
+        "root_cause": fc.root_cause,
+        "asi_failure_type": fc.asi_failure_type,
+        "asi_blame_set": list(fc.blame_set_raw),
+        "asi_blame_set_normalized": list(fc.blame_set_normalized),
+        "rca_card": (
+            {
+                "id": fc.rca_card_id,
+                "root_cause_summary": fc.rca_card_summary,
+            }
+            if fc.is_grounded
+            else {}
+        ),
+        "failure_keys": list(fc.failure_keys),
+    }
+
+
 def run_cluster_driven_synthesis_for_single_cluster(
-    cluster: dict,
+    cluster: "Any",
     metadata_snapshot: dict,
     *,
     benchmarks: list[dict] | None,
@@ -964,6 +989,18 @@ def run_cluster_driven_synthesis_for_single_cluster(
     ``_deduplicate_proposals`` + the shared applier on whatever this
     function returns.
     """
+    # Phase 1.2 (2026-05-17) — accept FailureCluster OR legacy
+    # Mapping. Legacy callers wrap at the boundary in
+    # forced_synthesis_dispatch (Phase 1.3); other callers still
+    # pass dicts. The shim reconstructs a legacy dict from the
+    # typed view so the unmigrated body of this function keeps
+    # working.
+    from genie_space_optimizer.optimization.failure_cluster import (
+        FailureCluster,
+    )
+
+    if isinstance(cluster, FailureCluster):
+        cluster = _failure_cluster_to_legacy_dict(cluster)
     cluster_id = str((cluster or {}).get("cluster_id") or "?")
     # P3: track archetype provenance even on skipped paths so the
     # caller (the harness lever-5 wiring) can emit a typed
