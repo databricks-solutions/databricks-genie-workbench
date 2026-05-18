@@ -4,9 +4,20 @@
 (iteration index, optional ag_id / cluster_id) that the lever-loop
 driver updates as it advances. ``TapeBackedLLMCaller`` is the
 Protocol-conforming object the ContextVar receives.
+
+Phase 3.7 (2026-05-18) — adds dispatch on ``tape.replay_mode_by_stage``.
+For stages flagged ``historic_inject`` (today: ``lever6_llm`` on the
+two anchor tapes), the caller bypasses prompt-SHA matching and serves
+the historic prompt+response via ``lookup_by_binding`` keyed by
+(stage, iteration, ag_id, cluster_id-extracted-from-prompt). The
+cluster_id comes from the prompt content rather than the binding
+ContextVar because the production binding tracks the AG's first
+source_cluster_id, not the inner-loop cluster — see
+``docs/architecture/stage-prompt-fidelity-audit.md`` §Forward risk.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -14,6 +25,8 @@ from genie_space_optimizer.optimization.tape import (
     LeverLoopTape,
     TapeMissError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Phase 3.6 (2026-05-18) — pre-loop space-setup helpers that may fire
@@ -73,33 +86,43 @@ class TapeBackedLLMCaller:
         response_format: dict[str, Any] | None,
         response_model: type | None,
     ) -> tuple[str, Any]:
-        try:
-            entry = self._tape.lookup(
-                stage=span_name,
-                iteration=self._binding.iteration,
-                ag_id=self._binding.ag_id,
-                cluster_id=self._binding.cluster_id,
-                prompt=prompt,
-            )
-        except TapeMissError:
-            # Phase 3.6 (2026-05-18) — allowlist of pre-loop helpers
-            # whose ``_traced_llm_call`` sites postdate the captured
-            # tape. Return an empty response so the lever loop keeps
-            # its postmortem trajectory (callers already wrap these
-            # in try/except — see ``_generate_proactive_instructions``
-            # at ``optimizer.py:4253``).
-            if span_name in self._miss_allowlist:
-                # Phase 3.6.1 D1 (2026-05-18) — return a parseable
-                # empty-JSON object instead of ``""``. Text-path
-                # callers see "result too short" and bail (same as
-                # before); JSON-path callers (e.g.
-                # ``_generate_sample_questions``) parse it cleanly
-                # to ``{}`` and ``.get("questions", [])`` returns
-                # ``[]`` without raising AttributeError on None.
-                # ``""`` was a contract bug that accidentally worked
-                # for the text-path entries in the allowlist.
-                return "{}", {"tape_metadata": {"replay_no_op": True}}
-            raise
+        # Phase 3.7 (2026-05-18) — dispatch on per-stage replay mode.
+        # Stages absent from replay_mode_by_stage default to
+        # rebuild_and_match (the historic v1–v3 behaviour).
+        replay_mode = self._tape.replay_mode_by_stage.get(
+            span_name, "rebuild_and_match",
+        )
+
+        if replay_mode == "historic_inject":
+            entry = self._historic_inject_lookup(span_name, prompt)
+        else:
+            try:
+                entry = self._tape.lookup(
+                    stage=span_name,
+                    iteration=self._binding.iteration,
+                    ag_id=self._binding.ag_id,
+                    cluster_id=self._binding.cluster_id,
+                    prompt=prompt,
+                )
+            except TapeMissError:
+                # Phase 3.6 (2026-05-18) — allowlist of pre-loop helpers
+                # whose ``_traced_llm_call`` sites postdate the captured
+                # tape. Return an empty response so the lever loop keeps
+                # its postmortem trajectory (callers already wrap these
+                # in try/except — see ``_generate_proactive_instructions``
+                # at ``optimizer.py:4253``).
+                if span_name in self._miss_allowlist:
+                    # Phase 3.6.1 D1 (2026-05-18) — return a parseable
+                    # empty-JSON object instead of ``""``. Text-path
+                    # callers see "result too short" and bail (same as
+                    # before); JSON-path callers (e.g.
+                    # ``_generate_sample_questions``) parse it cleanly
+                    # to ``{}`` and ``.get("questions", [])`` returns
+                    # ``[]`` without raising AttributeError on None.
+                    # ``""`` was a contract bug that accidentally worked
+                    # for the text-path entries in the allowlist.
+                    return "{}", {"tape_metadata": {"replay_no_op": True}}
+                raise
 
         text = entry.response_text
 
@@ -107,6 +130,42 @@ class TapeBackedLLMCaller:
             response_validator(text)
 
         return text, {"tape_metadata": dict(entry.response_metadata)}
+
+    def _historic_inject_lookup(self, span_name: str, prompt: str):
+        """Phase 3.7 — resolve a tape entry by binding (no prompt SHA).
+
+        For lever6_llm, the cluster_id comes from the prompt's AFS
+        block rather than ``binding.cluster_id`` — the production
+        binding tracks the AG's first source_cluster_id but the
+        inner ``for cluster in eligible_clusters`` loop iterates
+        through ALL clusters of the AG, so the binding does not
+        identify the *current* cluster.
+
+        Future historic_inject stages will need their own per-stage
+        cluster_id resolver here. Today there is only one.
+        """
+        if span_name == "lever6_llm":
+            from genie_space_optimizer.optimization.mlflow_trace_extractor import (
+                _extract_cluster_id_from_lever6_prompt,
+            )
+            cluster_id = _extract_cluster_id_from_lever6_prompt(prompt) or ""
+        else:
+            # Defensive: a stage was flagged historic_inject without a
+            # cluster_id-from-prompt resolver. Use binding.cluster_id
+            # but log loudly so the gap surfaces during tests.
+            logger.warning(
+                "historic_inject without per-stage cluster resolver "
+                "for stage=%s; falling back to binding.cluster_id=%s",
+                span_name, self._binding.cluster_id,
+            )
+            cluster_id = self._binding.cluster_id
+
+        return self._tape.lookup_by_binding(
+            stage=span_name,
+            iteration=self._binding.iteration,
+            ag_id=self._binding.ag_id,
+            cluster_id=cluster_id,
+        )
 
 
 @dataclass
