@@ -23108,26 +23108,47 @@ def _run_lever_loop(
                         rank_proposal_candidates,
                         should_run_best_of_n,
                     )
-                    # Resolve intended_patch_shape from AG's first source
-                    # cluster's rca_card. Falls open (empty string → False)
-                    # when no card / no cluster available; downstream
-                    # should_run_best_of_n then declines.
+                    # WU-3.5 — resolve intended_patch_shape via the
+                    # full-card resolver. ``build_rca_card`` stamps
+                    # ``cluster["rca_card"] = {"rca_id": ...}`` (rca.py:1866)
+                    # so a getattr on the thin dict always reads empty.
+                    # The resolver looks up the full card in
+                    # ``metadata_snapshot["_rca_card_store"]``.
                     try:
+                        from genie_space_optimizer.optimization.rca_card_resolver import (
+                            resolve_full_rca_card,
+                        )
                         _bon_cids = ag.get("source_cluster_ids") or ()
-                        if _bon_cids:
-                            _bon_first_cid = str(_bon_cids[0] or "")
+                        _bon_first_cid = str(_bon_cids[0] or "") if _bon_cids else ""
                         if _bon_first_cid:
                             for _bon_c in (clusters or []):
                                 if str(_bon_c.get("cluster_id") or "") == _bon_first_cid:
-                                    _bon_card = _bon_c.get("rca_card")
+                                    _bon_card = resolve_full_rca_card(
+                                        _bon_c, metadata_snapshot or {}
+                                    )
                                     if _bon_card is not None:
                                         _bon_intent_shape = str(
                                             getattr(_bon_card, "intended_patch_shape", "")
                                             or ""
                                         )
+                                    else:
+                                        # WU-3.5 flag OFF or no card
+                                        # resolvable — preserve legacy
+                                        # behavior (thin-dict getattr
+                                        # returns empty, declines BoN).
+                                        _legacy = _bon_c.get("rca_card")
+                                        _bon_intent_shape = str(
+                                            getattr(_legacy, "intended_patch_shape", "")
+                                            or ""
+                                        )
                                     break
                     except Exception:
                         _bon_intent_shape = ""
+                        logger.debug(
+                            "WU-3.5: Best-of-N intent resolution failed "
+                            "(non-fatal; declining BoN for this AG)",
+                            exc_info=True,
+                        )
                     # Compute prior_failure_count for this AG's cluster
                     # signature (same shape as the post-hoc emission sites
                     # at harness.py:23096 etc.).
@@ -27059,32 +27080,48 @@ def _run_lever_loop(
                         structural_repair_decision_record as _structural_repair_record,
                     )
 
-                    # Resolve the RCA card for this AG. Prefer the first
-                    # source cluster's ``rca_card`` (set by ``build_rca_card``
-                    # at the cluster stamping site); fall back to the AG's
-                    # legacy ``root_cause`` string when the card is missing
-                    # (legacy iterations without Phase 1 RCA cards fail
-                    # OPEN via the gate's empty-intent branch).
+                    # WU-3.5 — resolve the full RCA card object so
+                    # ``intended_patch_shape``, ``root_cause``, and
+                    # ``card_id`` reads see the real values, not the
+                    # empty defaults from getattr-on-thin-dict
+                    # (``build_rca_card`` stamps ``cluster["rca_card"] =
+                    # {"rca_id": ...}`` at rca.py:1866). Legacy fallback
+                    # is preserved when the resolver returns None
+                    # (flag OFF or unresolvable card).
+                    from genie_space_optimizer.optimization.rca_card_resolver import (
+                        resolve_full_rca_card,
+                    )
                     _sr_cluster_id = ""
-                    _sr_rca_card = None
+                    _sr_rca_card = None  # legacy fallback object.
+                    _sr_full_card = None  # WU-3.5 resolved card.
                     for _sr_cid in (ag.get("source_cluster_ids") or []):
                         _sr_cluster_id = str(_sr_cid)
                         _sr_cluster = (
                             _iter_source_clusters_by_id.get(str(_sr_cid)) or {}
                         )
                         _sr_rca_card = _sr_cluster.get("rca_card")
-                        if _sr_rca_card is not None:
+                        _sr_full_card = resolve_full_rca_card(
+                            _sr_cluster, metadata_snapshot or {}
+                        )
+                        if _sr_full_card is not None or _sr_rca_card is not None:
                             break
+                    # Prefer the resolved full card; fall back to the
+                    # legacy thin-dict getattr (which returns "" — the
+                    # exact pre-WU-3.5 behavior — when the flag is OFF
+                    # or the card cannot be resolved).
+                    _sr_read_card = (
+                        _sr_full_card if _sr_full_card is not None else _sr_rca_card
+                    )
                     _sr_intended_shape = str(
-                        getattr(_sr_rca_card, "intended_patch_shape", "") or ""
+                        getattr(_sr_read_card, "intended_patch_shape", "") or ""
                     )
                     _sr_rca_root_cause = str(
-                        getattr(_sr_rca_card, "root_cause", "")
+                        getattr(_sr_read_card, "root_cause", "")
                         or ag.get("root_cause")
                         or ""
                     )
                     _sr_rca_id = str(
-                        getattr(_sr_rca_card, "card_id", "")
+                        getattr(_sr_read_card, "card_id", "")
                         or _iter_rca_id_by_cluster.get(str(_sr_cluster_id))
                         or ""
                     )
