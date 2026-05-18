@@ -1514,12 +1514,53 @@ def decide_control_plane_acceptance(
                 and not soft_to_hard
                 and not passing_to_hard
             )
+            # WU-4 (2026-05-18) — tighten accepted_pre_arbiter_improvement
+            # to also require post-arbiter delta >= 0 AND the named
+            # causal target actually moved. Pre-WU-4 the branch accepted
+            # whenever pre_delta and collateral_clear held; the 7now
+            # iter-1 case showed this drifts (delta = -13.0pp,
+            # has_causal_fix=False, but accepted=true). See
+            # docs/runid_analysis/ab65fefe-9bb5-411c-9818-f62633ec9cfd/
+            # postmortem.md and the plan's §WU-4.
+            from genie_space_optimizer.common.config import (
+                pre_arbiter_requires_no_post_regression_enabled,
+            )
+            _wu4_on = pre_arbiter_requires_no_post_regression_enabled()
+            _no_post_regression = float(delta) >= 0.0
+            _has_target_fix = bool(target_fixed)
             if (
                 pre_delta >= float(min_pre_arbiter_gain_pp)
                 and collateral_clear
+                and (not _wu4_on or (_no_post_regression and _has_target_fix))
             ):
                 reason = "accepted_pre_arbiter_improvement"
                 accepted = True
+            elif (
+                _wu4_on
+                and pre_delta >= float(min_pre_arbiter_gain_pp)
+                and collateral_clear
+                and not _no_post_regression
+            ):
+                # WU-4 — pre-arbiter improved AND collateral_clear,
+                # but post-arbiter regressed. Pre-WU-4 accepted here;
+                # WU-4 rejects with a typed reason so postmortems
+                # distinguish this from the generic
+                # ``post_arbiter_not_improved``.
+                reason = "post_arbiter_regressed_pre_arbiter_only"
+                accepted = False
+            elif (
+                _wu4_on
+                and pre_delta >= float(min_pre_arbiter_gain_pp)
+                and collateral_clear
+                and _no_post_regression
+                and not _has_target_fix
+            ):
+                # WU-4 — pre-arbiter improved, collateral_clear,
+                # post-arbiter held steady, but the declared target
+                # qid did not flip. Pre-WU-4 accepted here; WU-4
+                # rejects so attribution drift is visible.
+                reason = "pre_arbiter_improvement_without_causal_fix"
+                accepted = False
             else:
                 # Cycle 5 T4 — granular reason codes when accuracy
                 # didn't move. Distinguish target-fixed-with-regression
