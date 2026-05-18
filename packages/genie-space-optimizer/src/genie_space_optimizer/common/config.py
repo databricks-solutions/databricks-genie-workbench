@@ -6422,6 +6422,32 @@ def full_rca_card_resolver_enabled() -> bool:
     return _flag_default_on("GSO_FULL_RCA_CARD_RESOLVER")
 
 
+def early_rca_preflight_enabled() -> bool:
+    """WU-3 (2026-05-18 early-rca-preflight plan) — when ON, the iter
+    body runs an RCA preflight at ``lever_per_iter_setup`` BEFORE
+    lever-5/6 fires. For each AG's source clusters that lack
+    ``rca_card``, the preflight calls the cluster regenerator once.
+    If any source cluster remains ungrounded, the preflight calls
+    ``decide_slate_action`` with ``blocked_cluster_ids`` populated and
+    honors its ``SlateAction.SKIP_AG`` verdict (emitting a typed
+    ``cluster_blocked_no_rca`` decision record + iteration-no-candidate
+    marker).
+
+    Defaults OFF — this flag changes iter-body control flow before
+    proposal generation. Production deploys must explicitly enable it
+    in ``app.yaml`` after replay invariants are green. A fresh deploy
+    or a rollback ships with the pre-WU-3 behavior.
+
+    Why this site: Plan P-D's existing recovery wire site
+    (downstream of the ``proposal_generation_empty_continue``
+    short-circuit at ``harness.py:24693``) is unreachable under the
+    airline + 7now anchor failure shape. The harness control-flow
+    audit confirmed ``lever_per_iter_setup`` is reachable under both
+    anchors.
+    """
+    return _flag_enabled("GSO_EARLY_RCA_PREFLIGHT")
+
+
 def rca_card_llm_normalization_enabled() -> bool:
     """Phase 1 Action 1.1 — when ON, the deterministic builder calls
     the LLM once at low temperature to rewrite the deterministic

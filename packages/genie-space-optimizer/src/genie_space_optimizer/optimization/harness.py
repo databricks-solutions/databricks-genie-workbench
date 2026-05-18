@@ -23017,6 +23017,78 @@ def _run_lever_loop(
                         exc_info=True,
                     )
 
+            # WU-3 — early RCA preflight + slate enforcement.
+            # Runs BEFORE lever-5/6 fires so ungrounded clusters get
+            # one regen attempt; if still ungrounded the AG is skipped
+            # via SKIP_AG instead of proceeding to proposal generation
+            # where it would hit missing_rca_card. This is the
+            # architectural fix that makes WU-1/2/3.5 reach the iter
+            # body BEFORE the proposal_generation_empty_continue
+            # short-circuit at the empty-proposal accounting block.
+            #
+            # Live-reference contract: metadata_snapshot is passed
+            # unchanged (not `or {}`) because build_rca_card persists
+            # the full card on metadata_snapshot["_rca_card_store"]
+            # in place; substituting a fresh empty dict would drop it.
+            try:
+                from genie_space_optimizer.common.config import (
+                    early_rca_preflight_enabled,
+                )
+                from genie_space_optimizer.optimization.early_rca_preflight import (
+                    run_early_rca_preflight,
+                )
+                from genie_space_optimizer.optimization.slate_consumption import (
+                    SlateAction as _WU3_SlateAction,
+                )
+                if early_rca_preflight_enabled():
+                    _preflight_decision, _preflight_records = (
+                        run_early_rca_preflight(
+                            ag=ag,
+                            clusters=clusters or [],
+                            spark=spark,
+                            run_id=str(run_id or ""),
+                            iteration=iteration_counter,
+                            metadata_snapshot=metadata_snapshot,
+                            regenerator=_regenerate_rca_for_cluster,
+                            soft_clusters=soft_signal_clusters or None,
+                        )
+                    )
+                    if _preflight_records:
+                        _current_iter_inputs.setdefault(
+                            "decision_records", []
+                        ).extend(_preflight_records)
+                    if _preflight_decision.action == _WU3_SlateAction.SKIP_AG:
+                        from genie_space_optimizer.optimization.run_analysis_contract import (
+                            iteration_no_candidate_marker,
+                        )
+                        _iter_terminal_emitted = True
+                        _iter_terminal_reason = (
+                            f"early_preflight_{_preflight_decision.reason}"
+                            if _preflight_decision.reason
+                            else "early_preflight_skip_ag"
+                        )
+                        _preflight_blocked_cids = tuple(
+                            str(r.get("cluster_id") or "")
+                            for r in _preflight_records
+                            if r.get("reason") == "cluster_blocked_no_rca"
+                            and r.get("cluster_id")
+                        )
+                        print(iteration_no_candidate_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=iteration_counter,
+                            terminal_reason=_iter_terminal_reason,
+                            cluster_ids=_preflight_blocked_cids,
+                            ag_id=str(ag.get("id") or ag.get("ag_id") or ""),
+                        ), flush=True)
+                        continue
+            except Exception:
+                logger.debug(
+                    "WU-3: early RCA preflight wire site failed "
+                    "(non-fatal); falling through to legacy lever-call "
+                    "path",
+                    exc_info=True,
+                )
+
             # ── 3B.5: Generate proposals + apply patches ─────────────────
             # Task 4 — initialize per-AG patch-survival snapshots. They get
             # filled in at each handoff gate (proposed → normalized →
