@@ -91,6 +91,11 @@ def _label_aligned_fixture() -> dict:
                 "root_cause": "wrong_aggregation",
                 "asi_failure_type": "wrong_aggregation",
                 "question_ids": ["gs_009"],
+                # Phase 0.3 (2026-05-17) — RCA-card grounding fixture.
+                "rca_card": {
+                    "id": "rca-fixture",
+                    "root_cause_summary": "fixture",
+                },
             }],
             "iter_source_clusters_by_id": {
                 "H001": {
@@ -98,6 +103,11 @@ def _label_aligned_fixture() -> dict:
                     "root_cause": "wrong_aggregation",
                     "asi_failure_type": "wrong_aggregation",
                     "question_ids": ["gs_009"],
+                    # Phase 0.3 (2026-05-17) — RCA-card grounding.
+                    "rca_card": {
+                        "id": "rca-fixture",
+                        "root_cause_summary": "fixture",
+                    },
                 },
             },
             "iter_rca_id_by_cluster": {"H001": "rca_h001"},
@@ -443,6 +453,11 @@ def test_replay_driver_passes_ag_proposals_so_far_from_fixture_patches() -> None
                 "root_cause": "plural_top_n_collapse",
                 "asi_failure_type": "wrong_filter_condition",
                 "question_ids": ["gs_007now_024"],
+                # Phase 0.3 (2026-05-17) — RCA-card grounding fixture.
+                "rca_card": {
+                    "id": "rca-fixture",
+                    "root_cause_summary": "fixture",
+                },
             }],
             "iter_source_clusters_by_id": {
                 "H002": {
@@ -450,6 +465,11 @@ def test_replay_driver_passes_ag_proposals_so_far_from_fixture_patches() -> None
                     "root_cause": "plural_top_n_collapse",
                     "asi_failure_type": "wrong_filter_condition",
                     "question_ids": ["gs_007now_024"],
+                    # Phase 0.3 (2026-05-17) — RCA-card grounding.
+                    "rca_card": {
+                        "id": "rca-fixture",
+                        "root_cause_summary": "fixture",
+                    },
                 },
             },
             "iter_rca_id_by_cluster": {"H002": "rca_h002"},

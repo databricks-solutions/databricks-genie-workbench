@@ -178,6 +178,25 @@ class ForcedSynthesisDispatchResult:
     emitted_decision_records: tuple[dict[str, Any], ...]
 
 
+def _cluster_is_grounded(cluster: Mapping) -> bool:
+    """Phase 0.3 (2026-05-17) — a cluster is grounded for synthesis
+    iff it carries a non-empty ``rca_card`` payload.
+
+    Matches the predicate in
+    :func:`harness.collect_blocked_clusters` and
+    ``invariants.check_i7_rca_grounding``. Centralising it here lets
+    the synthesis dispatcher refuse ungrounded clusters at entry,
+    instead of invoking the synthesizer and returning empty
+    archetypes silently.
+    """
+    if not isinstance(cluster, Mapping):
+        return False
+    rca_card = cluster.get("rca_card")
+    if isinstance(rca_card, Mapping) and rca_card:
+        return True
+    return bool(rca_card)
+
+
 def dispatch_forced_structural_synthesis(
     *,
     run_id: str,
@@ -290,6 +309,39 @@ def dispatch_forced_structural_synthesis(
         attempted.append(
             (str(_drop_cluster.get("cluster_id") or ""), _drop_root_cause)
         )
+
+        # Phase 0.3 (2026-05-17) — refuse ungrounded clusters BEFORE
+        # invoking the synthesizer. Two live runs (airline 59a173d3,
+        # 7now ab65fefe) reported I7
+        # ``open_cluster_ungrounded_at_ag_emit`` 48 times; the
+        # synthesizer was then called and returned empty
+        # (attempted_archetypes=[]). Emit a typed
+        # ``missing_rca_card`` decline and skip the synthesize call.
+        if not _cluster_is_grounded(_drop_cluster):
+            _nsc = no_structural_candidate_record(
+                run_id=run_id,
+                iteration=iteration,
+                ag_id=str(ag_id),
+                cluster_id=str(_drop_cluster.get("cluster_id") or ""),
+                rca_id=_l5_ag_rca_id,
+                root_cause=_drop_root_cause,
+                target_qids=tuple(
+                    str(q) for q in (
+                        ag.get("affected_questions") or []
+                    )
+                    if str(q)
+                ),
+                attempted_archetypes=(),
+                skipped_reason="missing_rca_card",
+            )
+            emitted.append(_nsc.to_dict())
+            logger.info(
+                "forced structural synthesis refused ungrounded "
+                "cluster AG=%s cluster=%s root_cause=%s",
+                ag_id, _drop_cluster.get("cluster_id"),
+                _drop_root_cause,
+            )
+            continue
 
         _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS += 1
         _synth_result = synthesize(
@@ -404,6 +456,40 @@ def dispatch_forced_structural_synthesis(
         if not isinstance(cluster, Mapping):
             continue
         attempted.append((str(cid), failure_key))
+
+        # Phase 0.3 (2026-05-17) — same pre-flight as the gate-drop
+        # branch above. Decomposed AGs reach the safety-net path
+        # without an RCA card too; refuse them with a typed
+        # ``missing_rca_card`` decline rather than calling
+        # synthesize and getting empty archetypes silently.
+        if not _cluster_is_grounded(cluster):
+            _safety_net_rca_id = str(
+                iter_rca_id_by_cluster.get(cid) or ""
+            )
+            _nsc = no_structural_candidate_record(
+                run_id=run_id,
+                iteration=iteration,
+                ag_id=str(ag_id),
+                cluster_id=str(cid),
+                rca_id=_safety_net_rca_id,
+                root_cause=failure_key,
+                target_qids=tuple(
+                    str(q) for q in (
+                        ag.get("affected_questions") or []
+                    )
+                    if str(q)
+                ),
+                attempted_archetypes=(),
+                skipped_reason="missing_rca_card",
+            )
+            emitted.append(_nsc.to_dict())
+            logger.info(
+                "rich-path safety net refused ungrounded cluster "
+                "AG=%s cluster=%s failure_key=%s",
+                ag_id, cid, failure_key,
+            )
+            continue
+
         _FORCED_SYNTHESIS_TRAPDOOR_INVOCATIONS += 1
         _synth_result = synthesize(
             dict(cluster),

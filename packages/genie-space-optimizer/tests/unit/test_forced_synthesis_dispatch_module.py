@@ -84,6 +84,10 @@ def test_dispatch_visits_matching_cluster_when_labels_aligned() -> None:
         "root_cause": "wrong_aggregation",
         "question_ids": ["gs_009"],
         "asi_failure_type": "wrong_aggregation",
+        # Phase 0.3 (2026-05-17) — RCA-card grounding fixture.
+        # The dispatcher refuses ungrounded clusters at entry; this
+        # fixture exercises the synthesis path so it needs a card.
+        "rca_card": {"id": "rca-fixture", "root_cause_summary": "fixture"},
     }
     drop = {
         "ag_id": "AG_DECOMPOSED_H001",
@@ -158,6 +162,8 @@ def test_label_divergence_visits_cluster_after_canonicalization() -> None:
         "root_cause": "plural_top_n_collapse",
         "question_ids": ["gs_009"],
         "asi_failure_type": "wrong_aggregation",
+        # Phase 0.3 (2026-05-17) — RCA-card grounding fixture.
+        "rca_card": {"id": "rca-fixture", "root_cause_summary": "fixture"},
     }
     drop = {
         "ag_id": "AG_DECOMPOSED_H001",
@@ -267,6 +273,8 @@ def test_safety_net_dispatches_when_l5_emitted_zero_for_sql_shape_cluster() -> N
         "root_cause": "plural_top_n_collapse",
         "asi_failure_type": "wrong_filter_condition",
         "question_ids": ["gs_007now_024"],
+        # Phase 0.3 (2026-05-17) — RCA-card grounding fixture.
+        "rca_card": {"id": "rca-fixture", "root_cause_summary": "fixture"},
     }
     ag = {
         "id": "AG_DECOMPOSED_H002",
@@ -344,6 +352,8 @@ def test_safety_net_does_not_double_dispatch_when_gate_drops_present() -> None:
         "root_cause": "plural_top_n_collapse",
         "asi_failure_type": "wrong_aggregation",
         "question_ids": ["gs_009"],
+        # Phase 0.3 (2026-05-17) — RCA-card grounding fixture.
+        "rca_card": {"id": "rca-fixture", "root_cause_summary": "fixture"},
     }
     drop = {
         "ag_id": "AG_DECOMPOSED_H001",
@@ -418,6 +428,8 @@ def test_safety_net_emits_nsc_when_synth_declines() -> None:
         "cluster_id": "H002",
         "root_cause": "plural_top_n_collapse",
         "question_ids": ["gs_007now_024"],
+        # Phase 0.3 (2026-05-17) — RCA-card grounding fixture.
+        "rca_card": {"id": "rca-fixture", "root_cause_summary": "fixture"},
     }
 
     def _synthesize_decline(*args, **kwargs):
@@ -482,6 +494,8 @@ def test_trapdoor_invocation_counter_increments_on_gate_drop_dispatch() -> None:
         "root_cause": "plural_top_n_collapse",
         "asi_failure_type": "wrong_aggregation",
         "question_ids": ["gs_009"],
+        # Phase 0.3 (2026-05-17) — RCA-card grounding fixture.
+        "rca_card": {"id": "rca-fixture", "root_cause_summary": "fixture"},
     }
     drop = {
         "ag_id": "AG_DECOMPOSED_H001",
@@ -551,6 +565,8 @@ def test_trapdoor_invocation_counter_increments_on_safety_net_dispatch() -> None
         "root_cause": "plural_top_n_collapse",
         "asi_failure_type": "wrong_filter_condition",
         "question_ids": ["q1"],
+        # Phase 0.3 (2026-05-17) — RCA-card grounding fixture.
+        "rca_card": {"id": "rca-fixture", "root_cause_summary": "fixture"},
     }
 
     def _synthesize_success(*args, **kwargs):

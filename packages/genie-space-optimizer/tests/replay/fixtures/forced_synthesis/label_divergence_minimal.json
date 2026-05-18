@@ -7,8 +7,12 @@
         "action_groups": [
           {
             "id": "AG_DECOMPOSED_H001",
-            "affected_questions": ["gs_009"],
-            "source_cluster_ids": ["H001"],
+            "affected_questions": [
+              "gs_009"
+            ],
+            "source_cluster_ids": [
+              "H001"
+            ],
             "patches": []
           }
         ]
@@ -18,7 +22,13 @@
           "cluster_id": "H001",
           "root_cause": "plural_top_n_collapse",
           "asi_failure_type": "wrong_aggregation",
-          "question_ids": ["gs_009"]
+          "question_ids": [
+            "gs_009"
+          ],
+          "rca_card": {
+            "id": "rca-fixture",
+            "root_cause_summary": "fixture"
+          }
         }
       ],
       "iter_source_clusters_by_id": {
@@ -26,23 +36,37 @@
           "cluster_id": "H001",
           "root_cause": "plural_top_n_collapse",
           "asi_failure_type": "wrong_aggregation",
-          "question_ids": ["gs_009"]
+          "question_ids": [
+            "gs_009"
+          ],
+          "rca_card": {
+            "id": "rca-fixture",
+            "root_cause_summary": "fixture"
+          }
         }
       },
-      "iter_rca_id_by_cluster": {"H001": "rca_h001"},
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_h001"
+      },
       "metadata_failure_clusters": [
         {
           "cluster_id": "H001",
           "root_cause": "plural_top_n_collapse",
           "asi_failure_type": "wrong_aggregation",
-          "question_ids": ["gs_009"]
+          "question_ids": [
+            "gs_009"
+          ]
         }
       ],
       "lever5_gate_drops": [
         {
           "ag_id": "AG_DECOMPOSED_H001",
-          "source_clusters": ["H001"],
-          "root_causes": ["wrong_aggregation"],
+          "source_clusters": [
+            "H001"
+          ],
+          "root_causes": [
+            "wrong_aggregation"
+          ],
           "target_lever": 5,
           "had_example_sqls": false,
           "instruction_sections_dropped": true,

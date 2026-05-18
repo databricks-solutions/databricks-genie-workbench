@@ -10,7 +10,9 @@
             "affected_questions": [
               "airline_ticketing_and_fare_analysis_gs_009"
             ],
-            "source_cluster_ids": ["H001"],
+            "source_cluster_ids": [
+              "H001"
+            ],
             "patches": []
           }
         ]
@@ -22,7 +24,11 @@
           "asi_failure_type": "wrong_aggregation",
           "question_ids": [
             "airline_ticketing_and_fare_analysis_gs_009"
-          ]
+          ],
+          "rca_card": {
+            "id": "rca-fixture",
+            "root_cause_summary": "fixture"
+          }
         }
       ],
       "iter_source_clusters_by_id": {
@@ -32,10 +38,16 @@
           "asi_failure_type": "wrong_aggregation",
           "question_ids": [
             "airline_ticketing_and_fare_analysis_gs_009"
-          ]
+          ],
+          "rca_card": {
+            "id": "rca-fixture",
+            "root_cause_summary": "fixture"
+          }
         }
       },
-      "iter_rca_id_by_cluster": {"H001": "rca_h001_airline"},
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_h001_airline"
+      },
       "metadata_failure_clusters": [
         {
           "cluster_id": "H001",

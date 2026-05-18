@@ -10,12 +10,16 @@
             "affected_questions": [
               "gs_007now_026"
             ],
-            "source_cluster_ids": ["H002"],
+            "source_cluster_ids": [
+              "H002"
+            ],
             "patches": [
               {
                 "proposal_id": "P001_L6",
                 "patch_type": "add_text_instruction",
-                "target_qids": ["gs_007now_026"],
+                "target_qids": [
+                  "gs_007now_026"
+                ],
                 "cluster_id": "H002"
               }
             ]
@@ -27,7 +31,13 @@
           "cluster_id": "H002",
           "root_cause": "plural_top_n_collapse",
           "asi_failure_type": "wrong_filter_condition",
-          "question_ids": ["gs_007now_026"]
+          "question_ids": [
+            "gs_007now_026"
+          ],
+          "rca_card": {
+            "id": "rca-fixture",
+            "root_cause_summary": "fixture"
+          }
         }
       ],
       "iter_source_clusters_by_id": {
@@ -35,16 +45,26 @@
           "cluster_id": "H002",
           "root_cause": "plural_top_n_collapse",
           "asi_failure_type": "wrong_filter_condition",
-          "question_ids": ["gs_007now_026"]
+          "question_ids": [
+            "gs_007now_026"
+          ],
+          "rca_card": {
+            "id": "rca-fixture",
+            "root_cause_summary": "fixture"
+          }
         }
       },
-      "iter_rca_id_by_cluster": {"H002": "rca_h002_7now"},
+      "iter_rca_id_by_cluster": {
+        "H002": "rca_h002_7now"
+      },
       "metadata_failure_clusters": [
         {
           "cluster_id": "H002",
           "root_cause": "plural_top_n_collapse",
           "asi_failure_type": "wrong_filter_condition",
-          "question_ids": ["gs_007now_026"]
+          "question_ids": [
+            "gs_007now_026"
+          ]
         }
       ],
       "lever5_gate_drops": []
