@@ -210,30 +210,45 @@ _TAPE_BINDING_HOOK = _noop_tape_binding_hook
 
 
 def _tape_binding_set_iteration(iteration: int) -> None:
-    """Notify the tape binding hook that the lever loop is entering
-    ``iteration``. ``_run_lever_loop`` calls this at the top of each
-    iteration."""
+    """Notify the Phase-3 tape hook AND the Phase-3.5 recorder binding
+    that the lever loop is entering ``iteration``. Called at the top
+    of each iteration by ``_run_lever_loop``."""
     try:
         _TAPE_BINDING_HOOK(int(iteration))
     except Exception:
         # Belt-and-suspenders: a misbehaving replay hook must never
         # crash a production lever loop. Failures here are silent.
         pass
+    # Phase 3.5 — update the recorder binding in lockstep. Import is
+    # local so the recorder module stays a leaf (no harness cycle).
+    try:
+        from genie_space_optimizer.optimization.llm_call_recorder import (
+            set_iteration_binding as _set_recorder_iteration,
+        )
+        _set_recorder_iteration(int(iteration))
+    except Exception:
+        pass
 
 
 def _tape_binding_set_ag(ag_id: str, *, cluster_id: str = "") -> None:
-    """Notify the tape binding hook that the lever loop is now
-    processing ``ag_id`` (optionally bound to ``cluster_id``).
-
-    The ``iteration`` argument is required by the hook signature but
-    unused here: the replay-harness binding hook consults ``ag_id``
-    first and only falls back to ``iteration`` when ``ag_id`` is
-    empty. We pass a sentinel ``-1`` to make that intent explicit.
-    """
+    """Notify the Phase-3 tape hook AND the Phase-3.5 recorder binding
+    that AG dispatch starts for ``ag_id`` (optionally bound to
+    ``cluster_id``)."""
     try:
         _TAPE_BINDING_HOOK(
             -1,
             ag_id=str(ag_id or ""),
+            cluster_id=str(cluster_id or ""),
+        )
+    except Exception:
+        pass
+    # Phase 3.5 — update the recorder binding in lockstep.
+    try:
+        from genie_space_optimizer.optimization.llm_call_recorder import (
+            set_ag_binding as _set_recorder_ag,
+        )
+        _set_recorder_ag(
+            str(ag_id or ""),
             cluster_id=str(cluster_id or ""),
         )
     except Exception:
@@ -18906,6 +18921,25 @@ def _run_lever_loop(
     _loop_abort_reason: str = ""
     _loop_abort_terminal_reason: str = ""
 
+    # Phase 3.5 (2026-05-17) — install an in-memory LLM-call recorder
+    # for the duration of the lever loop. Every successful LLM call
+    # routed through ``optimizer._traced_llm_call`` appends to it
+    # (with the current iteration / ag_id binding captured at call
+    # time). After the for-loop exits we drain the buffer once and
+    # attribute each call to its iteration's ``llm_call_log`` via
+    # the recorded ``iteration`` field. The replay path (Phase 3
+    # override) does NOT trigger recording, so this is a no-op in
+    # tape-replay tests.
+    from genie_space_optimizer.optimization.llm_call_recorder import (
+        InMemoryLLMCallRecorder as _Phase35InMemoryRecorder,
+    )
+    from genie_space_optimizer.optimization import optimizer as _opt_for_recorder
+
+    _phase35_recorder = _Phase35InMemoryRecorder()
+    _phase35_recorder_token = _opt_for_recorder._LLM_CALL_RECORDER.set(
+        _phase35_recorder,
+    )
+
     for _iter_num in range(1, max_iterations + 1):
         # Phase 3 (2026-05-17) — advance tape-replay binding to the
         # current iteration. ``_tape_binding_set_iteration`` is a
@@ -31814,6 +31848,47 @@ def _run_lever_loop(
                     catalog=catalog, schema=schema,
                 )
                 break
+    # Phase 3.5 (2026-05-17) — drain the recorder buffer once and
+    # attribute each captured LLM call to its iteration's
+    # ``llm_call_log`` slot. The recorded ``iteration`` field on
+    # each call is the 0-indexed lever-loop ordinal set by
+    # ``_tape_binding_set_iteration``; we route each call into
+    # ``_replay_fixture_iterations[i]`` by matching the iteration
+    # snapshot's own ``iteration`` field. Calls with no matching
+    # iteration snapshot (iteration=-1 or beyond the captured set)
+    # are dropped silently — they represent calls that fired
+    # outside any iteration body (e.g. one-time setup).
+    try:
+        _phase35_drained = _phase35_recorder.drain()
+    except Exception:
+        _phase35_drained = []
+        logger.debug(
+            "Phase 3.5: failed to drain LLM-call recorder (non-fatal)",
+            exc_info=True,
+        )
+    if _phase35_drained:
+        _iter_snapshot_by_idx: dict[int, dict] = {}
+        for _snap in _replay_fixture_iterations:
+            try:
+                _iter_snapshot_by_idx[int(_snap.get("iteration") or 0)] = _snap
+            except Exception:
+                continue
+        for _call in _phase35_drained:
+            try:
+                _i = int(_call.get("iteration") or -1)
+            except Exception:
+                _i = -1
+            _snap = _iter_snapshot_by_idx.get(_i)
+            if _snap is not None:
+                _snap.setdefault("llm_call_log", []).append(_call)
+    try:
+        _opt_for_recorder._LLM_CALL_RECORDER.reset(_phase35_recorder_token)
+    except Exception:
+        logger.debug(
+            "Phase 3.5: failed to reset _LLM_CALL_RECORDER token "
+            "(non-fatal)",
+            exc_info=True,
+        )
     write_stage(
         spark, run_id, "LEVER_LOOP_STARTED", "COMPLETE",
         task_key="lever_loop",

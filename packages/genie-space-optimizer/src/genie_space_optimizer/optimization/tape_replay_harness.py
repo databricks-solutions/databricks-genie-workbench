@@ -41,9 +41,16 @@ class LeverLoopReplayHarness:
             h.bind_iteration(0)
             ... drive harness._run_lever_loop ...
             assert h.captured_patches == [...]
+
+    Phase 3.5 (2026-05-17) — ``stub_side_effects_only`` mode installs
+    every side-effect stub (eval, patch, write_stage, MLflow) but
+    skips the LLM override + tape binding hook. Use it for capture-
+    mode tests that need to run ``_run_lever_loop`` offline against
+    a stubbed OpenAI client (e.g. Phase 3.5 Task 3 integration).
     """
 
-    tape: LeverLoopTape
+    tape: LeverLoopTape | None = None
+    stub_side_effects_only: bool = False
     captured_patches: list[dict] = field(default_factory=list)
     captured_write_stage_calls: list[dict] = field(default_factory=list)
     _context: TapeCallContext | None = None
@@ -51,8 +58,14 @@ class LeverLoopReplayHarness:
     _exit_stack: contextlib.ExitStack | None = None
 
     def __enter__(self) -> "LeverLoopReplayHarness":
-        self._context = TapeCallContext(tape=self.tape)
-        self._token = _LLM_CALLER_OVERRIDE.set(self._context.caller())
+        if not self.stub_side_effects_only:
+            if self.tape is None:
+                raise ValueError(
+                    "LeverLoopReplayHarness requires a tape unless "
+                    "stub_side_effects_only=True (capture mode)."
+                )
+            self._context = TapeCallContext(tape=self.tape)
+            self._token = _LLM_CALLER_OVERRIDE.set(self._context.caller())
         self._exit_stack = contextlib.ExitStack()
 
         # Replace MLflow run/logging operations with no-ops so the
@@ -166,22 +179,26 @@ class LeverLoopReplayHarness:
             )
         )
 
-        # Install the tape binding hook so _run_lever_loop can advance
-        # iteration/ag tracking on this harness's TapeCallContext.
-        def _binding_hook(
-            iteration: int, *, ag_id: str = "", cluster_id: str = "",
-        ) -> None:
-            if ag_id:
-                self.bind_ag(ag_id, cluster_id=cluster_id)
-            else:
-                self.bind_iteration(iteration)
+        if not self.stub_side_effects_only:
+            # Install the tape binding hook so _run_lever_loop can
+            # advance iteration/ag tracking on this harness's
+            # TapeCallContext. In stub_side_effects_only mode we
+            # skip this so production binding helpers (Phase 3.5
+            # recorder binding) fire instead.
+            def _binding_hook(
+                iteration: int, *, ag_id: str = "", cluster_id: str = "",
+            ) -> None:
+                if ag_id:
+                    self.bind_ag(ag_id, cluster_id=cluster_id)
+                else:
+                    self.bind_iteration(iteration)
 
-        from genie_space_optimizer.optimization import harness as _harness
-        self._exit_stack.enter_context(
-            _mock_patch.object(
-                _harness, "_TAPE_BINDING_HOOK", _binding_hook,
+            from genie_space_optimizer.optimization import harness as _harness
+            self._exit_stack.enter_context(
+                _mock_patch.object(
+                    _harness, "_TAPE_BINDING_HOOK", _binding_hook,
+                )
             )
-        )
 
         return self
 
@@ -194,19 +211,31 @@ class LeverLoopReplayHarness:
             self._token = None
         self._context = None
 
+    # ── stub_side_effects_only callers don't have a TapeCallContext
+    # to bind. The binding API raises a clear error in that mode.
+
+    def _require_context(self, op: str) -> None:
+        if self._context is None:
+            if self.stub_side_effects_only:
+                raise RuntimeError(
+                    f"{op} unavailable in stub_side_effects_only mode "
+                    f"(no tape installed; capture-mode tests do not "
+                    f"need binding)."
+                )
+            raise RuntimeError(
+                f"Harness must be entered before {op}."
+            )
+
     # ── Binding API ─────────────────────────────────────────────────
 
     def bind_iteration(self, iteration: int) -> None:
-        if self._context is None:
-            raise RuntimeError("Harness must be entered before binding.")
+        self._require_context("bind_iteration")
         self._context.set_iteration(iteration)
 
     def bind_ag(self, ag_id: str, *, cluster_id: str = "") -> None:
-        if self._context is None:
-            raise RuntimeError("Harness must be entered before binding.")
+        self._require_context("bind_ag")
         self._context.bind_ag(ag_id, cluster_id=cluster_id)
 
     def clear_ag(self) -> None:
-        if self._context is None:
-            raise RuntimeError("Harness must be entered before binding.")
+        self._require_context("clear_ag")
         self._context.clear_ag()
