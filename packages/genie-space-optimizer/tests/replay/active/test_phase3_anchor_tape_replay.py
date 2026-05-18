@@ -63,24 +63,31 @@ from fixtures.failure_cluster_anchors import (  # noqa: E402
 )
 
 
-# Phase 3.6 close (2026-05-18) — four anchor tests are marked
-# ``skip`` because they require proposal-generation under replay,
-# which depends on cluster-evidence fields the historic export
-# does not preserve (per-row SQL pairs, judge_rationale,
-# blame_set, counterfactual_fixes, structural_diff,
-# failure_features). The harness validates everything upstream of
-# proposal generation correctly; reaching the abort path or
-# emitting per-anchor-qid NSC markers requires the lever loop to
-# generate proposals, which needs production-fidelity cluster
-# enrichment. See ``docs/architecture/phase-3-6-classifier-divergence.md``
-# §5 (G1/G2/G3 trade-off) and ``docs/runid_analysis/phase-3-6-close.md``.
-# Un-skip when the export schema is extended (Phase 3.7) or when an
-# alternative replay seam at the prompt-construction layer is added.
-_PHASE_3_6_BLOCKED_REASON = (
-    "Phase 3.6 close — requires proposal generation under replay; "
-    "historic export drops cluster-evidence fields needed to drive "
-    "Lever 6 prompt construction. See "
-    "docs/architecture/phase-3-6-classifier-divergence.md."
+# Phase 3.7 close (2026-05-18) — four anchor tests are marked
+# ``xfail(strict=True)`` because the historic anchor tapes
+# (airline_run_59a173d3, seven_now_run_ab65fefe) predate the
+# G2-2026-05-17 cross-cluster ``affected_questions`` guard at
+# ``optimizer.py:14027-14045``. Their lever6 responses claim
+# affected_questions across multiple clusters (e.g. H001's response
+# cites both gs_009 and gs_024); production at capture time accepted
+# this, but the current guard rejects it under replay → lever6
+# returns no proposal → terminal signature never accumulates →
+# GSO_RUN_ABORTED_V1 never fires.
+#
+# This is a TEMPORAL-VALIDITY limit of historic-tape replay, not a
+# Phase 3.7 bug. The historic_inject_cluster_only mechanism IS
+# exercised end-to-end (lookup_by_cluster_only fires, returns the
+# historic response). The four tests un-xfail automatically once a
+# post-guard production stall is captured via
+# ``scripts/capture_tape_from_mlflow.py`` with
+# ``--replay-mode lever6_llm=historic_inject_cluster_only``.
+#
+# See ``docs/architecture/tape-replay-protocol.md`` §Temporal
+# validity and ``docs/architecture/stage-prompt-fidelity-audit.md``.
+_PHASE_3_7_TEMPORAL_VALIDITY_XFAIL_REASON = (
+    "historic_anchor_tape_predates_cross_cluster_affected_questions_guard_"
+    "g2_2026_05_17; recapture post-guard to un-xfail. See "
+    "docs/architecture/tape-replay-protocol.md §Temporal validity."
 )
 
 _TAPES_DIR = Path(__file__).parent / "tapes"
@@ -271,7 +278,7 @@ def test_airline_tape_replay_emits_typed_nsc_marker():
         )
 
 
-@pytest.mark.skip(reason=_PHASE_3_6_BLOCKED_REASON)
+@pytest.mark.xfail(strict=True, reason=_PHASE_3_7_TEMPORAL_VALIDITY_XFAIL_REASON)
 def test_airline_tape_replay_aborts_on_repeated_terminal_signature():
     """Replay must produce GSO_RUN_ABORTED_V1 once the same terminal
     signature is retried up to the abort threshold."""
@@ -415,7 +422,7 @@ def _qids_covered_by_typed_nsc(
     return covered, nsc_markers
 
 
-@pytest.mark.skip(reason=_PHASE_3_6_BLOCKED_REASON)
+@pytest.mark.xfail(strict=True, reason=_PHASE_3_7_TEMPORAL_VALIDITY_XFAIL_REASON)
 def test_airline_anchor_qids_are_handled_by_typed_nsc_markers():
     """For each anchor qid (gs_009, gs_024), there must exist at least
     one NSC marker whose ag_id corresponds to an AG covering the qid
@@ -449,7 +456,7 @@ def test_airline_anchor_qids_are_handled_by_typed_nsc_markers():
     )
 
 
-@pytest.mark.skip(reason=_PHASE_3_6_BLOCKED_REASON)
+@pytest.mark.xfail(strict=True, reason=_PHASE_3_7_TEMPORAL_VALIDITY_XFAIL_REASON)
 def test_seven_now_anchor_qids_are_handled_by_typed_nsc_markers():
     """Same proof-of-fix assertion for the 7now production run anchors."""
     tape = LeverLoopTape.from_json_file(
@@ -526,7 +533,7 @@ def test_all_nsc_markers_carry_typed_skipped_reason():
         )
 
 
-@pytest.mark.skip(reason=_PHASE_3_6_BLOCKED_REASON)
+@pytest.mark.xfail(strict=True, reason=_PHASE_3_7_TEMPORAL_VALIDITY_XFAIL_REASON)
 def test_abort_marker_does_not_indicate_iteration_budget_only():
     """The airline replay must abort with a typed terminal-router
     decision, not purely on iteration_budget_exhausted."""
