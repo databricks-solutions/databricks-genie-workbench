@@ -15,10 +15,11 @@ at ~1.5k LoC of fixture wiring).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 class LifecyclePath(str, Enum):
@@ -107,6 +108,80 @@ def qid_suffix_for_match(qid: str) -> str:
         if parts[i] == "gs" and parts[i + 1].isdigit():
             return f"gs_{parts[i + 1]}"
     return str(qid)
+
+
+@dataclass(frozen=True, slots=True)
+class MarkerLine:
+    """One parsed transcript marker — ``<NAME> {json_payload}``."""
+
+    name: str
+    payload: Mapping[str, Any]
+
+
+_MARKER_LINE_RE = re.compile(r"^([A-Z0-9_]+) (\{.*\})$")
+
+
+def parse_transcript_markers(text: str) -> tuple[MarkerLine, ...]:
+    """Walk ``text`` line by line and emit MarkerLine entries.
+    Malformed JSON payloads are silently dropped (transcripts are
+    sometimes truncated mid-line). Non-marker lines are ignored."""
+    if not text:
+        return ()
+    out: list[MarkerLine] = []
+    for line in text.splitlines():
+        m = _MARKER_LINE_RE.match(line)
+        if m is None:
+            continue
+        name, payload_text = m.group(1), m.group(2)
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        out.append(MarkerLine(name=name, payload=payload))
+    return tuple(out)
+
+
+def count_best_of_n_structural_fires(
+    markers: Iterable[MarkerLine],
+) -> int:
+    """Number of GSO_BEST_OF_N_RANKED_V1 markers whose
+    intended_patch_shape is exactly 'structural'.
+
+    Pre-WU-3.5 this count was always zero in production because
+    ``should_run_best_of_n`` saw an empty intended_patch_shape
+    (the ``getattr(thin_dict, attr, "")`` bug). Post-fix this
+    count must be > 0 for any run that had structural-intent AGs.
+    """
+    return sum(
+        1
+        for m in markers
+        if m.name == "GSO_BEST_OF_N_RANKED_V1"
+        and str(m.payload.get("intended_patch_shape") or "").lower() == "structural"
+    )
+
+
+def count_admitted_with_empty_intent(
+    markers: Iterable[MarkerLine],
+) -> int:
+    """Number of GSO_STRUCTURAL_REPAIR_DECISION_V1 markers with
+    ``gate_verdict='admitted'`` AND BOTH ``intended_patch_shape``
+    and ``rca_root_cause`` empty. That signature is the canonical
+    pre-WU-3.5 + pre-WU-5 bug: the gate's fail-open branch fired
+    because the harness consumer read the empty default from
+    getattr on the thin RCA card dict."""
+    out = 0
+    for m in markers:
+        if m.name != "GSO_STRUCTURAL_REPAIR_DECISION_V1":
+            continue
+        if str(m.payload.get("gate_verdict") or "").lower() != "admitted":
+            continue
+        shape = str(m.payload.get("intended_patch_shape") or "").strip()
+        root = str(m.payload.get("rca_root_cause") or "").strip()
+        if not shape and not root:
+            out += 1
+    return out
 
 
 @dataclass(frozen=True, slots=True)

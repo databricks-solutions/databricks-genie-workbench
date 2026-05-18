@@ -153,3 +153,93 @@ def test_postmortem_anchor_qid_suffix_match() -> None:
     assert qid_suffix_for_match("airline_space_gs_009") == "gs_009"
     assert qid_suffix_for_match("gs_026") == "gs_026"
     assert qid_suffix_for_match("") == ""
+
+
+def test_marker_parser_extracts_no_structural_candidate_lines() -> None:
+    """Lines like 'GSO_NO_STRUCTURAL_CANDIDATE_V1 {json}' are
+    extracted with the JSON payload parsed into a dict."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        parse_transcript_markers,
+    )
+    transcript = (
+        'unrelated log line\n'
+        'GSO_NO_STRUCTURAL_CANDIDATE_V1 {"ag_id":"AG_X","attempted_archetypes":[],"iteration":1,"skipped_reason":"missing_rca_card"}\n'
+        'more log noise\n'
+        'GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural","samples_emitted":3,"iteration":2}\n'
+    )
+    markers = parse_transcript_markers(transcript)
+    by_name: dict[str, list[dict]] = {}
+    for m in markers:
+        by_name.setdefault(m.name, []).append(dict(m.payload))
+    assert "GSO_NO_STRUCTURAL_CANDIDATE_V1" in by_name
+    assert by_name["GSO_NO_STRUCTURAL_CANDIDATE_V1"][0]["skipped_reason"] == "missing_rca_card"
+    assert "GSO_BEST_OF_N_RANKED_V1" in by_name
+    assert by_name["GSO_BEST_OF_N_RANKED_V1"][0]["intended_patch_shape"] == "structural"
+
+
+def test_marker_parser_ignores_unparseable_lines() -> None:
+    """A marker line with a malformed JSON payload is silently
+    dropped (defensive — transcripts contain truncated lines)."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        parse_transcript_markers,
+    )
+    transcript = (
+        'GSO_NO_STRUCTURAL_CANDIDATE_V1 {malformed\n'
+        'GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural"}\n'
+    )
+    markers = parse_transcript_markers(transcript)
+    names = [m.name for m in markers]
+    assert names == ["GSO_BEST_OF_N_RANKED_V1"]
+
+
+def test_marker_parser_empty_transcript() -> None:
+    from genie_space_optimizer.verification.anchor_chain import (
+        parse_transcript_markers,
+    )
+    assert parse_transcript_markers("") == ()
+
+
+def test_count_best_of_n_structural_fires() -> None:
+    """count_best_of_n_structural_fires(markers) returns the number
+    of GSO_BEST_OF_N_RANKED_V1 markers whose intended_patch_shape
+    is exactly 'structural'."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        MarkerLine,
+        count_best_of_n_structural_fires,
+    )
+    markers = (
+        MarkerLine("GSO_BEST_OF_N_RANKED_V1", {"intended_patch_shape": "structural"}),
+        MarkerLine("GSO_BEST_OF_N_RANKED_V1", {"intended_patch_shape": "instructional"}),
+        MarkerLine("GSO_BEST_OF_N_RANKED_V1", {"intended_patch_shape": "structural"}),
+        MarkerLine("GSO_OTHER", {"intended_patch_shape": "structural"}),
+    )
+    assert count_best_of_n_structural_fires(markers) == 2
+
+
+def test_count_admitted_with_empty_intent() -> None:
+    """count_admitted_with_empty_intent counts
+    GSO_STRUCTURAL_REPAIR_DECISION_V1 entries whose gate_verdict
+    is 'admitted' AND both intended_patch_shape and rca_root_cause
+    are empty — the canonical pre-WU-3.5 + pre-WU-5 bug signature."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        MarkerLine,
+        count_admitted_with_empty_intent,
+    )
+    markers = (
+        MarkerLine("GSO_STRUCTURAL_REPAIR_DECISION_V1", {
+            "gate_verdict": "admitted",
+            "intended_patch_shape": "",
+            "rca_root_cause": "",
+        }),
+        MarkerLine("GSO_STRUCTURAL_REPAIR_DECISION_V1", {
+            "gate_verdict": "admitted",
+            "intended_patch_shape": "structural",
+            "rca_root_cause": "non-empty",
+        }),
+        MarkerLine("GSO_STRUCTURAL_REPAIR_DECISION_V1", {
+            "gate_verdict": "rejected",
+            "intended_patch_shape": "",
+            "rca_root_cause": "",
+        }),
+    )
+    assert count_admitted_with_empty_intent(markers) == 1
