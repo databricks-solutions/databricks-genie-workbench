@@ -18,25 +18,54 @@ The extractor handles two trace vintages:
   - Pre-Task-2 (historic) traces: no breadcrumbs. Each call's binding
     defaults to (-1, "", "") and the resulting tape ships with
     ``miss_policy="prompt_sha_only"`` so replay still matches.
+
+Phase 3.7 (2026-05-18) — for historic lever6_llm calls that lack
+breadcrumbs, we can reconstruct the binding by parsing the cluster_id
+out of the prompt JSON and correlating against an export payload's
+``iter_source_clusters_by_id`` / ``action_groups``. This is needed so
+the ``historic_inject`` replay mode can key by (stage, iteration,
+ag_id, cluster_id) instead of prompt SHA — see
+``docs/architecture/stage-prompt-fidelity-audit.md``.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Any, Iterable, Iterator
 
 from genie_space_optimizer.optimization.tape import _KNOWN_STAGES
 
 logger = logging.getLogger(__name__)
 
+# Phase 3.7 (2026-05-18) — match the ``"cluster_id": "..."`` line
+# emitted by ``json.dumps(format_afs(cluster), indent=2)`` in
+# ``_generate_lever6_proposal``. The AFS projection puts cluster_id
+# first; the regex matches the FIRST occurrence in the prompt so any
+# later cluster_id references (e.g., inside strategist_hints) do not
+# shadow the binding cluster.
+_LEVER6_CLUSTER_ID_PATTERN = re.compile(r'"cluster_id"\s*:\s*"([^"]+)"')
 
-def extract_llm_calls_from_trace(trace) -> Iterator[dict[str, Any]]:
+
+def extract_llm_calls_from_trace(
+    trace,
+    *,
+    export_payload: dict[str, Any] | None = None,
+) -> Iterator[dict[str, Any]]:
     """Yield call-shape dicts for every CHAIN span named in _KNOWN_STAGES
     that has a CHAT_MODEL child.
 
     Order: spans appear in the order MLflow returns them (typically
     start_time_ns ascending). The caller is responsible for any
     re-ordering needed for replay determinism.
+
+    Phase 3.7 (2026-05-18) — when ``export_payload`` is provided and a
+    lever6_llm parent span lacks binding breadcrumbs (iteration=-1 /
+    empty ag/cluster), the cluster_id is parsed from the prompt JSON
+    and the (iteration, ag_id) pair is reconciled from the export's
+    ``iter_source_clusters_by_id`` / ``action_groups``. Calls whose
+    breadcrumbs were already set live (post-Phase-3.6-Task-2 captures)
+    are emitted unchanged.
     """
     spans = _spans_of(trace)
 
@@ -60,11 +89,36 @@ def extract_llm_calls_from_trace(trace) -> Iterator[dict[str, Any]]:
         usage = _read_usage(chat_model_child)
         binding = _read_binding_breadcrumbs(parent)
 
+        iteration = int(binding.get("iteration", -1))
+        ag_id = str(binding.get("ag_id", ""))
+        cluster_id = str(binding.get("cluster_id", ""))
+
+        # Phase 3.7 — backfill lever6_llm binding from prompt + export
+        # when the trace lacks live breadcrumbs. Only fires for
+        # historic captures (iteration == -1 AND both ids empty);
+        # post-Task-2 captures retain their authoritative breadcrumbs.
+        if (
+            name == "lever6_llm"
+            and export_payload is not None
+            and iteration == -1
+            and not ag_id
+            and not cluster_id
+        ):
+            parsed_cluster = _extract_cluster_id_from_lever6_prompt(prompt)
+            if parsed_cluster:
+                rec_iter, rec_ag = reconcile_lever6_binding_from_export(
+                    cluster_id=parsed_cluster,
+                    export_payload=export_payload,
+                )
+                cluster_id = parsed_cluster
+                iteration = rec_iter
+                ag_id = rec_ag
+
         yield {
             "span_name": name,
-            "iteration": int(binding.get("iteration", -1)),
-            "ag_id": str(binding.get("ag_id", "")),
-            "cluster_id": str(binding.get("cluster_id", "")),
+            "iteration": iteration,
+            "ag_id": ag_id,
+            "cluster_id": cluster_id,
             "prompt_sha256": _sha256(prompt),
             "system_msg": system_msg,
             "prompt": prompt,
@@ -79,10 +133,81 @@ def extract_llm_calls_from_trace(trace) -> Iterator[dict[str, Any]]:
 
 def extract_llm_calls_from_traces(
     traces: Iterable[object],
+    *,
+    export_payload: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Convenience wrapper: extract from a sequence of traces in order."""
+    """Convenience wrapper: extract from a sequence of traces in order.
+
+    Phase 3.7 — ``export_payload`` is forwarded to each
+    ``extract_llm_calls_from_trace`` invocation so lever6_llm
+    binding reconciliation works across multi-trace captures.
+    """
     for trace in traces:
-        yield from extract_llm_calls_from_trace(trace)
+        yield from extract_llm_calls_from_trace(
+            trace, export_payload=export_payload,
+        )
+
+
+def _extract_cluster_id_from_lever6_prompt(prompt: str) -> str | None:
+    """Phase 3.7 — return the FIRST ``"cluster_id": "..."`` value in a
+    lever6_llm prompt, or None if not found.
+
+    The lever6 prompt-builder serializes ``format_afs(cluster)`` via
+    ``json.dumps(..., indent=2)``; the AFS projection emits cluster_id
+    as its first key, so the first regex hit is the binding cluster.
+    """
+    if not prompt:
+        return None
+    m = _LEVER6_CLUSTER_ID_PATTERN.search(prompt)
+    if m is None:
+        return None
+    val = m.group(1).strip()
+    return val or None
+
+
+def reconcile_lever6_binding_from_export(
+    *,
+    cluster_id: str,
+    export_payload: dict[str, Any],
+) -> tuple[int, str]:
+    """Phase 3.7 — given a cluster_id and an export payload, return
+    ``(iteration, ag_id)``.
+
+    Algorithm:
+      1. Walk ``export_payload["iterations"]`` in order.
+      2. For each iteration whose ``iter_source_clusters_by_id``
+         contains ``cluster_id``, scan
+         ``strategist_response.action_groups`` for the first AG whose
+         ``source_cluster_ids`` contains ``cluster_id``.
+      3. Return that pair. If the cluster appears in an iteration but
+         no AG claims it, return ``(iteration, "")``.
+      4. If the cluster is absent from every iteration, return
+         ``(-1, "")``.
+    """
+    if not cluster_id or not isinstance(export_payload, dict):
+        return (-1, "")
+    iterations = export_payload.get("iterations") or []
+    for it in iterations:
+        if not isinstance(it, dict):
+            continue
+        src = it.get("iter_source_clusters_by_id") or {}
+        if not isinstance(src, dict):
+            continue
+        if cluster_id not in src:
+            continue
+        iter_num = int(it.get("iteration") or 0)
+        strategist = it.get("strategist_response") or {}
+        action_groups = (
+            strategist.get("action_groups") if isinstance(strategist, dict) else None
+        ) or []
+        for ag in action_groups:
+            if not isinstance(ag, dict):
+                continue
+            scids = ag.get("source_cluster_ids") or []
+            if cluster_id in [str(c) for c in scids]:
+                return (iter_num, str(ag.get("id") or ""))
+        return (iter_num, "")
+    return (-1, "")
 
 
 # ──────────────────────────────────────────────────────────────────────
