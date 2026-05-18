@@ -259,6 +259,46 @@ def test_harness_serves_load_run_with_synthetic_metadata():
     assert result["config_snapshot"] == {}
 
 
+def test_harness_load_stages_returns_empty_dataframe():
+    """Phase 3.6.2 E4 — ``state.load_stages`` empty-stub. Fires
+    post-loop; not iteration-critical. Returning an empty DataFrame
+    keeps the summary path quiet without pretending to have data."""
+    import pandas as pd
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+        format_version=3,
+        iteration_payloads={
+            0: {"iteration": 1, "eval_scope": "full", "rolled_back": False},
+        },
+    )
+    with LeverLoopReplayHarness(tape=tape):
+        from genie_space_optimizer.optimization import state as _state
+        df = _state.load_stages(
+            spark=None, run_id="r", catalog="c", schema="s",
+        )
+    assert isinstance(df, pd.DataFrame)
+    assert df.empty
+
+
+def test_harness_load_provenance_returns_empty_dataframe():
+    """Phase 3.6.2 E4 — ``state.load_provenance`` empty-stub."""
+    import pandas as pd
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+        format_version=3,
+        iteration_payloads={
+            0: {"iteration": 1, "eval_scope": "full", "rolled_back": False},
+        },
+    )
+    with LeverLoopReplayHarness(tape=tape):
+        from genie_space_optimizer.optimization import state as _state
+        df = _state.load_provenance(
+            spark=None, run_id="r", catalog="c", schema="s",
+        )
+    assert isinstance(df, pd.DataFrame)
+    assert df.empty
+
+
 def test_harness_iteration_binding_hook_invoked_by_run_lever_loop(monkeypatch):
     """harness.py exposes _TAPE_BINDING_HOOK that _run_lever_loop calls
     once per iteration. This lets the replay harness advance the

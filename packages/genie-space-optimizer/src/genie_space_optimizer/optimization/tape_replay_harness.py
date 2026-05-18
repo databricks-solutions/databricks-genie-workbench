@@ -317,6 +317,47 @@ class LeverLoopReplayHarness:
         except AttributeError:
             pass
 
+        # Phase 3.6.2 E4 (2026-05-18) — empty-stub the two secondary
+        # state.py loaders that fire mid-loop / post-loop but are
+        # not iteration-critical for the anchor regression contract:
+        #
+        # ``load_stages`` reads the genie_opt_stages Delta table for
+        # stage transitions; consumed by post-loop summary and the
+        # ``rerun_history`` helper. Empty pd.DataFrame is benign.
+        #
+        # ``load_provenance`` reads the genie_opt_provenance Delta
+        # table; consumed by proposal provenance lookups. Empty
+        # pd.DataFrame is benign — provenance lookups return
+        # "no prior provenance" rather than crashing.
+        #
+        # Documented in ``tape-replay-protocol.md``: extend if a
+        # future replay test asserts on post-loop / provenance state.
+        import pandas as _pd_for_replay
+
+        def _replay_load_stages(spark, run_id, catalog, schema):
+            return _pd_for_replay.DataFrame()
+
+        def _replay_load_provenance(spark, run_id, catalog, schema):
+            return _pd_for_replay.DataFrame()
+
+        for _target, _side in (
+            ("genie_space_optimizer.optimization.state.load_stages",
+             _replay_load_stages),
+            ("genie_space_optimizer.optimization.state.load_provenance",
+             _replay_load_provenance),
+            ("genie_space_optimizer.optimization.harness.load_stages",
+             _replay_load_stages),
+            ("genie_space_optimizer.optimization.harness.load_provenance",
+             _replay_load_provenance),
+        ):
+            try:
+                self._exit_stack.enter_context(
+                    _mock_patch(_target, side_effect=_side)
+                )
+            except AttributeError:
+                # Re-export may not exist in the harness module.
+                continue
+
         # Patch patch_space_config to a no-op that captures calls.
         def _replay_patch_space_config(w, space_id, config, **kwargs) -> dict:
             self.captured_patches.append({

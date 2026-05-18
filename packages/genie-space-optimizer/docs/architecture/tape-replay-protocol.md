@@ -98,6 +98,29 @@ For any run with active MLflow tracing — including runs that predate Phase 3.5
 
 Post-Phase-3.6 traces carry ``iteration`` / ``ag_id`` / ``cluster_id`` as span breadcrumbs (set by ``_traced_llm_call``), so historic-style extraction is bit-exact equivalent to live capture. Pre-3.6 traces have no breadcrumbs; their tapes use ``miss_policy="prompt_sha_only"`` and match on (stage, prompt_sha256) alone.
 
+## Cross-state reads (Phase 3.6.2)
+
+Production state lives in two stores: LLM call traces (already tape-served via `entries`) and Delta tables (`genie_opt_iterations`, `genie_opt_runs`, `genie_opt_stages`, `genie_opt_provenance`) read via `state.load_*` functions. The replay harness stubs both.
+
+### Iteration-row reads (tape-served from `iteration_payloads`)
+
+| Loader | Replay stub source | Filter |
+|---|---|---|
+| `state.load_latest_full_iteration` | `tape.iteration_payloads` | `eval_scope='full'` + `rolled_back != True` + optional `before_iteration` |
+| `state.load_latest_state_iteration` | `tape.iteration_payloads` | `eval_scope IN ('full', 'enrichment')` + `rolled_back != True` |
+| `state.load_all_full_iterations` | `tape.iteration_payloads` | `eval_scope='full'` + `rolled_back != True`, ordered by iteration ASC |
+| `state.load_run` | synthesized from tape-level fields | `run_id` echoed; `source_run_id` carried |
+
+The capture script populates `iteration_payloads` from the historic export's per-iteration dicts (`rows_json`, `clusters`, `decision_records`, `strategist_response`, etc.).
+
+### Empty-stubbed loaders (extend when needed)
+
+`state.load_stages` and `state.load_provenance` return an empty `pd.DataFrame`. They fire post-loop / mid-loop in code paths that don't affect the anchor regression contract (markers, iteration count, abort decision). Extend the harness if a future replay test asserts on stage transitions or provenance lookups.
+
+### Format-version invariant
+
+Tapes carry an explicit `format_version` (v3 = `iteration_payloads` populated). `LeverLoopTape.from_json_file` raises on unknown versions and on v3 tapes that don't carry `iteration_payloads`.
+
 ## Pre-loop helper allowlist
 
 ``tape_llm_caller.PRE_LOOP_HELPER_STAGES_ALLOWLIST`` is a frozenset of ``span_name`` values whose ``_traced_llm_call`` sites were added to the codebase AFTER the historic anchor tapes were captured. These calls fire during replay (typically space-setup helpers invoked once per run, before the lever-loop iteration loop opens) but the captured tape has no entry for them — they predate the call site.
