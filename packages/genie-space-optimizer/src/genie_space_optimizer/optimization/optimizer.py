@@ -228,6 +228,41 @@ _LLM_CALLER_OVERRIDE: _Phase3ContextVar[LLMCallerOverride | None] = (
 )
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Phase 3.5 (2026-05-17) — production LLM call recorder.
+#
+# ``_LLM_CALL_RECORDER`` is the capture-side counterpart to Phase 3's
+# ``_LLM_CALLER_OVERRIDE``. Production runs install an
+# ``InMemoryLLMCallRecorder`` at the lever-loop boundary; every
+# successful LLM call routed through ``_traced_llm_call`` appends to
+# it. The override path (replay) explicitly skips capture to avoid a
+# feedback loop.
+# ──────────────────────────────────────────────────────────────────────
+from genie_space_optimizer.optimization.llm_call_recorder import (
+    LLMCallRecorder as _LLMCallRecorderType,
+)
+
+_LLM_CALL_RECORDER: _Phase3ContextVar[_LLMCallRecorderType | None] = (
+    _Phase3ContextVar("_LLM_CALL_RECORDER", default=None)
+)
+
+
+def _safe_token_count(response: Any, field: str) -> int | None:
+    """Return ``response.usage.<field>`` or ``None`` on any failure.
+
+    Used by the Phase 3.5 recorder to populate ``response_metadata``
+    without crashing on response shapes that lack ``usage``.
+    """
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return None
+        v = getattr(usage, field, None)
+        return int(v) if v is not None else None
+    except Exception:
+        return None
+
+
 def _traced_llm_call(
     w: WorkspaceClient | None,
     system_msg: str,
@@ -385,6 +420,44 @@ def _traced_llm_call(
                     "response_chars": len(text),
                     "attempts": attempt + 1,
                 })
+
+                # Phase 3.5 — best-effort capture of every successful LLM
+                # call. Override path (Phase 3 replay) does not reach
+                # here, so this fires only on real LLM calls.
+                _recorder = _LLM_CALL_RECORDER.get()
+                if _recorder is not None:
+                    try:
+                        _recorder.record(
+                            span_name=span_name,
+                            system_msg=system_msg,
+                            prompt=prompt,
+                            response_text=text,
+                            response_metadata={
+                                "model": LLM_ENDPOINT,
+                                "temperature": float(temperature),
+                                "max_tokens": (
+                                    int(max_tokens)
+                                    if max_tokens is not None
+                                    else None
+                                ),
+                                "prompt_tokens": _safe_token_count(
+                                    response, "prompt_tokens",
+                                ),
+                                "completion_tokens": _safe_token_count(
+                                    response, "completion_tokens",
+                                ),
+                                "total_tokens": _safe_token_count(
+                                    response, "total_tokens",
+                                ),
+                            },
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Phase 3.5: LLM call recorder raised "
+                            "(non-fatal)",
+                            exc_info=True,
+                        )
+
                 return text, response
 
             except Exception as exc:
