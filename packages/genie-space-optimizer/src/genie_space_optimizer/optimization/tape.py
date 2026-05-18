@@ -12,9 +12,13 @@ Keying:
     when the call is not bound to a specific AG or cluster (e.g. strategist).
 
 Miss policy:
-    Default ``"raise"``. ``"warn"`` is for prompt-text-drift tolerance where
-    we match on ``(stage, iteration, ag_id, cluster_id)`` and accept the first
-    matching entry regardless of ``prompt_sha256``.
+    Default ``"raise"``. ``"warn"`` is for prompt-text-drift tolerance
+    where we match on ``(stage, iteration, ag_id, cluster_id)`` and
+    accept the first matching entry regardless of ``prompt_sha256``.
+    ``"prompt_sha_only"`` (Phase 3.6) is for historic tapes captured
+    from MLflow traces without iteration/ag breadcrumbs: matches on
+    ``(stage, prompt_sha256)`` alone, ignoring iteration/ag/cluster.
+    Safe because prompt content is iteration-+-AG-unique.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ from pathlib import Path
 from typing import Literal
 
 
-MissPolicy = Literal["raise", "warn"]
+MissPolicy = Literal["raise", "warn", "prompt_sha_only"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -219,6 +223,17 @@ class LeverLoopTape:
                         "stage/iteration/ag/cluster sibling.",
                         stage, iteration, ag_id, cluster_id, sha,
                     )
+                    return entry
+
+        # Phase 3.6 (2026-05-17) — historic tapes captured from MLflow
+        # traces without iteration/ag breadcrumbs key calls only by
+        # (stage, prompt_sha256). The prompt content includes
+        # iteration's clusters / RCA cards / AG context, so the SHA is
+        # iteration-+-AG-unique in practice and there is no ambiguity.
+        if self.miss_policy == "prompt_sha_only":
+            for entry in self.entries:
+                k = entry.key
+                if k.stage == stage and k.prompt_sha256 == sha:
                     return entry
 
         raise TapeMissError(
