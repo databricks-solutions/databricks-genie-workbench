@@ -247,6 +247,77 @@ def test_dispatcher_passes_failure_cluster_to_synthesizer():
     )
 
 
+def test_collision_key_pair_built_from_failure_cluster_matches_retired():
+    """Phase 1.4 — FailureCluster.collision_key_pair must produce
+    a key that matches the retired-signature producer's projection
+    end-to-end. Typed-contract replacement for the Phase 0.1 fix."""
+    from genie_space_optimizer.optimization.harness import (
+        _ForbiddenSetPair,
+        _collision_pair_matches,
+    )
+
+    fc = FailureCluster(
+        cluster_id="H001",
+        target_qids=("7now_delivery_analytics_space_gs_013",),
+        root_cause="wrong_filter_condition",
+        asi_failure_type="other",
+        failure_keys=("wrong_filter_condition",),
+        blame_set_raw=(),
+        blame_set_normalized=(),
+        rca_card_id="",
+        rca_card_summary="",
+        is_grounded=False,
+    )
+    candidate_key = fc.collision_key_pair(lever_keys=[6])
+    forbidden = _ForbiddenSetPair(
+        by_root_cause=frozenset(),
+        by_signature=frozenset(),
+        by_terminal_signature=frozenset({
+            (
+                frozenset({"7now_delivery_analytics_space_gs_013"}),
+                frozenset({6}),
+            ),
+        }),
+    )
+    assert _collision_pair_matches(candidate_key, forbidden)
+
+
+def test_ag_collision_key_pair_from_failure_cluster_matches_dict_version():
+    """The typed helper and the legacy dict helper must produce
+    byte-identical terminal_signature_keys for production-shaped
+    inputs. This proves the migration is a refactor, not a
+    behavior change."""
+    from genie_space_optimizer.optimization.harness import (
+        _ag_collision_key_pair,
+        _ag_collision_key_pair_from_failure_cluster,
+    )
+
+    cluster = {
+        "cluster_id": "H001",
+        "question_ids": ["7now_delivery_analytics_space_gs_013"],
+        "root_cause": "wrong_filter_condition",
+        "asi_failure_type": "other",
+    }
+    ag = {
+        "id": "AG_DECOMPOSED_H001",
+        "source_cluster_ids": ["H001"],
+        "affected_questions": ["7now_delivery_analytics_space_gs_013"],
+    }
+
+    legacy_key = _ag_collision_key_pair(
+        ag, "wrong_filter_condition", [], ["6"],
+    )
+    fc = FailureCluster.from_legacy(cluster, ag=ag)
+    typed_key = _ag_collision_key_pair_from_failure_cluster(
+        fc,
+        ag=ag,
+        ag_root_cause="wrong_filter_condition",
+        ag_blame_set=[],
+        lever_keys=["6"],
+    )
+    assert legacy_key.terminal_signature_keys == typed_key.terminal_signature_keys
+
+
 def test_nsc_marker_payload_passes_with_skipped_reason():
     """Positive case: a typed skipped_reason is sufficient."""
     fc = FailureCluster(

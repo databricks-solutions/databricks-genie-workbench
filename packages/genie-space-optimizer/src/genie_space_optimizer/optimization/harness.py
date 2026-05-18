@@ -13113,6 +13113,37 @@ def _ag_collision_key_pair(
     )
 
 
+def _ag_collision_key_pair_from_failure_cluster(
+    failure_cluster: Any,
+    *,
+    ag: dict,
+    ag_root_cause: str,
+    ag_blame_set: Any,
+    lever_keys: list,
+) -> _CollisionKeyPair:
+    """Phase 1.4 (2026-05-17) — typed replacement for
+    ``_ag_collision_key_pair`` on the terminal-signature axis only.
+
+    The non-terminal axes (``root_cause_key``, ``signature_keys``)
+    are delegated to the legacy ``_ag_collision_key_pair`` so we do
+    not re-derive their construction logic. Only the
+    ``terminal_signature_keys`` field is rebuilt from the typed
+    view — that is the field Phase 0.1 fixed, and where the
+    identity guarantee matters.
+    """
+    legacy_pair = _ag_collision_key_pair(
+        ag, ag_root_cause, ag_blame_set, lever_keys,
+    )
+    typed_pair = failure_cluster.collision_key_pair(
+        lever_keys=[int(lk) for lk in lever_keys] if lever_keys else [],
+    )
+    return _CollisionKeyPair(
+        root_cause_key=legacy_pair.root_cause_key,
+        signature_keys=legacy_pair.signature_keys,
+        terminal_signature_keys=typed_pair.terminal_signature_keys,
+    )
+
+
 def _collision_pair_matches(
     candidate: _CollisionKeyPair,
     forbidden: _ForbiddenSetPair,
