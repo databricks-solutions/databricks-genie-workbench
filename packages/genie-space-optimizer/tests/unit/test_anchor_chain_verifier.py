@@ -480,3 +480,137 @@ def test_classifier_anchor_not_present_in_run_is_silent() -> None:
     qids = {av.qid_suffix for av in result.anchor_verdicts}
     assert "gs_013" in qids
     assert "gs_009" not in qids
+
+
+def test_classifier_silently_skips_forbidden_set_bounce_iterations() -> None:
+    """An iteration that gets bounced by the forbidden-set check
+    before reaching RCA/synthesis (empty directive_outcome AND
+    empty no_structural_candidate AND
+    terminal_reason='ag_collision_with_forbidden_set') is NOT a
+    chain-invariant failure — it never exercised the chain. The
+    verifier emits no verdict for it (silent skip)."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        AnchorChainVerifier,
+    )
+    pm = {
+        "iteration_summary": [
+            # Production shape: nsc dict has keys but all values
+            # are null (the post-bounce serializer writes nulls).
+            {
+                "iteration": 2,
+                "ag_id": "AG_DECOMPOSED_H001",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": None,
+                "no_structural_candidate": {
+                    "skipped_reason": None,
+                    "attempted_archetypes": None,
+                },
+                "terminal_reason": "ag_collision_with_forbidden_set",
+                "next_step": "skip_no_op",
+            },
+            # Synthetic shape: both empty dicts.
+            {
+                "iteration": 4,
+                "ag_id": "AG_DECOMPOSED_H001",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": {},
+                "no_structural_candidate": {},
+                "terminal_reason": "ag_collision_with_forbidden_set",
+                "next_step": "abort_run",
+            },
+            # Real anchor iteration that DID exercise the chain.
+            {
+                "iteration": 1,
+                "ag_id": "AG_DECOMPOSED_H001",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": {"6": "proposal_emitted"},
+                "no_structural_candidate": {},
+                "terminal_reason": "",
+                "next_step": "continue",
+            },
+        ]
+    }
+    result = AnchorChainVerifier(
+        postmortem=pm,
+        transcript_text='GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural"}\n',
+    ).run()
+    # Only one verdict — the iter-1 chain-exercising iteration.
+    # The iter-2 bounce is silently skipped.
+    assert len(result.anchor_verdicts) == 1
+    assert result.anchor_verdicts[0].iteration == 1
+    assert result.passed is True
+
+
+def test_cli_main_returns_zero_for_passing_runid_dir(tmp_path: Path) -> None:
+    """End-to-end smoke: write a passing postmortem.json into a
+    fake runid dir, point the CLI at it, expect exit 0."""
+    import json
+    import sys
+    repo_root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(repo_root / "scripts"))
+    try:
+        import verify_anchor_chain_invariants as cli
+    finally:
+        sys.path.pop(0)
+
+    runid_dir = tmp_path / "fake-runid"
+    runid_dir.mkdir()
+    (runid_dir / "postmortem.json").write_text(json.dumps({
+        "iteration_summary": [
+            {
+                "iteration": 1,
+                "ag_id": "AG_X",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": {"6": "proposal_emitted"},
+                "no_structural_candidate": {},
+                "terminal_reason": "",
+                "next_step": "continue",
+            }
+        ]
+    }))
+    (runid_dir / "evidence").mkdir()
+    (runid_dir / "evidence" / "lever_loop_latest_export_run_1_text.txt").write_text(
+        'GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural"}\n'
+    )
+
+    exit_code = cli.main(["--runid-dir", str(runid_dir)])
+    assert exit_code == 0
+
+
+def test_cli_main_returns_nonzero_for_failing_runid_dir(tmp_path: Path) -> None:
+    """End-to-end smoke: write a pre-fix-shape postmortem.json,
+    point the CLI at it, expect exit 1."""
+    import json
+    import sys
+    repo_root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(repo_root / "scripts"))
+    try:
+        import verify_anchor_chain_invariants as cli
+    finally:
+        sys.path.pop(0)
+
+    runid_dir = tmp_path / "fake-runid"
+    runid_dir.mkdir()
+    (runid_dir / "postmortem.json").write_text(json.dumps({
+        "iteration_summary": [
+            {
+                "iteration": 1,
+                "ag_id": "AG_X",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": {"6": "proposal_emitted"},
+                "no_structural_candidate": {
+                    "skipped_reason": "missing_rca_card",
+                    "attempted_archetypes": [],
+                },
+                "terminal_reason": "",
+                "next_step": "continue",
+            }
+        ]
+    }))
+    exit_code = cli.main(["--runid-dir", str(runid_dir)])
+    assert exit_code == 1

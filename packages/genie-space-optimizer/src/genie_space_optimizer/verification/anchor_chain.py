@@ -96,6 +96,39 @@ def parse_iteration_records(
     return tuple(out)
 
 
+_ITERATION_BOUNCE_TERMINALS: frozenset[str] = frozenset({
+    # AG was selected but immediately bounced by the forbidden-set
+    # check before the lever loop ran.
+    "ag_collision_with_forbidden_set",
+    # Iteration concluded with no work before reaching the chain.
+    "iteration_no_op",
+    "convergence_thresholds_met",
+    "no_actionable_clusters",
+    # Run-level terminals that abort an iteration before chain work.
+    "run_aborted",
+})
+
+
+def _iteration_never_reached_chain(rec: "IterationRecord") -> bool:
+    """True if the iteration never exercised the RCA → candidate
+    chain (no lever invocation, no synthesis attempt). These
+    iterations are not subject to the chain-invariant contract —
+    e.g., a forbidden-set bounce on iter-2 of the 7now pre-fix run
+    correctly never reaches RCA/synthesis. Counting them as chain
+    failures would generate false positives on post-fix runs.
+
+    Tolerant of nsc-dict-with-null-values shape: production
+    postmortems write ``no_structural_candidate={"skipped_reason":
+    null, "attempted_archetypes": null}`` for bounced iterations
+    rather than an empty dict, so emptiness is judged by
+    non-null content, not key presence.
+    """
+    has_directive = bool(rec.directive_outcome)
+    has_nsc = any(v for v in (rec.no_structural_candidate or {}).values())
+    bounced = rec.terminal_reason in _ITERATION_BOUNCE_TERMINALS
+    return (not has_directive) and (not has_nsc) and bounced
+
+
 def qid_suffix_for_match(qid: str) -> str:
     """Strip any space prefix and return the suffix used by the
     canonical anchor map (e.g., ``"gs_013"``). The suffix is the
@@ -250,6 +283,8 @@ class AnchorChainVerifier:
 
         anchor_verdicts: list[AnchorVerdict] = []
         for rec in records:
+            if _iteration_never_reached_chain(rec):
+                continue
             for qid in rec.target_qids:
                 suffix = qid_suffix_for_match(qid)
                 if suffix not in self._anchor_suffixes:
