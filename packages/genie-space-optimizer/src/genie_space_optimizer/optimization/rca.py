@@ -271,6 +271,72 @@ def _mentions_remove_defensive_filter(text: str) -> bool:
     )
 
 
+def _mentions_top_n_collapse(text: str) -> bool:
+    """Return True when the text describes a top-N cardinality
+    collapse — a question asking for N ranked rows where the
+    generated SQL returns fewer (often 1) than N because of RANK
+    ties, LIMIT 1, or rank=1 filtering.
+
+    Patterns derived from the airline gs_009 and 7now gs_026 anchor
+    counterfactual fixes. The matcher requires either:
+      * an explicit collapse phrase (``top 1``, ``rank=1``,
+        ``only the top``, ``return all`` paired with ranking
+        vocabulary), or
+      * a RANK→ROW_NUMBER/LIMIT rewrite hint.
+    Benign mentions of RANK / ROW_NUMBER without a collapse hint do
+    not fire.
+    """
+    lower = str(text or "").lower()
+    if not lower:
+        return False
+
+    # Explicit collapse phrases.
+    explicit = (
+        "top 1" in lower
+        or "top-ranked" in lower
+        or "only the top" in lower
+        or "just the top" in lower
+        or "rank=1" in lower
+        or "rank = 1" in lower
+        or "ranked = 1" in lower
+        or "ranked=1" in lower
+    )
+    if explicit:
+        return True
+
+    # "Return all X ... not just" — common phrasing for plural-collapse.
+    if ("return all" in lower or "list of all" in lower) and (
+        "ranking" in lower
+        or "ranked" in lower
+        or "ordered by" in lower
+        or "not just" in lower
+    ):
+        return True
+
+    # RANK rewrite hints — the fix prose says swap RANK for
+    # ROW_NUMBER, or add LIMIT N, to control cardinality.
+    if "rank" in lower and (
+        "row_number" in lower
+        or "limit" in lower
+        or "ties produc" in lower  # 'ties producing more than N rows'
+        or ("more than" in lower and "rows" in lower)
+    ):
+        return True
+
+    # Ties producing more than N rows — standalone cardinality
+    # symptom (the fix prose can describe the symptom without
+    # naming RANK if a ROW_NUMBER/LIMIT rewrite is implied
+    # elsewhere in the cluster aggregate).
+    if "ties" in lower and "more than" in lower and "rows" in lower:
+        return True
+
+    # "Top N means exactly N rows" — explicit cardinality clarification.
+    if "top" in lower and "exactly" in lower and "rows" in lower:
+        return True
+
+    return False
+
+
 def _top_n_collapse_metadata_override(
     failure: str,
     metadata: dict,
