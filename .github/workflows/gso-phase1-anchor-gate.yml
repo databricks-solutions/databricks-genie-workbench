@@ -13,11 +13,22 @@ on:
       - "packages/genie-space-optimizer/src/genie_space_optimizer/optimization/harness.py"
       - "packages/genie-space-optimizer/src/genie_space_optimizer/optimization/decision_emitters.py"
       - "packages/genie-space-optimizer/src/genie_space_optimizer/optimization/run_analysis_contract.py"
+      - "packages/genie-space-optimizer/src/genie_space_optimizer/optimization/optimizer.py"
+      - "packages/genie-space-optimizer/src/genie_space_optimizer/optimization/tape.py"
+      - "packages/genie-space-optimizer/src/genie_space_optimizer/optimization/tape_llm_caller.py"
+      - "packages/genie-space-optimizer/src/genie_space_optimizer/optimization/tape_replay_harness.py"
       - "packages/genie-space-optimizer/docs/architecture/stage-handoff-contract.md"
+      - "packages/genie-space-optimizer/docs/architecture/tape-replay-protocol.md"
       - "packages/genie-space-optimizer/tests/fixtures/failure_cluster_anchors/**"
       - "packages/genie-space-optimizer/tests/replay/active/test_phase1_anchor_clusters_typed_contract.py"
+      - "packages/genie-space-optimizer/tests/replay/active/test_phase3_anchor_tape_replay.py"
       - "packages/genie-space-optimizer/tests/unit/test_failure_cluster.py"
       - "packages/genie-space-optimizer/tests/unit/test_marker_refuse_on_empty.py"
+      - "packages/genie-space-optimizer/tests/unit/test_tape_model.py"
+      - "packages/genie-space-optimizer/tests/unit/test_tape_llm_caller.py"
+      - "packages/genie-space-optimizer/tests/unit/test_tape_replay_harness.py"
+      - "packages/genie-space-optimizer/tests/unit/test_traced_llm_call_override.py"
+      - "packages/genie-space-optimizer/tests/unit/test_capture_lever_loop_tape.py"
       - ".github/workflows/gso-phase1-anchor-gate.yml"
 
 jobs:
@@ -39,8 +50,30 @@ jobs:
             tests/unit/test_marker_refuse_on_empty.py \
             -v --tb=short
 
+  phase3_tape_replay:
+    name: Phase 3 Tape Replay Anchors
+    runs-on: ubuntu-latest
+    needs: [anchor_tests]
+    defaults:
+      run:
+        working-directory: packages/genie-space-optimizer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --frozen
+      - name: Run Phase 3 tape replay tests
+        run: |
+          uv run pytest \
+            tests/unit/test_tape_model.py \
+            tests/unit/test_tape_llm_caller.py \
+            tests/unit/test_tape_replay_harness.py \
+            tests/unit/test_traced_llm_call_override.py \
+            tests/unit/test_capture_lever_loop_tape.py \
+            tests/replay/active/test_phase3_anchor_tape_replay.py \
+            -v --tb=short
+
   doc_sync_check:
-    name: Stage-handoff contract doc must accompany critical-path changes
+    name: Architecture docs must accompany critical-path changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,23 +85,46 @@ jobs:
           base="${GITHUB_BASE_REF:-main}"
           git fetch origin "${base}" --depth=50 || true
           changed=$(git diff --name-only "origin/${base}...HEAD")
-          critical_path_changed=false
+          # Phase 1 critical path → requires stage-handoff-contract.md
+          phase1_critical_path_changed=false
           for path in \
             packages/genie-space-optimizer/src/genie_space_optimizer/optimization/failure_cluster.py \
             packages/genie-space-optimizer/src/genie_space_optimizer/optimization/cluster_driven_synthesis.py \
             packages/genie-space-optimizer/src/genie_space_optimizer/optimization/forced_synthesis_dispatch.py \
             ; do
             if echo "$changed" | grep -q "^${path}$"; then
-              critical_path_changed=true
+              phase1_critical_path_changed=true
             fi
           done
-          if [[ "$critical_path_changed" == "true" ]]; then
+          if [[ "$phase1_critical_path_changed" == "true" ]]; then
             if ! echo "$changed" | grep -q "^packages/genie-space-optimizer/docs/architecture/stage-handoff-contract.md$"; then
               echo "ERROR: PR modifies Phase 1 critical-path files but does not update"
               echo "  packages/genie-space-optimizer/docs/architecture/stage-handoff-contract.md"
               echo "  Per the Phase 1 contract, every change to the typed-contract"
               echo "  stages must keep the doc in sync. Add the doc to this PR or"
               echo "  document why the change is doc-neutral in the PR description."
+              exit 1
+            fi
+          fi
+          # Phase 3 critical path → requires tape-replay-protocol.md
+          phase3_critical_path_changed=false
+          for path in \
+            packages/genie-space-optimizer/src/genie_space_optimizer/optimization/tape.py \
+            packages/genie-space-optimizer/src/genie_space_optimizer/optimization/tape_llm_caller.py \
+            packages/genie-space-optimizer/src/genie_space_optimizer/optimization/tape_replay_harness.py \
+            ; do
+            if echo "$changed" | grep -q "^${path}$"; then
+              phase3_critical_path_changed=true
+            fi
+          done
+          if [[ "$phase3_critical_path_changed" == "true" ]]; then
+            if ! echo "$changed" | grep -q "^packages/genie-space-optimizer/docs/architecture/tape-replay-protocol.md$"; then
+              echo "ERROR: PR modifies Phase 3 tape-replay critical-path files but"
+              echo "  does not update packages/genie-space-optimizer/docs/architecture/tape-replay-protocol.md"
+              echo "  Per the Phase 3 contract, every change to the tape-replay"
+              echo "  modules must keep the protocol doc in sync. Add the doc"
+              echo "  to this PR or document why the change is doc-neutral in"
+              echo "  the PR description."
               exit 1
             fi
           fi
