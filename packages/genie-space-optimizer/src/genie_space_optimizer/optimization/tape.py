@@ -126,8 +126,23 @@ class TapeEntry:
 #   v3 — Phase 3.6 E1 adds iteration_payloads (full per-iteration
 #        row dicts from genie_opt_iterations, served by replay
 #        stubs for state.load_latest_full_iteration et al.)
-TAPE_FORMAT_VERSION = 3
-_SUPPORTED_FORMAT_VERSIONS: frozenset[int] = frozenset({1, 2, 3})
+#   v4 — Phase 3.7 (2026-05-18) adds replay_mode_by_stage: a
+#        per-stage dispatch hint consumed by TapeBackedLLMCaller.
+#        Unset stages default to "rebuild_and_match" (SHA-based
+#        lookup, the v1–v3 behaviour). The single use today is
+#        {"lever6_llm": "historic_inject"} for anchor tapes
+#        whose lever6 prompts cannot be byte-for-byte rebuilt
+#        under replay (see
+#        docs/architecture/stage-prompt-fidelity-audit.md).
+TAPE_FORMAT_VERSION = 4
+_SUPPORTED_FORMAT_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4})
+
+# Phase 3.7 (2026-05-18) — typed replay-mode vocabulary. New modes
+# require a code change here AND in TapeBackedLLMCaller's dispatch.
+ReplayMode = Literal["rebuild_and_match", "historic_inject"]
+_VALID_REPLAY_MODES: frozenset[str] = frozenset(
+    {"rebuild_and_match", "historic_inject"}
+)
 
 
 @dataclass
@@ -146,6 +161,12 @@ class LeverLoopTape:
     # from this dict instead of letting them return None under a
     # MagicMock spark.
     iteration_payloads: dict[int, dict] = field(default_factory=dict)
+    # Phase 3.7 (2026-05-18) — per-stage replay-mode hint. Keys are
+    # ``span_name`` strings (subset of ``_KNOWN_STAGES``); values are
+    # in ``_VALID_REPLAY_MODES``. Stages absent from this dict default
+    # to ``"rebuild_and_match"``. See
+    # ``docs/architecture/tape-replay-protocol.md``.
+    replay_mode_by_stage: dict[str, str] = field(default_factory=dict)
     format_version: int = TAPE_FORMAT_VERSION
     miss_policy: MissPolicy = "raise"
 
@@ -259,6 +280,28 @@ class LeverLoopTape:
                 "with ``format_version: 2``."
             )
 
+        # Phase 3.7 (2026-05-18) — validate replay_mode_by_stage.
+        # v1/v2/v3 tapes that omit the field load with the default
+        # ``rebuild_and_match`` behaviour for every stage. v4 tapes
+        # may carry the field; we enforce the typed vocabulary at
+        # load time so a typo or stale capture is loud, not silent.
+        replay_mode_raw = payload.get("replay_mode_by_stage") or {}
+        if not isinstance(replay_mode_raw, dict):
+            raise ValueError(
+                f"LeverLoopTape: replay_mode_by_stage must be a dict, "
+                f"got {type(replay_mode_raw).__name__}."
+            )
+        replay_mode_by_stage: dict[str, str] = {}
+        for stage_name, mode in replay_mode_raw.items():
+            mode_str = str(mode)
+            if mode_str not in _VALID_REPLAY_MODES:
+                raise ValueError(
+                    f"LeverLoopTape: invalid replay_mode "
+                    f"{mode_str!r} for stage {stage_name!r} "
+                    f"(supported: {sorted(_VALID_REPLAY_MODES)})."
+                )
+            replay_mode_by_stage[str(stage_name)] = mode_str
+
         return cls(
             tape_id=str(payload.get("tape_id", "")),
             source_run_id=str(payload.get("source_run_id", "")),
@@ -270,6 +313,7 @@ class LeverLoopTape:
                 payload.get("rca_cards_by_cluster") or {}
             ),
             iteration_payloads=iteration_payloads,
+            replay_mode_by_stage=replay_mode_by_stage,
             format_version=format_version,
             miss_policy=str(payload.get("miss_policy", "raise")),
         )
@@ -328,3 +372,48 @@ class LeverLoopTape:
             f"No tape entry for stage={stage!r} iteration={iteration} "
             f"ag_id={ag_id!r} cluster_id={cluster_id!r} prompt_sha256={sha}"
         )
+
+    def lookup_by_binding(
+        self,
+        *,
+        stage: str,
+        iteration: int,
+        ag_id: str,
+        cluster_id: str,
+    ) -> TapeEntry:
+        """Phase 3.7 — find the unique entry for (stage, iteration, ag_id,
+        cluster_id) ignoring prompt_sha256.
+
+        Used by ``TapeBackedLLMCaller`` under the ``historic_inject``
+        replay mode, where the replay-time prompt cannot be rebuilt
+        byte-for-byte and the historic prompt+response must be served
+        from the tape directly.
+
+        Raises ``TapeMissError`` if no entry matches. Multiple matches
+        are not expected (each (stage, iteration, ag, cluster) tuple is
+        unique per production run); the first match wins and a warning
+        is emitted only on actual ambiguity.
+        """
+        matches: list[TapeEntry] = []
+        for entry in self.entries:
+            k = entry.key
+            if (
+                k.stage == stage
+                and k.iteration == iteration
+                and k.ag_id == ag_id
+                and k.cluster_id == cluster_id
+            ):
+                matches.append(entry)
+        if not matches:
+            raise TapeMissError(
+                f"No tape entry for binding stage={stage!r} "
+                f"iteration={iteration} ag_id={ag_id!r} "
+                f"cluster_id={cluster_id!r} (historic_inject mode)."
+            )
+        if len(matches) > 1:
+            logging.getLogger(__name__).warning(
+                "lookup_by_binding: %d entries match (stage=%s "
+                "iter=%d ag=%s cluster=%s); returning the first.",
+                len(matches), stage, iteration, ag_id, cluster_id,
+            )
+        return matches[0]
