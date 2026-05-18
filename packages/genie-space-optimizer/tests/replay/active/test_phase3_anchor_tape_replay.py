@@ -64,10 +64,25 @@ from fixtures.failure_cluster_anchors import (  # noqa: E402
 
 
 _TAPES_DIR = Path(__file__).parent / "tapes"
+# Phase 3.6 (2026-05-17) — historic tapes captured by
+# ``scripts/capture_tape_from_mlflow.py`` land here. Both locations
+# are checked so Phase 3 (live capture) and Phase 3.6 (MLflow-trace
+# capture) tapes coexist.
+_PRODUCTION_TAPES_DIR = (
+    Path(__file__).parent / "fixtures" / "production_tapes"
+)
+
+
+def _resolve_tape(path_name: str) -> Path | None:
+    for d in (_PRODUCTION_TAPES_DIR, _TAPES_DIR):
+        p = d / path_name
+        if p.exists():
+            return p
+    return None
 
 
 def _has_production_tape(path_name: str) -> bool:
-    return (_TAPES_DIR / path_name).exists()
+    return _resolve_tape(path_name) is not None
 
 
 def _load_or_synthesize(
@@ -79,8 +94,8 @@ def _load_or_synthesize(
 ) -> LeverLoopTape:
     """Load the production tape if present; else build a synthetic one
     from the anchor fixtures."""
-    path = _TAPES_DIR / path_name
-    if path.exists():
+    path = _resolve_tape(path_name)
+    if path is not None:
         return LeverLoopTape.from_json_file(path)
 
     # Synthetic tape: 4 strategist responses that parse as valid JSON
@@ -218,7 +233,7 @@ def test_airline_tape_replay_emits_typed_nsc_marker():
     proposal_generation_empty path emits a typed NSC marker with a
     non-empty skipped_reason (Phase 0 + 1 invariant)."""
     tape = LeverLoopTape.from_json_file(
-        _TAPES_DIR / "airline_run_59a173d3.json",
+        _resolve_tape("airline_run_59a173d3.json"),
     )
     stdout, _ = _drive_lever_loop_against_tape(
         tape=tape,
@@ -244,7 +259,7 @@ def test_airline_tape_replay_aborts_on_repeated_terminal_signature():
     """Replay must produce GSO_RUN_ABORTED_V1 once the same terminal
     signature is retried up to the abort threshold."""
     tape = LeverLoopTape.from_json_file(
-        _TAPES_DIR / "airline_run_59a173d3.json",
+        _resolve_tape("airline_run_59a173d3.json"),
     )
     stdout, _ = _drive_lever_loop_against_tape(
         tape=tape,
@@ -284,7 +299,7 @@ def test_seven_now_tape_replay_runs_without_crashing():
 def test_seven_now_tape_replay_emits_typed_nsc_marker():
     """Production-shape assertion for the 7now tape."""
     tape = LeverLoopTape.from_json_file(
-        _TAPES_DIR / "seven_now_run_ab65fefe.json",
+        _resolve_tape("seven_now_run_ab65fefe.json"),
     )
     stdout, _ = _drive_lever_loop_against_tape(
         tape=tape,
@@ -393,7 +408,7 @@ def test_airline_anchor_qids_are_handled_by_typed_nsc_markers():
     and whose ``skipped_reason`` is in the Phase 0+1+2 typed
     vocabulary."""
     tape = LeverLoopTape.from_json_file(
-        _TAPES_DIR / "airline_run_59a173d3.json",
+        _resolve_tape("airline_run_59a173d3.json"),
     )
     stdout, _ = _drive_lever_loop_against_tape(
         tape=tape,
@@ -427,7 +442,7 @@ def test_airline_anchor_qids_are_handled_by_typed_nsc_markers():
 def test_seven_now_anchor_qids_are_handled_by_typed_nsc_markers():
     """Same proof-of-fix assertion for the 7now production run anchors."""
     tape = LeverLoopTape.from_json_file(
-        _TAPES_DIR / "seven_now_run_ab65fefe.json",
+        _resolve_tape("seven_now_run_ab65fefe.json"),
     )
     stdout, _ = _drive_lever_loop_against_tape(
         tape=tape,
@@ -476,7 +491,7 @@ def test_all_nsc_markers_carry_typed_skipped_reason():
             [SEVEN_NOW_GS_013, SEVEN_NOW_GS_026],
         ),
     ):
-        tape = LeverLoopTape.from_json_file(_TAPES_DIR / tape_name)
+        tape = LeverLoopTape.from_json_file(_resolve_tape(tape_name))
         stdout, _ = _drive_lever_loop_against_tape(
             tape=tape,
             run_id=run_id,
@@ -508,7 +523,7 @@ def test_abort_marker_does_not_indicate_iteration_budget_only():
     """The airline replay must abort with a typed terminal-router
     decision, not purely on iteration_budget_exhausted."""
     tape = LeverLoopTape.from_json_file(
-        _TAPES_DIR / "airline_run_59a173d3.json",
+        _resolve_tape("airline_run_59a173d3.json"),
     )
     stdout, _ = _drive_lever_loop_against_tape(
         tape=tape,
