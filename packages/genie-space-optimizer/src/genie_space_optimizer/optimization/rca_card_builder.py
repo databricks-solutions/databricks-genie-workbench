@@ -407,6 +407,22 @@ def build_card(
     root_cause = dominant_root_cause(asi_by_qid)
     grounding = grounding_terms_from_asi(asi_by_qid)
 
+    # Plan 4a — union text-mined grounding terms (intersected with
+    # SQL corpus) into the proposed set. The intersect guarantees
+    # every text-mined term passes self_grounding via the SQL
+    # channel. Flag-gated so a regression can be reverted at runtime.
+    from genie_space_optimizer.common.config import (
+        rca_card_fix_text_grounding_enabled,
+    )
+    if rca_card_fix_text_grounding_enabled():
+        text_terms = grounding_terms_from_fix_text(
+            asi_by_qid=asi_by_qid,
+            generated_sql_by_qid=generated_sql_by_qid,
+            reference_sql_by_qid=reference_sql_by_qid,
+        )
+        if text_terms:
+            grounding = frozenset(grounding | text_terms)
+
     # Synthesize intended patch shape and family sets from the root.
     shape = intended_patch_shape_for_root_cause(root_cause)
     allowed, forbidden = allowed_and_forbidden_patch_families(root_cause)

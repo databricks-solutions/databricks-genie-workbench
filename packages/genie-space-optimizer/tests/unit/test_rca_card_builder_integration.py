@@ -274,3 +274,48 @@ def test_builder_ignores_soft_clusters_when_flag_off() -> None:
         card = metadata_snapshot["_rca_card_store"][out["rca_id"]]
         assert card.supporting_soft_evidence == ()
     assert "rca_card_supporting_soft_evidence" not in cluster
+
+
+# ── Plan 4a Task 8 — fix-text grounding union ───────────────────────
+
+
+from genie_space_optimizer.optimization.rca import RcaKind
+from genie_space_optimizer.optimization.rca_card_builder import build_card
+
+
+def test_build_card_unions_fix_text_grounding_terms():
+    """gs_024 — fix text mentions PAYMENT_CURRENCY_CD and FORM_OF_PAYMENT_CD,
+    SQL corpus contains both. blame_set is empty (the audit baseline).
+    Expect a fit card with both terms in grounding_terms."""
+    asi = {
+        "airline_gs_024": {
+            "failure_type": "unknown",
+            "blame_set": [],
+            "counterfactual_fix": (
+                "Remove the filter on PAYMENT_CURRENCY_CD = USD and the "
+                "IS NOT NULL filters on FORM_OF_PAYMENT_CD as they exclude "
+                "valid NULL groupings."
+            ),
+        }
+    }
+    generated_sql = {
+        "airline_gs_024": (
+            "SELECT SUM(PAYMENT_AMT) FROM payments WHERE "
+            "PAYMENT_CURRENCY_CD = 'USD' AND FORM_OF_PAYMENT_CD IS NOT NULL"
+        )
+    }
+    reference_sql = {
+        "airline_gs_024": "SELECT SUM(PAYMENT_AMT) FROM payments"
+    }
+    card, self_check_failure, _ = build_card(
+        cluster_id="H002",
+        qids=("airline_gs_024",),
+        asi_by_qid=asi,
+        generated_sql_by_qid=generated_sql,
+        reference_sql_by_qid=reference_sql,
+    )
+    assert self_check_failure is None
+    assert card is not None
+    assert card.root_cause == RcaKind.EXTRA_DEFENSIVE_FILTER
+    assert "PAYMENT_CURRENCY_CD" in card.grounding_terms
+    assert "FORM_OF_PAYMENT_CD" in card.grounding_terms
