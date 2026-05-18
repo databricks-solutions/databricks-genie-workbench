@@ -5734,8 +5734,32 @@ def _regenerate_rca_for_cluster(
     from genie_space_optimizer.optimization.rca import build_rca_card
 
     _ = spark, run_id  # accepted for future LLM wiring; not used today
-    cluster_id = str(cluster.get("primary_cluster_id") or "")
-    qids = tuple(str(q) for q in (cluster.get("target_qids") or ()))
+    # WU-1 — cluster-identity fallback. Failure clusters carry
+    # ``cluster_id`` / ``question_ids``; action-group-shape dicts
+    # carry ``primary_cluster_id`` / ``target_qids``. Sibling
+    # ``retry_rca_regeneration_for_blocked`` already does the
+    # fallback chain (rca_regen_retry.py:84-88); WU-1 makes this
+    # helper agree. Flag-gated for byte-stable revert.
+    from genie_space_optimizer.common.config import (
+        rca_regen_cluster_identity_fallback_enabled,
+    )
+    if rca_regen_cluster_identity_fallback_enabled():
+        cluster_id = str(
+            cluster.get("primary_cluster_id")
+            or cluster.get("cluster_id")
+            or ""
+        )
+        qids = tuple(
+            str(q)
+            for q in (
+                cluster.get("target_qids")
+                or cluster.get("question_ids")
+                or ()
+            )
+        )
+    else:
+        cluster_id = str(cluster.get("primary_cluster_id") or "")
+        qids = tuple(str(q) for q in (cluster.get("target_qids") or ()))
     attempted: list[str] = []
 
     # Phase 3 T3.3.1.1 — fall back to ``metadata_snapshot["_soft_clusters"]``

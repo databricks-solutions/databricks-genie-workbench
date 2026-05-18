@@ -6366,6 +6366,62 @@ def rca_card_self_check_evidence_v2_enabled() -> bool:
     return _flag_default_on("GSO_RCA_CARD_SELF_CHECK_EVIDENCE_V2")
 
 
+def rca_regen_cluster_identity_fallback_enabled() -> bool:
+    """WU-1 (2026-05-18 early-rca-preflight plan) — when ON,
+    ``_regenerate_rca_for_cluster`` reads ``cluster["cluster_id"]``
+    (with fallback to ``primary_cluster_id``) and
+    ``cluster["question_ids"]`` (with fallback to ``target_qids``).
+    Default ON. The legacy single-field reads remain accessible by
+    setting ``GSO_RCA_REGEN_CLUSTER_IDENTITY_FALLBACK=0``.
+
+    Why: ``_regenerate_rca_for_cluster`` previously read
+    ``primary_cluster_id`` / ``target_qids``, but failure clusters
+    carry ``cluster_id`` / ``question_ids``. The mismatch made the
+    helper silently no-op on real failure clusters. Sibling
+    ``retry_rca_regeneration_for_blocked`` already uses the fallback
+    chain (rca_regen_retry.py:84-88).
+    """
+    return _flag_default_on("GSO_RCA_REGEN_CLUSTER_IDENTITY_FALLBACK")
+
+
+def rca_regen_thread_sql_corpora_enabled() -> bool:
+    """WU-2 (2026-05-18 early-rca-preflight plan) — when ON,
+    ``_regenerate_rca_for_cluster`` forwards
+    ``metadata_snapshot["_generated_sql_by_qid"]`` and
+    ``metadata_snapshot["_reference_sql_by_qid"]`` to
+    ``build_rca_card``. Default ON.
+
+    Why: Plan 4a's ``grounding_terms_from_fix_text`` intersects
+    text-mined identifiers with the SQL corpus. The recovery call
+    site previously passed empty corpora, making the intersect
+    always return ``frozenset()``. Threading the real corpora lets
+    text-mined grounding terms survive self_grounding_check.
+    """
+    return _flag_default_on("GSO_RCA_REGEN_THREAD_SQL_CORPORA")
+
+
+def full_rca_card_resolver_enabled() -> bool:
+    """WU-3.5 (2026-05-18 early-rca-preflight plan) — when ON,
+    harness sites that need RCA card metadata
+    (``intended_patch_shape``, ``root_cause``, ``card_id``) read via
+    ``resolve_full_rca_card`` instead of
+    ``getattr(cluster["rca_card"], attr, "")``.
+
+    Default-ON. The resolver is a pure read-path normalization: it
+    returns the full card from ``metadata_snapshot["_rca_card_store"]``
+    when the cluster carries a thin ``{"rca_id": ...}`` dict (the
+    shape ``build_rca_card`` stamps at rca.py:1866), or returns the
+    cluster's ``rca_card`` value unchanged when it is already the
+    full structured card. Cannot make things worse than the current
+    behavior which ALWAYS reads empty for these fields on the thin
+    dict.
+
+    Re-enables Best-of-N for structural intent and gives the
+    structural-repair gate real intent values in production.
+    """
+    return _flag_default_on("GSO_FULL_RCA_CARD_RESOLVER")
+
+
 def rca_card_llm_normalization_enabled() -> bool:
     """Phase 1 Action 1.1 — when ON, the deterministic builder calls
     the LLM once at low temperature to rewrite the deterministic
