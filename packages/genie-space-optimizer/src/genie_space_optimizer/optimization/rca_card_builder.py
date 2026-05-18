@@ -120,6 +120,54 @@ def grounding_terms_from_asi(asi_by_qid: Mapping[str, dict]) -> frozenset[str]:
     return frozenset(out)
 
 
+def grounding_terms_from_fix_text(
+    *,
+    asi_by_qid: Mapping[str, dict],
+    generated_sql_by_qid: Mapping[str, str],
+    reference_sql_by_qid: Mapping[str, str],
+) -> frozenset[str]:
+    """Plan 4a — mine SQL identifiers from per-qid ``counterfactual_fix``
+    and ``wrong_clause`` text, intersected with the SQL corpus.
+
+    The intersect is what guarantees every term returned here will
+    pass ``self_grounding_check`` via the SQL channel. Callers
+    should union the result with ``grounding_terms_from_asi`` and
+    pass the union into ``self_grounding_check``.
+
+    Empty inputs → empty frozenset.
+    """
+    from genie_space_optimizer.optimization.sql_diff_grounding import (
+        extract_sql_identifiers_from_text,
+    )
+
+    if not asi_by_qid:
+        return frozenset()
+
+    sql_corpus_lower = " ".join(
+        str(s).lower()
+        for s in list(generated_sql_by_qid.values())
+        + list(reference_sql_by_qid.values())
+        if s
+    )
+    if not sql_corpus_lower:
+        return frozenset()
+
+    proposed: set[str] = set()
+    for metadata in asi_by_qid.values():
+        if not isinstance(metadata, dict):
+            continue
+        fix_text = str(metadata.get("counterfactual_fix") or "")
+        wrong_clause = str(metadata.get("wrong_clause") or "")
+        combined = f"{fix_text}\n{wrong_clause}".strip()
+        if not combined:
+            continue
+        for term in extract_sql_identifiers_from_text(combined):
+            proposed.add(term)
+
+    surviving = {term for term in proposed if term.lower() in sql_corpus_lower}
+    return frozenset(surviving)
+
+
 # Closed mapping from RcaKind → ``intended_patch_shape``. Each value
 # is a short verb-phrase identifier the strategist consumes to scope
 # proposal generation. Distinct from ``patch_family`` (which names
