@@ -358,6 +358,56 @@ class LeverLoopReplayHarness:
                 # Re-export may not exist in the harness module.
                 continue
 
+        # Phase 3.6.2 E5b (2026-05-18) — clustering is UPSTREAM of
+        # the lever-loop decision logic Phase 0+1+2 changed; it
+        # consumes per-row ASI metadata that lives in
+        # ``genie_eval_asi_results`` (a Delta table the historic
+        # export does not bundle) and produces a deterministic
+        # grouping. Re-deriving clusters under replay from raw
+        # rows + empty ASI returns 0 clusters and every iteration
+        # exits ``no_actionable_clusters``.
+        #
+        # The right boundary is to tape-serve the COMPUTED clusters
+        # that production already wrote (one ``clusters`` + one
+        # ``soft_clusters`` per iteration_payload). The lever-loop
+        # decision code receives byte-identical input to what
+        # production saw. Clustering itself has its own test
+        # surface (``tests/unit/test_cluster_failures.py``), not
+        # the anchor replay.
+        from genie_space_optimizer.optimization.llm_call_recorder import (
+            _RECORDER_BINDING as _phase35e5b_binding,
+        )
+
+        def _replay_cluster_failures(
+            eval_results, metadata_snapshot=None,
+            *, signal_type="hard", **kwargs,
+        ):
+            binding = _phase35e5b_binding.get()
+            iter_idx = (
+                int(binding.iteration)
+                if binding.iteration is not None and binding.iteration >= 0
+                else 0
+            )
+            payload = (self.tape.iteration_payloads or {}).get(iter_idx)
+            if not payload:
+                return []
+            if str(signal_type) == "hard":
+                return [dict(c) for c in (payload.get("clusters") or [])]
+            if str(signal_type) == "soft":
+                return [dict(c) for c in (payload.get("soft_clusters") or [])]
+            return []
+
+        for _target in (
+            "genie_space_optimizer.optimization.optimizer.cluster_failures",
+            "genie_space_optimizer.optimization.stages.clustering.cluster_failures",
+        ):
+            try:
+                self._exit_stack.enter_context(
+                    _mock_patch(_target, side_effect=_replay_cluster_failures)
+                )
+            except (AttributeError, ModuleNotFoundError):
+                continue
+
         # Patch patch_space_config to a no-op that captures calls.
         def _replay_patch_space_config(w, space_id, config, **kwargs) -> dict:
             self.captured_patches.append({

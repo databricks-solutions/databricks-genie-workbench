@@ -15107,7 +15107,7 @@ def _analyze_and_distribute(
             _rk = resolve_rca_kind_for_cluster(c)
             if _rk is not RcaKind.UNKNOWN:
                 _legacy_lever = _map_to_lever(
-                    c["root_cause"],
+                    c.get("root_cause", ""),
                     asi_failure_type=c.get("asi_failure_type"),
                     blame_set=c.get("asi_blame_set"),
                     judge=c.get("affected_judge"),
@@ -15135,13 +15135,13 @@ def _analyze_and_distribute(
                 exc_info=True,
             )
         blame = c.get("asi_blame_set", c.get("blame_set", []))
-        qids = c["question_ids"]
+        qids = c.get("question_ids", [])
         asi_ft = c.get("asi_failure_type", "n/a")
         c_signal = aggregate_cluster_signal_class(c.get("affected_judges", []))
         cluster_lines.append(f"|  Cluster {ci} / {len(clusters)}")
-        cluster_lines.append(f"|    {'Judge:':<24s} {c['affected_judge']}")
+        cluster_lines.append(f"|    {'Judge:':<24s} {c.get('affected_judge', '?')}")
         cluster_lines.append(f"|    {'Signal class:':<24s} {c_signal}")
-        cluster_lines.append(f"|    {'Root cause:':<24s} {c['root_cause']}")
+        cluster_lines.append(f"|    {'Root cause:':<24s} {c.get('root_cause', '?')}")
         cluster_lines.append(f"|    {'ASI failure type:':<24s} {asi_ft}")
         cluster_lines.append(f"|    {'Mapped lever:':<24s} {mapped}")
         blame_str = ", ".join(blame) if isinstance(blame, list) and blame else str(blame) if blame else "(none)"
@@ -15150,7 +15150,7 @@ def _analyze_and_distribute(
         for qid in qids:
             cluster_lines.append(f"|      {qid}")
         cluster_lines.append("|")
-        _root_cause_counter[c["root_cause"]] += 1
+        _root_cause_counter[c.get("root_cause", "")] += 1
         _lever_counter[mapped] += 1
         _all_cluster_qids.update(qids)
         if asi_ft and asi_ft != "n/a":
@@ -15207,7 +15207,7 @@ def _analyze_and_distribute(
     _lineage_lines = ["\n== PIPELINE LINEAGE ==========================================================", "|"]
     for c in clusters:
         mapped = c.get("_mapped_lever", _map_to_lever(
-            c["root_cause"],
+            c.get("root_cause", ""),
             asi_failure_type=c.get("asi_failure_type"),
             blame_set=c.get("asi_blame_set"),
             judge=c.get("affected_judge"),
@@ -15215,7 +15215,7 @@ def _analyze_and_distribute(
         for qt in c.get("question_traces", []):
             qid = qt.get("question_id", "")
             judges_info = ", ".join(
-                f"{jt['judge']} ({jt.get('resolved_root_cause', '?')})"
+                f"{jt.get('judge', '?')} ({jt.get('resolved_root_cause', '?')})"
                 for jt in qt.get("failed_judges", [])
             )
             blame = c.get("asi_blame_set") or "(none)"
@@ -15223,10 +15223,10 @@ def _analyze_and_distribute(
             cfix = str(cfix_list[0])[:120] if cfix_list else "(none)"
             _lineage_lines.append(f"|  Q: {qid}")
             _lineage_lines.append(f"|    Failed judges:         {judges_info}")
-            _lineage_lines.append(f"|    Dominant root cause:   {c['root_cause']}")
+            _lineage_lines.append(f"|    Dominant root cause:   {c.get('root_cause', '?')}")
             _lineage_lines.append(f"|    Blame:                 {blame}")
             _lineage_lines.append(f"|    Counterfactual:        \"{cfix}\"")
-            _lineage_lines.append(f"|    -> Cluster {c['cluster_id']} -> Lever {mapped} ({LEVER_NAMES.get(mapped, '?')})")
+            _lineage_lines.append(f"|    -> Cluster {c.get('cluster_id', '?')} -> Lever {mapped} ({LEVER_NAMES.get(mapped, '?')})")
             _lineage_lines.append("|")
     _lineage_lines.append("=" * 78)
     print("\n".join(_lineage_lines))

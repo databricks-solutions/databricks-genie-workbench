@@ -98,6 +98,30 @@ For any run with active MLflow tracing — including runs that predate Phase 3.5
 
 Post-Phase-3.6 traces carry ``iteration`` / ``ag_id`` / ``cluster_id`` as span breadcrumbs (set by ``_traced_llm_call``), so historic-style extraction is bit-exact equivalent to live capture. Pre-3.6 traces have no breadcrumbs; their tapes use ``miss_policy="prompt_sha_only"`` and match on (stage, prompt_sha256) alone.
 
+## Tape boundary (Phase 3.6.2 E5b)
+
+The replay harness exists to validate the **lever loop's decision logic** — the things Phase 0+1+2 changed (terminal-signature matching, ``FailureCluster`` propagation, RCA admission, abort decisioning, ``GSO_NO_STRUCTURAL_CANDIDATE_V1`` emission, retire-and-readmit handling). Everything upstream of those decisions is production state we feed in, not behavior we re-derive under replay.
+
+**Tape-served (upstream of lever-loop decisions):**
+
+- LLM responses — every ``_traced_llm_call`` output (Phase 3 ``entries``).
+- Eval rows — the per-question evaluation result (Phase 3.5 ``evals_by_iteration``; Phase 3.6.2 E1 ``iteration_payloads[i].rows_json``).
+- **Clusters** — pre-computed hard + soft cluster output (Phase 3.6.2 E5b: ``iteration_payloads[i].clusters`` and ``soft_clusters``).
+- RCA cards — already embedded inside each cluster's ``rca_card`` field when production produced one. Absent = ungrounded cluster = exact failure mode Phase 0.3 was built to detect.
+- Run / state metadata — ``state.load_run`` / ``load_latest_full_iteration`` / ``load_latest_state_iteration`` / ``load_all_full_iterations`` all read from ``iteration_payloads``.
+
+**Harness-derived (exercised under replay):**
+
+- AG dispatch (``dispatch_forced_structural_synthesis``) and the typed-decision-record emission Phase 0+1+2 modified.
+- Terminal-signature collision matching and forbidden-AG retire logic (Phase 0/1).
+- ``FailureCluster.from_legacy`` identity reconciliation (Phase 1).
+- ``no_structural_candidate_marker`` / record refuse-on-empty invariants (Phase 1.5).
+- The iteration-control loop itself: budget, abort, terminal-action consumption (Phase 6.2 ``_consume_terminal_action`` and friends).
+
+**Rule for adding future stubs:** is this what Phase 0+1+2 (or whatever the current investigation targets) changed? If yes, exercise it under replay — patch any wiring gap by adding state to the tape, not by stubbing the decision. If no, tape-serve it.
+
+**Test coverage trade-off.** Tape-serving clusters means clustering itself is not exercised under the anchor replay. Clustering retains its own test surface at ``tests/unit/test_cluster_failures.py`` (E5b adds three smoke assertions; existing sibling files cover internal-behavior details). Future regressions in the clustering predicate would surface there, not in the anchor replay — which is correct, because the anchor replay's contract is "given production's clusters, did Phase 0+1+2 do the right thing?", not "do current clusters match production's clusters?".
+
 ## Cross-state reads (Phase 3.6.2)
 
 Production state lives in two stores: LLM call traces (already tape-served via `entries`) and Delta tables (`genie_opt_iterations`, `genie_opt_runs`, `genie_opt_stages`, `genie_opt_provenance`) read via `state.load_*` functions. The replay harness stubs both.

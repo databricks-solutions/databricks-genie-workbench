@@ -299,6 +299,64 @@ def test_harness_load_provenance_returns_empty_dataframe():
     assert df.empty
 
 
+def test_harness_serves_clusters_from_iteration_payload():
+    """Phase 3.6.2 E5b — clustering is upstream of lever-loop
+    decision logic; tape-serve the COMPUTED clusters from the
+    current iteration's payload rather than re-deriving from raw
+    rows + (absent) per-row ASI metadata."""
+    from genie_space_optimizer.optimization.llm_call_recorder import (
+        _RECORDER_BINDING, RecorderBinding,
+    )
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+        format_version=3,
+        iteration_payloads={
+            0: {
+                "iteration": 1, "eval_scope": "full", "rolled_back": False,
+                "clusters": [
+                    {"cluster_id": "H001", "question_ids": ["q1", "q2"],
+                     "asi_failure_type": "x", "root_cause": "y"},
+                ],
+                "soft_clusters": [
+                    {"cluster_id": "S001", "question_ids": ["q3"],
+                     "asi_failure_type": "soft", "root_cause": "z"},
+                ],
+            },
+        },
+    )
+    binding_token = _RECORDER_BINDING.set(
+        RecorderBinding(iteration=0, ag_id="", cluster_id=""),
+    )
+    try:
+        with LeverLoopReplayHarness(tape=tape):
+            from genie_space_optimizer.optimization import optimizer as _opt
+            hard = _opt.cluster_failures(
+                {"rows": []}, {}, signal_type="hard",
+            )
+            soft = _opt.cluster_failures(
+                {"rows": []}, {}, signal_type="soft",
+            )
+    finally:
+        _RECORDER_BINDING.reset(binding_token)
+    assert [c["cluster_id"] for c in hard] == ["H001"]
+    assert [c["cluster_id"] for c in soft] == ["S001"]
+
+
+def test_harness_cluster_failures_empty_payload_returns_empty():
+    """When iteration_payloads is empty (v2 legacy tape), the
+    clustering stub returns []. The downstream lever loop handles
+    empty clusters gracefully (same as a real run with no
+    failures)."""
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+        format_version=2,
+    )
+    with LeverLoopReplayHarness(tape=tape):
+        from genie_space_optimizer.optimization import optimizer as _opt
+        out = _opt.cluster_failures({"rows": []}, {}, signal_type="hard")
+    assert out == []
+
+
 def test_harness_iteration_binding_hook_invoked_by_run_lever_loop(monkeypatch):
     """harness.py exposes _TAPE_BINDING_HOOK that _run_lever_loop calls
     once per iteration. This lets the replay harness advance the
