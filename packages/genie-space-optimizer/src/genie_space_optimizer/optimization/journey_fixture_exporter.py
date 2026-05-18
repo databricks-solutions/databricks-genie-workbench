@@ -46,6 +46,25 @@ _ALLOWED_ITERATION_KEYS = (
     "iter_source_clusters_by_id",
     "metadata_failure_clusters",
     "iter_rca_id_by_cluster",
+    # Phase 3.5 (2026-05-17) — every LLM call routed through
+    # ``optimizer._traced_llm_call`` is recorded into this list by the
+    # per-run ``InMemoryLLMCallRecorder``. The capture script
+    # (``scripts/capture_lever_loop_tape_from_export.py``) reads it
+    # to build a ``LeverLoopTape``.
+    "llm_call_log",
+)
+
+
+_ALLOWED_LLM_CALL_KEYS = (
+    "span_name",
+    "iteration",
+    "ag_id",
+    "cluster_id",
+    "prompt_sha256",
+    "system_msg",
+    "prompt",
+    "response_text",
+    "response_metadata",
 )
 
 
@@ -227,6 +246,26 @@ def _strip_iteration(it: dict[str, Any]) -> dict[str, Any]:
             for c in (out.get("metadata_failure_clusters") or [])
             if isinstance(c, dict)
         ]
+    if "llm_call_log" in out:
+        # Phase 3.5 (2026-05-17) — normalise each call entry against
+        # the closed allow-list. Non-dict entries are dropped silently
+        # so a malformed buffer cannot crash a whole iteration's
+        # serialization.
+        log_raw = out.get("llm_call_log") or []
+        normalised: list[dict[str, Any]] = []
+        for entry in log_raw:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                normalised.append(_strip_dict(entry, _ALLOWED_LLM_CALL_KEYS))
+            except Exception:
+                import logging as _logging
+                _logging.getLogger(__name__).debug(
+                    "Phase 3.5: skipping malformed llm_call_log entry "
+                    "(non-fatal)",
+                    exc_info=True,
+                )
+        out["llm_call_log"] = normalised
     return out
 
 
