@@ -6316,6 +6316,56 @@ def rca_card_builder_enabled() -> bool:
     return _flag_default_on("GSO_RCA_CARD_BUILDER")
 
 
+def rca_card_cluster_fix_enrichment_enabled() -> bool:
+    """Phase 4a — when True, the build_rca_card wrapper folds
+    ``cluster["asi_counterfactual_fixes"]`` (plural cluster aggregate)
+    into every per-qid ``counterfactual_fix`` before calling
+    ``build_card``. Closes the singular/plural impedance mismatch
+    that left the deterministic classifier blind to all but one
+    judge's fix per qid.
+    """
+    return _flag_default_on("GSO_RCA_CARD_CLUSTER_FIX_ENRICHMENT")
+
+
+def rca_card_top_n_text_matcher_enabled() -> bool:
+    """Phase 4a — when True, ``_safe_rca_kind`` checks for top-N
+    cardinality-collapse phrases in ``counterfactual_fix`` /
+    ``wrong_clause`` text BEFORE the existing defensive-filter
+    matcher. Resolves the dominant signal of gs_009 / gs_026 where
+    the fix prose contains both top-N and IS-NOT-NULL hints.
+    """
+    return _flag_default_on("GSO_RCA_CARD_TOP_N_TEXT_MATCHER")
+
+
+def rca_card_grain_text_matcher_enabled() -> bool:
+    """Phase 4a — when True, ``_safe_rca_kind`` checks for grain /
+    grouping-mismatch phrases in ``counterfactual_fix`` /
+    ``wrong_clause`` text BEFORE the existing filter substring
+    matchers. Resolves gs_013 (time_window-in-GROUP-BY).
+    """
+    return _flag_default_on("GSO_RCA_CARD_GRAIN_TEXT_MATCHER")
+
+
+def rca_card_fix_text_grounding_enabled() -> bool:
+    """Phase 4a — when True, ``build_card`` unions terms mined from
+    ``counterfactual_fix`` / ``wrong_clause`` text (intersected with
+    the SQL corpus) into the proposed grounding-term set. Resolves
+    the grounding-extraction gap that fires on 4/4 anchors today.
+    """
+    return _flag_default_on("GSO_RCA_CARD_FIX_TEXT_GROUNDING")
+
+
+def rca_card_self_check_evidence_v2_enabled() -> bool:
+    """Phase 4a — when True, the ``_rca_card_self_check_failures``
+    record stored in ``metadata_snapshot`` carries
+    ``ungrounded_terms`` and ``dominant_root_cause`` alongside the
+    typed reason. Postmortems can then distinguish 'no terms could
+    be grounded' from 'wrong root cause' without re-running the
+    builder.
+    """
+    return _flag_default_on("GSO_RCA_CARD_SELF_CHECK_EVIDENCE_V2")
+
+
 def rca_card_llm_normalization_enabled() -> bool:
     """Phase 1 Action 1.1 — when ON, the deterministic builder calls
     the LLM once at low temperature to rewrite the deterministic
