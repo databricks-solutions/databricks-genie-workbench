@@ -27214,6 +27214,19 @@ def _run_lever_loop(
                         emitted_patch_shape=_sr_emitted_shape,
                         narrow_replacement_available=_sr_narrow_available,
                     )
+                    # WU-5 — harness-level backstop. No-op when the
+                    # WU-5 flag is OFF or when intended_patch_shape /
+                    # rca_root_cause is non-empty. See
+                    # structural_repair_guard.py for the override
+                    # contract.
+                    from genie_space_optimizer.optimization.structural_repair_guard import (
+                        apply_empty_shape_backstop as _empty_shape_backstop,
+                    )
+                    _sr_verdict = _empty_shape_backstop(
+                        verdict=_sr_verdict,
+                        intended_patch_shape=_sr_intended_shape,
+                        rca_root_cause=_sr_rca_root_cause,
+                    )
                     _sr_score = _sr_verdict.repairability
                     _sr_score_value = (
                         float(_sr_score.value) if _sr_score is not None else 0.0

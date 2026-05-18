@@ -6448,6 +6448,34 @@ def early_rca_preflight_enabled() -> bool:
     return _flag_enabled("GSO_EARLY_RCA_PREFLIGHT")
 
 
+def structural_gate_guard_empty_shape_enabled() -> bool:
+    """WU-5 (2026-05-18 early-rca-preflight plan) — when ON, the
+    harness's structural-repair-gate consumer overrides the gate's
+    verdict to REJECTED (with terminal_reason ``no_rca_ground``) when
+    BOTH ``intended_patch_shape`` and ``rca_root_cause`` are empty at
+    admission time.
+
+    Defaults OFF. The gate's existing contract is to fail OPEN
+    (admit) when ``intended_patch_shape`` is empty so legacy RCA
+    cards without Phase 2.3 metadata are not penalized. WU-5
+    tightens that path only when the card is BOTH missing
+    intended_patch_shape AND missing root_cause — the production
+    signature of the 7now iter-1 attempt-11 bug. Production deploys
+    must explicitly enable this in ``app.yaml`` after operators
+    confirm no legitimate empty-intent paths exist outside SQL-shape
+    repair. A fresh deploy or a rollback ships with the pre-WU-5
+    behavior.
+
+    Why this is a backstop (not redundant with WU-3):
+      * Once WU-3 is on, ungrounded clusters get SKIP_AG at
+        lever_per_iter_setup and never reach the gate.
+      * WU-5 fires only when WU-3 is OFF, when a future code path
+        bypasses the preflight, or when the card exists but its
+        metadata is empty (card-builder regression).
+    """
+    return _flag_enabled("GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE")
+
+
 def rca_card_llm_normalization_enabled() -> bool:
     """Phase 1 Action 1.1 — when ON, the deterministic builder calls
     the LLM once at low temperature to rewrite the deterministic
