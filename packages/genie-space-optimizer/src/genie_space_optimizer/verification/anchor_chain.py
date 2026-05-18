@@ -43,6 +43,73 @@ ANCHOR_QID_SUFFIXES: tuple[str, ...] = ("gs_009", "gs_013", "gs_024", "gs_026")
 
 
 @dataclass(frozen=True, slots=True)
+class IterationRecord:
+    """Subset of ``iteration_summary[i]`` the classifier needs."""
+
+    iteration: int
+    ag_id: str
+    cluster_ids: tuple[str, ...]
+    target_qids: tuple[str, ...]
+    directive_outcome: Mapping[str, str]
+    no_structural_candidate: Mapping[str, Any]
+    terminal_reason: str
+    next_step: str
+    structural_gate_roots: tuple[str, ...]
+    full_eval: Mapping[str, Any]
+
+
+def parse_iteration_records(
+    postmortem: Mapping[str, Any],
+) -> tuple[IterationRecord, ...]:
+    """Walk ``postmortem["iteration_summary"]`` and emit typed
+    IterationRecord tuples. Tolerant of missing keys."""
+    items = postmortem.get("iteration_summary") or []
+    if not isinstance(items, Sequence):
+        return ()
+    out: list[IterationRecord] = []
+    for it in items:
+        if not isinstance(it, Mapping):
+            continue
+        out.append(
+            IterationRecord(
+                iteration=int(it.get("iteration") or 0),
+                ag_id=str(it.get("ag_id") or ""),
+                cluster_ids=tuple(
+                    str(c) for c in (it.get("cluster_ids") or ())
+                ),
+                target_qids=tuple(
+                    str(q) for q in (it.get("target_qids") or ())
+                ),
+                directive_outcome=dict(it.get("directive_outcome") or {}),
+                no_structural_candidate=dict(
+                    it.get("no_structural_candidate") or {}
+                ),
+                terminal_reason=str(it.get("terminal_reason") or ""),
+                next_step=str(it.get("next_step") or ""),
+                structural_gate_roots=tuple(
+                    str(r) for r in (it.get("structural_gate_roots") or ())
+                ),
+                full_eval=dict(it.get("full_eval") or {}),
+            )
+        )
+    return tuple(out)
+
+
+def qid_suffix_for_match(qid: str) -> str:
+    """Strip any space prefix and return the suffix used by the
+    canonical anchor map (e.g., ``"gs_013"``). The suffix is the
+    last ``gs_<digits>`` pair in the underscore-tokenized qid;
+    falls back to the whole string if no match is found."""
+    if not qid:
+        return ""
+    parts = str(qid).split("_")
+    for i in range(len(parts) - 1):
+        if parts[i] == "gs" and parts[i + 1].isdigit():
+            return f"gs_{parts[i + 1]}"
+    return str(qid)
+
+
+@dataclass(frozen=True, slots=True)
 class AnchorVerdict:
     """Per-anchor lifecycle verdict + the reasons it passed or
     failed. Serializable via ``dataclasses.asdict``."""
