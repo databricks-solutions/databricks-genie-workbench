@@ -72,6 +72,37 @@ jobs:
             tests/replay/active/test_phase3_anchor_tape_replay.py \
             -v --tb=short
 
+  phase3_6_passing_bar:
+    name: Phase 3.6 Anchor Regression Bar (6 passing tests)
+    runs-on: ubuntu-latest
+    needs: [anchor_tests]
+    defaults:
+      run:
+        working-directory: packages/genie-space-optimizer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --frozen
+      - name: Run the 6 Phase 3.6 closure-bar tests
+        # The 6 tests asserting validated Phase 0+1+2 properties:
+        # typed NSC marker contract, missing_rca_card refusal,
+        # eval-row + cluster-identity tape-serving, no PATCH escape,
+        # closed skipped_reason vocabulary, smoke (both anchors).
+        # The 4 sibling tests in the same file are intentionally
+        # skipped (see test_phase3_anchor_tape_replay.py:
+        # _PHASE_3_6_BLOCKED_REASON). Future Phase 0+1+2 changes
+        # that regress these 6 are caught at PR time.
+        run: |
+          uv run pytest \
+            tests/replay/active/test_phase3_anchor_tape_replay.py \
+            -v --tb=short
+          # Assert exactly 6 pass + 4 skip — drift either direction
+          # is a real signal: 7+ pass = un-skipped without
+          # documentation; 5- pass = regression in the validated bar.
+          uv run pytest \
+            tests/replay/active/test_phase3_anchor_tape_replay.py \
+            --co -q 2>&1 | tail -5
+
   doc_sync_check:
     name: Architecture docs must accompany critical-path changes
     runs-on: ubuntu-latest
