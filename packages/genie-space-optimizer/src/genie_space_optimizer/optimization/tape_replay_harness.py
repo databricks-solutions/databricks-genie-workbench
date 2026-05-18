@@ -145,6 +145,64 @@ class LeverLoopReplayHarness:
         except AttributeError:
             pass
 
+        # Phase 3.6.2 E2 (2026-05-18) — replay stub for
+        # ``state.load_latest_full_iteration``. Production reads this
+        # via a Spark/Delta query (``genie_opt_iterations``); under
+        # MagicMock spark the real loader returns None and the
+        # lever loop short-circuits at no_actionable_clusters before
+        # reaching any iteration body. Serve the tape's
+        # iteration_payloads instead: pick the highest 0-indexed
+        # iteration with ``eval_scope='full'`` and ``rolled_back !=
+        # True``, respecting the optional ``before_iteration``
+        # filter (1-indexed in the call site).
+        def _replay_load_latest_full_iteration(
+            spark, run_id, catalog, schema,
+            *, include_rolled_back=False, before_iteration=None,
+        ):
+            payloads = self.tape.iteration_payloads or {}
+            if not payloads:
+                return None
+            candidates: list[tuple[int, dict]] = []
+            for idx, payload in payloads.items():
+                if str(payload.get("eval_scope", "full")) != "full":
+                    continue
+                if not include_rolled_back and bool(
+                    payload.get("rolled_back", False)
+                ):
+                    continue
+                # ``before_iteration`` filters by the human-readable
+                # 1-indexed value in the payload; loader call sites
+                # pass that form (e.g., ``before_iteration=_iter_num``).
+                if before_iteration is not None and int(
+                    payload.get("iteration", idx + 1)
+                ) >= int(before_iteration):
+                    continue
+                candidates.append((int(idx), payload))
+            if not candidates:
+                return None
+            # Highest idx wins (latest by construction).
+            candidates.sort(key=lambda kv: kv[0], reverse=True)
+            return dict(candidates[0][1])
+
+        self._exit_stack.enter_context(
+            _mock_patch(
+                "genie_space_optimizer.optimization.state."
+                "load_latest_full_iteration",
+                side_effect=_replay_load_latest_full_iteration,
+            )
+        )
+        # Also patch the harness's local re-import.
+        try:
+            self._exit_stack.enter_context(
+                _mock_patch(
+                    "genie_space_optimizer.optimization.harness."
+                    "load_latest_full_iteration",
+                    side_effect=_replay_load_latest_full_iteration,
+                )
+            )
+        except AttributeError:
+            pass
+
         # Patch patch_space_config to a no-op that captures calls.
         def _replay_patch_space_config(w, space_id, config, **kwargs) -> dict:
             self.captured_patches.append({

@@ -112,6 +112,83 @@ def test_harness_routes_run_evaluation_to_tape_per_iteration():
     assert out1["eval_rows"][0]["result_correctness"] == "no"
 
 
+def test_harness_serves_load_latest_full_iteration_from_tape():
+    """Phase 3.6.2 E2 — replay stubs ``state.load_latest_full_iteration``
+    so the lever loop's Phase A baseline read returns the tape's
+    ``iteration_payloads[<max_index>]`` instead of None (the
+    pre-Phase-3.6.2 behavior under MagicMock spark)."""
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+        format_version=3,
+        iteration_payloads={
+            0: {
+                "iteration": 1,
+                "rows_json": [{"qid": "q1", "passed": False}],
+                "eval_scope": "full",
+                "rolled_back": False,
+            },
+            1: {
+                "iteration": 2,
+                "rows_json": [{"qid": "q1", "passed": True}],
+                "eval_scope": "full",
+                "rolled_back": False,
+            },
+        },
+    )
+
+    with LeverLoopReplayHarness(tape=tape):
+        from genie_space_optimizer.optimization import state as _state
+        result = _state.load_latest_full_iteration(
+            spark=None, run_id="r", catalog="c", schema="s",
+        )
+    assert result is not None
+    # Highest iteration index wins.
+    assert result["iteration"] == 2
+    assert result["rows_json"][0]["passed"] is True
+
+
+def test_harness_load_latest_full_iteration_respects_before_iteration():
+    """``before_iteration`` filters by the 1-indexed iteration value
+    in the payload (mirrors production behavior — see
+    ``state.load_latest_full_iteration`` docstring)."""
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+        format_version=3,
+        iteration_payloads={
+            0: {
+                "iteration": 1, "rows_json": [{"qid": "q1"}],
+                "eval_scope": "full", "rolled_back": False,
+            },
+            1: {
+                "iteration": 2, "rows_json": [{"qid": "q2"}],
+                "eval_scope": "full", "rolled_back": False,
+            },
+        },
+    )
+    with LeverLoopReplayHarness(tape=tape):
+        from genie_space_optimizer.optimization import state as _state
+        # before_iteration=2 → only iteration 1 visible.
+        result = _state.load_latest_full_iteration(
+            spark=None, run_id="r", catalog="c", schema="s",
+            before_iteration=2,
+        )
+    assert result is not None
+    assert result["iteration"] == 1
+
+
+def test_harness_load_latest_full_iteration_empty_payloads_returns_none():
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+        format_version=2,  # legacy → no iteration_payloads
+    )
+    with LeverLoopReplayHarness(tape=tape):
+        from genie_space_optimizer.optimization import state as _state
+        result = _state.load_latest_full_iteration(
+            spark=None, run_id="r", catalog="c", schema="s",
+        )
+    assert result is None
+
+
 def test_harness_iteration_binding_hook_invoked_by_run_lever_loop(monkeypatch):
     """harness.py exposes _TAPE_BINDING_HOOK that _run_lever_loop calls
     once per iteration. This lets the replay harness advance the
