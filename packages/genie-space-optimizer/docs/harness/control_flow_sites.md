@@ -8,8 +8,8 @@ to wire decisions into the iter body MUST reference sites by name (e.g.
 ## Scope and non-goals
 
 This is a **navigability artifact**, not a refactor proposal. The
-`_run_lever_loop` function remains a single ~15,800-line body (lines
-17458–33256). The named sites below let plans target the function by
+`_run_lever_loop` function remains a single ~15,840-line body (lines
+17528–33369). The named sites below let plans target the function by
 *semantic* role without owning that complexity.
 
 This document is regenerated empirically: run
@@ -50,24 +50,24 @@ an anchor tape that triggers proposal acceptance.
 <!-- BEGIN CANONICAL SITES TABLE -->
 | name | start_lineno | end_lineno | reach_airline | reach_7now |
 |------|--------------|------------|---------------|------------|
-| phase_2_pre_loop_setup | 18535 | 18540 | YES | YES |
-| phase_3_adaptive_lever_loop | 18599 | 18605 | YES | YES |
-| pre_loop_setup_complete | 18820 | 18935 | YES | YES |
-| iter_loop_start | 18943 | 18955 | YES | YES |
-| iter_counter_increment | 19500 | 19515 | YES | YES |
-| strategist_orchestration_start | 21400 | 21500 | YES | YES |
-| pending_buffered_ags_consume | 21900 | 22090 | YES | YES |
-| phase_b_strategist_emit | 22130 | 22180 | YES | YES |
-| strategist_response_received | 22270 | 22300 | YES | YES |
-| lever_per_iter_setup | 23500 | 23640 | YES | YES |
-| lever6_invocation_site | 23636 | 23700 | YES | YES |
-| post_lever6_proposal_collect | 23700 | 24300 | YES | YES |
-| proposal_generation_empty_record | 24380 | 24410 | YES | YES |
-| proposal_generation_empty_marker | 24540 | 24580 | YES | YES |
-| proposal_generation_empty_continue | 24578 | 24582 | YES | YES |
-| post_loop_replay_fixture_emit | 32100 | 32160 | YES | YES |
-| post_loop_mlflow_artifact | 32165 | 32220 | YES | YES |
-| post_loop_final_summary | 33000 | 33200 | YES | YES |
+| phase_2_pre_loop_setup | 18605 | 18615 | YES | YES |
+| phase_3_adaptive_lever_loop | 18712 | 18720 | YES | YES |
+| pre_loop_setup_complete | 18900 | 19055 | YES | YES |
+| iter_loop_start | 19056 | 19070 | YES | YES |
+| iter_counter_increment | 19613 | 19625 | YES | YES |
+| strategist_orchestration_start | 20800 | 21000 | YES | YES |
+| pending_buffered_ags_consume | 21080 | 21300 | YES | YES |
+| phase_b_strategist_emit | 22390 | 22420 | YES | YES |
+| strategist_response_received | 22390 | 22420 | YES | YES |
+| lever_per_iter_setup | 23600 | 23740 | YES | YES |
+| lever6_invocation_site | 23745 | 23810 | YES | YES |
+| post_lever6_proposal_collect | 23810 | 24450 | YES | YES |
+| proposal_generation_empty_record | 24490 | 24520 | YES | YES |
+| proposal_generation_empty_marker | 24670 | 24695 | YES | YES |
+| proposal_generation_empty_continue | 24690 | 24696 | YES | YES |
+| post_loop_replay_fixture_emit | 32220 | 32270 | YES | YES |
+| post_loop_mlflow_artifact | 32270 | 32300 | YES | YES |
+| post_loop_final_summary | 33100 | 33369 | YES | YES |
 <!-- END CANONICAL SITES TABLE -->
 
 ## Per-site semantic contracts
@@ -130,7 +130,7 @@ reset logic.
 * **Bound variables**: `_iter_num`, plus everything from
   `pre_loop_setup_complete`.
 * **Stages run**: function-level setup; tape-replay binding hook
-  fires here (line 18952: `_tape_binding_set_iteration(_iter_num - 1)`).
+  fires here (line 19065: `_tape_binding_set_iteration(_iter_num - 1)`).
 * **Stages not yet run**: eval, cluster, RCA card build, strategist,
   lever calls, action_groups stage.
 * **Safe to mutate**: per-iter locals (declared inside the loop body
@@ -301,10 +301,10 @@ classify the iteration's terminal state.
 
 ### proposal_generation_empty_continue
 
-The `continue` at line 24580 that short-circuits the rest of the iter
+The `continue` at line 24693 that short-circuits the rest of the iter
 body under the airline + 7now anchors. **This is the line that ends
 the reachable iter-body span**; everything downstream (lines
-24582-25457, action_groups stage, admission consume, grounding gate,
+24694-25600, action_groups stage, admission consume, grounding gate,
 forced synthesis dispatch) is unreachable under both anchor tapes.
 
 * **Bound variables**: same as `proposal_generation_empty_marker`.
@@ -359,7 +359,7 @@ value.
 
 The following sites are syntactically present in `_run_lever_loop`
 but **never execute** under either anchor tape because the
-`proposal_generation_empty_continue` at line 24580 short-circuits
+`proposal_generation_empty_continue` at line 24693 short-circuits
 the iter body. They are listed here so future plans know they exist
 and so plans wanting to target them know they need a fundamentally
 different anchor (one where lever-6 produces an accepted proposal
@@ -367,10 +367,10 @@ that survives the compatibility gate).
 
 | name | start_lineno | end_lineno | airline | 7now | semantic role |
 |------|--------------|------------|---------|------|---------------|
-| post_proposal_compat_gate | 24582 | 24700 | no | no | RCA/patch-type compatibility gate (Task 6A) |
-| action_groups_stage_entry | 24846 | 24900 | no | no | F4 action_groups stage call |
-| grounding_gate_prelude | 25113 | 25130 | no | no | `collect_blocked_clusters` invocation |
-| admission_consume | 25260 | 25300 | no | no | `apply_admission_trace` consumption |
+| post_proposal_compat_gate | 24700 | 24850 | no | no | RCA/patch-type compatibility gate (Task 6A) |
+| action_groups_stage_entry | 24960 | 25050 | no | no | F4 action_groups stage call |
+| grounding_gate_prelude | 25230 | 25260 | no | no | `collect_blocked_clusters` invocation |
+| admission_consume | 25380 | 25450 | no | no | `apply_admission_trace` consumption |
 
 These rows are deliberately **excluded from the regression test**
 because the test asserts each named site is reachable under at least

@@ -5703,6 +5703,35 @@ def _emit_rca_ungrounded_records_for_unfit_clusters(
     return n
 
 
+def stash_sql_corpora_on_metadata(
+    *,
+    metadata_snapshot: dict | None,
+    qid_to_generated_sql: dict | None,
+    qid_to_reference_sql: dict | None,
+) -> None:
+    """WU-2 — stash per-qid SQL corpora on metadata_snapshot so
+    ``_regenerate_rca_for_cluster`` can forward them to
+    ``build_rca_card``. No-op when the WU-2 flag is OFF or when
+    metadata_snapshot is not a dict.
+
+    Mutates ``metadata_snapshot`` in place. Pure with respect to
+    the SQL maps (defensive copies on insert).
+    """
+    if not isinstance(metadata_snapshot, dict):
+        return
+    from genie_space_optimizer.common.config import (
+        rca_regen_thread_sql_corpora_enabled,
+    )
+    if not rca_regen_thread_sql_corpora_enabled():
+        return
+    metadata_snapshot["_generated_sql_by_qid"] = dict(
+        qid_to_generated_sql or {}
+    )
+    metadata_snapshot["_reference_sql_by_qid"] = dict(
+        qid_to_reference_sql or {}
+    )
+
+
 def _regenerate_rca_for_cluster(
     *,
     spark,
@@ -5772,6 +5801,21 @@ def _regenerate_rca_for_cluster(
         if isinstance(_ms_soft, list):
             soft_clusters = _ms_soft
 
+    # WU-2 — read SQL corpora once for both attempts. Flag-gated for
+    # byte-stable revert; when OFF, the kwargs are omitted entirely
+    # (matches pre-WU-2 behavior).
+    from genie_space_optimizer.common.config import (
+        rca_regen_thread_sql_corpora_enabled,
+    )
+    _sql_kwargs: dict = {}
+    if rca_regen_thread_sql_corpora_enabled():
+        _sql_kwargs["generated_sql_by_qid"] = dict(
+            metadata_snapshot.get("_generated_sql_by_qid") or {}
+        )
+        _sql_kwargs["reference_sql_by_qid"] = dict(
+            metadata_snapshot.get("_reference_sql_by_qid") or {}
+        )
+
     attempted.append("failure_buckets")
     card = build_rca_card(
         cluster_id=cluster_id,
@@ -5781,6 +5825,7 @@ def _regenerate_rca_for_cluster(
         metadata_snapshot=metadata_snapshot,
         cluster=cluster,
         soft_clusters=soft_clusters,
+        **_sql_kwargs,
     )
     if card and str(card.get("rca_id") or ""):
         return {
@@ -5797,6 +5842,7 @@ def _regenerate_rca_for_cluster(
         metadata_snapshot=metadata_snapshot,
         cluster=cluster,
         soft_clusters=soft_clusters,
+        **_sql_kwargs,
     )
     if card and str(card.get("rca_id") or ""):
         return {
@@ -18580,6 +18626,49 @@ def _run_lever_loop(
         "Lever loop: %d reference SQLs, %d result hashes from baseline",
         len(reference_sqls),
         len(reference_result_hashes),
+    )
+
+    # WU-2 — make SQL corpora available to the RCA recovery helper via
+    # metadata_snapshot. Without this, Plan 4a's
+    # grounding_terms_from_fix_text short-circuits on empty corpora
+    # (rca_card_builder.py:152-153). Flag-gated; no-op when off.
+    #
+    # Generated-SQL map is best-effort: derived from the same baseline
+    # rows that produced reference_sqls. Each row's generated_sql is
+    # extracted via row_generated_sql() (eval_row_access.py:128).
+    _qid_to_generated_sql: dict[str, str] = {}
+    try:
+        from genie_space_optimizer.optimization.eval_row_access import (
+            row_generated_sql,
+            row_qid,
+        )
+        if baseline_iter:
+            _rj = baseline_iter.get("rows_json")
+            _rj_rows: list = []
+            if isinstance(_rj, list):
+                _rj_rows = _rj
+            elif isinstance(_rj, str):
+                try:
+                    _rj_rows = json.loads(_rj)
+                except (json.JSONDecodeError, TypeError):
+                    _rj_rows = []
+            for _row in _rj_rows or []:
+                if not isinstance(_row, dict):
+                    continue
+                _qid = row_qid(_row)
+                _sql = row_generated_sql(_row)
+                if _qid and _sql:
+                    _qid_to_generated_sql[_qid] = _sql
+    except Exception:
+        logger.debug(
+            "WU-2: failed to derive qid->generated_sql from baseline "
+            "(non-fatal; falls back to empty corpus)",
+            exc_info=True,
+        )
+    stash_sql_corpora_on_metadata(
+        metadata_snapshot=metadata_snapshot,
+        qid_to_generated_sql=_qid_to_generated_sql,
+        qid_to_reference_sql=reference_sqls,
     )
 
     # ── Per-question cross-iteration arbiter corrections ─────────────
