@@ -1625,6 +1625,75 @@ def build_rca_ledger(
     }
 
 
+_BOILERPLATE_FIX_PREFIX = "result mismatch:"
+
+
+def _enrich_per_qid_counterfactual_fix(
+    asi_by_qid: dict,
+    cluster: dict | None,
+) -> dict:
+    """Plan 4a — fold ``cluster["asi_counterfactual_fixes"]`` (cluster
+    plural aggregate) into every per-qid ``counterfactual_fix``.
+
+    The deterministic classifier and grounding-term miner in
+    ``_safe_rca_kind`` / ``grounding_terms_from_asi`` read the
+    singular per-qid field; judges however emit one fix per (qid,
+    judge) row, and the cluster aggregator builds the rich plural
+    list at ``cluster["asi_counterfactual_fixes"]``. Without this
+    enrichment, the builder only ever sees one judge's prose per
+    qid, which the anchor audit showed is insufficient to typed-
+    classify 4/4 anchors.
+
+    Rules:
+      * No-op if ``cluster`` is None, has no
+        ``asi_counterfactual_fixes`` list, or the list is empty.
+      * For each qid metadata entry, append the cluster prose to
+        the per-qid prose UNLESS the per-qid prose already contains
+        the substantive cluster text. The boilerplate
+        ``"Result mismatch:"`` prefix is treated as empty (the
+        cluster prose replaces it).
+
+    Returns a NEW dict; never mutates the caller's ``asi_by_qid``.
+    """
+    if not isinstance(cluster, dict):
+        return asi_by_qid
+    cluster_fixes = cluster.get("asi_counterfactual_fixes") or []
+    if not isinstance(cluster_fixes, list) or not cluster_fixes:
+        return asi_by_qid
+
+    cluster_text = "\n".join(
+        str(x).strip() for x in cluster_fixes if x and str(x).strip()
+    )
+    if not cluster_text:
+        return asi_by_qid
+
+    enriched: dict = {}
+    for qid, metadata in (asi_by_qid or {}).items():
+        if not isinstance(metadata, dict):
+            enriched[qid] = metadata
+            continue
+        per_qid_fix = str(metadata.get("counterfactual_fix") or "").strip()
+        # Treat boilerplate as empty so cluster prose replaces it.
+        boilerplate = per_qid_fix.lower().startswith(_BOILERPLATE_FIX_PREFIX)
+        # Skip enrichment ONLY if per-qid text already covers the
+        # cluster aggregate AND is not boilerplate. Pure boilerplate
+        # always gets replaced by the cluster prose.
+        if (
+            per_qid_fix
+            and not boilerplate
+            and per_qid_fix in cluster_text
+        ):
+            enriched[qid] = metadata
+            continue
+        new_meta = dict(metadata)
+        if not per_qid_fix or boilerplate:
+            new_meta["counterfactual_fix"] = cluster_text
+        else:
+            new_meta["counterfactual_fix"] = f"{per_qid_fix}\n{cluster_text}"
+        enriched[qid] = new_meta
+    return enriched
+
+
 def build_rca_card(
     *,
     cluster_id: str,
@@ -1684,6 +1753,16 @@ def build_rca_card(
     asi_by_qid = asi_metadata or {}
     gen_sql = generated_sql_by_qid or {}
     ref_sql = reference_sql_by_qid or {}
+
+    # Plan 4a — wrapper-level enrichment so the deterministic
+    # classifier sees the cluster's full counterfactual prose, not
+    # just one judge's per-qid string.
+    from genie_space_optimizer.common.config import (
+        rca_card_cluster_fix_enrichment_enabled,
+    )
+    if rca_card_cluster_fix_enrichment_enabled():
+        asi_by_qid = _enrich_per_qid_counterfactual_fix(asi_by_qid, cluster)
+
     # Phase 1 Addendum — soft_clusters is opt-in via env flag. With the
     # flag OFF, anything passed by the caller is silently dropped so
     # existing replay fixtures stay byte-identical.
