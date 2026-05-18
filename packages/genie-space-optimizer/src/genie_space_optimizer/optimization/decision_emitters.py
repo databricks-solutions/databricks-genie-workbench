@@ -3402,6 +3402,72 @@ def cluster_blocked_no_rca_record(
     )
 
 
+def slate_authoritative_skip_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    source_cluster_ids: Sequence[str],
+    reason: str,
+) -> DecisionRecord:
+    """WU-1 (2026-05-18) — emit a typed record when the harness skips
+    the current ``ag`` because the slate's admission trace denied it,
+    the grounding gate blocked its source clusters, or both.
+
+    ``reason`` is one of:
+
+    * ``ag_denied_by_admission_trace`` — slate admission verdict was
+      DENIED for this AG.
+    * ``cluster_blocked_no_rca`` — at least one of the AG's source
+      clusters is in ``blocked_cluster_ids`` after the grounding gate.
+    * ``ag_retired_pivot`` — pivot_signal fired against this AG's
+      ``first_ag_retired_id``.
+    """
+    if reason == "cluster_blocked_no_rca":
+        next_action = (
+            "regenerate RCA card for the blocked source cluster before "
+            "re-attempting AG emission; the strategist must not retry "
+            "the same AG family in this iteration"
+        )
+    elif reason == "ag_retired_pivot":
+        next_action = (
+            "strategist must pick a different cluster on the next "
+            "iteration; the admission trace pivoted off this AG"
+        )
+    else:
+        next_action = (
+            "strategist must pick a different AG family for the next "
+            "iteration; the admission trace has retired this one"
+        )
+    # ReasonCode.RCA_UNGROUNDED for cluster_blocked_no_rca matches the
+    # existing CLUSTER_BLOCKED_NO_RCA producer; the admission/pivot
+    # variants map to NONE because they are not RCA-grounded states.
+    _reason_code = (
+        ReasonCode.RCA_UNGROUNDED
+        if reason == "cluster_blocked_no_rca"
+        else ReasonCode.NONE
+    )
+    return DecisionRecord(
+        run_id=str(run_id or ""),
+        iteration=int(iteration),
+        decision_type=DecisionType.SLATE_AUTHORITATIVE_SKIP,
+        outcome=DecisionOutcome.SKIPPED,
+        reason_code=_reason_code,
+        cluster_id="",
+        rca_id="",
+        ag_id=str(ag_id or ""),
+        target_qids=(),
+        root_cause="",
+        next_action=next_action,
+        metrics={
+            "source_cluster_ids": list(
+                str(c) for c in (source_cluster_ids or ()) if c
+            ),
+            "reason": str(reason or ""),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Plan P-G — Stage 4 strategist context boundary
 # ---------------------------------------------------------------------------

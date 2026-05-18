@@ -1104,6 +1104,75 @@ def no_structural_candidate_marker(
     )
 
 
+def slate_authoritative_skip_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    reason: str,
+    source_cluster_ids: Sequence[str],
+) -> str:
+    """WU-1 (2026-05-18) — stdout marker emitted when the harness
+    refuses to process the current ``ag`` because the slate's
+    ``apply_admission_trace`` denied it OR the grounding-gate's
+    ``blocked_cluster_ids`` intersects its source clusters.
+
+    ``reason`` is a closed-vocabulary string:
+
+    * ``ag_denied_by_admission_trace``
+    * ``cluster_blocked_no_rca``
+    * ``ag_retired_pivot``
+
+    Postmortem extractors grep this marker to confirm the harness
+    stopped an ungrounded AG BEFORE ``forced_synthesis_dispatch``
+    (the defensive backstop). When zero markers fire across a run
+    that produced ``missing_rca_card``, the WU-1 wiring is broken.
+    """
+    return marker_line(
+        "GSO_SLATE_AUTHORITATIVE_SKIP_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "reason": str(reason),
+            "source_cluster_ids": list(
+                str(c) for c in (source_cluster_ids or ()) if c
+            ),
+        },
+    )
+
+
+def rca_regen_retry_verdict_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    cluster_id: str,
+    rca_id: str,
+    succeeded: bool,
+    attempted_sources: Sequence[str],
+) -> str:
+    """WU-2 (2026-05-18) — stdout marker emitted once per blocked
+    cluster after the single-shot RCA regeneration retry.
+
+    Postmortem extractors use this to confirm Plan P-D + Phase 2.2
+    + WU-2 actually attempted regeneration for every ungrounded
+    cluster, and to see WHICH sources were tried.
+    """
+    return marker_line(
+        "GSO_RCA_REGEN_RETRY_VERDICT_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "cluster_id": str(cluster_id),
+            "rca_id": str(rca_id or ""),
+            "succeeded": bool(succeeded),
+            "attempted_sources": list(
+                str(s) for s in (attempted_sources or ()) if s
+            ),
+        },
+    )
+
+
 def run_aborted_marker(
     *,
     optimization_run_id: str,

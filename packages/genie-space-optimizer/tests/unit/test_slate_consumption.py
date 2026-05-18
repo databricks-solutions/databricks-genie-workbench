@@ -137,3 +137,70 @@ def test_retired_pivot_signal_promotes_skip_to_pivot():
     assert decision.action.value == "pivot_iteration"
     assert decision.reason == "ag_retired_pivot"
     assert decision.denied_ag_id == "AG_RETIRED_H001"
+
+
+# ── Task 3: SLATE_AUTHORITATIVE_SKIP record + marker ─────────────────
+
+
+from genie_space_optimizer.optimization.decision_emitters import (
+    slate_authoritative_skip_record,
+)
+from genie_space_optimizer.optimization.rca_decision_trace import (
+    DecisionType,
+    DecisionOutcome,
+)
+
+
+def test_slate_authoritative_skip_record_emits_typed_record():
+    rec = slate_authoritative_skip_record(
+        run_id="run-1",
+        iteration=2,
+        ag_id="AG_DECOMPOSED_H001",
+        source_cluster_ids=("H001",),
+        reason="ag_denied_by_admission_trace",
+    )
+    d = rec.to_dict()
+    assert d["decision_type"] == DecisionType.SLATE_AUTHORITATIVE_SKIP.value
+    assert d["outcome"] == DecisionOutcome.SKIPPED.value
+    assert d["ag_id"] == "AG_DECOMPOSED_H001"
+    assert d["run_id"] == "run-1"
+    assert d["iteration"] == 2
+    # root_cause may be omitted from to_dict() when empty; the field
+    # is empty string on the record.
+    assert rec.root_cause == ""
+    assert "H001" in str(d.get("metrics", {}).get("source_cluster_ids", []))
+    assert d["next_action"].startswith("strategist must pick")
+
+
+def test_slate_authoritative_skip_record_cluster_blocked_variant():
+    rec = slate_authoritative_skip_record(
+        run_id="run-1",
+        iteration=2,
+        ag_id="AG_DECOMPOSED_H002",
+        source_cluster_ids=("H002",),
+        reason="cluster_blocked_no_rca",
+    )
+    d = rec.to_dict()
+    assert d["decision_type"] == DecisionType.SLATE_AUTHORITATIVE_SKIP.value
+    assert "RCA card" in d["next_action"]
+
+
+def test_slate_authoritative_skip_marker_emits_marker_line():
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        slate_authoritative_skip_marker,
+    )
+    line = slate_authoritative_skip_marker(
+        optimization_run_id="run-1",
+        iteration=2,
+        ag_id="AG_DECOMPOSED_H001",
+        reason="cluster_blocked_no_rca",
+        source_cluster_ids=("H001",),
+    )
+    assert line.startswith("GSO_SLATE_AUTHORITATIVE_SKIP_V1 ")
+    import json
+    payload = json.loads(line[len("GSO_SLATE_AUTHORITATIVE_SKIP_V1 "):])
+    assert payload["ag_id"] == "AG_DECOMPOSED_H001"
+    assert payload["reason"] == "cluster_blocked_no_rca"
+    assert payload["source_cluster_ids"] == ["H001"]
+    assert payload["iteration"] == 2
+    assert payload["optimization_run_id"] == "run-1"

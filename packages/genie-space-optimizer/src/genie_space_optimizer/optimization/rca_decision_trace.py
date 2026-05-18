@@ -84,6 +84,19 @@ class DecisionType(str, Enum):
     # of the cluster's first-pick lever. Producer:
     # ``decision_emitters.lever_rotation_decided_record``.
     LEVER_ROTATION_DECIDED = "lever_rotation_decided"
+    # WU-1 (2026-05-18) — emitted when the harness authoritatively
+    # skips the current ``ag`` because the slate's
+    # ``apply_admission_trace`` denied it, ``blocked_cluster_ids``
+    # intersected its source clusters, or it was retired with
+    # pivot_signal. Producer:
+    # ``decision_emitters.slate_authoritative_skip_record``.
+    SLATE_AUTHORITATIVE_SKIP = "slate_authoritative_skip"
+    # WU-2 (2026-05-18) — emitted once per blocked cluster after the
+    # single-shot RCA regeneration retry runs (between Phase 2.2 and
+    # the grounding gate prelude). Carries the per-attempt outcome
+    # so postmortems can see which retry sources fired. Producer:
+    # ``decision_emitters.rca_regen_retry_verdict_record``.
+    RCA_REGEN_RETRY_VERDICT = "rca_regen_retry_verdict"
 
 
 class DecisionOutcome(str, Enum):
