@@ -81,17 +81,28 @@ def test_ag_outcome_required_fields() -> None:
 
 
 def test_decide_accepts_pre_arbiter_improvement_when_post_arbiter_saturated() -> None:
-    """PR-E regression: post-arbiter saturated, pre-arbiter improved →
-    accepted with reason_code=accepted_pre_arbiter_improvement."""
+    """PR-E regression: post-arbiter saturated, pre-arbiter improved.
+
+    Phase 5 WU-4 (2026-05-18) — the accepted_pre_arbiter_improvement
+    branch now additionally requires has_causal_fix=True (target qid
+    flipped from hard to non-hard). The pre-WU-4 version of this test
+    asserted acceptance even when the target stayed hard; that was
+    encoding the attribution-drift bug WU-4 closes. Updated to fix the
+    target qid in post_rows so the positive case still validates."""
     from genie_space_optimizer.optimization.stages import acceptance as ac
     captured: list = []
     ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
-    # 22 passing + 2 hard before; same 22 + 2 hard after (post saturated).
+    # 22 passing + 2 hard before; q23 flipped to passing after (target
+    # fixed); q24 stays hard. post_hard != pre_hard so the
+    # stale_or_candidate_pre_rows guard does not fire.
     pre_rows = tuple(_row(f"q{i}", passing=True) for i in range(22)) + (
         _row("q23", hard=True), _row("q24", hard=True),
     )
-    post_rows = pre_rows  # same hard set, pre-arbiter raw improved
+    post_rows = tuple(_row(f"q{i}", passing=True) for i in range(22)) + (
+        _row("q23", passing=True),  # target fixed under WU-4
+        _row("q24", hard=True),
+    )
 
     inp = ac.AcceptanceInput(
         applied_entries_by_ag={"AG_001": (
@@ -100,7 +111,7 @@ def test_decide_accepts_pre_arbiter_improvement_when_post_arbiter_saturated() ->
         )},
         ags=({"id": "AG_001", "affected_questions": ["q23"]},),
         baseline_accuracy=91.7,
-        candidate_accuracy=91.7,  # saturated
+        candidate_accuracy=91.7,  # saturated post-arbiter (delta=0 → no regression)
         baseline_pre_arbiter_accuracy=83.3,
         candidate_pre_arbiter_accuracy=87.5,  # +4.2pp
         pre_rows=pre_rows,
