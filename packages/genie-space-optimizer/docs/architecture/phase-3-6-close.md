@@ -34,6 +34,10 @@ The Phase 3 anchor regression suite (`tests/replay/active/test_phase3_anchor_tap
 
 All four are marked `@pytest.mark.skip(reason=_PHASE_3_6_BLOCKED_REASON)` with an explicit pointer to the architectural decision (`docs/architecture/phase-3-6-classifier-divergence.md` §5).
 
+**Phase 3.7 update (2026-05-18):** the four tests were un-skipped and re-marked `@pytest.mark.xfail(strict=True)` after Phase 3.7 landed the `historic_inject` / `historic_inject_cluster_only` replay-mode mechanism. Three STOP-and-reports during execution revealed that the historic anchor tapes' lever6 responses claim cross-cluster `affected_questions` (e.g. H001's response cites both gs_009 and gs_024); production at capture time accepted this, but the G2-2026-05-17 cross-cluster guard at `optimizer.py:14027-14045` rejects it under replay → lever6 emits no proposal → no abort fires. This is a **temporal-validity** limit of historic-tape replay (a property, not a bug — see `docs/architecture/tape-replay-protocol.md` §Temporal validity). The tests un-xfail automatically when a post-guard production stall is captured and used as the anchor tape. The `historic_inject_cluster_only` mechanism itself is exercised end-to-end during these xfail runs.
+
+Forward pointer: Phase 3.7 plan + close are in `docs/prompt_improvements/2026-05-17-phase-3-7-historic-prompt-injection.md`.
+
 ## The architectural trade-off (deferred — G1 vs G2 vs G3)
 
 The four blocked tests all share one root cause: the historic export's per-iteration `clusters` field carries only 4 fields (`cluster_id`, `asi_failure_type`, `question_ids`, `root_cause`). Production-shape clusters carry ~20+ fields including `question_traces` (per-qid SQL pairs, judge_rationale, mismatch hashes), `blame_set`, `counterfactual_fixes`, `structural_diff`, `failure_features`, `affected_judge`. The Lever 6 prompt-construction code reads these enrichment fields; under replay the prompt comes out 12K chars (cluster metadata + empty placeholders) vs production's 34K chars (full failure evidence). The historic Lever 6 LLM response in the tape can't be matched against the under-fed replay prompt.

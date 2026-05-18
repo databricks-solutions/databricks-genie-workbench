@@ -15,6 +15,7 @@ The protocol does NOT validate accuracy. It validates that, given fixed inputs (
   "tape_id": "<short stable id>",
   "source_run_id": "<production runId>",
   "captured_at": "<UTC ISO8601>",
+  "format_version": 5,
   "entries": [
     {
       "key": {
@@ -32,9 +33,14 @@ The protocol does NOT validate accuracy. It validates that, given fixed inputs (
   "evals_by_iteration": { "0": [<eval row>, ...], "1": [...] },
   "clusters_by_iteration": { "0": [<cluster>, ...] },
   "rca_cards_by_cluster": { "H001": { ... } },
-  "miss_policy": "raise" | "warn"
+  "iteration_payloads": { "0": { "rows_json": [...], "strategist_response": {...}, ... } },
+  "replay_mode_by_stage": { "lever6_llm": "historic_inject_cluster_only" },
+  "miss_policy": "raise" | "warn" | "prompt_sha_only"
 }
 ```
+
+``format_version`` (Phase 3.6.2 E1 onwards) declares the on-disk schema:
+v1 (legacy), v2 (Phase 3.5 ``llm_call_log``), v3 (Phase 3.6.2 ``iteration_payloads``), v4 (Phase 3.7 ``replay_mode_by_stage``), v5 (Phase 3.7 §2.3 amendment — vocabulary widened with ``historic_inject_cluster_only``).
 
 ## Stage vocabulary
 
@@ -170,6 +176,57 @@ Adding a new entry to the allowlist is intentionally a code change (not a tape f
 | ``prompt_sha_only`` (Phase 3.6) | Pre-3.6 historic captures without breadcrumbs | Match on (stage, prompt_sha256); ignore iteration/ag/cluster on the candidate key |
 
 Prompt content is iteration-+-AG-unique in practice (Stage 1 / Stage 2 prompts include the iteration's clusters, RCA cards, and AG context), so ``prompt_sha_only`` is safe for historic tapes.
+
+## Per-stage replay modes (Phase 3.7, format v5)
+
+In addition to the miss policies above, format-version 4+ tapes carry a per-stage ``replay_mode_by_stage: dict[str, str]`` that tells the ``TapeBackedLLMCaller`` which lookup strategy to use for each stage's calls. Stages absent from this dict default to ``rebuild_and_match`` (the v1–v3 behaviour: rebuild the prompt under replay, SHA-match against the captured prompt). The current typed vocabulary:
+
+| Mode | Lookup key | When to use |
+|---|---|---|
+| ``rebuild_and_match`` (default) | (stage, iteration, ag_id, cluster_id, prompt_sha256) | Default for every stage. The rebuilt prompt SHA must match the captured prompt SHA. |
+| ``historic_inject`` | (stage, iteration, ag_id, cluster_id) via ``LeverLoopTape.lookup_by_binding`` | Stage where the prompt-builder reads fields the historic export drops, AND the run's per-iter binding is recoverable. Bypasses prompt SHA matching. Used when the captured tape carries authoritative (iteration, ag, cluster) breadcrumbs per call. |
+| ``historic_inject_cluster_only`` | (stage, cluster_id) via ``LeverLoopTape.lookup_by_cluster_only`` | Stage where the run's per-iter binding is NOT recoverable from the captured trace tree (e.g. lever6_llm on pre-Phase-3.6-Task-2 anchor captures). Drops iteration AND ag_id. Multiple captured entries match (one per production iteration); first wins. Trade-off: every replay iter sees the first-captured response. Sufficient for cluster-level assertions (terminal-signature recurrence, per-AG NSC); insufficient for per-iteration LLM-response distinctness. |
+
+### Historic-prompt injection (Phase 3.7)
+
+For ``lever6_llm`` on the airline + 7now anchor tapes, the prompt-builder reads cluster-enrichment fields (``raw_evidence``, ``format_afs`` AFS projection) that the historic export drops. The rebuilt prompt SHA diverges from the captured prompt SHA → ``TapeMissError`` under ``rebuild_and_match``. Phase 3.7 introduces:
+
+1. **A v5 tape format** carrying ``replay_mode_by_stage``.
+2. **Two new ``LeverLoopTape`` methods**: ``lookup_by_binding`` (used by ``historic_inject``) and ``lookup_by_cluster_only`` (used by ``historic_inject_cluster_only``).
+3. **A prompt-side cluster-id resolver** for ``lever6_llm``: ``_extract_cluster_id_from_lever6_prompt`` parses ``"cluster_id": "..."`` from the AFS JSON block in the prompt, so the cluster_id used for lookup matches the production-time cluster regardless of the binding ContextVar.
+4. **A capture-script AG backfill (1B)**: ``_backfill_source_cluster_ids_in_place`` populates ``action_group.source_cluster_ids`` from ``patches[*].cluster_id`` / iter cluster pool, so the replay harness's ``eligible_clusters`` resolves to real cluster dicts rather than the synthetic ``{cluster_id: ag_id}`` fallback.
+
+Example v5 tape preamble:
+
+```json
+{
+  "tape_id": "airline_run_59a173d3",
+  "format_version": 5,
+  "miss_policy": "prompt_sha_only",
+  "replay_mode_by_stage": {
+    "lever6_llm": "historic_inject_cluster_only"
+  },
+  ...
+}
+```
+
+### Temporal validity
+
+A historic LLM response is valid **only against the production code that was in place at capture time.** When production behaviour changes between capture and replay — typically when a new validator, guard, or normalization step is added downstream of the LLM call — the historic response may stop driving the current pipeline through the same state transitions.
+
+This is an architectural property of historic-tape replay, not a defect:
+
+- The captured response is verbatim what the LLM returned.
+- The current production code may now reject or transform it differently.
+- The tape is *correct*; the replay end-state may differ from the production end-state at capture time.
+
+Phase 3.7's anchor tapes' lever6 responses claim cross-cluster ``affected_questions`` (e.g. cluster H001's response cites both ``gs_009`` and ``gs_024``). Production at capture time accepted this; the G2-2026-05-17 guard at ``optimizer.py:14027-14045`` rejects it under current replay. The four anchor regression tests that depend on lever6 emitting proposals are marked ``@pytest.mark.xfail(strict=True)`` against these tapes. They un-xfail automatically once a fresh post-guard production stall is captured.
+
+To recover validity on a temporally-invalidated tape:
+
+1. Find a production stall whose run executed against the current code.
+2. ``python scripts/capture_tape_from_mlflow.py --filter-string '... new run id ...' --replay-mode lever6_llm=historic_inject_cluster_only --out <new tape path>``
+3. Replace the anchor tape; remove ``@pytest.mark.xfail`` decorators on tests that previously failed only due to temporal invalidation.
 
 ## Capture workflow (Phase 3.5)
 
