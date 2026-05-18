@@ -1,7 +1,8 @@
 {
   "tape_id": "airline_run_59a173d3",
   "source_run_id": "[]",
-  "captured_at": "2026-05-18T06:10:32.352419Z",
+  "captured_at": "2026-05-18T06:41:27.437153Z",
+  "format_version": 3,
   "entries": [
     {
       "key": {
@@ -1791,6 +1792,4373 @@
         "root_cause": "missing_filter"
       }
     ]
+  },
+  "iteration_payloads": {
+    "0": {
+      "iteration": 1,
+      "rows_json": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "result_correctness": "yes"
+        }
+      ],
+      "eval_scope": "full",
+      "rolled_back": false,
+      "clusters": [
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      ],
+      "soft_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_004",
+            "airline_ticketing_and_fare_analysis_gs_007",
+            "airline_ticketing_and_fare_analysis_gs_013",
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_010",
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "root_cause": "wrong_table"
+        },
+        {
+          "asi_failure_type": "",
+          "cluster_id": "S003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "root_cause": "wrong_filter_condition"
+        }
+      ],
+      "decision_records": [
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_026"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_026"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_026 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_016 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_010 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_001"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_001"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_001 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_001"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_005"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_005"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_005 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_005"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_030 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_004"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_004"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_004 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_004"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_008"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_008"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_008 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_008"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_017"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_017"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_017 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_017"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_006 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_002"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_002"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_002 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_002"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_003"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_003"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_003 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_003"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_014 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_021 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_018"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_018"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_018 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_018"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_009 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "reason_code": "hard_failure",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_022"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_022"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_022 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_022"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_029"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_029"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_029 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "reason_code": "gt_correction",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_029"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_019"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_019"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_019 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_019"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_024 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "reason_code": "hard_failure",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_013 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_007 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_012"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_012"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_012 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_012"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_025"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_025"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_025 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_025"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves plural_top_n_collapse for 1 qid(s).",
+          "iteration": 1,
+          "next_action": "Generate proposals for H001.",
+          "outcome": "info",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "clustered",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves missing_filter for 1 qid(s).",
+          "iteration": 1,
+          "next_action": "Generate proposals for H002.",
+          "outcome": "info",
+          "reason_code": "clustered",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H001",
+            "rca:rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "RCA rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse provides causal grounding for plural_top_n_collapse on 1 qid(s).",
+          "iteration": 1,
+          "next_action": "Strategist should emit AG targeting H001",
+          "outcome": "info",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "rca_grounded",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Cluster H002 should ground on a root cause.",
+          "iteration": 1,
+          "next_action": "Re-run RCA prompt with broader evidence, or promote this cluster to a benchmark-review queue.",
+          "observed_effect": "No RCA finding for cluster H002 (1 hard qid(s)); strategist has nothing to ground against.",
+          "outcome": "unresolved",
+          "reason_code": "rca_ungrounded",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009",
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_PIPELINE",
+          "decision_type": "strategist_ag_emitted",
+          "expected_effect": "candidate=(unknown, single_qid)",
+          "iteration": 1,
+          "next_action": "AG shape is novel for this target; proceed to strategy.",
+          "outcome": "info",
+          "reason_code": "near_miss_ag_shape_differs",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009",
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address plural_top_n_collapse on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 1,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "plural_top_n_collapse",
+              "wrong_aggregation"
+            ],
+            "source_clusters": [
+              "H001"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['plural_top_n_collapse', 'wrong_aggregation'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:plural_top_n_collapse,wrong_aggregation",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001",
+            "rca:rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "Synthesis attempted for plural_top_n_collapse; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 1,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Forced Lever-6 candidate would close the SQL-shape hard failure for the AG.",
+          "gate": "proposal_generation",
+          "iteration": 1,
+          "metrics": {
+            "cached": false,
+            "original_decline_iteration": null
+          },
+          "next_action": "Inspect the LLM transcript for this AG to confirm the decline rationale; consider widening the synthesizer archetype list.",
+          "observed_effect": "_generate_lever6_proposal returned no candidate; the AG retains the strategist's slate (which lacks an L6 add_sql_snippet_*).",
+          "outcome": "unresolved",
+          "reason_code": "lever6_force_llm_declined",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 produced zero proposals; root cause plural_top_n_collapse did not match any patch shape.",
+          "iteration": 1,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Next iteration applies mark_evidence_gap for AG AG_DECOMPOSED_H001 on failure mode lever6_force_llm_declined.",
+          "gate": "proposal_failure_policy",
+          "iteration": 1,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "lever6_force_llm_declined",
+            "lever_set": [
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 0,
+            "rca_card_grounded": true,
+            "tried_lever_families": [
+              6
+            ]
+          },
+          "next_action": "mark_evidence_gap",
+          "outcome": "info",
+          "reason_code": "mark_evidence_gap",
+          "reason_detail": "LLM declined despite grounded RCA",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 produced zero proposals; root cause wrong_aggregation did not match any patch shape.",
+          "iteration": 1,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "wrong_aggregation",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Next iteration applies request_evidence_gathering for AG AG_DECOMPOSED_H001 on failure mode proposal_generation_empty.",
+          "gate": "proposal_failure_policy",
+          "iteration": 1,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "proposal_generation_empty",
+            "lever_set": [
+              5,
+              1,
+              2,
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 0,
+            "rca_card_grounded": false,
+            "tried_lever_families": [
+              5,
+              1,
+              2,
+              6
+            ]
+          },
+          "next_action": "request_evidence_gathering",
+          "outcome": "info",
+          "reason_code": "request_evidence_gathering",
+          "reason_detail": "rca_card_grounded=False",
+          "root_cause": "wrong_aggregation",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "iteration": 1,
+          "metrics": {
+            "policy_max_attempts": 1,
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Recovery policy permits up to 1 regeneration attempt(s) for this typed ungrounded reason.",
+          "outcome": "info",
+          "reason_code": "rca_classified_ungrounded",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "iteration": 1,
+          "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
+          "outcome": "info",
+          "reason_code": "rca_regeneration_triggered",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "iteration": 1,
+          "metrics": {
+            "attempt_number": 1,
+            "attempted_evidence_sources": [
+              "failure_buckets"
+            ],
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Cluster proceeds to AG-emit with regenerated RCA card (Defect Plan 1 G1 grounding gate will not block).",
+          "outcome": "info",
+          "rca_id": "card_unknown_unknown",
+          "reason_code": "rca_regeneration_succeeded",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "airline_ticketing_and_fare_analysis_gs_009"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": []
+          }
+        ]
+      },
+      "ag_outcomes": {},
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+      },
+      "iter_source_clusters_by_id": {
+        "H001": {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        "H002": {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      },
+      "lever5_gate_drops": [
+        {
+          "ag_id": "AG_DECOMPOSED_H001",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "plural_top_n_collapse",
+            "wrong_aggregation"
+          ],
+          "source_clusters": [
+            "H001"
+          ],
+          "target_lever": 5
+        }
+      ],
+      "metadata_failure_clusters": [
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      ],
+      "post_eval_passing_qids": []
+    },
+    "1": {
+      "iteration": 2,
+      "rows_json": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "result_correctness": "yes"
+        }
+      ],
+      "eval_scope": "full",
+      "rolled_back": false,
+      "clusters": [
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      ],
+      "soft_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_004",
+            "airline_ticketing_and_fare_analysis_gs_007",
+            "airline_ticketing_and_fare_analysis_gs_013",
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_010",
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "root_cause": "wrong_table"
+        },
+        {
+          "asi_failure_type": "",
+          "cluster_id": "S003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "root_cause": "wrong_filter_condition"
+        }
+      ],
+      "decision_records": [
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_026"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_026"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_026 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_016 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_010 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_001"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_001"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_001 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_001"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_005"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_005"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_005 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_005"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_030 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_004"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_004"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_004 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_004"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_008"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_008"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_008 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_008"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_017"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_017"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_017 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_017"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_006 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_002"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_002"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_002 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_002"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_003"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_003"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_003 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_003"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_014 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_021 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_018"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_018"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_018 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_018"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_009 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "reason_code": "hard_failure",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_022"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_022"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_022 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_022"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_029"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_029"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_029 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "reason_code": "gt_correction",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_029"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_019"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_019"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_019 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_019"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_024 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "reason_code": "hard_failure",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_013 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_007 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_012"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_012"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_012 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_012"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_025"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_025"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_025 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_025"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves plural_top_n_collapse for 1 qid(s).",
+          "iteration": 2,
+          "next_action": "Generate proposals for H001.",
+          "outcome": "info",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "clustered",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves missing_filter for 1 qid(s).",
+          "iteration": 2,
+          "next_action": "Generate proposals for H002.",
+          "outcome": "info",
+          "reason_code": "clustered",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H001",
+            "rca:rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "RCA rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse provides causal grounding for plural_top_n_collapse on 1 qid(s).",
+          "iteration": 2,
+          "next_action": "Strategist should emit AG targeting H001",
+          "outcome": "info",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "rca_grounded",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Cluster H002 should ground on a root cause.",
+          "iteration": 2,
+          "next_action": "Re-run RCA prompt with broader evidence, or promote this cluster to a benchmark-review queue.",
+          "observed_effect": "No RCA finding for cluster H002 (1 hard qid(s)); strategist has nothing to ground against.",
+          "outcome": "unresolved",
+          "reason_code": "rca_ungrounded",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address missing_filter on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 2,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "missing_filter",
+              "wrong_aggregation"
+            ],
+            "source_clusters": [
+              "H002"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['missing_filter', 'wrong_aggregation'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:missing_filter,wrong_aggregation",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Synthesis attempted for missing_filter; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 2,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Forced Lever-6 candidate would close the SQL-shape hard failure for the AG.",
+          "gate": "proposal_generation",
+          "iteration": 2,
+          "metrics": {
+            "cached": false,
+            "original_decline_iteration": null
+          },
+          "next_action": "Inspect the LLM transcript for this AG to confirm the decline rationale; consider widening the synthesizer archetype list.",
+          "observed_effect": "_generate_lever6_proposal returned no candidate; the AG retains the strategist's slate (which lacks an L6 add_sql_snippet_*).",
+          "outcome": "unresolved",
+          "reason_code": "lever6_force_llm_declined",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H002 produced zero proposals; root cause missing_filter did not match any patch shape.",
+          "iteration": 2,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Next iteration applies mark_evidence_gap for AG AG_DECOMPOSED_H002 on failure mode lever6_force_llm_declined.",
+          "gate": "proposal_failure_policy",
+          "iteration": 2,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "lever6_force_llm_declined",
+            "lever_set": [
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 0,
+            "rca_card_grounded": true,
+            "tried_lever_families": [
+              6
+            ]
+          },
+          "next_action": "mark_evidence_gap",
+          "outcome": "info",
+          "reason_code": "mark_evidence_gap",
+          "reason_detail": "LLM declined despite grounded RCA",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H002 produced zero proposals; root cause wrong_aggregation did not match any patch shape.",
+          "iteration": 2,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "wrong_aggregation",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Next iteration applies request_evidence_gathering for AG AG_DECOMPOSED_H002 on failure mode proposal_generation_empty.",
+          "gate": "proposal_failure_policy",
+          "iteration": 2,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "proposal_generation_empty",
+            "lever_set": [
+              6,
+              1,
+              2,
+              5
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 0,
+            "rca_card_grounded": false,
+            "tried_lever_families": [
+              6,
+              1,
+              2,
+              5
+            ]
+          },
+          "next_action": "request_evidence_gathering",
+          "outcome": "info",
+          "reason_code": "request_evidence_gathering",
+          "reason_detail": "rca_card_grounded=False",
+          "root_cause": "wrong_aggregation",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "iteration": 2,
+          "metrics": {
+            "policy_max_attempts": 1,
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Recovery policy permits up to 1 regeneration attempt(s) for this typed ungrounded reason.",
+          "outcome": "info",
+          "reason_code": "rca_classified_ungrounded",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "iteration": 2,
+          "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
+          "outcome": "info",
+          "reason_code": "rca_regeneration_triggered",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "iteration": 2,
+          "metrics": {
+            "attempt_number": 1,
+            "attempted_evidence_sources": [
+              "failure_buckets"
+            ],
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Cluster proceeds to AG-emit with regenerated RCA card (Defect Plan 1 G1 grounding gate will not block).",
+          "outcome": "info",
+          "rca_id": "card_unknown_unknown",
+          "reason_code": "rca_regeneration_succeeded",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "airline_ticketing_and_fare_analysis_gs_024"
+            ],
+            "id": "AG_DECOMPOSED_H002",
+            "patches": []
+          }
+        ]
+      },
+      "ag_outcomes": {},
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+      },
+      "iter_source_clusters_by_id": {
+        "H001": {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        "H002": {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      },
+      "lever5_gate_drops": [
+        {
+          "ag_id": "AG_DECOMPOSED_H002",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "missing_filter",
+            "wrong_aggregation"
+          ],
+          "source_clusters": [
+            "H002"
+          ],
+          "target_lever": 5
+        }
+      ],
+      "metadata_failure_clusters": [
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      ],
+      "post_eval_passing_qids": []
+    },
+    "2": {
+      "iteration": 3,
+      "rows_json": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "result_correctness": "yes"
+        }
+      ],
+      "eval_scope": "full",
+      "rolled_back": false,
+      "clusters": [
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      ],
+      "soft_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_004",
+            "airline_ticketing_and_fare_analysis_gs_007",
+            "airline_ticketing_and_fare_analysis_gs_013",
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_010",
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "root_cause": "wrong_table"
+        },
+        {
+          "asi_failure_type": "",
+          "cluster_id": "S003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "root_cause": "wrong_filter_condition"
+        }
+      ],
+      "decision_records": [
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_026"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_026"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_026 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_016 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_010 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_001"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_001"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_001 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_001"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_005"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_005"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_005 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_005"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_030 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_004"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_004"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_004 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_004"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_008"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_008"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_008 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_008"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_017"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_017"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_017 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_017"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_006 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_002"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_002"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_002 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_002"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_003"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_003"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_003 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_003"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_014 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_021 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_018"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_018"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_018 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_018"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_009 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "reason_code": "hard_failure",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_022"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_022"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_022 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_022"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_029"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_029"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_029 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "reason_code": "gt_correction",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_029"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_019"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_019"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_019 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_019"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_024 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "reason_code": "hard_failure",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_013 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_007 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_012"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_012"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_012 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_012"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_025"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_025"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_025 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_025"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves plural_top_n_collapse for 1 qid(s).",
+          "iteration": 3,
+          "next_action": "Generate proposals for H001.",
+          "outcome": "info",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "clustered",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves missing_filter for 1 qid(s).",
+          "iteration": 3,
+          "next_action": "Generate proposals for H002.",
+          "outcome": "info",
+          "reason_code": "clustered",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H001",
+            "rca:rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "RCA rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse provides causal grounding for plural_top_n_collapse on 1 qid(s).",
+          "iteration": 3,
+          "next_action": "Strategist should emit AG targeting H001",
+          "outcome": "info",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "rca_grounded",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Cluster H002 should ground on a root cause.",
+          "iteration": 3,
+          "next_action": "Re-run RCA prompt with broader evidence, or promote this cluster to a benchmark-review queue.",
+          "observed_effect": "No RCA finding for cluster H002 (1 hard qid(s)); strategist has nothing to ground against.",
+          "outcome": "unresolved",
+          "reason_code": "rca_ungrounded",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009",
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_PIPELINE",
+          "decision_type": "strategist_ag_emitted",
+          "expected_effect": "candidate=(unknown, single_qid)",
+          "iteration": 3,
+          "next_action": "AG shape is novel for this target; proceed to strategy.",
+          "outcome": "info",
+          "reason_code": "near_miss_ag_shape_differs",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009",
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address plural_top_n_collapse on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 3,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "plural_top_n_collapse",
+              "wrong_aggregation"
+            ],
+            "source_clusters": [
+              "H001"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['plural_top_n_collapse', 'wrong_aggregation'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:plural_top_n_collapse,wrong_aggregation",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address plural_top_n_collapse on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 3,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "plural_top_n_collapse",
+              "wrong_aggregation"
+            ],
+            "source_clusters": [
+              "H001"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['plural_top_n_collapse', 'wrong_aggregation'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:plural_top_n_collapse,wrong_aggregation",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001",
+            "rca:rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "Synthesis attempted for plural_top_n_collapse; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 3,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001",
+            "rca:rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "Synthesis attempted for plural_top_n_collapse; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 3,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Forced Lever-6 candidate would close the SQL-shape hard failure for the AG.",
+          "gate": "proposal_generation",
+          "iteration": 3,
+          "metrics": {
+            "cached": false,
+            "original_decline_iteration": null
+          },
+          "next_action": "Inspect the LLM transcript for this AG to confirm the decline rationale; consider widening the synthesizer archetype list.",
+          "observed_effect": "_generate_lever6_proposal returned no candidate; the AG retains the strategist's slate (which lacks an L6 add_sql_snippet_*).",
+          "outcome": "unresolved",
+          "reason_code": "lever6_force_llm_declined",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 produced zero proposals; root cause plural_top_n_collapse did not match any patch shape.",
+          "iteration": 3,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Next iteration applies escalate_stalemate for AG AG_DECOMPOSED_H001 on failure mode lever6_force_llm_declined.",
+          "gate": "proposal_failure_policy",
+          "iteration": 3,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "lever6_force_llm_declined",
+            "lever_set": [
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 1,
+            "rca_card_grounded": true,
+            "tried_lever_families": [
+              6
+            ]
+          },
+          "next_action": "escalate_stalemate",
+          "outcome": "info",
+          "reason_code": "escalate_stalemate",
+          "reason_detail": "stalemate: prior_identical_failure_count=1 for signature=",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 produced zero proposals; root cause wrong_aggregation did not match any patch shape.",
+          "iteration": 3,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "wrong_aggregation",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Next iteration applies escalate_stalemate for AG AG_DECOMPOSED_H001 on failure mode proposal_generation_empty.",
+          "gate": "proposal_failure_policy",
+          "iteration": 3,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "proposal_generation_empty",
+            "lever_set": [
+              5,
+              1,
+              2,
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 1,
+            "rca_card_grounded": false,
+            "tried_lever_families": [
+              5,
+              1,
+              2,
+              6
+            ]
+          },
+          "next_action": "escalate_stalemate",
+          "outcome": "info",
+          "reason_code": "escalate_stalemate",
+          "reason_detail": "stalemate: prior_identical_failure_count=1 for signature=",
+          "root_cause": "wrong_aggregation",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "airline_ticketing_and_fare_analysis_gs_009"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": []
+          }
+        ]
+      },
+      "ag_outcomes": {},
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+      },
+      "iter_source_clusters_by_id": {
+        "H001": {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        "H002": {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      },
+      "lever5_gate_drops": [
+        {
+          "ag_id": "AG_DECOMPOSED_H001",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "plural_top_n_collapse",
+            "wrong_aggregation"
+          ],
+          "source_clusters": [
+            "H001"
+          ],
+          "target_lever": 5
+        },
+        {
+          "ag_id": "AG_DECOMPOSED_H001",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "plural_top_n_collapse",
+            "wrong_aggregation"
+          ],
+          "source_clusters": [
+            "H001"
+          ],
+          "target_lever": 5
+        }
+      ],
+      "metadata_failure_clusters": [
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      ],
+      "post_eval_passing_qids": []
+    },
+    "3": {
+      "iteration": 4,
+      "rows_json": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "result_correctness": "yes"
+        }
+      ],
+      "eval_scope": "full",
+      "rolled_back": false,
+      "clusters": [
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      ],
+      "soft_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_004",
+            "airline_ticketing_and_fare_analysis_gs_007",
+            "airline_ticketing_and_fare_analysis_gs_013",
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_010",
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "root_cause": "wrong_table"
+        },
+        {
+          "asi_failure_type": "",
+          "cluster_id": "S003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "root_cause": "wrong_filter_condition"
+        }
+      ],
+      "decision_records": [
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_026"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_026"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_026 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_016 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_010 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_001"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_001"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_001 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_001"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_005"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_005"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_005 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_005"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_030 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_004"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_004"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_004 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_004"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_008"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_008"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_008 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_008"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_017"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_017"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_017 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_017"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_006 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_002"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_002"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_002 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_002"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_003"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_003"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_003 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_003"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_014"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_014 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_014"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_021"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_021 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_021"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_018"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_018"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_018 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_018"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_009 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "reason_code": "hard_failure",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_022"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_022"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_022 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_022"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_029"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_029"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_029 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "reason_code": "gt_correction",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_029"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_019"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_019"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_019 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_019"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_024 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "reason_code": "hard_failure",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_013 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_007 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "reason_code": "soft_signal",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_012"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_012"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_012 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_012"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_025"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:airline_ticketing_and_fare_analysis_gs_025"
+          ],
+          "expected_effect": "Qid airline_ticketing_and_fare_analysis_gs_025 classified as already_passing; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "reason_code": "already_passing",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_025"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves plural_top_n_collapse for 1 qid(s).",
+          "iteration": 4,
+          "next_action": "Generate proposals for H001.",
+          "outcome": "info",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "clustered",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves missing_filter for 1 qid(s).",
+          "iteration": 4,
+          "next_action": "Generate proposals for H002.",
+          "outcome": "info",
+          "reason_code": "clustered",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H001",
+            "rca:rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "RCA rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse provides causal grounding for plural_top_n_collapse on 1 qid(s).",
+          "iteration": 4,
+          "next_action": "Strategist should emit AG targeting H001",
+          "outcome": "info",
+          "rca_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+          "reason_code": "rca_grounded",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Cluster H002 should ground on a root cause.",
+          "iteration": 4,
+          "next_action": "Re-run RCA prompt with broader evidence, or promote this cluster to a benchmark-review queue.",
+          "observed_effect": "No RCA finding for cluster H002 (1 hard qid(s)); strategist has nothing to ground against.",
+          "outcome": "unresolved",
+          "reason_code": "rca_ungrounded",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address missing_filter on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 4,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "missing_filter",
+              "wrong_aggregation"
+            ],
+            "source_clusters": [
+              "H002"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['missing_filter', 'wrong_aggregation'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:missing_filter,wrong_aggregation",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address missing_filter on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 4,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "missing_filter",
+              "wrong_aggregation"
+            ],
+            "source_clusters": [
+              "H002"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['missing_filter', 'wrong_aggregation'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:missing_filter,wrong_aggregation",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Synthesis attempted for missing_filter; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 4,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Synthesis attempted for missing_filter; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 4,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Forced Lever-6 candidate would close the SQL-shape hard failure for the AG.",
+          "gate": "proposal_generation",
+          "iteration": 4,
+          "metrics": {
+            "cached": false,
+            "original_decline_iteration": null
+          },
+          "next_action": "Inspect the LLM transcript for this AG to confirm the decline rationale; consider widening the synthesizer archetype list.",
+          "observed_effect": "_generate_lever6_proposal returned no candidate; the AG retains the strategist's slate (which lacks an L6 add_sql_snippet_*).",
+          "outcome": "unresolved",
+          "reason_code": "lever6_force_llm_declined",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H002 produced zero proposals; root cause missing_filter did not match any patch shape.",
+          "iteration": 4,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Next iteration applies escalate_stalemate for AG AG_DECOMPOSED_H002 on failure mode lever6_force_llm_declined.",
+          "gate": "proposal_failure_policy",
+          "iteration": 4,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "lever6_force_llm_declined",
+            "lever_set": [
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 1,
+            "rca_card_grounded": true,
+            "tried_lever_families": [
+              6
+            ]
+          },
+          "next_action": "escalate_stalemate",
+          "outcome": "info",
+          "reason_code": "escalate_stalemate",
+          "reason_detail": "stalemate: prior_identical_failure_count=1 for signature=",
+          "root_cause": "missing_filter",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H002 produced zero proposals; root cause wrong_aggregation did not match any patch shape.",
+          "iteration": 4,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "wrong_aggregation",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Next iteration applies escalate_stalemate for AG AG_DECOMPOSED_H002 on failure mode proposal_generation_empty.",
+          "gate": "proposal_failure_policy",
+          "iteration": 4,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "proposal_generation_empty",
+            "lever_set": [
+              6,
+              1,
+              2,
+              5
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 1,
+            "rca_card_grounded": false,
+            "tried_lever_families": [
+              6,
+              1,
+              2,
+              5
+            ]
+          },
+          "next_action": "escalate_stalemate",
+          "outcome": "info",
+          "reason_code": "escalate_stalemate",
+          "reason_detail": "stalemate: prior_identical_failure_count=1 for signature=",
+          "root_cause": "wrong_aggregation",
+          "run_id": "59a173d3-f71f-4901-90ad-e10f1084cd7f",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "airline_ticketing_and_fare_analysis_gs_024"
+            ],
+            "id": "AG_DECOMPOSED_H002",
+            "patches": []
+          }
+        ]
+      },
+      "ag_outcomes": {},
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse"
+      },
+      "iter_source_clusters_by_id": {
+        "H001": {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        "H002": {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      },
+      "lever5_gate_drops": [
+        {
+          "ag_id": "AG_DECOMPOSED_H002",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "missing_filter",
+            "wrong_aggregation"
+          ],
+          "source_clusters": [
+            "H002"
+          ],
+          "target_lever": 5
+        },
+        {
+          "ag_id": "AG_DECOMPOSED_H002",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "missing_filter",
+            "wrong_aggregation"
+          ],
+          "source_clusters": [
+            "H002"
+          ],
+          "target_lever": 5
+        }
+      ],
+      "metadata_failure_clusters": [
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "asi_failure_type": "wrong_aggregation",
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        }
+      ],
+      "post_eval_passing_qids": []
+    }
   },
   "rca_cards_by_cluster": {},
   "miss_policy": "prompt_sha_only"

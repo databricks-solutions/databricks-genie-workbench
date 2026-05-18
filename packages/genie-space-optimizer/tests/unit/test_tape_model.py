@@ -148,6 +148,107 @@ def test_loader_accepts_zero_indexed_side_tables(tmp_path: Path):
     assert sorted(tape.evals_by_iteration) == [0, 1, 2, 3]
 
 
+def test_loader_v3_requires_non_empty_iteration_payloads(tmp_path: Path):
+    """Phase 3.6.2 E1 — v3 tapes MUST carry a non-empty
+    ``iteration_payloads`` dict. Older tapes (v1/v2) load with
+    empty iteration_payloads; v3 declares the new contract."""
+    payload = {
+        "tape_id": "t",
+        "source_run_id": "r",
+        "captured_at": "0",
+        "format_version": 3,
+        "entries": [],
+        "evals_by_iteration": {"0": [{"qid": "q1"}]},
+        "iteration_payloads": {},  # empty → must raise
+        "miss_policy": "raise",
+    }
+    p = tmp_path / "v3-empty.json"
+    p.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="iteration_payloads"):
+        LeverLoopTape.from_json_file(p)
+
+
+def test_loader_v3_with_payloads_loads_cleanly(tmp_path: Path):
+    payload = {
+        "tape_id": "t",
+        "source_run_id": "r",
+        "captured_at": "0",
+        "format_version": 3,
+        "entries": [],
+        "evals_by_iteration": {"0": [{"qid": "q1"}]},
+        "iteration_payloads": {
+            "0": {
+                "iteration": 1,
+                "rows_json": [{"qid": "q1", "passed": False}],
+                "eval_scope": "full",
+                "rolled_back": False,
+            },
+        },
+        "miss_policy": "raise",
+    }
+    p = tmp_path / "v3-good.json"
+    p.write_text(json.dumps(payload))
+    tape = LeverLoopTape.from_json_file(p)
+    assert tape.format_version == 3
+    assert tape.iteration_payloads[0]["eval_scope"] == "full"
+    assert tape.iteration_payloads[0]["rows_json"][0]["qid"] == "q1"
+
+
+def test_loader_legacy_v2_load_with_empty_iteration_payloads(tmp_path: Path):
+    """Back-compat: v1/v2 tapes have no ``iteration_payloads`` field;
+    they load with an empty dict and replay falls back to the
+    pre-3.6.2 ``return None`` behavior on ``load_*`` calls."""
+    payload = {
+        "tape_id": "t",
+        "source_run_id": "r",
+        "captured_at": "0",
+        "format_version": 2,
+        "entries": [],
+        "evals_by_iteration": {"0": []},
+        "miss_policy": "raise",
+    }
+    p = tmp_path / "v2-legacy.json"
+    p.write_text(json.dumps(payload))
+    tape = LeverLoopTape.from_json_file(p)
+    assert tape.format_version == 2
+    assert tape.iteration_payloads == {}
+
+
+def test_loader_rejects_unknown_format_version(tmp_path: Path):
+    payload = {
+        "tape_id": "t",
+        "source_run_id": "r",
+        "captured_at": "0",
+        "format_version": 999,
+        "entries": [],
+        "miss_policy": "raise",
+    }
+    p = tmp_path / "v999.json"
+    p.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="format_version"):
+        LeverLoopTape.from_json_file(p)
+
+
+def test_loader_iteration_payloads_must_be_zero_indexed(tmp_path: Path):
+    """Contract assertion extends to iteration_payloads too."""
+    payload = {
+        "tape_id": "t",
+        "source_run_id": "r",
+        "captured_at": "0",
+        "format_version": 3,
+        "entries": [],
+        "iteration_payloads": {
+            "1": {"iteration": 1, "rows_json": []},
+            "2": {"iteration": 2, "rows_json": []},
+        },
+        "miss_policy": "raise",
+    }
+    p = tmp_path / "v3-one-indexed.json"
+    p.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="0-indexed"):
+        LeverLoopTape.from_json_file(p)
+
+
 def test_loader_accepts_empty_side_tables(tmp_path: Path):
     """Empty side-tables are fine — the 0-indexed invariant only
     applies when there are entries to check."""

@@ -1,7 +1,8 @@
 {
   "tape_id": "seven_now_run_ab65fefe",
   "source_run_id": "[]",
-  "captured_at": "2026-05-18T06:11:29.315754Z",
+  "captured_at": "2026-05-18T06:42:25.022472Z",
+  "format_version": 3,
   "entries": [
     {
       "key": {
@@ -2113,6 +2114,4738 @@
         "root_cause": "plural_top_n_collapse"
       }
     ]
+  },
+  "iteration_payloads": {
+    "0": {
+      "iteration": 1,
+      "rows_json": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_026",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_002",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_001",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_012",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_004",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_019",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_029",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_018",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_028",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_007",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_016",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "neither_correct",
+          "question_id": "7now_delivery_analytics_space_gs_021",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_025",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_010",
+          "result_correctness": "yes"
+        }
+      ],
+      "eval_scope": "full",
+      "rolled_back": false,
+      "clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      ],
+      "soft_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_001",
+            "7now_delivery_analytics_space_gs_002",
+            "7now_delivery_analytics_space_gs_004",
+            "7now_delivery_analytics_space_gs_006",
+            "7now_delivery_analytics_space_gs_007",
+            "7now_delivery_analytics_space_gs_008",
+            "7now_delivery_analytics_space_gs_010",
+            "7now_delivery_analytics_space_gs_014",
+            "7now_delivery_analytics_space_gs_016",
+            "7now_delivery_analytics_space_gs_017",
+            "7now_delivery_analytics_space_gs_018",
+            "7now_delivery_analytics_space_gs_022",
+            "7now_delivery_analytics_space_gs_025",
+            "7now_delivery_analytics_space_gs_029",
+            "7now_delivery_analytics_space_gs_030"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S003",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_024",
+            "7now_delivery_analytics_space_gs_028"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_012"
+          ],
+          "root_cause": "column_disambiguation"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S004",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_021"
+          ],
+          "root_cause": "wrong_aggregation"
+        }
+      ],
+      "decision_records": [
+        {
+          "cluster_id": "H002",
+          "decision_type": "lever_rotation_decided",
+          "iteration": 0,
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_017"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_017"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_017 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_017",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_017"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_008"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_008"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_008 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_008",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_008"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_013"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_013 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_013",
+          "reason_code": "hard_failure",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_026"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_026 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_026",
+          "reason_code": "hard_failure",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_002"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_002"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_002 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_002",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_002"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_001"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_001"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_001 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_001",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_001"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_014"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_014"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_014 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_014",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_014"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_012"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_012"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_012 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_012",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_012"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_004"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_004"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_004 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_004",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_004"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_030"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_030"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_030 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_030",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_030"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_019"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_019"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_019 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_019",
+          "reason_code": "gt_correction",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_019"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_029"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_029"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_029 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_029",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_029"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_018"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_018"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_018 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_018",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_018"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_028"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_028"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_028 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_028",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_028"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_009"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_009"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_009 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_009",
+          "reason_code": "gt_correction",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_024"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_024"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_024 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_024",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_022"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_022"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_022 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_022",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_022"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_006"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_006"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_006 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_006",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_006"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_007"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_007"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_007 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_007",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_007"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_016"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_016"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_016 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_016",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_016"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_021"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_021"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_021 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_021",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_021"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_025"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_025"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_025 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_025",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_025"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_010"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_010"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_010 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 1,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_010",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_010"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves wrong_filter_condition for 1 qid(s).",
+          "iteration": 1,
+          "next_action": "Generate proposals for H001.",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "clustered",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves plural_top_n_collapse for 1 qid(s).",
+          "iteration": 1,
+          "next_action": "Generate proposals for H002.",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "clustered",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H001",
+            "rca:rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch"
+          ],
+          "expected_effect": "RCA rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch provides causal grounding for wrong_filter_condition on 1 qid(s).",
+          "iteration": 1,
+          "next_action": "Strategist should emit AG targeting H001",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "rca_grounded",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H002",
+            "rca:rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "RCA rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse provides causal grounding for plural_top_n_collapse on 1 qid(s).",
+          "iteration": 1,
+          "next_action": "Strategist should emit AG targeting H002",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "rca_grounded",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "cluster_id": "S001",
+          "decision_type": "cluster_selected",
+          "iteration": 1,
+          "metrics": {
+            "cluster_dropped": true,
+            "drifted_qids": [
+              "7now_delivery_analytics_space_gs_001",
+              "7now_delivery_analytics_space_gs_002",
+              "7now_delivery_analytics_space_gs_004",
+              "7now_delivery_analytics_space_gs_006",
+              "7now_delivery_analytics_space_gs_007",
+              "7now_delivery_analytics_space_gs_008",
+              "7now_delivery_analytics_space_gs_010",
+              "7now_delivery_analytics_space_gs_014",
+              "7now_delivery_analytics_space_gs_016",
+              "7now_delivery_analytics_space_gs_017",
+              "7now_delivery_analytics_space_gs_018",
+              "7now_delivery_analytics_space_gs_022",
+              "7now_delivery_analytics_space_gs_025",
+              "7now_delivery_analytics_space_gs_029",
+              "7now_delivery_analytics_space_gs_030"
+            ]
+          },
+          "next_action": "Soft cluster S001 dropped \u2014 every qid drifted out of judge-failing state. Cluster removed from this iteration's slate.",
+          "outcome": "info",
+          "reason_code": "soft_cluster_drift_recovered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "cluster_id": "S001",
+          "decision_type": "cluster_selected",
+          "iteration": 1,
+          "metrics": {
+            "cluster_dropped": true,
+            "drifted_qids": [
+              "7now_delivery_analytics_space_gs_001",
+              "7now_delivery_analytics_space_gs_002",
+              "7now_delivery_analytics_space_gs_004",
+              "7now_delivery_analytics_space_gs_006",
+              "7now_delivery_analytics_space_gs_007",
+              "7now_delivery_analytics_space_gs_008",
+              "7now_delivery_analytics_space_gs_010",
+              "7now_delivery_analytics_space_gs_014",
+              "7now_delivery_analytics_space_gs_016",
+              "7now_delivery_analytics_space_gs_017",
+              "7now_delivery_analytics_space_gs_018",
+              "7now_delivery_analytics_space_gs_022",
+              "7now_delivery_analytics_space_gs_025",
+              "7now_delivery_analytics_space_gs_029",
+              "7now_delivery_analytics_space_gs_030"
+            ]
+          },
+          "next_action": "Soft cluster S001 dropped \u2014 every qid drifted out of judge-failing state. Cluster removed from this iteration's slate.",
+          "outcome": "info",
+          "reason_code": "soft_cluster_drift_recovered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013",
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_PIPELINE",
+          "decision_type": "strategist_ag_emitted",
+          "expected_effect": "candidate=(unknown, single_qid)",
+          "iteration": 1,
+          "next_action": "AG shape is novel for this target; proceed to strategy.",
+          "outcome": "info",
+          "reason_code": "near_miss_ag_shape_differs",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013",
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address wrong_filter_condition on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 1,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "wrong_filter_condition"
+            ],
+            "source_clusters": [
+              "H001"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['wrong_filter_condition'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:wrong_filter_condition",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001",
+            "rca:rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch"
+          ],
+          "expected_effect": "Synthesis attempted for wrong_filter_condition; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 1,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Forced Lever-6 candidate would close the SQL-shape hard failure for the AG.",
+          "gate": "proposal_generation",
+          "iteration": 1,
+          "metrics": {
+            "cached": false,
+            "original_decline_iteration": null
+          },
+          "next_action": "Inspect the LLM transcript for this AG to confirm the decline rationale; consider widening the synthesizer archetype list.",
+          "observed_effect": "_generate_lever6_proposal returned no candidate; the AG retains the strategist's slate (which lacks an L6 add_sql_snippet_*).",
+          "outcome": "unresolved",
+          "reason_code": "lever6_force_llm_declined",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 produced zero proposals; root cause wrong_filter_condition did not match any patch shape.",
+          "iteration": 1,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Next iteration applies mark_evidence_gap for AG AG_DECOMPOSED_H001 on failure mode lever6_force_llm_declined.",
+          "gate": "proposal_failure_policy",
+          "iteration": 1,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "lever6_force_llm_declined",
+            "lever_set": [
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 0,
+            "rca_card_grounded": true,
+            "tried_lever_families": [
+              6
+            ]
+          },
+          "next_action": "mark_evidence_gap",
+          "outcome": "info",
+          "reason_code": "mark_evidence_gap",
+          "reason_detail": "LLM declined despite grounded RCA",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "iteration": 1,
+          "metrics": {
+            "policy_max_attempts": 1,
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Recovery policy permits up to 1 regeneration attempt(s) for this typed ungrounded reason.",
+          "outcome": "info",
+          "reason_code": "rca_classified_ungrounded",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "iteration": 1,
+          "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
+          "outcome": "info",
+          "reason_code": "rca_regeneration_triggered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "iteration": 1,
+          "metrics": {
+            "attempt_number": 1,
+            "attempted_evidence_sources": [
+              "failure_buckets"
+            ],
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Cluster proceeds to AG-emit with regenerated RCA card (Defect Plan 1 G1 grounding gate will not block).",
+          "outcome": "info",
+          "rca_id": "card_unknown_unknown",
+          "reason_code": "rca_regeneration_succeeded",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "iteration": 1,
+          "metrics": {
+            "policy_max_attempts": 1,
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Recovery policy permits up to 1 regeneration attempt(s) for this typed ungrounded reason.",
+          "outcome": "info",
+          "reason_code": "rca_classified_ungrounded",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "iteration": 1,
+          "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
+          "outcome": "info",
+          "reason_code": "rca_regeneration_triggered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "iteration": 1,
+          "metrics": {
+            "attempt_number": 1,
+            "attempted_evidence_sources": [
+              "failure_buckets"
+            ],
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Cluster proceeds to AG-emit with regenerated RCA card (Defect Plan 1 G1 grounding gate will not block).",
+          "outcome": "info",
+          "rca_id": "card_unknown_unknown",
+          "reason_code": "rca_regeneration_succeeded",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "strategist_ag_emitted",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 should produce proposals that resolve wrong_filter_condition: Result mismatch: expected 3 rows (hash=66330e11), got 6 rows (hash=3f056bd5). Check joins, filters, or aggregation logic in the generated SQL. on 1 target qid(s).",
+          "iteration": 1,
+          "next_action": "Emit proposals for AG",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "strategist_selected",
+          "root_cause": "wrong_filter_condition: Result mismatch: expected 3 rows (hash=66330e11), got 6 rows (hash=3f056bd5). Check joins, filters, or aggregation logic in the generated SQL.",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001"
+          ],
+          "expected_effect": "Proposal would address failure pattern on 1 target qid(s).",
+          "gate": "rca_groundedness",
+          "iteration": 1,
+          "metrics": {
+            "target_kind": "proposal",
+            "verdict_finding_id": ""
+          },
+          "next_action": "Strategist must re-target an RCA-grounded scope or skip this AG.",
+          "observed_effect": "Dropped at groundedness gate: rca_ungrounded.",
+          "outcome": "dropped",
+          "proposal_id": "P001",
+          "proposal_ids": [
+            "P001"
+          ],
+          "reason_code": "rca_ungrounded",
+          "reason_detail": "groundedness:proposal:rca_ungrounded",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "structural_repair_shape_gate"
+          ],
+          "expected_effect": "Structural-repair-shape gate enforces intended_patch_shape= on 1 target qid(s).",
+          "gate": "structural_repair_shape_gate",
+          "iteration": 1,
+          "metrics": {
+            "component_scores": {
+              "emitted_shape": "absent",
+              "intended_shape": "",
+              "narrow_replacement_available": false,
+              "value": 1.0
+            },
+            "emitted_patch_shape": "absent",
+            "gate_verdict": "admitted",
+            "intended_patch_shape": "",
+            "narrow_replacement_available": false,
+            "repairability_score": 1.0,
+            "terminal_reason": ""
+          },
+          "next_action": "Observe-only admission (no action)",
+          "observed_effect": "Verdict admitted: intended=, emitted=absent, narrow_replacement_available=False.",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "none",
+          "reason_detail": "intended=;emitted=absent;verdict=admitted;narrow_replacement_available=False",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "acceptance_decided",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 should land patches that improve 1 target qid(s).",
+          "iteration": 1,
+          "metrics": {
+            "out_of_target_regressed_count": 1,
+            "out_of_target_regressed_qids": [
+              "7now_delivery_analytics_space_gs_007"
+            ],
+            "passing_to_hard_regressed_count": 0,
+            "passing_to_hard_regressed_qids": [],
+            "protected_regressed_count": 0,
+            "regression_debt_count": 0,
+            "regression_debt_qids": [],
+            "soft_to_hard_regressed_count": 0,
+            "soft_to_hard_regressed_qids": [],
+            "target_delta_states": [
+              [
+                "7now_delivery_analytics_space_gs_013",
+                "still_hard"
+              ]
+            ],
+            "target_fixed_count": 0,
+            "target_fixed_qids": [],
+            "target_qids_count": 1,
+            "target_still_hard_count": 1,
+            "target_still_hard_qids": [
+              "7now_delivery_analytics_space_gs_013"
+            ],
+            "unknown_to_hard_regressed_count": 1,
+            "unknown_to_hard_regressed_qids": [
+              "7now_delivery_analytics_space_gs_007"
+            ]
+          },
+          "next_action": "Triage rollback reason; consider alternative RCA.",
+          "observed_effect": "Patches applied but eval regressed; reverted.",
+          "outcome": "rolled_back",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "post_arbiter_not_improved",
+          "reason_detail": "reason=post_arbiter_not_improved; target_qids=7now_delivery_analytics_space_gs_013; target_fixed_qids=(none); target_still_hard_qids=7now_delivery_analytics_space_gs_013; out_of_target_regressed_qids=7now_delivery_analytics_space_gs_007; regression_debt_qids=(none); protected_regressed_qids=(none); soft_to_hard_regressed_qids=(none); passing_to_hard_regressed_qids=(none); unknown_to_hard_regressed_qids=7now_delivery_analytics_space_gs_007",
+          "regression_qids": [
+            "7now_delivery_analytics_space_gs_007"
+          ],
+          "root_cause": "wrong_filter_condition: Result mismatch: expected 3 rows (hash=66330e11), got 6 rows (hash=3f056bd5). Check joins, filters, or aggregation logic in the generated SQL.",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "acceptance_decided",
+          "iteration": 1,
+          "metrics": {
+            "accepted_class": "loss",
+            "debt_classification": {},
+            "reflection": {
+              "delta_pp": -13.0,
+              "fixes_count": 0,
+              "passing_to_hard": [],
+              "protected_regressed": [],
+              "regressions_count": 1
+            },
+            "soft_signal_pass_rate": 0.0
+          },
+          "next_action": "No improvement OR previously-passing/protected QID regressed; rollback the candidate.",
+          "outcome": "rolled_back",
+          "reason_code": "tier_loss",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "7now_delivery_analytics_space_gs_013"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": [
+              {
+                "cluster_id": "H001",
+                "patch_type": "add_sql_snippet_filter",
+                "proposal_id": "P001",
+                "target_qids": [
+                  "7now_delivery_analytics_space_gs_013"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "ag_outcomes": {
+        "AG_DECOMPOSED_H001": "rolled_back"
+      },
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+        "H002": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse"
+      },
+      "iter_source_clusters_by_id": {
+        "H001": {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        "H002": {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      },
+      "lever5_gate_drops": [
+        {
+          "ag_id": "AG_DECOMPOSED_H001",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "wrong_filter_condition"
+          ],
+          "source_clusters": [
+            "H001"
+          ],
+          "target_lever": 5
+        }
+      ],
+      "metadata_failure_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      ],
+      "post_eval_passing_qids": []
+    },
+    "1": {
+      "iteration": 2,
+      "rows_json": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_026",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_002",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_001",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_012",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_004",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_019",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_029",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_018",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_028",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_007",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_016",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "neither_correct",
+          "question_id": "7now_delivery_analytics_space_gs_021",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_025",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_010",
+          "result_correctness": "yes"
+        }
+      ],
+      "eval_scope": "full",
+      "rolled_back": false,
+      "clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      ],
+      "soft_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_001",
+            "7now_delivery_analytics_space_gs_002",
+            "7now_delivery_analytics_space_gs_004",
+            "7now_delivery_analytics_space_gs_006",
+            "7now_delivery_analytics_space_gs_007",
+            "7now_delivery_analytics_space_gs_008",
+            "7now_delivery_analytics_space_gs_010",
+            "7now_delivery_analytics_space_gs_014",
+            "7now_delivery_analytics_space_gs_016",
+            "7now_delivery_analytics_space_gs_017",
+            "7now_delivery_analytics_space_gs_018",
+            "7now_delivery_analytics_space_gs_022",
+            "7now_delivery_analytics_space_gs_025",
+            "7now_delivery_analytics_space_gs_029",
+            "7now_delivery_analytics_space_gs_030"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S003",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_024",
+            "7now_delivery_analytics_space_gs_028"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_012"
+          ],
+          "root_cause": "column_disambiguation"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S004",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_021"
+          ],
+          "root_cause": "wrong_aggregation"
+        }
+      ],
+      "decision_records": [
+        {
+          "cluster_id": "H001",
+          "decision_type": "lever_rotation_decided",
+          "iteration": 1,
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "cluster_id": "H002",
+          "decision_type": "lever_rotation_decided",
+          "iteration": 1,
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_017"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_017"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_017 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_017",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_017"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_008"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_008"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_008 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_008",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_008"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_013"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_013 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_013",
+          "reason_code": "hard_failure",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_026"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_026 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_026",
+          "reason_code": "hard_failure",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_002"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_002"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_002 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_002",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_002"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_001"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_001"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_001 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_001",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_001"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_014"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_014"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_014 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_014",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_014"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_012"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_012"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_012 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_012",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_012"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_004"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_004"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_004 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_004",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_004"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_030"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_030"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_030 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_030",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_030"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_019"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_019"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_019 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_019",
+          "reason_code": "gt_correction",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_019"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_029"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_029"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_029 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_029",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_029"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_018"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_018"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_018 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_018",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_018"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_028"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_028"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_028 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_028",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_028"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_009"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_009"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_009 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_009",
+          "reason_code": "gt_correction",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_024"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_024"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_024 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_024",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_022"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_022"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_022 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_022",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_022"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_006"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_006"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_006 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_006",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_006"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_007"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_007"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_007 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_007",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_007"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_016"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_016"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_016 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_016",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_016"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_021"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_021"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_021 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_021",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_021"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_025"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_025"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_025 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_025",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_025"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_010"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_010"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_010 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 2,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_010",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_010"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves wrong_filter_condition for 1 qid(s).",
+          "iteration": 2,
+          "next_action": "Generate proposals for H001.",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "clustered",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves plural_top_n_collapse for 1 qid(s).",
+          "iteration": 2,
+          "next_action": "Generate proposals for H002.",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "clustered",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H001",
+            "rca:rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch"
+          ],
+          "expected_effect": "RCA rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch provides causal grounding for wrong_filter_condition on 1 qid(s).",
+          "iteration": 2,
+          "next_action": "Strategist should emit AG targeting H001",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "rca_grounded",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H002",
+            "rca:rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "RCA rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse provides causal grounding for plural_top_n_collapse on 1 qid(s).",
+          "iteration": 2,
+          "next_action": "Strategist should emit AG targeting H002",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "rca_grounded",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "cluster_id": "S001",
+          "decision_type": "cluster_selected",
+          "iteration": 2,
+          "metrics": {
+            "cluster_dropped": true,
+            "drifted_qids": [
+              "7now_delivery_analytics_space_gs_001",
+              "7now_delivery_analytics_space_gs_002",
+              "7now_delivery_analytics_space_gs_004",
+              "7now_delivery_analytics_space_gs_006",
+              "7now_delivery_analytics_space_gs_007",
+              "7now_delivery_analytics_space_gs_008",
+              "7now_delivery_analytics_space_gs_010",
+              "7now_delivery_analytics_space_gs_014",
+              "7now_delivery_analytics_space_gs_016",
+              "7now_delivery_analytics_space_gs_017",
+              "7now_delivery_analytics_space_gs_018",
+              "7now_delivery_analytics_space_gs_022",
+              "7now_delivery_analytics_space_gs_025",
+              "7now_delivery_analytics_space_gs_029",
+              "7now_delivery_analytics_space_gs_030"
+            ]
+          },
+          "next_action": "Soft cluster S001 dropped \u2014 every qid drifted out of judge-failing state. Cluster removed from this iteration's slate.",
+          "outcome": "info",
+          "reason_code": "soft_cluster_drift_recovered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "cluster_id": "S001",
+          "decision_type": "cluster_selected",
+          "iteration": 2,
+          "metrics": {
+            "cluster_dropped": true,
+            "drifted_qids": [
+              "7now_delivery_analytics_space_gs_001",
+              "7now_delivery_analytics_space_gs_002",
+              "7now_delivery_analytics_space_gs_004",
+              "7now_delivery_analytics_space_gs_006",
+              "7now_delivery_analytics_space_gs_007",
+              "7now_delivery_analytics_space_gs_008",
+              "7now_delivery_analytics_space_gs_010",
+              "7now_delivery_analytics_space_gs_014",
+              "7now_delivery_analytics_space_gs_016",
+              "7now_delivery_analytics_space_gs_017",
+              "7now_delivery_analytics_space_gs_018",
+              "7now_delivery_analytics_space_gs_022",
+              "7now_delivery_analytics_space_gs_025",
+              "7now_delivery_analytics_space_gs_029",
+              "7now_delivery_analytics_space_gs_030"
+            ]
+          },
+          "next_action": "Soft cluster S001 dropped \u2014 every qid drifted out of judge-failing state. Cluster removed from this iteration's slate.",
+          "outcome": "info",
+          "reason_code": "soft_cluster_drift_recovered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013",
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_PIPELINE",
+          "decision_type": "strategist_ag_emitted",
+          "expected_effect": "candidate=(unknown, single_qid)",
+          "iteration": 2,
+          "next_action": "AG shape is novel for this target; proceed to strategy.",
+          "outcome": "info",
+          "reason_code": "near_miss_ag_shape_differs",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013",
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address wrong_filter_condition on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 2,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "wrong_filter_condition"
+            ],
+            "source_clusters": [
+              "H001"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['wrong_filter_condition'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:wrong_filter_condition",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001",
+            "rca:rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch"
+          ],
+          "expected_effect": "Synthesis attempted for wrong_filter_condition; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 2,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Forced Lever-6 candidate would close the SQL-shape hard failure for the AG.",
+          "gate": "proposal_generation",
+          "iteration": 2,
+          "metrics": {
+            "cached": false,
+            "original_decline_iteration": null
+          },
+          "next_action": "Inspect the LLM transcript for this AG to confirm the decline rationale; consider widening the synthesizer archetype list.",
+          "observed_effect": "_generate_lever6_proposal returned no candidate; the AG retains the strategist's slate (which lacks an L6 add_sql_snippet_*).",
+          "outcome": "unresolved",
+          "reason_code": "lever6_force_llm_declined",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 produced zero proposals; root cause wrong_filter_condition did not match any patch shape.",
+          "iteration": 2,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Next iteration applies escalate_stalemate for AG AG_DECOMPOSED_H001 on failure mode lever6_force_llm_declined.",
+          "gate": "proposal_failure_policy",
+          "iteration": 2,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "lever6_force_llm_declined",
+            "lever_set": [
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 1,
+            "rca_card_grounded": true,
+            "tried_lever_families": [
+              6
+            ]
+          },
+          "next_action": "escalate_stalemate",
+          "outcome": "info",
+          "reason_code": "escalate_stalemate",
+          "reason_detail": "stalemate: prior_identical_failure_count=1 for signature=",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 produced zero proposals; root cause other did not match any patch shape.",
+          "iteration": 2,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "other",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Next iteration applies request_evidence_gathering for AG AG_DECOMPOSED_H001 on failure mode proposal_generation_empty.",
+          "gate": "proposal_failure_policy",
+          "iteration": 2,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "proposal_generation_empty",
+            "lever_set": [
+              6,
+              1,
+              2,
+              5
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 0,
+            "rca_card_grounded": false,
+            "tried_lever_families": [
+              6,
+              1,
+              2,
+              5
+            ]
+          },
+          "next_action": "request_evidence_gathering",
+          "outcome": "info",
+          "reason_code": "request_evidence_gathering",
+          "reason_detail": "rca_card_grounded=False",
+          "root_cause": "other",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "iteration": 2,
+          "metrics": {
+            "policy_max_attempts": 1,
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Recovery policy permits up to 1 regeneration attempt(s) for this typed ungrounded reason.",
+          "outcome": "info",
+          "reason_code": "rca_classified_ungrounded",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "iteration": 2,
+          "metrics": {
+            "attempt_number": 1,
+            "attempted_evidence_sources": [
+              "failure_buckets"
+            ],
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Cluster proceeds to AG-emit with regenerated RCA card (Defect Plan 1 G1 grounding gate will not block).",
+          "outcome": "info",
+          "rca_id": "card_unknown_unknown",
+          "reason_code": "rca_regeneration_succeeded",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "7now_delivery_analytics_space_gs_013"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": []
+          }
+        ]
+      },
+      "ag_outcomes": {},
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+        "H002": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse"
+      },
+      "iter_source_clusters_by_id": {
+        "H001": {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        "H002": {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      },
+      "lever5_gate_drops": [
+        {
+          "ag_id": "AG_DECOMPOSED_H001",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "wrong_filter_condition"
+          ],
+          "source_clusters": [
+            "H001"
+          ],
+          "target_lever": 5
+        }
+      ],
+      "metadata_failure_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      ],
+      "post_eval_passing_qids": []
+    },
+    "2": {
+      "iteration": 3,
+      "rows_json": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_026",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_002",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_001",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_012",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_004",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_019",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_029",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_018",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_028",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_007",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_016",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "neither_correct",
+          "question_id": "7now_delivery_analytics_space_gs_021",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_025",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_010",
+          "result_correctness": "yes"
+        }
+      ],
+      "eval_scope": "full",
+      "rolled_back": false,
+      "clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      ],
+      "soft_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_001",
+            "7now_delivery_analytics_space_gs_002",
+            "7now_delivery_analytics_space_gs_004",
+            "7now_delivery_analytics_space_gs_006",
+            "7now_delivery_analytics_space_gs_007",
+            "7now_delivery_analytics_space_gs_008",
+            "7now_delivery_analytics_space_gs_010",
+            "7now_delivery_analytics_space_gs_014",
+            "7now_delivery_analytics_space_gs_016",
+            "7now_delivery_analytics_space_gs_017",
+            "7now_delivery_analytics_space_gs_018",
+            "7now_delivery_analytics_space_gs_022",
+            "7now_delivery_analytics_space_gs_025",
+            "7now_delivery_analytics_space_gs_029",
+            "7now_delivery_analytics_space_gs_030"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S003",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_024",
+            "7now_delivery_analytics_space_gs_028"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_012"
+          ],
+          "root_cause": "column_disambiguation"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S004",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_021"
+          ],
+          "root_cause": "wrong_aggregation"
+        }
+      ],
+      "decision_records": [
+        {
+          "cluster_id": "H002",
+          "decision_type": "lever_rotation_decided",
+          "iteration": 2,
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_017"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_017"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_017 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_017",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_017"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_008"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_008"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_008 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_008",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_008"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_013"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_013 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_013",
+          "reason_code": "hard_failure",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_026"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_026 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_026",
+          "reason_code": "hard_failure",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_002"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_002"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_002 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_002",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_002"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_001"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_001"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_001 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_001",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_001"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_014"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_014"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_014 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_014",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_014"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_012"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_012"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_012 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_012",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_012"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_004"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_004"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_004 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_004",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_004"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_030"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_030"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_030 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_030",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_030"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_019"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_019"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_019 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_019",
+          "reason_code": "gt_correction",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_019"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_029"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_029"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_029 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_029",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_029"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_018"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_018"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_018 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_018",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_018"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_028"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_028"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_028 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_028",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_028"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_009"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_009"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_009 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_009",
+          "reason_code": "gt_correction",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_024"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_024"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_024 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_024",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_022"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_022"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_022 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_022",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_022"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_006"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_006"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_006 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_006",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_006"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_007"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_007"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_007 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_007",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_007"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_016"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_016"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_016 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_016",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_016"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_021"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_021"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_021 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_021",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_021"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_025"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_025"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_025 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_025",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_025"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_010"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_010"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_010 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 3,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_010",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_010"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves wrong_filter_condition for 1 qid(s).",
+          "iteration": 3,
+          "next_action": "Generate proposals for H001.",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "clustered",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves plural_top_n_collapse for 1 qid(s).",
+          "iteration": 3,
+          "next_action": "Generate proposals for H002.",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "clustered",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H001",
+            "rca:rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch"
+          ],
+          "expected_effect": "RCA rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch provides causal grounding for wrong_filter_condition on 1 qid(s).",
+          "iteration": 3,
+          "next_action": "Strategist should emit AG targeting H001",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "rca_grounded",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H002",
+            "rca:rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "RCA rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse provides causal grounding for plural_top_n_collapse on 1 qid(s).",
+          "iteration": 3,
+          "next_action": "Strategist should emit AG targeting H002",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "rca_grounded",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "cluster_id": "S001",
+          "decision_type": "cluster_selected",
+          "iteration": 3,
+          "metrics": {
+            "cluster_dropped": true,
+            "drifted_qids": [
+              "7now_delivery_analytics_space_gs_001",
+              "7now_delivery_analytics_space_gs_002",
+              "7now_delivery_analytics_space_gs_004",
+              "7now_delivery_analytics_space_gs_006",
+              "7now_delivery_analytics_space_gs_007",
+              "7now_delivery_analytics_space_gs_008",
+              "7now_delivery_analytics_space_gs_010",
+              "7now_delivery_analytics_space_gs_014",
+              "7now_delivery_analytics_space_gs_016",
+              "7now_delivery_analytics_space_gs_017",
+              "7now_delivery_analytics_space_gs_018",
+              "7now_delivery_analytics_space_gs_022",
+              "7now_delivery_analytics_space_gs_025",
+              "7now_delivery_analytics_space_gs_029",
+              "7now_delivery_analytics_space_gs_030"
+            ]
+          },
+          "next_action": "Soft cluster S001 dropped \u2014 every qid drifted out of judge-failing state. Cluster removed from this iteration's slate.",
+          "outcome": "info",
+          "reason_code": "soft_cluster_drift_recovered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "cluster_id": "S001",
+          "decision_type": "cluster_selected",
+          "iteration": 3,
+          "metrics": {
+            "cluster_dropped": true,
+            "drifted_qids": [
+              "7now_delivery_analytics_space_gs_001",
+              "7now_delivery_analytics_space_gs_002",
+              "7now_delivery_analytics_space_gs_004",
+              "7now_delivery_analytics_space_gs_006",
+              "7now_delivery_analytics_space_gs_007",
+              "7now_delivery_analytics_space_gs_008",
+              "7now_delivery_analytics_space_gs_010",
+              "7now_delivery_analytics_space_gs_014",
+              "7now_delivery_analytics_space_gs_016",
+              "7now_delivery_analytics_space_gs_017",
+              "7now_delivery_analytics_space_gs_018",
+              "7now_delivery_analytics_space_gs_022",
+              "7now_delivery_analytics_space_gs_025",
+              "7now_delivery_analytics_space_gs_029",
+              "7now_delivery_analytics_space_gs_030"
+            ]
+          },
+          "next_action": "Soft cluster S001 dropped \u2014 every qid drifted out of judge-failing state. Cluster removed from this iteration's slate.",
+          "outcome": "info",
+          "reason_code": "soft_cluster_drift_recovered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address plural_top_n_collapse on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 3,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "plural_top_n_collapse"
+            ],
+            "source_clusters": [
+              "H002"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['plural_top_n_collapse'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:plural_top_n_collapse",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002",
+            "rca:rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "Synthesis attempted for plural_top_n_collapse; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 3,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Forced Lever-6 candidate would close the SQL-shape hard failure for the AG.",
+          "gate": "proposal_generation",
+          "iteration": 3,
+          "metrics": {
+            "cached": false,
+            "original_decline_iteration": null
+          },
+          "next_action": "Inspect the LLM transcript for this AG to confirm the decline rationale; consider widening the synthesizer archetype list.",
+          "observed_effect": "_generate_lever6_proposal returned no candidate; the AG retains the strategist's slate (which lacks an L6 add_sql_snippet_*).",
+          "outcome": "unresolved",
+          "reason_code": "lever6_force_llm_declined",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H002 produced zero proposals; root cause plural_top_n_collapse did not match any patch shape.",
+          "iteration": 3,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Next iteration applies mark_evidence_gap for AG AG_DECOMPOSED_H002 on failure mode lever6_force_llm_declined.",
+          "gate": "proposal_failure_policy",
+          "iteration": 3,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "lever6_force_llm_declined",
+            "lever_set": [
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 0,
+            "rca_card_grounded": true,
+            "tried_lever_families": [
+              6
+            ]
+          },
+          "next_action": "mark_evidence_gap",
+          "outcome": "info",
+          "reason_code": "mark_evidence_gap",
+          "reason_detail": "LLM declined despite grounded RCA",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H002 produced zero proposals; root cause other did not match any patch shape.",
+          "iteration": 3,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "other",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_DECOMPOSED_H002",
+          "cluster_id": "H002",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H002",
+            "cluster:H002"
+          ],
+          "expected_effect": "Next iteration applies request_evidence_gathering for AG AG_DECOMPOSED_H002 on failure mode proposal_generation_empty.",
+          "gate": "proposal_failure_policy",
+          "iteration": 3,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "proposal_generation_empty",
+            "lever_set": [
+              5,
+              1,
+              2,
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 0,
+            "rca_card_grounded": false,
+            "tried_lever_families": [
+              5,
+              1,
+              2,
+              6
+            ]
+          },
+          "next_action": "request_evidence_gathering",
+          "outcome": "info",
+          "reason_code": "request_evidence_gathering",
+          "reason_detail": "rca_card_grounded=False",
+          "root_cause": "other",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "iteration": 3,
+          "metrics": {
+            "policy_max_attempts": 1,
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Recovery policy permits up to 1 regeneration attempt(s) for this typed ungrounded reason.",
+          "outcome": "info",
+          "reason_code": "rca_classified_ungrounded",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "iteration": 3,
+          "metrics": {
+            "attempt_number": 1,
+            "attempted_evidence_sources": [
+              "failure_buckets"
+            ],
+            "ungrounded_reason": "no_parent_rca"
+          },
+          "next_action": "Cluster proceeds to AG-emit with regenerated RCA card (Defect Plan 1 G1 grounding gate will not block).",
+          "outcome": "info",
+          "rca_id": "card_unknown_unknown",
+          "reason_code": "rca_regeneration_succeeded",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "7now_delivery_analytics_space_gs_026"
+            ],
+            "id": "AG_DECOMPOSED_H002",
+            "patches": []
+          }
+        ]
+      },
+      "ag_outcomes": {},
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+        "H002": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse"
+      },
+      "iter_source_clusters_by_id": {
+        "H001": {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        "H002": {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      },
+      "lever5_gate_drops": [
+        {
+          "ag_id": "AG_DECOMPOSED_H002",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "plural_top_n_collapse"
+          ],
+          "source_clusters": [
+            "H002"
+          ],
+          "target_lever": 5
+        }
+      ],
+      "metadata_failure_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      ],
+      "post_eval_passing_qids": []
+    },
+    "3": {
+      "iteration": 4,
+      "rows_json": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_026",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_002",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_001",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_012",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "7now_delivery_analytics_space_gs_004",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_019",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_029",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_018",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_028",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "genie_correct",
+          "question_id": "7now_delivery_analytics_space_gs_007",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_016",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "neither_correct",
+          "question_id": "7now_delivery_analytics_space_gs_021",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_025",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "7now_delivery_analytics_space_gs_010",
+          "result_correctness": "yes"
+        }
+      ],
+      "eval_scope": "full",
+      "rolled_back": false,
+      "clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      ],
+      "soft_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_001",
+            "7now_delivery_analytics_space_gs_002",
+            "7now_delivery_analytics_space_gs_004",
+            "7now_delivery_analytics_space_gs_006",
+            "7now_delivery_analytics_space_gs_007",
+            "7now_delivery_analytics_space_gs_008",
+            "7now_delivery_analytics_space_gs_010",
+            "7now_delivery_analytics_space_gs_014",
+            "7now_delivery_analytics_space_gs_016",
+            "7now_delivery_analytics_space_gs_017",
+            "7now_delivery_analytics_space_gs_018",
+            "7now_delivery_analytics_space_gs_022",
+            "7now_delivery_analytics_space_gs_025",
+            "7now_delivery_analytics_space_gs_029",
+            "7now_delivery_analytics_space_gs_030"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S003",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_024",
+            "7now_delivery_analytics_space_gs_028"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_012"
+          ],
+          "root_cause": "column_disambiguation"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "S004",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_021"
+          ],
+          "root_cause": "wrong_aggregation"
+        }
+      ],
+      "decision_records": [
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_017"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_017"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_017 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_017",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_017"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_008"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_008"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_008 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_008",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_008"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_013"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_013 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_013",
+          "reason_code": "hard_failure",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_026"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_026 classified as hard; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_026",
+          "reason_code": "hard_failure",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_002"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_002"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_002 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_002",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_002"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_001"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_001"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_001 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_001",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_001"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_014"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_014"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_014 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_014",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_014"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_012"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_012"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_012 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_012",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_012"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_004"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_004"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_004 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_004",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_004"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_030"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_030"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_030 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_030",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_030"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_019"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_019"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_019 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_019",
+          "reason_code": "gt_correction",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_019"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_029"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_029"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_029 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_029",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_029"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_018"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_018"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_018 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_018",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_018"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_028"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_028"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_028 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_028",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_028"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_009"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_009"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_009 classified as gt_correction; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_009",
+          "reason_code": "gt_correction",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_009"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_024"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_024"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_024 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_024",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_024"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_022"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_022"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_022 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_022",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_022"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_006"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_006"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_006 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_006",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_006"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_007"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_007"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_007 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_007",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_007"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_016"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_016"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_016 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_016",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_016"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_021"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_021"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_021 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_021",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_021"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_025"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_025"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_025 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_025",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_025"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_010"
+          ],
+          "decision_type": "eval_classified",
+          "evidence_refs": [
+            "eval:7now_delivery_analytics_space_gs_010"
+          ],
+          "expected_effect": "Qid 7now_delivery_analytics_space_gs_010 classified as soft; downstream stages decide whether to act on it.",
+          "iteration": 4,
+          "outcome": "info",
+          "question_id": "7now_delivery_analytics_space_gs_010",
+          "reason_code": "soft_signal",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_010"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H001"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves wrong_filter_condition for 1 qid(s).",
+          "iteration": 4,
+          "next_action": "Generate proposals for H001.",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "clustered",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "cluster_selected",
+          "evidence_refs": [
+            "cluster:H002"
+          ],
+          "expected_effect": "Strategist should emit an AG that resolves plural_top_n_collapse for 1 qid(s).",
+          "iteration": 4,
+          "next_action": "Generate proposals for H002.",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "clustered",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "cluster_id": "H001",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H001",
+            "rca:rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch"
+          ],
+          "expected_effect": "RCA rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch provides causal grounding for wrong_filter_condition on 1 qid(s).",
+          "iteration": 4,
+          "next_action": "Strategist should emit AG targeting H001",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "rca_grounded",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "cluster_id": "H002",
+          "decision_type": "rca_formed",
+          "evidence_refs": [
+            "cluster:H002",
+            "rca:rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse"
+          ],
+          "expected_effect": "RCA rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse provides causal grounding for plural_top_n_collapse on 1 qid(s).",
+          "iteration": 4,
+          "next_action": "Strategist should emit AG targeting H002",
+          "outcome": "info",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "rca_grounded",
+          "root_cause": "plural_top_n_collapse",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H002"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "cluster_id": "S001",
+          "decision_type": "cluster_selected",
+          "iteration": 4,
+          "metrics": {
+            "cluster_dropped": true,
+            "drifted_qids": [
+              "7now_delivery_analytics_space_gs_001",
+              "7now_delivery_analytics_space_gs_002",
+              "7now_delivery_analytics_space_gs_004",
+              "7now_delivery_analytics_space_gs_006",
+              "7now_delivery_analytics_space_gs_007",
+              "7now_delivery_analytics_space_gs_008",
+              "7now_delivery_analytics_space_gs_010",
+              "7now_delivery_analytics_space_gs_014",
+              "7now_delivery_analytics_space_gs_016",
+              "7now_delivery_analytics_space_gs_017",
+              "7now_delivery_analytics_space_gs_018",
+              "7now_delivery_analytics_space_gs_022",
+              "7now_delivery_analytics_space_gs_025",
+              "7now_delivery_analytics_space_gs_029",
+              "7now_delivery_analytics_space_gs_030"
+            ]
+          },
+          "next_action": "Soft cluster S001 dropped \u2014 every qid drifted out of judge-failing state. Cluster removed from this iteration's slate.",
+          "outcome": "info",
+          "reason_code": "soft_cluster_drift_recovered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "cluster_id": "S001",
+          "decision_type": "cluster_selected",
+          "iteration": 4,
+          "metrics": {
+            "cluster_dropped": true,
+            "drifted_qids": [
+              "7now_delivery_analytics_space_gs_001",
+              "7now_delivery_analytics_space_gs_002",
+              "7now_delivery_analytics_space_gs_004",
+              "7now_delivery_analytics_space_gs_006",
+              "7now_delivery_analytics_space_gs_007",
+              "7now_delivery_analytics_space_gs_008",
+              "7now_delivery_analytics_space_gs_010",
+              "7now_delivery_analytics_space_gs_014",
+              "7now_delivery_analytics_space_gs_016",
+              "7now_delivery_analytics_space_gs_017",
+              "7now_delivery_analytics_space_gs_018",
+              "7now_delivery_analytics_space_gs_022",
+              "7now_delivery_analytics_space_gs_025",
+              "7now_delivery_analytics_space_gs_029",
+              "7now_delivery_analytics_space_gs_030"
+            ]
+          },
+          "next_action": "Soft cluster S001 dropped \u2014 every qid drifted out of judge-failing state. Cluster removed from this iteration's slate.",
+          "outcome": "info",
+          "reason_code": "soft_cluster_drift_recovered",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013",
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "ag_id": "AG_PIPELINE",
+          "decision_type": "strategist_ag_emitted",
+          "expected_effect": "candidate=(unknown, single_qid)",
+          "iteration": 4,
+          "next_action": "AG shape is novel for this target; proceed to strategy.",
+          "outcome": "info",
+          "reason_code": "near_miss_ag_shape_differs",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013",
+            "7now_delivery_analytics_space_gs_026"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address wrong_filter_condition on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 4,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "wrong_filter_condition"
+            ],
+            "source_clusters": [
+              "H001"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['wrong_filter_condition'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:wrong_filter_condition",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "decision_type": "gate_decision",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "lever5_structural_gate"
+          ],
+          "expected_effect": "Lever 5 instruction would address wrong_filter_condition on 1 target qid(s).",
+          "gate": "lever5_structural_gate",
+          "iteration": 4,
+          "metrics": {
+            "had_example_sqls": false,
+            "instruction_guidance_dropped": false,
+            "instruction_sections_dropped": false,
+            "root_causes": [
+              "wrong_filter_condition"
+            ],
+            "source_clusters": [
+              "H001"
+            ],
+            "target_lever": 5
+          },
+          "next_action": "Re-route via Lever 6 (sql_snippet) or attach example_sql via cluster-driven synthesis",
+          "observed_effect": "Dropped: SQL-shape root cause(s) ['wrong_filter_condition'] require structural fix; no example_sql attached.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "structural_gate_dropped_instruction_only",
+          "reason_detail": "sql_shape_without_example_sql:wrong_filter_condition",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001",
+            "rca:rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch"
+          ],
+          "expected_effect": "Synthesis attempted for wrong_filter_condition; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 4,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001",
+            "rca:rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch"
+          ],
+          "expected_effect": "Synthesis attempted for wrong_filter_condition; no archetype produced a structural candidate.",
+          "gate": "cluster_driven_synthesis",
+          "iteration": 4,
+          "metrics": {
+            "attempted_archetypes": [],
+            "proposals_total": 0,
+            "skipped_reason": "",
+            "synthesis_attempted": true
+          },
+          "next_action": "Regenerate RCA with sharper grounding, or escalate to operator review.",
+          "outcome": "dropped",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+          "reason_code": "no_structural_candidate",
+          "reason_detail": "attempted_archetypes=(none)",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Forced Lever-6 candidate would close the SQL-shape hard failure for the AG.",
+          "gate": "proposal_generation",
+          "iteration": 4,
+          "metrics": {
+            "cached": false,
+            "original_decline_iteration": null
+          },
+          "next_action": "Inspect the LLM transcript for this AG to confirm the decline rationale; consider widening the synthesizer archetype list.",
+          "observed_effect": "_generate_lever6_proposal returned no candidate; the AG retains the strategist's slate (which lacks an L6 add_sql_snippet_*).",
+          "outcome": "unresolved",
+          "reason_code": "lever6_force_llm_declined",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 produced zero proposals; root cause wrong_filter_condition did not match any patch shape.",
+          "iteration": 4,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Next iteration applies escalate_stalemate for AG AG_DECOMPOSED_H001 on failure mode lever6_force_llm_declined.",
+          "gate": "proposal_failure_policy",
+          "iteration": 4,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "lever6_force_llm_declined",
+            "lever_set": [
+              6
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 2,
+            "rca_card_grounded": true,
+            "tried_lever_families": [
+              6
+            ]
+          },
+          "next_action": "escalate_stalemate",
+          "outcome": "info",
+          "reason_code": "escalate_stalemate",
+          "reason_detail": "stalemate: prior_identical_failure_count=2 for signature=",
+          "root_cause": "wrong_filter_condition",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_generated",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "AG AG_DECOMPOSED_H001 produced zero proposals; root cause other did not match any patch shape.",
+          "iteration": 4,
+          "metrics": {
+            "proposals_total": 0
+          },
+          "next_action": "Regenerate RCA, broaden lever set, or escalate to operator review.",
+          "outcome": "dropped",
+          "reason_code": "proposal_generation_empty",
+          "root_cause": "other",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        },
+        {
+          "affected_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "ag_id": "AG_DECOMPOSED_H001",
+          "cluster_id": "H001",
+          "decision_type": "proposal_failure_decided",
+          "evidence_refs": [
+            "ag:AG_DECOMPOSED_H001",
+            "cluster:H001"
+          ],
+          "expected_effect": "Next iteration applies escalate_stalemate for AG AG_DECOMPOSED_H001 on failure mode proposal_generation_empty.",
+          "gate": "proposal_failure_policy",
+          "iteration": 4,
+          "metrics": {
+            "ag_source_cluster_count": 1,
+            "cluster_signature": "",
+            "failure_mode": "proposal_generation_empty",
+            "lever_set": [
+              6,
+              1,
+              2,
+              5
+            ],
+            "prior_failure_count": 0,
+            "prior_identical_failure_count": 1,
+            "rca_card_grounded": false,
+            "tried_lever_families": [
+              6,
+              1,
+              2,
+              5
+            ]
+          },
+          "next_action": "escalate_stalemate",
+          "outcome": "info",
+          "reason_code": "escalate_stalemate",
+          "reason_detail": "stalemate: prior_identical_failure_count=1 for signature=",
+          "root_cause": "other",
+          "run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd",
+          "source_cluster_ids": [
+            "H001"
+          ],
+          "target_qids": [
+            "7now_delivery_analytics_space_gs_013"
+          ]
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "7now_delivery_analytics_space_gs_013"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": []
+          }
+        ]
+      },
+      "ag_outcomes": {},
+      "iter_rca_id_by_cluster": {
+        "H001": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
+        "H002": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse"
+      },
+      "iter_source_clusters_by_id": {
+        "H001": {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        "H002": {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      },
+      "lever5_gate_drops": [
+        {
+          "ag_id": "AG_DECOMPOSED_H001",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "wrong_filter_condition"
+          ],
+          "source_clusters": [
+            "H001"
+          ],
+          "target_lever": 5
+        },
+        {
+          "ag_id": "AG_DECOMPOSED_H001",
+          "had_example_sqls": false,
+          "instruction_guidance_dropped": false,
+          "instruction_sections_dropped": false,
+          "root_causes": [
+            "wrong_filter_condition"
+          ],
+          "source_clusters": [
+            "H001"
+          ],
+          "target_lever": 5
+        }
+      ],
+      "metadata_failure_clusters": [
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H001",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_013"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "asi_failure_type": "other",
+          "cluster_id": "H002",
+          "question_ids": [
+            "7now_delivery_analytics_space_gs_026"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        }
+      ],
+      "post_eval_passing_qids": []
+    }
   },
   "rca_cards_by_cluster": {},
   "miss_policy": "prompt_sha_only"

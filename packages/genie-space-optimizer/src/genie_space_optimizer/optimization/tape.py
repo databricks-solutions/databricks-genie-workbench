@@ -117,6 +117,19 @@ class TapeEntry:
     response_metadata: dict
 
 
+# Phase 3.6.2 E1 (2026-05-18) — tape format version. Bumped each
+# time the on-disk schema gains a new field. ``from_json_file``
+# tolerates older versions for back-compat read; capture writes
+# the current version.
+#   v1 — LLM entries + evals_by_iteration + clusters_by_iteration
+#   v2 — Phase 3.5 adds llm_call_log shape + _KNOWN_STAGES vocab
+#   v3 — Phase 3.6 E1 adds iteration_payloads (full per-iteration
+#        row dicts from genie_opt_iterations, served by replay
+#        stubs for state.load_latest_full_iteration et al.)
+TAPE_FORMAT_VERSION = 3
+_SUPPORTED_FORMAT_VERSIONS: frozenset[int] = frozenset({1, 2, 3})
+
+
 @dataclass
 class LeverLoopTape:
     tape_id: str
@@ -126,6 +139,14 @@ class LeverLoopTape:
     evals_by_iteration: dict[int, list[dict]] = field(default_factory=dict)
     clusters_by_iteration: dict[int, list[dict]] = field(default_factory=dict)
     rca_cards_by_cluster: dict[str, dict] = field(default_factory=dict)
+    # Phase 3.6.2 E1 — per-iteration row dicts from
+    # ``genie_opt_iterations`` (rows_json, scores_json,
+    # soft_signal_qids, mlflow_run_id, evaluated_count, eval_scope,
+    # rolled_back, ...). Replay stubs serve ``state.load_*`` calls
+    # from this dict instead of letting them return None under a
+    # MagicMock spark.
+    iteration_payloads: dict[int, dict] = field(default_factory=dict)
+    format_version: int = TAPE_FORMAT_VERSION
     miss_policy: MissPolicy = "raise"
 
     @classmethod
@@ -167,8 +188,28 @@ class LeverLoopTape:
                 "(tape may be from a newer or stale capture; loading anyway)",
                 sorted(unknown_stages),
             )
+        # Phase 3.6.2 E1 (2026-05-18) — format-version gate. v1 and v2
+        # tapes load with their pre-v3 fields; ``iteration_payloads``
+        # defaults to empty when missing. v3 tapes MUST carry a
+        # non-empty ``iteration_payloads`` dict.
+        version_raw = payload.get("format_version")
+        if version_raw is None:
+            # Legacy capture (pre-Phase 3.6.2). Treat as v1/v2.
+            inferred_version = 2 if "llm_call_log" not in payload else 2
+            format_version = 2 if "iteration_payloads" not in payload else inferred_version
+        else:
+            format_version = int(version_raw)
+        if format_version not in _SUPPORTED_FORMAT_VERSIONS:
+            raise ValueError(
+                f"LeverLoopTape: unsupported format_version "
+                f"{format_version!r} (supported: "
+                f"{sorted(_SUPPORTED_FORMAT_VERSIONS)}). Recapture "
+                f"the tape with the current capture script."
+            )
+
         evals_raw = payload.get("evals_by_iteration") or {}
         clusters_raw = payload.get("clusters_by_iteration") or {}
+        iter_payloads_raw = payload.get("iteration_payloads") or {}
 
         # Phase 3.6.1 (2026-05-18) — tape side-tables MUST be
         # 0-indexed. The replay harness queries with ``_iter_num - 1``
@@ -185,9 +226,14 @@ class LeverLoopTape:
         clusters_by_iteration = {
             int(k): list(v) for k, v in clusters_raw.items()
         }
+        iteration_payloads = {
+            int(k): dict(v) for k, v in iter_payloads_raw.items()
+            if isinstance(v, dict)
+        }
         for label, table in (
             ("evals_by_iteration", evals_by_iteration),
             ("clusters_by_iteration", clusters_by_iteration),
+            ("iteration_payloads", iteration_payloads),
         ):
             if not table:
                 continue
@@ -201,6 +247,18 @@ class LeverLoopTape:
                     f"``scripts/capture_lever_loop_tape_from_export.py``."
                 )
 
+        # Phase 3.6.2 E1 — v3 tapes assert non-empty iteration_payloads.
+        # v1/v2 tapes are accepted with empty iteration_payloads (the
+        # replay stubs will return None for state.load_* calls, which
+        # is the pre-Phase-3.6.2 behavior).
+        if format_version >= 3 and not iteration_payloads:
+            raise ValueError(
+                "LeverLoopTape: format_version 3 tapes must carry a "
+                "non-empty ``iteration_payloads`` dict. Either bump "
+                "the capture script to populate it or write the tape "
+                "with ``format_version: 2``."
+            )
+
         return cls(
             tape_id=str(payload.get("tape_id", "")),
             source_run_id=str(payload.get("source_run_id", "")),
@@ -211,6 +269,8 @@ class LeverLoopTape:
             rca_cards_by_cluster=dict(
                 payload.get("rca_cards_by_cluster") or {}
             ),
+            iteration_payloads=iteration_payloads,
+            format_version=format_version,
             miss_policy=str(payload.get("miss_policy", "raise")),
         )
 

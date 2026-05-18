@@ -236,3 +236,13 @@ def test_capture_normalizes_one_indexed_export_iterations_to_zero(
     assert sorted(tape.clusters_by_iteration.keys()) == [0, 1]
     assert tape.clusters_by_iteration[0][0]["cluster_id"] == "C1"
     assert tape.clusters_by_iteration[1][0]["cluster_id"] == "C2"
+    # Phase 3.6.2 E1 — capture populates iteration_payloads + tape
+    # advertises format_version 3.
+    assert tape.format_version == 3
+    assert sorted(tape.iteration_payloads.keys()) == [0, 1]
+    payload0 = tape.iteration_payloads[0]
+    assert payload0["iteration"] == 1
+    assert payload0["eval_scope"] == "full"
+    assert payload0["rolled_back"] is False
+    assert payload0["rows_json"][0]["qid"] == "row-iter-1"
+    assert payload0["clusters"][0]["cluster_id"] == "C1"

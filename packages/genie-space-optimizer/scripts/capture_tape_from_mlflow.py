@@ -42,11 +42,12 @@ def _build_mlflow_client():
 
 def _read_export_side_tables(
     export_path: Path,
-) -> tuple[dict, dict]:
+) -> tuple[dict, dict, dict]:
     evals_by_iter: dict[str, list] = {}
     clusters_by_iter: dict[str, list] = {}
+    iter_payloads: dict[str, dict] = {}
     if not export_path or not export_path.exists():
-        return evals_by_iter, clusters_by_iter
+        return evals_by_iter, clusters_by_iter, iter_payloads
     payload = json.loads(export_path.read_text(encoding="utf-8"))
     for it in (payload.get("iterations") or []):
         # Phase 3.6.1 (2026-05-18) — the production export uses
@@ -61,7 +62,36 @@ def _read_export_side_tables(
         i = str(max(0, raw - 1))
         evals_by_iter[i] = list(it.get("eval_rows") or [])
         clusters_by_iter[i] = list(it.get("clusters") or [])
-    return evals_by_iter, clusters_by_iter
+        # Phase 3.6.2 E1 (2026-05-18) — full per-iteration row dict
+        # for ``state.load_*`` replay stubs. The replay_fixture export
+        # carries every field ``genie_opt_iterations`` does:
+        # rows_json (= eval_rows), clusters, soft_clusters,
+        # decision_records, strategist_response, ag_outcomes,
+        # iter_rca_id_by_cluster, iter_source_clusters_by_id,
+        # journey_validation, lever5_gate_drops,
+        # metadata_failure_clusters, post_eval_passing_qids,
+        # iteration. The harness's load_latest_full_iteration consumes
+        # these via ``baseline_iter.get("rows_json")`` etc.
+        payload_dict: dict = {
+            "iteration": raw,            # preserve human 1-indexed in payload
+            "rows_json": list(it.get("eval_rows") or []),
+            "eval_scope": "full",
+            "rolled_back": False,
+        }
+        # Carry every other top-level key the export provides.
+        for k in (
+            "clusters", "soft_clusters", "decision_records",
+            "strategist_response", "ag_outcomes",
+            "iter_rca_id_by_cluster", "iter_source_clusters_by_id",
+            "journey_validation", "lever5_gate_drops",
+            "metadata_failure_clusters", "post_eval_passing_qids",
+            "scores_json", "soft_signal_qids", "mlflow_run_id",
+            "evaluated_count",
+        ):
+            if k in it and it[k] is not None:
+                payload_dict[k] = it[k]
+        iter_payloads[i] = payload_dict
+    return evals_by_iter, clusters_by_iter, iter_payloads
 
 
 def _calls_to_entries(calls: Iterable[dict]) -> list[dict]:
@@ -226,7 +256,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # 3. Read complementary export side-tables.
-    evals_by_iter, clusters_by_iter = _read_export_side_tables(export_path)
+    evals_by_iter, clusters_by_iter, iter_payloads = (
+        _read_export_side_tables(export_path)
+    )
     logger.info(
         "Phase 3.6 capture: complementary export contributed %d "
         "iteration(s) of eval/cluster state.",
@@ -234,13 +266,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # 4. Assemble + write tape.
+    from genie_space_optimizer.optimization.tape import TAPE_FORMAT_VERSION
+
     tape_payload = {
         "tape_id": str(args.tape_id or out_path.stem),
         "source_run_id": str(args.run_id),
         "captured_at": _dt.datetime.utcnow().isoformat() + "Z",
+        "format_version": TAPE_FORMAT_VERSION,
         "entries": _calls_to_entries(calls),
         "evals_by_iteration": evals_by_iter,
         "clusters_by_iteration": clusters_by_iter,
+        "iteration_payloads": iter_payloads,
         "rca_cards_by_cluster": {},
         "miss_policy": args.miss_policy,
     }
