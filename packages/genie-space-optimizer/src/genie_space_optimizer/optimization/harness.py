@@ -188,6 +188,58 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 3 (2026-05-17) — Lever Loop Tape Replay binding hook.
+#
+# ``_TAPE_BINDING_HOOK`` lets ``LeverLoopReplayHarness`` advance the
+# tape's iteration/ag binding from inside ``_run_lever_loop`` without
+# rewriting every LLM call site to thread iteration through the call
+# stack. Production callers see no effect: the default hook is a no-op.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _noop_tape_binding_hook(
+    iteration: int, *, ag_id: str = "", cluster_id: str = "",
+) -> None:
+    """Default tape binding hook. No-op in production."""
+    return None
+
+
+_TAPE_BINDING_HOOK = _noop_tape_binding_hook
+
+
+def _tape_binding_set_iteration(iteration: int) -> None:
+    """Notify the tape binding hook that the lever loop is entering
+    ``iteration``. ``_run_lever_loop`` calls this at the top of each
+    iteration."""
+    try:
+        _TAPE_BINDING_HOOK(int(iteration))
+    except Exception:
+        # Belt-and-suspenders: a misbehaving replay hook must never
+        # crash a production lever loop. Failures here are silent.
+        pass
+
+
+def _tape_binding_set_ag(ag_id: str, *, cluster_id: str = "") -> None:
+    """Notify the tape binding hook that the lever loop is now
+    processing ``ag_id`` (optionally bound to ``cluster_id``).
+
+    The ``iteration`` argument is required by the hook signature but
+    unused here: the replay-harness binding hook consults ``ag_id``
+    first and only falls back to ``iteration`` when ``ag_id`` is
+    empty. We pass a sentinel ``-1`` to make that intent explicit.
+    """
+    try:
+        _TAPE_BINDING_HOOK(
+            -1,
+            ag_id=str(ag_id or ""),
+            cluster_id=str(cluster_id or ""),
+        )
+    except Exception:
+        pass
+
+
 FINALIZE_TIMEOUT_SECONDS = int(
     os.getenv("GENIE_SPACE_OPTIMIZER_FINALIZE_TIMEOUT_SECONDS", "6600"),
 )
@@ -18855,6 +18907,15 @@ def _run_lever_loop(
     _loop_abort_terminal_reason: str = ""
 
     for _iter_num in range(1, max_iterations + 1):
+        # Phase 3 (2026-05-17) — advance tape-replay binding to the
+        # current iteration. ``_tape_binding_set_iteration`` is a
+        # no-op in production (the default ``_TAPE_BINDING_HOOK``
+        # is a no-op); replay tests patch the hook to a binding
+        # update on the active ``TapeCallContext``. We pass
+        # ``_iter_num - 1`` so the tape's iteration index is
+        # 0-based and matches ``evals_by_iteration[0]`` for
+        # iteration 1 of production.
+        _tape_binding_set_iteration(_iter_num - 1)
         # Risk-1 mitigation — clear the consecutive counter if the
         # previous iteration did NOT take the collision-skip path.
         # The collision-skip path sets the flag True before ``continue``,

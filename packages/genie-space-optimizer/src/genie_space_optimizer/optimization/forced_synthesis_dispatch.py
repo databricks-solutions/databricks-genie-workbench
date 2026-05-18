@@ -266,6 +266,23 @@ def dispatch_forced_structural_synthesis(
     )
 
     ag_id = str(ag.get("id") or "")
+    # Phase 3 (2026-05-17) — advance tape-replay binding to this AG.
+    # ``_tape_binding_set_ag`` is a no-op in production (the default
+    # ``_TAPE_BINDING_HOOK`` is a no-op); replay tests patch it to
+    # update the active ``TapeCallContext`` so subsequent
+    # ``cluster_driven_synthesis`` LLM lookups resolve under the
+    # right ``(ag_id, cluster_id)`` key.
+    from genie_space_optimizer.optimization.harness import (
+        _tape_binding_set_ag,
+    )
+    _primary_cluster_id_for_tape = ""
+    _src_cluster_ids_for_tape = ag.get("source_cluster_ids") or []
+    if _src_cluster_ids_for_tape:
+        _primary_cluster_id_for_tape = str(_src_cluster_ids_for_tape[0] or "")
+    _tape_binding_set_ag(
+        ag_id,
+        cluster_id=_primary_cluster_id_for_tape,
+    )
     # _l5_ag_rca_id is precomputed by the harness's earlier block at
     # 22650-22691; we recompute it here so the function is callable in
     # isolation.
