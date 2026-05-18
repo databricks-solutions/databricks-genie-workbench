@@ -1069,7 +1069,30 @@ def no_structural_candidate_marker(
     (e.g. ``"no_top_n_archetype"``, ``"format_afs_failed"``,
     ``"validate_afs_rejected"``, ``"safety_cap_reached"``). Empty
     string means "no specific cause recorded".
+
+    Phase 1.5 (2026-05-17) — refuses construction when both
+    ``skipped_reason`` and ``attempted_archetypes`` are empty. The
+    synthesizer always knows something:
+
+    - It ran and produced no candidate (typed skipped_reason)
+    - It ran and gates rejected attempted archetypes (non-empty
+      attempted_archetypes)
+    - It never ran due to RCA-card pre-flight
+      (skipped_reason="missing_rca_card")
+
+    Double-empty is the exact failure pattern seen in airline
+    59a173d3 and 7now ab65fefe before Phase 0.2 wired the fields
+    through. Refuse so CI catches future regressions.
     """
+    if not skipped_reason and not (attempted_archetypes or ()):
+        raise ValueError(
+            f"no_structural_candidate_marker: synthesizer must "
+            f"report either a non-empty skipped_reason or a "
+            f"non-empty attempted_archetypes tuple. Got both empty "
+            f"for ag_id={ag_id!r}, iteration={iteration}. This is "
+            f"the Phase 1 refuse-on-empty invariant; if you reach "
+            f"this branch, upstream causal context was dropped."
+        )
     return marker_line(
         "GSO_NO_STRUCTURAL_CANDIDATE_V1",
         {

@@ -567,7 +567,20 @@ def no_structural_candidate_record(
     from ``ClusterSynthesisResult.skipped_reason`` (e.g.
     ``"no_top_n_archetype"``). Surfaced in the ``metrics`` dict so
     postmortem readers no longer have to log-scrape for the cause.
+
+    Phase 1.5 (2026-05-17) — refuses construction when both
+    ``skipped_reason`` and ``attempted_archetypes`` are empty. See
+    ``no_structural_candidate_marker`` for rationale.
     """
+    if not skipped_reason and not (attempted_archetypes or ()):
+        raise ValueError(
+            f"no_structural_candidate_record: synthesizer must "
+            f"report either a non-empty skipped_reason or a "
+            f"non-empty attempted_archetypes tuple. Got both empty "
+            f"for ag_id={ag_id!r}, cluster_id={cluster_id!r}, "
+            f"iteration={iteration}. This is the Phase 1 "
+            f"refuse-on-empty invariant."
+        )
     evidence_refs = tuple(
         v for v in (
             f"ag:{ag_id}" if ag_id else "",

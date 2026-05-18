@@ -208,7 +208,14 @@ def test_no_structural_candidate_record_metrics_contains_attempted_archetypes() 
 
 def test_no_structural_candidate_record_metrics_empty_archetypes_list_not_missing_key() -> None:
     """Defense: when no archetypes were attempted, the key must still be
-    present with an empty list — not absent."""
+    present with an empty list — not absent.
+
+    Phase 1.5 (2026-05-17) — the refuse-on-empty invariant requires
+    either a non-empty ``attempted_archetypes`` OR a non-empty
+    ``skipped_reason``. This test now passes a typed
+    ``skipped_reason`` (the synthesizer always knows one) and still
+    asserts the empty-archetypes-list shape.
+    """
     from genie_space_optimizer.optimization.decision_emitters import (
         no_structural_candidate_record,
     )
@@ -218,6 +225,7 @@ def test_no_structural_candidate_record_metrics_empty_archetypes_list_not_missin
         iteration=2,
         ag_id="AG_COVERAGE_H002",
         attempted_archetypes=(),
+        skipped_reason="missing_rca_card",
     )
 
     assert "attempted_archetypes" in rec.metrics, (
