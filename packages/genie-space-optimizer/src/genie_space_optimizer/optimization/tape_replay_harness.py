@@ -55,6 +55,54 @@ class LeverLoopReplayHarness:
         self._token = _LLM_CALLER_OVERRIDE.set(self._context.caller())
         self._exit_stack = contextlib.ExitStack()
 
+        # Replace MLflow run/logging operations with no-ops so the
+        # lever loop's tracing does not hit a real backend during
+        # replay. ``mlflow.start_run`` is the only one that needs to
+        # return a context-manager — we wrap a synthetic Run shape.
+        import contextlib as _ctxlib
+
+        @_ctxlib.contextmanager
+        def _noop_start_run(*args, **kwargs):
+            class _NoopRun:
+                class _Info:
+                    run_id = "replay-noop"
+                    experiment_id = "replay-experiment"
+                info = _Info()
+            yield _NoopRun()
+
+        for _target in (
+            "mlflow.start_run",
+            "mlflow.log_param",
+            "mlflow.log_params",
+            "mlflow.log_metric",
+            "mlflow.log_metrics",
+            "mlflow.log_text",
+            "mlflow.log_artifact",
+            "mlflow.log_dict",
+            "mlflow.set_tag",
+            "mlflow.set_tags",
+            "mlflow.set_experiment",
+            "mlflow.set_tracking_uri",
+            "mlflow.active_run",
+            "mlflow.last_active_run",
+            "mlflow.end_run",
+        ):
+            try:
+                if _target == "mlflow.start_run":
+                    self._exit_stack.enter_context(
+                        _mock_patch(_target, side_effect=_noop_start_run)
+                    )
+                elif _target == "mlflow.active_run":
+                    self._exit_stack.enter_context(
+                        _mock_patch(_target, return_value=None)
+                    )
+                else:
+                    self._exit_stack.enter_context(
+                        _mock_patch(_target, return_value=None)
+                    )
+            except (AttributeError, ModuleNotFoundError):
+                continue
+
         # Patch evaluation.run_evaluation to return tape-recorded eval rows.
         def _replay_run_evaluation(*args, **kwargs) -> dict:
             iteration = int(kwargs.get("iteration") or 0)
