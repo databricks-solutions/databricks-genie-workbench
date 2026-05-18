@@ -167,18 +167,24 @@ def parse_markers(stdout: str) -> MarkerLog:
 
 
 def extract_replay_fixture(stdout: str) -> Mapping[str, Any] | None:
-    begin = stdout.find(_FIXTURE_BEGIN)
-    end = stdout.find(_FIXTURE_END)
-    if begin < 0 or end < 0 or end <= begin:
-        return None
-    blob = stdout[begin + len(_FIXTURE_BEGIN) : end].strip()
-    if not blob:
-        return None
-    try:
-        parsed = json.loads(blob)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    """WU-5 (2026-05-18) — delegate to ``replay_fixture_marker`` so
+    both plain-JSON and base64-fallback channels are honoured.
+
+    Returns the parsed payload or ``None`` when neither channel
+    produced a parseable fixture. Backward compatible with legacy
+    plain-only emissions (the new extractor's first branch handles
+    them). Postmortems that previously failed with
+    ``extractor_succeeded=False, json_parseable=False,
+    contains_prompt_source=True`` now recover via the base64
+    fallback when ``_run_lever_loop`` is updated to call
+    ``emit_dual_fixture``.
+    """
+    from genie_space_optimizer.optimization.replay_fixture_marker import (
+        extract_replay_fixture_from_stream,
+    )
+    result = extract_replay_fixture_from_stream(stdout)
+    payload = result.payload
+    return payload if isinstance(payload, dict) else None
 
 
 def _parse_named_marker(line: str, expected_name: str) -> dict:

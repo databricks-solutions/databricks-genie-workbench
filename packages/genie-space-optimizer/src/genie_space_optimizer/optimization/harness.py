@@ -32101,19 +32101,58 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
-        # Channel 1 — stderr markers.
-        # Use unique multi-segment markers that cannot collide with normal
-        # logger output. The user's extractor script greps on these.
-        sys.stderr.write("\n===PHASE_A_REPLAY_FIXTURE_JSON_BEGIN===\n")
-        sys.stderr.write(_replay_fixture_json)
-        sys.stderr.write("\n===PHASE_A_REPLAY_FIXTURE_JSON_END===\n")
-        sys.stderr.flush()
-        logger.info(
-            "Phase A: emitted replay fixture (%d iterations, %d bytes) to "
-            "stderr between markers PHASE_A_REPLAY_FIXTURE_JSON_BEGIN/END",
-            len(_replay_fixture_iterations or []),
-            len(_replay_fixture_json),
+        # Channel 1 — stderr markers (WU-5 dual emission when enabled).
+        from genie_space_optimizer.common.config import (
+            replay_fixture_dual_emit_enabled as _dual_emit_on,
         )
+        if _dual_emit_on():
+            from genie_space_optimizer.optimization.replay_fixture_marker import (
+                emit_dual_fixture as _emit_dual_fixture,
+            )
+            try:
+                import json as _json
+                _emit_dual_fixture(
+                    payload=_json.loads(_replay_fixture_json),
+                    stream_name="stderr",
+                )
+                logger.info(
+                    "Phase A: emitted replay fixture (%d iterations, %d "
+                    "bytes) to stderr via dual-channel markers "
+                    "(plain + base64)",
+                    len(_replay_fixture_iterations or []),
+                    len(_replay_fixture_json),
+                )
+            except Exception:
+                # Fall back to legacy plain-only emission on any error.
+                logger.debug(
+                    "WU-5: dual emit failed (non-fatal); falling back "
+                    "to plain-JSON",
+                    exc_info=True,
+                )
+                sys.stderr.write(
+                    "\n===PHASE_A_REPLAY_FIXTURE_JSON_BEGIN===\n"
+                )
+                sys.stderr.write(_replay_fixture_json)
+                sys.stderr.write(
+                    "\n===PHASE_A_REPLAY_FIXTURE_JSON_END===\n"
+                )
+                sys.stderr.flush()
+        else:
+            sys.stderr.write(
+                "\n===PHASE_A_REPLAY_FIXTURE_JSON_BEGIN===\n"
+            )
+            sys.stderr.write(_replay_fixture_json)
+            sys.stderr.write(
+                "\n===PHASE_A_REPLAY_FIXTURE_JSON_END===\n"
+            )
+            sys.stderr.flush()
+            logger.info(
+                "Phase A: emitted replay fixture (%d iterations, %d "
+                "bytes) to stderr between markers "
+                "PHASE_A_REPLAY_FIXTURE_JSON_BEGIN/END (plain only)",
+                len(_replay_fixture_iterations or []),
+                len(_replay_fixture_json),
+            )
 
         # Channel 2 — MLflow artifact (best-effort; skips if no active run).
         try:
