@@ -167,19 +167,47 @@ class LeverLoopTape:
                 "(tape may be from a newer or stale capture; loading anyway)",
                 sorted(unknown_stages),
             )
+        evals_raw = payload.get("evals_by_iteration") or {}
+        clusters_raw = payload.get("clusters_by_iteration") or {}
+
+        # Phase 3.6.1 (2026-05-18) — tape side-tables MUST be
+        # 0-indexed. The replay harness queries with ``_iter_num - 1``
+        # (see ``harness.py:18933``); a 1-indexed tape silently
+        # misses every lookup, leaving the lever loop with no eval
+        # rows / no clusters and short-circuiting at
+        # ``no_actionable_clusters`` before ever reaching the
+        # iterations the postmortems documented. Refuse to load
+        # the broken shape so the failure is loud at capture time,
+        # not silent at replay time.
+        evals_by_iteration = {
+            int(k): list(v) for k, v in evals_raw.items()
+        }
+        clusters_by_iteration = {
+            int(k): list(v) for k, v in clusters_raw.items()
+        }
+        for label, table in (
+            ("evals_by_iteration", evals_by_iteration),
+            ("clusters_by_iteration", clusters_by_iteration),
+        ):
+            if not table:
+                continue
+            keys = sorted(table.keys())
+            if keys[0] != 0:
+                raise ValueError(
+                    f"LeverLoopTape: {label} must be 0-indexed "
+                    f"(got keys {keys}). Pre-Phase-3.6.1 tapes need "
+                    f"recapture via "
+                    f"``scripts/capture_tape_from_mlflow.py`` or "
+                    f"``scripts/capture_lever_loop_tape_from_export.py``."
+                )
+
         return cls(
             tape_id=str(payload.get("tape_id", "")),
             source_run_id=str(payload.get("source_run_id", "")),
             captured_at=str(payload.get("captured_at", "")),
             entries=entries,
-            evals_by_iteration={
-                int(k): list(v)
-                for k, v in (payload.get("evals_by_iteration") or {}).items()
-            },
-            clusters_by_iteration={
-                int(k): list(v)
-                for k, v in (payload.get("clusters_by_iteration") or {}).items()
-            },
+            evals_by_iteration=evals_by_iteration,
+            clusters_by_iteration=clusters_by_iteration,
             rca_cards_by_cluster=dict(
                 payload.get("rca_cards_by_cluster") or {}
             ),

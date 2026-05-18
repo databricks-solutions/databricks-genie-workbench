@@ -1,7 +1,7 @@
 {
   "tape_id": "seven_now_run_ab65fefe",
   "source_run_id": "[]",
-  "captured_at": "2026-05-18T05:39:36.715147Z",
+  "captured_at": "2026-05-18T06:11:29.315754Z",
   "entries": [
     {
       "key": {
@@ -1571,6 +1571,123 @@
     }
   ],
   "evals_by_iteration": {
+    "0": [
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_017",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_008",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "ground_truth_correct",
+        "question_id": "7now_delivery_analytics_space_gs_013",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "ground_truth_correct",
+        "question_id": "7now_delivery_analytics_space_gs_026",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_002",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "ground_truth_correct",
+        "question_id": "7now_delivery_analytics_space_gs_001",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_014",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_012",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "ground_truth_correct",
+        "question_id": "7now_delivery_analytics_space_gs_004",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_030",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "genie_correct",
+        "question_id": "7now_delivery_analytics_space_gs_019",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_029",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_018",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_028",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "genie_correct",
+        "question_id": "7now_delivery_analytics_space_gs_009",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_024",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_022",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_006",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "genie_correct",
+        "question_id": "7now_delivery_analytics_space_gs_007",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_016",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "neither_correct",
+        "question_id": "7now_delivery_analytics_space_gs_021",
+        "result_correctness": "no"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_025",
+        "result_correctness": "yes"
+      },
+      {
+        "arbiter": "both_correct",
+        "question_id": "7now_delivery_analytics_space_gs_010",
+        "result_correctness": "yes"
+      }
+    ],
     "1": [
       {
         "arbiter": "both_correct",
@@ -1806,123 +1923,6 @@
       }
     ],
     "3": [
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_017",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_008",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "ground_truth_correct",
-        "question_id": "7now_delivery_analytics_space_gs_013",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "ground_truth_correct",
-        "question_id": "7now_delivery_analytics_space_gs_026",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_002",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "ground_truth_correct",
-        "question_id": "7now_delivery_analytics_space_gs_001",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_014",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_012",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "ground_truth_correct",
-        "question_id": "7now_delivery_analytics_space_gs_004",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_030",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "genie_correct",
-        "question_id": "7now_delivery_analytics_space_gs_019",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_029",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_018",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_028",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "genie_correct",
-        "question_id": "7now_delivery_analytics_space_gs_009",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_024",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_022",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_006",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "genie_correct",
-        "question_id": "7now_delivery_analytics_space_gs_007",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_016",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "neither_correct",
-        "question_id": "7now_delivery_analytics_space_gs_021",
-        "result_correctness": "no"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_025",
-        "result_correctness": "yes"
-      },
-      {
-        "arbiter": "both_correct",
-        "question_id": "7now_delivery_analytics_space_gs_010",
-        "result_correctness": "yes"
-      }
-    ],
-    "4": [
       {
         "arbiter": "both_correct",
         "question_id": "7now_delivery_analytics_space_gs_017",
@@ -2041,6 +2041,24 @@
     ]
   },
   "clusters_by_iteration": {
+    "0": [
+      {
+        "asi_failure_type": "other",
+        "cluster_id": "H001",
+        "question_ids": [
+          "7now_delivery_analytics_space_gs_013"
+        ],
+        "root_cause": "wrong_filter_condition"
+      },
+      {
+        "asi_failure_type": "other",
+        "cluster_id": "H002",
+        "question_ids": [
+          "7now_delivery_analytics_space_gs_026"
+        ],
+        "root_cause": "plural_top_n_collapse"
+      }
+    ],
     "1": [
       {
         "asi_failure_type": "other",
@@ -2078,24 +2096,6 @@
       }
     ],
     "3": [
-      {
-        "asi_failure_type": "other",
-        "cluster_id": "H001",
-        "question_ids": [
-          "7now_delivery_analytics_space_gs_013"
-        ],
-        "root_cause": "wrong_filter_condition"
-      },
-      {
-        "asi_failure_type": "other",
-        "cluster_id": "H002",
-        "question_ids": [
-          "7now_delivery_analytics_space_gs_026"
-        ],
-        "root_cause": "plural_top_n_collapse"
-      }
-    ],
-    "4": [
       {
         "asi_failure_type": "other",
         "cluster_id": "H001",

@@ -102,6 +102,67 @@ def test_lookup_miss_raises_under_default_policy():
         )
 
 
+def test_loader_refuses_one_indexed_side_tables(tmp_path: Path):
+    """Phase 3.6.1 (2026-05-18) — tape side-tables must be 0-indexed
+    so the replay harness's ``_iter_num - 1`` lookup matches. A
+    1-indexed tape would silently miss every lookup; refuse to load
+    so the capture-side bug surfaces at construction time, not at
+    test-assertion time."""
+    payload = {
+        "tape_id": "t",
+        "source_run_id": "r",
+        "captured_at": "0",
+        "entries": [],
+        "evals_by_iteration": {
+            "1": [{"qid": "q1"}],
+            "2": [{"qid": "q1"}],
+            "3": [{"qid": "q1"}],
+            "4": [{"qid": "q1"}],
+        },
+        "miss_policy": "raise",
+    }
+    p = tmp_path / "broken.json"
+    p.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="0-indexed"):
+        LeverLoopTape.from_json_file(p)
+
+
+def test_loader_accepts_zero_indexed_side_tables(tmp_path: Path):
+    """Mirror of the above: the canonical 0-indexed shape loads cleanly."""
+    payload = {
+        "tape_id": "t",
+        "source_run_id": "r",
+        "captured_at": "0",
+        "entries": [],
+        "evals_by_iteration": {
+            "0": [{"qid": "q1"}],
+            "1": [{"qid": "q1"}],
+            "2": [{"qid": "q1"}],
+            "3": [{"qid": "q1"}],
+        },
+        "miss_policy": "raise",
+    }
+    p = tmp_path / "good.json"
+    p.write_text(json.dumps(payload))
+    tape = LeverLoopTape.from_json_file(p)
+    assert sorted(tape.evals_by_iteration) == [0, 1, 2, 3]
+
+
+def test_loader_accepts_empty_side_tables(tmp_path: Path):
+    """Empty side-tables are fine — the 0-indexed invariant only
+    applies when there are entries to check."""
+    payload = {
+        "tape_id": "t",
+        "source_run_id": "r",
+        "captured_at": "0",
+        "entries": [],
+        "miss_policy": "raise",
+    }
+    p = tmp_path / "empty.json"
+    p.write_text(json.dumps(payload))
+    LeverLoopTape.from_json_file(p)  # no raise
+
+
 def test_lookup_miss_warns_and_returns_sibling_under_warn_policy(caplog):
     tape = LeverLoopTape(
         tape_id="t",

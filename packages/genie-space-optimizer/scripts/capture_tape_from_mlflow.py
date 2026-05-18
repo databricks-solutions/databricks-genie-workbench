@@ -49,7 +49,16 @@ def _read_export_side_tables(
         return evals_by_iter, clusters_by_iter
     payload = json.loads(export_path.read_text(encoding="utf-8"))
     for it in (payload.get("iterations") or []):
-        i = str(it.get("iteration") or 0)
+        # Phase 3.6.1 (2026-05-18) — the production export uses
+        # 1-indexed iteration counters (human-readable, matches the
+        # postmortem narrative). The in-memory replay harness queries
+        # ``evals_by_iteration`` with ``_iter_num - 1`` per
+        # ``harness.py:18933`` — i.e. 0-indexed. Store 0-indexed in
+        # the tape so the on-disk side-tables match in-memory
+        # semantics, not the display format. ``LeverLoopTape.from_json_file``
+        # asserts this invariant at load time.
+        raw = int(it.get("iteration") or 1)
+        i = str(max(0, raw - 1))
         evals_by_iter[i] = list(it.get("eval_rows") or [])
         clusters_by_iter[i] = list(it.get("clusters") or [])
     return evals_by_iter, clusters_by_iter

@@ -178,3 +178,61 @@ def test_end_to_end_assembly(tmp_path: Path, monkeypatch):
     assert tape.evals_by_iteration.get(0)
     assert tape.evals_by_iteration[0][0]["qid"] == "gs_009"
     assert tape.clusters_by_iteration.get(0)
+
+
+def test_capture_normalizes_one_indexed_export_iterations_to_zero(
+    tmp_path: Path, monkeypatch,
+):
+    """Phase 3.6.1 (2026-05-18) — production exports use 1-indexed
+    iteration counters; the capture script must shift them to
+    0-indexed so the on-disk tape matches the replay harness's
+    in-memory query semantics."""
+    export_path = tmp_path / "export.json"
+    export_path.write_text(json.dumps({
+        "fixture_id": "f1",
+        "iterations": [
+            {
+                "iteration": 1,                       # 1-indexed
+                "eval_rows": [{"qid": "row-iter-1"}],
+                "clusters": [{"cluster_id": "C1"}],
+            },
+            {
+                "iteration": 2,
+                "eval_rows": [{"qid": "row-iter-2"}],
+                "clusters": [{"cluster_id": "C2"}],
+            },
+        ],
+    }))
+
+    from genie_space_optimizer.optimization import mlflow_trace_extractor
+    monkeypatch.setattr(
+        mlflow_trace_extractor,
+        "extract_llm_calls_from_traces",
+        lambda traces: iter([]),
+    )
+
+    fake_client = MagicMock(name="FakeMlflowClient")
+    fake_client.search_traces.return_value = []
+
+    from scripts import capture_tape_from_mlflow as cli
+    monkeypatch.setattr(cli, "_build_mlflow_client", lambda: fake_client)
+
+    out_path = tmp_path / "tape.json"
+    rc = cli.main(argv=[
+        "--experiment-id", "EXP_X",
+        "--run-id",        "RUN_X",
+        "--export-json",   str(export_path),
+        "--out",           str(out_path),
+        "--miss-policy",   "prompt_sha_only",
+    ])
+    assert rc == 0
+
+    from genie_space_optimizer.optimization.tape import LeverLoopTape
+    tape = LeverLoopTape.from_json_file(out_path)
+    # The export's iter=1 → tape key 0 ; iter=2 → tape key 1.
+    assert sorted(tape.evals_by_iteration.keys()) == [0, 1]
+    assert tape.evals_by_iteration[0][0]["qid"] == "row-iter-1"
+    assert tape.evals_by_iteration[1][0]["qid"] == "row-iter-2"
+    assert sorted(tape.clusters_by_iteration.keys()) == [0, 1]
+    assert tape.clusters_by_iteration[0][0]["cluster_id"] == "C1"
+    assert tape.clusters_by_iteration[1][0]["cluster_id"] == "C2"
