@@ -60,6 +60,7 @@ genie_space_optimizer_docs/
 docs/*
 !docs/optimizer-process-design
 !docs/runid_analysis
+!docs/architecture
 
 # Proprietary postmortem evidence — exclude all run-specific data by default.
 # Customer task IDs, optimization-run UUIDs, MLflow exports, replay fixtures,
