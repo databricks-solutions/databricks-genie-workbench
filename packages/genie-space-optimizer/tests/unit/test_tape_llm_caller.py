@@ -11,6 +11,7 @@ from genie_space_optimizer.optimization.tape import (
     prompt_sha256,
 )
 from genie_space_optimizer.optimization.tape_llm_caller import (
+    PRE_LOOP_HELPER_STAGES_ALLOWLIST,
     TapeCallContext,
 )
 
@@ -120,6 +121,60 @@ def test_caller_routes_ag_and_cluster_ids_via_context():
         response_model=None,
     )
     assert text == "synth response"
+
+
+def test_pre_loop_helper_miss_returns_empty_instead_of_raising():
+    """Phase 3.6 (2026-05-18) — pre-loop helper stages whose
+    ``_traced_llm_call`` sites were added AFTER the historic tapes
+    were captured return an empty payload instead of raising
+    TapeMissError. The captured tape literally cannot serve these
+    calls; the lever loop's call sites wrap them in try/except and
+    treat empty as a benign no-op."""
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+    )
+    ctx = TapeCallContext(tape=tape)
+    # The default allowlist must include the canonical names.
+    assert "generate_sample_questions" in PRE_LOOP_HELPER_STAGES_ALLOWLIST
+    assert "generate_proactive_instructions" in PRE_LOOP_HELPER_STAGES_ALLOWLIST
+
+    text, resp = ctx.caller().call(
+        w=None,
+        system_msg="",
+        prompt="anything",
+        span_name="generate_proactive_instructions",
+        max_retries=3,
+        temperature=0.0,
+        max_tokens=None,
+        response_validator=None,
+        response_format=None,
+        response_model=None,
+    )
+    assert text == ""
+    assert resp == {"tape_metadata": {"replay_no_op": True}}
+
+
+def test_non_allowlisted_miss_still_raises():
+    """Allowlist is surgical: only the listed pre-loop helpers no-op
+    on miss. Every other unmatched call still raises so genuine
+    tape coverage gaps are caught."""
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+    )
+    ctx = TapeCallContext(tape=tape)
+    with pytest.raises(TapeMissError):
+        ctx.caller().call(
+            w=None,
+            system_msg="",
+            prompt="anything",
+            span_name="stage_1_discovery",  # NOT in the allowlist
+            max_retries=3,
+            temperature=0.0,
+            max_tokens=None,
+            response_validator=None,
+            response_format=None,
+            response_model=None,
+        )
 
 
 def test_caller_passes_through_response_validator():

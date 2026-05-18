@@ -98,6 +98,22 @@ For any run with active MLflow tracing — including runs that predate Phase 3.5
 
 Post-Phase-3.6 traces carry ``iteration`` / ``ag_id`` / ``cluster_id`` as span breadcrumbs (set by ``_traced_llm_call``), so historic-style extraction is bit-exact equivalent to live capture. Pre-3.6 traces have no breadcrumbs; their tapes use ``miss_policy="prompt_sha_only"`` and match on (stage, prompt_sha256) alone.
 
+## Pre-loop helper allowlist
+
+``tape_llm_caller.PRE_LOOP_HELPER_STAGES_ALLOWLIST`` is a frozenset of ``span_name`` values whose ``_traced_llm_call`` sites were added to the codebase AFTER the historic anchor tapes were captured. These calls fire during replay (typically space-setup helpers invoked once per run, before the lever-loop iteration loop opens) but the captured tape has no entry for them — they predate the call site.
+
+Under any miss policy, a tape miss whose ``span_name`` is in the allowlist returns ``("", {"tape_metadata": {"replay_no_op": True}})`` instead of raising ``TapeMissError``. The production call sites for these helpers wrap their ``_traced_llm_call`` invocations in ``try/except`` and treat an empty/failed response as a benign no-op (see ``optimizer._generate_proactive_instructions`` at ``optimizer.py:4253``), so the lever loop stays on its postmortem trajectory.
+
+Current allowlist:
+
+| ``span_name`` | Call site | When added |
+|---|---|---|
+| ``generate_sample_questions`` | ``optimizer._generate_sample_questions`` | post-2026-05-09 |
+| ``generate_space_description`` | ``optimizer._generate_space_description`` | post-2026-05-09 |
+| ``generate_proactive_instructions`` | ``optimizer._generate_proactive_instructions`` | post-2026-05-09 |
+
+Adding a new entry to the allowlist is intentionally a code change (not a tape flag) so the choice is reviewable: an unmatched call that *should* have been captured is a real coverage gap and must surface as a ``TapeMissError``.
+
 ## Miss policies
 
 | Policy | When to use | Lookup semantics |
