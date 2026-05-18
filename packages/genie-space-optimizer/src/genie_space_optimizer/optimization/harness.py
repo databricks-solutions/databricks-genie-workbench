@@ -4963,10 +4963,23 @@ def _check_proposal_stage_forbidden_ag_leakage(
     # membership probes when there's nothing to match.
     has_rc_candidate = collision_pair.root_cause_key is not None
     has_sig_candidate = bool(collision_pair.signature_keys)
-    has_forbidden = bool(
-        forbidden_pair.by_root_cause or forbidden_pair.by_signature
+    # Phase 0.4 (2026-05-17) — terminal-signature axis admission was
+    # added in Phase 6.1; this observation site must consult it too,
+    # otherwise ``proposal_stage_forbidden_ag_observed_count_by_call_site``
+    # stays at 0 even when retired signatures match at admission.
+    has_ts_candidate = bool(
+        getattr(collision_pair, "terminal_signature_keys", ())
     )
-    if not has_forbidden or (not has_rc_candidate and not has_sig_candidate):
+    has_forbidden = bool(
+        forbidden_pair.by_root_cause
+        or forbidden_pair.by_signature
+        or getattr(forbidden_pair, "by_terminal_signature", frozenset())
+    )
+    if not has_forbidden or (
+        not has_rc_candidate
+        and not has_sig_candidate
+        and not has_ts_candidate
+    ):
         return None
 
     rc_match = (
@@ -4977,16 +4990,33 @@ def _check_proposal_stage_forbidden_ag_leakage(
         s in forbidden_pair.by_signature
         for s in collision_pair.signature_keys
     )
+    ts_forbidden = getattr(
+        forbidden_pair, "by_terminal_signature", frozenset()
+    )
+    ts_match = bool(ts_forbidden) and any(
+        k in ts_forbidden
+        for k in getattr(collision_pair, "terminal_signature_keys", ())
+    )
 
-    if not rc_match and not sig_match:
+    if not rc_match and not sig_match and not ts_match:
         return None
 
-    if rc_match and sig_match:
+    # Compose the closed-vocabulary axis label. Single matches use
+    # their axis name; combinations use a stable underscore join.
+    if rc_match and sig_match and ts_match:
+        axis = "root_cause+cluster_signature+terminal_signature"
+    elif rc_match and sig_match:
         axis = "both"
+    elif rc_match and ts_match:
+        axis = "root_cause+terminal_signature"
+    elif sig_match and ts_match:
+        axis = "cluster_signature+terminal_signature"
     elif rc_match:
         axis = "root_cause"
-    else:
+    elif sig_match:
         axis = "cluster_signature"
+    else:
+        axis = "terminal_signature"
 
     from genie_space_optimizer.optimization.decision_emitters import (
         proposal_stage_forbidden_ag_observed_record,

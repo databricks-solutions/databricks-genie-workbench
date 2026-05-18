@@ -2643,6 +2643,15 @@ _PROPOSAL_STAGE_OBSERVED_MATCH_AXES = frozenset({
     "root_cause",
     "cluster_signature",
     "both",
+    # Phase 0.4 (2026-05-17) — terminal-signature axis (added in
+    # Phase 6.1) is now consulted by
+    # ``_check_proposal_stage_forbidden_ag_leakage``. The closed
+    # vocabulary widens to include the new single-axis label plus
+    # the combined-axis labels the leakage check emits.
+    "terminal_signature",
+    "root_cause+terminal_signature",
+    "cluster_signature+terminal_signature",
+    "root_cause+cluster_signature+terminal_signature",
 })
 
 
