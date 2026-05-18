@@ -8,16 +8,31 @@ from unittest.mock import patch
 # ── Task 12: flag ────────────────────────────────────────────────────
 
 
-def test_flag_default_off() -> None:
-    """WU-5 ships default-OFF. Legacy/empty-intent paths may be valid
-    outside SQL-shape repair; the codebase default preserves the
-    gate's existing fails-open contract for these."""
+def test_flag_default_on() -> None:
+    """WU-5 ships default-ON for the production rollout. Pairs with
+    WU-3 to catch the both-empty card-metadata signature when the
+    preflight is bypassed or a card-builder regression strips
+    metadata."""
     from genie_space_optimizer.common.config import (
         structural_gate_guard_empty_shape_enabled,
     )
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE", None)
-        assert structural_gate_guard_empty_shape_enabled() is False
+        assert structural_gate_guard_empty_shape_enabled() is True
+
+
+def test_flag_off_when_explicit_zero() -> None:
+    """Rollback path — operators can restore the gate's pre-WU-5
+    fails-open contract by setting
+    GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE=0 in app.yaml."""
+    from genie_space_optimizer.common.config import (
+        structural_gate_guard_empty_shape_enabled,
+    )
+    for val in ("0", "false", "no", "off"):
+        with patch.dict(
+            os.environ, {"GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE": val}
+        ):
+            assert structural_gate_guard_empty_shape_enabled() is False, val
 
 
 def test_flag_on_when_explicit_one() -> None:
@@ -33,9 +48,11 @@ def test_flag_on_when_explicit_one() -> None:
 # ── Task 13: guard helper ────────────────────────────────────────────
 
 
-def test_guard_returns_original_verdict_when_flag_off() -> None:
-    """Guard is a no-op when GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE is
-    unset/0 — caller gets back the same verdict the gate returned."""
+def test_guard_returns_original_verdict_when_flag_off(monkeypatch) -> None:
+    """Guard is a no-op when GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE=0
+    (rollback path) — caller gets back the same verdict the gate
+    returned. Post default-ON flip, the rollback path must be
+    exercised explicitly via env var."""
     from genie_space_optimizer.optimization.structural_repair_gate import (
         StructuralRepairGateVerdict,
     )
@@ -43,6 +60,7 @@ def test_guard_returns_original_verdict_when_flag_off() -> None:
         apply_empty_shape_backstop,
     )
 
+    monkeypatch.setenv("GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE", "0")
     original = StructuralRepairGateVerdict.admitted(score=None)
     out = apply_empty_shape_backstop(
         verdict=original,

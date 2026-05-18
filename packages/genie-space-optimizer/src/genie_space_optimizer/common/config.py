@@ -6433,10 +6433,12 @@ def early_rca_preflight_enabled() -> bool:
     ``cluster_blocked_no_rca`` decision record + iteration-no-candidate
     marker).
 
-    Defaults OFF — this flag changes iter-body control flow before
-    proposal generation. Production deploys must explicitly enable it
-    in ``app.yaml`` after replay invariants are green. A fresh deploy
-    or a rollback ships with the pre-WU-3 behavior.
+    Default-ON for the production rollout — the verifier suite
+    (``scripts/verify_anchor_chain_invariants.py`` plus the WU-A/B/C
+    test sweep) is green against both canonical pre-fix runs, and
+    keeping this OFF leaves the ``missing_rca_card`` regression
+    surface intact. Set ``GSO_EARLY_RCA_PREFLIGHT=0`` in ``app.yaml``
+    to force the pre-WU-3 control flow back on (rollback path).
 
     Why this site: Plan P-D's existing recovery wire site
     (downstream of the ``proposal_generation_empty_continue``
@@ -6445,7 +6447,7 @@ def early_rca_preflight_enabled() -> bool:
     audit confirmed ``lever_per_iter_setup`` is reachable under both
     anchors.
     """
-    return _flag_enabled("GSO_EARLY_RCA_PREFLIGHT")
+    return _flag_default_on("GSO_EARLY_RCA_PREFLIGHT")
 
 
 def structural_gate_guard_empty_shape_enabled() -> bool:
@@ -6455,16 +6457,21 @@ def structural_gate_guard_empty_shape_enabled() -> bool:
     BOTH ``intended_patch_shape`` and ``rca_root_cause`` are empty at
     admission time.
 
-    Defaults OFF. The gate's existing contract is to fail OPEN
-    (admit) when ``intended_patch_shape`` is empty so legacy RCA
-    cards without Phase 2.3 metadata are not penalized. WU-5
-    tightens that path only when the card is BOTH missing
-    intended_patch_shape AND missing root_cause — the production
-    signature of the 7now iter-1 attempt-11 bug. Production deploys
-    must explicitly enable this in ``app.yaml`` after operators
-    confirm no legitimate empty-intent paths exist outside SQL-shape
-    repair. A fresh deploy or a rollback ships with the pre-WU-5
-    behavior.
+    Default-ON for the production rollout — paired with WU-3 to
+    catch the case where the preflight is bypassed (legacy code
+    path) or the card exists but its metadata is empty
+    (card-builder regression). The both-empty signature is the
+    production fingerprint of the 7now iter-1 attempt-11 bug; in
+    normal operation this guard never fires. Set
+    ``GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE=0`` in ``app.yaml`` to
+    restore the pre-WU-5 fails-open contract (rollback path).
+
+    The gate's pre-WU-5 contract was to fail OPEN (admit) when
+    ``intended_patch_shape`` is empty so legacy RCA cards without
+    Phase 2.3 metadata were not penalized. WU-5 tightens that path
+    only when the card is BOTH missing intended_patch_shape AND
+    missing root_cause — legacy cards always carry at least one of
+    those, so the legacy-card admission path is unaffected.
 
     Why this is a backstop (not redundant with WU-3):
       * Once WU-3 is on, ungrounded clusters get SKIP_AG at
@@ -6473,7 +6480,7 @@ def structural_gate_guard_empty_shape_enabled() -> bool:
         bypasses the preflight, or when the card exists but its
         metadata is empty (card-builder regression).
     """
-    return _flag_enabled("GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE")
+    return _flag_default_on("GSO_STRUCTURAL_GATE_GUARD_EMPTY_SHAPE")
 
 
 def rca_card_llm_normalization_enabled() -> bool:

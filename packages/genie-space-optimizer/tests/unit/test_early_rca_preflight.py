@@ -8,16 +8,27 @@ from unittest.mock import patch
 # ── Task 7: flag ─────────────────────────────────────────────────────
 
 
-def test_flag_default_off() -> None:
-    """WU-3 ships default-OFF. Production deploys must opt in via
-    GSO_EARLY_RCA_PREFLIGHT=1 in app.yaml after replay invariants
-    pass."""
+def test_flag_default_on() -> None:
+    """WU-3 ships default-ON for the production rollout. The
+    preflight runs unless an operator explicitly disables it via
+    GSO_EARLY_RCA_PREFLIGHT=0 in app.yaml (rollback path)."""
     from genie_space_optimizer.common.config import (
         early_rca_preflight_enabled,
     )
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("GSO_EARLY_RCA_PREFLIGHT", None)
-        assert early_rca_preflight_enabled() is False
+        assert early_rca_preflight_enabled() is True
+
+
+def test_flag_off_when_explicit_zero() -> None:
+    """Rollback path — operators can force the pre-WU-3 control flow
+    back on by setting GSO_EARLY_RCA_PREFLIGHT=0 in app.yaml."""
+    from genie_space_optimizer.common.config import (
+        early_rca_preflight_enabled,
+    )
+    for val in ("0", "false", "no", "off"):
+        with patch.dict(os.environ, {"GSO_EARLY_RCA_PREFLIGHT": val}):
+            assert early_rca_preflight_enabled() is False, val
 
 
 def test_flag_on_when_explicit_one() -> None:
@@ -29,7 +40,8 @@ def test_flag_on_when_explicit_one() -> None:
 
 
 def test_flag_on_when_truthy_string() -> None:
-    """_flag_enabled accepts 1/true/yes/on (lowercase)."""
+    """_flag_default_on returns True for the default and for any
+    non-falsy value; verify truthy strings stay ON as before."""
     from genie_space_optimizer.common.config import (
         early_rca_preflight_enabled,
     )
