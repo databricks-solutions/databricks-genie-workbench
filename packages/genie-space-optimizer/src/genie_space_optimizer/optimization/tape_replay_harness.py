@@ -203,6 +203,120 @@ class LeverLoopReplayHarness:
         except AttributeError:
             pass
 
+        # Phase 3.6.2 E3 (2026-05-18) — replay stub for
+        # ``state.load_latest_state_iteration``. Same source as
+        # ``load_latest_full_iteration`` but accepts ``eval_scope IN
+        # ('full', 'enrichment')`` and orders by (iteration desc,
+        # timestamp desc). For tape replay we don't have timestamps,
+        # so the highest-index payload with a matching scope wins.
+        def _replay_load_latest_state_iteration(
+            spark, run_id, catalog, schema,
+            *, include_rolled_back=False,
+        ):
+            payloads = self.tape.iteration_payloads or {}
+            if not payloads:
+                return None
+            candidates: list[tuple[int, dict]] = []
+            for idx, payload in payloads.items():
+                scope = str(payload.get("eval_scope", "full"))
+                if scope not in ("full", "enrichment"):
+                    continue
+                if not include_rolled_back and bool(
+                    payload.get("rolled_back", False)
+                ):
+                    continue
+                candidates.append((int(idx), payload))
+            if not candidates:
+                return None
+            candidates.sort(key=lambda kv: kv[0], reverse=True)
+            return dict(candidates[0][1])
+
+        self._exit_stack.enter_context(
+            _mock_patch(
+                "genie_space_optimizer.optimization.state."
+                "load_latest_state_iteration",
+                side_effect=_replay_load_latest_state_iteration,
+            )
+        )
+        try:
+            self._exit_stack.enter_context(
+                _mock_patch(
+                    "genie_space_optimizer.optimization.harness."
+                    "load_latest_state_iteration",
+                    side_effect=_replay_load_latest_state_iteration,
+                )
+            )
+        except AttributeError:
+            pass
+
+        # Phase 3.6.2 E3 — replay stub for
+        # ``state.load_all_full_iterations``. Returns ALL ``full``
+        # scope payloads ordered by iteration ASC (mirrors
+        # production's ``ORDER BY iteration ASC``).
+        def _replay_load_all_full_iterations(
+            spark, run_id, catalog, schema,
+        ):
+            payloads = self.tape.iteration_payloads or {}
+            rows = [
+                dict(p) for idx, p in sorted(payloads.items())
+                if str(p.get("eval_scope", "full")) == "full"
+                and not bool(p.get("rolled_back", False))
+            ]
+            return rows
+
+        self._exit_stack.enter_context(
+            _mock_patch(
+                "genie_space_optimizer.optimization.state."
+                "load_all_full_iterations",
+                side_effect=_replay_load_all_full_iterations,
+            )
+        )
+        try:
+            self._exit_stack.enter_context(
+                _mock_patch(
+                    "genie_space_optimizer.optimization.harness."
+                    "load_all_full_iterations",
+                    side_effect=_replay_load_all_full_iterations,
+                )
+            )
+        except AttributeError:
+            pass
+
+        # Phase 3.6.2 E3 — replay stub for ``state.load_run``.
+        # Production reads the run-metadata row from
+        # ``genie_opt_runs``; under replay we synthesize a minimal
+        # dict from tape-level fields. Most consumers read
+        # ``space_id``, ``levers``, ``config_snapshot``,
+        # ``started_at`` — we return enough for graceful
+        # back-compat; downstream consumers that need richer
+        # metadata will surface as the next stop-and-report.
+        def _replay_load_run(spark, run_id, catalog, schema):
+            return {
+                "run_id": str(run_id),
+                "space_id": "",
+                "status": "running",
+                "levers": [],
+                "config_snapshot": {},
+                "started_at": str(self.tape.captured_at or ""),
+                "source_run_id": str(self.tape.source_run_id or ""),
+            }
+
+        self._exit_stack.enter_context(
+            _mock_patch(
+                "genie_space_optimizer.optimization.state.load_run",
+                side_effect=_replay_load_run,
+            )
+        )
+        try:
+            self._exit_stack.enter_context(
+                _mock_patch(
+                    "genie_space_optimizer.optimization.harness.load_run",
+                    side_effect=_replay_load_run,
+                )
+            )
+        except AttributeError:
+            pass
+
         # Patch patch_space_config to a no-op that captures calls.
         def _replay_patch_space_config(w, space_id, config, **kwargs) -> dict:
             self.captured_patches.append({

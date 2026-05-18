@@ -189,6 +189,76 @@ def test_harness_load_latest_full_iteration_empty_payloads_returns_none():
     assert result is None
 
 
+def test_harness_serves_load_latest_state_iteration_includes_enrichment():
+    """Phase 3.6.2 E3 — ``load_latest_state_iteration`` accepts both
+    ``full`` and ``enrichment`` eval_scope. Highest payload index
+    wins (tape replay has no timestamps)."""
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+        format_version=3,
+        iteration_payloads={
+            0: {"iteration": 0, "eval_scope": "enrichment",
+                "rolled_back": False, "rows_json": []},
+            1: {"iteration": 1, "eval_scope": "full",
+                "rolled_back": False, "rows_json": [{"qid": "q1"}]},
+        },
+    )
+    with LeverLoopReplayHarness(tape=tape):
+        from genie_space_optimizer.optimization import state as _state
+        result = _state.load_latest_state_iteration(
+            spark=None, run_id="r", catalog="c", schema="s",
+        )
+    assert result is not None
+    assert result["iteration"] == 1
+    assert result["eval_scope"] == "full"
+
+
+def test_harness_serves_load_all_full_iterations_ordered_asc():
+    """All ``full`` payloads, iteration ASC."""
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+        format_version=3,
+        iteration_payloads={
+            0: {"iteration": 1, "eval_scope": "full", "rolled_back": False},
+            1: {"iteration": 2, "eval_scope": "enrichment",
+                "rolled_back": False},  # excluded
+            2: {"iteration": 3, "eval_scope": "full", "rolled_back": False},
+            3: {"iteration": 4, "eval_scope": "full", "rolled_back": True},  # excluded
+        },
+    )
+    with LeverLoopReplayHarness(tape=tape):
+        from genie_space_optimizer.optimization import state as _state
+        rows = _state.load_all_full_iterations(
+            spark=None, run_id="r", catalog="c", schema="s",
+        )
+    assert [r["iteration"] for r in rows] == [1, 3]
+
+
+def test_harness_serves_load_run_with_synthetic_metadata():
+    """``load_run`` synthesizes a minimal run-metadata dict.
+    Downstream consumers needing richer metadata surface as the
+    next stop-and-report."""
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="source-r",
+        captured_at="2026-05-18T00:00:00Z", entries=[],
+        format_version=3,
+        iteration_payloads={
+            0: {"iteration": 1, "eval_scope": "full", "rolled_back": False},
+        },
+    )
+    with LeverLoopReplayHarness(tape=tape):
+        from genie_space_optimizer.optimization import state as _state
+        result = _state.load_run(
+            spark=None, run_id="r", catalog="c", schema="s",
+        )
+    assert result is not None
+    assert result["run_id"] == "r"
+    assert result["source_run_id"] == "source-r"
+    assert result["status"] == "running"
+    assert result["levers"] == []
+    assert result["config_snapshot"] == {}
+
+
 def test_harness_iteration_binding_hook_invoked_by_run_lever_loop(monkeypatch):
     """harness.py exposes _TAPE_BINDING_HOOK that _run_lever_loop calls
     once per iteration. This lets the replay harness advance the
