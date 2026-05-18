@@ -4,8 +4,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from scripts.capture_lever_loop_tape_from_export import (
     capture_tape_from_export,
 )
@@ -61,25 +59,32 @@ def test_capture_emits_strategist_entry_per_iteration(tmp_path: Path):
 
 
 def test_capture_records_synthesis_entries_when_present(tmp_path: Path):
+    """Phase 3.5 (2026-05-17) — synthesis entries are captured via the
+    new ``llm_call_log`` shape (the legacy ``synthesis_calls`` field
+    is no longer read; recapture against a Phase-3.5 run for full
+    coverage)."""
     export = {
         "fixture_id": "fx-2",
         "source_run_id": "run-xyz",
         "iterations": [
             {
-                "iteration_idx": 2,
+                "iteration": 2,
                 "eval_rows": [],
                 "clusters": [],
                 "soft_clusters": [],
-                "strategist_prompt": "P",
-                "strategist_response": "R",
                 "decision_records": [],
-                "synthesis_calls": [
+                "llm_call_log": [
                     {
+                        "span_name": "cluster_driven_synthesis",
+                        "iteration": 2,
                         "ag_id": "AG_001",
                         "cluster_id": "H001",
+                        "prompt_sha256": "a" * 64,
+                        "system_msg": "",
                         "prompt": "SYNTH-P",
-                        "response": "SYNTH-R",
-                    }
+                        "response_text": "SYNTH-R",
+                        "response_metadata": {},
+                    },
                 ],
             }
         ],
@@ -91,14 +96,22 @@ def test_capture_records_synthesis_entries_when_present(tmp_path: Path):
     capture_tape_from_export(src, out, tape_id="tape-2")
 
     tape = LeverLoopTape.from_json_file(out)
-    synth = [e for e in tape.entries if e.key.stage == "cluster_driven_synthesis"]
+    synth = [
+        e for e in tape.entries
+        if e.key.stage == "cluster_driven_synthesis"
+    ]
     assert len(synth) == 1
     assert synth[0].key.ag_id == "AG_001"
     assert synth[0].key.cluster_id == "H001"
     assert synth[0].response_text == "SYNTH-R"
 
 
-def test_capture_raises_on_missing_strategist_fields(tmp_path: Path):
+def test_capture_emits_empty_tape_when_no_llm_data(tmp_path: Path):
+    """Phase 3.5 (2026-05-17) — exports with no ``llm_call_log`` and no
+    legacy ``strategist_prompt`` produce an empty tape (warning logged
+    on the legacy path). Previously this raised; Phase 3.5 prefers
+    "warn + empty tape" so the capture pipeline never blocks Phase 3
+    diagnostics on a borderline export."""
     export = {
         "fixture_id": "fx-3",
         "iterations": [
@@ -109,7 +122,8 @@ def test_capture_raises_on_missing_strategist_fields(tmp_path: Path):
     src.write_text(json.dumps(export))
     out = tmp_path / "tape.json"
 
-    with pytest.raises(
-        ValueError, match="iteration 0 is missing strategist_prompt"
-    ):
-        capture_tape_from_export(src, out, tape_id="tape-3")
+    capture_tape_from_export(src, out, tape_id="tape-3")
+
+    assert out.exists()
+    tape = json.loads(out.read_text())
+    assert tape["entries"] == []
