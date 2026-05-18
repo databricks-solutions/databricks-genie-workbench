@@ -186,6 +186,48 @@ def _attach_last_response(exc: BaseException, text: str) -> None:
         pass
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Phase 3 (2026-05-17) — Lever Loop Tape Replay
+#
+# ``_LLM_CALLER_OVERRIDE`` lets tests intercept every LLM call routed
+# through ``_traced_llm_call`` without changing any call-site signature.
+# Production callers see no behavioral change: ``ContextVar.get()``
+# returns ``None`` by default and the legacy code path executes.
+#
+# Replay tests set the override at the lever-loop entry boundary via
+# ``LeverLoopReplayHarness`` (tape_replay_harness.py) and reset it on
+# exit. Concurrency: ContextVar isolates state per asyncio task /
+# thread, matching how MLflow tracing manages its own context.
+# ──────────────────────────────────────────────────────────────────────
+from contextvars import ContextVar as _Phase3ContextVar
+from typing import Protocol as _Phase3Protocol
+
+
+class LLMCallerOverride(_Phase3Protocol):
+    """Protocol for an installable LLM caller that bypasses the real LLM."""
+
+    def call(
+        self,
+        *,
+        w: Any,
+        system_msg: str,
+        prompt: str,
+        span_name: str,
+        max_retries: int,
+        temperature: float,
+        max_tokens: int | None,
+        response_validator: Callable[[str], Any] | None,
+        response_format: dict[str, Any] | None,
+        response_model: type | None,
+    ) -> tuple[str, Any]:
+        ...
+
+
+_LLM_CALLER_OVERRIDE: _Phase3ContextVar[LLMCallerOverride | None] = (
+    _Phase3ContextVar("_LLM_CALLER_OVERRIDE", default=None)
+)
+
+
 def _traced_llm_call(
     w: WorkspaceClient | None,
     system_msg: str,
@@ -221,6 +263,38 @@ def _traced_llm_call(
     legacy behaviour (return first HTTP 200, no post-success
     validation) is preserved for every existing call site.
     """
+    # Phase 3 (2026-05-17) — consult tape-replay override before any
+    # LLM/MLflow work. The override is a ContextVar set by
+    # LeverLoopReplayHarness — it returns deterministic (text,
+    # response) from a tape and skips OpenAI/MLflow entirely.
+    _override = _LLM_CALLER_OVERRIDE.get()
+    if _override is not None:
+        _local_response_format = response_format
+        _local_response_validator = response_validator
+        if response_model is not None:
+            from genie_space_optimizer.optimization.prompt_io import (
+                build_response_format,
+                validate_and_parse,
+            )
+            if _local_response_format is None:
+                _local_response_format = build_response_format(response_model)
+            if _local_response_validator is None:
+                _local_response_validator = (
+                    lambda txt: validate_and_parse(txt, response_model)  # noqa: E731
+                )
+        return _override.call(
+            w=w,
+            system_msg=system_msg,
+            prompt=prompt,
+            span_name=span_name,
+            max_retries=max_retries,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_validator=_local_response_validator,
+            response_format=_local_response_format,
+            response_model=response_model,
+        )
+
     import time
 
     import mlflow
