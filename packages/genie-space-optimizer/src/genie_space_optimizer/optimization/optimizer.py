@@ -349,11 +349,27 @@ def _traced_llm_call(
             response_validator = lambda txt: validate_and_parse(txt, response_model)  # noqa: E731
 
     with mlflow.start_span(name=span_name, span_type=SpanType.CHAIN) as span:
+        # Phase 3.6 (2026-05-17) — read recorder binding so historic-
+        # style extractors don't need timestamp-correlation hacks.
+        # Default RecorderBinding values (-1 / "") are recorded
+        # explicitly so the schema is uniform whether or not the
+        # lever loop is bound.
+        from genie_space_optimizer.optimization.llm_call_recorder import (
+            _RECORDER_BINDING as _phase36_binding_ctx,
+        )
+
+        _phase36_binding = _phase36_binding_ctx.get()
         span.set_inputs({
             "model": LLM_ENDPOINT,
             "temperature": temperature,
             "prompt_chars": len(prompt),
             "response_model": response_model.__name__ if response_model else None,
+            # Phase 3.6 breadcrumbs — read by mlflow_trace_extractor at
+            # tape-capture time so historic tapes can be keyed by
+            # iteration/ag_id/cluster_id without timestamp inference.
+            "iteration": int(_phase36_binding.iteration),
+            "ag_id": str(_phase36_binding.ag_id),
+            "cluster_id": str(_phase36_binding.cluster_id),
         })
 
         client = _get_openai_client(w)
