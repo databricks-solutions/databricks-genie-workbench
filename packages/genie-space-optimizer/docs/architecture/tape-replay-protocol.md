@@ -72,16 +72,37 @@ If new external side effects are added to the lever loop, they MUST be patched i
 
 If you add a new per-cluster or per-AG LLM call site to the lever loop, ensure ``_tape_binding_set_ag`` is called immediately before the LLM call so the tape lookup uses the right key.
 
-## Capture workflow
+## Capture workflow (Phase 3.5)
 
-1. **From a production run's lever-loop export:**
-   ```bash
-   python scripts/capture_lever_loop_tape_from_export.py \
-       --input  docs/runid_analysis/<runid>/lever_loop_latest_export.json \
-       --output tests/replay/active/tapes/<short_id>.json \
-       --tape-id <short_id>
-   ```
-2. **(Future) From MLflow CHAT_MODEL spans:** extend the capture script with an ``--mlflow-run-id`` flag that walks the MLflow trace tree, reads ``inputs.messages`` and ``outputs.choices[0].message.content`` from each ``CHAT_MODEL`` span, and emits ``TapeEntry`` records. Not implemented in this iteration.
+1. **Production run records every LLM call.** ``_run_lever_loop`` installs an ``InMemoryLLMCallRecorder`` for the duration of the loop. Every call routed through ``optimizer._traced_llm_call`` (Stage 1, Stage 2 per lever, synthesis, fallback strategist) is appended to the recorder's buffer with binding ``(iteration, ag_id, cluster_id)`` captured at call time.
+2. **Drain at loop exit.** After the main for-loop completes, the harness drains the recorder buffer and routes each call into ``_replay_fixture_iterations[i]["llm_call_log"]`` by matching the recorded ``iteration`` field.
+3. **Journey exporter serializes.** ``journey_fixture_exporter._ALLOWED_ITERATION_KEYS`` includes ``llm_call_log``; the per-call shape is enforced by ``_ALLOWED_LLM_CALL_KEYS``.
+4. **Capture script reads the export.** ``scripts/capture_lever_loop_tape_from_export.py`` walks ``iteration["llm_call_log"]`` and emits a canonical ``LeverLoopTape`` JSON.
+
+```bash
+python scripts/capture_lever_loop_tape_from_export.py \
+    --export docs/runid_analysis/<runid>/lever_loop_latest_export.json \
+    --out    tests/replay/active/tapes/<short_id>.json \
+    --tape-id <short_id>
+```
+
+5. **Legacy fallback for pre-Phase-3.5 exports.** If the export lacks ``llm_call_log``, the script logs a WARNING and falls back to the old ``strategist_prompt`` + ``strategist_response`` path where present. When neither is present, the script emits an empty tape (with a WARNING) rather than raising.
+6. **(Future) From MLflow CHAT_MODEL spans:** extend the capture script with an ``--mlflow-run-id`` flag that walks the MLflow trace tree and emits ``TapeEntry`` records from each ``CHAT_MODEL`` span. Not implemented.
+
+## Stage vocabulary
+
+``tape._KNOWN_STAGES`` is a frozenset enumerating every ``span_name`` literal currently emitted by ``src/genie_space_optimizer/``. Tapes that reference a stage outside this set load successfully (forward compat) but emit a WARNING at load time so capture-side typos or drift are visible.
+
+A CI gate (``tests/ci/test_known_stages_matches_source.py``) re-derives the production vocabulary via ``grep`` and refuses any PR that introduces a new ``span_name`` literal without updating ``_KNOWN_STAGES``.
+
+Stages by category (current):
+
+- **Stage 1 (three-stage pipeline):** ``stage_1_discovery``
+- **Stage 2 / per-lever:** ``lever_1_table_column_description``, ``lever_2_mv_column_refinement``, ``lever_3_tvf_routing``, ``lever_4_join_discovery``, ``lever_4_join_discovery_repair``, ``lever_5a_instructions``, ``lever_5b_example_sql``, ``lever_5b_example_sql_for_rca``, ``lever_6_sql_expression``
+- **Synthesis:** ``cluster_driven_example_synthesis``, ``cluster_driven_example_synthesis_retry``, ``cluster_driven_synthesis``, ``preflight_example_synthesis``, ``archetype_learning.synthesize_provisional``
+- **Legacy strategist:** ``adaptive_strategy``, ``monolithic_strategy_fallback``
+- **Other proposal-stage:** ``phase_1a_triage``, ``lever1_rca_proposal``, ``lever6_llm``, ``prose_rule_mining``, ``prose_rule_mining_retry``, ``sql_expression_seeding_llm``
+- **Space-setup:** ``generate_space_description``, ``generate_sample_questions``
 
 ## Refresh policy
 
