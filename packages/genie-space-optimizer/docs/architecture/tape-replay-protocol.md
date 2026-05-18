@@ -102,7 +102,7 @@ Post-Phase-3.6 traces carry ``iteration`` / ``ag_id`` / ``cluster_id`` as span b
 
 ``tape_llm_caller.PRE_LOOP_HELPER_STAGES_ALLOWLIST`` is a frozenset of ``span_name`` values whose ``_traced_llm_call`` sites were added to the codebase AFTER the historic anchor tapes were captured. These calls fire during replay (typically space-setup helpers invoked once per run, before the lever-loop iteration loop opens) but the captured tape has no entry for them — they predate the call site.
 
-Under any miss policy, a tape miss whose ``span_name`` is in the allowlist returns ``("", {"tape_metadata": {"replay_no_op": True}})`` instead of raising ``TapeMissError``. The production call sites for these helpers wrap their ``_traced_llm_call`` invocations in ``try/except`` and treat an empty/failed response as a benign no-op (see ``optimizer._generate_proactive_instructions`` at ``optimizer.py:4253``), so the lever loop stays on its postmortem trajectory.
+Under any miss policy, a tape miss whose ``span_name`` is in the allowlist returns ``("{}", {"tape_metadata": {"replay_no_op": True}})`` instead of raising ``TapeMissError``. The empty-JSON-object body is the contract: text-path callers see a short string and bail via their "result too short" guards; JSON-path callers (e.g. ``_generate_sample_questions`` at ``optimizer.py:4569``) parse it cleanly to ``{}`` and ``.get("questions", [])`` returns ``[]`` without NoneType-crashing. The lever loop stays on its postmortem trajectory.
 
 Current allowlist:
 

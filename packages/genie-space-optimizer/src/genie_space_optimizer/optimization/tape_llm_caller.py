@@ -89,7 +89,16 @@ class TapeBackedLLMCaller:
             # in try/except — see ``_generate_proactive_instructions``
             # at ``optimizer.py:4253``).
             if span_name in self._miss_allowlist:
-                return "", {"tape_metadata": {"replay_no_op": True}}
+                # Phase 3.6.1 D1 (2026-05-18) — return a parseable
+                # empty-JSON object instead of ``""``. Text-path
+                # callers see "result too short" and bail (same as
+                # before); JSON-path callers (e.g.
+                # ``_generate_sample_questions``) parse it cleanly
+                # to ``{}`` and ``.get("questions", [])`` returns
+                # ``[]`` without raising AttributeError on None.
+                # ``""`` was a contract bug that accidentally worked
+                # for the text-path entries in the allowlist.
+                return "{}", {"tape_metadata": {"replay_no_op": True}}
             raise
 
         text = entry.response_text

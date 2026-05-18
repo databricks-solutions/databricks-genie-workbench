@@ -150,8 +150,41 @@ def test_pre_loop_helper_miss_returns_empty_instead_of_raising():
         response_format=None,
         response_model=None,
     )
-    assert text == ""
+    # Phase 3.6.1 D1 (2026-05-18) — "{}" instead of "" so JSON-path
+    # callers parse cleanly to {} and don't NoneType-crash.
+    assert text == "{}"
     assert resp == {"tape_metadata": {"replay_no_op": True}}
+
+
+def test_pre_loop_helper_miss_payload_is_parseable_json():
+    """Phase 3.6.1 D1 — the empty-payload return must be valid JSON
+    so JSON-parsing callers (e.g. ``_generate_sample_questions`` at
+    optimizer.py:4569) parse it cleanly to ``{}`` rather than
+    receiving ``None`` from a JSON parse of ``""`` and then
+    NoneType-crashing on ``.get(...)``."""
+    import json as _json
+
+    tape = LeverLoopTape(
+        tape_id="t", source_run_id="r", captured_at="0", entries=[],
+    )
+    ctx = TapeCallContext(tape=tape)
+    text, _ = ctx.caller().call(
+        w=None,
+        system_msg="",
+        prompt="anything",
+        span_name="generate_sample_questions",
+        max_retries=3,
+        temperature=0.0,
+        max_tokens=None,
+        response_validator=None,
+        response_format=None,
+        response_model=None,
+    )
+    parsed = _json.loads(text)
+    assert parsed == {}
+    # The .get(...)-on-empty-dict pattern callers use must work:
+    assert parsed.get("questions", []) == []
+    assert parsed.get("instructions", []) == []
 
 
 def test_non_allowlisted_miss_still_raises():
