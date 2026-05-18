@@ -1,6 +1,8 @@
 """Phase 3.5 Task 1 — recorder Protocol + InMemory + binding ContextVar."""
 from __future__ import annotations
 
+import pytest
+
 from genie_space_optimizer.optimization.llm_call_recorder import (
     InMemoryLLMCallRecorder,
     RecorderBinding,
@@ -8,6 +10,22 @@ from genie_space_optimizer.optimization.llm_call_recorder import (
     set_ag_binding,
     set_iteration_binding,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_recorder_binding():
+    """Ensure each test starts from the default binding. The harness
+    binding helpers (``_tape_binding_set_iteration`` /
+    ``_tape_binding_set_ag``) mutate ``_RECORDER_BINDING`` without
+    saving tokens, so earlier tests in the same pytest session may
+    leak state into ours."""
+    token = _RECORDER_BINDING.set(
+        RecorderBinding(iteration=-1, ag_id="", cluster_id=""),
+    )
+    try:
+        yield
+    finally:
+        _RECORDER_BINDING.reset(token)
 
 
 def test_default_binding_is_unbound():
