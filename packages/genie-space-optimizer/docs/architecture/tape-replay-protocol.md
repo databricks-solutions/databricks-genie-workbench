@@ -72,6 +72,42 @@ If new external side effects are added to the lever loop, they MUST be patched i
 
 If you add a new per-cluster or per-AG LLM call site to the lever loop, ensure ``_tape_binding_set_ag`` is called immediately before the LLM call so the tape lookup uses the right key.
 
+## Capture paths
+
+There are two complementary ways to build a ``LeverLoopTape``:
+
+### Live capture (Phase 3.5)
+
+For any optimization run executed by the post-3.5 build:
+
+1. ``_run_lever_loop`` installs an ``InMemoryLLMCallRecorder`` for the duration of the loop.
+2. ``optimizer._traced_llm_call`` appends every successful call to the recorder.
+3. End of loop: the harness drains the buffer and routes each call to ``_replay_fixture_iterations[i]["llm_call_log"]``.
+4. ``journey_fixture_exporter`` serializes the log into the export JSON.
+5. ``scripts/capture_lever_loop_tape_from_export.py --export ... --out ...`` reads ``llm_call_log`` and writes a tape.
+
+Tapes from this path carry full iteration / ag_id / cluster_id binding and use ``miss_policy="raise"`` (strict, full-key match).
+
+### Historic capture (Phase 3.6)
+
+For any run with active MLflow tracing — including runs that predate Phase 3.5 (no ``llm_call_log`` in the export):
+
+1. ``MlflowClient.search_traces(experiment_ids=[...], run_id=...)`` fetches the trace tree.
+2. ``mlflow_trace_extractor.extract_llm_calls_from_traces(traces)`` walks every CHAIN span in ``_KNOWN_STAGES`` with a CHAT_MODEL child and emits call dicts.
+3. ``scripts/capture_tape_from_mlflow.py --experiment-id ... --run-id ... --export-json ... --out ...`` assembles a tape from the extractor output plus the export JSON's eval/cluster side-tables.
+
+Post-Phase-3.6 traces carry ``iteration`` / ``ag_id`` / ``cluster_id`` as span breadcrumbs (set by ``_traced_llm_call``), so historic-style extraction is bit-exact equivalent to live capture. Pre-3.6 traces have no breadcrumbs; their tapes use ``miss_policy="prompt_sha_only"`` and match on (stage, prompt_sha256) alone.
+
+## Miss policies
+
+| Policy | When to use | Lookup semantics |
+|---|---|---|
+| ``raise`` (default) | Live captures and post-3.6 historic captures with breadcrumbs | Strict full-key match on (stage, iteration, ag_id, cluster_id, prompt_sha256); miss raises ``TapeMissError`` |
+| ``warn`` | Deliberate prompt-template-drift testing | Match on (stage, iteration, ag_id, cluster_id); accept first sibling regardless of prompt SHA, log WARNING |
+| ``prompt_sha_only`` (Phase 3.6) | Pre-3.6 historic captures without breadcrumbs | Match on (stage, prompt_sha256); ignore iteration/ag/cluster on the candidate key |
+
+Prompt content is iteration-+-AG-unique in practice (Stage 1 / Stage 2 prompts include the iteration's clusters, RCA cards, and AG context), so ``prompt_sha_only`` is safe for historic tapes.
+
 ## Capture workflow (Phase 3.5)
 
 1. **Production run records every LLM call.** ``_run_lever_loop`` installs an ``InMemoryLLMCallRecorder`` for the duration of the loop. Every call routed through ``optimizer._traced_llm_call`` (Stage 1, Stage 2 per lever, synthesis, fallback strategist) is appended to the recorder's buffer with binding ``(iteration, ag_id, cluster_id)`` captured at call time.
