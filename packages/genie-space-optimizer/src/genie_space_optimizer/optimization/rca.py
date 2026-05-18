@@ -337,6 +337,49 @@ def _mentions_top_n_collapse(text: str) -> bool:
     return False
 
 
+def _mentions_grain_or_grouping_mismatch(text: str) -> bool:
+    """Return True when the text describes a grain / grouping
+    mismatch — the generated SQL groups by a dimension the
+    question did not ask for, producing extra rows; or the
+    generated SQL fails to pivot two related measures into one
+    row per entity.
+
+    Patterns derived from the 7now gs_013 anchor counterfactual
+    fixes. The matcher requires a GROUP BY context AND either a
+    removal / split / pivot hint OR a CTE-join hint. Plain mentions
+    of GROUP BY do not fire.
+    """
+    lower = str(text or "").lower()
+    if not lower:
+        return False
+
+    has_group_by = "group by" in lower
+    has_grain_signal = (
+        ("split into" in lower and "cte" in lower)
+        or "pivoted" in lower
+        or ("pivot" in lower and ("into columns" in lower or "side by side" in lower))
+    )
+
+    if has_grain_signal:
+        return True
+
+    # GROUP BY + removal / negation hint.
+    if has_group_by:
+        if (
+            "remove" in lower
+            or "should not include" in lower
+            or "do not include" in lower
+            or "don't include" in lower
+            or "exclude" in lower
+            or "instead of grouping" in lower
+            or "rather than grouping" in lower
+            or ("produces" in lower and "rows" in lower and "instead of" in lower)
+        ):
+            return True
+
+    return False
+
+
 def _top_n_collapse_metadata_override(
     failure: str,
     metadata: dict,
