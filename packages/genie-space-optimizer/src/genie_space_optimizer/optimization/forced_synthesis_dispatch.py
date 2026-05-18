@@ -367,6 +367,14 @@ def dispatch_forced_structural_synthesis(
                 attempted_archetypes=(
                     _synth_result.attempted_archetypes
                 ),
+                # Phase 0.2 (2026-05-17) — surface the typed
+                # decline reason so postmortems can distinguish
+                # no_archetype_or_slice / no_top_n_archetype /
+                # validate_afs_rejected / format_afs_failed /
+                # safety_cap:* / budget:* without log-scraping.
+                skipped_reason=str(
+                    _synth_result.skipped_reason or ""
+                ),
             )
             emitted.append(_nsc.to_dict())
             logger.info(
@@ -471,6 +479,13 @@ def dispatch_forced_structural_synthesis(
                     if str(q)
                 ),
                 attempted_archetypes=_synth_result.attempted_archetypes,
+                # Phase 0.2 (2026-05-17) — surface the typed
+                # decline reason for the safety-net (no-L5-drop
+                # SQL-shape) branch so postmortems see the same
+                # vocabulary as the gate-drop branch.
+                skipped_reason=str(
+                    _synth_result.skipped_reason or ""
+                ),
             )
             emitted.append(_nsc.to_dict())
             logger.info(

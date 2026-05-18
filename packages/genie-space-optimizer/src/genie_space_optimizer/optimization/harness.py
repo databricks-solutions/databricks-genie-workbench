@@ -23357,6 +23357,16 @@ def _run_lever_loop(
                                             "attempted_archetypes"
                                         ) or ()
                                     ),
+                                    # Phase 0.2 (2026-05-17) — mirror the
+                                    # typed decline reason from the
+                                    # record's metrics dict into the
+                                    # marker so postmortems no longer see
+                                    # ``"skipped_reason": ""`` everywhere.
+                                    skipped_reason=str(
+                                        _nsc_dict.get("metrics", {}).get(
+                                            "skipped_reason"
+                                        ) or ""
+                                    ),
                                 ), flush=True)
                             except Exception:
                                 logger.debug(
