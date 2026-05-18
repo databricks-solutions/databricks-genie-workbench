@@ -243,3 +243,240 @@ def test_count_admitted_with_empty_intent() -> None:
         }),
     )
     assert count_admitted_with_empty_intent(markers) == 1
+
+
+def _pre_fix_postmortem() -> dict:
+    """The exact shape the canonical pre-fix 7now run produces for
+    its iter-1 H001/gs_013 anchor (extracted from
+    docs/runid_analysis/ab65fefe-9bb5-411c-9818-f62633ec9cfd/postmortem.json)."""
+    return {
+        "iteration_summary": [
+            {
+                "iteration": 1,
+                "ag_id": "AG_DECOMPOSED_H001",
+                "cluster_ids": ["H001"],
+                "target_qids": ["7now_delivery_analytics_space_gs_013"],
+                "directive_outcome": {"6": "proposal_emitted"},
+                "no_structural_candidate": {
+                    "skipped_reason": "missing_rca_card",
+                    "attempted_archetypes": [],
+                },
+                "terminal_reason": "full_eval_regression",
+                "next_step": "skip_productive",
+            }
+        ]
+    }
+
+
+def test_classifier_pre_fix_postmortem_marks_anchor_failed_with_missing_rca_card() -> None:
+    """The canonical pre-WU-3.5 shape for gs_013 must FAIL with
+    'missing_rca_card' as the reason."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        AnchorChainVerifier,
+        LifecyclePath,
+    )
+    v = AnchorChainVerifier(postmortem=_pre_fix_postmortem())
+    result = v.run()
+    assert not result.passed
+    gs013 = next(
+        (av for av in result.anchor_verdicts if av.qid_suffix == "gs_013"),
+        None,
+    )
+    assert gs013 is not None
+    assert gs013.passed is False
+    assert gs013.lifecycle_path == LifecyclePath.UNKNOWN
+    assert any("missing_rca_card" in r for r in gs013.reasons)
+
+
+def test_classifier_grounded_with_candidate_path_a() -> None:
+    """directive_outcome shows proposal_emitted AND
+    no_structural_candidate is empty → Path A passes."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        AnchorChainVerifier,
+        LifecyclePath,
+    )
+    pm = {
+        "iteration_summary": [
+            {
+                "iteration": 1,
+                "ag_id": "AG_X",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": {"6": "proposal_emitted"},
+                "no_structural_candidate": {},
+                "terminal_reason": "",
+                "next_step": "continue",
+            }
+        ]
+    }
+    result = AnchorChainVerifier(
+        postmortem=pm,
+        transcript_text='GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural"}\n',
+    ).run()
+    gs013 = next(av for av in result.anchor_verdicts if av.qid_suffix == "gs_013")
+    assert gs013.lifecycle_path == LifecyclePath.GROUNDED_WITH_CANDIDATE
+    assert gs013.passed is True
+
+
+def test_classifier_grounded_with_typed_decline_path_b() -> None:
+    """no_structural_candidate carries a typed archetype-decline
+    reason AND non-empty attempted_archetypes → Path B passes."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        AnchorChainVerifier,
+        LifecyclePath,
+    )
+    pm = {
+        "iteration_summary": [
+            {
+                "iteration": 3,
+                "ag_id": "AG_X",
+                "cluster_ids": ["H002"],
+                "target_qids": ["x_gs_026"],
+                "directive_outcome": {"5": "no_structural_candidate"},
+                "no_structural_candidate": {
+                    "skipped_reason": "no_top_n_archetype",
+                    "attempted_archetypes": ["top_n", "filter_removal"],
+                },
+                "terminal_reason": "proposal_generation_empty",
+                "next_step": "retry_strategy_switch",
+            }
+        ]
+    }
+    result = AnchorChainVerifier(
+        postmortem=pm,
+        transcript_text='GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural"}\n',
+    ).run()
+    gs026 = next(av for av in result.anchor_verdicts if av.qid_suffix == "gs_026")
+    assert gs026.lifecycle_path == LifecyclePath.GROUNDED_WITH_TYPED_DECLINE
+    assert gs026.passed is True
+
+
+def test_classifier_preflight_skip_path_c() -> None:
+    """If the postmortem records the WU-3 SKIP_AG signature
+    (terminal_reason=='early_preflight_cluster_blocked_no_rca' OR a
+    matching marker), Path C passes."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        AnchorChainVerifier,
+        LifecyclePath,
+    )
+    pm = {
+        "iteration_summary": [
+            {
+                "iteration": 1,
+                "ag_id": "AG_X",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": {},
+                "no_structural_candidate": {},
+                "terminal_reason": "early_preflight_cluster_blocked_no_rca",
+                "next_step": "skip_ag",
+            }
+        ]
+    }
+    result = AnchorChainVerifier(
+        postmortem=pm,
+        transcript_text='GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural"}\n',
+    ).run()
+    gs013 = next(av for av in result.anchor_verdicts if av.qid_suffix == "gs_013")
+    assert gs013.lifecycle_path == LifecyclePath.PREFLIGHT_SKIP
+    assert gs013.passed is True
+
+
+def test_classifier_global_failure_best_of_n_never_fired() -> None:
+    """Even if every anchor passes individually, the global
+    invariant 'best_of_n fires at least once for structural intent'
+    must hold. A run with zero such markers FAILs overall."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        AnchorChainVerifier,
+    )
+    pm = {
+        "iteration_summary": [
+            {
+                "iteration": 1,
+                "ag_id": "AG_X",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": {"6": "proposal_emitted"},
+                "no_structural_candidate": {},
+                "terminal_reason": "",
+                "next_step": "continue",
+            }
+        ]
+    }
+    result = AnchorChainVerifier(
+        postmortem=pm,
+        transcript_text="",
+    ).run()
+    assert result.passed is False
+    assert any(
+        "best_of_n_structural_never_fired" in f
+        for f in result.global_failures
+    )
+
+
+def test_classifier_global_failure_admitted_with_empty_intent() -> None:
+    """The 7now iter-1 attempt-11 bug signature: at least one
+    GSO_STRUCTURAL_REPAIR_DECISION_V1 with gate_verdict=admitted
+    AND both intent fields empty. This is a hard FAIL even if
+    individual anchors pass."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        AnchorChainVerifier,
+    )
+    pm = {
+        "iteration_summary": [
+            {
+                "iteration": 1,
+                "ag_id": "AG_X",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": {"6": "proposal_emitted"},
+                "no_structural_candidate": {},
+                "terminal_reason": "",
+                "next_step": "continue",
+            }
+        ]
+    }
+    transcript = (
+        'GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural"}\n'
+        'GSO_STRUCTURAL_REPAIR_DECISION_V1 '
+        '{"gate_verdict":"admitted","intended_patch_shape":"","rca_root_cause":""}\n'
+    )
+    result = AnchorChainVerifier(
+        postmortem=pm, transcript_text=transcript
+    ).run()
+    assert result.passed is False
+    assert any(
+        "admitted_with_empty_intent" in f
+        for f in result.global_failures
+    )
+
+
+def test_classifier_anchor_not_present_in_run_is_silent() -> None:
+    """Not every run will exercise every anchor. If a canonical
+    anchor (e.g., gs_009) is not present in any iteration's target
+    qids, the verifier emits no verdict for it and does not FAIL —
+    it just verifies what's there."""
+    from genie_space_optimizer.verification.anchor_chain import (
+        AnchorChainVerifier,
+    )
+    pm = {
+        "iteration_summary": [
+            {
+                "iteration": 1,
+                "ag_id": "AG_X",
+                "cluster_ids": ["H001"],
+                "target_qids": ["x_gs_013"],
+                "directive_outcome": {"6": "proposal_emitted"},
+                "no_structural_candidate": {},
+                "terminal_reason": "",
+                "next_step": "continue",
+            }
+        ]
+    }
+    result = AnchorChainVerifier(
+        postmortem=pm,
+        transcript_text='GSO_BEST_OF_N_RANKED_V1 {"intended_patch_shape":"structural"}\n',
+    ).run()
+    qids = {av.qid_suffix for av in result.anchor_verdicts}
+    assert "gs_013" in qids
+    assert "gs_009" not in qids

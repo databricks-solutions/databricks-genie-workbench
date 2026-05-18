@@ -227,9 +227,11 @@ class VerifierResult:
 
 
 class AnchorChainVerifier:
-    """Orchestrator. Wraps postmortem + transcript parsing + the
-    classifier. Use ``verify_runid_dir`` for the common case;
-    construct directly for finer-grained inspection."""
+    """Orchestrator. Walks ``postmortem["iteration_summary"]`` and
+    the transcript markers; emits an AnchorVerdict per anchor qid
+    that the run actually targeted; adds global-invariant failures
+    for run-wide patterns (best-of-n fire count, admitted-with-
+    empty-intent count)."""
 
     def __init__(
         self,
@@ -243,7 +245,164 @@ class AnchorChainVerifier:
         self._anchor_suffixes = tuple(anchor_qid_suffixes)
 
     def run(self) -> VerifierResult:
-        raise NotImplementedError("classifier wiring — see Task 4")
+        records = parse_iteration_records(self._postmortem)
+        markers = parse_transcript_markers(self._transcript)
+
+        anchor_verdicts: list[AnchorVerdict] = []
+        for rec in records:
+            for qid in rec.target_qids:
+                suffix = qid_suffix_for_match(qid)
+                if suffix not in self._anchor_suffixes:
+                    continue
+                anchor_verdicts.append(
+                    self._classify_anchor(rec, suffix, markers)
+                )
+
+        global_failures: list[str] = []
+        bon_fires = count_best_of_n_structural_fires(markers)
+        if bon_fires == 0:
+            global_failures.append(
+                "best_of_n_structural_never_fired: "
+                "GSO_BEST_OF_N_RANKED_V1 with intended_patch_shape='structural' "
+                "did not fire in this run — WU-3.5 wiring may not have "
+                "taken effect, or no structural-intent AG was selected"
+            )
+        admitted_empty = count_admitted_with_empty_intent(markers)
+        if admitted_empty > 0:
+            global_failures.append(
+                f"admitted_with_empty_intent: "
+                f"{admitted_empty} GSO_STRUCTURAL_REPAIR_DECISION_V1 "
+                f"marker(s) with gate_verdict='admitted' AND both "
+                f"intended_patch_shape and rca_root_cause empty — "
+                f"this is the pre-WU-3.5+WU-5 bug signature"
+            )
+
+        return VerifierResult(
+            anchor_verdicts=tuple(anchor_verdicts),
+            global_failures=tuple(global_failures),
+            best_of_n_structural_fire_count=bon_fires,
+        )
+
+    def _classify_anchor(
+        self,
+        rec: IterationRecord,
+        qid_suffix: str,
+        markers: Sequence[MarkerLine],
+    ) -> AnchorVerdict:
+        cluster_id = rec.cluster_ids[0] if rec.cluster_ids else ""
+
+        # Path C — preflight skip.
+        if (
+            rec.terminal_reason == "early_preflight_cluster_blocked_no_rca"
+            or rec.next_step == "skip_ag"
+        ):
+            return AnchorVerdict(
+                qid_suffix=qid_suffix,
+                cluster_id=cluster_id,
+                iteration=rec.iteration,
+                lifecycle_path=LifecyclePath.PREFLIGHT_SKIP,
+                passed=True,
+                reasons=(
+                    f"preflight skip: terminal_reason="
+                    f"{rec.terminal_reason!r}, next_step={rec.next_step!r}",
+                ),
+            )
+
+        nsc = rec.no_structural_candidate or {}
+        skipped_reason = str(nsc.get("skipped_reason") or "")
+        attempted = tuple(nsc.get("attempted_archetypes") or ())
+
+        # Failure mode 1 — missing_rca_card. Always a FAIL.
+        if skipped_reason == "missing_rca_card":
+            return AnchorVerdict(
+                qid_suffix=qid_suffix,
+                cluster_id=cluster_id,
+                iteration=rec.iteration,
+                lifecycle_path=LifecyclePath.UNKNOWN,
+                passed=False,
+                reasons=(
+                    f"missing_rca_card emitted for {rec.ag_id}; "
+                    f"attempted_archetypes={list(attempted)}",
+                ),
+            )
+
+        # Failure mode 2 — grounded but skipped_reason is not in the
+        # typed-decline set. Forbidden by the WU-4 contract.
+        if skipped_reason and skipped_reason not in TYPED_ARCHETYPE_DECLINES:
+            return AnchorVerdict(
+                qid_suffix=qid_suffix,
+                cluster_id=cluster_id,
+                iteration=rec.iteration,
+                lifecycle_path=LifecyclePath.UNKNOWN,
+                passed=False,
+                reasons=(
+                    f"untyped skipped_reason={skipped_reason!r}; "
+                    f"WU-4 requires one of "
+                    f"{sorted(TYPED_ARCHETYPE_DECLINES)}",
+                ),
+            )
+
+        # Path B — grounded + typed archetype decline.
+        if skipped_reason in TYPED_ARCHETYPE_DECLINES:
+            if not attempted:
+                return AnchorVerdict(
+                    qid_suffix=qid_suffix,
+                    cluster_id=cluster_id,
+                    iteration=rec.iteration,
+                    lifecycle_path=LifecyclePath.UNKNOWN,
+                    passed=False,
+                    reasons=(
+                        f"typed decline {skipped_reason!r} but "
+                        f"attempted_archetypes=[]; synthesizer must "
+                        f"surface which archetypes it tried",
+                    ),
+                )
+            return AnchorVerdict(
+                qid_suffix=qid_suffix,
+                cluster_id=cluster_id,
+                iteration=rec.iteration,
+                lifecycle_path=LifecyclePath.GROUNDED_WITH_TYPED_DECLINE,
+                passed=True,
+                reasons=(
+                    f"typed decline {skipped_reason!r}; "
+                    f"attempted={list(attempted)}",
+                ),
+            )
+
+        # Path A — directive_outcome shows proposal_emitted AND no
+        # skipped_reason. Candidate-shape correctness is NOT
+        # checked here (it's archetype tuning, a follow-on plan).
+        proposal_emitted = any(
+            "proposal_emitted" in str(v).lower()
+            for v in rec.directive_outcome.values()
+        )
+        if proposal_emitted:
+            return AnchorVerdict(
+                qid_suffix=qid_suffix,
+                cluster_id=cluster_id,
+                iteration=rec.iteration,
+                lifecycle_path=LifecyclePath.GROUNDED_WITH_CANDIDATE,
+                passed=True,
+                reasons=(
+                    f"proposal_emitted; "
+                    f"directive_outcome={dict(rec.directive_outcome)}",
+                ),
+            )
+
+        # Otherwise — neither path matched. UNKNOWN/FAIL.
+        return AnchorVerdict(
+            qid_suffix=qid_suffix,
+            cluster_id=cluster_id,
+            iteration=rec.iteration,
+            lifecycle_path=LifecyclePath.UNKNOWN,
+            passed=False,
+            reasons=(
+                f"no path matched: directive_outcome="
+                f"{dict(rec.directive_outcome)}, "
+                f"no_structural_candidate={dict(nsc)}, "
+                f"terminal_reason={rec.terminal_reason!r}",
+            ),
+        )
 
 
 def verify_runid_dir(runid_dir: Path) -> VerifierResult:
