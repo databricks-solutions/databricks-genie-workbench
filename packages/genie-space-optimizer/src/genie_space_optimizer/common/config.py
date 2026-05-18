@@ -7751,6 +7751,71 @@ def ag_admission_blocking_enabled() -> bool:
     return _flag_default_on("GSO_AG_ADMISSION_BLOCKING")
 
 
+def slate_consumption_authoritative_enabled() -> bool:
+    """WU-1 (2026-05-18) — when ON, the harness skips the current ``ag``
+    if the slate's ``apply_admission_trace`` denied it OR the
+    grounding-gate's ``blocked_cluster_ids`` intersects its
+    ``source_cluster_ids``. Emits ``SLATE_AUTHORITATIVE_SKIP`` and
+    advances ``iteration_counter`` instead of falling through to
+    forced synthesis.
+
+    Default-ON. Explicit ``GSO_SLATE_CONSUMPTION_AUTHORITATIVE=0``
+    falls back to the observability-only behaviour (the slate is
+    computed but ignored), which matches the pre-WU-1 production
+    runs captured in the airline 59a173d3 and 7now ab65fefe tapes.
+    """
+    return _flag_default_on("GSO_SLATE_CONSUMPTION_AUTHORITATIVE")
+
+
+def rca_regen_retry_enabled() -> bool:
+    """WU-2 (2026-05-18) — when ON, the harness invokes
+    ``retry_rca_regeneration_for_blocked`` after Plan P-D and Phase
+    2.2 have run, immediately before the grounding-gate prelude
+    computes ``blocked_cluster_ids``. Each blocked cluster gets one
+    deterministic regenerate-attempt; successes mutate
+    ``cluster.rca_card`` in place so the prelude sees the post-retry
+    view and ``blocked_cluster_ids`` shrinks.
+
+    Default-ON. Explicit ``GSO_RCA_REGEN_RETRY=0`` reverts to
+    Plan-P-D-only behaviour.
+    """
+    return _flag_default_on("GSO_RCA_REGEN_RETRY")
+
+
+def pre_arbiter_requires_no_post_regression_enabled() -> bool:
+    """WU-4 (2026-05-18) — when ON, the
+    ``accepted_pre_arbiter_improvement`` branch of
+    ``decide_control_plane_acceptance`` additionally requires:
+
+    * ``delta >= 0`` — post-arbiter accuracy did NOT regress, AND
+    * ``has_causal_fix is True`` — at least one declared target qid
+      flipped from hard to non-hard.
+
+    The 7now iter-1 case in
+    ``docs/runid_analysis/ab65fefe-9bb5-411c-9818-f62633ec9cfd/postmortem.md``
+    accepted with ``delta=-13.0pp`` and ``has_causal_fix=False`` under
+    legacy logic; this flag closes that drift.
+
+    Default-ON. ``GSO_PRE_ARBITER_REQUIRES_NO_POST_REGRESSION=0``
+    falls back to the legacy logic for replay byte-stability against
+    pre-WU-4 fixtures.
+    """
+    return _flag_default_on("GSO_PRE_ARBITER_REQUIRES_NO_POST_REGRESSION")
+
+
+def replay_fixture_dual_emit_enabled() -> bool:
+    """WU-5 (2026-05-18) — when ON, ``_run_lever_loop`` emits the
+    replay fixture as BOTH plain-JSON markers (legacy) AND
+    base64-encoded markers (immune to in-band pollution). The
+    marker_parser extractor prefers plain JSON and falls back to
+    base64 when plain JSON is unparseable.
+
+    Default-ON. ``GSO_REPLAY_FIXTURE_DUAL_EMIT=0`` reverts to
+    plain-JSON-only emission.
+    """
+    return _flag_default_on("GSO_REPLAY_FIXTURE_DUAL_EMIT")
+
+
 def reserved_recovery_budget_enabled() -> bool:
     """Phase 1.6 — when ON, the LAST iteration of the lever loop is
     reserved for recovery work; skipped (with honest early

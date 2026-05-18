@@ -204,3 +204,23 @@ def test_slate_authoritative_skip_marker_emits_marker_line():
     assert payload["source_cluster_ids"] == ["H001"]
     assert payload["iteration"] == 2
     assert payload["optimization_run_id"] == "run-1"
+
+
+# ── Task 4: config flag ───────────────────────────────────────────────
+
+
+import importlib
+
+
+def test_slate_consumption_authoritative_default_on(monkeypatch):
+    monkeypatch.delenv("GSO_SLATE_CONSUMPTION_AUTHORITATIVE", raising=False)
+    from genie_space_optimizer.common import config
+    importlib.reload(config)
+    assert config.slate_consumption_authoritative_enabled() is True
+
+
+def test_slate_consumption_authoritative_off_when_env_zero(monkeypatch):
+    monkeypatch.setenv("GSO_SLATE_CONSUMPTION_AUTHORITATIVE", "0")
+    from genie_space_optimizer.common import config
+    importlib.reload(config)
+    assert config.slate_consumption_authoritative_enabled() is False
