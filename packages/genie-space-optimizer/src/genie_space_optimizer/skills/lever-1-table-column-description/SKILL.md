@@ -73,6 +73,37 @@ Columns relevant to the failure. [EDITABLE] may be updated; [LOCKED] must not.
 {{ structured_column_context }}
 </context>
 
+<intent_aware_context>
+## Plan 5 RepairIntent input (when present)
+
+When this skill is dispatched by the Plan-5 intent-aware router for
+`patch_type ∈ {add_column_description, update_table_description}`,
+the caller passes a typed `RepairIntent` whose fields you can use
+to ground the description / synonyms output:
+
+- `intent_id` — opaque framework-minted ID; do NOT echo into the
+  description text.
+- `intent_name` — short identifier ("rca_bridge_l1") for postmortem
+  grouping.
+- `intent_description` — one-paragraph human-readable narrative
+  of what the intent is trying to fix.
+- `blame_set` — the cluster's normalized blame_set (the columns /
+  tables RCA identified as causally implicated). Treat these as
+  the AUTHORITATIVE list of identifiers your description should
+  disambiguate — do NOT invent new ones.
+- `repair_shape` — closed-enum hint that biases your output:
+  - `column_description` → emit `{description, synonyms}` for a
+    single column;
+  - `instruction` → emit only a `{description}` for the parent
+    table (no synonyms);
+  - `other` → fall through to the generic prompt branch above.
+
+The previous `lever-1-rca-bridge` skill (retired in Plan 8 Task 10)
+emitted the same output shape from a separate context block. The
+fields above replace its `intent` / `expected_objects` /
+`actual_objects` / `afs_projections` hand-rolled context.
+</intent_aware_context>
+
 <examples>
 <example>
 Branch 1 — wrong_column failure with synonym fix

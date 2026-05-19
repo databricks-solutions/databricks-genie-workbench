@@ -22,7 +22,6 @@ see the comment inside the SKILL.md file.
 | `lever-5-instruction` | `LEVER_5_INSTRUCTION_PROMPT` | causal | false | pass-through (N=3) |
 | `lever-5b-example-sql` | `LEVER_5B_EXAMPLE_SQL_PROMPT` | causal | true | excluded |
 | `lever-6-sql-expression` | `LEVER_6_SQL_EXPRESSION_PROMPT` | causal | true | pass-through (N=3) |
-| `lever-1-rca-bridge` | `LEVER_1_RCA_BRIDGE_PROMPT` | causal | false | pass-through (N=3) |
 | `stage-1-discovery` | `STAGE_1_DISCOVERY_PROMPT` | causal | false | excluded |
 | `adaptive-strategist` | `ADAPTIVE_STRATEGIST_PROMPT` | causal | false | excluded (legacy fallback only) |
 

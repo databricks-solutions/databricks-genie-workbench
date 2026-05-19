@@ -499,20 +499,9 @@ This does not bypass ``ensure_join_spec_fields`` normalization,
 existing or already-proposed joins.
 """
 
-ENABLE_RCA_LEVER1_BRIDGE: bool = (
-    os.getenv("GSO_ENABLE_RCA_LEVER1_BRIDGE", "true").lower()
-    in {"1", "true", "yes", "on"}
-)
-"""When true, RCA themes whose patches request L1 metadata changes
-(``update_column_description`` / ``add_column_synonym`` /
-``update_description``) trigger ``_generate_lever1_rca_proposal``,
-which calls the LLM to produce description text and high-quality
-synonyms from the failing questions' NL phrasing + RCA evidence.
-
-Existing column proposals from the strategist path are augmented with
-RCA-derived synonyms (additive merge) rather than overwritten. The
-benchmark-leakage firewall still applies via the AFS projection.
-"""
+# Plan 8 Task 10 — GSO_ENABLE_RCA_LEVER1_BRIDGE flag removed
+# (lever-1-rca-bridge skill retired; absorbed into
+# lever-1-table-column-description).
 
 ENFORCE_REFLECTION_REVALIDATION: bool = (
     os.getenv("GSO_ENFORCE_REFLECTION_REVALIDATION", "true").lower()
@@ -5006,14 +4995,9 @@ LEVER_5B_EXAMPLE_SQL_PROMPT = _SKILL_LOADER.load_prompt(
 )
 LEVER_PROMPTS["lever_5b_example_sql"] = LEVER_5B_EXAMPLE_SQL_PROMPT
 
-# Plan 2026-05-17-prompt-registry-and-typed-io-hygiene Task 8 — Lever-1
-# RCA-bridge prompt (Task 9 replaces the inline f-string at
-# optimizer.py:12591 with a template render against this constant).
-LEVER_1_RCA_BRIDGE_PROMPT = _SKILL_LOADER.load_prompt(
-    "lever-1-rca-bridge",
-    expected_constant_name="LEVER_1_RCA_BRIDGE_PROMPT",
-)
-LEVER_PROMPTS["lever_1_rca_bridge"] = LEVER_1_RCA_BRIDGE_PROMPT
+# Plan 8 Task 10 — LEVER_1_RCA_BRIDGE_PROMPT removed
+# (lever-1-rca-bridge skill retired; absorbed into
+# lever-1-table-column-description).
 
 # ── 24. Prose Rule Mining (multi-target; prose → structured) ──────────
 #

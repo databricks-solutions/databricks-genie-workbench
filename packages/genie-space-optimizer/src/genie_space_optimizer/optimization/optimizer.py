@@ -37,7 +37,6 @@ from genie_space_optimizer.common.config import (
     DESCRIPTION_ENRICHMENT_PROMPT,
     ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS,
     ENABLE_RCA_JOIN_SPEC_BRIDGE,
-    ENABLE_RCA_LEVER1_BRIDGE,
     ENABLE_RCA_SQL_SNIPPET_BRIDGE,
     ENABLE_RCA_THEMES_STRATEGIST,
     FAILURE_TAXONOMY,
@@ -16228,134 +16227,8 @@ def generate_proposals_from_strategy(
                         ),
                     })
 
-            if target_lever == 1 and ENABLE_RCA_LEVER1_BRIDGE:
-                _bridged_themes = _rca_themes_requesting_lever1(
-                    metadata_snapshot.get("_rca_themes") or [],
-                    target_qids=_rca_bridge_target_qids,
-                )
-                _l1_index: dict[tuple[str, str], dict] = {
-                    (
-                        str(p.get("table", "") or ""),
-                        str(p.get("column", "") or ""),
-                    ): p
-                    for p in proposals
-                    if p.get("patch_type") in _RCA_LEVER1_PATCH_TYPES
-                }
-                for _theme in _bridged_themes:
-                    _theme_patches = list(getattr(_theme, "patches", ()) or ())
-                    _l1_patches = [
-                        p for p in _theme_patches
-                        if isinstance(p, dict)
-                        and p.get("type") in _RCA_LEVER1_PATCH_TYPES
-                    ]
-                    if not _l1_patches:
-                        continue
-                    _theme_id = str(getattr(_theme, "rca_id", ag_id))
-                    _theme_qids = list(getattr(_theme, "target_qids", ()) or ())
-                    _theme_family = str(getattr(_theme, "patch_family", ""))
-                    _theme_kind = getattr(_theme, "rca_kind", None)
-                    _kind_value = (
-                        _theme_kind.value
-                        if hasattr(_theme_kind, "value")
-                        else str(_theme_kind or "unknown")
-                    )
-                    for _p in _l1_patches:
-                        try:
-                            _gen = _generate_lever1_rca_proposal(
-                                _theme, _p, metadata_snapshot,
-                                w=w, benchmarks=benchmarks,
-                            )
-                        except Exception:
-                            logger.debug(
-                                "[%s] Lever-1 RCA bridge failed for theme %s",
-                                ag_id, _theme_id, exc_info=True,
-                            )
-                            _gen = None
-                        if not _gen:
-                            continue
-                        _tbl = str(_gen.get("table") or "")
-                        _col = str(_gen.get("column") or "")
-                        _key = (_tbl, _col)
-                        if _key in _l1_index:
-                            existing = _l1_index[_key]
-                            existing_sections = existing.get(
-                                "column_sections", {},
-                            ) or {}
-                            new_synonyms = _gen.get("_rca_synonyms") or []
-                            if new_synonyms:
-                                merged = list(
-                                    existing_sections.get("synonyms") or []
-                                )
-                                for s in new_synonyms:
-                                    if s not in merged:
-                                        merged.append(s)
-                                existing_sections["synonyms"] = merged
-                                existing["column_sections"] = existing_sections
-                                _existing_prov = existing.setdefault(
-                                    "provenance", {},
-                                )
-                                _existing_prov.setdefault(
-                                    "rca_synonym_themes", [],
-                                ).append(_theme_id)
-                            continue
-                        _proposal = {
-                            "proposal_id": f"P{len(proposals) + 1:03d}",
-                            "cluster_id": _theme_id,
-                            "lever": 1,
-                            "scope": scope,
-                            "patch_type": _gen["patch_type"],
-                            "change_description": (
-                                f"[{ag_id}] RCA L1: "
-                                f"{_tbl}.{_col} ({_kind_value})"
-                                if _col else
-                                f"[{ag_id}] RCA L1: {_tbl} ({_kind_value})"
-                            ),
-                            "proposed_value": "",
-                            "rationale": (
-                                f"RCA-driven Lever-1 from theme {_theme_id} "
-                                f"(intent: {_p.get('intent', '')})"
-                            ),
-                            "table": _tbl,
-                            "column": _col,
-                            "column_sections": _gen.get("column_sections", {}),
-                            "column_entity_type": _gen.get(
-                                "column_entity_type", "",
-                            ),
-                            "table_sections": _gen.get("table_sections", {}),
-                            "table_entity_type": _gen.get(
-                                "table_entity_type", "",
-                            ),
-                            "dual_persistence": DUAL_PERSIST_PATHS.get(
-                                1, DUAL_PERSIST_PATHS[5],
-                            ),
-                            "confidence": 0.78,
-                            "questions_fixed": len(_theme_qids),
-                            "questions_at_risk": 0,
-                            "net_impact": max(len(_theme_qids) * 0.78, 1.0),
-                            "asi": {
-                                "failure_type": _kind_value,
-                                "blame_set": [_tbl, _col] if _col else [_tbl],
-                                "severity": "major",
-                                "counterfactual_fixes": [],
-                                "ambiguity_detected": False,
-                            },
-                            "rca_id": _theme_id,
-                            "patch_family": _theme_family,
-                            "target_qids": _theme_qids,
-                            "source": "rca_theme_lever1",
-                            "provenance": {
-                                **provenance_base,
-                                "patch_type": _gen["patch_type"],
-                                "synthesis_source": "rca_theme_lever1",
-                                "rca_id": _theme_id,
-                                "patch_family": _theme_family,
-                            },
-                            "metric_view_columns": _select_metric_view_columns(
-                                _p, _gen, action_group,
-                            ),
-                        }
-                        proposals.append(_proposal)
-                        _l1_index[_key] = _proposal
+            # Plan 8 Task 10 — lever-1-rca-bridge dispatch retired;
+            # absorbed into lever-1-table-column-description (intent-aware).
 
         # ── Lever 3: functions ───────────────────────────────────────────
         elif target_lever == 3:
