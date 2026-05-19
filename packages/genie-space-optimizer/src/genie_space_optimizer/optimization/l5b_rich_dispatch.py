@@ -236,8 +236,18 @@ def _build_decline_record(
     cluster: dict,
     attempted_archetypes: tuple[str, ...],
     skipped_reason: str,
+    intent_decline_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Construct one entry for ``_L5B_RICH_PATH_DECLINES``."""
+    """Construct one entry for ``_L5B_RICH_PATH_DECLINES``.
+
+    Plan 5 (2026-05-19) — ``intent_decline_reason`` (optional) records
+    the typed Plan-5 LLM decline reason (e.g. ``"ambiguous_failure"``,
+    ``"blame_set_not_in_identifier_allowlist"``) so postmortems can
+    distinguish Plan-5 declines from no-Archetype declines uniformly.
+    Existing callers that don't pass it produce records with the field
+    set to ``None`` — byte-stable for downstream consumers that read
+    only the original fields.
+    """
     qids = cluster.get("question_ids") or []
     if not isinstance(qids, (list, tuple)):
         qids = []
@@ -248,6 +258,7 @@ def _build_decline_record(
         "attempted_archetypes": tuple(str(a) for a in attempted_archetypes),
         "skipped_reason": str(skipped_reason),
         "question_ids": tuple(str(q) for q in qids if str(q).strip()),
+        "intent_decline_reason": intent_decline_reason,
     }
 
 
