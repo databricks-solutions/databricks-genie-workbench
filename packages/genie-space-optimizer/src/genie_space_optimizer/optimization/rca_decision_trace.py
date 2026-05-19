@@ -822,6 +822,10 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     # cluster-distribute step (before proposals are generated) so it
     # belongs in the AG-Decisions section alongside strategist outputs.
     DecisionType.LEVER_ROTATION_DECIDED: SECTION_AG_DECISIONS,
+    # Plan 6 — candidate-critique gate verdict belongs in the proposal-
+    # survival section alongside GATE_DECISION since both decide whether
+    # a candidate continues to the applier.
+    DecisionType.CANDIDATE_CRITIQUED: SECTION_PROPOSAL_SURVIVAL,
     DecisionType.GATE_DECISION: SECTION_PROPOSAL_SURVIVAL,
     DecisionType.PATCH_APPLIED: SECTION_APPLIED_PATCHES,
     DecisionType.PATCH_SKIPPED: SECTION_APPLIED_PATCHES,

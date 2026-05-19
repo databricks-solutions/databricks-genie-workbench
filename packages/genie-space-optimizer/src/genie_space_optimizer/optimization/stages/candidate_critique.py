@@ -22,12 +22,6 @@ from typing import Any
 from genie_space_optimizer.optimization.candidate_critique_typed import (
     CritiqueVerdict,
 )
-from genie_space_optimizer.optimization.llm_reasoning_call import (
-    LlmReasoningCall,
-)
-from genie_space_optimizer.optimization.llm_reasoning_io import (
-    LlmReasoningRequest,
-)
 from genie_space_optimizer.optimization.rca_evidence_typed import (
     PerQidRcaEvidence,
 )
@@ -116,9 +110,15 @@ def _build_request(
     cluster_semantic_theme: str,
     per_qid_evidence: dict[str, PerQidRcaEvidence],
     passing_qids_at_risk: tuple[str, ...],
-) -> LlmReasoningRequest:
+):
     """Build a Plan-2 LlmReasoningRequest. Pure — no LLM dispatch.
     Exposed for testability."""
+    # Lazy import to break the circular import chain:
+    # stages/__init__ → _registry → candidate_critique → llm_reasoning_call →
+    # llm_abstain → stages._json_io → stages/__init__.
+    from genie_space_optimizer.optimization.llm_reasoning_io import (
+        LlmReasoningRequest,
+    )
     rsm = _SKILL_LOADER.load_reasoning_metadata(_SKILL_ID)
     if rsm is None:
         raise RuntimeError(
@@ -206,6 +206,9 @@ def critique_candidate_for_proposal(
         cluster_semantic_theme=cluster_semantic_theme,
         per_qid_evidence=per_qid_evidence,
         passing_qids_at_risk=passing_qids_at_risk,
+    )
+    from genie_space_optimizer.optimization.llm_reasoning_call import (
+        LlmReasoningCall,
     )
     response = LlmReasoningCall().invoke(w=w, request=request)
 

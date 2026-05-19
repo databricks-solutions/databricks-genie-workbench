@@ -58,6 +58,7 @@ _STAGE_DECISION_TYPE_MAP: dict[str, tuple[DecisionType, ...]] = {
         DecisionType.PROPOSAL_GENERATED,
         DecisionType.PROPOSAL_FAILURE_DECIDED,
     ),
+    "candidate_critique":       (DecisionType.CANDIDATE_CRITIQUED,),
     "safety_gates":             (DecisionType.GATE_DECISION,),
     "applied_patches":          (DecisionType.PATCH_APPLIED, DecisionType.PATCH_SKIPPED),
     "post_patch_evaluation":    (DecisionType.EVAL_CLASSIFIED,),
