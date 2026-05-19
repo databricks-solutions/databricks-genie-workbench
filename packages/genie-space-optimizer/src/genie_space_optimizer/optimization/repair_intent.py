@@ -222,3 +222,101 @@ class RepairIntent(JsonRoundTrip):
                 else None
             ),
         )
+
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.archetypes import Archetype
+    from genie_space_optimizer.optimization.failure_cluster import FailureCluster
+
+
+# Closed mapping from Archetype.name → RepairShape. Plan 1 owns this
+# table. New archetypes added to the catalog MUST add an entry here
+# in the same commit (the catalog-drift test in
+# ``test_repair_intent_archetype_adapter.py`` pins this).
+_ARCHETYPE_NAME_TO_SHAPE: dict[str, RepairShape] = {
+    "simple_enumerate": RepairShape.OTHER,
+    "ordered_list_by_metric": RepairShape.ORDERED_LIST_BY_METRIC,
+    "top_n_by_metric": RepairShape.TOP_N_BY_METRIC,
+    "group_by_all_projected_keys": RepairShape.OTHER,
+    "period_over_period": RepairShape.PERIOD_OVER_PERIOD,
+    "correct_join_spec": RepairShape.JOIN_DISCOVERY,
+    "cohort_retention": RepairShape.OTHER,
+    "funnel_conversion": RepairShape.OTHER,
+    "ratio_by_dimension": RepairShape.OTHER,
+    "running_total": RepairShape.OTHER,
+    "rank_within_group": RepairShape.RANK_WITHIN_GROUP,
+    "pct_change": RepairShape.PERIOD_OVER_PERIOD,
+    "filter_compose": RepairShape.FILTER_COMPOSE,
+    "segment_compare": RepairShape.OTHER,
+    "disambiguate_column": RepairShape.COLUMN_DESCRIPTION,
+    "time_window_aggregate": RepairShape.PERIOD_OVER_PERIOD,
+    "self_join_hierarchy": RepairShape.JOIN_DISCOVERY,
+    "event_sequence": RepairShape.OTHER,
+    "distinct_count_by_dim": RepairShape.OTHER,
+    "pivot_wide": RepairShape.OTHER,
+}
+
+
+def intent_from_archetype(
+    *,
+    archetype: "Archetype",
+    cluster: "FailureCluster",
+    ag_id: str,
+    seq: int,
+) -> RepairIntent:
+    """Deterministic Archetype → RepairIntent adapter.
+
+    Pure function: same archetype + cluster + ag_id + seq always
+    produces an equal RepairIntent. Used by every non-LLM synthesis
+    path in Plan 1 to emit typed intents.
+
+    Plan 2 replaces the L5b call site of this adapter with an LLM
+    call; the adapter itself remains as the fallback producer for
+    paths Plan 2 does not touch.
+
+    Raises ``KeyError`` if ``archetype.name`` is not in
+    ``_ARCHETYPE_NAME_TO_SHAPE`` — the catalog-drift detector.
+    """
+    if archetype.name not in _ARCHETYPE_NAME_TO_SHAPE:
+        raise KeyError(
+            f"intent_from_archetype: archetype {archetype.name!r} has no "
+            f"RepairShape mapping. Add an entry to "
+            f"repair_intent._ARCHETYPE_NAME_TO_SHAPE in the same commit "
+            f"that introduced the archetype."
+        )
+    shape = _ARCHETYPE_NAME_TO_SHAPE[archetype.name]
+    patch_type = PatchType(archetype.patch_type)
+
+    intent_id = (
+        f"intent_{cluster.cluster_id}_{ag_id}_{archetype.name}_{seq:03d}"
+    )
+
+    # intent_description = archetype.prompt_template clipped to one
+    # sentence. Plan 2's LLM call replaces this with free-form text.
+    description = archetype.prompt_template.split(". ")[0].strip()
+    if not description.endswith("."):
+        description += "."
+
+    rationale = (
+        f"Cluster {cluster.cluster_id} root_cause="
+        f"{cluster.root_cause!r}; archetype {archetype.name!r} is the "
+        f"deterministic shape match."
+    )
+
+    return RepairIntent(
+        intent_id=intent_id,
+        intent_name=archetype.name,
+        intent_description=description,
+        repair_shape=shape,
+        patch_type=patch_type,
+        rationale=rationale,
+        confidence="medium",
+        source="deterministic_archetype_adapter",
+        cluster_id=cluster.cluster_id,
+        target_qids=cluster.target_qids,
+        blame_set=cluster.blame_set_normalized or cluster.blame_set_raw,
+        rca_card_id=cluster.rca_card_id,
+        ag_id=ag_id,
+    )
