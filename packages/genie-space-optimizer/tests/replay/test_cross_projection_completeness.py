@@ -298,6 +298,129 @@ def _build_full_iteration_fixture() -> dict:
                             "keys_in_both": 0,
                         },
                     },
+                    {
+                        # PROPOSAL_FAILURE_DECIDED — emitted once per
+                        # failed proposal-generation attempt with a
+                        # closed-vocabulary next-action label. Producer:
+                        # decision_emitters.proposal_failure_decided_record.
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "proposal_failure_decided",
+                        "outcome": "info",
+                        "reason_code": "rotate_lever_family",
+                        "ag_id": "AG_SYNTH_FAIL",
+                        "cluster_id": "H_SYNTH",
+                        "evidence_refs": ["ag:AG_SYNTH_FAIL"],
+                        "target_qids": ["q_synth_failed"],
+                        "affected_qids": ["q_synth_failed"],
+                        "next_action": (
+                            "rotate from lever 5 to lever 6 after empty "
+                            "proposal slate"
+                        ),
+                    },
+                    {
+                        # LEVER_ROTATION_DECIDED — emitted by
+                        # _select_lever_for_cluster when the
+                        # RCA_REPAIR_MATRIX rotation chose a fallback lever
+                        # over the cluster's first-pick lever. Producer:
+                        # decision_emitters.lever_rotation_decided_record
+                        # (the emitter has no reason_code field so
+                        # ``none`` is the canonical fixture default).
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "lever_rotation_decided",
+                        "outcome": "info",
+                        "reason_code": "none",
+                        "cluster_id": "H_SYNTH",
+                        "rca_id": "rca_synth",
+                        "root_cause": "missing_filter",
+                        "evidence_refs": ["cluster:H_SYNTH"],
+                        "affected_qids": ["q_synth"],
+                        "metrics": {
+                            "first_pick_lever": 5,
+                            "rotated_to_lever": 6,
+                        },
+                    },
+                    {
+                        # SLATE_AUTHORITATIVE_SKIP — WU-1 (2026-05-18).
+                        # Emitted when the harness authoritatively skips
+                        # the current AG because the slate's
+                        # apply_admission_trace denied it. Producer:
+                        # decision_emitters.slate_authoritative_skip_record
+                        # (uses RCA_UNGROUNDED for the
+                        # cluster_blocked_no_rca skip path).
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "slate_authoritative_skip",
+                        "outcome": "skipped",
+                        "reason_code": "rca_ungrounded",
+                        "ag_id": "AG_DENIED",
+                        "cluster_id": "H_SYNTH",
+                        "evidence_refs": ["slate:apply_admission_trace"],
+                        "target_qids": ["q_denied"],
+                        "affected_qids": ["q_denied"],
+                    },
+                    {
+                        # RCA_REGEN_RETRY_VERDICT — WU-2 (2026-05-18).
+                        # Emitted once per blocked cluster after the
+                        # single-shot RCA regeneration retry runs.
+                        # Producer:
+                        # decision_emitters.rca_regen_retry_verdict_record
+                        # (per-attempt outcome carried in metrics; the
+                        # emitter pins reason_code=NONE).
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "rca_regen_retry_verdict",
+                        "outcome": "info",
+                        "reason_code": "none",
+                        "cluster_id": "H_RETRY",
+                        "rca_id": "rca_h_retry",
+                        "evidence_refs": ["cluster:H_RETRY"],
+                        "metrics": {
+                            "retry_source": "second_pass_synth",
+                            "attempt_count": 1,
+                        },
+                    },
+                    {
+                        # CANDIDATE_CRITIQUED — Plan 6. Emitted by
+                        # stages/candidate_critique.py:execute once per
+                        # critiqued proposal regardless of enforcing mode.
+                        # Uses one of the four critique reason codes:
+                        # CRITIQUE_PROCEED / CRITIQUE_REWORK /
+                        # CRITIQUE_DISCARD / CRITIQUE_DECLINED.
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "candidate_critiqued",
+                        "outcome": "accepted",
+                        "reason_code": "critique_proceed",
+                        "ag_id": "AG1",
+                        "proposal_id": "P001",
+                        "rca_id": "rca_h001",
+                        "evidence_refs": ["proposal:P001"],
+                        "target_qids": ["q1"],
+                        "affected_qids": ["q1"],
+                        "metrics": {
+                            "critique_score": 0.92,
+                            "verdict": "pass",
+                            "enforcing": False,
+                        },
+                    },
+                    {
+                        # NEXT_ATTEMPT_HYPOTHESIZED — Plan 7. Emitted by
+                        # rollback_learning.hypothesize_next_attempts_for_iteration
+                        # once per rolled-back cluster regardless of LLM
+                        # success/decline/validator-rejection.
+                        # Uses one of HYPOTHESIS_HIGH/MEDIUM/LOW_
+                        # CONFIDENCE / HYPOTHESIS_DECLINED /
+                        # HYPOTHESIS_VALIDATION_REJECTED.
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "next_attempt_hypothesized",
+                        "outcome": "info",
+                        "reason_code": "hypothesis_high_confidence",
+                        "cluster_id": "H_ROLLEDBACK",
+                        "rca_id": "rca_h_rolledback",
+                        "evidence_refs": ["cluster:H_ROLLEDBACK"],
+                        "affected_qids": ["q_rolledback"],
+                        "metrics": {
+                            "hypothesis_count": 1,
+                            "llm_outcome": "success",
+                        },
+                    },
                 ],
             }
         ],

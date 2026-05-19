@@ -36,7 +36,10 @@ def test_zero_proposal_ag_retires_after_one_repeat() -> None:
             "accepted": False,
             "terminal_signature": build_terminal_signature(
                 root_cause="no_metric_view_for_gross_sales",
-                blame_set_norm=("catalog.schema.orders",),
+                # Phase 1.x rename: ``blame_set_norm`` parameter
+                # collapsed into ``blame_set`` (the constructor now
+                # owns the normalize-to-sorted-tuple step).
+                blame_set=("catalog.schema.orders",),
                 lever_set=frozenset([5]),
                 target_qids=frozenset(iter2["target_qids"]),
                 terminal_reason=TerminalReason.PROPOSAL_GENERATION_EMPTY,
@@ -49,17 +52,56 @@ def test_zero_proposal_ag_retires_after_one_repeat() -> None:
         }
     ]
 
-    retired = compute_retired_signatures(reflection_buffer, repeat_threshold=1)
+    # Phase 1.x rename: ``compute_retired_signatures`` is now
+    # keyword-only with no ``repeat_threshold`` parameter. The
+    # retire-after-one-repeat rule is hard-coded (one unaccepted
+    # appearance retires the signature) — verified by the
+    # ``test_one_unaccepted_appearance_retires_signature`` invariant
+    # below.
+    retired = compute_retired_signatures(reflection_buffer=reflection_buffer)
     assert reflection_buffer[0]["terminal_signature"] in retired
 
 
-def test_repeat_threshold_one_is_active() -> None:
-    """Defensive assertion: Phase 1+2 Task 3 sets the retire-after-one-repeat
-    rule. If this is loosened (e.g., to ``repeat_threshold=2``) the iter-3
-    pivot guarantee weakens; the test must fail loud.
+def test_one_unaccepted_appearance_retires_signature() -> None:
+    """Defensive invariant: Phase 1+2 Task 3 hard-codes the
+    retire-after-one-repeat rule into ``compute_retired_signatures``
+    (no threshold parameter). A single unaccepted appearance must be
+    enough to retire the signature; if a future refactor reintroduces
+    a threshold > 1 the iter-3 pivot guarantee weakens and this
+    invariant must fail loud.
     """
-    from genie_space_optimizer.optimization.forbidden_ag_set_v2 import (
-        DEFAULT_REPEAT_THRESHOLD,
+    sig = build_terminal_signature(
+        root_cause="no_metric_view_for_gross_sales",
+        blame_set=("catalog.schema.orders",),
+        lever_set=frozenset([5]),
+        target_qids=frozenset({"some_space_gs_026"}),
+        terminal_reason=TerminalReason.PROPOSAL_GENERATION_EMPTY,
+    )
+    one_unaccepted = [
+        {
+            "iteration": 1,
+            "accepted": False,
+            "terminal_signature": sig,
+            "emitted_patch_shape": EmittedPatchShape.ABSENT.value,
+        }
+    ]
+    retired = compute_retired_signatures(reflection_buffer=one_unaccepted)
+    assert sig in retired, (
+        "compute_retired_signatures must retire a signature after a "
+        "single unaccepted appearance (Phase 1+2 retire-after-one "
+        "rule). If this fails, the iter-3 pivot guarantee is broken."
     )
 
-    assert DEFAULT_REPEAT_THRESHOLD == 1
+    # And an accepted entry must NOT retire.
+    one_accepted = [
+        {
+            "iteration": 1,
+            "accepted": True,
+            "terminal_signature": sig,
+            "emitted_patch_shape": EmittedPatchShape.ABSENT.value,
+        }
+    ]
+    retired_accept = compute_retired_signatures(
+        reflection_buffer=one_accepted
+    )
+    assert sig not in retired_accept

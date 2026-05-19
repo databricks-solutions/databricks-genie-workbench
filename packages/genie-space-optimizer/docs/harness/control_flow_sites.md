@@ -67,7 +67,7 @@ an anchor tape that triggers proposal acceptance.
 | proposal_generation_empty_continue | 24690 | 24696 | YES | YES |
 | post_loop_replay_fixture_emit | 32220 | 32270 | YES | YES |
 | post_loop_mlflow_artifact | 32270 | 32300 | YES | YES |
-| post_loop_final_summary | 33100 | 33369 | YES | YES |
+| post_loop_final_summary | 33548 | 33769 | YES | YES |
 <!-- END CANONICAL SITES TABLE -->
 
 ## Per-site semantic contracts
@@ -345,9 +345,12 @@ attached; silently no-ops otherwise.
 
 ### post_loop_final_summary
 
-End-of-run summary + return block (lines ~33000-33200). Final
-accumulator dumps, MLflow tag updates, and the function's return
-value.
+End-of-run summary + return block (lines ~33548-33769). Emits the
+``_emit_contract_health_summary`` marker, performs the Phase-5
+post-loop trial-capture upload, and returns the
+``_build_loop_out_with_pretty_print`` result. (Range shifted from
+33100-33369 → 33548-33769 in Plan 8 as the lever-loop body grew —
+audit refreshed 2026-05-19 against airline + 7now anchor tapes.)
 
 * **Bound variables**: every function-scope accumulator.
 * **Stages run**: replay fixture emit + MLflow upload.

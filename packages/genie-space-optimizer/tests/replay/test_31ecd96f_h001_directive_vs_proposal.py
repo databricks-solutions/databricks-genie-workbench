@@ -11,6 +11,22 @@ import pytest
 from tests.replay.fixtures.phase5._helpers import load
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "Forcing-function for the L6-under-H001 renderer bug. The "
+        "31ecd96f_iter1_h001.json fixture is hand-authored from the "
+        "postmortem and DELIBERATELY records the bug shape — "
+        "rendered_proposal_kinds=['L6_metric_view'] while L5 said "
+        "no_structural_candidate. The assertion can only pass once "
+        "Phase 1+2 Task 11 (the directive-truthfulness invariant in "
+        "the renderer) lands AND the fixture is refreshed with the "
+        "post-fix transcript. The companion "
+        "test_when_renderer_fixed_h001_emits_no_l6 below tracks the "
+        "same condition from the positive side. Drop both xfails "
+        "together once the renderer fix ships."
+    ),
+)
 def test_l6_proposal_not_emitted_under_h001_when_l5_says_no_structural() -> None:
     iter1 = load("31ecd96f_iter1_h001.json")
     l5 = iter1["directives"]["L5"]

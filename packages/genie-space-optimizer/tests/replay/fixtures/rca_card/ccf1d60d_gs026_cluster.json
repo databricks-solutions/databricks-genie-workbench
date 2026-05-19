@@ -25,7 +25,7 @@
   },
   "expected_card": {
     "root_cause": "top_n_cardinality_collapse",
-    "grounding_terms": ["plural_top_n_collapse", "zone_combination", "zone_vp_name"],
+    "grounding_terms": ["mv_esr_dim_location", "plural_top_n_collapse", "zone_combination", "zone_vp_name"],
     "intended_patch_shape": "enforce_explicit_top_n_cardinality",
     "allowed_patch_families": ["cardinality_preserving_top_n_guidance"],
     "forbidden_patch_families": ["avoid_unrequested_defensive_filters", "filter_logic_guidance"]
