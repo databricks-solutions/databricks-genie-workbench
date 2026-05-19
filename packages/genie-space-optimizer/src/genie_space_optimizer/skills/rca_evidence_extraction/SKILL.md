@@ -9,6 +9,7 @@ max_tokens: 800
 abstain_supported: true
 examples_dir: ./examples
 eval_dir: ./eval
+prompt_registry_name: gso_reasoning_rca_evidence_extraction
 ---
 <role>
 You extract structured RCA (root-cause-analysis) evidence for ONE

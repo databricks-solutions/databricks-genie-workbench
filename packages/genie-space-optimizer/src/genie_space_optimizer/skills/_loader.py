@@ -153,6 +153,13 @@ class ReasoningSkillMetadata:
     examples_dir: str | None
     eval_dir: str | None
     model_override: str | None
+    # ── Plan 4 — MLflow Prompt Registry registration name. ──
+    # When non-None, register_reasoning_prompts() registers this
+    # skill's SKILL.md body to MLflow Prompt Registry under this
+    # name (idempotent; MLflow mints a new version only when the
+    # template changes). None for template / non-production skills
+    # (the Plan 2 smoke-test).
+    prompt_registry_name: str | None = None
 
 
 _PLAN2_MAX_EXAMPLES = 4  # Anthropic: "curate canonical, not laundry list"
@@ -210,6 +217,11 @@ def _load_reasoning_metadata(
         examples_dir=meta.get("examples_dir") or None,
         eval_dir=meta.get("eval_dir") or None,
         model_override=meta.get("model_override") or None,
+        # Plan 4: None when absent; non-None when SKILL.md sets it.
+        prompt_registry_name=(
+            str(meta["prompt_registry_name"])
+            if meta.get("prompt_registry_name") else None
+        ),
     )
 
 
