@@ -1,0 +1,2 @@
+{"input": "ping", "expected_result_branch": "result", "expected_echoed": "ping"}
+{"input": "", "expected_result_branch": "declined", "expected_reason": "ambiguous_failure"}

@@ -1,0 +1,7 @@
+{
+  "input": "hello",
+  "expected_output": {
+    "result": {"echoed": "hello"},
+    "declined": null
+  }
+}
