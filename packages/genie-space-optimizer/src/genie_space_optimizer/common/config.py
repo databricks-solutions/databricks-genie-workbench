@@ -8101,3 +8101,27 @@ def best_of_n_structural_enabled() -> bool:
     to single-shot proposal generation (legacy behavior).
     """
     return _flag_default_on("GSO_BEST_OF_N_STRUCTURAL")
+
+
+# ── Plan 3 — LLM-driven RCA evidence extraction. ──────────────────────
+# Default ON per the user's explicit "rip out the bandaid"
+# architectural directive — the deterministic
+# ``_asi_finding_from_metadata`` path is still present as the per-qid
+# fallback when the LLM declines or errors. Operators can set
+# ``GSO_PLAN3_LLM_RCA_EVIDENCE=0`` to disable the LLM dispatch entirely
+# (every qid takes the deterministic path) without redeploying.
+
+
+def plan3_llm_rca_evidence_enabled() -> bool:
+    """Whether the LLM-driven per-qid RCA evidence extractor is
+    dispatched.
+
+    True (default-on): every qid goes through the
+    rca-evidence-extraction skill via Plan 2's LlmReasoningCall;
+    abstain/error fall back to the deterministic path per qid.
+
+    False: every qid takes the deterministic
+    ``_asi_finding_from_metadata`` path; the new typed sidecar
+    ``per_qid_evidence_typed`` stays empty.
+    """
+    return _flag_default_on("GSO_PLAN3_LLM_RCA_EVIDENCE")
