@@ -13,6 +13,8 @@ _EXPECTED_KEYS_IN_ORDER: tuple[str, ...] = (
     "strategist_context",
     "action_group_selection",
     "proposal_generation",
+    # Plan 6 new stage (between proposal_generation and safety_gates):
+    "candidate_critique",
     "safety_gates",
     "applied_patches",
     "acceptance_decision",
@@ -39,8 +41,8 @@ def test_stages_registry_has_nine_entries_in_process_order() -> None:
     assert actual_keys[:3] == _ORIGINAL_9_KEYS[:3], (
         f"First 3-stage order drift: {actual_keys[:3]!r}"
     )
-    # The full registry now has exactly 12 entries
-    assert len(STAGES) == 12, f"Expected 12 STAGES entries, got {len(STAGES)}"
+    # Plan 6 adds candidate_critique → 13 entries
+    assert len(STAGES) == 13, f"Expected 13 STAGES entries, got {len(STAGES)}"
     assert actual_keys == _EXPECTED_KEYS_IN_ORDER, (
         f"STAGES order drift: {actual_keys!r}"
     )
