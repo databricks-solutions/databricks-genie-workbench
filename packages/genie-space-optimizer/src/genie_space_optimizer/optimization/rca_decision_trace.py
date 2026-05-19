@@ -376,6 +376,11 @@ class ReasonCode(str, Enum):
     )
     REQUEST_EVIDENCE_GATHERING = "request_evidence_gathering"
     ESCALATE_STALEMATE = "escalate_stalemate"
+    # ── Plan 6 — candidate-critique gate (advisory/enforcing). ──
+    CRITIQUE_PROCEED = "critique_proceed"
+    CRITIQUE_REWORK = "critique_rework"
+    CRITIQUE_DISCARD = "critique_discard"
+    CRITIQUE_DECLINED = "critique_declined"
 
 
 class RejectReason(str, Enum):
