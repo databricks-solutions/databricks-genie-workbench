@@ -24,7 +24,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.action_group import ActionGroup
 
 from genie_space_optimizer.optimization.decision_emitters import (
     strategist_ag_records,
@@ -271,15 +274,22 @@ class ActionGroupsInput(JsonRoundTrip):
 class ActionGroupSlate(JsonRoundTrip):
     """Output of stages.action_groups.select.
 
-    ``ags`` is the selected AG tuple (same content as input but normalized
-    to a tuple). ``rejected_ag_alternatives`` records AGs the strategist
-    proposed but the constraint/buffer pipeline filtered out, for Phase
-    D.5 alternatives capture.
+    ``ags`` is the selected AG tuple (same content as input but
+    normalized to a tuple). ``rejected_ag_alternatives`` records AGs
+    the strategist proposed but the constraint/buffer pipeline
+    filtered out, for Phase D.5 alternatives capture.
 
-    C15 Phase 3: ``admission_trace`` records per-candidate AdmissionTrace
-    entries when stage_handlers_chunk_b_enabled() is on. Empty tuple
-    when flag is off (byte-stable with legacy behaviour — zero new fields
-    emitted to postmortem bundle unless flag is on).
+    C15 Phase 3: ``admission_trace`` records per-candidate
+    AdmissionTrace entries when stage_handlers_chunk_b_enabled() is
+    on. Empty tuple when flag is off (byte-stable with legacy
+    behaviour — zero new fields emitted to postmortem bundle unless
+    flag is on).
+
+    Plan 1 Task 12: ``ag_records`` is the typed-ActionGroup sidecar.
+    Derived from ``ags`` in __post_init__ via
+    ``ActionGroup.from_legacy`` when not supplied. Malformed AGs (no
+    ``id`` / ``ag_id``) are skipped silently from typed records;
+    legacy ``ags`` tuple keeps them.
     """
 
     ags: tuple[Mapping[str, Any], ...]
@@ -287,6 +297,21 @@ class ActionGroupSlate(JsonRoundTrip):
     # C15 Phase 3 — per-candidate admission verdicts. Populated when
     # stage_handlers_chunk_b_enabled() is on; always empty otherwise.
     admission_trace: tuple[AdmissionTrace, ...] = ()
+    # Plan 1 Task 12 — typed-ActionGroup sidecar.
+    ag_records: tuple["ActionGroup", ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.ag_records and self.ags:
+            from genie_space_optimizer.optimization.action_group import (
+                ActionGroup,
+            )
+            derived: list[ActionGroup] = []
+            for ag in self.ags:
+                try:
+                    derived.append(ActionGroup.from_legacy(ag))
+                except ValueError:
+                    continue
+            self.ag_records = tuple(derived)
 
     @classmethod
     def from_json(cls, payload: dict) -> "ActionGroupSlate":
