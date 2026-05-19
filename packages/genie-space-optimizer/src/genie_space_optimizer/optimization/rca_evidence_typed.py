@@ -18,8 +18,9 @@ unidirectional type / helper layer.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from genie_space_optimizer.optimization.repair_intent import PatchType
 from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
@@ -49,10 +50,55 @@ class PerQidRcaEvidence(JsonRoundTrip):
     confidence: Literal["high", "medium", "low"]
     quoted_evidence: tuple[str, ...]
 
+    def to_legacy_dict(
+        self,
+        *,
+        judge: dict[str, Any],
+        asi: dict[str, Any],
+        sql: str,
+    ) -> dict[str, Any]:
+        """Project to the legacy ``RcaEvidenceBundle.per_qid_evidence``
+        dict.
+
+        Pass-through fields come from the (judge, asi, sql) inputs so
+        the legacy consumers see byte-stable structure regardless of
+        whether the LLM path or the deterministic fallback produced
+        this evidence. The closed-enum derivation (rca_kind →
+        recommended_levers → rca_id) uses
+        ``rca_kind_from_repair_family``.
+        """
+        rca_kind = rca_kind_from_repair_family(self.suggested_repair_family)
+        safe_qid = re.sub(r"[^a-zA-Z0-9_]+", "_", self.qid or "unknown")
+        rca_id = f"rca_llm_{safe_qid}_{rca_kind.value}"
+        judge_verdict = str(
+            judge.get("verdict") or self.observed_failure or ""
+        )
+        actual_objects_raw = asi.get("actual_objects") or []
+        if isinstance(actual_objects_raw, (list, tuple)):
+            actual_objects = [str(x) for x in actual_objects_raw]
+        else:
+            actual_objects = []
+        return {
+            "rca_kind": rca_kind.value,
+            "judge_verdict": judge_verdict,
+            "sql_diff": str(sql or ""),
+            "counterfactual_fix": asi.get("counterfactual_fix"),
+            "asi_features": dict(asi or {}),
+            "expected_objects": list(self.blame_set),
+            "actual_objects": actual_objects,
+            "recommended_levers": list(
+                recommended_levers_for_rca_kind(rca_kind)
+            ),
+            "rca_id": rca_id,
+        }
+
 
 # ── Plan 3 Task 4 — open-vocab repair_family → closed RcaKind mapper. ──
 
-from genie_space_optimizer.optimization.rca import RcaKind  # noqa: E402
+from genie_space_optimizer.optimization.rca import (  # noqa: E402
+    RcaKind,
+    recommended_levers_for_rca_kind,
+)
 
 # Substring patterns mapping the LLM's open-vocab
 # ``suggested_repair_family`` onto the closed ``RcaKind`` enum. Order
