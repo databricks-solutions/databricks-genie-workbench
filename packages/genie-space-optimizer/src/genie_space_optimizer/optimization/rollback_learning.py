@@ -633,3 +633,61 @@ def hypothesize_next_attempts_for_iteration(
                 )
 
     return out
+
+
+# ── Plan 7 Task 10 — stamp_hypotheses_on_metadata_snapshot ─────────────
+
+_METADATA_SNAPSHOT_HYPOTHESIS_KEY: str = "_last_attempt_hypothesis_by_cluster"
+"""Runtime-annotation key on metadata_snapshot. Matches the existing
+``_failure_clusters`` / ``_data_profile`` convention — leading underscore
+signals "internal, stripped before serialization"."""
+
+
+def stamp_hypotheses_on_metadata_snapshot(
+    metadata_snapshot: dict[str, Any],
+    hypotheses_by_cluster_id: dict[str, NextAttemptHypothesis],
+) -> None:
+    """Stamp Plan-7 hypotheses onto the harness's metadata_snapshot.
+
+    Writes ``metadata_snapshot["_last_attempt_hypothesis_by_cluster"]``
+    as a dict keyed by cluster_id. Each value is the JSON
+    representation of the NextAttemptHypothesis (NOT the dataclass —
+    the side-channel survives MLflow capture serialization).
+
+    No-op when ``hypotheses_by_cluster_id`` is empty (does NOT create
+    the metadata_snapshot key in that case).
+
+    Merges into the existing key when present — preserves any
+    per-cluster entries from prior calls within the same iteration.
+    """
+    if not hypotheses_by_cluster_id:
+        return
+    by_cluster: dict[str, dict[str, Any]] = dict(
+        metadata_snapshot.get(_METADATA_SNAPSHOT_HYPOTHESIS_KEY) or {}
+    )
+    for cluster_id, hypothesis in hypotheses_by_cluster_id.items():
+        by_cluster[str(cluster_id)] = hypothesis.to_json()
+    metadata_snapshot[_METADATA_SNAPSHOT_HYPOTHESIS_KEY] = by_cluster
+
+
+# ── Plan 7 Task 11 — apply_forbidden_signatures_to_rollback_fingerprints
+
+def apply_forbidden_signatures_to_rollback_fingerprints(
+    *,
+    prior_set: set[str],
+    hypotheses_by_cluster_id: dict[str, NextAttemptHypothesis],
+) -> set[str]:
+    """Union LLM-emitted forbidden_signatures from each hypothesis
+    into ``prior_set``.
+
+    Per roadmap.md:460-461 — the LLM-emitted signatures go through the
+    existing deterministic forbidden-set filter (no privileged path).
+
+    Returns a NEW set; does NOT mutate ``prior_set``.
+    """
+    combined = set(prior_set)
+    for hypothesis in hypotheses_by_cluster_id.values():
+        for sig in hypothesis.forbidden_signatures:
+            if sig:
+                combined.add(str(sig))
+    return combined
