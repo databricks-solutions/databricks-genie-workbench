@@ -37,12 +37,14 @@ def test_emit_contract_health_summary_call_site_exists() -> None:
         "contract-health emission must follow the Phase H render-"
         "failed except; the wiring fix has been reverted"
     )
-    # Within 2500 chars of the render-failed except (it should be the
-    # very next try/except block after Phase H wraps up). The 2500
-    # budget accommodates the RCO-2b _contract_health_summary capture
-    # comment + default-init line; if the gap grows past this, an
-    # unrelated block has been wedged between Phase H and the emission.
-    assert emit_idx - render_idx < 2500, (
+    # Within 4500 chars of the render-failed except (it should be the
+    # very next try/except block after Phase H wraps up). The budget
+    # was bumped from 2500 to 4500 to accommodate Plan 8 Task 9's
+    # rollback-learning wire-in (~3K chars) that lands between the
+    # Phase H acceptance-drift block and the contract-health emission.
+    # If the gap grows past 4500, an unrelated block has been wedged
+    # between Phase H and the emission.
+    assert emit_idx - render_idx < 4500, (
         f"contract-health emission is suspiciously far from the "
         f"Phase H block ({emit_idx - render_idx} chars). It should "
         f"be the next try/except after Phase H."

@@ -212,7 +212,11 @@ def test_collect_falls_back_to_deterministic_when_llm_declines(
     with patch.object(optimizer, "_get_openai_client", return_value=client):
         bundle = collect(_Ctx(), inp)
 
-    assert bundle.per_qid_evidence_typed == {}
+    # Plan 8 Task 6 — deterministic fallback now populates the typed
+    # sidecar from metadata (so Plan 4 LLM clustering / Plan 5 LLM intent
+    # synthesis see fallback'd qids). The legacy dict is still populated
+    # for byte-stable downstream consumers.
+    assert "gs_001" in bundle.per_qid_evidence_typed
     assert "gs_001" in bundle.per_qid_evidence
     assert bundle.per_qid_evidence["gs_001"]["rca_kind"] == "join_spec_missing_or_wrong"
 
@@ -247,5 +251,7 @@ def test_collect_skips_llm_dispatch_when_flag_disabled(monkeypatch) -> None:
         bundle = collect(_Ctx(), inp)
 
     assert client.chat.completions.create.call_count == 0
-    assert bundle.per_qid_evidence_typed == {}
+    # Plan 8 Task 6 — deterministic fallback now populates the typed
+    # sidecar even when the LLM path is flag-disabled.
+    assert "gs_001" in bundle.per_qid_evidence_typed
     assert "gs_001" in bundle.per_qid_evidence

@@ -357,7 +357,7 @@ def test_dispatch_returns_holistic_compatible_shape(monkeypatch):
     # Stub the per-cluster 5b adapter to return one example proposal per
     # cluster. Adapter signature: (cluster, metadata_snapshot, w,
     # benchmark_corpus) -> list[dict].
-    def _fake_5b_per_cluster(cluster, metadata_snapshot, w, benchmark_corpus, benchmarks=None):
+    def _fake_5b_per_cluster(cluster, metadata_snapshot, w, benchmark_corpus, benchmarks=None, **_kwargs):
         return [{
             "example_question": f"Q for {cluster.get('cluster_id', '?')}",
             "example_sql": "SELECT 1",
@@ -393,7 +393,7 @@ def test_dispatch_runs_5a_once_and_5b_once_per_cluster(monkeypatch):
     def _fake_5a(**kw):
         calls_5a["n"] += 1
         return {"instruction_text": "X", "rationale": "r"}
-    def _fake_5b(cluster, metadata_snapshot, w, benchmark_corpus, benchmarks=None):
+    def _fake_5b(cluster, metadata_snapshot, w, benchmark_corpus, benchmarks=None, **_kwargs):
         calls_5b["n"] += 1
         return []
     monkeypatch.setattr(optimizer, "_call_llm_for_lever_5a_instructions", _fake_5a)
