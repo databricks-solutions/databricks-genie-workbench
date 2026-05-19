@@ -251,6 +251,21 @@ def collect(ctx, inp: RcaEvidenceInput) -> RcaEvidenceBundle:
         evidence_refs[qstr] = (
             f"trace://{ctx.run_id}/iter/{ctx.iteration}/judge/{qstr}",
         )
+        # Plan 8 Task 6 — populate the typed sidecar from the same
+        # metadata so Plan 4 LLM clustering and Plan 5 LLM intent
+        # synthesis see fallback'd qids.
+        from genie_space_optimizer.optimization.rca import (
+            _typed_evidence_from_metadata,
+        )
+        sql_for_qid = _row_sql(rows_by_qid.get(qstr) or {})
+        typed_fallback = _typed_evidence_from_metadata(
+            qstr,
+            str(judge.get("judge_name") or "judge_asi"),
+            metadata,
+            sql_for_qid,
+        )
+        if typed_fallback is not None:
+            per_qid_evidence_typed[qstr] = typed_fallback
 
     return RcaEvidenceBundle(
         per_qid_evidence=per_qid_evidence,

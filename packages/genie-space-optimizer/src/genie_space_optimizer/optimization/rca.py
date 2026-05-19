@@ -537,6 +537,85 @@ def _asi_finding_from_metadata(
     )
 
 
+def _patch_type_from_repair_family(family: str):
+    """Plan 8 Task 6 — deterministic open-vocab string → closed PatchType
+    mapping. Conservative defaults bias toward ``ADD_INSTRUCTION`` (the
+    lowest-risk patch type).
+    """
+    from genie_space_optimizer.optimization.repair_intent import PatchType
+    f = (family or "").lower()
+    if "snippet" in f and "measure" in f:
+        return PatchType.ADD_SQL_SNIPPET_MEASURE
+    if "snippet" in f and "filter" in f:
+        return PatchType.ADD_SQL_SNIPPET_FILTER
+    if "snippet" in f or "expression" in f:
+        return PatchType.ADD_SQL_SNIPPET_EXPRESSION
+    if "example" in f:
+        return PatchType.ADD_EXAMPLE_SQL
+    if "join" in f:
+        return PatchType.ADD_JOIN_SPEC
+    if "column" in f or "description" in f:
+        return PatchType.ADD_COLUMN_DESCRIPTION
+    return PatchType.ADD_INSTRUCTION
+
+
+def _typed_evidence_from_metadata(
+    qid: str,
+    judge_name: str,
+    metadata: dict,
+    sql: str,
+):
+    """Plan 8 Task 6 — deterministic counterpart to the Plan 3 LLM
+    extractor; builds a typed PerQidRcaEvidence from the same metadata
+    that ``_asi_finding_from_metadata`` consumes.
+
+    Returns ``None`` when ``qid`` or ``failure_type`` is empty (mirrors
+    ``_asi_finding_from_metadata``).
+    """
+    from genie_space_optimizer.optimization.rca_evidence_typed import (
+        PerQidRcaEvidence,
+    )
+
+    failure_type = str(metadata.get("failure_type") or "").strip()
+    if not qid or not failure_type:
+        return None
+    blame_set_raw = (
+        metadata.get("blame_set") or metadata.get("expected_objects") or ()
+    )
+    blame_set: tuple[str, ...] = tuple(
+        str(b) for b in blame_set_raw if str(b)
+    )
+    counterfactual = str(metadata.get("counterfactual_fix") or "")
+    observed = failure_type
+    generated_issue = (
+        f"judge={judge_name}; failure_type={failure_type}; "
+        f"wrong_objects={list(metadata.get('actual_objects') or [])}"
+    )
+    expected_shape = (
+        counterfactual
+        or f"expected_objects={list(metadata.get('expected_objects') or [])}"
+    )
+    kind = _safe_rca_kind(metadata.get("rca_kind"), failure_type, metadata)
+    family = str(
+        metadata.get("patch_family") or patch_family_for_rca_kind(kind)
+    )
+    repair_hint = _patch_type_from_repair_family(family)
+    return PerQidRcaEvidence(
+        qid=qid,
+        observed_failure=observed,
+        generated_sql_issue=generated_issue,
+        expected_sql_shape=expected_shape,
+        blame_set=blame_set,
+        suggested_repair_family=family,
+        repair_hint_patch_type=repair_hint,
+        confidence="medium",
+        quoted_evidence=tuple(
+            s for s in (counterfactual, str(sql or ""))
+            if s and len(s) < 240
+        ),
+    )
+
+
 def _measures(sql: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(m.lower() for m in _MEASURE_RE.findall(sql or "")))
 
