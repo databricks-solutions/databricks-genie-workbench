@@ -60,6 +60,23 @@ You will receive — in the user message — these fields:
 - `existing_examples_preview`: short text listing existing
   example_questions in the space (anti-dup hint — do NOT propose a
   near-paraphrase).
+- `last_attempt_hypothesis`: a Plan-7 ``NextAttemptHypothesis`` dict
+  from the previous iteration's rollback-learning helper, or ``null``
+  when no hypothesis is available (optional field). Fields:
+  ``rolled_back_intent_id``, ``why_failed``, ``failure_mode``,
+  ``revised_repair_shape``, ``revised_patch_type``,
+  ``revised_blame_set``, ``additional_evidence_needed``,
+  ``forbidden_signatures``, ``confidence``. When present and
+  ``confidence`` is ``high`` or ``medium``, treat it as a high-signal
+  hint about what the next attempt should look different from the
+  rolled-back attempt. When ``revised_repair_shape`` is non-null it
+  OVERRIDES ``cluster_suggested_repair_shape`` for ``high``
+  confidence and is WEIGHTED EQUALLY for ``medium``.
+  ``forbidden_signatures`` patches have ALREADY been blocked by the
+  deterministic content-fingerprint dedup gate before you receive
+  this prompt — you do not need to re-block them. NEVER copy the
+  rolled-back intent's blame_set into your output unchanged; if
+  ``revised_blame_set`` is non-null, prefer it.
 </context_inputs>
 
 <patch_body_shapes>

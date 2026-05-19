@@ -191,13 +191,29 @@ def _render_user_prompt(
     ag_id: str,
     iteration: int,
     existing_examples_preview: str,
+    metadata_snapshot: dict | None = None,
 ) -> str:
     """Render the per-cluster user prompt as one JSON-shaped block.
 
     Per Anthropic context-engineering: smallest set of high-signal
     tokens. We include only the fields SKILL.md promises in
     ``<context_inputs>``; nothing else.
+
+    Plan 7 extension: when ``metadata_snapshot`` is provided AND
+    carries a ``_last_attempt_hypothesis_by_cluster`` dict with a
+    matching ``cluster_id`` entry, the rendered prompt includes a
+    ``last_attempt_hypothesis`` field carrying the hypothesis dict.
+    Otherwise the field is ``null``. Additive: existing callers that
+    pass no ``metadata_snapshot`` see ``null`` and the prompt is
+    byte-stable.
     """
+    last_attempt_hypothesis = None
+    if metadata_snapshot is not None:
+        by_cluster = (
+            metadata_snapshot.get("_last_attempt_hypothesis_by_cluster") or {}
+        )
+        last_attempt_hypothesis = by_cluster.get(str(cluster.cluster_id))
+
     payload = {
         "cluster_id": cluster.cluster_id,
         "ag_id": ag_id,
@@ -222,6 +238,7 @@ def _render_user_prompt(
         ],
         "available_repair_shapes": [s.value for s in RepairShape],
         "existing_examples_preview": existing_examples_preview,
+        "last_attempt_hypothesis": last_attempt_hypothesis,
     }
     return json.dumps(payload, indent=2, sort_keys=True)
 
