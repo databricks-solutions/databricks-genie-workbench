@@ -393,3 +393,243 @@ def hypothesize_rollback_for_cluster(
         return None
 
     return hypothesis
+
+
+# ── Plan 7 Task 9 — iteration entry ────────────────────────────────────
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.stages.acceptance import (
+        AgOutcome,
+    )
+
+
+def _emit_hypothesis_decision(
+    *,
+    ctx: Any,
+    cluster_id: str,
+    ag_id: str,
+    rolled_back_intent_id: str,
+    hypothesis: NextAttemptHypothesis | None,
+    decline_reason_code: Any | None,
+    rationale: str,
+) -> None:
+    """Emit one NEXT_ATTEMPT_HYPOTHESIZED record per rolled-back
+    cluster regardless of success/decline/validator-rejection."""
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionOutcome, DecisionRecord, DecisionType, ReasonCode,
+    )
+    if hypothesis is not None:
+        reason_code = hypothesis.reason_code()
+        outcome = DecisionOutcome.INFO
+        affected = (
+            tuple(hypothesis.revised_blame_set)
+            if hypothesis.revised_blame_set is not None
+            else ()
+        )
+        details = {
+            "rolled_back_intent_id": rolled_back_intent_id,
+            "failure_mode": hypothesis.failure_mode,
+            "revised_repair_shape": (
+                hypothesis.revised_repair_shape.value
+                if hypothesis.revised_repair_shape is not None
+                else None
+            ),
+            "revised_patch_type": (
+                hypothesis.revised_patch_type.value
+                if hypothesis.revised_patch_type is not None
+                else None
+            ),
+            "revised_blame_set": (
+                list(hypothesis.revised_blame_set)
+                if hypothesis.revised_blame_set is not None
+                else None
+            ),
+            "additional_evidence_needed": list(
+                hypothesis.additional_evidence_needed
+            ),
+            "forbidden_signatures": list(hypothesis.forbidden_signatures),
+            "confidence": hypothesis.confidence,
+        }
+    else:
+        reason_code = (
+            decline_reason_code
+            if decline_reason_code is not None
+            else ReasonCode.HYPOTHESIS_DECLINED
+        )
+        outcome = DecisionOutcome.INFO
+        affected = ()
+        details = {"rolled_back_intent_id": rolled_back_intent_id}
+
+    rec = DecisionRecord(
+        run_id=str(getattr(ctx, "run_id", "") or ""),
+        iteration=int(getattr(ctx, "iteration", 0) or 0),
+        decision_type=DecisionType.NEXT_ATTEMPT_HYPOTHESIZED,
+        outcome=outcome,
+        reason_code=reason_code,
+        cluster_id=cluster_id,
+        ag_id=ag_id,
+        evidence_refs=(
+            f"intent:{rolled_back_intent_id}", f"cluster:{cluster_id}",
+        ),
+        affected_qids=affected,
+        target_qids=affected,
+        reason_detail=rationale,
+        metrics=details,
+    )
+    ctx.decision_emit(rec)
+
+
+def _eval_diffs_for_cluster(
+    *,
+    target_qids: tuple[str, ...],
+    pre_rows: tuple[dict, ...],
+    post_rows: tuple[dict, ...],
+) -> tuple[dict[str, Any], ...]:
+    """Build per-qid pre→post deltas for the cluster's target_qids."""
+    def _qid(row: dict) -> str:
+        return str(
+            row.get("question_id") or row.get("qid")
+            or row.get("inputs.question_id") or ""
+        )
+
+    def _correct(row: dict) -> str:
+        return str(row.get("result_correctness") or "").lower()
+
+    def _arb(row: dict) -> str:
+        return str(row.get("arbiter") or "").lower()
+
+    pre_by_qid = {_qid(r): r for r in pre_rows or ()}
+    post_by_qid = {_qid(r): r for r in post_rows or ()}
+    out: list[dict[str, Any]] = []
+    for qid in target_qids:
+        pre_row = pre_by_qid.get(qid) or {}
+        post_row = post_by_qid.get(qid) or {}
+        pre_c = _correct(pre_row)
+        post_c = _correct(post_row)
+        if pre_c == "yes" and post_c == "yes":
+            transition = "hold_pass"
+        elif pre_c == "yes" and post_c != "yes":
+            transition = "pass_to_fail"
+        elif pre_c != "yes" and post_c == "yes":
+            transition = "fail_to_pass"
+        else:
+            transition = "hold_fail"
+        out.append({
+            "qid": qid,
+            "pre_correctness": pre_c,
+            "post_correctness": post_c,
+            "pre_arbiter": _arb(pre_row),
+            "post_arbiter": _arb(post_row),
+            "transition": transition,
+        })
+    return tuple(out)
+
+
+def hypothesize_next_attempts_for_iteration(
+    *,
+    ctx: Any,
+    ag_outcome: "AgOutcome",
+    repair_intents_by_id: dict[str, "RepairIntent"],
+    per_qid_evidence_by_cluster: dict[str, dict[str, "PerQidRcaEvidence"]],
+    critique_verdicts_by_proposal_id: dict[str, Any],
+    pre_rows: tuple[dict, ...],
+    post_rows: tuple[dict, ...],
+    applied_patch_fingerprints_by_ag: dict[str, set[str]],
+    identifier_allowlist_by_ag: dict[str, set[str]],
+    cluster_id_by_intent_id: dict[str, str],
+) -> dict[str, NextAttemptHypothesis]:
+    """Iteration entry. Walks ag_outcome.outcomes_by_ag for
+    rolled_back records, dispatches one LLM call per rolled-back
+    cluster, returns the surviving hypotheses keyed by cluster_id.
+
+    Behaviour:
+      * Gated behind ``GSO_PLAN7_ROLLBACK_LEARNING``. Disabled →
+        return ``{}`` immediately without dispatching any LLM call.
+      * For each rolled-back intent_outcome: look up
+        repair_intents_by_id[intent_id] (skip with
+        HYPOTHESIS_VALIDATION_REJECTED record when missing); look up
+        cluster_id_by_intent_id[intent_id]; look up
+        per_qid_evidence_by_cluster[cluster_id]; build eval_diffs for
+        the cluster's target_qids; dispatch the per-cluster driver.
+      * Emit one ``NEXT_ATTEMPT_HYPOTHESIZED`` decision record per
+        rolled-back cluster regardless of outcome.
+    """
+    from genie_space_optimizer.common.config import (
+        plan7_rollback_learning_enabled,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        ReasonCode,
+    )
+    if not plan7_rollback_learning_enabled():
+        return {}
+
+    out: dict[str, NextAttemptHypothesis] = {}
+
+    for ag_id in sorted(ag_outcome.outcomes_by_ag.keys()):
+        rec = ag_outcome.outcomes_by_ag[ag_id]
+        if rec.outcome != "rolled_back":
+            continue
+        for io_ in rec.intent_outcomes:
+            if io_.outcome != "rolled_back":
+                continue
+            intent = repair_intents_by_id.get(io_.intent_id)
+            cluster_id = cluster_id_by_intent_id.get(io_.intent_id, "")
+            if intent is None or not cluster_id:
+                _emit_hypothesis_decision(
+                    ctx=ctx,
+                    cluster_id=cluster_id or "",
+                    ag_id=ag_id,
+                    rolled_back_intent_id=io_.intent_id,
+                    hypothesis=None,
+                    decline_reason_code=ReasonCode.HYPOTHESIS_VALIDATION_REJECTED,
+                    rationale=(
+                        f"intent {io_.intent_id!r} has no typed "
+                        f"RepairIntent stamp OR no cluster_id mapping; "
+                        f"hypothesizer skipped."
+                    ),
+                )
+                continue
+
+            cluster_evidence = per_qid_evidence_by_cluster.get(cluster_id, {})
+            eval_diffs = _eval_diffs_for_cluster(
+                target_qids=intent.target_qids,
+                pre_rows=pre_rows, post_rows=post_rows,
+            )
+            allowlist = identifier_allowlist_by_ag.get(ag_id, set())
+            applied_fps = applied_patch_fingerprints_by_ag.get(ag_id, set())
+
+            hypothesis = hypothesize_rollback_for_cluster(
+                w=None,
+                cluster_id=cluster_id, ag_id=ag_id,
+                iteration=int(getattr(ctx, "iteration", 0) or 0),
+                rolled_back_repair_intent=intent,
+                intent_outcome=io_,
+                per_qid_evidence=cluster_evidence,
+                critique_verdict=None,
+                eval_diffs_for_cluster=eval_diffs,
+                identifier_allowlist=allowlist,
+                applied_patch_fingerprints=applied_fps,
+            )
+
+            if hypothesis is not None:
+                out[cluster_id] = hypothesis
+                _emit_hypothesis_decision(
+                    ctx=ctx, cluster_id=cluster_id, ag_id=ag_id,
+                    rolled_back_intent_id=io_.intent_id,
+                    hypothesis=hypothesis,
+                    decline_reason_code=None,
+                    rationale=hypothesis.why_failed,
+                )
+            else:
+                _emit_hypothesis_decision(
+                    ctx=ctx, cluster_id=cluster_id, ag_id=ag_id,
+                    rolled_back_intent_id=io_.intent_id,
+                    hypothesis=None,
+                    decline_reason_code=ReasonCode.HYPOTHESIS_DECLINED,
+                    rationale=(
+                        f"LLM declined or validators rejected hypothesis "
+                        f"for cluster {cluster_id} intent {io_.intent_id}."
+                    ),
+                )
+
+    return out

@@ -101,6 +101,12 @@ class DecisionType(str, Enum):
     # ``optimization/stages/candidate_critique.py:execute`` once per
     # critiqued proposal regardless of enforcing mode.
     CANDIDATE_CRITIQUED = "candidate_critiqued"
+    # ── Plan 7 — rollback-learning hypothesis. Emitted by
+    # ``optimization/rollback_learning.py:hypothesize_next_attempts_for_iteration``
+    # once per rolled-back cluster regardless of LLM success/decline/
+    # validator-rejection (the record's outcome + reason_code
+    # differentiate).
+    NEXT_ATTEMPT_HYPOTHESIZED = "next_attempt_hypothesized"
 
 
 class DecisionOutcome(str, Enum):

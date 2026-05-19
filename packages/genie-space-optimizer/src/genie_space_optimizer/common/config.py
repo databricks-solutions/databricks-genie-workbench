@@ -8190,3 +8190,29 @@ def critique_gate_enforcing_enabled() -> bool:
         os.environ.get("GSO_CRITIQUE_GATE_ENFORCING") or "false"
     ).strip().lower()
     return raw in _TRUTHY_VALUES
+
+
+# ── Plan 7 — LLM-driven rollback learning. ──────────────────────────────
+# Default ``false`` for the first deploy — operators flip to true once
+# they have reviewed several iterations of hypotheses and trust the
+# downstream consumer (Plan 5's synthesizer reads stamped hypotheses
+# as additional grounding). The hypothesis is ALWAYS recorded
+# (decision-emit) when the flag is on, even when validators reject
+# it, so postmortem can see what the hypothesizer said.
+
+
+def plan7_rollback_learning_enabled() -> bool:
+    """Whether the Plan-7 rollback-learning helper runs.
+
+    True: when ``stages.acceptance`` returns a ``rolled_back`` outcome,
+    the harness dispatches one LLM hypothesis call per rolled-back
+    cluster and stamps surviving hypotheses onto
+    ``metadata_snapshot["_last_attempt_hypothesis_by_cluster"]``.
+
+    False (default): no hypothesis call; existing learning behaviour
+    is byte-stable.
+    """
+    raw = (
+        os.environ.get("GSO_PLAN7_ROLLBACK_LEARNING") or "false"
+    ).strip().lower()
+    return raw in _TRUTHY_VALUES
