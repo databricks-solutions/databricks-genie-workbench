@@ -30211,6 +30211,113 @@ def _run_lever_loop(
                         "(non-fatal)",
                         exc_info=True,
                     )
+
+                # ── Plan 8 Task 9 — Plan 7 rollback learning. ────
+                # Runs only when at least one AG rolled back this
+                # iteration. Emits typed NextAttemptHypothesis per
+                # rolled-back cluster, stamps them on the typed
+                # FailureCluster records (Plan 8 Task 8), and unions
+                # the validated forbidden_signatures into the
+                # rolled-back content-fingerprint set so the next
+                # iteration's dedup gate sees them. Hypotheses are
+                # NEVER auto-applied — Plan 5's synthesizer reads
+                # them as advisory context next iteration.
+                try:
+                    from genie_space_optimizer.optimization.plan7_inputs import (
+                        build_applied_patch_fingerprints_by_ag,
+                        build_cluster_id_by_intent_id,
+                        build_critique_verdicts_by_intent_id,
+                        build_identifier_allowlist_by_ag,
+                        build_per_qid_evidence_by_cluster,
+                        build_repair_intents_by_id_from_proposals,
+                    )
+                    from genie_space_optimizer.optimization.rollback_learning import (
+                        apply_forbidden_signatures_to_rollback_fingerprints,
+                        hypothesize_next_attempts_for_iteration,
+                        stamp_hypotheses_on_metadata_snapshot,
+                    )
+
+                    _p7_proposals_iter = list(
+                        locals().get("all_proposals") or ()
+                    )
+                    _p7_repair_intents_by_id = (
+                        build_repair_intents_by_id_from_proposals(
+                            _p7_proposals_iter,
+                        )
+                    )
+                    _p7_cluster_id_by_intent = (
+                        build_cluster_id_by_intent_id(
+                            _p7_repair_intents_by_id,
+                        )
+                    )
+                    _p7_per_qid_evidence_by_cluster = (
+                        build_per_qid_evidence_by_cluster(
+                            metadata_snapshot.get("_rca_evidence_typed") or {},
+                            metadata_snapshot.get("cluster_by_qid") or {},
+                        )
+                    )
+                    _p7_applied_fps_by_ag = (
+                        build_applied_patch_fingerprints_by_ag(apply_log)
+                    )
+                    _p7_allowlist_by_ag = (
+                        build_identifier_allowlist_by_ag(
+                            ags=(ag,),
+                            metadata_snapshot=metadata_snapshot,
+                            cluster_by_qid=(
+                                metadata_snapshot.get("cluster_by_qid") or {}
+                            ),
+                            per_qid_evidence_typed=(
+                                metadata_snapshot.get(
+                                    "_rca_evidence_typed"
+                                ) or {}
+                            ),
+                        )
+                    )
+                    _p7_verdicts_by_intent = (
+                        build_critique_verdicts_by_intent_id(
+                            locals().get("critique_outcome"),
+                            {str(ag_id): _p7_proposals_iter},
+                        )
+                    )
+
+                    _p7_hypotheses = hypothesize_next_attempts_for_iteration(
+                        ctx=_stage_ctx_a5,
+                        ag_outcome=_ag_outcome,
+                        repair_intents_by_id=_p7_repair_intents_by_id,
+                        per_qid_evidence_by_cluster=(
+                            _p7_per_qid_evidence_by_cluster
+                        ),
+                        critique_verdicts_by_intent_id=(
+                            _p7_verdicts_by_intent
+                        ),
+                        pre_rows=_accept_inp.pre_rows,
+                        post_rows=_accept_inp.post_rows,
+                        applied_patch_fingerprints_by_ag=(
+                            _p7_applied_fps_by_ag
+                        ),
+                        identifier_allowlist_by_ag=_p7_allowlist_by_ag,
+                        cluster_id_by_intent_id=_p7_cluster_id_by_intent,
+                    )
+                    stamp_hypotheses_on_metadata_snapshot(
+                        metadata_snapshot, _p7_hypotheses,
+                    )
+                    _p7_prior_rb = set(
+                        metadata_snapshot.get(
+                            "_rolled_back_content_fingerprints"
+                        ) or set()
+                    )
+                    metadata_snapshot["_rolled_back_content_fingerprints"] = (
+                        apply_forbidden_signatures_to_rollback_fingerprints(
+                            prior_set=_p7_prior_rb,
+                            hypotheses_by_cluster_id=_p7_hypotheses,
+                        )
+                    )
+                except Exception:
+                    logger.debug(
+                        "Plan 8 Task 9 — Plan 7 rollback-learning "
+                        "wire-in failed (non-fatal)",
+                        exc_info=True,
+                    )
             except Exception as _accept_stage_exc:
                 try:
                     from genie_space_optimizer.common.config import (
