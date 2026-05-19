@@ -7,6 +7,7 @@ description: Synthesize ORIGINAL example_sql proposals matching a structural arc
 when_to_pick: Failure shows a structural SQL pattern Genie can't generalize from existing examples; a NEW demonstrating example_sql would teach the pattern.
 target_kind: base_table
 target_min_count: 0
+prompt_registry_name: gso_reasoning_lever_5b_example_sql
 ---
 <role>
 You are an expert Databricks SQL author synthesizing a single NEW example
@@ -22,12 +23,14 @@ scrubbed by the leak-safe contract above.
 {{ afs_block }}
 </failure_signature>
 
-<archetype>
-Name: {{ archetype_name }}
-Shape Contract: {{ archetype_output_shape }}
-Guidance:
-{{ archetype_prompt_template }}
-</archetype>
+<repair_intent>
+Name: {{ repair_intent_name }}
+Repair Shape: {{ repair_shape }}
+Description:
+{{ repair_intent_description }}
+Rationale:
+{{ repair_rationale }}
+</repair_intent>
 
 <schema>
 Identifier allowlist — ONLY these identifiers may appear in your
