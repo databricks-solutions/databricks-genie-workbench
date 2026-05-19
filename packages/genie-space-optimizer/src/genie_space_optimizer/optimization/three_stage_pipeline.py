@@ -607,7 +607,12 @@ def _stage_2_l6(
             ),
         }]
     proposals: list[dict] = []
+    # Plan 8 Task 3 — thread intent-aware kwargs from the bundle.
+    _rca = getattr(bundle, "rca_evidence_typed", None) or {}
+    _lcm = getattr(bundle, "llm_cluster_by_cluster_id", None) or {}
+    _iter = int(getattr(bundle, "iteration", 0) or 0)
     for cluster_afs in bundle.cluster_afs:
+        _cid = str(cluster_afs.get("cluster_id") or "")
         try:
             p = _generate_lever6_proposal(
                 dict(cluster_afs), bundle.metadata_snapshot,
@@ -616,6 +621,10 @@ def _stage_2_l6(
                 gold_schema=gold_schema, warehouse_id=warehouse_id,
                 benchmarks=benchmarks,
                 raw_evidence=bundle.raw_evidence,
+                rca_evidence_typed=_rca,
+                llm_cluster=_lcm.get(_cid),
+                ag_id=bundle.ag_id,
+                iteration=_iter,
             )
         except Exception:
             logger.warning(

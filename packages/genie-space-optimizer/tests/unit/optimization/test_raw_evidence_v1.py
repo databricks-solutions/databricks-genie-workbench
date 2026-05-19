@@ -929,7 +929,10 @@ def test_stage_2_l6_forwards_raw_evidence(monkeypatch):
     received = {"raw_evidence": None}
     def _fake_l6(cluster, metadata_snapshot, *, strategist_hints=None,
                   w=None, spark=None, catalog="", gold_schema="",
-                  warehouse_id="", benchmarks=None, raw_evidence=()):
+                  warehouse_id="", benchmarks=None, raw_evidence=(),
+                  # Plan 8 Task 3 — intent-aware kwargs accepted +
+                  # ignored by this mock (it tests raw_evidence forwarding).
+                  **_intent_kwargs):
         received["raw_evidence"] = raw_evidence
         # Must be a canonical proposal: contract-first hardening
         # requires patch_type + target.

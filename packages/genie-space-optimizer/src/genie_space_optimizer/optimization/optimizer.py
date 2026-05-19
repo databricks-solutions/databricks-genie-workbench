@@ -14074,8 +14074,60 @@ def _generate_lever6_proposal(
     warehouse_id: str = "",
     benchmarks: list[dict] | None = None,
     raw_evidence: tuple[dict, ...] = (),
+    # Plan 8 Task 3 — Plan 5 intent-aware short-circuit kwargs.
+    rca_evidence_typed: dict | None = None,
+    llm_cluster: Any = None,
+    ag_id: str | None = None,
+    iteration: int = 0,
 ) -> dict | None:
     """Generate a SQL Expression proposal for a failure cluster.
+
+    Plan 8 Task 3 — when ``rca_evidence_typed`` + ``llm_cluster`` +
+    ``ag_id`` are populated, dispatch through
+    ``lever6_intent_dispatch.dispatch_lever_6_with_intent`` which calls
+    Plan 5's typed synthesizer first and stamps a typed ``RepairIntent``
+    on the returned proposal. ``None`` from the intent dispatch path
+    means caller takes the heuristic fallback below.
+    """
+    if rca_evidence_typed and llm_cluster is not None and ag_id:
+        from genie_space_optimizer.optimization.lever6_intent_dispatch import (
+            dispatch_lever_6_with_intent,
+        )
+        out = dispatch_lever_6_with_intent(
+            cluster=cluster, metadata_snapshot=metadata_snapshot, w=w,
+            rca_evidence_typed=rca_evidence_typed,
+            llm_cluster=llm_cluster, ag_id=ag_id, iteration=int(iteration),
+            spark=spark, catalog=catalog, gold_schema=gold_schema,
+            warehouse_id=warehouse_id, benchmarks=benchmarks,
+            raw_evidence=raw_evidence,
+            strategist_hints=strategist_hints,
+        )
+        if out is not None:
+            return out
+    return _generate_lever6_proposal_legacy_body(
+        cluster=cluster, metadata_snapshot=metadata_snapshot,
+        strategist_hints=strategist_hints, w=w, spark=spark,
+        catalog=catalog, gold_schema=gold_schema, warehouse_id=warehouse_id,
+        benchmarks=benchmarks, raw_evidence=raw_evidence,
+    )
+
+
+def _generate_lever6_proposal_legacy_body(
+    cluster: dict,
+    metadata_snapshot: dict,
+    *,
+    strategist_hints: list[dict] | None = None,
+    w: WorkspaceClient | None = None,
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    warehouse_id: str = "",
+    benchmarks: list[dict] | None = None,
+    raw_evidence: tuple[dict, ...] = (),
+) -> dict | None:
+    """Heuristic Lever-6 body — invoked as the fallback when the
+    Plan-5 intent-aware short-circuit declines or selects a non-L6
+    patch_type. Identical to the pre-Plan-8 body verbatim.
 
     Calls the LLM with LEVER_6_SQL_EXPRESSION_PROMPT, validates the output
     structurally and by SQL execution, and returns a proposal dict or None
