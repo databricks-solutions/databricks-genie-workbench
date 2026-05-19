@@ -89,22 +89,5 @@ def test_invoke_dispatches_through_traced_llm_call() -> None:
     assert seen[0]["kwargs"]["max_tokens"] == 100
 
 
-def test_invoke_uses_model_override_when_set() -> None:
-    """model_override propagates to the OpenAI client's model param."""
-    req = LlmReasoningRequest(
-        call_id="call_003",
-        skill_id="_reference-smoke-test",
-        system_msg="s",
-        user_prompt="u",
-        result_cls=_EchoOutput,
-        max_tokens=100,
-        model_override="databricks-claude-haiku-4-5",
-    )
-    envelope = '{"result": {"echoed": "ok"}, "declined": null}'
-
-    stub = _stub_openai_client_with_envelope(envelope)
-    with patch.object(optimizer, "_get_openai_client", return_value=stub):
-        LlmReasoningCall().invoke(w=None, request=req)
-
-    create_kwargs = stub.chat.completions.create.call_args.kwargs
-    assert create_kwargs["model"] == "databricks-claude-haiku-4-5"
+# Plan 8 Task 11 — model_override removed from LlmReasoningRequest;
+# the per-skill override test is retired with the field.

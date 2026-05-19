@@ -106,7 +106,6 @@ def _build_request_for_qid(
         user_prompt=user_prompt,
         result_cls=output_cls,
         max_tokens=rsm.max_tokens,
-        model_override=rsm.model_override,
     )
 
 

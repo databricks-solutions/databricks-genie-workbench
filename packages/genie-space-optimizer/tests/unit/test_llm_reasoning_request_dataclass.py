@@ -29,7 +29,6 @@ def test_request_construction_populates_all_required_fields() -> None:
         user_prompt="qid: gs_009 ...",
         result_cls=_DummyResult,
         max_tokens=1000,
-        model_override=None,
     )
     assert req.call_id == "call_001"
     assert req.skill_id == "rca-evidence-extraction"
@@ -37,7 +36,6 @@ def test_request_construction_populates_all_required_fields() -> None:
     assert req.user_prompt == "qid: gs_009 ..."
     assert req.result_cls is _DummyResult
     assert req.max_tokens == 1000
-    assert req.model_override is None
 
 
 def test_request_rejects_max_tokens_zero_or_negative() -> None:
@@ -50,8 +48,7 @@ def test_request_rejects_max_tokens_zero_or_negative() -> None:
                 user_prompt="u",
                 result_cls=_DummyResult,
                 max_tokens=bad,
-                model_override=None,
-            )
+                    )
 
 
 def test_request_rejects_empty_call_id() -> None:
@@ -63,8 +60,7 @@ def test_request_rejects_empty_call_id() -> None:
             user_prompt="u",
             result_cls=_DummyResult,
             max_tokens=100,
-            model_override=None,
-        )
+            )
 
 
 def test_request_rejects_empty_skill_id() -> None:
@@ -76,17 +72,8 @@ def test_request_rejects_empty_skill_id() -> None:
             user_prompt="u",
             result_cls=_DummyResult,
             max_tokens=100,
-            model_override=None,
-        )
+            )
 
 
-def test_request_model_override_defaults_to_none() -> None:
-    req = LlmReasoningRequest(
-        call_id="c",
-        skill_id="rca-evidence-extraction",
-        system_msg="s",
-        user_prompt="u",
-        result_cls=_DummyResult,
-        max_tokens=100,
-    )
-    assert req.model_override is None
+# Plan 8 Task 11 — model_override field removed from LlmReasoningRequest;
+# the test that asserted its None default is retired with the field.

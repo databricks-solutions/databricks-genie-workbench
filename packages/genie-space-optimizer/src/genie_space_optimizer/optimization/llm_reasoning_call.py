@@ -30,7 +30,6 @@ What it deliberately does NOT do:
 from __future__ import annotations
 
 import time
-from contextlib import contextmanager
 from typing import Any
 
 from genie_space_optimizer.optimization.llm_abstain import AbstainVerdict
@@ -94,15 +93,14 @@ class LlmReasoningCall:
         tokens_input = 0
         tokens_output = 0
         try:
-            with _model_override_scope(request.model_override):
-                raw_text, response_obj = optimizer._traced_llm_call(
-                    w,
-                    request.system_msg,
-                    request.user_prompt,
-                    span_name=span_name,
-                    max_tokens=request.max_tokens,
-                    response_model=envelope_cls,
-                )
+            raw_text, response_obj = optimizer._traced_llm_call(
+                w,
+                request.system_msg,
+                request.user_prompt,
+                span_name=span_name,
+                max_tokens=request.max_tokens,
+                response_model=envelope_cls,
+            )
             tokens_input, tokens_output = _extract_token_usage(response_obj)
         except Exception as exc:
             duration_ms = int((time.monotonic() - t0) * 1000)
@@ -193,42 +191,5 @@ def _extract_token_usage(response_obj: Any) -> tuple[int, int]:
         return (0, 0)
 
 
-# ── Model-override scope ──────────────────────────────────────────────
-# We need a way to make ``_traced_llm_call`` use a different model
-# without modifying it. llm_client.py binds LLM_ENDPOINT at module
-# import time (line 20), so we temporarily monkey-patch BOTH
-# ``config.LLM_ENDPOINT`` (covers re-imports) and
-# ``llm_client.LLM_ENDPOINT`` (covers the already-bound name) for the
-# duration of the call. Restoration is guaranteed by the finally
-# clause even on exceptions. Plan 8 cleanup adds a proper override
-# parameter to ``_traced_llm_call``.
-
-
-@contextmanager
-def _model_override_scope(model_override: str | None):
-    """Temporarily set LLM_ENDPOINT for the duration of the with-block.
-
-    When ``model_override`` is None, the function is a no-op.
-    """
-    if model_override is None:
-        yield
-        return
-    from genie_space_optimizer.common import config
-    from genie_space_optimizer.optimization import llm_client, optimizer
-
-    # _traced_llm_call binds LLM_ENDPOINT inside the optimizer module
-    # (line 392); llm_client.call_llm uses it from its own module
-    # namespace. Override all three so the next call site picks up
-    # the new value regardless of which path executes.
-    original_config = config.LLM_ENDPOINT
-    original_client = llm_client.LLM_ENDPOINT
-    original_optimizer = optimizer.LLM_ENDPOINT
-    config.LLM_ENDPOINT = model_override
-    llm_client.LLM_ENDPOINT = model_override
-    optimizer.LLM_ENDPOINT = model_override
-    try:
-        yield
-    finally:
-        config.LLM_ENDPOINT = original_config
-        llm_client.LLM_ENDPOINT = original_client
-        optimizer.LLM_ENDPOINT = original_optimizer
+# Plan 8 Task 11 — _model_override_scope removed; one system-wide
+# LLM_MODEL is the single tuning knob.

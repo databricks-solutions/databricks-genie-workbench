@@ -155,9 +155,8 @@ class LlmReasoningRequest:
         Model API limits doc. Claude defaults to 1000 otherwise and
         silently truncates responses.
 
-    Optional:
-      * ``model_override`` — when set, overrides the system-wide
-        ``LLM_ENDPOINT``.
+    Plan 8 Task 11 — ``model_override`` removed; the framework uses the
+    system-wide ``LLM_ENDPOINT`` for every call.
 
     The request is NOT a JsonRoundTrip — it carries a class reference
     (``result_cls``) that cannot be serialized portably.
@@ -169,7 +168,6 @@ class LlmReasoningRequest:
     user_prompt: str
     result_cls: type
     max_tokens: int
-    model_override: str | None = None
 
     def __post_init__(self) -> None:
         if not self.call_id:

@@ -60,7 +60,7 @@ def test_load_reasoning_metadata_returns_typed_record(tmp_path: Path) -> None:
     assert meta.abstain_supported is True
     assert meta.examples_dir == "./examples"
     assert meta.eval_dir == "./eval"
-    assert meta.model_override is None
+    # Plan 8 Task 11 — model_override field removed.
 
 
 def test_load_reasoning_metadata_returns_none_for_legacy_skill(

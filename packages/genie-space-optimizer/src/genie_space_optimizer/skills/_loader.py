@@ -152,7 +152,8 @@ class ReasoningSkillMetadata:
     abstain_supported: bool
     examples_dir: str | None
     eval_dir: str | None
-    model_override: str | None
+    # Plan 8 Task 11 — model_override removed; one system-wide
+    # LLM_MODEL is the single tuning knob.
     # ── Plan 4 — MLflow Prompt Registry registration name. ──
     # When non-None, register_reasoning_prompts() registers this
     # skill's SKILL.md body to MLflow Prompt Registry under this
@@ -216,7 +217,6 @@ def _load_reasoning_metadata(
         ),
         examples_dir=meta.get("examples_dir") or None,
         eval_dir=meta.get("eval_dir") or None,
-        model_override=meta.get("model_override") or None,
         # Plan 4: None when absent; non-None when SKILL.md sets it.
         prompt_registry_name=(
             str(meta["prompt_registry_name"])
