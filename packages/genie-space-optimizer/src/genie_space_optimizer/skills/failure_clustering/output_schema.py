@@ -72,3 +72,22 @@ class LlmClusterOutput(LLMOutputContract):
             "best-effort grouping."
         ),
     )
+
+
+class LlmClusterSetOutput(LLMOutputContract):
+    """Envelope-bound full-list shape — one object wrapping the list.
+
+    Used as the ``T`` in Plan 2's
+    ``AbstainableEnvelope[LlmClusterSetOutput]``. Empty list is
+    acceptable (post-validation may have rejected every cluster);
+    decline lives on the envelope, not here.
+    """
+
+    clusters: list[LlmClusterOutput] = Field(
+        description=(
+            "All semantic clusters the LLM identified. Empty list "
+            "means 'no clusters found'; decline (insufficient signal) "
+            "goes on the envelope's ``declined`` field, not in this "
+            "list."
+        ),
+    )
