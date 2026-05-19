@@ -30,10 +30,15 @@ it does not, so ``rejected_cluster_alternatives`` is always empty —
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from genie_space_optimizer.optimization.optimizer import cluster_failures
 from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.failure_cluster import (
+        FailureCluster,
+    )
 
 
 STAGE_KEY: str = "cluster_formation"
@@ -64,13 +69,63 @@ class ClusterFindings(JsonRoundTrip):
     ``clusters`` is the promoted-hard tuple (no ``demoted_reason``).
     ``soft_clusters`` is the promoted-soft tuple.
     ``rejected_cluster_alternatives`` is every cluster the optimizer
-    returned that carries a ``demoted_reason`` — F4 reads this to stamp
-    Phase D.5 ``AlternativeOption.cluster``.
+    returned that carries a ``demoted_reason`` — F4 reads this to
+    stamp Phase D.5 ``AlternativeOption.cluster``.
+
+    Plan 1 Task 11: ``cluster_records`` is the typed-FailureCluster
+    sidecar. Derived from ``clusters`` via
+    ``FailureCluster.from_legacy`` in __post_init__ when not supplied
+    explicitly. Invalid clusters (empty cluster_id, identity
+    mismatch) are silently skipped from typed records but remain in
+    the legacy ``clusters`` tuple so byte-stable downstream reads are
+    preserved.
     """
 
     clusters: tuple[dict[str, Any], ...]
     soft_clusters: tuple[dict[str, Any], ...] = ()
     rejected_cluster_alternatives: tuple[dict[str, Any], ...] = ()
+    cluster_records: tuple["FailureCluster", ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.cluster_records and self.clusters:
+            from genie_space_optimizer.optimization.failure_cluster import (
+                FailureCluster,
+            )
+            derived: list[FailureCluster] = []
+            for c in self.clusters:
+                try:
+                    record = FailureCluster.from_legacy(c)
+                except Exception:
+                    continue
+                if record.cluster_id:
+                    derived.append(record)
+            self.cluster_records = tuple(derived)
+
+    def to_json(self) -> dict[str, Any]:  # type: ignore[override]
+        # cluster_records is intentionally NOT serialised — it is a
+        # derived view of ``clusters``. ``from_json`` re-derives via
+        # __post_init__. This keeps the JSON payload byte-stable with
+        # pre-Plan-1 fixtures (no new JSON keys).
+        return {
+            "clusters": [dict(c) for c in (self.clusters or ())],
+            "soft_clusters": [dict(c) for c in (self.soft_clusters or ())],
+            "rejected_cluster_alternatives": [
+                dict(c) for c in (self.rejected_cluster_alternatives or ())
+            ],
+        }
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "ClusterFindings":  # type: ignore[override]
+        return cls(
+            clusters=tuple(dict(c) for c in (payload.get("clusters") or [])),
+            soft_clusters=tuple(
+                dict(c) for c in (payload.get("soft_clusters") or [])
+            ),
+            rejected_cluster_alternatives=tuple(
+                dict(c)
+                for c in (payload.get("rejected_cluster_alternatives") or [])
+            ),
+        )
 
 
 def _split_by_demoted(
