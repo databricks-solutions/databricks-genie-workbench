@@ -129,14 +129,31 @@ def _build_metadata(
 
 
 def collect(ctx, inp: RcaEvidenceInput) -> RcaEvidenceBundle:
-    """Stage 2 entry. Build per-qid evidence using the existing
-    ``rca._asi_finding_from_metadata`` primitive, plus PR-D's top-N
-    promotion tracking.
+    """Stage 2 entry. Build per-qid evidence.
 
-    F2 is observability-only: it does NOT modify any harness call
-    sites. F3 will consume the produced RcaEvidenceBundle as part of
-    its ClusteringInput.
+    Plan 3 dispatch order (flag-gated):
+
+      1. If ``GSO_PLAN3_LLM_RCA_EVIDENCE`` is true (default-on),
+         dispatch per-qid through the rca-evidence-extraction skill
+         via Plan 2's LlmReasoningCall. Successful LLM extractions
+         populate both the typed sidecar AND the legacy dict (via
+         ``PerQidRcaEvidence.to_legacy_dict``).
+      2. For every qid the LLM declined / errored / was skipped for
+         (or every qid when the flag is off), run the existing
+         ``_asi_finding_from_metadata`` deterministic path and
+         populate ONLY the legacy dict.
+
+    PR-D's top-N override is detected BEFORE per-qid dispatch — the
+    ``promoted_to_top_n_qids`` list is populated regardless of which
+    extraction path was used.
     """
+    from genie_space_optimizer.common.config import (
+        plan3_llm_rca_evidence_enabled,
+    )
+    from genie_space_optimizer.optimization.rca_evidence_extractor import (
+        extract_evidence_for_all_qids,
+    )
+
     rows_by_qid: dict[str, dict[str, Any]] = {
         _row_qid(r): r for r in (inp.eval_rows or []) if _row_qid(r)
     }
@@ -145,47 +162,87 @@ def collect(ctx, inp: RcaEvidenceInput) -> RcaEvidenceBundle:
     rca_kinds_by_qid: dict[str, str] = {}
     evidence_refs: dict[str, tuple[str, ...]] = {}
     promoted: list[str] = []
+    per_qid_evidence_typed: dict[str, Any] = {}
 
     qids = tuple(inp.hard_failure_qids) + tuple(inp.soft_signal_qids)
+
+    # ── Step 1: PR-D top-N promotion detection (both paths) ───────────
+    metadata_by_qid: dict[str, tuple[dict[str, Any], str]] = {}
     for qid in qids:
         qstr = str(qid)
         if not qstr:
             continue
-
         row = rows_by_qid.get(qstr) or {}
         judge = inp.per_qid_judge.get(qstr) or {}
         asi = inp.asi_metadata.get(qstr) or {}
         sql = _row_sql(row)
-
-        metadata, failure_type = _build_metadata(judge=judge, asi=asi, sql=sql)
-
-        # Detect PR-D top-N promotion BEFORE _asi_finding_from_metadata
-        # consumes the metadata. The override only fires for eligible
-        # failure types when SQL + intent agree.
+        metadata, failure_type = _build_metadata(
+            judge=judge, asi=asi, sql=sql,
+        )
+        metadata_by_qid[qstr] = (metadata, failure_type)
         promoted_kind = _top_n_collapse_metadata_override(
             failure_type.lower(), metadata,
         )
         if promoted_kind is not None:
             promoted.append(qstr)
 
+    # ── Step 2: LLM-driven typed extraction (flag-gated) ──────────────
+    iteration = int(getattr(ctx, "iteration", 0) or 0)
+    if plan3_llm_rca_evidence_enabled() and qids:
+        sql_by_qid = {
+            qstr: _row_sql(rows_by_qid.get(qstr) or {})
+            for qstr in (str(q) for q in qids if str(q))
+        }
+        typed_by_qid = extract_evidence_for_all_qids(
+            w=getattr(ctx, "w", None),
+            qids=tuple(str(q) for q in qids if str(q)),
+            judge_by_qid={
+                str(q): inp.per_qid_judge.get(str(q)) or {} for q in qids
+            },
+            asi_by_qid={
+                str(q): inp.asi_metadata.get(str(q)) or {} for q in qids
+            },
+            sql_by_qid=sql_by_qid,
+            iteration=iteration,
+        )
+        for qstr, evidence in typed_by_qid.items():
+            judge = inp.per_qid_judge.get(qstr) or {}
+            asi = inp.asi_metadata.get(qstr) or {}
+            sql = _row_sql(rows_by_qid.get(qstr) or {})
+            legacy_dict = evidence.to_legacy_dict(
+                judge=judge, asi=asi, sql=sql,
+            )
+            per_qid_evidence[qstr] = legacy_dict
+            rca_kinds_by_qid[qstr] = legacy_dict["rca_kind"]
+            evidence_refs[qstr] = (
+                f"trace://{ctx.run_id}/iter/{ctx.iteration}/judge/{qstr}",
+            )
+            per_qid_evidence_typed[qstr] = evidence
+
+    # ── Step 3: Deterministic fallback for every qid not covered. ─────
+    for qid in qids:
+        qstr = str(qid)
+        if not qstr:
+            continue
+        if qstr in per_qid_evidence_typed:
+            continue
+        judge = inp.per_qid_judge.get(qstr) or {}
+        metadata, failure_type = metadata_by_qid.get(qstr, ({}, ""))
         finding = _asi_finding_from_metadata(
             qstr,
             str(judge.get("judge_name") or "judge_asi"),
             metadata,
         )
         if finding is None:
-            # Defensive: empty failure_type → no finding. Skip silently;
-            # the qid simply won't appear in per_qid_evidence.
             continue
-
         rca_kind_value = finding.rca_kind.value
         rca_kinds_by_qid[qstr] = rca_kind_value
         per_qid_evidence[qstr] = {
             "rca_kind": rca_kind_value,
             "judge_verdict": str(judge.get("verdict") or failure_type),
-            "sql_diff": sql,
+            "sql_diff": _row_sql(rows_by_qid.get(qstr) or {}),
             "counterfactual_fix": metadata.get("counterfactual_fix"),
-            "asi_features": dict(asi),
+            "asi_features": dict(inp.asi_metadata.get(qstr) or {}),
             "expected_objects": list(finding.expected_objects),
             "actual_objects": list(finding.actual_objects),
             "recommended_levers": list(finding.recommended_levers),
@@ -200,6 +257,7 @@ def collect(ctx, inp: RcaEvidenceInput) -> RcaEvidenceBundle:
         rca_kinds_by_qid=rca_kinds_by_qid,
         evidence_refs=evidence_refs,
         promoted_to_top_n_qids=tuple(promoted),
+        per_qid_evidence_typed=per_qid_evidence_typed,
     )
 
 
