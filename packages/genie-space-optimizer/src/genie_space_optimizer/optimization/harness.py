@@ -16362,6 +16362,15 @@ def _run_gate_checks(
         _rca_evidence_bundle = _f2_wrapped(
             _stage_ctx_full_eval, _f2_inp,
         )
+        # Plan 8 Task 1 — stamp the typed per-qid evidence onto
+        # metadata_snapshot so stages/clustering.form can thread it
+        # into cluster_failures(rca_evidence_typed=...) and Plan 4's
+        # LLM short-circuit activates.
+        if _rca_evidence_bundle is not None:
+            metadata_snapshot["_rca_evidence_typed"] = dict(
+                getattr(_rca_evidence_bundle, "per_qid_evidence_typed", {})
+                or {}
+            )
     except Exception:
         logger.debug(
             "Phase H Task 2: F2 rca_evidence stage failed (non-fatal)",

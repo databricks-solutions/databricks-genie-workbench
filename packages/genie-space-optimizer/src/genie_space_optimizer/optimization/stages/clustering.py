@@ -155,7 +155,17 @@ def form(ctx, inp: ClusteringInput) -> ClusterFindings:
     F3 is observability-only — no harness call site is modified.
     Returns a typed ClusterFindings that F4 will consume in addition
     to (or eventually instead of) the existing harness clusters local.
+
+    Plan 8 Task 1 — when ``inp.metadata_snapshot`` carries the
+    Plan-3 typed sidecar at ``_rca_evidence_typed`` (dict of qid →
+    PerQidRcaEvidence), thread it into ``cluster_failures(...)`` so
+    Plan 4's LLM short-circuit fires. ``w`` comes from ``ctx.w`` when
+    present (falls back to None → SP-anonymous client per Plan 4 R3).
     """
+    rca_evidence_typed = (
+        inp.metadata_snapshot.get("_rca_evidence_typed") or {}
+    )
+    w = getattr(ctx, "w", None)
     hard_clusters_raw = cluster_failures(
         inp.eval_result_for_clustering,
         inp.metadata_snapshot,
@@ -166,6 +176,8 @@ def form(ctx, inp: ClusteringInput) -> ClusterFindings:
         qid_state=inp.qid_state,
         signal_type="hard",
         namespace="H",
+        rca_evidence_typed=rca_evidence_typed,
+        w=w,
     )
     promoted_hard, rejected_hard = _split_by_demoted(list(hard_clusters_raw or []))
 
@@ -183,6 +195,8 @@ def form(ctx, inp: ClusteringInput) -> ClusterFindings:
             qid_state=inp.qid_state,
             signal_type="soft",
             namespace="S",
+            rca_evidence_typed=rca_evidence_typed,
+            w=w,
         )
         soft_clusters, rejected_soft = _split_by_demoted(list(soft_raw or []))
 
