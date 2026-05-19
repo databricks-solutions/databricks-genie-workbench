@@ -8175,22 +8175,16 @@ def plan5_lever_5b_llm_intent_enabled() -> bool:
 
 
 def critique_gate_enforcing_enabled() -> bool:
-    """Whether the Plan-6 candidate-critique gate filters ``discard``
-    verdicts out of the slate.
+    """Plan 8 Task 4 — default flipped to ON.
 
-    True: ``discard`` verdicts filter the proposal out of
-    ``CritiqueOutcome.proposals_by_ag``; ``dropped_by_critique``
-    records the proposal_id; the slate that reaches ``stages.gates``
-    excludes the dropped proposals.
+    When ON, harness filters proposals listed in
+    CritiqueOutcome.dropped_by_critique out of the slate before the
+    acceptance gate sees them.
 
-    False (default): slate is byte-stable from input → output;
-    verdicts still recorded in ``verdict_by_proposal_id`` and emitted
-    as decision records; no filtering happens.
+    Set ``GSO_CRITIQUE_GATE_ENFORCING=0`` to force off (escape hatch
+    for emergency rollback; flag is removed in Plan 8 Task 12).
     """
-    raw = (
-        os.environ.get("GSO_CRITIQUE_GATE_ENFORCING") or "false"
-    ).strip().lower()
-    return raw in _TRUTHY_VALUES
+    return _flag_default_on("GSO_CRITIQUE_GATE_ENFORCING")
 
 
 # ── Plan 7 — LLM-driven rollback learning. ──────────────────────────────

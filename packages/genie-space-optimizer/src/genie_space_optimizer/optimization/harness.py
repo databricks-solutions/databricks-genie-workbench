@@ -24861,6 +24861,139 @@ def _run_lever_loop(
                     exc_info=True,
                 )
 
+            # ── Plan 8 Task 4 — Plan 6 candidate-critique stage. ─────────────
+            # Runs per-AG on the legacy proposal list (which carries intent_id
+            # + repair_intent stamps from stamp_repair_intent_on_proposal); emits
+            # one CritiqueVerdict per proposal_id. When GSO_CRITIQUE_GATE_ENFORCING
+            # is ON (default after Plan 8), proposals in dropped_by_critique are
+            # filtered out of all_proposals before the acceptance gate sees them.
+            critique_outcome = None
+            try:
+                from genie_space_optimizer.common.config import (
+                    critique_gate_enforcing_enabled as _critique_gate_on,
+                )
+                from genie_space_optimizer.optimization.stages import (
+                    StageContext as _StageCtx_crit,
+                )
+                from genie_space_optimizer.optimization.stages import (
+                    candidate_critique as _crit_stage,
+                )
+                from genie_space_optimizer.optimization.stage_io_capture import (
+                    wrap_with_io_capture as _wrap_with_io_capture_crit,
+                )
+                from genie_space_optimizer.optimization.repair_intent import (
+                    extract_repair_intent_from_proposal as _extract_intent_from_prop,
+                )
+
+                _stage_ctx_crit = _StageCtx_crit(
+                    run_id=str(run_id),
+                    iteration=int(iteration_counter),
+                    space_id=str(space_id),
+                    domain=str(domain),
+                    catalog=str(catalog),
+                    schema=str(schema),
+                    apply_mode=str(apply_mode),
+                    journey_emit=_journey_emit,
+                    decision_emit=_decision_emit,
+                    mlflow_anchor_run_id=_phase_h_anchor_run_id,
+                    feature_flags={},
+                )
+
+                _ag_str_crit = str(ag_id)
+                _cluster_id_by_proposal_id: dict[str, str] = {}
+                _ag_id_by_proposal_id: dict[str, str] = {}
+                _crit_repair_intents_by_id: dict[str, Any] = {}
+                for _prop in (all_proposals or []):
+                    _pid = str(_prop.get("proposal_id") or "")
+                    if not _pid:
+                        continue
+                    _ri_dict = _prop.get("repair_intent") or {}
+                    _cluster_id_by_proposal_id[_pid] = str(
+                        _ri_dict.get("cluster_id") or ""
+                    )
+                    _ag_id_by_proposal_id[_pid] = _ag_str_crit
+                    try:
+                        _ri_obj = _extract_intent_from_prop(_prop)
+                    except Exception:
+                        _ri_obj = None
+                    if _ri_obj is not None:
+                        _crit_repair_intents_by_id[str(_ri_obj.intent_id)] = _ri_obj
+
+                _at_risk_for_ag_crit: tuple[str, ...] = tuple(
+                    str(q) for q in (locals().get("_ag_passing_qids_at_risk") or ())
+                )
+                _passing_qids_at_risk_by_proposal_id: dict[str, tuple[str, ...]] = {
+                    _pid: _at_risk_for_ag_crit
+                    for _pid in _cluster_id_by_proposal_id.keys()
+                }
+
+                _cluster_semantic_theme_by_cluster: dict[str, str] = {}
+                for _c in (clusters or []):
+                    _cid_crit = str(_c.get("cluster_id") or "")
+                    if _cid_crit:
+                        _cluster_semantic_theme_by_cluster[_cid_crit] = str(
+                            _c.get("semantic_theme") or ""
+                        )
+
+                _rca_evidence_typed_flat = metadata_snapshot.get(
+                    "_rca_evidence_typed"
+                ) or {}
+                _iter_cluster_by_qid_local = locals().get(
+                    "_iter_cluster_by_qid"
+                ) or {}
+                _rca_evidence_typed_by_cluster: dict[str, dict[str, Any]] = {}
+                for _qid, _ev in (_rca_evidence_typed_flat or {}).items():
+                    _cid_for_qid = str(
+                        _iter_cluster_by_qid_local.get(_qid) or ""
+                    )
+                    if not _cid_for_qid:
+                        continue
+                    _rca_evidence_typed_by_cluster.setdefault(
+                        _cid_for_qid, {}
+                    )[_qid] = _ev
+
+                _proposals_by_ag_crit = {
+                    _ag_str_crit: tuple(
+                        dict(_p) for _p in (all_proposals or ())
+                    ),
+                }
+
+                _crit_inp = _crit_stage.CritiqueInput(
+                    proposals_by_ag=_proposals_by_ag_crit,
+                    repair_intents_by_id=_crit_repair_intents_by_id,
+                    rca_evidence_typed_by_cluster=_rca_evidence_typed_by_cluster,
+                    passing_qids_at_risk_by_proposal_id=(
+                        _passing_qids_at_risk_by_proposal_id
+                    ),
+                    cluster_semantic_theme_by_cluster=(
+                        _cluster_semantic_theme_by_cluster
+                    ),
+                    cluster_id_by_proposal_id=_cluster_id_by_proposal_id,
+                    ag_id_by_proposal_id=_ag_id_by_proposal_id,
+                )
+                _crit_wrapped = _wrap_with_io_capture_crit(
+                    execute=_crit_stage.execute,
+                    stage_key="candidate_critique",
+                )
+                critique_outcome = _crit_wrapped(_stage_ctx_crit, _crit_inp)
+
+                if _critique_gate_on() and critique_outcome.dropped_by_critique:
+                    _dropped_set: set[str] = set(
+                        critique_outcome.dropped_by_critique
+                    )
+                    all_proposals = [
+                        p for p in (all_proposals or [])
+                        if str(p.get("proposal_id") or "") not in _dropped_set
+                    ]
+            except Exception:
+                logger.debug(
+                    "Plan 8 Task 4 — candidate_critique stage failed "
+                    "(non-fatal); harness continues with the unfiltered "
+                    "proposal list.",
+                    exc_info=True,
+                )
+                critique_outcome = None
+
             # ── Apply coordinated patch set ──────────────────────────────
             try:
                 from genie_space_optimizer.optimization.proposal_shape import (
