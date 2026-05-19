@@ -31,6 +31,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from genie_space_optimizer.optimization.repair_intent import RepairShape
+
 
 class FailureClusterIdentityError(ValueError):
     """Raised when cluster and AG dicts disagree on identity fields.
@@ -55,6 +57,11 @@ class FailureCluster:
     rca_card_id: str
     rca_card_summary: str
     is_grounded: bool
+    # ── Plan 4 — typed semantic fields populated by the LLM path. ──
+    # Defaults preserve byte-stable construction for every existing
+    # caller of FailureCluster(...) and from_legacy(...).
+    semantic_theme: str = ""
+    suggested_repair_shape: RepairShape = RepairShape.OTHER
 
     @property
     def affected_questions(self) -> tuple[str, ...]:
@@ -243,4 +250,57 @@ class FailureCluster:
             target_qids=self.target_qids,
             attempted_archetypes=attempted_archetypes,
             skipped_reason=str(skipped_reason or ""),
+        )
+
+    @classmethod
+    def from_llm_cluster(
+        cls,
+        llm_cluster: Any,  # LlmCluster; Any avoids cross-module cycles.
+        ag: Mapping | None = None,
+    ) -> "FailureCluster":
+        """Build a FailureCluster from an LlmCluster.
+
+        ``ag`` is optional; when present, ``target_qids`` from the
+        LlmCluster must agree with ``ag.affected_questions`` (mirrors
+        the identity-check contract of ``from_legacy``). On mismatch
+        raises ``FailureClusterIdentityError``.
+        """
+        llm_qids = tuple(
+            str(q) for q in llm_cluster.member_qids if str(q)
+        )
+        if ag is not None:
+            ag_qids = tuple(
+                str(q) for q in (ag.get("affected_questions") or [])
+                if str(q)
+            )
+            if llm_qids and ag_qids and set(llm_qids) != set(ag_qids):
+                raise FailureClusterIdentityError(
+                    f"LlmCluster/AG identity mismatch on target_qids "
+                    f"for cluster_id={llm_cluster.cluster_id!r}: "
+                    f"llm.member_qids={sorted(llm_qids)} vs "
+                    f"ag.affected_questions={sorted(ag_qids)}."
+                )
+
+        return cls(
+            cluster_id=str(llm_cluster.cluster_id),
+            target_qids=llm_qids,
+            root_cause=str(llm_cluster.semantic_theme),
+            asi_failure_type=str(llm_cluster.suggested_repair_shape.value),
+            failure_keys=(
+                str(llm_cluster.semantic_theme),
+                str(llm_cluster.suggested_repair_shape.value),
+            ),
+            blame_set_raw=tuple(
+                str(b) for b in llm_cluster.primary_blame_set
+            ),
+            blame_set_normalized=tuple(
+                str(b) for b in llm_cluster.primary_blame_set
+            ),
+            rca_card_id="",
+            rca_card_summary="",
+            is_grounded=False,
+            semantic_theme=str(llm_cluster.semantic_theme),
+            suggested_repair_shape=RepairShape(
+                llm_cluster.suggested_repair_shape
+            ),
         )
