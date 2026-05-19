@@ -1,0 +1,133 @@
+"""Plan 2 — typed I/O contracts for LLM reasoning calls.
+
+Three contracts live here:
+
+  * ``AbstainableEnvelope[T]`` — the Pydantic generic the LLM's
+    response_format is derived from. Every reasoning call's prompt
+    instructs the LLM to fill EITHER ``result`` (typed T) OR
+    ``declined`` (an AbstainVerdict). Exactly one must be populated.
+  * ``LlmReasoningRequest`` — the typed input to
+    ``LlmReasoningCall.invoke``. Frozen + slots so it can travel
+    safely through ContextVars and be logged to MLflow. (Added in
+    Task 3.)
+  * ``LlmReasoningResponse`` — the typed output from
+    ``LlmReasoningCall.invoke``. Frozen + slots + JsonRoundTrip so
+    it can be persisted by Plans 3-7 stage I/O carriers without
+    re-parsing. (Added in Task 4.)
+
+The envelope shape is deliberately:
+
+  {"result": <T> | null, "declined": <AbstainVerdict> | null}
+
+rather than a tagged union, because Databricks Foundation Model API
+strict-mode response_format does NOT support ``anyOf`` / ``oneOf`` /
+``$ref`` (see ``prompt_io._UNSUPPORTED_KEYWORDS``). The XOR semantics
+are enforced post-parse by ``parse_envelope``.
+"""
+from __future__ import annotations
+
+from typing import Generic, TypeVar
+
+from pydantic import BaseModel, ConfigDict
+
+from genie_space_optimizer.optimization.llm_abstain import (
+    AbstainReason,
+    AbstainVerdict,
+)
+from genie_space_optimizer.optimization.prompt_io import LLMOutputContract
+
+_T = TypeVar("_T", bound=LLMOutputContract)
+
+
+class _AbstainVerdictModel(BaseModel):
+    """Pydantic mirror of ``AbstainVerdict`` for response_format binding.
+
+    Pydantic ``BaseModel`` is required because Databricks response_format
+    is generated from Pydantic. ``parse_envelope`` converts an instance
+    to the dataclass ``AbstainVerdict`` so callers never see this type.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: AbstainReason
+    explanation: str
+    needed_evidence: list[str]
+    suggested_next_step: str
+
+
+class AbstainableEnvelope(BaseModel, Generic[_T]):
+    """Generic Pydantic envelope wrapping a typed result OR an abstain
+    verdict.
+
+    Both fields default to ``None`` so the schema fits Databricks
+    strict mode without ``anyOf``/``oneOf``. The XOR rule is enforced
+    by ``parse_envelope``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    result: _T | None = None
+    declined: _AbstainVerdictModel | None = None
+
+
+class EnvelopeContractError(ValueError):
+    """Raised when the LLM's envelope response violates the XOR rule
+    or is not valid JSON / does not match the envelope schema."""
+
+
+def parse_envelope(
+    raw_text: str, result_cls: type[_T]
+) -> _T | AbstainVerdict:
+    """Parse ``raw_text`` as an ``AbstainableEnvelope[result_cls]``.
+
+    Returns either an instance of ``result_cls`` (when ``result`` is
+    the populated branch) or an ``AbstainVerdict`` dataclass (when
+    ``declined`` is the populated branch). Raises
+    ``EnvelopeContractError`` when neither or both branches are
+    populated, when the JSON is malformed, or when Pydantic
+    validation of either branch fails.
+    """
+    from genie_space_optimizer.optimization.prompt_io import (
+        _extract_json_text,
+    )
+
+    try:
+        json_text = _extract_json_text(raw_text)
+    except Exception as exc:
+        raise EnvelopeContractError(
+            f"envelope JSON extraction failed: {exc}"
+        ) from exc
+
+    EnvCls = AbstainableEnvelope[result_cls]
+    try:
+        env = EnvCls.model_validate_json(json_text)
+    except Exception as exc:
+        raise EnvelopeContractError(
+            f"envelope did not validate against AbstainableEnvelope"
+            f"[{result_cls.__name__}]: {exc}"
+        ) from exc
+
+    populated_result = env.result is not None
+    populated_declined = env.declined is not None
+    if populated_result and populated_declined:
+        raise EnvelopeContractError(
+            "exactly one of 'result' / 'declined' must be populated; "
+            "both were"
+        )
+    if not populated_result and not populated_declined:
+        raise EnvelopeContractError(
+            "exactly one of 'result' / 'declined' must be populated; "
+            "neither was"
+        )
+
+    if populated_result:
+        return env.result  # type: ignore[return-value]
+
+    decl_model = env.declined
+    assert decl_model is not None
+    return AbstainVerdict(
+        reason=decl_model.reason,
+        explanation=decl_model.explanation,
+        needed_evidence=tuple(decl_model.needed_evidence),
+        suggested_next_step=decl_model.suggested_next_step,
+    )
