@@ -8125,3 +8125,26 @@ def plan3_llm_rca_evidence_enabled() -> bool:
     ``per_qid_evidence_typed`` stays empty.
     """
     return _flag_default_on("GSO_PLAN3_LLM_RCA_EVIDENCE")
+
+
+# ── Plan 4 — LLM-driven failure clustering. ───────────────────────────
+# Default ON per the user's "rip out the bandaid" architectural
+# directive — the deterministic ``cluster_failures`` heuristic body is
+# still present as the fallback path (LLM declines, errors, fewer than
+# 2 qids, or no rca_evidence_typed input). Operators can set
+# ``GSO_PLAN4_LLM_CLUSTERING=0`` to disable LLM dispatch entirely
+# without redeploying.
+
+
+def plan4_llm_clustering_enabled() -> bool:
+    """Whether the LLM-driven clustering driver is dispatched.
+
+    True (default-on): when ``cluster_failures`` is called with
+    non-empty ``rca_evidence_typed`` (Plan 3's typed sidecar) and
+    ≥2 qids, dispatch through ``cluster_failures_llm`` first; fall
+    back to heuristic body on decline / error / per-cluster
+    validator rejection.
+
+    False: every call takes the existing heuristic body directly.
+    """
+    return _flag_default_on("GSO_PLAN4_LLM_CLUSTERING")
