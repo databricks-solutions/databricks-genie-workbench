@@ -19,7 +19,10 @@ now and is deferred to a follow-up plan.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.repair_intent import RepairIntent
 
 from genie_space_optimizer.optimization.decision_emitters import (
     proposal_generated_records,
@@ -106,14 +109,19 @@ class ProposalsInput(JsonRoundTrip):
 class ProposalSlate(JsonRoundTrip):
     """Output of stages.proposals.generate.
 
-    ``proposals_by_ag`` mirrors the input but every proposal is stamped
-    with ``content_fingerprint`` (the 6-tuple from
+    ``proposals_by_ag`` mirrors the input but every proposal is
+    stamped with ``content_fingerprint`` (the 6-tuple from
     ``patch_retry_signature`` joined to a string).
     ``rejected_proposal_alternatives`` is the union of any
     alternative-option records the caller passed in.
     ``content_fingerprints_emitted`` is the aggregated tuple of every
-    fingerprint stamped — F6's content-fingerprint dedup gate consumes
-    this.
+    fingerprint stamped — F6's content-fingerprint dedup gate
+    consumes this.
+
+    Plan 1 Task 8: ``repair_intents_by_id`` is the typed-RepairIntent
+    sidecar. Populated by ``generate()`` from each proposal's stamped
+    ``repair_intent`` field (Task 4 helper). Empty dict for legacy /
+    unstamped proposals.
 
     C15 Phase 4.1: mixes JsonRoundTrip for boundary-fixture replay.
     """
@@ -121,6 +129,7 @@ class ProposalSlate(JsonRoundTrip):
     proposals_by_ag: dict[str, tuple[dict[str, Any], ...]]
     rejected_proposal_alternatives: tuple[Mapping[str, Any], ...] = ()
     content_fingerprints_emitted: tuple[str, ...] = ()
+    repair_intents_by_id: dict[str, "RepairIntent"] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:  # type: ignore[override]
         return {
@@ -134,10 +143,17 @@ class ProposalSlate(JsonRoundTrip):
             "content_fingerprints_emitted": list(
                 self.content_fingerprints_emitted or ()
             ),
+            "repair_intents_by_id": {
+                intent_id: intent.to_json()
+                for intent_id, intent in (self.repair_intents_by_id or {}).items()
+            },
         }
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "ProposalSlate":  # type: ignore[override]
+        from genie_space_optimizer.optimization.repair_intent import (
+            RepairIntent,
+        )
         return cls(
             proposals_by_ag={
                 ag_id: tuple(dict(p) for p in props)
@@ -152,6 +168,12 @@ class ProposalSlate(JsonRoundTrip):
             content_fingerprints_emitted=tuple(
                 payload.get("content_fingerprints_emitted") or []
             ),
+            repair_intents_by_id={
+                intent_id: RepairIntent.from_json(intent_payload)
+                for intent_id, intent_payload in (
+                    payload.get("repair_intents_by_id") or {}
+                ).items()
+            },
         )
 
 
@@ -250,10 +272,24 @@ def generate(ctx, inp: ProposalsInput) -> ProposalSlate:
         for record in records:
             ctx.decision_emit(record)
 
+    # Plan 1 Task 8 — roll up stamped RepairIntents from the
+    # fingerprinted proposals. Legacy / unstamped proposals are
+    # silently skipped (carrier stays empty for them).
+    from genie_space_optimizer.optimization.repair_intent import (
+        extract_repair_intent_from_proposal,
+    )
+    intents_by_id: dict[str, "RepairIntent"] = {}
+    for ag_id in ag_ids_sorted:
+        for proposal in fingerprinted.get(str(ag_id), ()):
+            intent = extract_repair_intent_from_proposal(proposal)
+            if intent is not None:
+                intents_by_id[intent.intent_id] = intent
+
     return ProposalSlate(
         proposals_by_ag=fingerprinted,
         rejected_proposal_alternatives=(),
         content_fingerprints_emitted=tuple(fingerprints),
+        repair_intents_by_id=intents_by_id,
     )
 
 
