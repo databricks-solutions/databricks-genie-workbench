@@ -1,0 +1,73 @@
+{
+  "input": {
+    "cluster_id": "H001",
+    "ag_id": "AG3",
+    "iteration": 2,
+    "rolled_back_intent": {
+      "intent_id": "intent_H001_AG3_001",
+      "intent_name": "top_n_revenue_by_region",
+      "intent_description": "Teach Genie top-N by metric using sales.fact_sales.revenue grouped by region",
+      "repair_shape": "top_n_by_metric",
+      "patch_type": "add_example_sql",
+      "rationale": "cluster blames missing LIMIT/ORDER BY on revenue",
+      "confidence": "high",
+      "source": "llm_l5b_synthesis",
+      "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.region"],
+      "target_qids": ["gs_009", "gs_017"]
+    },
+    "intent_outcome": {
+      "intent_id": "intent_H001_AG3_001",
+      "ag_id": "AG3",
+      "outcome": "rolled_back",
+      "applied_signature": "sig_top_n_abc123",
+      "applied_at_iter": 2,
+      "rollback_reason": "out_of_target_regression"
+    },
+    "per_qid_evidence": [
+      {
+        "qid": "gs_009",
+        "observed_failure": "missing top-N",
+        "generated_sql_issue": "no ORDER BY ... LIMIT",
+        "expected_sql_shape": "GROUP BY region ORDER BY revenue DESC LIMIT 3",
+        "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.region"],
+        "confidence": "high"
+      }
+    ],
+    "critique_verdict": {
+      "addresses_target_failure": true,
+      "is_overgeneralized": true,
+      "likely_neighbor_regressions": ["gs_044", "gs_055"],
+      "matches_intended_shape": true,
+      "overall_recommendation": "rework",
+      "rationale": "patch may regress monthly-revenue questions"
+    },
+    "eval_diffs": [
+      {"qid": "gs_009", "pre_correctness": "no", "post_correctness": "yes", "pre_arbiter": "no", "post_arbiter": "yes", "transition": "fail_to_pass"},
+      {"qid": "gs_017", "pre_correctness": "no", "post_correctness": "yes", "pre_arbiter": "no", "post_arbiter": "yes", "transition": "fail_to_pass"},
+      {"qid": "gs_044", "pre_correctness": "yes", "post_correctness": "no", "pre_arbiter": "yes", "post_arbiter": "no", "transition": "pass_to_fail"},
+      {"qid": "gs_055", "pre_correctness": "yes", "post_correctness": "no", "pre_arbiter": "yes", "post_arbiter": "no", "transition": "pass_to_fail"}
+    ],
+    "identifier_allowlist": [
+      "sales.fact_sales.revenue",
+      "sales.fact_sales.region",
+      "sales.fact_sales.order_date",
+      "sales.fact_sales.product_id"
+    ],
+    "applied_patch_fingerprints": ["sig_top_n_abc123"],
+    "available_repair_shapes": ["top_n_by_metric", "ordered_list_by_metric", "rank_within_group", "period_over_period", "filter_compose", "filter_remove", "join_discovery", "sql_expression", "column_description", "other"],
+    "available_patch_types": ["add_example_sql", "add_sql_snippet_expression", "add_sql_snippet_filter", "add_sql_snippet_measure", "add_instruction", "update_instruction", "add_join_spec", "add_column_description"]
+  },
+  "expected_output": {
+    "result": {
+      "why_failed": "rollback_reason=out_of_target_regression — target gs_009/gs_017 transitioned fail_to_pass (good) BUT protected gs_044/gs_055 transitioned pass_to_fail because the top-N example also taught Genie to apply LIMIT 3 to monthly-revenue questions that don't ask for top-N.",
+      "failure_mode": "overgeneralized_top_n_to_monthly_breakdown",
+      "revised_repair_shape": null,
+      "revised_patch_type": "add_sql_snippet_filter",
+      "revised_blame_set": null,
+      "additional_evidence_needed": [],
+      "forbidden_signatures": ["sig_top_n_abc123"],
+      "confidence": "high"
+    },
+    "declined": null
+  }
+}

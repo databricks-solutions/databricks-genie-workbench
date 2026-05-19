@@ -1,0 +1,84 @@
+{
+  "input": {
+    "cluster_id": "H003",
+    "ag_id": "AG5",
+    "iteration": 4,
+    "rolled_back_intent": {
+      "intent_id": "intent_H003_AG5_001",
+      "intent_name": "always_include_date_filter",
+      "intent_description": "Add instruction to always include a date filter",
+      "repair_shape": "other",
+      "patch_type": "add_instruction",
+      "rationale": "cluster failures include unbounded queries",
+      "confidence": "medium",
+      "source": "llm_l5b_synthesis",
+      "blame_set": [],
+      "target_qids": ["gs_033", "gs_034"]
+    },
+    "intent_outcome": {
+      "intent_id": "intent_H003_AG5_001",
+      "ag_id": "AG5",
+      "outcome": "rolled_back",
+      "applied_signature": "sig_instr_ghi789",
+      "applied_at_iter": 4,
+      "rollback_reason": "out_of_target_regression"
+    },
+    "per_qid_evidence": [
+      {
+        "qid": "gs_033",
+        "observed_failure": "returned all historical rows instead of last month",
+        "generated_sql_issue": "no WHERE clause on order_date",
+        "expected_sql_shape": "WHERE order_date >= DATE_TRUNC('month', CURRENT_DATE)",
+        "blame_set": ["sales.fact_sales.order_date"],
+        "confidence": "medium"
+      },
+      {
+        "qid": "gs_034",
+        "observed_failure": "timeout on large scan",
+        "generated_sql_issue": "no date filter",
+        "expected_sql_shape": "WHERE order_date >= DATE_TRUNC('year', CURRENT_DATE)",
+        "blame_set": ["sales.fact_sales.order_date"],
+        "confidence": "low"
+      }
+    ],
+    "critique_verdict": {
+      "addresses_target_failure": false,
+      "is_overgeneralized": true,
+      "likely_neighbor_regressions": ["gs_077", "gs_088", "gs_099"],
+      "matches_intended_shape": false,
+      "overall_recommendation": "discard",
+      "rationale": "blanket 'always filter by date' regresses queries about historical totals"
+    },
+    "eval_diffs": [
+      {"qid": "gs_033", "pre_correctness": "no", "post_correctness": "yes", "pre_arbiter": "no", "post_arbiter": "yes", "transition": "fail_to_pass"},
+      {"qid": "gs_034", "pre_correctness": "no", "post_correctness": "no", "pre_arbiter": "no", "post_arbiter": "no", "transition": "hold_fail"},
+      {"qid": "gs_077", "pre_correctness": "yes", "post_correctness": "no", "pre_arbiter": "yes", "post_arbiter": "no", "transition": "pass_to_fail"},
+      {"qid": "gs_088", "pre_correctness": "yes", "post_correctness": "no", "pre_arbiter": "yes", "post_arbiter": "no", "transition": "pass_to_fail"},
+      {"qid": "gs_099", "pre_correctness": "yes", "post_correctness": "no", "pre_arbiter": "yes", "post_arbiter": "no", "transition": "pass_to_fail"}
+    ],
+    "identifier_allowlist": [
+      "sales.fact_sales.order_date",
+      "sales.fact_sales.revenue",
+      "sales.fact_sales.region"
+    ],
+    "applied_patch_fingerprints": ["sig_instr_ghi789"],
+    "available_repair_shapes": ["top_n_by_metric", "ordered_list_by_metric", "rank_within_group", "period_over_period", "filter_compose", "filter_remove", "join_discovery", "sql_expression", "column_description", "other"],
+    "available_patch_types": ["add_example_sql", "add_sql_snippet_expression", "add_sql_snippet_filter", "add_sql_snippet_measure", "add_instruction", "update_instruction", "add_join_spec", "add_column_description"]
+  },
+  "expected_output": {
+    "result": {
+      "why_failed": "rollback_reason=out_of_target_regression — gs_033 went fail_to_pass but gs_077/gs_088/gs_099 (historical-total questions) went pass_to_fail because the blanket 'always include date filter' instruction caused Genie to add WHERE date>= predicates to historical-total queries. The instruction was too broad.",
+      "failure_mode": "blanket_date_filter_regressed_historical_totals",
+      "revised_repair_shape": "period_over_period",
+      "revised_patch_type": "add_example_sql",
+      "revised_blame_set": ["sales.fact_sales.order_date"],
+      "additional_evidence_needed": [
+        "data_profile_for_sales.fact_sales.order_date",
+        "question_classifier_for_historical_vs_recent_intent"
+      ],
+      "forbidden_signatures": ["sig_instr_ghi789"],
+      "confidence": "medium"
+    },
+    "declined": null
+  }
+}

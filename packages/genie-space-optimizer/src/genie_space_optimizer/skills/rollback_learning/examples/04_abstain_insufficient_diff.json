@@ -1,0 +1,52 @@
+{
+  "input": {
+    "cluster_id": "H004",
+    "ag_id": "AG6",
+    "iteration": 5,
+    "rolled_back_intent": {
+      "intent_id": "intent_H004_AG6_001",
+      "intent_name": "x",
+      "intent_description": "x",
+      "repair_shape": "other",
+      "patch_type": "add_instruction",
+      "rationale": "x",
+      "confidence": "low",
+      "source": "deterministic_archetype_adapter",
+      "blame_set": [],
+      "target_qids": []
+    },
+    "intent_outcome": {
+      "intent_id": "intent_H004_AG6_001",
+      "ag_id": "AG6",
+      "outcome": "rolled_back",
+      "applied_signature": "sig_x",
+      "applied_at_iter": 5,
+      "rollback_reason": ""
+    },
+    "per_qid_evidence": [
+      {
+        "qid": "gs_999",
+        "observed_failure": "returned wrong number",
+        "generated_sql_issue": "unclear",
+        "expected_sql_shape": "",
+        "blame_set": [],
+        "confidence": "low"
+      }
+    ],
+    "critique_verdict": null,
+    "eval_diffs": [],
+    "identifier_allowlist": ["sales.fact_sales.revenue"],
+    "applied_patch_fingerprints": ["sig_x"],
+    "available_repair_shapes": ["other"],
+    "available_patch_types": ["add_instruction"]
+  },
+  "expected_output": {
+    "result": null,
+    "declined": {
+      "reason": "insufficient_signal",
+      "explanation": "intent_outcome.rollback_reason is empty AND eval_diffs is empty — cannot diagnose without either a reason_code OR observable transitions.",
+      "needed_evidence": ["intent_outcome.rollback_reason", "eval_diffs"],
+      "suggested_next_step": "investigate_acceptance_gate_did_not_emit_reason_code"
+    }
+  }
+}

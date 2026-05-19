@@ -1,0 +1,75 @@
+{
+  "input": {
+    "cluster_id": "H002",
+    "ag_id": "AG4",
+    "iteration": 3,
+    "rolled_back_intent": {
+      "intent_id": "intent_H002_AG4_001",
+      "intent_name": "customer_segment_join",
+      "intent_description": "Teach Genie to JOIN crm.customer to crm.orders on customer_id for segment-filtered queries",
+      "repair_shape": "join_discovery",
+      "patch_type": "add_example_sql",
+      "rationale": "cluster blames missing customer-order join",
+      "confidence": "high",
+      "source": "llm_l5b_synthesis",
+      "blame_set": ["crm.customer.id", "crm.orders.customer_id", "crm.customer.tier", "crm.customer.region", "crm.customer.signup_date"],
+      "target_qids": ["gs_021", "gs_022"]
+    },
+    "intent_outcome": {
+      "intent_id": "intent_H002_AG4_001",
+      "ag_id": "AG4",
+      "outcome": "rolled_back",
+      "applied_signature": "sig_join_def456",
+      "applied_at_iter": 3,
+      "rollback_reason": "acceptance_below_min_pre_arbiter_gain"
+    },
+    "per_qid_evidence": [
+      {
+        "qid": "gs_021",
+        "observed_failure": "premium customer order count NULL",
+        "generated_sql_issue": "missing JOIN crm.customer",
+        "expected_sql_shape": "FROM crm.orders JOIN crm.customer ON customer_id WHERE tier='premium'",
+        "blame_set": ["crm.customer.id", "crm.orders.customer_id", "crm.customer.tier"],
+        "confidence": "high"
+      },
+      {
+        "qid": "gs_022",
+        "observed_failure": "VIP customer revenue 0",
+        "generated_sql_issue": "missing JOIN crm.customer",
+        "expected_sql_shape": "FROM crm.orders JOIN crm.customer ON customer_id WHERE tier IN ('vip','premium')",
+        "blame_set": ["crm.customer.id", "crm.orders.customer_id", "crm.customer.tier"],
+        "confidence": "high"
+      }
+    ],
+    "critique_verdict": null,
+    "eval_diffs": [
+      {"qid": "gs_021", "pre_correctness": "no", "post_correctness": "no", "pre_arbiter": "no", "post_arbiter": "no", "transition": "hold_fail"},
+      {"qid": "gs_022", "pre_correctness": "no", "post_correctness": "no", "pre_arbiter": "no", "post_arbiter": "no", "transition": "hold_fail"}
+    ],
+    "identifier_allowlist": [
+      "crm.customer.id",
+      "crm.customer.tier",
+      "crm.customer.region",
+      "crm.customer.signup_date",
+      "crm.orders.customer_id",
+      "crm.orders.order_date",
+      "crm.orders.amount"
+    ],
+    "applied_patch_fingerprints": ["sig_join_def456"],
+    "available_repair_shapes": ["top_n_by_metric", "ordered_list_by_metric", "rank_within_group", "period_over_period", "filter_compose", "filter_remove", "join_discovery", "sql_expression", "column_description", "other"],
+    "available_patch_types": ["add_example_sql", "add_sql_snippet_expression", "add_sql_snippet_filter", "add_sql_snippet_measure", "add_instruction", "update_instruction", "add_join_spec", "add_column_description"]
+  },
+  "expected_output": {
+    "result": {
+      "why_failed": "rollback_reason=acceptance_below_min_pre_arbiter_gain — neither gs_021 nor gs_022 transitioned fail_to_pass (both hold_fail). The example_sql included tier+region+signup_date which Genie used to over-filter; a tighter join on JUST customer_id+tier may produce the right learning signal.",
+      "failure_mode": "blame_scope_too_broad_for_join_discovery",
+      "revised_repair_shape": null,
+      "revised_patch_type": null,
+      "revised_blame_set": ["crm.customer.id", "crm.customer.tier", "crm.orders.customer_id"],
+      "additional_evidence_needed": ["join_cardinality_crm.orders_to_crm.customer"],
+      "forbidden_signatures": ["sig_join_def456"],
+      "confidence": "medium"
+    },
+    "declined": null
+  }
+}
