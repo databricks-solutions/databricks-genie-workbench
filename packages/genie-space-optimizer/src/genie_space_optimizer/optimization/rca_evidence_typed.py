@@ -48,3 +48,76 @@ class PerQidRcaEvidence(JsonRoundTrip):
     repair_hint_patch_type: PatchType
     confidence: Literal["high", "medium", "low"]
     quoted_evidence: tuple[str, ...]
+
+
+# ── Plan 3 Task 4 — open-vocab repair_family → closed RcaKind mapper. ──
+
+from genie_space_optimizer.optimization.rca import RcaKind  # noqa: E402
+
+# Substring patterns mapping the LLM's open-vocab
+# ``suggested_repair_family`` onto the closed ``RcaKind`` enum. Order
+# matters — first match wins, so more-specific patterns
+# (``extra_defensive`` / ``filter_removal``) precede more-general ones
+# (``filter``).
+_REPAIR_FAMILY_PATTERNS: tuple[tuple[str, RcaKind], ...] = (
+    # Top-N
+    ("top_n", RcaKind.TOP_N_CARDINALITY_COLLAPSE),
+    ("topn", RcaKind.TOP_N_CARDINALITY_COLLAPSE),
+    ("cardinality", RcaKind.TOP_N_CARDINALITY_COLLAPSE),
+    # Joins
+    ("join_spec", RcaKind.JOIN_SPEC_MISSING_OR_WRONG),
+    ("missing_join", RcaKind.JOIN_SPEC_MISSING_OR_WRONG),
+    ("wrong_join", RcaKind.JOIN_SPEC_MISSING_OR_WRONG),
+    # Filters — extra/unrequested defensive removal precedes generic.
+    ("extra_defensive", RcaKind.EXTRA_DEFENSIVE_FILTER),
+    ("filter_removal", RcaKind.EXTRA_DEFENSIVE_FILTER),
+    ("unrequested_predicate", RcaKind.EXTRA_DEFENSIVE_FILTER),
+    ("filter_logic", RcaKind.FILTER_LOGIC_MISMATCH),
+    ("filter", RcaKind.FILTER_LOGIC_MISMATCH),
+    # Grain / grouping
+    ("grain", RcaKind.GRAIN_OR_GROUPING_MISMATCH),
+    ("grouping", RcaKind.GRAIN_OR_GROUPING_MISMATCH),
+    # Time window
+    ("time_window", RcaKind.TIME_WINDOW_LOGIC_MISMATCH),
+    ("temporal", RcaKind.TIME_WINDOW_LOGIC_MISMATCH),
+    # Measures
+    ("measure_swap", RcaKind.MEASURE_SWAP),
+    ("measure", RcaKind.MEASURE_SWAP),
+    # SQL expression
+    ("sql_expression", RcaKind.SQL_EXPRESSION_MISSING),
+    # Synonym / entity matching
+    ("synonym", RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING),
+    ("entity_match", RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING),
+    # Functions / TVFs
+    ("function", RcaKind.FUNCTION_OR_TVF_NOT_INVOKED),
+    ("tvf", RcaKind.FUNCTION_OR_TVF_NOT_INVOKED),
+    # Example-SQL shape
+    ("example_sql_shape", RcaKind.EXAMPLE_SQL_SHAPE_NEEDED),
+    # Metric view
+    ("metric_view", RcaKind.METRIC_VIEW_ROUTING_CONFUSION),
+    # Asset-type routing
+    ("asset_type", RcaKind.ASSET_TYPE_ROUTING_MISMATCH),
+    # Canonical / required dimensions
+    ("canonical_dimension", RcaKind.CANONICAL_DIMENSION_MISSED),
+    ("required_dimension", RcaKind.MISSING_REQUIRED_DIMENSION),
+)
+
+
+def rca_kind_from_repair_family(family: str | None) -> RcaKind:
+    """Deterministic substring map from open-vocab family to closed
+    RcaKind.
+
+    Case-insensitive, whitespace-tolerant. Returns ``RcaKind.UNKNOWN``
+    when no pattern matches (including ``None`` and empty string).
+    Postmortems should surface ``UNKNOWN`` rates as a signal that a
+    new pattern may need to be added.
+    """
+    if not family:
+        return RcaKind.UNKNOWN
+    needle = family.strip().lower()
+    if not needle:
+        return RcaKind.UNKNOWN
+    for pattern, kind in _REPAIR_FAMILY_PATTERNS:
+        if pattern in needle:
+            return kind
+    return RcaKind.UNKNOWN
