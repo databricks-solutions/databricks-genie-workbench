@@ -161,7 +161,7 @@ def test_end_to_end_rolled_back_intent_produces_stamped_hypothesis(monkeypatch) 
                 "gs_009": _evidence("gs_009"),
                 "gs_017": _evidence("gs_017"),
             }},
-            critique_verdicts_by_proposal_id={},
+            critique_verdicts_by_intent_id={},
             pre_rows=({"question_id": "gs_009",
                        "result_correctness": "no"},
                       {"question_id": "gs_017",
@@ -251,7 +251,7 @@ def test_end_to_end_budget_meter_records_actuals(monkeypatch) -> None:
                 per_qid_evidence_by_cluster={"H001": {
                     "gs_009": _evidence("gs_009"),
                 }},
-                critique_verdicts_by_proposal_id={},
+                critique_verdicts_by_intent_id={},
                 pre_rows=(), post_rows=(),
                 applied_patch_fingerprints_by_ag={"AG3": {"sig_i_001"}},
                 identifier_allowlist_by_ag={"AG3": {
@@ -296,7 +296,7 @@ def test_end_to_end_no_rolled_back_outcomes_is_zero_overhead(monkeypatch) -> Non
             per_qid_evidence_by_cluster={"H001": {
                 "gs_009": _evidence("gs_009"),
             }},
-            critique_verdicts_by_proposal_id={},
+            critique_verdicts_by_intent_id={},
             pre_rows=(), post_rows=(),
             applied_patch_fingerprints_by_ag={"AG3": {"sig_i_001"}},
             identifier_allowlist_by_ag={"AG3": {

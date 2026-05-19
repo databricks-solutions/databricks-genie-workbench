@@ -120,12 +120,20 @@ def test_end_to_end_three_qids_two_success_one_decline(monkeypatch) -> None:
     with patch.object(optimizer, "_get_openai_client", return_value=client):
         bundle = collect(_StubCtx(), inp)
 
-    assert set(bundle.per_qid_evidence_typed.keys()) == {"gs_001", "gs_002"}
+    # Post Plan-8 T6: deterministic fallback also stamps a typed
+    # PerQidRcaEvidence for the declined-LLM qid (gs_003) so Plan 4
+    # clustering and Plan 5 intent synthesis can see fallback'd qids.
+    # The LLM-extracted entries (gs_001, gs_002) keep their richer
+    # repair_hint_patch_type from the LLM envelope.
+    assert set(bundle.per_qid_evidence_typed.keys()) == {
+        "gs_001", "gs_002", "gs_003",
+    }
     assert isinstance(bundle.per_qid_evidence_typed["gs_001"], PerQidRcaEvidence)
     assert (
         bundle.per_qid_evidence_typed["gs_001"].repair_hint_patch_type
         is PatchType.ADD_EXAMPLE_SQL
     )
+    assert isinstance(bundle.per_qid_evidence_typed["gs_003"], PerQidRcaEvidence)
     assert set(bundle.per_qid_evidence.keys()) == {"gs_001", "gs_002", "gs_003"}
     assert (
         bundle.per_qid_evidence["gs_001"]["rca_kind"]
@@ -190,5 +198,12 @@ def test_end_to_end_flag_off_uses_deterministic_only(monkeypatch) -> None:
     with patch.object(optimizer, "_get_openai_client", return_value=client):
         bundle = collect(_StubCtx(), inp)
     assert client.chat.completions.create.call_count == 0
-    assert bundle.per_qid_evidence_typed == {}
+    # Post Plan-8 T6: deterministic-only path stamps a typed
+    # PerQidRcaEvidence built from asi_metadata so the typed sidecar
+    # is non-empty even when no LLM call fires. The legacy
+    # per_qid_evidence dict still gets populated as before.
+    assert "gs_001" in bundle.per_qid_evidence_typed
+    assert isinstance(
+        bundle.per_qid_evidence_typed["gs_001"], PerQidRcaEvidence
+    )
     assert "gs_001" in bundle.per_qid_evidence
