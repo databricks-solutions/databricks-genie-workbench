@@ -2056,6 +2056,10 @@ def cluster_failures(
     qid_state: dict | None = None,
     signal_type: str = "hard",
     namespace: str | None = None,
+    # ── Plan 4 — LLM-driven clustering short-circuit (back-compat) ──
+    rca_evidence_typed: Any = None,
+    prior_clusters: list[dict] | None = None,
+    w: Any = None,
 ) -> list[dict]:
     """Group evaluation failures into actionable clusters.
 
@@ -2090,6 +2094,49 @@ def cluster_failures(
     Callers that pass ``held_out_qids=None`` get the legacy "train+held-
     out mixed" behaviour but SHOULD be updated.
     """
+    # ── Plan 4 — LLM-driven short-circuit. ─────────────────────────────
+    # Lazy-imported to avoid load-order coupling with cluster_llm (which
+    # imports rca_evidence_typed, which is part of the optimization
+    # package this file lives in). When the flag is off OR no typed
+    # evidence is supplied, fall through to the heuristic body verbatim.
+    from genie_space_optimizer.common.config import (
+        plan4_llm_clustering_enabled,
+    )
+    if (
+        plan4_llm_clustering_enabled()
+        and rca_evidence_typed
+        and len(rca_evidence_typed) >= 2
+    ):
+        from genie_space_optimizer.optimization.cluster_llm import (
+            cluster_failures_llm,
+        )
+        schema_columns: set[str] = set(
+            metadata_snapshot.get("schema_columns") or []
+        )
+        if not schema_columns:
+            for ev in rca_evidence_typed.values():
+                schema_columns.update(ev.blame_set)
+        _namespace = namespace or ("H" if signal_type == "hard" else "S")
+        _iteration = int(metadata_snapshot.get("iteration") or 0)
+
+        llm_clusters = cluster_failures_llm(
+            w=w,
+            rca_evidence_typed=rca_evidence_typed,
+            schema_columns=schema_columns,
+            iteration=_iteration,
+            namespace=_namespace,
+        )
+        if llm_clusters is not None:
+            return [
+                c.to_legacy_dict(signal_type=signal_type) for c in llm_clusters
+            ]
+        # LLM declined / errored / produced no valid clusters. Per the
+        # roadmap, prefer prior_clusters (previous iteration's output);
+        # if not supplied, fall through to the heuristic body below.
+        if prior_clusters is not None:
+            return prior_clusters
+        # Fall through to heuristic ↓ (safety-net invariant).
+
     uc_asi_map: dict[tuple[str, str], dict] = {}
     if spark and run_id and catalog and schema:
         try:
