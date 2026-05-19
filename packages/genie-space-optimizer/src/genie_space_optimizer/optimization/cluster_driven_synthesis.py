@@ -1934,3 +1934,47 @@ def build_l5_example_sql_replacement(
             ).strip(),
         })
     return tuple(out)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Plan 1 Task 7 — typed RepairIntent stamping at the synthesis emit
+# boundary. Pure helper; no I/O, no logger; safe to call from any
+# synthesis dispatch path. Reuses ``intent_from_archetype`` from the
+# repair_intent module so the deterministic adapter is the single
+# source of truth for Archetype → RepairIntent semantics.
+
+
+def stamp_proposals_from_archetype(
+    *,
+    proposals: list[dict],
+    archetype,  # archetypes.Archetype (avoid circular import in hint)
+    cluster,    # failure_cluster.FailureCluster
+    ag_id: str,
+) -> None:
+    """Stamp a sequence-numbered RepairIntent onto every proposal in
+    ``proposals``.
+
+    Each proposal gets its own intent_id of the form
+    ``intent_{cluster_id}_{ag_id}_{archetype.name}_{NNN}`` (1-based,
+    zero-padded to 3) so the carrier on ProposalSlate can key on the
+    intent_id without collision.
+
+    Mutates ``proposals`` in place. Calls
+    ``stamp_repair_intent_on_proposal`` which validates the
+    patch_type match between proposal and intent — any disagreement
+    raises ``RepairIntentPatchTypeMismatchError`` (a synthesizer
+    bug).
+    """
+    from genie_space_optimizer.optimization.repair_intent import (
+        intent_from_archetype,
+        stamp_repair_intent_on_proposal,
+    )
+
+    for seq, proposal in enumerate(proposals, start=1):
+        intent = intent_from_archetype(
+            archetype=archetype,
+            cluster=cluster,
+            ag_id=ag_id,
+            seq=seq,
+        )
+        stamp_repair_intent_on_proposal(proposal, intent)

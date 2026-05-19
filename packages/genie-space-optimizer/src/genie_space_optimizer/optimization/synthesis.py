@@ -1332,3 +1332,30 @@ def synthesize_example_sqls_for_rca(
         "archetype": archetype.name,
     }
     return proposal
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Plan 1 Task 7 — lazy-wrap the typed-intent stamping helper from
+# cluster_driven_synthesis so the lean-path synthesizer can call it
+# without forcing a top-level import (preflight_synthesis transitively
+# imports this module via cluster_driven_synthesis — a direct
+# top-level re-export creates a cycle).
+
+
+def stamp_proposals_from_archetype(*, proposals, archetype, cluster, ag_id):
+    """Lean-path delegate that forwards to
+    ``cluster_driven_synthesis.stamp_proposals_from_archetype``.
+    Local import keeps the re-export cycle-safe.
+    """
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        stamp_proposals_from_archetype as _impl,
+    )
+    return _impl(
+        proposals=proposals,
+        archetype=archetype,
+        cluster=cluster,
+        ag_id=ag_id,
+    )
+
+
+__all__ = list(globals().get("__all__", [])) + ["stamp_proposals_from_archetype"]
