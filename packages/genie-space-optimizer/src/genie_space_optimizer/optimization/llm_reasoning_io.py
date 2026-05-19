@@ -180,3 +180,85 @@ class LlmReasoningRequest:
             raise ValueError(
                 f"max_tokens must be > 0; got {self.max_tokens}"
             )
+
+
+# ── LlmReasoningResponse ──────────────────────────────────────────────
+
+
+from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
+
+
+@dataclass(frozen=True, slots=True)
+class LlmReasoningResponse(JsonRoundTrip):
+    """Typed output from ``LlmReasoningCall.invoke``.
+
+    Carries one of three mutually-exclusive states:
+
+      * Success: ``succeeded=True``, ``parsed_output`` is a dict
+        (from ``result_cls.model_dump()``), ``declined=None``,
+        ``error=None``.
+      * Abstain: ``succeeded=False``, ``parsed_output=None``,
+        ``declined`` is an AbstainVerdict, ``error=None``.
+      * Error: ``succeeded=False``, ``parsed_output=None``,
+        ``declined=None``, ``error`` is a non-empty string.
+
+    Other fields are unconditional breadcrumbs for postmortems:
+      * ``raw_text`` — always captured (empty string on hard failure
+        before the LLM returned).
+      * ``tokens_input`` / ``tokens_output`` — sourced from the
+        OpenAI response object's ``usage`` field; 0 when the HTTP
+        call did not complete or when the override path (tape
+        replay) is in effect.
+      * ``duration_ms`` — wall-clock from invoke entry to invoke
+        exit.
+    """
+
+    call_id: str
+    skill_id: str
+    succeeded: bool
+    parsed_output: dict | None
+    declined: AbstainVerdict | None
+    raw_text: str
+    tokens_input: int
+    tokens_output: int
+    duration_ms: int
+    error: str | None
+
+    def __post_init__(self) -> None:
+        if self.succeeded and self.parsed_output is None:
+            raise ValueError(
+                "succeeded=True requires parsed_output to be set"
+            )
+        if self.succeeded and self.declined is not None:
+            raise ValueError(
+                "declined is set but succeeded=True — mutually exclusive"
+            )
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "LlmReasoningResponse":  # type: ignore[override]
+        declined_payload = payload.get("declined")
+        declined = (
+            AbstainVerdict.from_json(declined_payload)
+            if isinstance(declined_payload, dict)
+            else None
+        )
+        return cls(
+            call_id=str(payload["call_id"]),
+            skill_id=str(payload["skill_id"]),
+            succeeded=bool(payload["succeeded"]),
+            parsed_output=(
+                dict(payload["parsed_output"])
+                if isinstance(payload.get("parsed_output"), dict)
+                else None
+            ),
+            declined=declined,
+            raw_text=str(payload.get("raw_text") or ""),
+            tokens_input=int(payload.get("tokens_input") or 0),
+            tokens_output=int(payload.get("tokens_output") or 0),
+            duration_ms=int(payload.get("duration_ms") or 0),
+            error=(
+                str(payload["error"])
+                if payload.get("error") is not None
+                else None
+            ),
+        )
