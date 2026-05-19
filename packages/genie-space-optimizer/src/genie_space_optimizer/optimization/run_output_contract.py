@@ -108,6 +108,17 @@ PROCESS_STAGE_ORDER: tuple[ProcessStage, ...] = (
         ),
     ),
     ProcessStage(
+        key="candidate_critique",
+        title="Candidate Critique",
+        why=(
+            "Before the expensive full-eval cycle, an LLM critique scores "
+            "each candidate against its failure evidence — addresses target "
+            "failure, overgeneralization risk, predicted neighbor "
+            "regressions, shape match. Advisory by default; flip "
+            "GSO_CRITIQUE_GATE_ENFORCING=true to filter discard verdicts."
+        ),
+    ),
+    ProcessStage(
         key="safety_gates",
         title="Safety Gates",
         why=(
