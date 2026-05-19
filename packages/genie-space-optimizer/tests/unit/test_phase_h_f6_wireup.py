@@ -81,4 +81,5 @@ def test_f6_capture_wrap_writes_to_anchor_run() -> None:
     assert paths["input"] in captured
     assert paths["output"] in captured
     # C15 Phase 2: strategist_context at position 4 shifts safety_gates from 06 to 07.
-    assert "07_safety_gates" in paths["input"]
+    # Plan 8 T4: candidate_critique at position 7 shifts safety_gates from 07 to 08.
+    assert "08_safety_gates" in paths["input"]

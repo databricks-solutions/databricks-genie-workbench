@@ -17,6 +17,8 @@ after bundle_assembly (11) and run_manifest (12) were added to
 PROCESS_STAGE_ORDER.
 C15 Phase 2: contract_health moved from position 13 to position 14
 after strategist_context was inserted at position 4.
+Plan 8 T4: contract_health moved from position 14 to position 15
+after candidate_critique was inserted at position 7.
 """
 
 from __future__ import annotations
@@ -60,7 +62,7 @@ def test_render_stage_14_with_producer_exception_record() -> None:
         trace=trace,
         iteration_summary={"iteration": 1, "exit_path": "in_progress"},
     )
-    assert "14. Contract Health" in rendered
+    assert "15. Contract Health" in rendered
     assert "producer_exception" in rendered
     # Reason detail must surface so operators see *which* producer
     # raised and what kind of error.
@@ -85,7 +87,7 @@ def test_render_stage_14_with_invariant_violation_record() -> None:
         trace=trace,
         iteration_summary={"iteration": 2, "exit_path": "completed"},
     )
-    assert "14. Contract Health" in rendered
+    assert "15. Contract Health" in rendered
     assert "invariant_violation" in rendered
     assert "cap_conservation_repaired" in rendered
 
@@ -102,6 +104,6 @@ def test_render_stage_14_empty_when_no_contract_health_records() -> None:
         trace=trace,
         iteration_summary={"iteration": 1, "exit_path": "completed"},
     )
-    assert "14. Contract Health" in rendered
+    assert "15. Contract Health" in rendered
     # The placeholder text is the fallback for empty stages.
     assert "no decisions emitted for this stage" in rendered

@@ -264,6 +264,21 @@ _KNOWN_DEFENDED_DEAD_CODE_LEAKS: frozenset[str] = frozenset({
     "_rca_evidence_bundle",
     "_rolled_back_content_fingerprints",
     "strategist_returned_ags",
+    # ``decision_records`` is read at ~16 sites inside the Section E
+    # Tier 2-3 archetype-learning branch (harness.py ~21658-21953,
+    # ~28026-28218) as a bare-name ``.append(...)``. The name is
+    # never bound in ``_run_lever_loop``'s top scope, so the branch
+    # raises ``NameError`` if it ever executes. In practice the
+    # branch only runs when ``archetype_learning_enabled()`` is True
+    # AND ``iteration_counter >= 2``, which has never fired in any
+    # captured trial since the introducing commit 075e73f8
+    # (2026-05-12, "feat(harness): wire Section E Tiers 2-3 prelude
+    # into iteration loop"). Promote to a proper local or replace
+    # each call site with ``current_iter_inputs.setdefault(
+    # "decision_records", []).append(rec.to_dict())`` per the
+    # canonical pattern at harness.py:4623 — tracked as Cycle 13
+    # cleanup. Plan 8 discovered the leak (not introduced it).
+    "decision_records",
 })
 
 

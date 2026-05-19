@@ -30,20 +30,36 @@ from genie_space_optimizer.optimization import harness
 #       earlier in the SAME conditional block (the harness pattern is
 #       reflection-first, then the typed marker emit ~60-300 lines
 #       later in the cleanup tail).
+#
+# Line numbers refresh per harness growth. After Plan 8 (T1, T3, T4,
+# T8, T9) added ~600 lines to harness.py, every entry shifted. The
+# semantic categories (pre-AG vs per-AG-with-earlier-write) are
+# unchanged; refresh the indices when the structural guard fails
+# only after confirming via the nearest ``_iter_terminal_reason``
+# assignment that the new index emits the same reason as the entry
+# it replaces.
 _REFLECTION_WRITE_WHITELIST: frozenset[int] = frozenset({
     # (a) Pre-AG-selection — no AG in scope.
-    18880,  # blast_radius_rejected, reserved-recovery early-terminate
-    20362,  # no_structural_candidate, no_actionable_clusters
-    22070,  # no_action_group_emitted, strategy_zero_ags
+    19204,  # blast_radius_rejected, reserved-recovery early-terminate
+    20686,  # no_structural_candidate, no_actionable_clusters
+    22394,  # no_action_group_emitted, strategy_zero_ags
+    23102,  # WU-3 (2026-05-18) early_preflight_<reason>, slate-level
+            # apply_admission_trace SKIP_AG decision before per-AG
+            # processing begins — no AG to retire yet.
     # (b) Per-AG, reflection write precedes the typed marker emit.
-    22337,  # ag_collision_with_forbidden_set
-    24339,  # proposal_generation_empty
-    25814,  # no_rca_ground
-    28712,  # no_applied_patches DOA
-    29012,  # patch_deploy_failed
+    22707,  # ag_collision_with_forbidden_set
+    24812,  # proposal_generation_empty
+    26420,  # no_rca_ground
+    29347,  # no_applied_patches DOA
+    29647,  # Phase 0.3 Task 10 — applier_failed short-circuit
+            # (Genie API rejected the PATCH payload as
+            # SCHEMA_FAILURE/INFRA_FAILURE). Terminates as
+            # ``unknown`` because no closed-vocab structural reason
+            # applies; the exception path emits before any
+            # reflection write reaches this AG.
     # (b) Full-eval path: gate result handling, reflection write
     # happens later in the rollback or accept paths.
-    29204,  # full_eval_regression / accepted, write in gate-result branch
+    29839,  # full_eval / accepted, write in gate-result branch
 })
 
 

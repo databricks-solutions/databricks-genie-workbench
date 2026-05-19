@@ -834,6 +834,19 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     # cluster-distribute step (before proposals are generated) so it
     # belongs in the AG-Decisions section alongside strategist outputs.
     DecisionType.LEVER_ROTATION_DECIDED: SECTION_AG_DECISIONS,
+    # WU-1 (2026-05-18) — emitted when the harness authoritatively
+    # skips an AG because the slate's apply_admission_trace denied
+    # it, blocked_cluster_ids intersected its source clusters, or it
+    # was retired with pivot_signal. Lives alongside other
+    # AG-disposition records.
+    DecisionType.SLATE_AUTHORITATIVE_SKIP: SECTION_AG_DECISIONS,
+    # WU-2 (2026-05-18) — emitted once per blocked cluster after the
+    # single-shot RCA regeneration retry runs (between Phase 2.2 and
+    # the grounding gate prelude). Belongs alongside RCA_FORMED /
+    # CLUSTER_BLOCKED_NO_RCA in the RCA Cards section so the
+    # operator sees the retry outcome adjacent to the original card
+    # decision.
+    DecisionType.RCA_REGEN_RETRY_VERDICT: SECTION_RCA_CARDS,
     # Plan 6 — candidate-critique gate verdict belongs in the proposal-
     # survival section alongside GATE_DECISION since both decide whether
     # a candidate continues to the applier.

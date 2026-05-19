@@ -69,9 +69,16 @@ def test_iter_level_guard_short_circuits_before_sub_ag_helper():
          if "_collision_pair_matches(_collision_pair" in ln),
         None,
     )
+    # P-E2 refactor: the sub-AG cluster-driven synthesis call site is
+    # now ``dispatch_forced_structural_synthesis(`` at harness.py
+    # ~line 23752 (the harness run_lever_loop assigns the result to
+    # ``_dispatch_result``). The same symbol also appears at ~13081
+    # inside the ``_maybe_dispatch_forced_structural_synthesis``
+    # helper definition; we filter on the assignment prefix to pin
+    # the in-loop call site rather than the helper internals.
     cds_line = next(
         (i for i, ln in enumerate(src)
-         if "run_cluster_driven_synthesis_for_single_cluster(" in ln),
+         if "= dispatch_forced_structural_synthesis(" in ln),
         None,
     )
     force_l6_line = next(
