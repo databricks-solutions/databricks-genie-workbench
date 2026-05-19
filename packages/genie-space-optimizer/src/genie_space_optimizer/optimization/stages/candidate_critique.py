@@ -21,12 +21,12 @@ from typing import Any
 
 from typing import TYPE_CHECKING
 
-from genie_space_optimizer.optimization.candidate_critique_typed import (
-    CritiqueVerdict,
-)
 from genie_space_optimizer.skills._loader import _SKILL_LOADER
 
 if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.candidate_critique_typed import (
+        CritiqueVerdict,
+    )
     from genie_space_optimizer.optimization.rca_evidence_typed import (
         PerQidRcaEvidence,
     )
@@ -241,6 +241,9 @@ def critique_candidate_for_proposal(
     filtered_neighbors = _filter_predicted_regressions(
         raw_neighbors, passing_qids_at_risk=passing_qids_at_risk,
     )
+    from genie_space_optimizer.optimization.candidate_critique_typed import (
+        CritiqueVerdict,
+    )
     return CritiqueVerdict(
         proposal_id=proposal_id,
         addresses_target_failure=bool(parsed["addresses_target_failure"]),
@@ -383,6 +386,9 @@ class CritiqueOutcome(JsonRoundTrip):
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "CritiqueOutcome":  # type: ignore[override]
+        from genie_space_optimizer.optimization.candidate_critique_typed import (
+            CritiqueVerdict as _CritiqueVerdict,
+        )
         return cls(
             proposals_by_ag={
                 ag_id: tuple(dict(p) for p in props)
@@ -391,7 +397,7 @@ class CritiqueOutcome(JsonRoundTrip):
                 ).items()
             },
             verdict_by_proposal_id={
-                pid: CritiqueVerdict.from_json(p)
+                pid: _CritiqueVerdict.from_json(p)
                 for pid, p in (
                     payload.get("verdict_by_proposal_id") or {}
                 ).items()
