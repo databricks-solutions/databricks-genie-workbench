@@ -8163,3 +8163,30 @@ def plan5_lever_5b_llm_intent_enabled() -> bool:
     ``_derive_asset_slice_from_afs`` + rich-synthesizer path directly.
     """
     return _flag_default_on("GSO_PLAN5_LEVER_5B_LLM_INTENT")
+
+
+# ── Plan 6 — LLM-driven candidate critique gate. ───────────────────────
+# Default ``false`` per roadmap.md:404 — "overall_recommendation is
+# advisory by default". Operators flip to true once they have reviewed
+# several iterations of verdicts and trust the critic. The verdict is
+# ALWAYS recorded (decision-emit) regardless of this flag so postmortem
+# can read what the critic said even in advisory mode.
+
+
+def critique_gate_enforcing_enabled() -> bool:
+    """Whether the Plan-6 candidate-critique gate filters ``discard``
+    verdicts out of the slate.
+
+    True: ``discard`` verdicts filter the proposal out of
+    ``CritiqueOutcome.proposals_by_ag``; ``dropped_by_critique``
+    records the proposal_id; the slate that reaches ``stages.gates``
+    excludes the dropped proposals.
+
+    False (default): slate is byte-stable from input → output;
+    verdicts still recorded in ``verdict_by_proposal_id`` and emitted
+    as decision records; no filtering happens.
+    """
+    raw = (
+        os.environ.get("GSO_CRITIQUE_GATE_ENFORCING") or "false"
+    ).strip().lower()
+    return raw in _TRUTHY_VALUES

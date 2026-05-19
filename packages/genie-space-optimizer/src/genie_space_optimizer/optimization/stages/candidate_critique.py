@@ -387,3 +387,163 @@ class CritiqueOutcome(JsonRoundTrip):
 
 INPUT_CLASS = CritiqueInput
 OUTPUT_CLASS = CritiqueOutcome
+
+
+# ── Plan 6 Task 9 — stage execute() with advisory + enforcing modes ───
+
+from genie_space_optimizer.common.config import (  # noqa: E402
+    critique_gate_enforcing_enabled,
+)
+from genie_space_optimizer.optimization.rca_decision_trace import (  # noqa: E402
+    DecisionOutcome,
+    DecisionRecord,
+    DecisionType,
+)
+
+
+def _emit_verdict_decision(
+    *,
+    ctx: Any,
+    verdict: CritiqueVerdict,
+    cluster_id: str,
+    ag_id: str,
+    is_blocked: bool,
+) -> None:
+    """Emit one CANDIDATE_CRITIQUED decision record per verdict.
+
+    ``outcome`` mirrors the verdict semantics:
+      proceed → INFO   (verdict.reason_code() = CRITIQUE_PROCEED)
+      rework  → INFO   (verdict.reason_code() = CRITIQUE_REWORK)
+      discard → INFO if advisory; DROPPED if enforcing-and-blocked
+    Postmortem groups by reason_code; the outcome distinguishes
+    "blocked the patch" from "noted but let through".
+    """
+    outcome = (
+        DecisionOutcome.DROPPED if is_blocked else DecisionOutcome.INFO
+    )
+    rec = DecisionRecord(
+        run_id=str(getattr(ctx, "run_id", "") or ""),
+        iteration=int(getattr(ctx, "iteration", 0) or 0),
+        decision_type=DecisionType.CANDIDATE_CRITIQUED,
+        outcome=outcome,
+        reason_code=verdict.reason_code(),
+        cluster_id=cluster_id,
+        ag_id=ag_id,
+        proposal_id=verdict.proposal_id,
+        evidence_refs=(f"proposal:{verdict.proposal_id}",),
+        affected_qids=verdict.likely_neighbor_regressions,
+        target_qids=verdict.likely_neighbor_regressions,
+        expected_effect=verdict.rationale,
+        metrics={
+            "addresses_target_failure": verdict.addresses_target_failure,
+            "is_overgeneralized": verdict.is_overgeneralized,
+            "matches_intended_shape": verdict.matches_intended_shape,
+            "overall_recommendation": verdict.overall_recommendation,
+            "is_blocked_by_critique": is_blocked,
+        },
+    )
+    ctx.decision_emit(rec)
+
+
+def _filter_slate_in_enforcing_mode(
+    *,
+    proposals_by_ag: dict[str, tuple[Mapping[str, Any], ...]],
+    verdicts_by_pid: dict[str, CritiqueVerdict],
+) -> tuple[dict[str, tuple[Mapping[str, Any], ...]], tuple[str, ...]]:
+    """Drop proposals whose verdict is blocking. Preserves AG keys
+    (empty tuple when every proposal in the AG drops)."""
+    filtered: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    dropped: list[str] = []
+    for ag_id, props in proposals_by_ag.items():
+        kept: list[Mapping[str, Any]] = []
+        for p in props:
+            pid = str(p.get("proposal_id") or "")
+            v = verdicts_by_pid.get(pid)
+            if v is not None and v.is_blocking():
+                dropped.append(pid)
+                continue
+            kept.append(p)
+        filtered[ag_id] = tuple(kept)
+    return filtered, tuple(dropped)
+
+
+def execute(ctx: Any, inp: CritiqueInput) -> CritiqueOutcome:
+    """Plan 6 stage entry. One LLM critique call per proposal.
+
+    Behaviour:
+      * Walk ``proposals_by_ag`` in canonical (sorted) AG order;
+        within each AG, walk proposals in their input order.
+      * For each proposal, look up the cluster_id / ag_id from the
+        provenance maps and dispatch ``critique_candidate_for_proposal``.
+      * Driver returns ``None`` when the proposal has no intent OR
+        the LLM declines / errors — those proposals are silently
+        passed through (advisory) and do NOT contribute to
+        ``advised_count``.
+      * For every non-None verdict: stamp it on the proposal dict as
+        ``proposal["critique_verdict"] = verdict.to_json()`` for
+        downstream postmortem, increment ``advised_count``, and emit
+        a ``CANDIDATE_CRITIQUED`` decision record.
+      * When ``GSO_CRITIQUE_GATE_ENFORCING=true``: filter blocking
+        verdicts out of the output slate; record their proposal_ids
+        in ``dropped_by_critique``. Otherwise output slate is
+        byte-stable from input.
+    """
+    enforcing = critique_gate_enforcing_enabled()
+    verdicts: dict[str, CritiqueVerdict] = {}
+    stamped_proposals_by_ag: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    advised = 0
+
+    for ag_id in sorted(inp.proposals_by_ag.keys()):
+        props = inp.proposals_by_ag[ag_id]
+        stamped_props: list[Mapping[str, Any]] = []
+        for proposal in props:
+            stamped = dict(proposal)
+            pid = str(stamped.get("proposal_id") or "")
+            cluster_id = inp.cluster_id_by_proposal_id.get(pid, "")
+            verdict = critique_candidate_for_proposal(
+                w=None,
+                proposal=stamped,
+                cluster_id=cluster_id,
+                ag_id=inp.ag_id_by_proposal_id.get(pid, ag_id),
+                iteration=int(getattr(ctx, "iteration", 0) or 0),
+                cluster_semantic_theme=(
+                    inp.cluster_semantic_theme_by_cluster.get(cluster_id, "")
+                ),
+                per_qid_evidence=(
+                    inp.rca_evidence_typed_by_cluster.get(cluster_id, {})
+                ),
+                passing_qids_at_risk=(
+                    inp.passing_qids_at_risk_by_proposal_id.get(pid, ())
+                ),
+            )
+            if verdict is not None:
+                advised += 1
+                verdicts[pid] = verdict
+                stamped["critique_verdict"] = verdict.to_json()
+                _emit_verdict_decision(
+                    ctx=ctx, verdict=verdict,
+                    cluster_id=cluster_id,
+                    ag_id=inp.ag_id_by_proposal_id.get(pid, ag_id),
+                    is_blocked=(enforcing and verdict.is_blocking()),
+                )
+            stamped_props.append(stamped)
+        stamped_proposals_by_ag[ag_id] = tuple(stamped_props)
+
+    if enforcing:
+        filtered_slate, dropped = _filter_slate_in_enforcing_mode(
+            proposals_by_ag=stamped_proposals_by_ag,
+            verdicts_by_pid=verdicts,
+        )
+        return CritiqueOutcome(
+            proposals_by_ag=filtered_slate,
+            verdict_by_proposal_id=verdicts,
+            dropped_by_critique=dropped,
+            advised_count=advised,
+        )
+
+    return CritiqueOutcome(
+        proposals_by_ag=stamped_proposals_by_ag,
+        verdict_by_proposal_id=verdicts,
+        dropped_by_critique=(),
+        advised_count=advised,
+    )

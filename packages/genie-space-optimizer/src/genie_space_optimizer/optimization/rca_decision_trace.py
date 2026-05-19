@@ -97,6 +97,10 @@ class DecisionType(str, Enum):
     # so postmortems can see which retry sources fired. Producer:
     # ``decision_emitters.rca_regen_retry_verdict_record``.
     RCA_REGEN_RETRY_VERDICT = "rca_regen_retry_verdict"
+    # ── Plan 6 — candidate-critique gate verdict. Emitted by
+    # ``optimization/stages/candidate_critique.py:execute`` once per
+    # critiqued proposal regardless of enforcing mode.
+    CANDIDATE_CRITIQUED = "candidate_critiqued"
 
 
 class DecisionOutcome(str, Enum):
