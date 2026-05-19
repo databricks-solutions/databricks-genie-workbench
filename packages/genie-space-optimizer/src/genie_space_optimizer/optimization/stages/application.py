@@ -43,6 +43,12 @@ class AppliedPatch:
     content_fingerprint: str = ""
     rolled_back_immediately: bool = False
     rollback_reason: str | None = None
+    # Plan 1 Task 9 — typed RepairIntent linkage. Populated from the
+    # apply-log entry's ``patch["intent_id"]`` field, which the
+    # proposal stamping helper (Task 4) puts there at synthesis time.
+    # Empty string for legacy / unstamped patches; the carrier on
+    # AppliedPatchSet excludes those.
+    intent_id: str = ""
 
 
 @dataclass
@@ -103,13 +109,25 @@ class AppliedPatchSet(JsonRoundTrip):
     ``applied_signature`` is a stable hash F8 / F9 use for cycle
     detection across iterations.
 
+    Plan 1 Task 9: ``applied_by_intent_id`` is the typed-intent
+    rollup. Excludes entries with empty intent_id (legacy /
+    unstamped). Computed from ``applied`` in __post_init__ so callers
+    cannot construct an inconsistent pair.
+
     C15 Phase 4.3: mixes JsonRoundTrip for boundary-fixture replay.
-    AppliedPatch instances are serialised as plain dicts and restored via
-    AppliedPatch(**...) in from_json.
+    AppliedPatch instances are serialised as plain dicts and restored
+    via AppliedPatch(**...) in from_json.
     """
 
     applied: tuple[AppliedPatch, ...]
     applied_signature: str = ""
+    applied_by_intent_id: dict[str, AppliedPatch] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.applied_by_intent_id:
+            self.applied_by_intent_id = {
+                p.intent_id: p for p in (self.applied or ()) if p.intent_id
+            }
 
     def to_json(self) -> dict[str, Any]:  # type: ignore[override]
         return {
@@ -123,6 +141,7 @@ class AppliedPatchSet(JsonRoundTrip):
                     "content_fingerprint": p.content_fingerprint,
                     "rolled_back_immediately": p.rolled_back_immediately,
                     "rollback_reason": p.rollback_reason,
+                    "intent_id": p.intent_id,
                 }
                 for p in (self.applied or ())
             ],
@@ -148,6 +167,7 @@ class AppliedPatchSet(JsonRoundTrip):
                         if p.get("rollback_reason") is not None
                         else None
                     ),
+                    intent_id=str(p.get("intent_id", "")),
                 )
                 for p in (payload.get("applied") or [])
             ),
@@ -199,6 +219,7 @@ def _entry_to_applied_patch(
             if entry.get("rollback_reason")
             else None
         ),
+        intent_id=str(patch.get("intent_id") or ""),
     )
 
 
