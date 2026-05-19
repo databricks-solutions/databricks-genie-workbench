@@ -1,0 +1,25 @@
+{
+  "input": {
+    "proposal_id": "prop_H003_AG5_001",
+    "cluster_id": "H003",
+    "ag_id": "AG5",
+    "iteration": 4,
+    "repair_intent": null,
+    "patch_body": {
+      "instruction_text": "Always include a date filter."
+    },
+    "blame_set": [],
+    "per_qid_evidence": [],
+    "passing_qids_at_risk": [],
+    "cluster_semantic_theme": ""
+  },
+  "expected_output": {
+    "result": null,
+    "declined": {
+      "reason": "insufficient_signal",
+      "explanation": "proposal has no repair_intent stamp AND per_qid_evidence is empty — cannot score the four dimensions without typed evidence.",
+      "needed_evidence": ["repair_intent", "per_qid_evidence"],
+      "suggested_next_step": "re_run_after_plan1_or_plan5_stamps_intent"
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "input": {
+    "proposal_id": "prop_H001_AG3_002",
+    "cluster_id": "H001",
+    "ag_id": "AG3",
+    "iteration": 2,
+    "repair_intent": {
+      "intent_name": "always_aggregate_revenue",
+      "intent_description": "Teach Genie to always aggregate revenue",
+      "repair_shape": "other",
+      "patch_type": "add_instruction",
+      "rationale": "cluster failures involve revenue",
+      "source": "llm_l5b_synthesis"
+    },
+    "patch_body": {
+      "instruction_text": "Whenever the user mentions revenue, ALWAYS apply SUM(revenue) and GROUP BY every available dimension."
+    },
+    "blame_set": ["sales.fact_sales.revenue"],
+    "per_qid_evidence": [
+      {
+        "qid": "gs_009",
+        "observed_failure": "returned 1 row instead of top 3 by revenue",
+        "generated_sql_issue": "missing LIMIT 3 and ORDER BY revenue DESC",
+        "expected_sql_shape": "GROUP BY region ORDER BY revenue DESC LIMIT 3",
+        "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.region"],
+        "confidence": "high"
+      }
+    ],
+    "passing_qids_at_risk": ["gs_044", "gs_055", "gs_077", "gs_088"],
+    "cluster_semantic_theme": "top-N revenue ranking missing"
+  },
+  "expected_output": {
+    "result": {
+      "addresses_target_failure": false,
+      "is_overgeneralized": true,
+      "likely_neighbor_regressions": ["gs_044", "gs_055", "gs_077", "gs_088"],
+      "matches_intended_shape": false,
+      "overall_recommendation": "discard",
+      "rationale": "instruction generalizes from one top-N failure to ALL revenue questions; addresses_target_failure=false (top-N specific shape not taught); likely to regress gs_044/gs_055/gs_077/gs_088 which ask for revenue WITHOUT top-N."
+    },
+    "declined": null
+  }
+}
