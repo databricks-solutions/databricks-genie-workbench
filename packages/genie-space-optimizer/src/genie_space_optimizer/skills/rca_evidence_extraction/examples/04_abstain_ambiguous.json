@@ -1,0 +1,23 @@
+{
+  "input": {
+    "qid": "gs_037",
+    "judge_verdict": "wrong_answer",
+    "generated_sql": "SELECT region, COUNT(*) FROM sales.fact_sales GROUP BY 1",
+    "sql_diff": "",
+    "counterfactual_fix": "",
+    "asi_features": {
+      "failure_type": "unknown",
+      "wrong_clause": ""
+    },
+    "blame_set_hint": []
+  },
+  "expected_output": {
+    "result": null,
+    "declined": {
+      "reason": "insufficient_blame_set",
+      "explanation": "judge verdict 'wrong_answer' is unstructured; no sql_diff, no counterfactual_fix, no blame_set hint",
+      "needed_evidence": ["sql_diff", "counterfactual_fix", "asi.wrong_clause"],
+      "suggested_next_step": "re_dispatch_after_judge_clarification"
+    }
+  }
+}

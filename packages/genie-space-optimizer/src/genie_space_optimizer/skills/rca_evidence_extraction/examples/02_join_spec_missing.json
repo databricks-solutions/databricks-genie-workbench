@@ -1,0 +1,34 @@
+{
+  "input": {
+    "qid": "gs_014",
+    "judge_verdict": "wrong_join_spec",
+    "generated_sql": "SELECT c.name, COUNT(*) FROM crm.customer c, crm.orders o GROUP BY 1",
+    "sql_diff": "+ON c.customer_id = o.customer_id (missing join condition — produces cartesian product)",
+    "counterfactual_fix": "add explicit JOIN ... ON c.customer_id = o.customer_id",
+    "asi_features": {
+      "failure_type": "missing_join_condition",
+      "wrong_clause": "FROM clause has cross-join without ON predicate",
+      "expected_objects": ["crm.customer.customer_id", "crm.orders.customer_id"],
+      "actual_objects": []
+    },
+    "blame_set_hint": ["crm.customer.customer_id", "crm.orders.customer_id"]
+  },
+  "expected_output": {
+    "result": {
+      "qid": "gs_014",
+      "observed_failure": "cartesian product between crm.customer and crm.orders — join condition missing",
+      "generated_sql_issue": "FROM clause lists both tables comma-separated with no ON predicate",
+      "expected_sql_shape": "FROM crm.customer c JOIN crm.orders o ON c.customer_id = o.customer_id",
+      "blame_set": ["crm.customer.customer_id", "crm.orders.customer_id"],
+      "suggested_repair_family": "join_spec_addition_with_disambiguation",
+      "repair_hint_patch_type": "add_join_spec",
+      "confidence": "high",
+      "quoted_evidence": [
+        "judge: 'wrong_join_spec'",
+        "sql_diff: '+ON c.customer_id = o.customer_id'",
+        "asi: 'wrong_clause=cross-join without ON'"
+      ]
+    },
+    "declined": null
+  }
+}

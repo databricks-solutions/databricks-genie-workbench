@@ -1,0 +1,33 @@
+{
+  "input": {
+    "qid": "gs_021",
+    "judge_verdict": "wrong_filter_condition",
+    "generated_sql": "SELECT * FROM finance.payments WHERE status = 'PENDING'",
+    "sql_diff": "-WHERE status = 'PENDING' +WHERE status IN ('SETTLED','CLEARED')",
+    "counterfactual_fix": "use IN ('SETTLED','CLEARED') for 'completed payments' phrasing",
+    "asi_features": {
+      "failure_type": "wrong_filter_condition",
+      "wrong_clause": "WHERE status = 'PENDING'",
+      "expected_objects": ["finance.payments.status"],
+      "actual_objects": ["finance.payments.status"]
+    },
+    "blame_set_hint": ["finance.payments.status"]
+  },
+  "expected_output": {
+    "result": {
+      "qid": "gs_021",
+      "observed_failure": "filter selects PENDING rows when the question asks for completed payments",
+      "generated_sql_issue": "WHERE status = 'PENDING' should be WHERE status IN ('SETTLED','CLEARED')",
+      "expected_sql_shape": "WHERE status IN ('SETTLED', 'CLEARED')",
+      "blame_set": ["finance.payments.status"],
+      "suggested_repair_family": "filter_logic_correction",
+      "repair_hint_patch_type": "update_filter_condition",
+      "confidence": "medium",
+      "quoted_evidence": [
+        "judge: 'wrong_filter_condition'",
+        "sql_diff: '-status = PENDING +status IN (SETTLED, CLEARED)'"
+      ]
+    },
+    "declined": null
+  }
+}
