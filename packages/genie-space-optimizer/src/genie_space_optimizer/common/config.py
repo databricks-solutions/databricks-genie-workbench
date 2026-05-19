@@ -8148,3 +8148,18 @@ def plan4_llm_clustering_enabled() -> bool:
     False: every call takes the existing heuristic body directly.
     """
     return _flag_default_on("GSO_PLAN4_LLM_CLUSTERING")
+
+
+def plan5_lever_5b_llm_intent_enabled() -> bool:
+    """Whether the Plan-5 LLM-driven RepairIntent synthesizer runs
+    inside ``_dispatch_lever_5b_for_cluster``.
+
+    True (default): for each cluster reaching L5b, dispatch the LLM
+    first; fall back to ``intent_from_archetype`` against the
+    deterministically picked Archetype on decline / error / validator
+    rejection.
+
+    False: every call takes the existing ``pick_archetype`` +
+    ``_derive_asset_slice_from_afs`` + rich-synthesizer path directly.
+    """
+    return _flag_default_on("GSO_PLAN5_LEVER_5B_LLM_INTENT")

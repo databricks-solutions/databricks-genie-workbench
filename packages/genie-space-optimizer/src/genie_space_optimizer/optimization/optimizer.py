@@ -10373,6 +10373,11 @@ def _dispatch_lever_5b_for_cluster(
     w: WorkspaceClient | None,
     benchmark_corpus: Any,
     benchmarks: list[dict] | None = None,
+    # ── Plan 5 — LLM-driven RepairIntent synthesizer short-circuit ──
+    rca_evidence_typed: Any = None,
+    llm_cluster: Any = None,
+    ag_id: str | None = None,
+    iteration: int | None = None,
 ) -> list[dict]:
     """Plan 2 — adapter that returns the proposed example SQL(s) for ONE
     cluster in holistic-compatible shape.
@@ -10411,6 +10416,79 @@ def _dispatch_lever_5b_for_cluster(
     passes ``benchmarks=None`` and the rich path runs with an empty
     leakage corpus (degrades gracefully).
     """
+    # ── Plan 5 — LLM-driven RepairIntent synthesizer short-circuit ──
+    from genie_space_optimizer.common.config import (
+        plan5_lever_5b_llm_intent_enabled,
+    )
+    if (
+        plan5_lever_5b_llm_intent_enabled()
+        and rca_evidence_typed
+        and llm_cluster is not None
+        and ag_id
+    ):
+        from genie_space_optimizer.optimization.repair_intent_synthesizer import (
+            synthesize_repair_intent_for_cluster,
+        )
+        from genie_space_optimizer.optimization.cross_lever_router import (
+            route_to_per_lever_generator,
+        )
+        from genie_space_optimizer.optimization.repair_intent import (
+            stamp_repair_intent_on_proposal,
+        )
+        from genie_space_optimizer.optimization.failure_cluster import (
+            FailureCluster,
+        )
+        identifier_allowlist: set[str] = set(
+            metadata_snapshot.get("schema_columns") or []
+        )
+        if not identifier_allowlist:
+            for ev in rca_evidence_typed.values():
+                identifier_allowlist.update(ev.blame_set)
+        existing_questions = []
+        for ex in (metadata_snapshot.get("instructions", {}) or {}).get(
+            "example_question_sqls", []
+        ) or []:
+            q = (ex or {}).get("question")
+            if isinstance(q, str) and q.strip():
+                existing_questions.append(q.strip())
+        existing_preview = "; ".join(
+            f"({i+1}) '{q}'" for i, q in enumerate(existing_questions[:5])
+        )
+
+        proposal = synthesize_repair_intent_for_cluster(
+            w=w,
+            cluster=llm_cluster,
+            rca_evidence_typed=rca_evidence_typed,
+            identifier_allowlist=identifier_allowlist,
+            ag_id=ag_id,
+            iteration=int(iteration or 0),
+            seq=1,
+            existing_examples_preview=existing_preview,
+            benchmarks=benchmarks,
+        )
+        if proposal is not None:
+            routed = route_to_per_lever_generator(proposal)
+            if routed is not None:
+                generator, override_event = routed
+                proposal_dict = generator(proposal)
+                fc = FailureCluster.from_legacy(cluster)
+                intent = proposal.to_repair_intent(cluster=fc, ag_id=ag_id)
+                stamp_repair_intent_on_proposal(proposal_dict, intent)
+                if override_event is not None:
+                    proposal_dict["cross_lever_override"] = (
+                        override_event.to_dict()
+                    )
+                    logger.info(
+                        "plan5.cross_lever_override intent_id=%s "
+                        "from=%s to=%s",
+                        override_event.intent_id,
+                        override_event.from_lever,
+                        override_event.to_lever,
+                    )
+                return [proposal_dict]
+        # LLM declined OR routing failed → fall through to the existing
+        # rich-path / lean-path branches below.
+
     from genie_space_optimizer.optimization.l5b_rich_dispatch import (
         should_route_l5b_to_rich_synthesizer,
         _dispatch_rich_synthesis_for_l5b,
