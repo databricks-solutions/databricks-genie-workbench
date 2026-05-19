@@ -19,16 +19,17 @@ import json
 import logging
 from typing import Any
 
+from typing import TYPE_CHECKING
+
 from genie_space_optimizer.optimization.candidate_critique_typed import (
     CritiqueVerdict,
 )
-from genie_space_optimizer.optimization.rca_evidence_typed import (
-    PerQidRcaEvidence,
-)
-from genie_space_optimizer.optimization.repair_intent import (
-    extract_repair_intent_from_proposal,
-)
 from genie_space_optimizer.skills._loader import _SKILL_LOADER
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.rca_evidence_typed import (
+        PerQidRcaEvidence,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,9 @@ def _render_user_prompt(
     passing_qids_at_risk: tuple[str, ...],
 ) -> str:
     """Render the per-proposal user prompt as one JSON-shaped block."""
+    from genie_space_optimizer.optimization.repair_intent import (
+        extract_repair_intent_from_proposal,
+    )
     intent = extract_repair_intent_from_proposal(proposal)
     repair_intent_payload: dict | None = None
     if intent is not None:
@@ -192,6 +196,9 @@ def critique_candidate_for_proposal(
         records the None outcome as a typed iteration outcome rather
         than blocking the proposal.
     """
+    from genie_space_optimizer.optimization.repair_intent import (
+        extract_repair_intent_from_proposal,
+    )
     intent = extract_repair_intent_from_proposal(proposal)
     if intent is None:
         logger.info(
@@ -250,10 +257,12 @@ def critique_candidate_for_proposal(
 from dataclasses import dataclass, field  # noqa: E402
 from typing import Mapping  # noqa: E402
 
-from genie_space_optimizer.optimization.repair_intent import (  # noqa: E402
-    RepairIntent,
-)
 from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip  # noqa: E402
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.repair_intent import (
+        RepairIntent,
+    )
 
 
 @dataclass
@@ -303,6 +312,12 @@ class CritiqueInput(JsonRoundTrip):
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "CritiqueInput":  # type: ignore[override]
+        from genie_space_optimizer.optimization.rca_evidence_typed import (
+            PerQidRcaEvidence as _PerQidRcaEvidence,
+        )
+        from genie_space_optimizer.optimization.repair_intent import (
+            RepairIntent as _RepairIntent,
+        )
         return cls(
             proposals_by_ag={
                 ag_id: tuple(dict(p) for p in props)
@@ -311,14 +326,14 @@ class CritiqueInput(JsonRoundTrip):
                 ).items()
             },
             repair_intents_by_id={
-                intent_id: RepairIntent.from_json(p)
+                intent_id: _RepairIntent.from_json(p)
                 for intent_id, p in (
                     payload.get("repair_intents_by_id") or {}
                 ).items()
             },
             rca_evidence_typed_by_cluster={
                 cid: {
-                    qid: PerQidRcaEvidence.from_json(p)
+                    qid: _PerQidRcaEvidence.from_json(p)
                     for qid, p in evs.items()
                 }
                 for cid, evs in (
