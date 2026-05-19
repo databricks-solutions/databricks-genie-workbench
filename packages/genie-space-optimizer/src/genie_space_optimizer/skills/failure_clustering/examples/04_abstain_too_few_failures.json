@@ -1,0 +1,35 @@
+{
+  "input": {
+    "iteration": 2,
+    "namespace": "hard",
+    "per_qid_evidence": [
+      {
+        "qid": "gs_099",
+        "observed_failure": "",
+        "generated_sql_issue": "",
+        "expected_sql_shape": "",
+        "blame_set": [],
+        "suggested_repair_family": "",
+        "repair_hint_patch_type": "add_instruction",
+        "confidence": "low",
+        "quoted_evidence": []
+      }
+    ],
+    "schema_columns": [],
+    "available_repair_shapes": [
+      "top_n_by_metric", "ordered_list_by_metric", "rank_within_group",
+      "period_over_period", "filter_compose", "filter_remove",
+      "join_discovery", "sql_expression", "column_description",
+      "metric_view_refinement", "instruction", "other"
+    ]
+  },
+  "expected_output": {
+    "result": null,
+    "declined": {
+      "reason": "insufficient_signal",
+      "explanation": "single qid with empty observed_failure / blame_set / suggested_repair_family — no structural signal to cluster on",
+      "needed_evidence": ["observed_failure", "blame_set", "suggested_repair_family"],
+      "suggested_next_step": "re_run_after_per_qid_extraction_succeeds"
+    }
+  }
+}

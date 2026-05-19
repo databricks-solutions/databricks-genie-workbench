@@ -1,0 +1,89 @@
+{
+  "input": {
+    "iteration": 1,
+    "namespace": "hard",
+    "per_qid_evidence": [
+      {
+        "qid": "gs_021",
+        "observed_failure": "wrong filter status='PENDING' instead of completed",
+        "generated_sql_issue": "WHERE status = 'PENDING' should be WHERE status IN ('SETTLED','CLEARED')",
+        "expected_sql_shape": "WHERE status IN ('SETTLED', 'CLEARED')",
+        "blame_set": ["finance.payments.status"],
+        "suggested_repair_family": "filter_logic_correction",
+        "repair_hint_patch_type": "update_filter_condition",
+        "confidence": "high",
+        "quoted_evidence": []
+      },
+      {
+        "qid": "gs_022",
+        "observed_failure": "filter selects ACTIVE accounts only",
+        "generated_sql_issue": "WHERE status='ACTIVE' excludes the requested CLOSED accounts",
+        "expected_sql_shape": "WHERE status IN ('ACTIVE','CLOSED')",
+        "blame_set": ["finance.payments.status"],
+        "suggested_repair_family": "filter_logic_correction",
+        "repair_hint_patch_type": "update_filter_condition",
+        "confidence": "high",
+        "quoted_evidence": []
+      },
+      {
+        "qid": "gs_023",
+        "observed_failure": "filter rejects refunds when refunds are requested",
+        "generated_sql_issue": "WHERE status <> 'REFUNDED' should be removed",
+        "expected_sql_shape": "(no status filter)",
+        "blame_set": ["finance.payments.status"],
+        "suggested_repair_family": "filter_logic_correction",
+        "repair_hint_patch_type": "update_filter_condition",
+        "confidence": "medium",
+        "quoted_evidence": []
+      },
+      {
+        "qid": "gs_024",
+        "observed_failure": "filter only HIGH priority excludes MEDIUM",
+        "generated_sql_issue": "WHERE priority='HIGH' should include MEDIUM too",
+        "expected_sql_shape": "WHERE priority IN ('HIGH','MEDIUM')",
+        "blame_set": ["finance.payments.priority"],
+        "suggested_repair_family": "filter_logic_correction",
+        "repair_hint_patch_type": "update_filter_condition",
+        "confidence": "high",
+        "quoted_evidence": []
+      },
+      {
+        "qid": "gs_025",
+        "observed_failure": "filter rejects all when no filter requested",
+        "generated_sql_issue": "WHERE region='NA' was added but not requested",
+        "expected_sql_shape": "(no region filter)",
+        "blame_set": ["finance.payments.region"],
+        "suggested_repair_family": "filter_logic_correction",
+        "repair_hint_patch_type": "update_filter_condition",
+        "confidence": "high",
+        "quoted_evidence": []
+      }
+    ],
+    "schema_columns": [
+      "finance.payments.status",
+      "finance.payments.priority",
+      "finance.payments.region"
+    ],
+    "available_repair_shapes": [
+      "top_n_by_metric", "ordered_list_by_metric", "rank_within_group",
+      "period_over_period", "filter_compose", "filter_remove",
+      "join_discovery", "sql_expression", "column_description",
+      "metric_view_refinement", "instruction", "other"
+    ]
+  },
+  "expected_output": {
+    "result": {
+      "clusters": [
+        {
+          "semantic_theme": "filter logic misalignment on payments table",
+          "member_qids": ["gs_021", "gs_022", "gs_023", "gs_024", "gs_025"],
+          "unifying_evidence": "every qid involves a misapplied WHERE clause on finance.payments — wrong values, missing values, or unrequested predicates; all repair via filter rewrites on the same table family",
+          "suggested_repair_shape": "filter_compose",
+          "primary_blame_set": [],
+          "confidence": "medium"
+        }
+      ]
+    },
+    "declined": null
+  }
+}

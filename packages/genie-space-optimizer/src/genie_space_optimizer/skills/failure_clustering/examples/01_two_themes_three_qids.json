@@ -1,0 +1,75 @@
+{
+  "input": {
+    "iteration": 3,
+    "namespace": "hard",
+    "per_qid_evidence": [
+      {
+        "qid": "gs_009",
+        "observed_failure": "returned 1 row instead of top 3",
+        "generated_sql_issue": "missing LIMIT 3 and ORDER BY revenue DESC",
+        "expected_sql_shape": "GROUP BY 1 ORDER BY 2 DESC LIMIT 3",
+        "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.product"],
+        "suggested_repair_family": "top_n_with_ordering",
+        "repair_hint_patch_type": "add_example_sql",
+        "confidence": "high",
+        "quoted_evidence": ["judge: missing top-n"]
+      },
+      {
+        "qid": "gs_017",
+        "observed_failure": "returned all categories instead of top 5",
+        "generated_sql_issue": "missing LIMIT 5",
+        "expected_sql_shape": "GROUP BY category ORDER BY revenue DESC LIMIT 5",
+        "blame_set": ["sales.fact_sales.revenue", "sales.dim_category.name"],
+        "suggested_repair_family": "top_n_with_ordering",
+        "repair_hint_patch_type": "add_example_sql",
+        "confidence": "high",
+        "quoted_evidence": []
+      },
+      {
+        "qid": "gs_014",
+        "observed_failure": "cartesian product between customer and orders",
+        "generated_sql_issue": "FROM clause has no ON predicate",
+        "expected_sql_shape": "FROM crm.customer c JOIN crm.orders o ON c.customer_id = o.customer_id",
+        "blame_set": ["crm.customer.customer_id", "crm.orders.customer_id"],
+        "suggested_repair_family": "join_spec_addition_with_disambiguation",
+        "repair_hint_patch_type": "add_join_spec",
+        "confidence": "high",
+        "quoted_evidence": []
+      }
+    ],
+    "schema_columns": [
+      "sales.fact_sales.revenue", "sales.fact_sales.product",
+      "sales.dim_category.name",
+      "crm.customer.customer_id", "crm.orders.customer_id"
+    ],
+    "available_repair_shapes": [
+      "top_n_by_metric", "ordered_list_by_metric", "rank_within_group",
+      "period_over_period", "filter_compose", "filter_remove",
+      "join_discovery", "sql_expression", "column_description",
+      "metric_view_refinement", "instruction", "other"
+    ]
+  },
+  "expected_output": {
+    "result": {
+      "clusters": [
+        {
+          "semantic_theme": "top-N ranking missing in revenue aggregates",
+          "member_qids": ["gs_009", "gs_017"],
+          "unifying_evidence": "both qids generate the right aggregation but omit ORDER BY revenue DESC and LIMIT — judge verdicts agree on 'missing top-n'",
+          "suggested_repair_shape": "top_n_by_metric",
+          "primary_blame_set": ["sales.fact_sales.revenue"],
+          "confidence": "high"
+        },
+        {
+          "semantic_theme": "missing join spec between customer and orders",
+          "member_qids": ["gs_014"],
+          "unifying_evidence": "cartesian product caused by FROM crm.customer, crm.orders without ON predicate; join discovery resolves customer_id linkage",
+          "suggested_repair_shape": "join_discovery",
+          "primary_blame_set": ["crm.customer.customer_id", "crm.orders.customer_id"],
+          "confidence": "high"
+        }
+      ]
+    },
+    "declined": null
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "input": {
+    "iteration": 5,
+    "namespace": "hard",
+    "per_qid_evidence": [
+      {
+        "qid": "gs_042",
+        "observed_failure": "query returns NULL because TVF was not invoked",
+        "generated_sql_issue": "SELECT fn_revenue() FROM dual — function not registered as TVF in Genie Space",
+        "expected_sql_shape": "SELECT * FROM fn_revenue(...)",
+        "blame_set": ["analytics.fn_revenue"],
+        "suggested_repair_family": "tvf_invocation_pattern",
+        "repair_hint_patch_type": "add_tvf",
+        "confidence": "medium",
+        "quoted_evidence": []
+      }
+    ],
+    "schema_columns": ["analytics.fn_revenue"],
+    "available_repair_shapes": [
+      "top_n_by_metric", "ordered_list_by_metric", "rank_within_group",
+      "period_over_period", "filter_compose", "filter_remove",
+      "join_discovery", "sql_expression", "column_description",
+      "metric_view_refinement", "instruction", "other"
+    ]
+  },
+  "expected_output": {
+    "result": {
+      "clusters": [
+        {
+          "semantic_theme": "TVF invocation pattern missing from space",
+          "member_qids": ["gs_042"],
+          "unifying_evidence": "the qid blames analytics.fn_revenue but no TVF is registered; no closed repair_shape captures TVF registration specifically",
+          "suggested_repair_shape": "other",
+          "primary_blame_set": ["analytics.fn_revenue"],
+          "confidence": "low"
+        }
+      ]
+    },
+    "declined": null
+  }
+}
