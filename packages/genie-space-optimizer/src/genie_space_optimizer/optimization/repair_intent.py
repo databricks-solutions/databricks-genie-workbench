@@ -320,3 +320,72 @@ def intent_from_archetype(
         rca_card_id=cluster.rca_card_id,
         ag_id=ag_id,
     )
+
+
+from typing import Any
+
+
+class RepairIntentCollisionError(ValueError):
+    """Raised when two different intents are stamped on the same
+    proposal dict. Indicates a synthesizer bug (two producers
+    competing for the same proposal_id)."""
+
+
+class RepairIntentPatchTypeMismatchError(ValueError):
+    """Raised when a proposal's patch_type field disagrees with the
+    intent's patch_type. Indicates the synthesizer's dispatcher picked
+    a patch_type independently of the chosen archetype's intent."""
+
+
+def stamp_repair_intent_on_proposal(
+    proposal: dict[str, Any],
+    intent: RepairIntent,
+) -> None:
+    """Mutate ``proposal`` in place to carry ``intent``.
+
+    Adds two keys:
+      * ``proposal["intent_id"]`` — stable string lookup key.
+      * ``proposal["repair_intent"]`` — serialized intent dict (the
+        output of ``intent.to_json()``).
+
+    Idempotent for the same intent. Raises:
+      * ``RepairIntentCollisionError`` if the proposal already carries
+        a different intent_id.
+      * ``RepairIntentPatchTypeMismatchError`` if proposal["patch_type"]
+        (when present and non-empty) disagrees with intent.patch_type.
+    """
+    existing_id = str(proposal.get("intent_id") or "")
+    if existing_id and existing_id != intent.intent_id:
+        raise RepairIntentCollisionError(
+            f"proposal_id={proposal.get('proposal_id', '?')!r} already "
+            f"carries intent_id={existing_id!r}; refusing to overwrite "
+            f"with {intent.intent_id!r}. Two producers competed for "
+            f"the same proposal — investigate the synthesis dispatch."
+        )
+    proposal_pt = str(proposal.get("patch_type") or "")
+    if proposal_pt and proposal_pt != intent.patch_type.value:
+        raise RepairIntentPatchTypeMismatchError(
+            f"proposal_id={proposal.get('proposal_id', '?')!r} has "
+            f"patch_type={proposal_pt!r} but intent patch_type="
+            f"{intent.patch_type.value!r}. The synthesizer's "
+            f"dispatcher picked a patch_type independently of the "
+            f"chosen archetype's intent."
+        )
+    proposal["intent_id"] = intent.intent_id
+    proposal["repair_intent"] = intent.to_json()
+
+
+def extract_repair_intent_from_proposal(
+    proposal: dict[str, Any],
+) -> RepairIntent | None:
+    """Read a typed ``RepairIntent`` off a stamped proposal dict.
+
+    Returns ``None`` when the proposal carries no ``repair_intent``
+    field (legacy / unstamped proposals during the Plan 1 rollout
+    window). After Plan 4 every proposal will carry one and a
+    follow-up plan can promote this to non-Optional.
+    """
+    payload = proposal.get("repair_intent")
+    if not payload or not isinstance(payload, dict):
+        return None
+    return RepairIntent.from_json(payload)
