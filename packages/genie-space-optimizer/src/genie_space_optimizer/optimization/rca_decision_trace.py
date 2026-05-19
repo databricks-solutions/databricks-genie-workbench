@@ -385,6 +385,12 @@ class ReasonCode(str, Enum):
     CRITIQUE_REWORK = "critique_rework"
     CRITIQUE_DISCARD = "critique_discard"
     CRITIQUE_DECLINED = "critique_declined"
+    # ── Plan 7 — rollback-learning hypothesis. ──
+    HYPOTHESIS_HIGH_CONFIDENCE = "hypothesis_high_confidence"
+    HYPOTHESIS_MEDIUM_CONFIDENCE = "hypothesis_medium_confidence"
+    HYPOTHESIS_LOW_CONFIDENCE = "hypothesis_low_confidence"
+    HYPOTHESIS_DECLINED = "hypothesis_declined"
+    HYPOTHESIS_VALIDATION_REJECTED = "hypothesis_validation_rejected"
 
 
 class RejectReason(str, Enum):
