@@ -694,6 +694,26 @@ LLM_ENDPOINT = "databricks-claude-opus-4-6"
 LLM_TEMPERATURE = 0
 LLM_MAX_RETRIES = 3
 
+# ── Plan 2 — LLM reasoning-call framework defaults. ───────────────────
+# These constants are the framework's source-of-truth for token
+# budgeting. Sourced from the Databricks Foundation Model APIs limits
+# doc for the Claude line (Opus 4.7 / Opus 4.6 / Sonnet 4.6 all share
+# the same per-endpoint limits).
+#
+# Why these specific values:
+#   * LLM_REASONING_DEFAULT_MAX_TOKENS: a sensible per-call ceiling
+#     when a reasoning skill's frontmatter does NOT specify
+#     max_tokens. 2000 is comfortably below the 8192 model default.
+#   * LLM_REASONING_ITPM_LIMIT / LLM_REASONING_OTPM_LIMIT: enforced
+#     per-iteration aggregate caps before any LLM call is dispatched.
+#     The framework's IterationTokenBudget raises
+#     CONTEXT_TOKEN_BUDGET_EXCEEDED when the next reasoning call
+#     would cross the limit, so callers see a typed abstain instead
+#     of an opaque 429.
+LLM_REASONING_DEFAULT_MAX_TOKENS = 2000
+LLM_REASONING_ITPM_LIMIT = 200_000
+LLM_REASONING_OTPM_LIMIT = 20_000
+
 # Stage-1 discovery LLM output cap. Evidence-based sizing:
 # - Stretch worst case (5 picks × max-decomposition): ~1170 tokens
 #   pretty-printed (~850 compact).
