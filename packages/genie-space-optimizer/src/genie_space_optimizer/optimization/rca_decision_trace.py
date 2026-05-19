@@ -838,6 +838,11 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     # survival section alongside GATE_DECISION since both decide whether
     # a candidate continues to the applier.
     DecisionType.CANDIDATE_CRITIQUED: SECTION_PROPOSAL_SURVIVAL,
+    # Plan 7 — rollback-learning hypothesis. Runs between acceptance and
+    # learning; anchored under SECTION_APPLIED_PATCHES (same section as
+    # ACCEPTANCE_DECIDED + PATCH_APPLIED) so the transcript groups it
+    # with the rollback that produced it.
+    DecisionType.NEXT_ATTEMPT_HYPOTHESIZED: SECTION_APPLIED_PATCHES,
     DecisionType.GATE_DECISION: SECTION_PROPOSAL_SURVIVAL,
     DecisionType.PATCH_APPLIED: SECTION_APPLIED_PATCHES,
     DecisionType.PATCH_SKIPPED: SECTION_APPLIED_PATCHES,

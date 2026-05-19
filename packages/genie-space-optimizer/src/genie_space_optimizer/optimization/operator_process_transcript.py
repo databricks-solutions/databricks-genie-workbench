@@ -62,7 +62,14 @@ _STAGE_DECISION_TYPE_MAP: dict[str, tuple[DecisionType, ...]] = {
     "safety_gates":             (DecisionType.GATE_DECISION,),
     "applied_patches":          (DecisionType.PATCH_APPLIED, DecisionType.PATCH_SKIPPED),
     "post_patch_evaluation":    (DecisionType.EVAL_CLASSIFIED,),
-    "acceptance_decision":      (DecisionType.ACCEPTANCE_DECIDED,),
+    "acceptance_decision":      (
+        DecisionType.ACCEPTANCE_DECIDED,
+        # Plan 7 — the rollback-learning helper runs between
+        # acceptance_decision and learning_next_action. We anchor its
+        # NEXT_ATTEMPT_HYPOTHESIZED records under the acceptance
+        # section so the transcript stays in causal order.
+        DecisionType.NEXT_ATTEMPT_HYPOTHESIZED,
+    ),
     "learning_next_action":     (
         DecisionType.AG_RETIRED,
         DecisionType.QID_RESOLUTION,
