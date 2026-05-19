@@ -389,3 +389,54 @@ def extract_repair_intent_from_proposal(
     if not payload or not isinstance(payload, dict):
         return None
     return RepairIntent.from_json(payload)
+
+
+@dataclass(frozen=True, slots=True)
+class IntentOutcome(JsonRoundTrip):
+    """Per-intent acceptance verdict, carried on AgOutcomeRecord.
+
+    ``outcome`` mirrors the AgOutcomeRecord.outcome closed vocabulary
+    so a postmortem can join intents to AG outcomes without remapping
+    strings. Two extra outcome strings beyond the AG vocabulary handle
+    the "intent had no proposal" / "proposal had no intent" cases that
+    occur during the Plan 1 rollout window where stamping is opt-in:
+      * ``"skipped_no_proposal"`` — intent was emitted but no proposal
+        carried this intent_id (synthesizer dropped it
+        post-stamping).
+      * ``"skipped_no_intent"`` — proposal had no intent stamped
+        (legacy producer not yet wired). Plan 4 eliminates this case.
+
+    ``applied_signature`` is the ``AppliedPatchSet.applied_signature``
+    snapshot at apply time, or ``None`` for skipped intents. Plan 4's
+    cycle-detection seam reads this.
+    """
+
+    intent_id: str
+    ag_id: str
+    outcome: str
+    applied_signature: str | None
+    applied_at_iter: int | None
+    rollback_reason: str | None
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "IntentOutcome":  # type: ignore[override]
+        return cls(
+            intent_id=str(payload["intent_id"]),
+            ag_id=str(payload["ag_id"]),
+            outcome=str(payload["outcome"]),
+            applied_signature=(
+                str(payload["applied_signature"])
+                if payload.get("applied_signature") is not None
+                else None
+            ),
+            applied_at_iter=(
+                int(payload["applied_at_iter"])
+                if payload.get("applied_at_iter") is not None
+                else None
+            ),
+            rollback_reason=(
+                str(payload["rollback_reason"])
+                if payload.get("rollback_reason") is not None
+                else None
+            ),
+        )
