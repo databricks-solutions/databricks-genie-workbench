@@ -1,0 +1,58 @@
+{
+  "input": {
+    "cluster_id": "H003",
+    "ag_id": "AG5",
+    "iteration": 4,
+    "cluster_semantic_theme": "self-referential cohort retention pattern",
+    "cluster_suggested_repair_shape": "other",
+    "per_qid_evidence": [
+      {
+        "qid": "gs_044",
+        "observed_failure": "cohort retention returned wrong numerator",
+        "generated_sql_issue": "self-join on cohort_month missing",
+        "expected_sql_shape": "WITH cohort AS (...) SELECT cohort_month, COUNT(DISTINCT customer_id) FROM cohort c1 JOIN cohort c2 ON c1.customer_id = c2.customer_id AND c2.cohort_month > c1.cohort_month",
+        "blame_set": ["analytics.customer_events.customer_id", "analytics.customer_events.event_month"],
+        "suggested_repair_family": "cohort_retention",
+        "repair_hint_patch_type": "add_example_sql",
+        "confidence": "medium",
+        "quoted_evidence": []
+      }
+    ],
+    "identifier_allowlist": [
+      "analytics.customer_events",
+      "analytics.customer_events.customer_id",
+      "analytics.customer_events.event_month"
+    ],
+    "available_patch_types": [
+      "add_example_sql", "add_sql_snippet_expression",
+      "add_sql_snippet_filter", "add_sql_snippet_measure",
+      "add_instruction", "update_instruction",
+      "add_join_spec", "add_column_description"
+    ],
+    "available_repair_shapes": [
+      "top_n_by_metric", "ordered_list_by_metric", "rank_within_group",
+      "period_over_period", "filter_compose", "filter_remove",
+      "join_discovery", "sql_expression", "column_description",
+      "metric_view_refinement", "instruction", "other"
+    ],
+    "existing_examples_preview": "(none)"
+  },
+  "expected_output": {
+    "result": {
+      "intent_name": "cohort_retention_self_join",
+      "intent_description": "Teach Genie the cohort-retention self-join pattern: CTE to define cohort, then JOIN cohort to itself on customer_id with a later event_month to count returning customers. Pattern is not in the closed catalog (OTHER).",
+      "repair_shape": "other",
+      "patch_type": "add_example_sql",
+      "rationale": "Cluster's expected_sql_shape uses a self-join that no closed repair_shape captures; OTHER + add_example_sql teaches the structure once.",
+      "confidence": "low",
+      "patch_body": {
+        "example_question": "Of the customers who first appeared in January, how many returned in February?",
+        "example_sql": "WITH cohort AS (SELECT customer_id, MIN(event_month) AS cohort_month FROM analytics.customer_events GROUP BY customer_id) SELECT c1.cohort_month, COUNT(DISTINCT c2.customer_id) AS returning_customers FROM cohort c1 JOIN cohort c2 ON c1.customer_id = c2.customer_id WHERE c2.cohort_month > c1.cohort_month GROUP BY c1.cohort_month",
+        "usage_guidance": "Use when the user asks about cohort retention or follow-on activity.",
+        "parameters": []
+      },
+      "blame_set": ["analytics.customer_events.customer_id", "analytics.customer_events.event_month"]
+    },
+    "declined": null
+  }
+}

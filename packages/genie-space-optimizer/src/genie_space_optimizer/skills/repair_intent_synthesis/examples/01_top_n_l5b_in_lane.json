@@ -1,0 +1,68 @@
+{
+  "input": {
+    "cluster_id": "H001",
+    "ag_id": "AG3",
+    "iteration": 2,
+    "cluster_semantic_theme": "top-N revenue ranking missing",
+    "cluster_suggested_repair_shape": "top_n_by_metric",
+    "per_qid_evidence": [
+      {
+        "qid": "gs_009",
+        "observed_failure": "returned 1 row instead of top 3 by revenue",
+        "generated_sql_issue": "missing LIMIT 3 and ORDER BY revenue DESC",
+        "expected_sql_shape": "GROUP BY region ORDER BY revenue DESC LIMIT 3",
+        "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.region"],
+        "suggested_repair_family": "top_n_with_ordering",
+        "repair_hint_patch_type": "add_example_sql",
+        "confidence": "high",
+        "quoted_evidence": ["judge: 'missing top-n ordering'"]
+      },
+      {
+        "qid": "gs_017",
+        "observed_failure": "returned all regions instead of top 5",
+        "generated_sql_issue": "missing LIMIT 5",
+        "expected_sql_shape": "GROUP BY region ORDER BY revenue DESC LIMIT 5",
+        "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.region"],
+        "suggested_repair_family": "top_n_with_ordering",
+        "repair_hint_patch_type": "add_example_sql",
+        "confidence": "high",
+        "quoted_evidence": []
+      }
+    ],
+    "identifier_allowlist": [
+      "sales.fact_sales", "sales.fact_sales.revenue",
+      "sales.fact_sales.region", "sales.fact_sales.order_date"
+    ],
+    "available_patch_types": [
+      "add_example_sql", "add_sql_snippet_expression",
+      "add_sql_snippet_filter", "add_sql_snippet_measure",
+      "add_instruction", "update_instruction",
+      "add_join_spec", "add_column_description"
+    ],
+    "available_repair_shapes": [
+      "top_n_by_metric", "ordered_list_by_metric", "rank_within_group",
+      "period_over_period", "filter_compose", "filter_remove",
+      "join_discovery", "sql_expression", "column_description",
+      "metric_view_refinement", "instruction", "other"
+    ],
+    "existing_examples_preview": "(1) 'What is total revenue?' (2) 'How many orders last week?'"
+  },
+  "expected_output": {
+    "result": {
+      "intent_name": "top_n_revenue_by_region",
+      "intent_description": "Teach Genie the top-N by-metric pattern: GROUP BY a dimension, ORDER BY the metric DESC, LIMIT N. Concrete shape uses sales.fact_sales.revenue grouped by sales.fact_sales.region.",
+      "repair_shape": "top_n_by_metric",
+      "patch_type": "add_example_sql",
+      "rationale": "Both qids (gs_009, gs_017) miss LIMIT/ORDER BY on revenue per region — the cluster's defining signal.",
+      "confidence": "high",
+      "patch_body": {
+        "example_question": "What are the top 3 regions by total revenue this quarter?",
+        "example_sql": "SELECT region, SUM(revenue) AS total_revenue FROM sales.fact_sales WHERE order_date >= DATE_TRUNC('quarter', CURRENT_DATE) GROUP BY region ORDER BY total_revenue DESC LIMIT 3",
+        "usage_guidance": "Use when the user asks for top-N entities ranked by a metric within a time window.",
+        "parameters": []
+      },
+      "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.region"]
+    },
+    "declined": null
+  }
+}

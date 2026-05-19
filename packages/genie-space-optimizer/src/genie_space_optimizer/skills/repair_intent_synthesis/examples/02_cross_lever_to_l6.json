@@ -1,0 +1,67 @@
+{
+  "input": {
+    "cluster_id": "H002",
+    "ag_id": "AG4",
+    "iteration": 3,
+    "cluster_semantic_theme": "revenue-by-region rollup recurring",
+    "cluster_suggested_repair_shape": "sql_expression",
+    "per_qid_evidence": [
+      {
+        "qid": "gs_021",
+        "observed_failure": "computed total but not by region",
+        "generated_sql_issue": "missing window: SUM(revenue) OVER (PARTITION BY region)",
+        "expected_sql_shape": "SELECT *, SUM(revenue) OVER (PARTITION BY region) AS region_total FROM sales.fact_sales",
+        "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.region"],
+        "suggested_repair_family": "windowed_aggregate",
+        "repair_hint_patch_type": "add_sql_snippet_expression",
+        "confidence": "high",
+        "quoted_evidence": ["judge: 'expects windowed sum'"]
+      },
+      {
+        "qid": "gs_022",
+        "observed_failure": "running total per region returned NULL",
+        "generated_sql_issue": "no PARTITION BY",
+        "expected_sql_shape": "SUM(revenue) OVER (PARTITION BY region)",
+        "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.region"],
+        "suggested_repair_family": "windowed_aggregate",
+        "repair_hint_patch_type": "add_sql_snippet_expression",
+        "confidence": "high",
+        "quoted_evidence": []
+      }
+    ],
+    "identifier_allowlist": [
+      "sales.fact_sales", "sales.fact_sales.revenue",
+      "sales.fact_sales.region"
+    ],
+    "available_patch_types": [
+      "add_example_sql", "add_sql_snippet_expression",
+      "add_sql_snippet_filter", "add_sql_snippet_measure",
+      "add_instruction", "update_instruction",
+      "add_join_spec", "add_column_description"
+    ],
+    "available_repair_shapes": [
+      "top_n_by_metric", "ordered_list_by_metric", "rank_within_group",
+      "period_over_period", "filter_compose", "filter_remove",
+      "join_discovery", "sql_expression", "column_description",
+      "metric_view_refinement", "instruction", "other"
+    ],
+    "existing_examples_preview": "(1) 'Total revenue this year' (2) 'Order count by region'"
+  },
+  "expected_output": {
+    "result": {
+      "intent_name": "revenue_by_region_windowed_total",
+      "intent_description": "Add a reusable SQL snippet expression that computes per-region windowed revenue totals — SUM(revenue) OVER (PARTITION BY region). Cleaner as a snippet than as a full example_sql because the fragment recurs across many questions.",
+      "repair_shape": "sql_expression",
+      "patch_type": "add_sql_snippet_expression",
+      "rationale": "Both qids (gs_021, gs_022) expect SUM(revenue) OVER (PARTITION BY region) — a snippet teaches the fragment once and is reused.",
+      "confidence": "high",
+      "patch_body": {
+        "name": "revenue_by_region_total",
+        "sql_expression": "SUM(revenue) OVER (PARTITION BY region)",
+        "usage_guidance": "Use when the user asks for a running or windowed revenue total partitioned by region."
+      },
+      "blame_set": ["sales.fact_sales.revenue", "sales.fact_sales.region"]
+    },
+    "declined": null
+  }
+}
