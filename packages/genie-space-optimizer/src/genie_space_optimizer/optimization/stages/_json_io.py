@@ -31,7 +31,14 @@ class JsonRoundTrip:
     mixin does NOT itself decorate; the subclass declares its own
     decorator so that ``slots=True`` interacts correctly with the
     multiple-base-class rule (slots base allowed).
+
+    The empty ``__slots__`` declaration ensures subclasses that use
+    ``@dataclass(slots=True)`` actually get strict slot enforcement
+    (without this, the mixin's implicit ``__dict__`` defeats slots on
+    every subclass).
     """
+
+    __slots__ = ()
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
