@@ -51,22 +51,38 @@ class RcaEvidenceInput(JsonRoundTrip):
 
 @dataclass
 class RcaEvidenceBundle(JsonRoundTrip):
-    """Per-qid evidence record after Phase C grounding + PR-D top-N routing.
+    """Per-qid evidence record after Phase C grounding + PR-D top-N
+    routing.
 
-    ``per_qid_evidence[qid]`` is a dict carrying judge verdict, sql_diff,
-    counterfactual_fix, ASI features, and the resolved rca_kind enum value.
+    ``per_qid_evidence[qid]`` is a dict carrying judge verdict,
+    sql_diff, counterfactual_fix, ASI features, and the resolved
+    rca_kind enum value.
     ``rca_kinds_by_qid[qid]`` is the resolved rca_kind string (the
     ``RcaKind`` enum's ``.value``) used by F3 clustering.
     ``evidence_refs[qid]`` is the tuple of trace/eval references the
     DecisionRecord field requires.
     ``promoted_to_top_n_qids`` records which qids the PR-D override
     re-routed to TOP_N_CARDINALITY_COLLAPSE.
+
+    Plan 3: ``per_qid_evidence_typed[qid]`` is the typed sidecar
+    populated when the LLM-driven extractor produced evidence for
+    that qid. Absence from this dict means the deterministic
+    ``_asi_finding_from_metadata`` fallback supplied this qid's
+    entry in ``per_qid_evidence`` (the legacy dict is still
+    populated for both paths, so downstream consumers stay
+    byte-stable).
+
+    Field type ``dict[str, Any]`` (not ``dict[str, PerQidRcaEvidence]``)
+    is intentional — a direct import would create a cycle via
+    rca.py. Per-instance typing is enforced by the dispatch code in
+    rca_evidence.collect(), not at the dataclass field level.
     """
 
     per_qid_evidence: dict[str, dict[str, Any]]
     rca_kinds_by_qid: dict[str, str]
     evidence_refs: dict[str, tuple[str, ...]]
     promoted_to_top_n_qids: tuple[str, ...]
+    per_qid_evidence_typed: dict[str, Any] = field(default_factory=dict)
 
 
 def _row_qid(row: dict[str, Any]) -> str:
