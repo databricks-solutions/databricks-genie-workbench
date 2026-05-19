@@ -240,3 +240,150 @@ def critique_candidate_for_proposal(
         overall_recommendation=parsed["overall_recommendation"],
         rationale=str(parsed["rationale"]),
     )
+
+
+# ── Plan 6 Task 8 — typed I/O dataclasses ─────────────────────────────
+
+from dataclasses import dataclass, field  # noqa: E402
+from typing import Mapping  # noqa: E402
+
+from genie_space_optimizer.optimization.repair_intent import (  # noqa: E402
+    RepairIntent,
+)
+from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip  # noqa: E402
+
+
+@dataclass
+class CritiqueInput(JsonRoundTrip):
+    """Plan 6 — typed input to the candidate-critique stage."""
+
+    proposals_by_ag: dict[str, tuple[Mapping[str, Any], ...]]
+    repair_intents_by_id: dict[str, RepairIntent] = field(default_factory=dict)
+    rca_evidence_typed_by_cluster: dict[str, dict[str, PerQidRcaEvidence]] = (
+        field(default_factory=dict)
+    )
+    passing_qids_at_risk_by_proposal_id: dict[str, tuple[str, ...]] = (
+        field(default_factory=dict)
+    )
+    cluster_semantic_theme_by_cluster: dict[str, str] = field(default_factory=dict)
+    cluster_id_by_proposal_id: dict[str, str] = field(default_factory=dict)
+    ag_id_by_proposal_id: dict[str, str] = field(default_factory=dict)
+
+    def to_json(self) -> dict[str, Any]:  # type: ignore[override]
+        return {
+            "proposals_by_ag": {
+                ag_id: [dict(p) for p in props]
+                for ag_id, props in (self.proposals_by_ag or {}).items()
+            },
+            "repair_intents_by_id": {
+                intent_id: intent.to_json()
+                for intent_id, intent in (self.repair_intents_by_id or {}).items()
+            },
+            "rca_evidence_typed_by_cluster": {
+                cid: {qid: ev.to_json() for qid, ev in evs.items()}
+                for cid, evs in (self.rca_evidence_typed_by_cluster or {}).items()
+            },
+            "passing_qids_at_risk_by_proposal_id": {
+                pid: list(qids)
+                for pid, qids in (
+                    self.passing_qids_at_risk_by_proposal_id or {}
+                ).items()
+            },
+            "cluster_semantic_theme_by_cluster": dict(
+                self.cluster_semantic_theme_by_cluster or {}
+            ),
+            "cluster_id_by_proposal_id": dict(
+                self.cluster_id_by_proposal_id or {}
+            ),
+            "ag_id_by_proposal_id": dict(self.ag_id_by_proposal_id or {}),
+        }
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "CritiqueInput":  # type: ignore[override]
+        return cls(
+            proposals_by_ag={
+                ag_id: tuple(dict(p) for p in props)
+                for ag_id, props in (
+                    payload.get("proposals_by_ag") or {}
+                ).items()
+            },
+            repair_intents_by_id={
+                intent_id: RepairIntent.from_json(p)
+                for intent_id, p in (
+                    payload.get("repair_intents_by_id") or {}
+                ).items()
+            },
+            rca_evidence_typed_by_cluster={
+                cid: {
+                    qid: PerQidRcaEvidence.from_json(p)
+                    for qid, p in evs.items()
+                }
+                for cid, evs in (
+                    payload.get("rca_evidence_typed_by_cluster") or {}
+                ).items()
+            },
+            passing_qids_at_risk_by_proposal_id={
+                pid: tuple(str(q) for q in qids)
+                for pid, qids in (
+                    payload.get("passing_qids_at_risk_by_proposal_id") or {}
+                ).items()
+            },
+            cluster_semantic_theme_by_cluster=dict(
+                payload.get("cluster_semantic_theme_by_cluster") or {}
+            ),
+            cluster_id_by_proposal_id=dict(
+                payload.get("cluster_id_by_proposal_id") or {}
+            ),
+            ag_id_by_proposal_id=dict(
+                payload.get("ag_id_by_proposal_id") or {}
+            ),
+        )
+
+
+@dataclass
+class CritiqueOutcome(JsonRoundTrip):
+    """Plan 6 — typed output of the candidate-critique stage."""
+
+    proposals_by_ag: dict[str, tuple[Mapping[str, Any], ...]]
+    verdict_by_proposal_id: dict[str, CritiqueVerdict] = field(default_factory=dict)
+    dropped_by_critique: tuple[str, ...] = ()
+    advised_count: int = 0
+
+    def to_json(self) -> dict[str, Any]:  # type: ignore[override]
+        return {
+            "proposals_by_ag": {
+                ag_id: [dict(p) for p in props]
+                for ag_id, props in (self.proposals_by_ag or {}).items()
+            },
+            "verdict_by_proposal_id": {
+                pid: v.to_json()
+                for pid, v in (self.verdict_by_proposal_id or {}).items()
+            },
+            "dropped_by_critique": list(self.dropped_by_critique or ()),
+            "advised_count": int(self.advised_count),
+        }
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "CritiqueOutcome":  # type: ignore[override]
+        return cls(
+            proposals_by_ag={
+                ag_id: tuple(dict(p) for p in props)
+                for ag_id, props in (
+                    payload.get("proposals_by_ag") or {}
+                ).items()
+            },
+            verdict_by_proposal_id={
+                pid: CritiqueVerdict.from_json(p)
+                for pid, p in (
+                    payload.get("verdict_by_proposal_id") or {}
+                ).items()
+            },
+            dropped_by_critique=tuple(
+                str(p) for p in (payload.get("dropped_by_critique") or ())
+            ),
+            advised_count=int(payload.get("advised_count") or 0),
+        )
+
+
+INPUT_CLASS = CritiqueInput
+OUTPUT_CLASS = CritiqueOutcome
