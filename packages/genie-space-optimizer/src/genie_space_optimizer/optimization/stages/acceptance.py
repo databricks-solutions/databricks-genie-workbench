@@ -32,6 +32,13 @@ from genie_space_optimizer.optimization.decision_emitters import (
 )
 from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
 
+# Plan 1 Task 10 — IntentOutcome is imported lazily inside the
+# carrier helpers below. Importing at module top would trigger a
+# cycle via stages/__init__.py → _registry → acceptance →
+# repair_intent → stages._json_io → stages/__init__.py.
+if False:  # noqa: F401  (TYPE_CHECKING-style guard without typing import)
+    from genie_space_optimizer.optimization.repair_intent import IntentOutcome
+
 
 STAGE_KEY: str = "acceptance_decision"
 
@@ -53,6 +60,28 @@ class AgOutcomeRecord(JsonRoundTrip):
     target_qids: tuple[str, ...] = ()
     affected_qids: tuple[str, ...] = ()
     content_fingerprints: tuple[str, ...] = ()
+    # Plan 1 Task 10 — typed per-intent outcome rollup. One entry per
+    # AppliedPatch that carries a non-empty intent_id. Empty tuple
+    # for legacy / unstamped patches.
+    intent_outcomes: tuple["IntentOutcome", ...] = ()
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "AgOutcomeRecord":  # type: ignore[override]
+        from genie_space_optimizer.optimization.repair_intent import (
+            IntentOutcome,
+        )
+        return cls(
+            ag_id=str(payload["ag_id"]),
+            outcome=str(payload["outcome"]),
+            reason_code=str(payload["reason_code"]),
+            target_qids=tuple(payload.get("target_qids") or ()),
+            affected_qids=tuple(payload.get("affected_qids") or ()),
+            content_fingerprints=tuple(payload.get("content_fingerprints") or ()),
+            intent_outcomes=tuple(
+                IntentOutcome.from_json(p)
+                for p in (payload.get("intent_outcomes") or ())
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,23 +145,40 @@ class AgOutcome(JsonRoundTrip):
 
     ``outcomes_by_ag`` maps AG id → AgOutcomeRecord.
     ``qid_resolutions`` maps eval qid → transition string
-    (``hold_pass`` / ``fail_to_pass`` / ``hold_fail`` / ``pass_to_fail``).
+    (``hold_pass`` / ``fail_to_pass`` / ``hold_fail`` /
+    ``pass_to_fail``).
     ``rolled_back_content_fingerprints`` is the union of every
-    rolled-back AG's patch fingerprints — F6's PR-E content-fingerprint
-    dedup gate consumes this on the next iteration.
+    rolled-back AG's patch fingerprints — F6's PR-E
+    content-fingerprint dedup gate consumes this on the next
+    iteration.
 
-    C15 Phase 1: frozen+slots+JsonRoundTrip (closes D-6 contract surface).
+    Plan 1 Task 10: ``intent_outcomes_by_id`` is the typed-intent
+    rollup. Mirrors the AgOutcomeRecord.intent_outcomes tuples,
+    indexed by intent_id. Empty dict for legacy / unstamped runs.
+
+    C15 Phase 1: frozen+slots+JsonRoundTrip (closes D-6 contract
+    surface).
     """
 
     outcomes_by_ag: dict[str, AgOutcomeRecord] = field(default_factory=dict)
     qid_resolutions: dict[str, str] = field(default_factory=dict)
     rolled_back_content_fingerprints: frozenset[str] = field(default_factory=frozenset)
+    intent_outcomes_by_id: dict[str, "IntentOutcome"] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, payload: dict) -> "AgOutcome":
+        from genie_space_optimizer.optimization.repair_intent import (
+            IntentOutcome,
+        )
         outcomes = {
             ag_id: AgOutcomeRecord.from_json(rec)
             for ag_id, rec in (payload.get("outcomes_by_ag") or {}).items()
+        }
+        intent_outcomes = {
+            intent_id: IntentOutcome.from_json(p)
+            for intent_id, p in (
+                payload.get("intent_outcomes_by_id") or {}
+            ).items()
         }
         return AgOutcome(
             outcomes_by_ag=outcomes,
@@ -140,6 +186,7 @@ class AgOutcome(JsonRoundTrip):
             rolled_back_content_fingerprints=frozenset(
                 payload.get("rolled_back_content_fingerprints") or []
             ),
+            intent_outcomes_by_id=intent_outcomes,
         )
 
 
@@ -238,6 +285,32 @@ def decide(ctx, inp: AcceptanceInput) -> AgOutcome:
         )
         fps = tuple(fp for fp in fps if fp)
 
+        # Plan 1 Task 10 — typed per-intent outcomes for this AG.
+        from genie_space_optimizer.optimization.repair_intent import (
+            IntentOutcome,
+        )
+        ag_intent_outcomes: list[IntentOutcome] = []
+        for entry in applied_entries:
+            patch = entry.get("patch") or {}
+            intent_id = str(patch.get("intent_id") or "")
+            if not intent_id:
+                continue
+            rollback_reason: str | None = None
+            if outcome_str == "rolled_back":
+                rollback_reason = str(decision.reason_code or "rolled_back")
+            ag_intent_outcomes.append(
+                IntentOutcome(
+                    intent_id=intent_id,
+                    ag_id=ag_id,
+                    outcome=outcome_str,
+                    applied_signature=(
+                        str(patch.get("content_fingerprint") or "") or None
+                    ),
+                    applied_at_iter=int(ctx.iteration),
+                    rollback_reason=rollback_reason,
+                )
+            )
+
         outcomes[ag_id] = AgOutcomeRecord(
             ag_id=ag_id,
             outcome=outcome_str,
@@ -245,6 +318,7 @@ def decide(ctx, inp: AcceptanceInput) -> AgOutcome:
             target_qids=target_qids,
             affected_qids=affected_qids,
             content_fingerprints=fps,
+            intent_outcomes=tuple(ag_intent_outcomes),
         )
 
         if outcome_str == "rolled_back":
@@ -362,10 +436,21 @@ def decide(ctx, inp: AcceptanceInput) -> AgOutcome:
         else:
             qid_resolutions[q] = "hold_fail"
 
+    # Plan 1 Task 10 — aggregate the per-AG intent outcomes into a
+    # by-intent-id rollup so learning + postmortem can join directly.
+    from genie_space_optimizer.optimization.repair_intent import (
+        IntentOutcome as _IntentOutcome,
+    )
+    intent_outcomes_by_id: dict[str, _IntentOutcome] = {}
+    for rec in outcomes.values():
+        for io_ in rec.intent_outcomes:
+            intent_outcomes_by_id[io_.intent_id] = io_
+
     return AgOutcome(
         outcomes_by_ag=outcomes,
         qid_resolutions=qid_resolutions,
         rolled_back_content_fingerprints=frozenset(rolled_back_fps),
+        intent_outcomes_by_id=intent_outcomes_by_id,
     )
 
 
