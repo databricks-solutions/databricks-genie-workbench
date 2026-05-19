@@ -120,3 +120,150 @@ class SkillLoader:
 
 
 _SKILL_LOADER = SkillLoader()
+
+
+# ── Plan 2 — reasoning-skill metadata accessors (additive). ───────────
+# Below: a typed metadata record, three accessor functions, and three
+# attribute assignments that bolt the accessors onto SkillLoader. We
+# use the bolt-on pattern (rather than editing the class definition
+# above) so this change is purely additive — diff-only inspection of
+# the existing class block shows zero modifications. Plan 8 cleanup
+# may inline these into the class once all Plan-3/4/5/6/7 skills are
+# stable.
+
+import importlib as _plan2_importlib
+import json as _plan2_json
+from dataclasses import dataclass as _plan2_dataclass
+
+
+@_plan2_dataclass(frozen=True, slots=True)
+class ReasoningSkillMetadata:
+    """Typed view of the Plan-2-introduced frontmatter fields.
+
+    All fields are surfaced explicitly so the runner can validate
+    them without raw-dict probing. ``examples_dir`` and ``eval_dir``
+    are relative paths (joined against the skill's directory at
+    lookup time).
+    """
+
+    llm_call_kind: str
+    output_schema_class: str
+    max_tokens: int
+    abstain_supported: bool
+    examples_dir: str | None
+    eval_dir: str | None
+    model_override: str | None
+
+
+_PLAN2_MAX_EXAMPLES = 4  # Anthropic: "curate canonical, not laundry list"
+
+
+def _plan2_coerce_bool(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return default
+
+
+def _load_reasoning_metadata(
+    self: "SkillLoader", skill_id: str
+) -> "ReasoningSkillMetadata | None":
+    """Return reasoning-skill metadata, or None for legacy skills.
+
+    A skill is "reasoning" iff its frontmatter has
+    ``llm_call_kind: reasoning``. When set, ``output_schema_class``
+    and ``max_tokens`` are required; missing required fields raise
+    ``ValueError``.
+    """
+    meta = self.load_metadata(skill_id)
+    if meta.get("llm_call_kind") != "reasoning":
+        return None
+    output_schema_class = meta.get("output_schema_class")
+    if not output_schema_class:
+        raise ValueError(
+            f"skill {skill_id!r} has llm_call_kind=reasoning but is "
+            "missing required frontmatter field 'output_schema_class'"
+        )
+    if "max_tokens" not in meta:
+        raise ValueError(
+            f"skill {skill_id!r} has llm_call_kind=reasoning but is "
+            "missing required frontmatter field 'max_tokens'"
+        )
+    max_tokens_raw = meta["max_tokens"]
+    try:
+        max_tokens = int(max_tokens_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"skill {skill_id!r} has non-integer "
+            f"max_tokens={max_tokens_raw!r}"
+        ) from exc
+    return ReasoningSkillMetadata(
+        llm_call_kind="reasoning",
+        output_schema_class=str(output_schema_class),
+        max_tokens=max_tokens,
+        abstain_supported=_plan2_coerce_bool(
+            meta.get("abstain_supported"), default=False
+        ),
+        examples_dir=meta.get("examples_dir") or None,
+        eval_dir=meta.get("eval_dir") or None,
+        model_override=meta.get("model_override") or None,
+    )
+
+
+def _load_output_schema_class(self: "SkillLoader", skill_id: str) -> type:
+    """Resolve the frontmatter ``output_schema_class`` to the actual
+    class.
+
+    Format: ``"package.module:ClassName"``. Raises ``ValueError`` on
+    malformed paths and propagates ``ImportError`` /
+    ``AttributeError`` when resolution fails.
+    """
+    rsm = _load_reasoning_metadata(self, skill_id)
+    if rsm is None:
+        raise ValueError(
+            f"skill {skill_id!r} is not a reasoning skill"
+        )
+    path = rsm.output_schema_class
+    if ":" not in path:
+        raise ValueError(
+            f"output_schema_class for {skill_id!r} must be in form "
+            f"'package.module:ClassName'; got {path!r}"
+        )
+    module_path, class_name = path.split(":", 1)
+    module = _plan2_importlib.import_module(module_path)
+    return getattr(module, class_name)
+
+
+def _iter_examples(self: "SkillLoader", skill_id: str):
+    """Yield (filename, parsed_json_dict) for every example JSON file.
+
+    The skill's examples_dir frontmatter is interpreted relative to
+    the skill folder. When the field is absent or the directory does
+    not exist, yields nothing. Enforces ≤4 examples (Anthropic
+    context-engineering guidance).
+    """
+    rsm = _load_reasoning_metadata(self, skill_id)
+    examples_dir_rel = (rsm.examples_dir if rsm else None) or "./examples"
+    skill_root = self._root / skill_id
+    ex_dir = (skill_root / examples_dir_rel).resolve()
+    if not ex_dir.is_dir():
+        return
+    files = sorted(p for p in ex_dir.iterdir() if p.suffix == ".json")
+    if len(files) > _PLAN2_MAX_EXAMPLES:
+        raise ValueError(
+            f"skill {skill_id!r} has {len(files)} example files in "
+            f"{examples_dir_rel}/; framework enforces ≤4 canonical "
+            "examples per Anthropic context engineering guidance"
+        )
+    for path in files:
+        yield path.name, _plan2_json.loads(
+            path.read_text(encoding="utf-8")
+        )
+
+
+SkillLoader.load_reasoning_metadata = _load_reasoning_metadata  # type: ignore[assignment]
+SkillLoader.load_output_schema_class = _load_output_schema_class  # type: ignore[assignment]
+SkillLoader.iter_examples = _iter_examples  # type: ignore[assignment]
