@@ -73,23 +73,21 @@ def test_build_manifest_includes_stage_keys_in_process_order() -> None:
         iterations=[1],
         missing_pieces=[],
     )
-    # C15 Phase 2: manifest stage order mirrors the 14-entry transcript
+    # Plan 6: manifest stage order mirrors the 15-entry transcript
     # contract (PROCESS_STAGE_ORDER). The transcript-only stages
-    # ``post_patch_evaluation`` (between ``applied_patches`` and
-    # ``acceptance_decision``) and ``contract_health`` (final) are
-    # included so postmortem skills walk every stage the operator
-    # transcript renders. bundle_assembly and run_manifest are now
-    # executable stages at positions 11 and 12; strategist_context at 4.
+    # ``post_patch_evaluation`` and ``contract_health`` are included
+    # so postmortem skills walk every stage. candidate_critique was
+    # inserted at position 7 (between proposal_generation and safety_gates).
     keys = manifest["stage_keys_in_process_order"]
     assert keys[0] == "evaluation_state"
     assert keys[-1] == "contract_health"
-    assert len(keys) == 14
-    # Executable subset (12 stages from STAGES) is still exposed for
+    assert len(keys) == 15
+    # Executable subset (13 stages from STAGES) is still exposed for
     # consumers that need to reach stage I/O artifacts.
     exec_keys = manifest["executable_stage_keys"]
     assert exec_keys[0] == "evaluation_state"
     assert exec_keys[-1] == "run_manifest"
-    assert len(exec_keys) == 12
+    assert len(exec_keys) == 13
 
 
 # Cycle 12-T3 — parent-bundle aggregators / minimal producers

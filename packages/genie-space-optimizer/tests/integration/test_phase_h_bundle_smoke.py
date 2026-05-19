@@ -84,15 +84,17 @@ def test_artifact_index_lists_every_stage_per_iteration() -> None:
         # contract. C15 Phase 2: 12 executable stages
         # (post_patch_evaluation + contract_health are transcript-only
         # and not in the per-stage paths; bundle_assembly and
-        # run_manifest are now executable at positions 12 and 13;
-        # strategist_context is at position 4).
+        # run_manifest are now executable at positions 13 and 14;
+        # strategist_context is at position 4; candidate_critique at 7).
         assert per_iter["stages_index"].endswith("/stages/index.json")
-        assert len(per_iter["stage_artifacts"]) == 12
+        assert len(per_iter["stage_artifacts"]) == 13
         assert "01_evaluation_state" in per_iter["stage_artifacts"]
-        # PROCESS_STAGE_ORDER positions: 4=strategist_context, 9=post_patch_evaluation
-        # (transcript-only), so the 12 executable stages get positions 1-8, 10-13.
+        # PROCESS_STAGE_ORDER positions: 4=strategist_context, 7=candidate_critique,
+        # 10=post_patch_evaluation (transcript-only), so the 13 executable stages
+        # get positions 1-9, 11-14.
         assert "04_strategist_context" in per_iter["stage_artifacts"]
-        assert "10_acceptance_decision" in per_iter["stage_artifacts"]
-        assert "11_learning_next_action" in per_iter["stage_artifacts"]
-        assert "12_bundle_assembly" in per_iter["stage_artifacts"]
-        assert "13_run_manifest" in per_iter["stage_artifacts"]
+        assert "07_candidate_critique" in per_iter["stage_artifacts"]
+        assert "11_acceptance_decision" in per_iter["stage_artifacts"]
+        assert "12_learning_next_action" in per_iter["stage_artifacts"]
+        assert "13_bundle_assembly" in per_iter["stage_artifacts"]
+        assert "14_run_manifest" in per_iter["stage_artifacts"]

@@ -98,7 +98,7 @@ def test_wrapped_f3_writes_to_correct_bundle_path(monkeypatch) -> None:
 
 
 def test_wrapped_f7_writes_to_correct_bundle_path(monkeypatch) -> None:
-    """Same contract for F7 application — paths under 08_applied_patches.
+    """Same contract for F7 application — paths under 09_applied_patches.
     C15 Phase 2: strategist_context at position 4 shifts applied_patches
     from 07 to 08."""
     captured: list[tuple[str, str, str]] = []
@@ -127,7 +127,7 @@ def test_wrapped_f7_writes_to_correct_bundle_path(monkeypatch) -> None:
 
     artifact_files = [p for _, p, _ in captured]
     for p in artifact_files:
-        assert "iterations/iter_01/stages/08_applied_patches" in p
+        assert "iterations/iter_01/stages/09_applied_patches" in p
 
 
 def test_skips_capture_when_anchor_is_none() -> None:
@@ -194,7 +194,7 @@ def test_bundle_jsons_compose_for_a_single_iteration_run() -> None:
     # at position 4 shifts applied_patches from position 07 to 08.
     assert iter_paths["stages_index"].endswith("/stages/index.json")
     assert "03_cluster_formation" in iter_paths["stage_artifacts"]
-    assert "08_applied_patches" in iter_paths["stage_artifacts"]
+    assert "09_applied_patches" in iter_paths["stage_artifacts"]
     f3_paths = iter_paths["stage_artifacts"]["03_cluster_formation"]
     assert f3_paths["input"] == stage_artifact_paths(1, "cluster_formation")["input"]
 
@@ -234,6 +234,8 @@ _EXECUTABLE_STAGES: tuple[str, ...] = (
     "strategist_context",
     "action_group_selection",
     "proposal_generation",
+    # Plan 6 inserts candidate_critique at position 7:
+    "candidate_critique",
     "safety_gates",
     "applied_patches",
     "acceptance_decision",
@@ -263,7 +265,7 @@ def test_all_nine_executable_stages_have_distinct_artifact_paths() -> None:
     assert len(seen) == len(_EXECUTABLE_STAGES) * 3
 
 
-def test_transcript_renders_all_14_process_order_sections() -> None:
+def test_transcript_renders_all_15_process_order_sections() -> None:
     from genie_space_optimizer.optimization.operator_process_transcript import (
         render_iteration_transcript,
         render_run_overview,
@@ -309,4 +311,4 @@ def test_transcript_renders_all_14_process_order_sections() -> None:
             f"Transcript missing heading {heading!r}; renderer + "
             f"PROCESS_STAGE_ORDER are out of sync"
         )
-    assert "14. Contract Health" in body
+    assert "15. Contract Health" in body

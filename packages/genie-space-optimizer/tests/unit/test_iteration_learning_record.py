@@ -118,11 +118,12 @@ def test_learning_next_action_stage_renders_iteration_budget_decision() -> None:
     )
 
 
-def test_full_transcript_renders_learning_record_in_stage_11() -> None:
+def test_full_transcript_renders_learning_record_in_stage_12() -> None:
     """End-to-end: when an iteration trace contains a learning record,
-    Stage 11 of the rendered transcript must contain that record's text
+    Stage 12 of the rendered transcript must contain that record's text
     (decision_type + reason_code) instead of the empty placeholder.
-    C15 Phase 2: learning_next_action moved from position 10 to 11."""
+    Plan 6: learning_next_action moved from position 11 to 12 because
+    candidate_critique was inserted at position 7."""
     from genie_space_optimizer.optimization.operator_process_transcript import (
         render_iteration_transcript,
     )
@@ -148,6 +149,6 @@ def test_full_transcript_renders_learning_record_in_stage_11() -> None:
         trace=trace,
         iteration_summary={"iteration": 1, "exit_path": "proposals_empty"},
     )
-    assert "11. Learning / Next Action" in rendered
+    assert "12. Learning / Next Action" in rendered
     assert "iteration_budget_decision" in rendered
     assert "proposal_generation_empty" in rendered

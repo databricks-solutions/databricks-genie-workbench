@@ -17,17 +17,17 @@ def test_iteration_bundle_prefix_zero_pads() -> None:
 
 
 def test_stage_artifact_paths_for_iter_3_safety_gates() -> None:
-    # C15 Phase 2: strategist_context inserted at position 4 shifts safety_gates
-    # from position 06 to position 07.
+    # Plan 6: candidate_critique inserted at position 7 shifts safety_gates
+    # from position 07 to position 08.
     paths = stage_artifact_paths(3, "safety_gates")
     assert paths["input"] == (
-        "gso_postmortem_bundle/iterations/iter_03/stages/07_safety_gates/input.json"
+        "gso_postmortem_bundle/iterations/iter_03/stages/08_safety_gates/input.json"
     )
     assert paths["output"] == (
-        "gso_postmortem_bundle/iterations/iter_03/stages/07_safety_gates/output.json"
+        "gso_postmortem_bundle/iterations/iter_03/stages/08_safety_gates/output.json"
     )
     assert paths["decisions"] == (
-        "gso_postmortem_bundle/iterations/iter_03/stages/07_safety_gates/decisions.json"
+        "gso_postmortem_bundle/iterations/iter_03/stages/08_safety_gates/decisions.json"
     )
 
 
@@ -38,10 +38,10 @@ def test_run_role_values() -> None:
     assert RunRole.LOGGED_MODEL.value == "logged_model"
 
 
-def test_process_stage_order_has_fourteen_entries_in_canonical_order() -> None:
-    """C15 Phase 2: PROCESS_STAGE_ORDER now has 14 entries (was 13);
-    strategist_context inserted between cluster_formation and
-    action_group_selection."""
+def test_process_stage_order_has_fifteen_entries_in_canonical_order() -> None:
+    """Plan 6: PROCESS_STAGE_ORDER now has 15 entries (was 14);
+    candidate_critique inserted between proposal_generation and
+    safety_gates."""
     keys = [stage.key for stage in PROCESS_STAGE_ORDER]
     assert keys == [
         "evaluation_state",
@@ -50,6 +50,7 @@ def test_process_stage_order_has_fourteen_entries_in_canonical_order() -> None:
         "strategist_context",
         "action_group_selection",
         "proposal_generation",
+        "candidate_critique",
         "safety_gates",
         "applied_patches",
         "post_patch_evaluation",

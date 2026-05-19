@@ -89,8 +89,8 @@ def test_manifest_stage_keys_in_process_order_uses_full_stage_contract() -> None
         missing_pieces=[],
     )
     expected_keys = [s.key for s in PROCESS_STAGE_ORDER]
-    # C15 P2: PROCESS_STAGE_ORDER now has 14 entries (was 13; strategist_context added)
-    assert len(expected_keys) == 14
+    # Plan 6: PROCESS_STAGE_ORDER now has 15 entries (was 14; candidate_critique added).
+    assert len(expected_keys) == 15
     assert manifest["stage_keys_in_process_order"] == expected_keys
 
 
@@ -115,6 +115,6 @@ def test_manifest_executable_stage_keys_field_lists_executable_stages() -> None:
         missing_pieces=[],
     )
     expected_executable = [e.stage_key for e in STAGES]
-    # C15 P2: now 12 stages (9 original + bundle_assembly + run_manifest + strategist_context)
-    assert len(expected_executable) == 12
+    # Plan 6: now 13 stages (12 from C15 P2 + candidate_critique).
+    assert len(expected_executable) == 13
     assert manifest["executable_stage_keys"] == expected_executable
