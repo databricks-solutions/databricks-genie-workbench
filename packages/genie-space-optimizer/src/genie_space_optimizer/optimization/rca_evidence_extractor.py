@@ -158,3 +158,45 @@ def extract_evidence_for_qid(
             str(x) for x in parsed.get("quoted_evidence") or []
         ),
     )
+
+
+def extract_evidence_for_all_qids(
+    *,
+    w: Any,
+    qids: tuple[str, ...],
+    judge_by_qid: dict[str, dict[str, Any]],
+    asi_by_qid: dict[str, dict[str, Any]],
+    sql_by_qid: dict[str, str],
+    iteration: int,
+) -> dict[str, PerQidRcaEvidence]:
+    """Sequential per-qid driver.
+
+    Returns a dict keyed by qid containing ONLY the qids for which
+    the LLM successfully produced typed evidence. Qids missing from
+    the returned dict (LLM declined or errored) signal to the caller
+    that the deterministic fallback should be used for that qid.
+
+    Per-iteration token budgeting is handled by Plan 2's
+    ``IterationTokenBudget`` (a ContextVar consulted inside
+    ``LlmReasoningCall.invoke``); the driver itself does no budget
+    accounting.
+
+    Dispatch is sequential (not concurrent) by design — see Plan 3
+    Out of scope.
+    """
+    out: dict[str, PerQidRcaEvidence] = {}
+    for qid in qids:
+        qstr = str(qid)
+        if not qstr:
+            continue
+        evidence = extract_evidence_for_qid(
+            w=w,
+            qid=qstr,
+            judge=judge_by_qid.get(qstr) or {},
+            asi=asi_by_qid.get(qstr) or {},
+            sql=sql_by_qid.get(qstr) or "",
+            iteration=iteration,
+        )
+        if evidence is not None:
+            out[qstr] = evidence
+    return out
