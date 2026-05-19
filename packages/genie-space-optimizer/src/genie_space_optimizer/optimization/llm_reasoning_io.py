@@ -26,6 +26,7 @@ are enforced post-parse by ``parse_envelope``.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict
@@ -131,3 +132,51 @@ def parse_envelope(
         needed_evidence=tuple(decl_model.needed_evidence),
         suggested_next_step=decl_model.suggested_next_step,
     )
+
+
+# ── LlmReasoningRequest ───────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class LlmReasoningRequest:
+    """Typed input to ``LlmReasoningCall.invoke``.
+
+    Required:
+      * ``call_id`` — stable per-invocation identifier (the framework's
+        token-budget meter keys on this; postmortems join on it).
+      * ``skill_id`` — the skill folder under ``src/.../skills/<id>/``
+        whose SKILL.md body is the system prompt.
+      * ``system_msg`` — the rendered system prompt (skill body with
+        template variables substituted).
+      * ``user_prompt`` — the rendered user prompt for this call.
+      * ``result_cls`` — Pydantic ``LLMOutputContract`` subclass that
+        the envelope's ``result`` branch is bound to.
+      * ``max_tokens`` — non-optional per the Databricks Foundation
+        Model API limits doc. Claude defaults to 1000 otherwise and
+        silently truncates responses.
+
+    Optional:
+      * ``model_override`` — when set, overrides the system-wide
+        ``LLM_ENDPOINT``.
+
+    The request is NOT a JsonRoundTrip — it carries a class reference
+    (``result_cls``) that cannot be serialized portably.
+    """
+
+    call_id: str
+    skill_id: str
+    system_msg: str
+    user_prompt: str
+    result_cls: type
+    max_tokens: int
+    model_override: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.call_id:
+            raise ValueError("call_id must be a non-empty string")
+        if not self.skill_id:
+            raise ValueError("skill_id must be a non-empty string")
+        if self.max_tokens <= 0:
+            raise ValueError(
+                f"max_tokens must be > 0; got {self.max_tokens}"
+            )
