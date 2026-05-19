@@ -156,7 +156,7 @@ def test_iteration_skips_when_no_rolled_back_outcomes(monkeypatch) -> None:
             per_qid_evidence_by_cluster={"H001": {
                 "gs_009": _evidence("gs_009"),
             }},
-            critique_verdicts_by_proposal_id={},
+            critique_verdicts_by_intent_id={},
             pre_rows=(), post_rows=(),
             applied_patch_fingerprints_by_ag={"AG3": {"sig_i_001"}},
             identifier_allowlist_by_ag={"AG3": {
@@ -183,7 +183,7 @@ def test_iteration_skips_entirely_when_flag_disabled(monkeypatch) -> None:
             per_qid_evidence_by_cluster={"H001": {
                 "gs_009": _evidence("gs_009"),
             }},
-            critique_verdicts_by_proposal_id={},
+            critique_verdicts_by_intent_id={},
             pre_rows=(), post_rows=(),
             applied_patch_fingerprints_by_ag={"AG3": {"sig_i_001"}},
             identifier_allowlist_by_ag={"AG3": {
@@ -214,7 +214,7 @@ def test_iteration_dispatches_one_llm_call_per_rolled_back_cluster(
             per_qid_evidence_by_cluster={"H001": {
                 "gs_009": _evidence("gs_009"),
             }},
-            critique_verdicts_by_proposal_id={},
+            critique_verdicts_by_intent_id={},
             pre_rows=({"question_id": "gs_009",
                        "result_correctness": "no"},),
             post_rows=({"question_id": "gs_009",
@@ -250,7 +250,7 @@ def test_iteration_emits_decision_record_per_dispatched_cluster(
             per_qid_evidence_by_cluster={"H001": {
                 "gs_009": _evidence("gs_009"),
             }},
-            critique_verdicts_by_proposal_id={},
+            critique_verdicts_by_intent_id={},
             pre_rows=(), post_rows=(),
             applied_patch_fingerprints_by_ag={"AG3": {"sig_i_001"}},
             identifier_allowlist_by_ag={"AG3": {
@@ -284,7 +284,7 @@ def test_iteration_skips_intents_with_missing_repair_intent(monkeypatch) -> None
             per_qid_evidence_by_cluster={"H001": {
                 "gs_009": _evidence("gs_009"),
             }},
-            critique_verdicts_by_proposal_id={},
+            critique_verdicts_by_intent_id={},
             pre_rows=(), post_rows=(),
             applied_patch_fingerprints_by_ag={"AG3": {"sig_i_legacy"}},
             identifier_allowlist_by_ag={"AG3": {

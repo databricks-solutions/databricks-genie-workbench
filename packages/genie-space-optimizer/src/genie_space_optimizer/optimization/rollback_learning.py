@@ -531,7 +531,7 @@ def hypothesize_next_attempts_for_iteration(
     ag_outcome: "AgOutcome",
     repair_intents_by_id: dict[str, "RepairIntent"],
     per_qid_evidence_by_cluster: dict[str, dict[str, "PerQidRcaEvidence"]],
-    critique_verdicts_by_proposal_id: dict[str, Any],
+    critique_verdicts_by_intent_id: dict[str, Any] | None = None,
     pre_rows: tuple[dict, ...],
     post_rows: tuple[dict, ...],
     applied_patch_fingerprints_by_ag: dict[str, set[str]],
@@ -598,6 +598,10 @@ def hypothesize_next_attempts_for_iteration(
             allowlist = identifier_allowlist_by_ag.get(ag_id, set())
             applied_fps = applied_patch_fingerprints_by_ag.get(ag_id, set())
 
+            verdict = (
+                (critique_verdicts_by_intent_id or {}).get(io_.intent_id)
+                if critique_verdicts_by_intent_id else None
+            )
             hypothesis = hypothesize_rollback_for_cluster(
                 w=None,
                 cluster_id=cluster_id, ag_id=ag_id,
@@ -605,7 +609,7 @@ def hypothesize_next_attempts_for_iteration(
                 rolled_back_repair_intent=intent,
                 intent_outcome=io_,
                 per_qid_evidence=cluster_evidence,
-                critique_verdict=None,
+                critique_verdict=verdict,
                 eval_diffs_for_cluster=eval_diffs,
                 identifier_allowlist=allowlist,
                 applied_patch_fingerprints=applied_fps,
