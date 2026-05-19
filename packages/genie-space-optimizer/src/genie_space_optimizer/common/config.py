@@ -3553,6 +3553,7 @@ KNOWN_INTERNAL_RUNTIME_KEYS = frozenset({
     "_data_profile",
     "_failure_clusters",
     "_cluster_synthesis_count",
+    "_last_attempt_hypothesis_by_cluster",
     "_rls_audit",
     "_space_id",
     "_join_overlaps",
