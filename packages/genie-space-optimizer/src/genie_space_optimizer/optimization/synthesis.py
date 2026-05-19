@@ -325,15 +325,59 @@ def render_synthesis_prompt(afs: dict, archetype: Any, identifier_allowlist: str
         format_mlflow_template,
     )
 
-    body = format_mlflow_template(
-        _SYNTHESIS_PROMPT_TEMPLATE,
+    from types import SimpleNamespace
+    from genie_space_optimizer.optimization.repair_intent import (
+        RepairShape,
+        _ARCHETYPE_NAME_TO_SHAPE,
+    )
+    shape = _ARCHETYPE_NAME_TO_SHAPE.get(archetype.name, RepairShape.OTHER)
+    synthetic_intent = SimpleNamespace(
+        intent_name=archetype.name,
+        intent_description=archetype.prompt_template,
+        repair_shape=shape,
+        rationale=f"Cluster blames the {archetype.name} shape.",
+    )
+    body = _render_lever_5b_intent_prompt(
+        intent=synthetic_intent,
         afs_block=_render_lever_5b_afs_block(afs),
-        archetype_name=archetype.name,
-        archetype_output_shape=json.dumps(archetype.output_shape),
-        archetype_prompt_template=archetype.prompt_template,
         identifier_allowlist=identifier_allowlist,
     )
     return _EXAMPLE_SYNTHESIS_CONTRACT_HEADER + body
+
+
+def _render_lever_5b_intent_prompt(
+    *,
+    intent: Any,
+    afs_block: str,
+    identifier_allowlist: str,
+) -> str:
+    """Plan 5 Task 10 — render the L5b prompt body using intent-aware
+    placeholders.
+
+    Same template renders for both producers (intent_from_archetype
+    deterministic OR synthesize_repair_intent_for_cluster LLM); the
+    caller passes the RepairIntent built upstream.
+
+    The four intent placeholders (renamed in Task 9):
+      {{ repair_intent_name }}        → intent.intent_name
+      {{ repair_intent_description }} → intent.intent_description
+      {{ repair_shape }}              → intent.repair_shape.value
+      {{ repair_rationale }}          → intent.rationale
+
+    The two preserved placeholders:
+      {{ afs_block }}                 → caller-built AFS rendering
+      {{ identifier_allowlist }}      → caller-built allowlist rendering
+    """
+    body = _SYNTHESIS_PROMPT_TEMPLATE
+    body = body.replace("{{ repair_intent_name }}", str(intent.intent_name))
+    body = body.replace(
+        "{{ repair_intent_description }}", str(intent.intent_description),
+    )
+    body = body.replace("{{ repair_shape }}", str(intent.repair_shape.value))
+    body = body.replace("{{ repair_rationale }}", str(intent.rationale))
+    body = body.replace("{{ afs_block }}", str(afs_block))
+    body = body.replace("{{ identifier_allowlist }}", str(identifier_allowlist))
+    return body
 
 
 # ── Skill identity (Plan 2 — Lever 5 Split) ───────────────────────────

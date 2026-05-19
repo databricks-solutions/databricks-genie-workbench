@@ -312,7 +312,7 @@ def test_lever_5b_skill_md_has_xml_structure():
         ("<role>", "</role>"),
         ("<context>", "</context>"),
         ("<failure_signature>", "</failure_signature>"),
-        ("<archetype>", "</archetype>"),
+        ("<repair_intent>", "</repair_intent>"),
         ("<schema>", "</schema>"),
         ("<examples>", "</examples>"),
         ("<instructions>", "</instructions>"),
@@ -391,9 +391,10 @@ def test_lever_5b_skill_md_uses_new_slot_names():
             f"legacy slot {legacy} must be removed (replaced by afs_block)"
         )
     for surviving in (
-        "{{ archetype_name }}",
-        "{{ archetype_output_shape }}",
-        "{{ archetype_prompt_template }}",
+        "{{ repair_intent_name }}",
+        "{{ repair_intent_description }}",
+        "{{ repair_shape }}",
+        "{{ repair_rationale }}",
         "{{ identifier_allowlist }}",
     ):
         assert surviving in prompt, f"slot {surviving} must remain in template"
