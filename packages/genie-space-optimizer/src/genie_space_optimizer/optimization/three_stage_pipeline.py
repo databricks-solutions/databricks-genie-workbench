@@ -525,23 +525,33 @@ def _stage_2_l5a(bundle: "ActivationBundle", w: Any) -> dict:
 
 
 def _stage_2_l5b(bundle: "ActivationBundle", w: Any) -> dict:
-    """Stage-2 adapter for lever-5b-example-sql (Plan 2 per-cluster)."""
+    """Stage-2 adapter for lever-5b-example-sql (Plan 2 per-cluster).
+
+    Plan 8 Task 2 — threads ``bundle.rca_evidence_typed``,
+    ``bundle.llm_cluster_by_cluster_id[cluster_id]``, ``bundle.ag_id``,
+    ``bundle.iteration`` into ``_dispatch_lever_5b_for_cluster`` so
+    Plan 5's LLM intent short-circuit activates when the typed evidence
+    and the LLM cluster are present for the cluster.
+    """
     from genie_space_optimizer.optimization.optimizer import (
         _dispatch_lever_5b_for_cluster,
     )
-    # Plan 2's adapter handles benchmark_corpus internally when None;
-    # since the bundle does not carry the raw benchmarks list, pass None
-    # (firewall degrades gracefully — see Plan 2 Task 10 docstring).
     proposals: list[dict] = []
+    _rca = getattr(bundle, "rca_evidence_typed", None) or {}
+    _lcm = getattr(bundle, "llm_cluster_by_cluster_id", None) or {}
+    _iter = int(getattr(bundle, "iteration", 0) or 0)
     for cluster_afs in bundle.cluster_afs:
-        # The adapter takes a cluster dict; AFS dicts are accepted because
-        # synthesize_example_sqls calls format_afs(cluster) which is
-        # idempotent on already-AFS-shaped dicts.
+        cluster_id = str(cluster_afs.get("cluster_id") or "")
+        llm_cluster = _lcm.get(cluster_id)
         per_cluster = _dispatch_lever_5b_for_cluster(
             cluster=dict(cluster_afs),
             metadata_snapshot=bundle.metadata_snapshot,
             w=w,
             benchmark_corpus=None,
+            rca_evidence_typed=_rca,
+            llm_cluster=llm_cluster,
+            ag_id=bundle.ag_id,
+            iteration=_iter,
         )
         for sub in (per_cluster or []):
             proposals.append(canonicalize_stage_2_proposal(

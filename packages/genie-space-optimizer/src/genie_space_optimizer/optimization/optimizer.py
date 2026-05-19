@@ -10543,6 +10543,11 @@ def _dispatch_lever_5_split(
     lever_changes: list[dict] | None = None,
     w: WorkspaceClient | None = None,
     benchmarks: list[dict] | None = None,
+    # Plan 8 Task 2 — thread Plan 5 intent-aware kwargs from caller.
+    rca_evidence_typed: dict | None = None,
+    llm_cluster_by_cluster_id: dict | None = None,
+    ag_id: str | None = None,
+    iteration: int = 0,
 ) -> dict:
     """Plan 2 — split-mode dispatcher for Lever 5.
 
@@ -10610,7 +10615,10 @@ def _dispatch_lever_5_split(
         )
 
         example_sql_proposals: list[dict] = []
+        _rca = rca_evidence_typed or {}
+        _lcm = llm_cluster_by_cluster_id or {}
         for cluster in cluster_list:
+            _cid = str(cluster.get("cluster_id") or "")
             example_sql_proposals.extend(
                 _dispatch_lever_5b_for_cluster(
                     cluster=cluster,
@@ -10618,6 +10626,10 @@ def _dispatch_lever_5_split(
                     w=w,
                     benchmark_corpus=benchmark_corpus,
                     benchmarks=benchmarks,
+                    rca_evidence_typed=_rca,
+                    llm_cluster=_lcm.get(_cid),
+                    ag_id=ag_id,
+                    iteration=int(iteration),
                 )
             )
 
@@ -10639,19 +10651,32 @@ def _select_lever_5_holistic_path(
     lever_changes: list[dict] | None = None,
     w: WorkspaceClient | None = None,
     benchmarks: list[dict] | None = None,
+    *,
+    # Plan 8 Task 2 — intent-aware kwargs forwarded to the split dispatcher.
+    rca_evidence_typed: dict | None = None,
+    llm_cluster_by_cluster_id: dict | None = None,
+    ag_id: str | None = None,
+    iteration: int = 0,
 ) -> dict:
     """Plan 2 is unconditionally on as of 2026-05-16 — the L5 result
     always comes from the split dispatcher. The historical selector
     that arbitrated between the split path, the shadow-emission
     branch, and the legacy holistic path is gone; this thin wrapper
     is kept so the existing call sites in
-    ``generate_metadata_proposals`` stay unchanged."""
+    ``generate_metadata_proposals`` stay unchanged.
+
+    Plan 8 Task 2 — forward intent-aware kwargs to ``_dispatch_lever_5_split``.
+    """
     return _dispatch_lever_5_split(
         all_clusters=all_clusters,
         metadata_snapshot=metadata_snapshot,
         lever_changes=lever_changes,
         w=w,
         benchmarks=benchmarks,
+        rca_evidence_typed=rca_evidence_typed,
+        llm_cluster_by_cluster_id=llm_cluster_by_cluster_id,
+        ag_id=ag_id,
+        iteration=int(iteration),
     )
 
 

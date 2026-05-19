@@ -12,7 +12,7 @@ empty) for skills that pass the leakage classifier. Plan 3 leaves
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -28,6 +28,10 @@ class ActivationBundle:
     equal even if their evidence text differs. This makes the bundle
     safe to use as a memoization key in
     ``three_stage_pipeline._stage_2_for_skill``.
+
+    Plan 8 Task 2 — the three optional fields at the end carry the
+    typed sidecars Plan 5's LLM intent synthesizer needs. Defaults
+    preserve byte-stability for legacy callers.
     """
     skill_id: str
     ag_id: str
@@ -41,6 +45,10 @@ class ActivationBundle:
     lever_directives_legacy: dict | None
     discovery_rationale: str
     priority: int
+    # ── Plan 8 Task 2 — intent-aware pass-through fields. ─────────────
+    rca_evidence_typed: dict = field(default_factory=dict)
+    llm_cluster_by_cluster_id: dict = field(default_factory=dict)
+    iteration: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.target_objects, tuple):
