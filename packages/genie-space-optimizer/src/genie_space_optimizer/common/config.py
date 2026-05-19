@@ -3554,6 +3554,7 @@ KNOWN_INTERNAL_RUNTIME_KEYS = frozenset({
     "_failure_clusters",
     "_cluster_synthesis_count",
     "_last_attempt_hypothesis_by_cluster",
+    "_failure_cluster_records_by_id",  # Plan 8 Task 8 — typed cluster records
     "_rls_audit",
     "_space_id",
     "_join_overlaps",

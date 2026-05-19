@@ -207,12 +207,25 @@ def _render_user_prompt(
     pass no ``metadata_snapshot`` see ``null`` and the prompt is
     byte-stable.
     """
+    # Plan 8 Task 8 — read the typed FailureCluster field first; fall
+    # back to the metadata_snapshot side-channel for byte-stable
+    # replay of pre-Plan-8 fixtures.
     last_attempt_hypothesis = None
     if metadata_snapshot is not None:
-        by_cluster = (
-            metadata_snapshot.get("_last_attempt_hypothesis_by_cluster") or {}
+        cluster_records = (
+            metadata_snapshot.get("_failure_cluster_records_by_id") or {}
         )
-        last_attempt_hypothesis = by_cluster.get(str(cluster.cluster_id))
+        fc_typed = cluster_records.get(str(cluster.cluster_id))
+        if (
+            fc_typed is not None
+            and getattr(fc_typed, "last_attempt_hypothesis", None) is not None
+        ):
+            last_attempt_hypothesis = fc_typed.last_attempt_hypothesis.to_json()
+        else:
+            by_cluster = (
+                metadata_snapshot.get("_last_attempt_hypothesis_by_cluster") or {}
+            )
+            last_attempt_hypothesis = by_cluster.get(str(cluster.cluster_id))
 
     payload = {
         "cluster_id": cluster.cluster_id,

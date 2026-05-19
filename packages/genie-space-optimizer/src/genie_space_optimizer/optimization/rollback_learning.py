@@ -653,25 +653,46 @@ def stamp_hypotheses_on_metadata_snapshot(
 ) -> None:
     """Stamp Plan-7 hypotheses onto the harness's metadata_snapshot.
 
-    Writes ``metadata_snapshot["_last_attempt_hypothesis_by_cluster"]``
-    as a dict keyed by cluster_id. Each value is the JSON
-    representation of the NextAttemptHypothesis (NOT the dataclass —
-    the side-channel survives MLflow capture serialization).
+    Plan 8 Task 8 — writes BOTH the legacy side-channel dict at
+    ``_last_attempt_hypothesis_by_cluster`` AND the typed
+    ``FailureCluster.last_attempt_hypothesis`` /
+    ``FailureCluster.hypothesis_history`` fields on each cluster
+    record at ``_failure_cluster_records_by_id`` when present. The
+    side-channel stays for byte-stable replay; the typed field is
+    the canonical reader after Plan 8.
 
-    No-op when ``hypotheses_by_cluster_id`` is empty (does NOT create
-    the metadata_snapshot key in that case).
-
-    Merges into the existing key when present — preserves any
-    per-cluster entries from prior calls within the same iteration.
+    No-op when ``hypotheses_by_cluster_id`` is empty.
     """
+    from dataclasses import replace
     if not hypotheses_by_cluster_id:
         return
+
+    # ── Side-channel (legacy / byte-stable) ──────────────────────────
     by_cluster: dict[str, dict[str, Any]] = dict(
         metadata_snapshot.get(_METADATA_SNAPSHOT_HYPOTHESIS_KEY) or {}
     )
     for cluster_id, hypothesis in hypotheses_by_cluster_id.items():
         by_cluster[str(cluster_id)] = hypothesis.to_json()
     metadata_snapshot[_METADATA_SNAPSHOT_HYPOTHESIS_KEY] = by_cluster
+
+    # ── Typed FailureCluster hydration ───────────────────────────────
+    cluster_records_by_id: dict = (
+        metadata_snapshot.get("_failure_cluster_records_by_id") or {}
+    )
+    if not cluster_records_by_id:
+        return
+    updated: dict = dict(cluster_records_by_id)
+    for cluster_id, hypothesis in hypotheses_by_cluster_id.items():
+        fc = updated.get(str(cluster_id))
+        if fc is None:
+            continue
+        new_history = fc.hypothesis_history + (hypothesis,)
+        updated[str(cluster_id)] = replace(
+            fc,
+            last_attempt_hypothesis=hypothesis,
+            hypothesis_history=new_history,
+        )
+    metadata_snapshot["_failure_cluster_records_by_id"] = updated
 
 
 # ── Plan 7 Task 11 — apply_forbidden_signatures_to_rollback_fingerprints

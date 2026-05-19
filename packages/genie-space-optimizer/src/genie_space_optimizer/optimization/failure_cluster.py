@@ -29,9 +29,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from genie_space_optimizer.optimization.repair_intent import RepairShape
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.rollback_hypothesis_typed import (
+        NextAttemptHypothesis,
+    )
 
 
 class FailureClusterIdentityError(ValueError):
@@ -62,6 +67,13 @@ class FailureCluster:
     # caller of FailureCluster(...) and from_legacy(...).
     semantic_theme: str = ""
     suggested_repair_shape: RepairShape = RepairShape.OTHER
+    # ── Plan 8 Task 8 — typed Plan-7 hypothesis fields. ─────────────
+    # Defaults preserve byte-stable construction. Hydrated by
+    # rollback_learning.stamp_hypotheses_on_metadata_snapshot when
+    # the harness exposes the typed record on
+    # metadata_snapshot["_failure_cluster_records_by_id"].
+    last_attempt_hypothesis: "NextAttemptHypothesis | None" = None
+    hypothesis_history: "tuple[NextAttemptHypothesis, ...]" = ()
 
     @property
     def affected_questions(self) -> tuple[str, ...]:

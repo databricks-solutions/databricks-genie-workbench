@@ -15096,6 +15096,12 @@ def _analyze_and_distribute(
     _cluster_findings = _clust_wrapped(_stage_ctx_clustering, _clust_inp)
     clusters = list(_cluster_findings.clusters)
     soft_clusters: list[dict] = list(_cluster_findings.soft_clusters)
+    # Plan 8 Task 8 — expose typed cluster records on metadata_snapshot
+    # so rollback_learning's stamp can hydrate the typed Plan-7
+    # hypothesis fields, and the Plan-5 synthesizer can read them.
+    metadata_snapshot["_failure_cluster_records_by_id"] = {
+        fc.cluster_id: fc for fc in _cluster_findings.cluster_records
+    }
 
     if soft_signal_rows:
         # Preserve the harness's defensive signal_type=soft setdefault
