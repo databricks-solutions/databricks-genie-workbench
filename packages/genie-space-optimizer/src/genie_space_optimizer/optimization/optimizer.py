@@ -10528,13 +10528,44 @@ def _dispatch_lever_5b_for_cluster(
     from genie_space_optimizer.common.config import _record_lever5_skill_hit
     _record_lever5_skill_hit("lever-5b-example-sql")
 
-    return [{
+    proposal_dict = {
         "example_question": proposal.get("example_question", ""),
         "example_sql": proposal.get("example_sql", ""),
         "parameters": proposal.get("parameters", []) or [],
         "usage_guidance": proposal.get("usage_guidance", "")
                           or proposal.get("rationale", ""),
-    }]
+        "patch_type": "add_example_sql",
+    }
+    # Plan 8 Task 7 — stamp the typed RepairIntent on the lean fallback
+    # proposal so ProposalSlate.repair_intents_by_id is non-empty when
+    # the LLM intent short-circuit declines.
+    archetype_name = str(proposal.get("_archetype_name") or "")
+    if archetype_name:
+        try:
+            from genie_space_optimizer.optimization.archetypes import ARCHETYPES
+            from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+                stamp_proposals_from_archetype,
+            )
+            from genie_space_optimizer.optimization.failure_cluster import (
+                FailureCluster,
+            )
+            arch = next(
+                (a for a in ARCHETYPES if a.name == archetype_name), None,
+            )
+            if arch is not None:
+                fc = FailureCluster.from_legacy(cluster)
+                stamp_proposals_from_archetype(
+                    proposals=[proposal_dict],
+                    archetype=arch,
+                    cluster=fc,
+                    ag_id=str(ag_id or ""),
+                )
+        except Exception:
+            logger.debug(
+                "Plan 8 Task 7 — lean fallback stamp failed (non-fatal)",
+                exc_info=True,
+            )
+    return [proposal_dict]
 
 
 def _dispatch_lever_5_split(

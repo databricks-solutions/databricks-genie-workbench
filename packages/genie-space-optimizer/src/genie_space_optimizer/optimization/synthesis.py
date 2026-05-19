@@ -1236,6 +1236,11 @@ def synthesize_example_sqls(
     }
     if budget is not None:
         budget.record_success(afs.get("cluster_id", "?"), archetype.name)
+    # Plan 8 Task 7 — stash the chosen archetype identity on the returned
+    # proposal so the caller (_dispatch_lever_5b_for_cluster) can stamp
+    # the typed RepairIntent via stamp_proposals_from_archetype.
+    proposal["_archetype_name"] = str(archetype.name)
+    proposal["_archetype_patch_type"] = str(archetype.patch_type)
     return proposal
 
 

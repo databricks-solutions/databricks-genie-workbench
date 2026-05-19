@@ -55,12 +55,16 @@ def test_flag_off_sql_shape_routes_lean(monkeypatch: Any) -> None:
         benchmark_corpus=None,
     )
     assert lean_mock.call_count == 1
-    assert out == [{
-        "example_question": "Q_lean",
-        "example_sql": "SELECT 1",
-        "parameters": [],
-        "usage_guidance": "G",
-    }]
+    # Plan 8 Task 7 — the lean dispatch dict now also carries
+    # patch_type (the lean fallback's stamp-prep field). Stamp itself
+    # is best-effort: when _archetype_name isn't on the synthesized
+    # proposal (as in this mock), no intent_id is added.
+    assert len(out) == 1
+    assert out[0]["example_question"] == "Q_lean"
+    assert out[0]["example_sql"] == "SELECT 1"
+    assert out[0]["parameters"] == []
+    assert out[0]["usage_guidance"] == "G"
+    assert out[0].get("patch_type") == "add_example_sql"
     assert drain_l5b_rich_path_declines() == []
 
 

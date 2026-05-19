@@ -130,12 +130,18 @@ def _normalize_rich_proposal_to_l5b_shape(
     parameters = proposal.get("parameters") or []
     if not isinstance(parameters, list):
         parameters = []
-    return {
+    normalized: dict[str, Any] = {
         "example_question": example_question,
         "example_sql": example_sql,
         "parameters": parameters,
         "usage_guidance": usage_guidance,
     }
+    # Plan 8 Task 7 — preserve _archetype_name on the normalized dict so
+    # _dispatch_rich_synthesis_for_l5b can stamp the typed RepairIntent.
+    archetype_name = str(proposal.get("_archetype_name") or "")
+    if archetype_name:
+        normalized["_archetype_name"] = archetype_name
+    return normalized
 
 
 def _dispatch_rich_synthesis_for_l5b(
@@ -228,7 +234,52 @@ def _dispatch_rich_synthesis_for_l5b(
         )
         return []
 
-    return [normalized]
+    proposals = [normalized]
+    # Plan 8 Task 7 — stamp the typed RepairIntent on every rich fallback
+    # proposal so ProposalSlate.repair_intents_by_id is non-empty when
+    # the LLM intent short-circuit declines.
+    try:
+        from genie_space_optimizer.optimization.archetypes import ARCHETYPES
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            stamp_proposals_from_archetype,
+        )
+        from genie_space_optimizer.optimization.failure_cluster import (
+            FailureCluster,
+        )
+        fc = FailureCluster.from_legacy(cluster)
+        by_arch: dict[str, list[dict[str, Any]]] = {}
+        for p in proposals:
+            name = str(p.get("_archetype_name") or "")
+            if name:
+                by_arch.setdefault(name, []).append(p)
+        ag_id_value = str(
+            getattr(cluster, "ag_id", "")
+            or (cluster.get("ag_id") if isinstance(cluster, dict) else "")
+            or ""
+        )
+        for arch_name, batch in by_arch.items():
+            arch = next(
+                (a for a in ARCHETYPES if a.name == arch_name), None,
+            )
+            if arch is None:
+                continue
+            # The normalize step strips patch_type; stamp_proposals_from_archetype
+            # requires patch_type to match archetype.patch_type, so set it
+            # here from the archetype before stamping.
+            for proposal_dict in batch:
+                proposal_dict.setdefault(
+                    "patch_type", str(arch.patch_type),
+                )
+            stamp_proposals_from_archetype(
+                proposals=batch, archetype=arch, cluster=fc,
+                ag_id=ag_id_value,
+            )
+    except Exception:
+        logger.debug(
+            "Plan 8 Task 7 — rich fallback stamp failed (non-fatal)",
+            exc_info=True,
+        )
+    return proposals
 
 
 def _build_decline_record(

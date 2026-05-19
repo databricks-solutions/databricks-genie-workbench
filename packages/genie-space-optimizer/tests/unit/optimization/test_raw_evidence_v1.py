@@ -848,7 +848,7 @@ def test_stage_2_lever_5b_never_runs_shadow(monkeypatch):
     from genie_space_optimizer.optimization import three_stage_pipeline
 
     captured = {"calls": 0}
-    def _fake_5b(cluster, metadata_snapshot, w, benchmark_corpus):
+    def _fake_5b(cluster, metadata_snapshot, w, benchmark_corpus, **_kwargs):
         captured["calls"] += 1
         return []
     monkeypatch.setattr(optimizer, "_dispatch_lever_5b_for_cluster", _fake_5b)

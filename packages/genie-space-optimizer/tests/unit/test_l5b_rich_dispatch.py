@@ -168,11 +168,14 @@ def test_normalize_extracts_canonical_l5b_fields() -> None:
         "provenance": {"source": "cluster_driven_synthesis"},
     }
     out = _normalize_rich_proposal_to_l5b_shape(rich)
+    # Plan 8 Task 7 — normalize preserves _archetype_name so the rich
+    # dispatcher can stamp the typed RepairIntent before returning.
     assert out == {
         "example_question": "Show top route",
         "example_sql": "SELECT route FROM flights GROUP BY route LIMIT 1",
         "parameters": [{"name": "k", "type": "int"}],
         "usage_guidance": "Use when ranking.",
+        "_archetype_name": "single_row_top_n",
     }
 
 
@@ -259,12 +262,19 @@ def test_dispatch_rich_returns_normalized_proposal_on_success() -> None:
         benchmarks=[],
         _synthesize=_synth_stub,
     )
-    assert out == [{
-        "example_question": "Show top route",
-        "example_sql": "SELECT route FROM flights LIMIT 1",
-        "parameters": [],
-        "usage_guidance": "Use for ranking.",
-    }]
+    # Plan 8 Task 7 — _archetype_name is preserved on the normalized
+    # dict so the dispatcher can stamp a typed RepairIntent. For a
+    # known archetype the stamp adds patch_type/intent_id/repair_intent;
+    # this test uses a synthetic name (single_row_top_n) that is not in
+    # the production catalog, so the stamp is a no-op and only the
+    # four canonical fields + _archetype_name are present.
+    assert len(out) == 1
+    p = out[0]
+    assert p["example_question"] == "Show top route"
+    assert p["example_sql"] == "SELECT route FROM flights LIMIT 1"
+    assert p["parameters"] == []
+    assert p["usage_guidance"] == "Use for ranking."
+    assert p["_archetype_name"] == "single_row_top_n"
     assert call_args["cluster"] is cluster
     assert call_args["metadata"] == {"_space_id": "test"}
     assert call_args["kwargs"]["benchmarks"] == []
