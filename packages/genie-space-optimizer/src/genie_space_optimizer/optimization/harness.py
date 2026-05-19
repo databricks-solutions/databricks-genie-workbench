@@ -18606,6 +18606,29 @@ def _run_lever_loop(
     _pls_lines = [_section("LEVER LOOP — PRE-LOOP SETUP", "-")]
     print("\n".join(_pls_lines))
 
+    # Plan 4 — register reasoning-skill prompts (rca_evidence_extraction,
+    # failure_clustering, …) to MLflow Prompt Registry. Idempotent —
+    # MLflow mints a new version only when the SKILL.md body changes.
+    # Tolerant of mlflow-unavailable environments (no-op + logs).
+    try:
+        from genie_space_optimizer.optimization.llm_prompt_registry import (
+            register_reasoning_prompts,
+        )
+        _reasoning_prompt_result = register_reasoning_prompts()
+        logger.info(
+            "register_reasoning_prompts: registered=%s skipped=%d "
+            "failed=%d mlflow_unavailable=%s",
+            _reasoning_prompt_result["registered"],
+            _reasoning_prompt_result["skipped_no_registry_name"],
+            len(_reasoning_prompt_result["failed_skills"]),
+            _reasoning_prompt_result["mlflow_unavailable"],
+        )
+    except Exception:  # noqa: BLE001 — never block job startup
+        logger.warning(
+            "register_reasoning_prompts call failed (non-fatal)",
+            exc_info=True,
+        )
+
     baseline_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
     reference_sqls: dict[str, str] = {}
     reference_result_hashes: dict[str, str] = {}

@@ -132,3 +132,20 @@ def test_helper_is_idempotent_across_repeated_invocations() -> None:
 
     assert result1["registered"] == result2["registered"]
     assert register_prompt_stub.call_count == 2 * len(result1["registered"])
+
+
+def test_harness_module_invokes_register_reasoning_prompts() -> None:
+    """Cheap import-level pin: harness.py must contain the
+    register_reasoning_prompts call at iteration-0 setup. If the
+    inline import block drifts, this test fails loud."""
+    import importlib
+    from genie_space_optimizer.optimization import harness
+
+    source = importlib.util.find_spec(harness.__name__).origin
+    with open(source, encoding="utf-8") as f:
+        body = f.read()
+    assert "register_reasoning_prompts" in body, (
+        "harness.py must invoke register_reasoning_prompts at "
+        "iteration-0 setup; the call was apparently removed or "
+        "renamed"
+    )
