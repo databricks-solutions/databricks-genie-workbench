@@ -90,7 +90,11 @@ def parse_iteration_records(
                 structural_gate_roots=tuple(
                     str(r) for r in (it.get("structural_gate_roots") or ())
                 ),
-                full_eval=dict(it.get("full_eval") or {}),
+                full_eval=(
+                    dict(it["full_eval"])
+                    if isinstance(it.get("full_eval"), Mapping)
+                    else {}
+                ),
             )
         )
     return tuple(out)
@@ -358,6 +362,43 @@ class AnchorChainVerifier:
                 reasons=(
                     f"missing_rca_card emitted for {rec.ag_id}; "
                     f"attempted_archetypes={list(attempted)}",
+                ),
+            )
+
+        # Failure mode 1b — IMPLICIT missing_rca_card (pre-WU-3.5
+        # signature). The synthesizer silently emits an empty
+        # ``no_structural_candidate`` payload, the directive_outcome
+        # records ``no_structural_candidate`` for at least one lever,
+        # and ``terminal_reason == "proposal_generation_empty"``.
+        # In pre-WU-3.5 production this is the load-bearing bug
+        # shape: the RCA card resolver returned a thin id-only dict,
+        # ``intended_patch_shape`` read as ``""``, the structural
+        # synthesizer had no intent, and the AG fell through to an
+        # empty proposal slate without ever stamping
+        # ``skipped_reason="missing_rca_card"``. Tag it explicitly so
+        # the verifier detects this exact shape (WU-C self-tests
+        # depend on the ``missing_rca_card`` reason substring).
+        directive_marks_nsc = any(
+            "no_structural_candidate" in str(v).lower()
+            for v in rec.directive_outcome.values()
+        )
+        if (
+            not nsc
+            and directive_marks_nsc
+            and rec.terminal_reason == "proposal_generation_empty"
+        ):
+            return AnchorVerdict(
+                qid_suffix=qid_suffix,
+                cluster_id=cluster_id,
+                iteration=rec.iteration,
+                lifecycle_path=LifecyclePath.UNKNOWN,
+                passed=False,
+                reasons=(
+                    f"implicit missing_rca_card for {rec.ag_id}: "
+                    f"empty no_structural_candidate, "
+                    f"directive_outcome={dict(rec.directive_outcome)}, "
+                    f"terminal_reason='proposal_generation_empty' "
+                    f"(pre-WU-3.5 signature)",
                 ),
             )
 

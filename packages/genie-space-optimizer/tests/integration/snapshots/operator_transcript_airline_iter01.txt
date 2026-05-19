@@ -46,35 +46,42 @@
 **What happened:**
 - (trace not available)
 
-### 7. Safety Gates
+### 7. Candidate Critique
+
+**Why this stage exists:** Before the expensive full-eval cycle, an LLM critique scores each candidate against its failure evidence — addresses target failure, overgeneralization risk, predicted neighbor regressions, shape match. Advisory by default; flip GSO_CRITIQUE_GATE_ENFORCING=true to filter discard verdicts.
+
+**What happened:**
+- (trace not available)
+
+### 8. Safety Gates
 
 **Why this stage exists:** RCA-groundedness, blast-radius, patch-cap, and applyability gates keep patches causal, bounded, and safe.
 
 **What happened:**
 - (trace not available)
 
-### 8. Applied Patches
+### 9. Applied Patches
 
 **Why this stage exists:** Only surviving patches are applied to the candidate Genie Space; this is the state-changing step.
 
 **What happened:**
 - (trace not available)
 
-### 9. Post-Patch Evaluation
+### 10. Post-Patch Evaluation
 
 **Why this stage exists:** The patched space is evaluated again to measure target fixes, protected-question regressions, and overall score movement. Today this re-uses the same evaluation primitive as Stage 1; Phase H captures it as a separate transcript entry for process clarity.
 
 **What happened:**
 - (trace not available)
 
-### 10. Acceptance / Rollback
+### 11. Acceptance / Rollback
 
 **Why this stage exists:** The control plane keeps changes that safely improve the objective and rolls back changes that do not.
 
 **What happened:**
 - (trace not available)
 
-[STAGE 10: acceptance_decision] fixture: airline_1105451933925748_iter01
+[STAGE 11: acceptance_decision] fixture: airline_1105451933925748_iter01
 ─ Input ─────────────────────────────────────────────────────────────────
 applied_entries_by_ag   : {AG_DECOMPOSED_H004=[]}
 ags                     : ({'affected_questions': ['airline_ticketing_and_fare_analysis_gs_024'], 'id': 'AG_DECOMPOSED_H004', 'target_qids': ['airline_ticketing_and_fare_analysis_gs_024']})
@@ -92,18 +99,19 @@ cluster_by_qid          : {airline_ticketing_and_fare_analysis_gs_024='C1'}
 thresholds_met          : True
 canonical_decisions_by_ag_id: {}
 ─ Output ────────────────────────────────────────────────────────────────
-outcomes_by_ag          : {AG_DECOMPOSED_H004=AgOutcomeRecord(ag_id='AG_DECOMPOSED_H004', outcome='rolled_back', reason_code='missing_pre_rows', target_qids=('airline_ticketing_and_fare_analysis_gs_024',), affected_qids=('airline_ticketing_and_fare_analysis_gs_024',), content_fingerprints=())}
+outcomes_by_ag          : {AG_DECOMPOSED_H004=AgOutcomeRecord(ag_id='AG_DECOMPOSED_H004', outcome='rolled_back', reason_code='missing_pre_rows', target_qids=('airline_ticketing_and_fare_analysis_gs_024',), affected_qids=('airline_ticketing_and_fare_analysis_gs_024',), content_fingerprints=(), intent_outcomes=())}
 qid_resolutions         : {airline_ticketing_and_fare_analysis_gs_001='fail_to_pass', airline_ticketing_and_fare_analysis_gs_002='fail_to_pass', airline_ticketing_and_fare_analysis_gs_003='fail_to_pass', airline_ticketing_and_fare_analysis_gs_004='fail_to_pass', ... (1 more)}
 rolled_back_content_fingerprints: ()
+intent_outcomes_by_id   : {}
 
-### 11. Learning / Next Action
+### 12. Learning / Next Action
 
 **Why this stage exists:** The loop records what worked, what failed, and what the next iteration or human operator should do.
 
 **What happened:**
 - (trace not available)
 
-[STAGE 11: learning_next_action] fixture: airline_1105451933925748_iter01
+[STAGE 12: learning_next_action] fixture: airline_1105451933925748_iter01
 ─ Input ─────────────────────────────────────────────────────────────────
 iteration               : 1
 attempted               : True
@@ -119,14 +127,14 @@ iteration_summaries     : (IterationSummary(iteration=1, attempted=True, verdict
 terminate               : False
 terminate_reason        : ''
 
-### 12. Bundle Assembly
+### 13. Bundle Assembly
 
 **Why this stage exists:** Stage captures are normalized to dict shape before the postmortem bundle is assembled, closing D-4 so no downstream consumer can encounter AttributeError on list-valued captures.
 
 **What happened:**
 - (trace not available)
 
-[STAGE 12: bundle_assembly]     fixture: airline_1105451933925748_iter01
+[STAGE 13: bundle_assembly]     fixture: airline_1105451933925748_iter01
 ─ Input ─────────────────────────────────────────────────────────────────
 run_id                  : 'airline_1105451933925748_iter01'
 iteration               : 1
@@ -138,14 +146,14 @@ normalized_captures     : {acceptance_decision={'outcomes_by_ag': {'AG_DECOMPOSE
 list_normalizations     : ()
 exception               : (none)
 
-### 13. Run Manifest
+### 14. Run Manifest
 
 **Why this stage exists:** Databricks IDs (job, parent run, task run) are resolved from environment variables and dbutils tags and written to the canonical experimental-setup record so D-5 blank-ID regressions cannot recur.
 
 **What happened:**
 - (trace not available)
 
-[STAGE 13: run_manifest]        fixture: airline_1105451933925748_iter01
+[STAGE 14: run_manifest]        fixture: airline_1105451933925748_iter01
 ─ Input ─────────────────────────────────────────────────────────────────
 env                     : {DATABRICKS_JOB_ID='REDACTED_JOB_ID', DATABRICKS_RUN_ID='REDACTED_RUN_ID', DATABRICKS_TASK_RUN_ID='REDACTED_TASK_RUN_ID'}
 dbutils_available       : False
@@ -164,7 +172,7 @@ dbutils_succeeded       : False
 jobs_api_attempted      : False
 jobs_api_succeeded      : False
 
-### 14. Contract Health
+### 15. Contract Health
 
 **Why this stage exists:** The run reports whether journey validation, decision records, and artifact persistence are complete enough for postmortem analysis.
 

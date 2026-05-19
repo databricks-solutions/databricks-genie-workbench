@@ -7,7 +7,9 @@
       "title": "replay_validity_violated",
       "detail": "replay reports 25 illegal trunk transitions",
       "violation_count": 25,
-      "violation_details": {"forbidden_repeat": 25}
+      "violation_details": {
+        "forbidden_repeat": 25
+      }
     }
   ],
   "medium_tier_violations": [],
@@ -15,5 +17,15 @@
   "phase_h_validator_status": "ok",
   "bundle_status": "complete",
   "replay_is_valid": false,
-  "replay_violation_count": 25
+  "replay_violation_count": 25,
+  "proposal_stage_forbidden_ag_observed_count_by_call_site": [
+    [
+      "cluster_driven_synthesis",
+      0
+    ],
+    [
+      "force_lever6",
+      0
+    ]
+  ]
 }

@@ -33,7 +33,12 @@ def test_falls_back_to_notebook_output_result_when_logs_empty():
     assert missing is not None
     assert missing.kind == MissingPieceKind.STDOUT_FALLBACK_NOTEBOOK_OUTPUT
     assert "logs field empty" in missing.diagnosis
-    assert "notebook task" in missing.diagnosis
+    # Phase 0.1 refactor of the diagnosis template: the helper now
+    # cites the source by its canonical name
+    # (``notebook_output.result``) and the Databricks Jobs API
+    # provenance, rather than the older "notebook task" phrasing.
+    assert "notebook_output.result" in missing.diagnosis
+    assert "Databricks Jobs API" in missing.diagnosis
 
 
 def test_returns_empty_string_and_no_fallback_when_both_empty():

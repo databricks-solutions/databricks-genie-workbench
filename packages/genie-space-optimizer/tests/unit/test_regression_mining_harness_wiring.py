@@ -418,23 +418,46 @@ def test_harness_guards_control_plane_regression_with_kill_switch() -> None:
     """The rollback-driving ``control_plane_acceptance`` regression must
     be guarded by ``ENABLE_CONTROL_PLANE_ACCEPTANCE`` so operators have
     a kill switch if the new gate over-rejects.
+
+    Phase 1 acceptance unification (2026-05-16) moved the guard from
+    an inline ``ENABLE_CONTROL_PLANE_ACCEPTANCE and not
+    _control_plane_decision.accepted`` block in ``harness.py`` to the
+    typed acceptance pipeline at
+    ``acceptance_outcome.build_acceptance_outcome``. The harness now
+    threads the flag via the ``enable_control_plane_acceptance``
+    kwarg; the actual short-circuit lives in ``acceptance_outcome``.
+    This test verifies both halves so a future refactor that drops
+    the flag still trips the kill-switch contract.
     """
     import inspect
 
-    from genie_space_optimizer.optimization import harness
+    from genie_space_optimizer.optimization import (
+        acceptance_outcome,
+        harness,
+    )
 
-    src = inspect.getsource(harness)
-
-    assert "ENABLE_CONTROL_PLANE_ACCEPTANCE" in src, (
+    harness_src = inspect.getsource(harness)
+    assert "ENABLE_CONTROL_PLANE_ACCEPTANCE" in harness_src, (
         "harness must import the control-plane acceptance flag"
     )
     assert (
-        "ENABLE_CONTROL_PLANE_ACCEPTANCE\n"
-        "        and not _control_plane_decision.accepted"
-    ) in src, (
-        "control_plane_acceptance regression append must be guarded by "
-        "ENABLE_CONTROL_PLANE_ACCEPTANCE so operators can disable "
-        "rollback while keeping diagnostics."
+        "enable_control_plane_acceptance=ENABLE_CONTROL_PLANE_ACCEPTANCE"
+        in harness_src
+    ), (
+        "harness must thread ENABLE_CONTROL_PLANE_ACCEPTANCE through to "
+        "build_acceptance_outcome via the enable_control_plane_acceptance "
+        "kwarg so operators can disable rollback while keeping diagnostics."
+    )
+
+    acceptance_src = inspect.getsource(acceptance_outcome)
+    assert (
+        "enable_control_plane_acceptance and not "
+        "control_plane_decision.accepted"
+    ) in acceptance_src, (
+        "acceptance_outcome.build_acceptance_outcome must guard the "
+        "control-plane regression short-circuit on "
+        "enable_control_plane_acceptance so the flag actually disables "
+        "rollback when False."
     )
 
 

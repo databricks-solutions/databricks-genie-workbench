@@ -63,12 +63,17 @@ def test_capture_records_synthesis_entries_when_present(tmp_path: Path):
     new ``llm_call_log`` shape (the legacy ``synthesis_calls`` field
     is no longer read; recapture against a Phase-3.5 run for full
     coverage)."""
+    # Phase 3.6.1 (2026-05-18) — tape side-tables (evals_by_iteration,
+    # clusters_by_iteration, iteration_payloads) MUST be 0-indexed.
+    # The synthesis path can fire at any iteration; the side-tables
+    # here only need to start at 0 to satisfy LeverLoopTape's
+    # construction-time invariant.
     export = {
         "fixture_id": "fx-2",
         "source_run_id": "run-xyz",
         "iterations": [
             {
-                "iteration": 2,
+                "iteration": 0,
                 "eval_rows": [],
                 "clusters": [],
                 "soft_clusters": [],
@@ -76,7 +81,7 @@ def test_capture_records_synthesis_entries_when_present(tmp_path: Path):
                 "llm_call_log": [
                     {
                         "span_name": "cluster_driven_synthesis",
-                        "iteration": 2,
+                        "iteration": 0,
                         "ag_id": "AG_001",
                         "cluster_id": "H001",
                         "prompt_sha256": "a" * 64,

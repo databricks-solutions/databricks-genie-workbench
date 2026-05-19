@@ -27,12 +27,30 @@ def _row(qid: str, *, hard: bool = False, passing: bool = False) -> dict:
 
 
 def test_accepts_pre_arbiter_improvement_when_post_arbiter_saturated():
-    """Iter-3 case: post 91.7 → 91.7 (delta 0); pre 83.3 → 87.5 (delta +4.2)."""
+    """Iter-3 case: post 91.7 → 91.7 (delta 0); pre 83.3 → 87.5 (delta
+    +4.2); target q23 IS causally fixed in post-arbiter rows.
+
+    WU-4 (2026-05-18) tightened the gate: pre-arbiter improvement
+    alone no longer accepts when the causal target stays hard
+    (reason_code ``pre_arbiter_improvement_without_causal_fix``).
+    To accept, the target must flip to passing in the post-arbiter
+    rows AND the pre-arbiter delta must clear the threshold. This
+    test pins the WU-4 acceptance shape — target q23 flips to
+    passing post-arbiter, q24 remains hard outside the target set,
+    and pre-arbiter raw-genie gains +4.2pp.
+    """
     pre_rows = [_row(f"q{i}", passing=True) for i in range(22)] + [
         _row("q23", hard=True),
         _row("q24", hard=True),
     ]
-    post_rows = pre_rows  # same hard set, but pre-arbiter raw genie better
+    # WU-4: post must show target_fixed for the pre-arbiter branch
+    # to be eligible. q23 (the target) flips to passing; q24 stays
+    # hard so the post-arbiter accuracy still ties (24 - 1 fixed +
+    # 0 new collateral / 24 = saturated).
+    post_rows = [_row(f"q{i}", passing=True) for i in range(22)] + [
+        _row("q23", passing=True),
+        _row("q24", hard=True),
+    ]
 
     decision = decide_control_plane_acceptance(
         baseline_accuracy=91.7,

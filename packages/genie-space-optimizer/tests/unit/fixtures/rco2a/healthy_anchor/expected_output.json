@@ -7,5 +7,15 @@
   "phase_h_validator_status": "ok",
   "bundle_status": "complete",
   "replay_is_valid": true,
-  "replay_violation_count": 0
+  "replay_violation_count": 0,
+  "proposal_stage_forbidden_ag_observed_count_by_call_site": [
+    [
+      "cluster_driven_synthesis",
+      0
+    ],
+    [
+      "force_lever6",
+      0
+    ]
+  ]
 }

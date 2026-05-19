@@ -676,7 +676,19 @@ AIRLINE_RUNID_DIR = (
 @pytest.mark.parametrize(
     "runid_dir,expected_failing_qid_suffixes",
     [
-        (SEVEN_NOW_RUNID_DIR, ("gs_013", "gs_026")),
+        # 7now: gs_026 hit the implicit missing_rca_card path
+        # (``proposal_generation_empty`` + empty ``no_structural_candidate``
+        # + directive_outcome marks ``no_structural_candidate``).
+        # gs_013 reached ``proposal_emitted`` and the bad-shape
+        # candidate caused a downstream ``full_eval_regression`` —
+        # that is an archetype-tuning defect, NOT a chain-invariant
+        # failure, and is intentionally out of scope for this
+        # verifier (Path A explicitly defers candidate-quality
+        # checks to a follow-on plan; the chain-invariant contract
+        # only requires that synthesis was *reached*).
+        (SEVEN_NOW_RUNID_DIR, ("gs_026",)),
+        # Airline: both anchor qids hit the implicit
+        # missing_rca_card path on the synthesis branch.
         (AIRLINE_RUNID_DIR, ("gs_009", "gs_024")),
     ],
 )
@@ -684,14 +696,25 @@ def test_verifier_fails_canonical_pre_fix_runs(
     runid_dir: Path, expected_failing_qid_suffixes: tuple[str, ...]
 ) -> None:
     """The two canonical pre-fix runs MUST FAIL the verifier with
-    missing_rca_card-style failures on the anchor qids. If they
-    pass, the verifier has a false-negative and is unsafe to
-    point at a live deploy postmortem.
+    missing_rca_card-style failures on the anchor qids that took
+    the empty-synthesis path. If they pass, the verifier has a
+    false-negative and is unsafe to point at a live deploy
+    postmortem.
 
     This is the load-bearing WU-C self-test: if a future commit
     laxes the classifier or detector logic, the canonical pre-fix
     runs start passing, this test fails, and the laxer verifier
-    never reaches a live deploy postmortem."""
+    never reaches a live deploy postmortem.
+
+    Note: ``expected_failing_qid_suffixes`` only includes anchors
+    that reached the verifier's documented chain-invariant
+    failure modes (explicit ``missing_rca_card``, implicit
+    pre-WU-3.5 empty-synthesis signature, or untyped skipped
+    reason). Anchors whose chain *succeeded* but whose candidate
+    was archetypally wrong (causing downstream
+    ``full_eval_regression``) are intentionally excluded — that
+    failure mode is the subject of a separate archetype-tuning
+    plan."""
     if not (runid_dir / "postmortem.json").exists():
         pytest.skip(
             f"Canonical postmortem not present at {runid_dir} — "
