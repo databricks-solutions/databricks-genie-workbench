@@ -25,12 +25,15 @@ def test_dataclass_mixes_in_json_round_trip() -> None:
 
 
 def test_field_set_includes_intent_id_plus_eight_llm_fields() -> None:
+    # Plan 9 Task 1 — target_objects added (LLM-emitted typed slice
+    # that will replace archetype-derived AssetSlice).
     field_names = {f.name for f in dataclasses.fields(RepairProposal)}
     assert field_names == {
         "intent_id",
         "intent_name", "intent_description", "repair_shape",
         "patch_type", "rationale", "confidence",
         "patch_body", "blame_set",
+        "target_objects",
     }
 
 

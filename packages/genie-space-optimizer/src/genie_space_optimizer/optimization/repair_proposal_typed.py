@@ -32,6 +32,10 @@ from genie_space_optimizer.optimization.repair_intent import (
     RepairShape,
 )
 from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
+from genie_space_optimizer.optimization.target_object_typed import (
+    AssetKind,
+    TargetObject,
+)
 
 
 class PatchBodyValidationError(ValueError):
@@ -80,6 +84,11 @@ class RepairProposal(JsonRoundTrip):
     confidence: Literal["high", "medium", "low"]
     patch_body: dict[str, Any]
     blame_set: tuple[str, ...]
+    # Plan 9 Task 1 — LLM-emitted typed slice. Replaces archetype-
+    # derived AssetSlice picking (which lived in pick_archetype +
+    # _derive_asset_slice_from_afs). Default () for backward
+    # compatibility with pre-Plan-9 serialized proposals.
+    target_objects: tuple[TargetObject, ...] = ()
 
     @classmethod
     def from_llm_output(
@@ -90,6 +99,19 @@ class RepairProposal(JsonRoundTrip):
     ) -> "RepairProposal":
         """Bridge from Pydantic LlmRepairProposalOutput to the
         dataclass."""
+        target_objects_raw = (
+            getattr(pydantic_inst, "target_objects", None) or []
+        )
+        target_objects = tuple(
+            TargetObject(
+                asset_kind=AssetKind(getattr(t, "asset_kind", "table")),
+                identifier=str(getattr(t, "identifier", "")),
+                columns=tuple(
+                    str(c) for c in (getattr(t, "columns", None) or [])
+                ),
+            )
+            for t in target_objects_raw
+        )
         return cls(
             intent_id=str(intent_id),
             intent_name=str(pydantic_inst.intent_name),
@@ -102,6 +124,7 @@ class RepairProposal(JsonRoundTrip):
             blame_set=tuple(
                 str(b) for b in pydantic_inst.blame_set or ()
             ),
+            target_objects=target_objects,
         )
 
     def to_proposal_dict(self) -> dict[str, Any]:
@@ -197,7 +220,22 @@ class RepairProposal(JsonRoundTrip):
             blame_set=self.blame_set,
             rca_card_id=str(getattr(cluster, "rca_card_id", "")),
             ag_id=str(ag_id),
+            target_objects=self.target_objects,
         )
+
+    def to_json(self) -> dict:  # type: ignore[override]
+        return {
+            "intent_id": self.intent_id,
+            "intent_name": self.intent_name,
+            "intent_description": self.intent_description,
+            "repair_shape": self.repair_shape.value,
+            "patch_type": self.patch_type.value,
+            "rationale": self.rationale,
+            "confidence": self.confidence,
+            "patch_body": dict(self.patch_body),
+            "blame_set": list(self.blame_set),
+            "target_objects": [t.to_json() for t in self.target_objects],
+        }
 
     @classmethod
     def from_json(cls, payload: dict) -> "RepairProposal":  # type: ignore[override]
@@ -212,5 +250,9 @@ class RepairProposal(JsonRoundTrip):
             patch_body=dict(payload.get("patch_body") or {}),
             blame_set=tuple(
                 str(b) for b in payload.get("blame_set") or ()
+            ),
+            target_objects=tuple(
+                TargetObject.from_json(t)
+                for t in (payload.get("target_objects") or ())
             ),
         )
