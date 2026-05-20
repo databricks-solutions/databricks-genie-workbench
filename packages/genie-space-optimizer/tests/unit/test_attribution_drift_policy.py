@@ -57,20 +57,21 @@ def test_attribution_drift_policy_pilot_default_is_distinct_from_partial_harvest
     assert len(harvest.allowed_debt_buckets) == 1
 
 
-def test_attribution_drift_policy_from_config_default_off_returns_hard_zero() -> None:
-    """When GSO_ATTRIBUTION_DRIFT_WITH_DEBT is unset (default-OFF),
-    the from_config helper returns the hard-zero policy — the path
-    is unreachable, matching the partial-harvest convention."""
-    import os
+def test_attribution_drift_policy_from_config_default_on_returns_pilot(
+    monkeypatch,
+) -> None:
+    """When GSO_ATTRIBUTION_DRIFT_WITH_DEBT is unset (default-ON after T11.C),
+    the from_config helper returns the pilot default."""
+    monkeypatch.delenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", raising=False)
 
     from genie_space_optimizer.optimization.acceptance_policy import (
-        RegressionDebtPolicy,
         attribution_drift_policy_from_config,
+        attribution_drift_policy_pilot_default,
     )
 
-    os.environ.pop("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", None)
-    policy = attribution_drift_policy_from_config()
-    assert policy == RegressionDebtPolicy()  # hard-zero default
+    assert attribution_drift_policy_from_config() == (
+        attribution_drift_policy_pilot_default()
+    )
 
 
 def test_attribution_drift_policy_from_config_flag_on_returns_pilot(monkeypatch) -> None:
@@ -107,17 +108,15 @@ def test_attribution_drift_policy_validation_rejects_negative_floor() -> None:
         )
 
 
-def test_attribution_drift_with_debt_flag_defaults_off(monkeypatch) -> None:
-    """The new flag is default-OFF. Phase 0.2 must validate offline
-    before this flips. Mirrors the existing GSO_PARTIAL_HARVEST_WITH_DEBT
-    default-OFF convention (config.py:5361)."""
+def test_attribution_drift_with_debt_flag_defaults_on(monkeypatch) -> None:
+    """Plan 9 T11.C — Phase 0.2 offline replay passed; flag is default-ON."""
     monkeypatch.delenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", raising=False)
 
     from genie_space_optimizer.common.config import (
         attribution_drift_with_debt_enabled,
     )
 
-    assert attribution_drift_with_debt_enabled() is False
+    assert attribution_drift_with_debt_enabled() is True
 
 
 def test_attribution_drift_with_debt_flag_truthy_env_enables(monkeypatch) -> None:

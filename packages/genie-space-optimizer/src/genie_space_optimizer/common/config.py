@@ -6609,15 +6609,16 @@ def attribution_drift_with_debt_enabled() -> bool:
     ``min_target_clusters_fixed=0``, ``min_aggregate_improvement_pp=4.0``,
     debt buckets ``{SOFT_TO_HARD, LOOKUP_FAILED}``.
 
-    Default-OFF. Phase 0.2 (offline replay under the new policy) must
-    return ``pass_criterion_met=true`` before this flips.
+    Plan 9 T11.C — default flipped to ON after Phase 0.2 offline replay
+    returned ``pass_criterion_met=true`` (see
+    ``tests/replay/test_policy_replay_phase0_predictions.py``).
 
-    Enable with ``GSO_ATTRIBUTION_DRIFT_WITH_DEBT=1``.
+    Set ``GSO_ATTRIBUTION_DRIFT_WITH_DEBT=0`` to force off (escape hatch).
 
     Evidence anchor:
     docs/2026-05-13-acceptance-gate-redesign-design-record.md
     """
-    return _flag_enabled("GSO_ATTRIBUTION_DRIFT_WITH_DEBT")
+    return _flag_default_on("GSO_ATTRIBUTION_DRIFT_WITH_DEBT")
 
 
 def directive_outcome_coverage_enabled() -> bool:

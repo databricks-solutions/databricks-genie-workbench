@@ -44,7 +44,7 @@ def _ccf1d60d_inputs() -> dict:
 
 def test_attribution_drift_branch_off_legacy_rejection_preserved(monkeypatch) -> None:
     """Flag off → legacy rejection reason is preserved."""
-    monkeypatch.delenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", raising=False)
+    monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "0")
     monkeypatch.delenv("GSO_PARTIAL_HARVEST_WITH_DEBT", raising=False)
 
     from genie_space_optimizer.optimization.control_plane import (
@@ -64,8 +64,8 @@ def test_attribution_drift_branch_off_legacy_rejection_preserved(monkeypatch) ->
 
 
 def test_attribution_drift_branch_on_flips_to_accepted_with_debt(monkeypatch) -> None:
-    """Flag on → ccf1d60d shape flips to accepted_with_attribution_drift_and_debt."""
-    monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "1")
+    """Flag on (default after T11.C) → ccf1d60d shape flips to accepted_with_attribution_drift_and_debt."""
+    monkeypatch.delenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", raising=False)
     monkeypatch.delenv("GSO_PARTIAL_HARVEST_WITH_DEBT", raising=False)
 
     from genie_space_optimizer.optimization.control_plane import (
