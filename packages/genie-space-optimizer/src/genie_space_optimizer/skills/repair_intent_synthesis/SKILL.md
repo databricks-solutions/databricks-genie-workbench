@@ -109,6 +109,44 @@ the deterministic Archetype adapter.
   the column's semantic meaning).
 </patch_body_shapes>
 
+<target_objects>
+
+For every repair you propose, emit a `target_objects` array listing the assets the repair touches.
+
+Each entry has three fields:
+- `asset_kind`: one of `"table"`, `"metric_view"`, `"column"`.
+- `identifier`: fully qualified name (`catalog.schema.name` for tables and metric views; `catalog.schema.table.column_name` for columns).
+- `columns`: for `"table"` and `"metric_view"`, list the subset of columns the repair will touch (typically 1-8). For `"column"`, leave as an empty array.
+
+The slice must come from the cluster's blame_set and the schema you were shown — do not invent identifiers. Reusing identifiers verbatim is correct and expected; the downstream resolver will fail-loud if an identifier is not present in the schema.
+
+For `repair_shape == "other"` or patch types that do not target a slice (e.g. `add_instruction`), an empty `target_objects` array is allowed.
+
+Examples:
+
+For a top-N example SQL repair on the orders table:
+```
+"target_objects": [
+  {
+    "asset_kind": "table",
+    "identifier": "main.sales.orders",
+    "columns": ["product_id", "amount"]
+  }
+]
+```
+
+For a metric-view refinement adding a new measure:
+```
+"target_objects": [
+  {
+    "asset_kind": "metric_view",
+    "identifier": "main.sales.daily_orders_mv",
+    "columns": ["order_amount_sum"]
+  }
+]
+```
+</target_objects>
+
 <output_envelope>
 Return EXACTLY ONE JSON object with this shape:
 
@@ -121,7 +159,8 @@ Return EXACTLY ONE JSON object with this shape:
     "rationale": "<one sentence, ≤200 chars, explaining why this proposal fixes the cluster>",
     "confidence": "<one of: high | medium | low>",
     "patch_body": { <per-patch-type fields — see <patch_body_shapes> above> },
-    "blame_set": ["<catalog.schema.table.column>", ...]
+    "blame_set": ["<catalog.schema.table.column>", ...],
+    "target_objects": [ <see <target_objects> section above; [] is allowed for repair_shape="other" or add_instruction> ]
   } | null,
   "declined": null | {
     "reason": "<one of: insufficient_signal | ambiguous_failure | schema_does_not_support_shape | blame_set_too_sparse | no_applicable_patch_type | context_token_budget_exceeded | other>",

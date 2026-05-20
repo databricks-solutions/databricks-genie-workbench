@@ -15,13 +15,48 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from genie_space_optimizer.optimization.prompt_io import LLMOutputContract
 from genie_space_optimizer.optimization.repair_intent import (
     PatchType,
     RepairShape,
 )
+
+
+class LlmTargetObject(BaseModel):
+    """Plan 9 Task 1 — LLM-emitted typed slice. Bridges to
+    ``TargetObject`` dataclass in target_object_typed.py.
+
+    Strict mode + extra=forbid mirror the ``LLMOutputContract`` base
+    used by ``LlmRepairProposalOutput``.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    asset_kind: Literal["table", "metric_view", "column"] = Field(
+        description=(
+            "The kind of asset this slice points at. "
+            "'table' for base tables; 'metric_view' for UC metric "
+            "views; 'column' for a single named column."
+        ),
+    )
+    identifier: str = Field(
+        min_length=1,
+        description=(
+            "Fully qualified name. For 'table'/'metric_view': "
+            "'catalog.schema.name'. For 'column': "
+            "'catalog.schema.table.column_name'."
+        ),
+    )
+    columns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "For 'table'/'metric_view': the subset of columns the "
+            "repair will touch (typically 1-8). For 'column': empty "
+            "list."
+        ),
+    )
 
 
 class LlmRepairProposalOutput(LLMOutputContract):
@@ -92,5 +127,18 @@ class LlmRepairProposalOutput(LLMOutputContract):
             "AG's identifier allowlist — references outside the "
             "allowlist are rejected by the validator and trigger "
             "fallback to ``intent_from_archetype``."
+        ),
+    )
+    target_objects: list[LlmTargetObject] = Field(
+        default_factory=list,
+        description=(
+            "Plan 9 — typed slice replacing archetype-derived "
+            "AssetSlice. The LLM emits the assets (tables, metric "
+            "views, columns) the repair targets. Empty list is "
+            "allowed only when repair_shape == 'other' or "
+            "patch_type does not require a slice (e.g. "
+            "'add_instruction'). After Plan 9 PR2 (catalog "
+            "deletion), this becomes required for shape-keyed "
+            "repairs."
         ),
     )
