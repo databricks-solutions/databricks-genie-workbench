@@ -40,18 +40,18 @@ from genie_space_optimizer.optimization import harness
 # it replaces.
 _REFLECTION_WRITE_WHITELIST: frozenset[int] = frozenset({
     # (a) Pre-AG-selection — no AG in scope.
-    19204,  # blast_radius_rejected, reserved-recovery early-terminate
-    20686,  # no_structural_candidate, no_actionable_clusters
-    22394,  # no_action_group_emitted, strategy_zero_ags
-    23102,  # WU-3 (2026-05-18) early_preflight_<reason>, slate-level
+    19218,  # blast_radius_rejected, reserved-recovery early-terminate
+    20700,  # no_structural_candidate, no_actionable_clusters
+    22408,  # no_action_group_emitted, strategy_zero_ags
+    23116,  # WU-3 (2026-05-18) early_preflight_<reason>, slate-level
             # apply_admission_trace SKIP_AG decision before per-AG
             # processing begins — no AG to retire yet.
     # (b) Per-AG, reflection write precedes the typed marker emit.
-    22707,  # ag_collision_with_forbidden_set
-    24812,  # proposal_generation_empty
-    26420,  # no_rca_ground
-    29347,  # no_applied_patches DOA
-    29647,  # Phase 0.3 Task 10 — applier_failed short-circuit
+    22721,  # ag_collision_with_forbidden_set
+    24864,  # proposal_generation_empty
+    26472,  # no_rca_ground
+    29399,  # no_applied_patches DOA
+    29699,  # Phase 0.3 Task 10 — applier_failed short-circuit
             # (Genie API rejected the PATCH payload as
             # SCHEMA_FAILURE/INFRA_FAILURE). Terminates as
             # ``unknown`` because no closed-vocab structural reason
@@ -59,7 +59,7 @@ _REFLECTION_WRITE_WHITELIST: frozenset[int] = frozenset({
             # reflection write reaches this AG.
     # (b) Full-eval path: gate result handling, reflection write
     # happens later in the rollback or accept paths.
-    29839,  # full_eval / accepted, write in gate-result branch
+    29891,  # full_eval / accepted, write in gate-result branch
 })
 
 

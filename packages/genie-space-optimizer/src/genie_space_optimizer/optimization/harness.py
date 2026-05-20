@@ -3138,6 +3138,13 @@ def _force_lever6_proposal_for_ag(
     metadata_snapshot: dict,
     decision_emit,
     generate_lever6,
+    # Plan 9 Task 5 — Plan-5 typed inputs lifted from **lever6_kwargs
+    # to first-class params so they MUST be passed explicitly and the
+    # static type checker catches missing wire-in. Without this, the
+    # Plan-5 L6 short-circuit at _generate_lever6_proposal
+    # (optimizer.py:14122) silently never fires on the forced-L6 path.
+    rca_evidence_typed: dict | None = None,
+    llm_cluster: Any = None,
     **lever6_kwargs,
 ) -> dict | None:
     """Cycle 7 N3 — when the predicate fires, invoke ``generate_lever6``
@@ -3170,7 +3177,14 @@ def _force_lever6_proposal_for_ag(
 
     try:
         proposal = generate_lever6(
-            cluster, metadata_snapshot, **lever6_kwargs,
+            cluster, metadata_snapshot,
+            # Plan 9 Task 5 — forward the typed inputs so
+            # _generate_lever6_proposal's Plan-5 short-circuit fires.
+            rca_evidence_typed=rca_evidence_typed,
+            llm_cluster=llm_cluster,
+            ag_id=ag_id,
+            iteration=iteration,
+            **lever6_kwargs,
         )
     except Exception:
         logger.warning(
@@ -23312,6 +23326,15 @@ def _run_lever_loop(
                                 warehouse_id=resolve_warehouse_id(""),
                                 benchmarks=benchmarks,
                                 doa_fingerprint_buffer=_doa_fingerprint_buffer,
+                                # Plan 9 Task 4 — thread Plan-5 typed inputs.
+                                rca_evidence_typed=metadata_snapshot.get(
+                                    "_rca_evidence_typed"
+                                ),
+                                llm_cluster_by_cluster_id=metadata_snapshot.get(
+                                    "_llm_clusters_by_cluster_id"
+                                ),
+                                ag_id=str(ag_id),
+                                iteration=int(iteration_counter),
                             ) or []
                             _bon_sample_count += 1
                             if _sample:
@@ -23424,6 +23447,15 @@ def _run_lever_loop(
                         # whose retry signature was already captured as
                         # target_still_hard in this run.
                         doa_fingerprint_buffer=_doa_fingerprint_buffer,
+                        # Plan 9 Task 4 — thread Plan-5 typed inputs.
+                        rca_evidence_typed=metadata_snapshot.get(
+                            "_rca_evidence_typed"
+                        ),
+                        llm_cluster_by_cluster_id=metadata_snapshot.get(
+                            "_llm_clusters_by_cluster_id"
+                        ),
+                        ag_id=str(ag_id),
+                        iteration=int(iteration_counter),
                     )
                 all_proposals.extend(lever_proposals)
 
@@ -23921,6 +23953,19 @@ def _run_lever_loop(
                     _forced_l6 = None
 
                     def _force_l6_call_for_this_ag():
+                        # Plan 9 Task 5 — derive per-AG typed cluster
+                        # from the harness-stamped map.
+                        _force_llm_cluster = None
+                        _llm_clusters_map = metadata_snapshot.get(
+                            "_llm_clusters_by_cluster_id"
+                        ) or {}
+                        _force_cluster_id = str(
+                            _force_cluster.get("cluster_id") or ""
+                        )
+                        if _force_cluster_id and _llm_clusters_map:
+                            _force_llm_cluster = _llm_clusters_map.get(
+                                _force_cluster_id
+                            )
                         return _force_lever6_proposal_for_ag(
                             run_id=str(run_id),
                             iteration=int(iteration_counter),
@@ -23935,6 +23980,13 @@ def _run_lever_loop(
                                 ).append(_rec.to_dict())
                             ),
                             generate_lever6=_generate_lever6_proposal,
+                            # Plan 9 Task 5 — typed Plan-5 inputs so the
+                            # L6 short-circuit at optimizer.py:14122
+                            # actually fires on the forced-L6 path.
+                            rca_evidence_typed=metadata_snapshot.get(
+                                "_rca_evidence_typed"
+                            ),
+                            llm_cluster=_force_llm_cluster,
                             w=w,
                             spark=spark,
                             catalog=catalog,

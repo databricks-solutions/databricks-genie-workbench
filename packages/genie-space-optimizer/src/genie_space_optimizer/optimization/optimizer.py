@@ -2126,6 +2126,26 @@ def cluster_failures(
             namespace=_namespace,
         )
         if llm_clusters is not None:
+            # Plan 9 Task 4 — stamp the typed LlmCluster objects on
+            # metadata_snapshot so the harness can thread them through
+            # generate_proposals_from_strategy (which forwards them
+            # into _select_lever_5_holistic_path and the L6 short-circuit
+            # at optimizer.py:14122). Merge into any existing map so
+            # both the hard + soft passes contribute.
+            try:
+                existing = (
+                    metadata_snapshot.get("_llm_clusters_by_cluster_id") or {}
+                )
+                merged = dict(existing)
+                for c in llm_clusters:
+                    merged[str(c.cluster_id)] = c
+                metadata_snapshot["_llm_clusters_by_cluster_id"] = merged
+            except Exception:
+                logger.debug(
+                    "Plan 9 Task 4 — stamping _llm_clusters_by_cluster_id "
+                    "failed (non-fatal)",
+                    exc_info=True,
+                )
             return [
                 c.to_legacy_dict(signal_type=signal_type) for c in llm_clusters
             ]
@@ -15969,6 +15989,14 @@ def generate_proposals_from_strategy(
     warehouse_id: str = "",
     benchmarks: list[dict] | None = None,
     doa_fingerprint_buffer: Any = None,
+    # Plan 9 Task 4 — thread Plan-5 typed inputs from the harness so
+    # the Plan-5 LLM intent short-circuit at _dispatch_lever_5b_for_cluster
+    # (optimizer.py:10422) and at _generate_lever6_proposal
+    # (optimizer.py:14122) actually fires on the live path.
+    rca_evidence_typed: dict | None = None,
+    llm_cluster_by_cluster_id: dict | None = None,
+    ag_id: str | None = None,
+    iteration: int = 0,
 ) -> list[dict]:
     """Generate proposals for a single lever guided by the holistic strategy.
 
@@ -17251,12 +17279,26 @@ def generate_proposals_from_strategy(
                 ]
 
             for cluster in eligible_clusters:
+                # Plan 9 Task 4 — derive per-cluster typed LLM cluster
+                # from the harness-stamped map so the L6 short-circuit
+                # at _generate_lever6_proposal (optimizer.py:14122) can fire.
+                _l6_cluster_id = str(cluster.get("cluster_id") or "")
+                _l6_llm_cluster = None
+                if llm_cluster_by_cluster_id and _l6_cluster_id:
+                    _l6_llm_cluster = llm_cluster_by_cluster_id.get(
+                        _l6_cluster_id
+                    )
                 proposal = _generate_lever6_proposal(
                     cluster, metadata_snapshot,
                     strategist_hints=strategist_hints,
                     w=w, spark=spark, catalog=catalog,
                     gold_schema=gold_schema, warehouse_id=warehouse_id,
                     benchmarks=benchmarks,
+                    # Plan 9 Task 4 — Plan-5 typed inputs.
+                    rca_evidence_typed=rca_evidence_typed,
+                    llm_cluster=_l6_llm_cluster,
+                    ag_id=ag_id,
+                    iteration=iteration,
                 )
                 if proposal:
                     proposal["proposal_id"] = f"P{len(proposals) + 1:03d}"
@@ -17331,12 +17373,27 @@ def generate_proposals_from_strategy(
                             "affected_questions": _theme_qids,
                         })
                     try:
+                        # Plan 9 Task 4 — derive per-cluster typed LLM
+                        # cluster so the L6 short-circuit fires.
+                        _l6_syn_cluster_id = str(
+                            _synthetic_cluster.get("cluster_id") or ""
+                        )
+                        _l6_syn_llm_cluster = None
+                        if llm_cluster_by_cluster_id and _l6_syn_cluster_id:
+                            _l6_syn_llm_cluster = llm_cluster_by_cluster_id.get(
+                                _l6_syn_cluster_id
+                            )
                         _proposal = _generate_lever6_proposal(
                             _synthetic_cluster, metadata_snapshot,
                             strategist_hints=_hints,
                             w=w, spark=spark, catalog=catalog,
                             gold_schema=gold_schema, warehouse_id=warehouse_id,
                             benchmarks=benchmarks,
+                            # Plan 9 Task 4 — Plan-5 typed inputs.
+                            rca_evidence_typed=rca_evidence_typed,
+                            llm_cluster=_l6_syn_llm_cluster,
+                            ag_id=ag_id,
+                            iteration=iteration,
                         )
                     except Exception:
                         logger.debug(
@@ -17536,6 +17593,17 @@ def generate_metadata_proposals(
             if natural_lever == 5 or natural_lever in failed_levers:
                 all_lever5_clusters.append(cluster)
 
+        # Plan 9 Task 4 — NOTE: this _select_lever_5_holistic_path call
+        # site lives inside generate_metadata_proposals (the ASI-driven
+        # path used by propose_patch_set_from_asi), NOT inside
+        # generate_proposals_from_strategy (the harness's main path).
+        # The Plan-5 typed-input wire-in for the harness path goes
+        # through the L6 short-circuit call sites inside
+        # generate_proposals_from_strategy (see the L6 branches in
+        # the elif target_lever == 6 block — those already receive
+        # rca_evidence_typed / llm_cluster / ag_id / iteration). This
+        # call site stays kwarg-free until a future plan threads
+        # Plan-5 typed inputs through propose_patch_set_from_asi.
         holistic_result = _select_lever_5_holistic_path(
             all_clusters=all_lever5_clusters if all_lever5_clusters else clusters,
             metadata_snapshot=metadata_snapshot,
