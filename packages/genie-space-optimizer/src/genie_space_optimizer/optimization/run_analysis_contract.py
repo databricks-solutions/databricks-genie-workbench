@@ -1397,6 +1397,191 @@ def llm_contract_failure_marker(
     )
 
 
+def plan11_stage1_diagnosis_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    qid: str,
+    outcome: str,
+    rca_kind_label: str = "",
+    confidence: str = "",
+    blame_set_size: int = 0,
+    evidence_summary_chars: int = 0,
+    abstain_reason: str = "",
+    abstain_explanation: str = "",
+    duration_ms: int = 0,
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+) -> str:
+    """Plan 11 — per-QID Stage 1 diagnosis outcome marker."""
+    return marker_line(
+        "GSO_PLAN11_STAGE1_DIAGNOSIS_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "qid": str(qid),
+            "outcome": str(outcome),
+            "rca_kind_label": str(rca_kind_label),
+            "confidence": str(confidence),
+            "blame_set_size": int(blame_set_size),
+            "evidence_summary_chars": int(evidence_summary_chars),
+            "abstain_reason": str(abstain_reason),
+            "abstain_explanation": str(abstain_explanation),
+            "duration_ms": int(duration_ms),
+            "tokens_input": int(tokens_input),
+            "tokens_output": int(tokens_output),
+        },
+    )
+
+
+def plan11_stage2_clustering_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    namespace: str,
+    outcome: str,
+    input_qids_count: int = 0,
+    clusters_count: int = 0,
+    cluster_ids: list[str] | None = None,
+    abstain_reason: str = "",
+    abstain_explanation: str = "",
+    duration_ms: int = 0,
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+) -> str:
+    """Plan 11 — per-iteration Stage 2 clustering outcome marker."""
+    return marker_line(
+        "GSO_PLAN11_STAGE2_CLUSTERING_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "namespace": str(namespace),
+            "outcome": str(outcome),
+            "input_qids_count": int(input_qids_count),
+            "clusters_count": int(clusters_count),
+            "cluster_ids": list(cluster_ids or []),
+            "abstain_reason": str(abstain_reason),
+            "abstain_explanation": str(abstain_explanation),
+            "duration_ms": int(duration_ms),
+            "tokens_input": int(tokens_input),
+            "tokens_output": int(tokens_output),
+        },
+    )
+
+
+def plan11_stage3_synthesis_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    outcome: str,
+    proposals_count: int = 0,
+    proposal_ids: list[str] | None = None,
+    patch_types: list[str] | None = None,
+    target_qids_union: list[str] | None = None,
+    abstain_reason: str = "",
+    abstain_explanation: str = "",
+    duration_ms: int = 0,
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+) -> str:
+    """Plan 11 — per-cluster Stage 3 synthesis outcome marker."""
+    return marker_line(
+        "GSO_PLAN11_STAGE3_SYNTHESIS_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "cluster_id": str(cluster_id),
+            "outcome": str(outcome),
+            "proposals_count": int(proposals_count),
+            "proposal_ids": list(proposal_ids or []),
+            "patch_types": list(patch_types or []),
+            "target_qids_union": list(target_qids_union or []),
+            "abstain_reason": str(abstain_reason),
+            "abstain_explanation": str(abstain_explanation),
+            "duration_ms": int(duration_ms),
+            "tokens_input": int(tokens_input),
+            "tokens_output": int(tokens_output),
+        },
+    )
+
+
+def plan11_repair_loop_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    patch_id: str,
+    attempt: int,
+    max_attempts: int,
+    outcome: str,
+    error_kinds: list[str] | None = None,
+    error_count: int = 0,
+    duration_ms: int = 0,
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+) -> str:
+    """Plan 11 — per-attempt repair loop outcome marker."""
+    return marker_line(
+        "GSO_PLAN11_REPAIR_LOOP_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "cluster_id": str(cluster_id),
+            "patch_id": str(patch_id),
+            "attempt": int(attempt),
+            "max_attempts": int(max_attempts),
+            "outcome": str(outcome),
+            "error_kinds": list(error_kinds or []),
+            "error_count": int(error_count),
+            "duration_ms": int(duration_ms),
+            "tokens_input": int(tokens_input),
+            "tokens_output": int(tokens_output),
+        },
+    )
+
+
+def plan11_narrow_replacement_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    patch_id: str,
+    attempt: int,
+    max_attempts: int,
+    outcome: str,
+    collateral_qids_count: int = 0,
+    target_qids: list[str] | None = None,
+    duration_ms: int = 0,
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+) -> str:
+    """Plan 11 — per-attempt narrow-replacement outcome marker."""
+    return marker_line(
+        "GSO_PLAN11_NARROW_REPLACEMENT_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "cluster_id": str(cluster_id),
+            "patch_id": str(patch_id),
+            "attempt": int(attempt),
+            "max_attempts": int(max_attempts),
+            "outcome": str(outcome),
+            "collateral_qids_count": int(collateral_qids_count),
+            "target_qids": list(target_qids or []),
+            "duration_ms": int(duration_ms),
+            "tokens_input": int(tokens_input),
+            "tokens_output": int(tokens_output),
+        },
+    )
+
+
 def assemble_run_manifest_v2_line(
     *,
     optimization_run_id: str,
