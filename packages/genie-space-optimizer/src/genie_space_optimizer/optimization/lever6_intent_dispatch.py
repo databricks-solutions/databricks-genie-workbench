@@ -57,6 +57,7 @@ def dispatch_lever_6_with_intent(
     llm_cluster: Any,
     ag_id: str | None,
     iteration: int,
+    run_id: str | None = None,
     spark: Any = None,
     catalog: str = "",
     gold_schema: str = "",
@@ -74,6 +75,19 @@ def dispatch_lever_6_with_intent(
     """
     if not (rca_evidence_typed and llm_cluster is not None and ag_id):
         return None
+
+    from genie_space_optimizer.optimization.plan9_activation_markers import (
+        ActivationStatus,
+        emit_plan5_activation,
+    )
+    _plan5_run_id = str(run_id or "")
+    _plan5_cluster_id = str(
+        getattr(llm_cluster, "cluster_id", None)
+        or cluster.get("cluster_id")
+        or ""
+    )
+    _plan5_iter = int(iteration or 0)
+    _plan5_ag_id = str(ag_id)
 
     identifier_allowlist: set[str] = set(
         metadata_snapshot.get("schema_columns") or []
@@ -105,6 +119,14 @@ def dispatch_lever_6_with_intent(
         benchmarks=benchmarks,
     )
     if proposal is None:
+        emit_plan5_activation(
+            run_id=_plan5_run_id,
+            iteration=_plan5_iter,
+            ag_id=_plan5_ag_id,
+            cluster_id=_plan5_cluster_id,
+            status=ActivationStatus.PLAN5_INTENT_DECLINED,
+            reason="synthesizer_returned_none",
+        )
         return None
     if proposal.patch_type not in _L6_PATCH_TYPES:
         return None
@@ -177,6 +199,16 @@ def dispatch_lever_6_with_intent(
     _prov = proposal_dict.setdefault("provenance", {})
     if isinstance(_prov, dict):
         _prov["plan9_materialization_source"] = materialization_source
+    emit_plan5_activation(
+        run_id=_plan5_run_id,
+        iteration=_plan5_iter,
+        ag_id=_plan5_ag_id,
+        cluster_id=_plan5_cluster_id,
+        status=ActivationStatus.PLAN5_INTENT_MATERIALIZED,
+        reason="patch_body materialized via to_proposal_dict",
+        patch_type=proposal.patch_type.value,
+        intent_id=proposal.intent_id,
+    )
     logger.info(
         "plan9.l6_materialized cluster_id=%s ag_id=%s intent_id=%s "
         "patch_type=%s source=%s",

@@ -10397,6 +10397,7 @@ def _dispatch_lever_5b_for_cluster(
     llm_cluster: Any = None,
     ag_id: str | None = None,
     iteration: int | None = None,
+    run_id: str | None = None,
 ) -> list[dict]:
     """Plan 2 — adapter that returns the proposed example SQL(s) for ONE
     cluster in holistic-compatible shape.
@@ -10457,6 +10458,15 @@ def _dispatch_lever_5b_for_cluster(
         from genie_space_optimizer.optimization.failure_cluster import (
             FailureCluster,
         )
+        from genie_space_optimizer.optimization.plan9_activation_markers import (
+            ActivationStatus,
+            emit_plan5_activation,
+        )
+        _plan5_run_id = str(run_id or "")
+        _plan5_cluster_id = str(cluster.get("cluster_id") or "")
+        _plan5_iter = int(iteration or 0)
+        _plan5_ag_id = str(ag_id)
+
         identifier_allowlist: set[str] = set(
             metadata_snapshot.get("schema_columns") or []
         )
@@ -10485,7 +10495,20 @@ def _dispatch_lever_5b_for_cluster(
             existing_examples_preview=existing_preview,
             benchmarks=benchmarks,
         )
+        if proposal is None:
+            emit_plan5_activation(
+                run_id=_plan5_run_id,
+                iteration=_plan5_iter,
+                ag_id=_plan5_ag_id,
+                cluster_id=_plan5_cluster_id,
+                status=ActivationStatus.PLAN5_INTENT_DECLINED,
+                reason="synthesizer_returned_none",
+            )
         if proposal is not None:
+            _activation_status = ActivationStatus.PLAN5_INTENT_INVOKED
+            _activation_reason = "synthesizer_returned_proposal"
+            _activation_patch_type = proposal.patch_type.value
+            _activation_intent_id = proposal.intent_id
             # Plan 9 Task 6 — materialize RepairProposal.patch_body
             # directly via to_proposal_dict().
             # Plan 9 Task 6.1 — finalize ADD_SQL_SNIPPET_* patches.
@@ -10528,6 +10551,12 @@ def _dispatch_lever_5b_for_cluster(
                 )
                 materialization_source = "plan9_legacy_fallback"
                 proposal_dict = None
+                _activation_status = (
+                    ActivationStatus.PLAN5_INTENT_VALIDATOR_REJECTED
+                )
+                _activation_reason = (
+                    f"to_proposal_dict_raised:{type(exc).__name__}"
+                )
 
             routed = route_to_per_lever_generator(proposal)
             override_event = routed[1] if routed else None
@@ -10535,9 +10564,31 @@ def _dispatch_lever_5b_for_cluster(
             if proposal_dict is None:
                 # Safety-net path: invoke the per-lever generator.
                 if routed is None:
+                    emit_plan5_activation(
+                        run_id=_plan5_run_id,
+                        iteration=_plan5_iter,
+                        ag_id=_plan5_ag_id,
+                        cluster_id=_plan5_cluster_id,
+                        status=ActivationStatus.PLAN5_INTENT_VALIDATOR_REJECTED,
+                        reason="cross_lever_router_returned_none",
+                        patch_type=_activation_patch_type,
+                        intent_id=_activation_intent_id,
+                    )
                     return []
                 generator = routed[0]
                 proposal_dict = generator(proposal)
+                if proposal_dict is None:
+                    emit_plan5_activation(
+                        run_id=_plan5_run_id,
+                        iteration=_plan5_iter,
+                        ag_id=_plan5_ag_id,
+                        cluster_id=_plan5_cluster_id,
+                        status=ActivationStatus.PLAN5_INTENT_VALIDATOR_REJECTED,
+                        reason="safety_net_generator_returned_none",
+                        patch_type=proposal.patch_type.value,
+                        intent_id=proposal.intent_id,
+                    )
+                    return []
 
             fc = FailureCluster.from_legacy(cluster)
             intent = proposal.to_repair_intent(cluster=fc, ag_id=ag_id)
@@ -10558,6 +10609,26 @@ def _dispatch_lever_5b_for_cluster(
                     override_event.from_lever,
                     override_event.to_lever,
                 )
+            if override_event is not None:
+                _activation_status = ActivationStatus.PLAN5_INTENT_ROUTED
+                _activation_reason = (
+                    f"routed_from_l5b_to_{override_event.to_lever}"
+                )
+            else:
+                _activation_status = ActivationStatus.PLAN5_INTENT_MATERIALIZED
+                _activation_reason = (
+                    "patch_body materialized via to_proposal_dict"
+                )
+            emit_plan5_activation(
+                run_id=_plan5_run_id,
+                iteration=_plan5_iter,
+                ag_id=_plan5_ag_id,
+                cluster_id=_plan5_cluster_id,
+                status=_activation_status,
+                reason=_activation_reason,
+                patch_type=_activation_patch_type,
+                intent_id=_activation_intent_id,
+            )
             logger.info(
                 "plan9.l5b_materialized intent_id=%s cluster_id=%s "
                 "ag_id=%s patch_type=%s source=%s",
@@ -10661,6 +10732,7 @@ def _dispatch_lever_5_split(
     llm_cluster_by_cluster_id: dict | None = None,
     ag_id: str | None = None,
     iteration: int = 0,
+    run_id: str | None = None,
 ) -> dict:
     """Plan 2 — split-mode dispatcher for Lever 5.
 
@@ -10743,6 +10815,7 @@ def _dispatch_lever_5_split(
                     llm_cluster=_lcm.get(_cid),
                     ag_id=ag_id,
                     iteration=int(iteration),
+                    run_id=run_id,
                 )
             )
 
@@ -10790,6 +10863,7 @@ def _select_lever_5_holistic_path(
         llm_cluster_by_cluster_id=llm_cluster_by_cluster_id,
         ag_id=ag_id,
         iteration=int(iteration),
+        run_id=run_id,
     )
 
 
@@ -14192,6 +14266,7 @@ def _generate_lever6_proposal(
     llm_cluster: Any = None,
     ag_id: str | None = None,
     iteration: int = 0,
+    run_id: str | None = None,
 ) -> dict | None:
     """Generate a SQL Expression proposal for a failure cluster.
 
@@ -14210,6 +14285,7 @@ def _generate_lever6_proposal(
             cluster=cluster, metadata_snapshot=metadata_snapshot, w=w,
             rca_evidence_typed=rca_evidence_typed,
             llm_cluster=llm_cluster, ag_id=ag_id, iteration=int(iteration),
+            run_id=run_id,
             spark=spark, catalog=catalog, gold_schema=gold_schema,
             warehouse_id=warehouse_id, benchmarks=benchmarks,
             raw_evidence=raw_evidence,
@@ -16060,6 +16136,7 @@ def generate_proposals_from_strategy(
     llm_cluster_by_cluster_id: dict | None = None,
     ag_id: str | None = None,
     iteration: int = 0,
+    run_id: str | None = None,
 ) -> list[dict]:
     """Generate proposals for a single lever guided by the holistic strategy.
 
@@ -17362,6 +17439,7 @@ def generate_proposals_from_strategy(
                     llm_cluster=_l6_llm_cluster,
                     ag_id=ag_id,
                     iteration=iteration,
+                    run_id=run_id,
                 )
                 if proposal:
                     proposal["proposal_id"] = f"P{len(proposals) + 1:03d}"

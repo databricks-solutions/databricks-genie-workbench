@@ -23456,6 +23456,7 @@ def _run_lever_loop(
                         ),
                         ag_id=str(ag_id),
                         iteration=int(iteration_counter),
+                        run_id=str(run_id or ""),
                     )
                 all_proposals.extend(lever_proposals)
 
