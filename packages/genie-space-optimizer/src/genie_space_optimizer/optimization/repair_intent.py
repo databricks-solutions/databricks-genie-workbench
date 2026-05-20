@@ -128,6 +128,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
+from genie_space_optimizer.optimization.target_object_typed import TargetObject
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +185,37 @@ class RepairIntent(JsonRoundTrip):
     applied_signature: str | None = None
     acceptance_outcome: str | None = None
     rollback_reason: str | None = None
+    # Plan 9 Task 1 — LLM-emitted typed slice. Defaults to () so
+    # the deterministic intent_from_archetype adapter and pre-Plan-9
+    # serialized intents remain compatible.
+    target_objects: tuple[TargetObject, ...] = ()
+
+    def to_json(self) -> dict:  # type: ignore[override]
+        payload: dict = {
+            "intent_id": self.intent_id,
+            "intent_name": self.intent_name,
+            "intent_description": self.intent_description,
+            "repair_shape": self.repair_shape.value,
+            "patch_type": self.patch_type.value,
+            "rationale": self.rationale,
+            "confidence": self.confidence,
+            "source": self.source,
+            "cluster_id": self.cluster_id,
+            "target_qids": list(self.target_qids),
+            "blame_set": list(self.blame_set),
+            "rca_card_id": self.rca_card_id,
+            "ag_id": self.ag_id,
+            "target_objects": [t.to_json() for t in self.target_objects],
+        }
+        if self.applied_at_iter is not None:
+            payload["applied_at_iter"] = self.applied_at_iter
+        if self.applied_signature is not None:
+            payload["applied_signature"] = self.applied_signature
+        if self.acceptance_outcome is not None:
+            payload["acceptance_outcome"] = self.acceptance_outcome
+        if self.rollback_reason is not None:
+            payload["rollback_reason"] = self.rollback_reason
+        return payload
 
     @classmethod
     def from_json(cls, payload: dict) -> "RepairIntent":  # type: ignore[override]
@@ -220,6 +252,10 @@ class RepairIntent(JsonRoundTrip):
                 str(payload["rollback_reason"])
                 if payload.get("rollback_reason") is not None
                 else None
+            ),
+            target_objects=tuple(
+                TargetObject.from_json(t)
+                for t in (payload.get("target_objects") or ())
             ),
         )
 
