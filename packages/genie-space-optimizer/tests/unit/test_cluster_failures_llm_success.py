@@ -145,18 +145,47 @@ def test_driver_call_id_is_iteration_namespace_scoped() -> None:
     assert request.max_tokens == 2000
 
 
-def test_driver_returns_none_when_fewer_than_two_qids() -> None:
-    """Deterministic early-abort: <2 qids → no LLM call → None."""
-    rca = {"gs_001": _evidence("gs_001")}
+def test_driver_returns_none_on_empty_input() -> None:
+    """Plan 11: the only inner early-abort that survives is empty input.
+
+    The legacy ``< 2`` gate that lived inside ``cluster_failures_llm`` was
+    moved up to the caller in ``optimizer.py`` (which still pre-gates on
+    ``len(rca_evidence_typed) >= 2`` for the legacy path). The new Plan 11
+    dispatch path needs to be able to call this with single-QID sets, so
+    the inner gate only fires on truly empty input now.
+    """
     client = MagicMock(name="OpenAIClientShouldNotBeCalled")
     with patch.object(optimizer, "_get_openai_client", return_value=client):
         clusters = cluster_failures_llm(
-            w=None, rca_evidence_typed=rca,
+            w=None, rca_evidence_typed={},
             schema_columns={"sales.fact_sales.revenue"},
             iteration=1, namespace="H",
         )
     assert clusters is None
     assert client.chat.completions.create.call_count == 0
+
+
+def test_driver_attempts_llm_call_for_single_qid_input() -> None:
+    """Plan 11: a single-QID input no longer short-circuits to None.
+
+    The function attempts the LLM call (the legacy ``< 2`` gate is gone).
+    Returns None here because the stubbed LLM returns an empty cluster
+    list, not because of an early-abort. The point of the test is that
+    ``chat.completions.create`` is invoked exactly once.
+    """
+    rca = {"gs_001": _evidence("gs_001")}
+    empty_envelope = json.dumps({"result": {"clusters": []}, "declined": None})
+    with patch.object(
+        optimizer,
+        "_get_openai_client",
+        return_value=_stub_with(empty_envelope),
+    ) as get_client:
+        cluster_failures_llm(
+            w=None, rca_evidence_typed=rca,
+            schema_columns={"sales.fact_sales.revenue"},
+            iteration=1, namespace="H",
+        )
+    assert get_client.return_value.chat.completions.create.call_count == 1
 
 
 def test_driver_rendered_prompt_includes_all_per_qid_evidence_and_schema() -> None:

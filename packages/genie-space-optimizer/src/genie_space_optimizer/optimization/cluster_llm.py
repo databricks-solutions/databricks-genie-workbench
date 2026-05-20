@@ -218,7 +218,7 @@ def cluster_failures_llm(
       list[LlmCluster] on success (every cluster has a framework-
         stamped cluster_id; passes all validators).
       None on:
-        - fewer than 2 qids (no clustering needed)
+        - empty input (no qids to cluster)
         - LLM decline / error
         - validator rejection of the entire set (no-qid-collision)
 
@@ -226,12 +226,16 @@ def cluster_failures_llm(
     blame_set outside schema) reject ONLY that cluster — the others
     pass through. Caller is responsible for falling back per dropped
     qid.
+
+    Plan 11: the historical ``< 2`` early-exit gate is removed. The
+    only remaining caller (``optimizer.py``) still pre-gates on
+    ``len(rca_evidence_typed) >= 2``, so production behavior is
+    unchanged. The new Plan 11 dispatch path needs the ability to
+    cluster single-QID sets when an iteration only has one failure
+    left in the namespace.
     """
-    if len(rca_evidence_typed) < 2:
-        logger.info(
-            "cluster_failures_llm.skip qids=%d (need ≥2)",
-            len(rca_evidence_typed),
-        )
+    if not rca_evidence_typed:
+        logger.info("cluster_failures_llm.skip empty_input")
         return None
 
     request = _build_request(
@@ -274,6 +278,10 @@ def cluster_failures_llm(
                 str(b) for b in pc.get("primary_blame_set") or []
             ),
             confidence=pc["confidence"],
+            # Plan 11: prefer free-text repair_hypothesis if the LLM
+            # supplied one; legacy responses leave this blank and
+            # downstream code falls back to suggested_repair_shape.value.
+            repair_hypothesis=str(pc.get("repair_hypothesis") or ""),
         )
         try:
             _validate_member_qids_in_input(

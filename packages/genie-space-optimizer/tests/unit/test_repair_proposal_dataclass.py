@@ -28,6 +28,8 @@ def test_field_set_includes_intent_id_plus_eight_llm_fields() -> None:
     # Plan 9 Task 1 — target_objects (LLM-emitted typed slice).
     # Plan 9 Task 3 — required_constructs (LLM-emitted SQL-clause
     # contract that replaces archetype.output_shape["requires_constructs"]).
+    # Plan 11 — repair_hypothesis (free-text replacement for repair_shape)
+    #           and target_qids (which QIDs the proposal is meant to fix).
     field_names = {f.name for f in dataclasses.fields(RepairProposal)}
     assert field_names == {
         "intent_id",
@@ -36,6 +38,8 @@ def test_field_set_includes_intent_id_plus_eight_llm_fields() -> None:
         "patch_body", "blame_set",
         "target_objects",
         "required_constructs",
+        "repair_hypothesis",
+        "target_qids",
     }
 
 

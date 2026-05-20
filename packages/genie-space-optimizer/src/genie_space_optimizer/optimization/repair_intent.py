@@ -37,6 +37,10 @@ from enum import StrEnum
 class RepairShape(StrEnum):
     """High-level repair category — the vocabulary the LLM picks from.
 
+    DEPRECATED (Plan 11): prefer ``repair_hypothesis: str`` (free text)
+    emitted by Stage 2 of the LLM-first dispatch path. Kept for back-compat
+    reads of pre-Plan-11 Delta rows. Deleted in PR 4.
+
     Closed-with-escape-hatch: ``OTHER`` lets Plan 2's LLM propose a
     repair shape the catalog doesn't enumerate (e.g. a long-tail
     structural pattern). Downstream code that inspects ``repair_shape``
@@ -56,6 +60,19 @@ class RepairShape(StrEnum):
     METRIC_VIEW_REFINEMENT = "metric_view_refinement"
     INSTRUCTION = "instruction"
     OTHER = "other"
+
+
+def parse_repair_shape_or_hypothesis(raw: "str | RepairShape | None") -> str:
+    """Plan 11 back-compat shim — same shape as parse_rca_kind_or_label.
+
+    Old Delta rows store RepairShape enum values (e.g. "top_n_by_metric");
+    new rows store free-text repair_hypothesis. Both round-trip without
+    raising. Removed after PR 4.
+    """
+    if isinstance(raw, RepairShape):
+        return raw.value
+    return str(raw or "")
+
 
 
 class PatchType(StrEnum):

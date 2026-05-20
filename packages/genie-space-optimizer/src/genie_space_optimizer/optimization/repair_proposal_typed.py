@@ -96,6 +96,14 @@ class RepairProposal(JsonRoundTrip):
     # default (used by add_instruction / add_column_description and
     # by pre-Plan-9 serialized proposals).
     required_constructs: tuple[str, ...] = ()
+    # Plan 11 — free-text replacement for repair_shape. New code reads
+    # this; old code keeps reading repair_shape (back-compat enum kept
+    # alongside until PR 4 deletes RepairShape entirely).
+    repair_hypothesis: str = ""
+    # Plan 11 — which QIDs this proposal is meant to fix. Used by the
+    # narrow-replacement loop to compute collateral_qids and by the
+    # validator to scope blast-radius checks.
+    target_qids: tuple[str, ...] = ()
 
     @classmethod
     def from_llm_output(
@@ -241,7 +249,11 @@ class RepairProposal(JsonRoundTrip):
             "intent_id": self.intent_id,
             "intent_name": self.intent_name,
             "intent_description": self.intent_description,
+            # Back-compat: keep writing repair_shape so pre-Plan-11 readers
+            # (and Delta history) keep parsing. Plan 11 readers should prefer
+            # repair_hypothesis when both are present.
             "repair_shape": self.repair_shape.value,
+            "repair_hypothesis": self.repair_hypothesis,  # Plan 11
             "patch_type": self.patch_type.value,
             "rationale": self.rationale,
             "confidence": self.confidence,
@@ -249,10 +261,19 @@ class RepairProposal(JsonRoundTrip):
             "blame_set": list(self.blame_set),
             "target_objects": [t.to_json() for t in self.target_objects],
             "required_constructs": list(self.required_constructs),
+            "target_qids": list(self.target_qids),  # Plan 11
         }
 
     @classmethod
     def from_json(cls, payload: dict) -> "RepairProposal":  # type: ignore[override]
+        # Plan 11: prefer free-text repair_hypothesis when the key is
+        # present (round-trip preserves empty string). Old Delta rows
+        # without the key fall back to the legacy repair_shape value
+        # so we can still narrate the cluster's intent in postmortems.
+        if "repair_hypothesis" in payload:
+            repair_hypothesis = str(payload.get("repair_hypothesis") or "")
+        else:
+            repair_hypothesis = str(payload.get("repair_shape", ""))
         return cls(
             intent_id=str(payload["intent_id"]),
             intent_name=str(payload["intent_name"]),
@@ -271,5 +292,9 @@ class RepairProposal(JsonRoundTrip):
             ),
             required_constructs=tuple(
                 str(c) for c in (payload.get("required_constructs") or ())
+            ),
+            repair_hypothesis=repair_hypothesis,
+            target_qids=tuple(
+                str(q) for q in (payload.get("target_qids") or ())
             ),
         )

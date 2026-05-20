@@ -19,11 +19,14 @@ def test_dataclass_mixes_in_json_round_trip() -> None:
 
 
 def test_field_set_includes_cluster_id_plus_six_llm_fields() -> None:
+    # Plan 11 — repair_hypothesis (free-text replacement for
+    # suggested_repair_shape; kept alongside until PR 4 deletes the enum).
     field_names = {f.name for f in dataclasses.fields(LlmCluster)}
     assert field_names == {
         "cluster_id",
         "semantic_theme", "member_qids", "unifying_evidence",
         "suggested_repair_shape", "primary_blame_set", "confidence",
+        "repair_hypothesis",
     }
 
 

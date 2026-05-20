@@ -46,6 +46,9 @@ class LlmCluster(JsonRoundTrip):
     suggested_repair_shape: RepairShape
     primary_blame_set: tuple[str, ...]
     confidence: Literal["high", "medium", "low"]
+    # Plan 11 — free-text replacement for suggested_repair_shape. New code
+    # reads this; old code keeps reading suggested_repair_shape.
+    repair_hypothesis: str = ""
 
     @classmethod
     def from_llm_output(
@@ -72,6 +75,34 @@ class LlmCluster(JsonRoundTrip):
                 str(b) for b in pydantic_inst.primary_blame_set
             ),
             confidence=pydantic_inst.confidence,
+            repair_hypothesis=str(
+                getattr(pydantic_inst, "repair_hypothesis", "") or ""
+            ),
+        )
+
+    def to_failure_cluster(self, cluster_id: str | None = None) -> Any:
+        """Plan 11 adapter — project an LlmCluster onto the new
+        :class:`FailureCluster` carrier. New code consumes FailureCluster
+        directly; this adapter exists so PR 1 can land without rewriting
+        every caller in one shot.
+
+        ``cluster_id`` defaults to ``self.cluster_id``; callers that want to
+        re-stamp (e.g. the Plan 11 framework that mints H001/H002 IDs)
+        can override.
+        """
+        from genie_space_optimizer.optimization.stages.plan11_types import (
+            FailureCluster,
+        )
+        return FailureCluster(
+            cluster_id=str(cluster_id or self.cluster_id),
+            semantic_theme=self.semantic_theme,
+            member_qids=tuple(self.member_qids),
+            unifying_evidence=self.unifying_evidence,
+            repair_hypothesis=(
+                self.repair_hypothesis or self.suggested_repair_shape.value
+            ),
+            primary_blame_set=tuple(self.primary_blame_set),
+            confidence=self.confidence,
         )
 
     def to_legacy_dict(

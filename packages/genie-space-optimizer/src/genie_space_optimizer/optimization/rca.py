@@ -25,6 +25,9 @@ from genie_space_optimizer.optimization.feature_mining import (
 
 
 class RcaKind(str, Enum):
+    # DEPRECATED (Plan 11): prefer rca_kind_label: str (free text) emitted
+    # by Stage 1 of the LLM-first dispatch path. Kept for back-compat reads
+    # of pre-Plan-11 Delta rows. Deleted in PR 4.
     METRIC_VIEW_ROUTING_CONFUSION = "metric_view_routing_confusion"
     MEASURE_SWAP = "measure_swap"
     CANONICAL_DIMENSION_MISSED = "canonical_dimension_missed"
@@ -42,6 +45,21 @@ class RcaKind(str, Enum):
     TIME_WINDOW_LOGIC_MISMATCH = "time_window_logic_mismatch"
     ASSET_TYPE_ROUTING_MISMATCH = "asset_type_routing_mismatch"
     UNKNOWN = "unknown"
+
+
+def parse_rca_kind_or_label(raw: "str | RcaKind | None") -> str:
+    """Plan 11 back-compat shim: read a stored RcaKind enum value OR a
+    free-text rca_kind_label. Always returns a str.
+
+    Old Delta rows store values like "FILTER_LOGIC_MISMATCH" / "UNKNOWN"
+    (the enum's serialized form). New rows store free text. Both round-trip
+    without raising.
+
+    Removed after PR 4 — replace remaining callsites with str(raw or '').
+    """
+    if isinstance(raw, RcaKind):
+        return raw.value
+    return str(raw or "")
 
 
 @dataclass(frozen=True)
