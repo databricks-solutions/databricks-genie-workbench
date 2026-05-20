@@ -329,9 +329,16 @@ def intent_from_archetype(
         f"intent_{cluster.cluster_id}_{ag_id}_{archetype.name}_{seq:03d}"
     )
 
-    # intent_description = archetype.prompt_template clipped to one
-    # sentence. Plan 2's LLM call replaces this with free-form text.
-    description = archetype.prompt_template.split(". ")[0].strip()
+    # Plan 9 Task 2 — intent_description comes from the RepairShape
+    # fragment registry, clipped to one sentence. The pre-Plan-9 path
+    # read archetype.prompt_template directly; this routes through the
+    # registry so the deterministic adapter and the LLM-driven path
+    # share the same prompt vocabulary.
+    from genie_space_optimizer.optimization.prompts._repair_shape_fragments import (
+        fragment_for,
+    )
+    fragment = fragment_for(shape)
+    description = fragment.split(". ")[0].strip()
     if not description.endswith("."):
         description += "."
 

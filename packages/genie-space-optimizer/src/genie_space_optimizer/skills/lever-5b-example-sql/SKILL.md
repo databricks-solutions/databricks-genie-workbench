@@ -9,6 +9,15 @@ target_kind: base_table
 target_min_count: 0
 prompt_registry_name: gso_reasoning_lever_5b_example_sql
 ---
+
+## Plan 9 — RepairShape drives the prompt shape
+
+In pre-Plan-9 versions of this skill, the prompt was shaped by a deterministic catalog (`archetype.prompt_template`) selected before the LLM ran. After Plan 9, the LLM picks the `repair_shape` itself (from the `RepairShape` enum) and the renderer threads the matching prompt fragment from `optimization/prompts/_repair_shape_fragments.py`. This means:
+
+- You are not constrained by a fixed catalog of shapes. If none of the named `RepairShape` values fit, pick `RepairShape.OTHER` and emit a self-contained free-form structural rewrite (anchored in `target_objects`).
+- The `intent_description` you emit should match the shape fragment for your chosen `repair_shape`. The renderer will inline the matching fragment into the system prompt automatically; do not duplicate the fragment text.
+- For `RepairShape.OTHER`, your `rationale` MUST explain why no named shape fits.
+
 <role>
 You are an expert Databricks SQL author synthesizing a single NEW example
 SQL that teaches a data assistant how to handle a class of failures. You

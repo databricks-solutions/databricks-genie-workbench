@@ -67,6 +67,28 @@ from genie_space_optimizer.optimization.archetypes import (
     _col_type,
     schema_traits,
 )
+
+
+def _preflight_repair_shape_fragment(archetype: Archetype) -> str:
+    """Plan 9 Task 2 — return the RepairShape-keyed prompt fragment
+    for ``archetype``. Replaces the pre-Plan-9 archetype.prompt_template
+    read at the preflight prompt-render site.
+
+    Uses the existing ``_ARCHETYPE_NAME_TO_SHAPE`` mapping (kept as a
+    compatibility shim through T10) to translate archetype identity
+    into the closed ``RepairShape`` enum, then looks up the fragment
+    in the public registry. RepairShape.OTHER is the free-form
+    structural-rewrite safety net for novel patterns.
+    """
+    from genie_space_optimizer.optimization.repair_intent import (
+        RepairShape,
+        _ARCHETYPE_NAME_TO_SHAPE,
+    )
+    from genie_space_optimizer.optimization.prompts._repair_shape_fragments import (
+        fragment_for,
+    )
+    shape = _ARCHETYPE_NAME_TO_SHAPE.get(archetype.name, RepairShape.OTHER)
+    return fragment_for(shape)
 # Module-level imports so tests can ``patch("preflight_synthesis.X")`` at the
 # orchestrator's attribute. Synthesis is already a dependency via the reused
 # 5-gate pipeline, so this doesn't add any import-time heaviness.
@@ -1912,7 +1934,11 @@ def render_preflight_prompt(
         "schema_example_identifier": _first_asset_identifier(context),
         "metric_view_contract": _format_metric_view_contract(context),
         "archetype_name": archetype.name,
-        "archetype_prompt_template": archetype.prompt_template,
+        # Plan 9 Task 2 — archetype_prompt_template now comes from the
+        # RepairShape fragment registry, keyed on the shape mapped from
+        # the archetype. (T10 deletes archetype_name + archetype_output_shape
+        # and renames archetype_prompt_template → repair_shape_fragment.)
+        "archetype_prompt_template": _preflight_repair_shape_fragment(archetype),
         "archetype_output_shape": json.dumps(archetype.output_shape),
         "identifier_allowlist": context.to_identifier_allowlist(),
         "existing_questions_list": _format_existing_questions(existing_questions),

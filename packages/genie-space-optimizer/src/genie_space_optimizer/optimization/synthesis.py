@@ -330,10 +330,16 @@ def render_synthesis_prompt(afs: dict, archetype: Any, identifier_allowlist: str
         RepairShape,
         _ARCHETYPE_NAME_TO_SHAPE,
     )
+    # Plan 9 Task 2 — replace archetype.prompt_template with the
+    # RepairShape-keyed fragment registry. RepairShape.OTHER is the
+    # free-form structural rewrite safety net.
+    from genie_space_optimizer.optimization.prompts._repair_shape_fragments import (
+        fragment_for,
+    )
     shape = _ARCHETYPE_NAME_TO_SHAPE.get(archetype.name, RepairShape.OTHER)
     synthetic_intent = SimpleNamespace(
         intent_name=archetype.name,
-        intent_description=archetype.prompt_template,
+        intent_description=fragment_for(shape),
         repair_shape=shape,
         rationale=f"Cluster blames the {archetype.name} shape.",
     )
