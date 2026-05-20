@@ -19,8 +19,14 @@ from typing import Any, Mapping, Sequence
 
 
 HIGH_TIER_INVARIANT_IDS: frozenset[str] = frozenset(
-    {"I9", "I10", "I11", "I12", "I13"}
+    {"I9", "I10", "I11", "I12", "I13", "I15", "I16"}
 )
+# Plan 10 Phase B (2026-05-19) — I15 + I16 are HIGH-tier because both
+# fire on the exact silent-leakage pattern the plan exists to prevent
+# (LLM dispatch entered but exited silently / fall-through to legacy
+# archetype path despite Plan 9 activation). Adding them to the HIGH
+# tier ensures the merge-gate summary surfaces these violations
+# loudly even though RCO-2b's gate-blocking flip is still deferred.
 
 
 class SeverityTier(enum.Enum):
@@ -32,8 +38,9 @@ def classify_invariant_severity(invariant_id: str) -> SeverityTier:
     """Map a canonical invariant ID to its severity tier.
 
     Unknown IDs and the ``I_CHECK_FAILED`` sentinel both classify as
-    MEDIUM. The HIGH tier is intentionally narrow (exactly I9–I13) so
-    new invariants do not silently inflate the merge-gate surface.
+    MEDIUM. The HIGH tier is intentionally narrow (I9–I13 + Plan 10
+    Phase B I15–I16) so new invariants do not silently inflate the
+    merge-gate surface.
     """
     if invariant_id in HIGH_TIER_INVARIANT_IDS:
         return SeverityTier.HIGH

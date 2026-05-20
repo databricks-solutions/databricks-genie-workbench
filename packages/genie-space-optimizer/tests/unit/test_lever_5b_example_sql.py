@@ -518,7 +518,19 @@ def test_render_lever_5b_retry_feedback_omits_full_rejected_sql_when_long():
 
 
 def test_synthesize_example_sqls_records_gate_results_on_failure(monkeypatch):
-    """When all gates fail, attach gate_failure attribute to active span."""
+    """When all gates fail, attach gate_failure attribute to active span.
+
+    Plan 10 Phase B3 — this test exercises the LEGACY 5-gate failure
+    path: a structurally-valid LLM response that passes the typed
+    Pydantic schema (``Lever5bExampleSqlOutput``) but is rejected by
+    one of the 5 gates (parse / execute / structural / arbiter /
+    firewall). The schema-rejection path now intercepts unparseable
+    LLM output earlier with its own ``GSO_LLM_CONTRACT_FAILURE_V1``
+    marker (see ``test_example_sql_contract_failure_emits_decision``),
+    so the LLM mock here must produce a payload that satisfies the
+    schema in order to land in the legacy gate-failure observability
+    path the test is verifying.
+    """
     from types import SimpleNamespace
     from genie_space_optimizer.optimization import synthesis
 
@@ -535,9 +547,18 @@ def test_synthesize_example_sqls_records_gate_results_on_failure(monkeypatch):
     )
 
     from genie_space_optimizer.optimization import optimizer as _opt
+    # Plan 10 Phase B3 — return a payload that satisfies the
+    # Lever5bExampleSqlOutput schema (both required str fields are
+    # non-empty). The stubbed validate_synthesis_proposal below still
+    # rejects so the legacy gate-failure span attribute is asserted on
+    # the right code path.
+    _schema_valid_llm_response = (
+        '{"example_question":"Pick any example question to satisfy schema",'
+        '"example_sql":"SELECT 1 AS placeholder"}'
+    )
     monkeypatch.setattr(
         _opt, "_traced_llm_call",
-        lambda *a, **kw: ("not json", None),
+        lambda *a, **kw: (_schema_valid_llm_response, None),
     )
 
     from genie_space_optimizer.optimization.synthesis import GateResult

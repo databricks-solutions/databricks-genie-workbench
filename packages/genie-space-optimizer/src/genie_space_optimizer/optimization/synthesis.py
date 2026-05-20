@@ -1115,6 +1115,97 @@ def instruction_only_fallback(afs: dict) -> dict | None:
     return proposal
 
 
+_LEVER5B_SCHEMA_NAME: str = "Lever5bExampleSqlOutput"
+_LEVER5B_SCHEMA_FIELDS: tuple[str, ...] = (
+    "example_question",
+    "example_sql",
+    "usage_guidance",
+    "rationale",
+)
+
+
+def _schema_check_lever5b_example_sql(
+    *,
+    proposal: dict,
+    cluster_id: str,
+    ag_id: str = "",
+    optimization_run_id: str = "",
+    iteration: int = 0,
+) -> bool:
+    """Plan 10 Phase B3 — gate ``synthesize_example_sqls`` on the
+    ``Lever5bExampleSqlOutput`` Pydantic contract.
+
+    Returns True when the proposal validates (synthesis proceeds to the
+    legacy 5-gate path). Returns False when the schema rejects the
+    payload — in that case we emit a ``GSO_LLM_CONTRACT_FAILURE_V1``
+    stdout marker so the postmortem reader can attribute the failure
+    to the contract bug instead of a generic Gate-1 rejection, and the
+    caller refuses to retry with the same broken payload.
+
+    The 5-gate path layered on top still runs for SQL parse / execute
+    / structural / arbiter / firewall semantics that Pydantic cannot
+    encode. The schema check is intentionally narrow: required string
+    ``example_question`` and ``example_sql`` plus the optional
+    ``usage_guidance`` and ``rationale`` strings.
+    """
+    from genie_space_optimizer.optimization.prompt_io import (
+        Lever5bExampleSqlOutput,
+    )
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        llm_contract_failure_marker,
+    )
+    # ``raw_payload_for_marker`` preserves the full schema-field view of
+    # the LLM's proposal (including explicit ``None`` for fields the LLM
+    # emitted as ``null``) so the postmortem reader sees exactly what the
+    # LLM said. ``payload_for_validation`` drops keys whose values are
+    # ``None`` so the optional fields ``usage_guidance`` and ``rationale``
+    # can fall back to their schema defaults (``""``); the required fields
+    # ``example_question`` + ``example_sql`` have no defaults, so dropping
+    # a ``None`` value there still surfaces a missing-field violation.
+    raw_payload_for_marker = {
+        k: proposal.get(k) for k in _LEVER5B_SCHEMA_FIELDS
+    }
+    payload_for_validation = {
+        k: v for k, v in raw_payload_for_marker.items() if v is not None
+    }
+    try:
+        Lever5bExampleSqlOutput.model_validate(payload_for_validation)
+        return True
+    except Exception as exc:
+        failing_fields: list[str] = []
+        try:
+            from pydantic import ValidationError
+            if isinstance(exc, ValidationError):
+                for err in exc.errors():
+                    loc = err.get("loc") or ()
+                    if loc:
+                        failing_fields.append(
+                            ".".join(str(p) for p in loc)
+                        )
+        except Exception:
+            pass
+        if not failing_fields:
+            failing_fields = [_LEVER5B_SCHEMA_NAME]
+        marker = llm_contract_failure_marker(
+            schema_name=_LEVER5B_SCHEMA_NAME,
+            failing_fields=failing_fields,
+            raw_payload=raw_payload_for_marker,
+            optimization_run_id=str(optimization_run_id or ""),
+            iteration=int(iteration or 0),
+            cluster_id=str(cluster_id or ""),
+            ag_id=str(ag_id or ""),
+            skill_name="lever_5b_example_sql",
+            error_repr=repr(exc)[:512],
+        )
+        print(marker, flush=True)
+        logger.warning(
+            "synthesize_example_sqls: %s rejected LLM response "
+            "(cluster=%s, failing_fields=%s)",
+            _LEVER5B_SCHEMA_NAME, cluster_id, failing_fields,
+        )
+        return False
+
+
 def synthesize_example_sqls(
     cluster: dict,
     metadata_snapshot: dict,
@@ -1215,6 +1306,29 @@ def synthesize_example_sqls(
     raw = _call_llm(prompt)
     proposal = _extract_json_proposal(raw) or {}
     proposal.setdefault("patch_type", archetype.patch_type)
+
+    # Plan 10 Phase B3 — explicit Pydantic validation against the
+    # ``Lever5bExampleSqlOutput`` contract BEFORE the legacy 5-gate path.
+    # Closes the 2026-05-19 ab65fefe (7now) silent-recovery defect where
+    # the LLM emitted ``example_sql: null``, ``_gate_parse`` coerced
+    # ``None`` -> ``""`` and rejected the proposal as a generic Gate-1
+    # failure, then the retry slot fired with the same broken payload
+    # and the postmortem reader saw "empty example_question or
+    # example_sql" instead of the actual contract bug. On schema
+    # rejection we emit a ``GSO_LLM_CONTRACT_FAILURE_V1`` stdout marker
+    # carrying the raw payload + failing fields + schema name, refuse
+    # the retry, and return ``None`` so the caller falls through to its
+    # contract-failure handling path. The legacy 5-gate validation still
+    # runs for payloads that pass the schema check (it carries SQL-
+    # parse, execute, structural, arbiter, and firewall semantics that
+    # the Pydantic schema cannot encode).
+    if not _schema_check_lever5b_example_sql(
+        proposal=proposal,
+        cluster_id=str(afs.get("cluster_id", "") or ""),
+    ):
+        if budget is not None:
+            budget.record_failure()
+        return None
 
     passed, gate_results = validate_synthesis_proposal(
         proposal,

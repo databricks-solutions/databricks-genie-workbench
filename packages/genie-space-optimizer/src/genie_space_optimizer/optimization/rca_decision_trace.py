@@ -107,6 +107,15 @@ class DecisionType(str, Enum):
     # validator-rejection (the record's outcome + reason_code
     # differentiate).
     NEXT_ATTEMPT_HYPOTHESIZED = "next_attempt_hypothesized"
+    # ── Plan 10 Phase B3 — typed contract-failure record emitted when a
+    # Pydantic ``response_model`` rejects an LLM response. Paired with
+    # the ``GSO_LLM_CONTRACT_FAILURE_V1`` stdout marker. Today's silent
+    # fall-through (broad ``except Exception: return ""``) buried the
+    # schema name + failing field + raw payload so postmortem readers
+    # could not tell apart "LLM returned ``example_sql: null``" from
+    # "5-gate parse rejected the SQL". Producer:
+    # ``decision_emitters.llm_contract_failure_record``.
+    LLM_CONTRACT_FAILURE = "llm_contract_failure"
 
 
 class DecisionOutcome(str, Enum):
@@ -342,6 +351,12 @@ class ReasonCode(str, Enum):
     PRODUCER_EXCEPTION = "producer_exception"
     # Cycle 11 — paired with DecisionType.INVARIANT_VIOLATION.
     INVARIANT_VIOLATION = "invariant_violation"
+    # Plan 10 Phase B3 — typed reason for the LLM_CONTRACT_FAILURE
+    # decision_type. Carried in the ``reason_code`` field so postmortem
+    # dashboards can pivot on a closed-vocabulary cause without parsing
+    # ``reason_detail`` free-form text. Producer:
+    # ``decision_emitters.llm_contract_failure_record``.
+    LLM_CONTRACT_FAILURE = "llm_contract_failure"
     # Phase H Fidelity Task 3 — control-plane acceptance reason codes.
     # ``ag_outcome_decision_record`` previously collapsed every rolled-back
     # outcome into ``PATCH_SKIPPED``, which erased the operator-relevant
@@ -880,6 +895,12 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     # violation detail must be visible to the operator, so route to
     # SECTION_HARD_FAILURES where _format_record_line renders reason_detail.
     DecisionType.INVARIANT_VIOLATION: SECTION_HARD_FAILURES,
+    # Plan 10 Phase B3 — LLM_CONTRACT_FAILURE is an infrastructure hard
+    # failure (the LLM emitted a payload that violated the typed
+    # response_model). Route to SECTION_HARD_FAILURES so the schema name
+    # + failing field surface to the operator without needing to scroll
+    # through proposal-survival noise.
+    DecisionType.LLM_CONTRACT_FAILURE: SECTION_HARD_FAILURES,
     # Defect Plan 1 (2026-05-12) — CLUSTER_BLOCKED_NO_RCA fires when an
     # open hard cluster reaches AG-emit time without a fit RCA card.
     # It belongs alongside CLUSTER_SELECTED / RCA_FORMED in the

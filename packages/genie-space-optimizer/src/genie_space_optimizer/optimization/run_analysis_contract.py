@@ -1340,6 +1340,63 @@ def gso_invariant_violation_marker(
     )
 
 
+def llm_contract_failure_marker(
+    *,
+    schema_name: str,
+    failing_fields: Sequence[str],
+    raw_payload: Mapping[str, Any] | None = None,
+    optimization_run_id: str = "",
+    iteration: int = 0,
+    cluster_id: str = "",
+    ag_id: str = "",
+    skill_name: str = "",
+    error_repr: str = "",
+) -> str:
+    """Plan 10 Phase B3 — single-shape stdout marker emitted every time
+    an LLM response is rejected by its typed Pydantic
+    ``response_model``.
+
+    Paired with ``decision_emitters.llm_contract_failure_record`` (the
+    in-process DecisionRecord). The marker exists separately so the
+    postmortem stdout grep path catches the failure even when the
+    decision-records persistence layer is not yet wired (the
+    historical defect: ``synthesize_example_sqls`` swallowed
+    ``ValidationError`` with a broad ``except Exception`` and the
+    postmortem reader saw a generic ``"empty example_question or
+    example_sql"`` gate rejection instead of the actual contract bug).
+
+    ``raw_payload`` is best-effort: callers pass the parsed dict they
+    fed to ``model_validate``. We coerce non-dict payloads (a free-form
+    string from a non-JSON LLM response) by wrapping under a ``raw``
+    key so the stdout marker is always JSON-serialisable.
+
+    ``failing_fields`` is the closed-vocabulary list of dotted field
+    paths the validator rejected (e.g. ``["example_sql"]``).
+    """
+    if isinstance(raw_payload, Mapping):
+        payload_out: dict[str, Any] = {
+            str(k): raw_payload[k] for k in raw_payload
+        }
+    elif raw_payload is None:
+        payload_out = {}
+    else:
+        payload_out = {"raw": str(raw_payload)[:2048]}
+    return marker_line(
+        "GSO_LLM_CONTRACT_FAILURE_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "cluster_id": str(cluster_id),
+            "ag_id": str(ag_id),
+            "skill_name": str(skill_name),
+            "schema_name": str(schema_name),
+            "failing_fields": [str(f) for f in (failing_fields or ()) if f],
+            "error_repr": str(error_repr)[:2048],
+            "raw_payload": payload_out,
+        },
+    )
+
+
 def assemble_run_manifest_v2_line(
     *,
     optimization_run_id: str,

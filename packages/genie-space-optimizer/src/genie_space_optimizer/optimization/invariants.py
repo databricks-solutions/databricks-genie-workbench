@@ -36,6 +36,26 @@ Invariant IDs:
   I14 — P-E1 dedup: at most one live ``lever6_force_llm_declined``
         per ``(iter, cluster_signature, root_cause)``; cached
         records are unbounded.
+  I15 — Plan 10 Phase B1. Activation-marker pair completeness:
+        every ``GSO_PLAN5_ANCHOR_ACTIVATION_V1`` marker with status
+        ``anchor_entered_plan5_dispatch`` must be paired with a
+        matching in-dispatcher status marker
+        (``plan5_intent_declined`` /
+        ``plan5_intent_validator_rejected`` /
+        ``plan5_intent_routed`` / ``plan5_intent_materialized``)
+        in the same ``(run_id, ag_id, iteration)`` window.
+        Violation = the LLM dispatch was entered but exited
+        silently (Plan 10 Leak 1's exact signature).
+  I16 — Plan 10 Phase B2. Illegal-decline after Plan 9 activation:
+        within a single ``(ag_id, iteration)`` window, if a
+        marker with status ``anchor_entered_plan5_dispatch`` fires
+        then ``GSO_NO_STRUCTURAL_CANDIDATE_V1`` records with
+        skipped_reason ``no_top_n_archetype`` or
+        ``no_archetype_or_slice`` are illegal UNLESS the same
+        window also carries a ``plan5_intent_validator_rejected``
+        marker with a concrete typed reason. Catches the silent
+        fall-through to the legacy archetype path even when
+        individual fixes regress.
 """
 
 from __future__ import annotations
@@ -842,7 +862,242 @@ def check_i14_l6_decline_dedup(evidence: Mapping[str, Any]) -> list[dict]:
     return violations
 
 
-# All invariants (I1–I8 + I11 + I12 + I13 + I14) are now implemented and wired in run_invariants.
+# All invariants (I1–I8 + I11 + I12 + I13 + I14 + I15 + I16) are now
+# implemented and wired in run_invariants.
+
+
+# ---------------------------------------------------------------------------
+# Plan 10 Phase B — markers-on-evidence invariants (I15, I16)
+# ---------------------------------------------------------------------------
+#
+# Both invariants read marker payloads produced by ``plan9_activation_markers``
+# (``GSO_PLAN5_ANCHOR_ACTIVATION_V1``) and ``run_analysis_contract.no_structural_candidate_marker``
+# (``GSO_NO_STRUCTURAL_CANDIDATE_V1``). The marker stream is shaped into the
+# evidence dict by upstream postmortem extractors before ``run_invariants``
+# runs; the shape is one flat list per marker family:
+#
+#     evidence["activation_markers"] = [
+#         {
+#             "marker_name": "GSO_PLAN5_ANCHOR_ACTIVATION_V1",
+#             "optimization_run_id": "run-X",
+#             "iteration": 3,
+#             "ag_id": "AG_DECOMPOSED_H001",
+#             "cluster_id": "C_top_n_collapse",
+#             "status": "anchor_entered_plan5_dispatch",
+#             "reason": "",
+#             "patch_type": "",
+#             "intent_id": "",
+#         },
+#         ...
+#     ]
+#     evidence["no_structural_candidate_markers"] = [
+#         {
+#             "marker_name": "GSO_NO_STRUCTURAL_CANDIDATE_V1",
+#             "ag_id": "AG_DECOMPOSED_H001",
+#             "iteration": 3,
+#             "attempted_archetypes": [],
+#             "skipped_reason": "no_top_n_archetype",
+#         },
+#         ...
+#     ]
+#
+# Both invariants stay silent (return ``[]``) when neither marker family is
+# present in the evidence dict so legacy fixtures from before Plan 9 stay
+# green.
+
+
+_ACTIVATION_MARKER_NAME: str = "GSO_PLAN5_ANCHOR_ACTIVATION_V1"
+_NO_STRUCTURAL_CANDIDATE_MARKER_NAME: str = "GSO_NO_STRUCTURAL_CANDIDATE_V1"
+
+_ANCHOR_ENTERED: str = "anchor_entered_plan5_dispatch"
+_INNER_STATUSES_PAIRED: frozenset[str] = frozenset({
+    "plan5_intent_declined",
+    "plan5_intent_validator_rejected",
+    "plan5_intent_routed",
+    "plan5_intent_materialized",
+})
+_VALIDATOR_REJECTED: str = "plan5_intent_validator_rejected"
+_ILLEGAL_LEGACY_SKIPPED_REASONS: frozenset[str] = frozenset({
+    "no_top_n_archetype",
+    "no_archetype_or_slice",
+})
+
+
+def _activation_markers(evidence: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Pull activation marker dicts out of evidence. Silent on absence so
+    legacy fixtures (pre-Plan-9) stay green for I15 + I16."""
+    raw = evidence.get("activation_markers") or ()
+    out: list[Mapping[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            continue
+        marker = str(entry.get("marker_name") or "")
+        if marker and marker != _ACTIVATION_MARKER_NAME:
+            continue
+        out.append(entry)
+    return out
+
+
+def _no_structural_candidate_markers(
+    evidence: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    """Pull no-structural-candidate marker dicts out of evidence."""
+    raw = evidence.get("no_structural_candidate_markers") or ()
+    out: list[Mapping[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            continue
+        marker = str(entry.get("marker_name") or "")
+        if marker and marker != _NO_STRUCTURAL_CANDIDATE_MARKER_NAME:
+            continue
+        out.append(entry)
+    return out
+
+
+def check_i15_activation_pair_completeness(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I15 — Plan 10 Phase B1. Every harness-level
+    ``anchor_entered_plan5_dispatch`` activation marker must be paired
+    with a matching in-dispatcher status marker on the same
+    ``(run_id, ag_id, iteration)`` key.
+
+    Closes Plan 10 Leak 1's exact signature: the LLM dispatch path was
+    entered (T9.1 harness-level marker fired) but exited silently
+    because the gate's ``rca_evidence_typed`` precondition was empty.
+    The in-dispatcher status (``plan5_intent_invoked`` /
+    ``plan5_intent_declined`` / ``plan5_intent_validator_rejected`` /
+    ``plan5_intent_routed`` / ``plan5_intent_materialized``) never
+    surfaced, so postmortems saw "entered but no outcome" — exactly
+    the silent-fall-through pattern this plan exists to prevent.
+
+    Pairing rule: every ``anchor_entered_plan5_dispatch`` marker must
+    have at least one accompanying marker on the same
+    ``(optimization_run_id, ag_id, iteration)`` triple with status in
+    ``_INNER_STATUSES_PAIRED``. ``plan5_intent_invoked`` is the
+    pre-outcome marker, so it does NOT satisfy the pairing — an
+    INVOKED marker without a following terminal status is itself a
+    silent-exit violation.
+
+    Silent (returns ``[]``) when ``evidence["activation_markers"]`` is
+    absent so back-compat with pre-Plan-9 fixtures is preserved.
+    """
+    markers = _activation_markers(evidence)
+    if not markers:
+        return []
+    entered: list[Mapping[str, Any]] = []
+    paired_keys: set[tuple[str, str, int]] = set()
+    for m in markers:
+        status = str(m.get("status") or "")
+        key = (
+            str(m.get("optimization_run_id") or ""),
+            str(m.get("ag_id") or ""),
+            int(m.get("iteration") or 0),
+        )
+        if status == _ANCHOR_ENTERED:
+            entered.append(m)
+        elif status in _INNER_STATUSES_PAIRED:
+            paired_keys.add(key)
+    violations: list[dict] = []
+    for m in entered:
+        key = (
+            str(m.get("optimization_run_id") or ""),
+            str(m.get("ag_id") or ""),
+            int(m.get("iteration") or 0),
+        )
+        if key in paired_keys:
+            continue
+        violations.append(_violation(
+            invariant_id="I15",
+            title="activation_pair_completeness_violated",
+            detail=(
+                f"anchor_entered_plan5_dispatch fired for "
+                f"run={key[0]!r} ag={key[1]!r} iter={key[2]} but no "
+                "paired in-dispatcher status marker followed "
+                "(expected one of plan5_intent_declined / "
+                "plan5_intent_validator_rejected / "
+                "plan5_intent_routed / plan5_intent_materialized)"
+            ),
+            optimization_run_id=key[0],
+            ag_id=key[1],
+            iteration=key[2],
+            cluster_id=str(m.get("cluster_id") or ""),
+        ))
+    return violations
+
+
+def check_i16_no_legacy_decline_after_activation(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I16 — Plan 10 Phase B2. Within a single ``(ag_id, iteration)``
+    window, if a marker with status ``anchor_entered_plan5_dispatch``
+    fires, then ``GSO_NO_STRUCTURAL_CANDIDATE_V1`` records with
+    ``skipped_reason`` in {``no_top_n_archetype``,
+    ``no_archetype_or_slice``} are illegal UNLESS the same window
+    also carries a ``plan5_intent_validator_rejected`` marker with
+    a concrete typed reason.
+
+    Catches the "silent fall-through to legacy archetype path" pattern
+    even when an individual Plan 10 fix regresses. The legacy
+    archetype skipped_reasons are the deterministic-classifier
+    signals that the AG was handed back to the pre-Plan-9 lever-5
+    pipeline despite the LLM-direct lane being entered. The carve-out
+    for ``plan5_intent_validator_rejected`` honors the path where the
+    LLM produced a structurally invalid intent — the validator
+    rejection is a typed, observable decline, not a silent fall-back.
+
+    Silent (returns ``[]``) when either marker family is absent so
+    pre-Plan-9 fixtures stay green.
+    """
+    activation = _activation_markers(evidence)
+    no_struct = _no_structural_candidate_markers(evidence)
+    if not activation or not no_struct:
+        return []
+    entered_keys: dict[tuple[str, int], Mapping[str, Any]] = {}
+    validator_rejected_keys: set[tuple[str, int]] = set()
+    for m in activation:
+        ag_id = str(m.get("ag_id") or "")
+        iteration = int(m.get("iteration") or 0)
+        status = str(m.get("status") or "")
+        if status == _ANCHOR_ENTERED:
+            entered_keys[(ag_id, iteration)] = m
+        elif status == _VALIDATOR_REJECTED:
+            reason = str(m.get("reason") or "").strip()
+            if reason:
+                validator_rejected_keys.add((ag_id, iteration))
+    violations: list[dict] = []
+    for r in no_struct:
+        skipped = str(r.get("skipped_reason") or "")
+        if skipped not in _ILLEGAL_LEGACY_SKIPPED_REASONS:
+            continue
+        ag_id = str(r.get("ag_id") or "")
+        iteration = int(r.get("iteration") or 0)
+        key = (ag_id, iteration)
+        entered = entered_keys.get(key)
+        if entered is None:
+            continue
+        if key in validator_rejected_keys:
+            continue
+        violations.append(_violation(
+            invariant_id="I16",
+            title="legacy_decline_after_activation_violated",
+            detail=(
+                f"GSO_NO_STRUCTURAL_CANDIDATE_V1 with "
+                f"skipped_reason={skipped!r} fired for ag={ag_id!r} "
+                f"iter={iteration} after anchor_entered_plan5_dispatch "
+                "without a paired plan5_intent_validator_rejected "
+                "marker carrying a concrete typed reason. The "
+                "LLM-direct lane silently fell through to the legacy "
+                "archetype path."
+            ),
+            optimization_run_id=str(entered.get("optimization_run_id") or ""),
+            ag_id=ag_id,
+            iteration=iteration,
+            cluster_id=str(entered.get("cluster_id") or ""),
+            skipped_reason=skipped,
+        ))
+    return violations
+
 
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
@@ -863,6 +1118,8 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i13_target_delta_totality,  # Cycle 14-T0
         check_i14_l6_decline_dedup,  # P-E1
         check_i12_replay_validity,  # Cycle 17 T3
+        check_i15_activation_pair_completeness,  # Plan 10 Phase B1
+        check_i16_no_legacy_decline_after_activation,  # Plan 10 Phase B2
     ):
         try:
             violations.extend(check(evidence))

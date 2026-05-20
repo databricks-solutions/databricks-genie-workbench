@@ -421,6 +421,38 @@ def _build_full_iteration_fixture() -> dict:
                             "llm_outcome": "success",
                         },
                     },
+                    {
+                        # Plan 10 Phase B3: LLM_CONTRACT_FAILURE — typed
+                        # record emitted when a Pydantic response_model
+                        # rejects an LLM response. Added here to satisfy
+                        # the exhaustiveness check in
+                        # test_replay_decision_records_cover_every_decision_type.
+                        # Mirrors the shape ``decision_emitters.llm_contract_failure_record``
+                        # produces in production.
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "llm_contract_failure",
+                        "outcome": "failed",
+                        "reason_code": "llm_contract_failure",
+                        "cluster_id": "C_synth_contract_fail",
+                        "evidence_refs": ["schema:Lever5bExampleSqlOutput"],
+                        "reason_detail": (
+                            "Lever5bExampleSqlOutput rejected LLM response; "
+                            "failing_fields=['example_sql']"
+                        ),
+                        "metrics": {
+                            "schema_name": "Lever5bExampleSqlOutput",
+                            "skill_name": "lever_5b_example_sql",
+                            "failing_fields": ["example_sql"],
+                            "error_repr": (
+                                "ValidationError(1 validation error for "
+                                "Lever5bExampleSqlOutput)"
+                            ),
+                            "raw_payload": {
+                                "example_question": "Top categories by revenue?",
+                                "example_sql": None,
+                            },
+                        },
+                    },
                 ],
             }
         ],

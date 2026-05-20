@@ -1537,6 +1537,71 @@ def producer_exception_record(
     )
 
 
+def llm_contract_failure_record(
+    *,
+    run_id: str,
+    iteration: int,
+    schema_name: str,
+    failing_fields: Sequence[str],
+    raw_payload: Any,
+    skill_name: str = "",
+    cluster_id: str = "",
+    ag_id: str = "",
+    error_repr: str = "",
+) -> DecisionRecord:
+    """Plan 10 Phase B3 — typed LLM_CONTRACT_FAILURE record emitted when
+    a Pydantic ``response_model`` rejects an LLM response payload.
+
+    Today (pre-Phase-B3) the rejection path is silent: the
+    ``synthesize_example_sqls`` helper's broad ``except Exception:
+    return ""`` swallows the ``ValidationError`` and burns the proposal's
+    single retry slot on a generic gate failure with reason
+    ``"empty example_question or example_sql"``. Postmortem readers
+    can't tell apart "the LLM emitted ``example_sql: null``" from
+    "the LLM emitted SQL that fails sqlglot parse" — both surface as
+    the same Gate-1 rejection, and the actual contract bug is
+    invisible.
+
+    This record + the paired ``GSO_LLM_CONTRACT_FAILURE_V1`` stdout
+    marker carry the raw LLM payload, the failing field path(s), and
+    the schema name so the failure is unambiguous in the operator
+    transcript and in stdout grep.
+
+    Pure: no I/O, no clock, no logger.
+    """
+    if isinstance(raw_payload, Mapping):
+        metrics_payload: Any = {str(k): raw_payload[k] for k in raw_payload}
+    elif raw_payload is None:
+        metrics_payload = {}
+    else:
+        metrics_payload = {"raw": str(raw_payload)[:2048]}
+    failing_list = [str(f) for f in (failing_fields or ()) if f]
+    detail = (
+        f"{schema_name} rejected LLM response; failing_fields="
+        f"{failing_list!r}"
+    )
+    if error_repr:
+        detail = f"{detail}; error={error_repr[:256]}"
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        decision_type=DecisionType.LLM_CONTRACT_FAILURE,
+        outcome=DecisionOutcome.FAILED,
+        reason_code=ReasonCode.LLM_CONTRACT_FAILURE,
+        reason_detail=detail,
+        cluster_id=str(cluster_id or ""),
+        ag_id=str(ag_id or ""),
+        evidence_refs=(f"schema:{schema_name}",),
+        metrics={
+            "schema_name": str(schema_name),
+            "skill_name": str(skill_name or ""),
+            "failing_fields": failing_list,
+            "error_repr": str(error_repr)[:2048],
+            "raw_payload": metrics_payload,
+        },
+    )
+
+
 def invariant_violation_record(
     *,
     run_id: str,

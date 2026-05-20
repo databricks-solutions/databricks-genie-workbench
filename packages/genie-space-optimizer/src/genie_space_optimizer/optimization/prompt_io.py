@@ -483,7 +483,17 @@ Lever5aInstructionOutput = Lever5aInstructionsOutput
 class Lever5bExampleSqlOutput(LLMOutputContract):
     """LEVER_5B_EXAMPLE_SQL_PROMPT output (loaded from
     lever-5b-example-sql/SKILL.md). Emits one example_question +
-    example_sql + usage_guidance + rationale."""
+    example_sql + usage_guidance + rationale.
+
+    Plan 10 Phase B3 — schema pin: ``example_question`` and
+    ``example_sql`` are required ``str`` fields with no ``Optional``
+    wrapper and no default. Pydantic rejects ``null`` and missing keys
+    at validation time so the synthesizer can emit a
+    ``GSO_LLM_CONTRACT_FAILURE_V1`` decline record instead of silently
+    treating the empty value as a regular gate failure and burning a
+    retry slot. The 2026-05-19 ``ab65fefe`` (7now) postmortem traced
+    one of the four anchors to this exact silent path.
+    """
 
     example_question: str = Field(description="NL question the example answers")
     example_sql: str = Field(description="SQL teaching the structural pattern")
