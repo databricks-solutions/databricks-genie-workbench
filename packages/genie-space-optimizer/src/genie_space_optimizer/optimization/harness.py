@@ -13106,6 +13106,42 @@ def _maybe_dispatch_forced_structural_synthesis(
     )
 
 
+def filter_ags_by_forbidden_set_pre_generation(
+    ags: list[dict],
+    forbidden_pair,
+) -> tuple[list[dict], list[dict]]:
+    """Plan 9 Task 9 — drop AGs whose source_cluster_signatures
+    match the forbidden set BEFORE generate_proposals_from_strategy
+    fires. Pre-Plan-9 the harness only consulted the forbidden set
+    as a post-generation collision check, wasting LLM calls on AGs
+    that would have been rejected anyway.
+
+    Returns (surviving_ags, dropped_ags). Dropped AGs get a
+    typed AG_PREFILTERED_BY_FORBIDDEN_SET decision record at the
+    caller; this helper is pure data manipulation.
+    """
+    by_signature = getattr(forbidden_pair, "by_signature", frozenset())
+    if not by_signature:
+        return (list(ags), [])
+
+    forbidden_sig_strings: set[str] = set()
+    for entry in by_signature:
+        if isinstance(entry, str):
+            forbidden_sig_strings.add(entry)
+        elif isinstance(entry, (tuple, list)) and entry:
+            forbidden_sig_strings.add(str(entry[0]))
+
+    surviving: list[dict] = []
+    dropped: list[dict] = []
+    for ag in ags:
+        sigs = {str(s) for s in (ag.get("source_cluster_signatures") or [])}
+        if sigs and sigs.intersection(forbidden_sig_strings):
+            dropped.append(ag)
+        else:
+            surviving.append(ag)
+    return (surviving, dropped)
+
+
 def _compute_forbidden_ag_set_pair(
     reflection_buffer: list[dict],
 ) -> _ForbiddenSetPair:
@@ -22540,6 +22576,30 @@ def _run_lever_loop(
             # 7now-trial defect where iterations 2-5 re-admitted the
             # same AG family after the LLM regenerated root_cause text.
             _forbidden_pair = _compute_forbidden_ag_set_pair(reflection_buffer)
+            # Plan 9 Task 9 — drop forbidden AGs BEFORE generation.
+            _surviving_ags, _prefiltered_ags = (
+                filter_ags_by_forbidden_set_pre_generation(
+                    [ag], _forbidden_pair,
+                )
+            )
+            if _prefiltered_ags:
+                logger.info(
+                    "plan9.prefiltered_ags count=%d ag_ids=%s",
+                    len(_prefiltered_ags),
+                    [a.get("id", "?") for a in _prefiltered_ags],
+                )
+                for _dropped_ag in _prefiltered_ags:
+                    _current_iter_inputs.setdefault(
+                        "decision_records", [],
+                    ).append({
+                        "decision_type": "AG_PREFILTERED_BY_FORBIDDEN_SET",
+                        "ag_id": str(_dropped_ag.get("id", "")),
+                        "signatures": list(
+                            _dropped_ag.get("source_cluster_signatures") or []
+                        ),
+                        "reason": "matches_forbidden_signature",
+                    })
+                continue
             # Phase 1.6 (2026-05-17) — build the typed view at the
             # collision-guard boundary so identity reconciliation
             # (cluster.question_ids vs ag.affected_questions) happens

@@ -10843,6 +10843,7 @@ def _select_lever_5_holistic_path(
     llm_cluster_by_cluster_id: dict | None = None,
     ag_id: str | None = None,
     iteration: int = 0,
+    run_id: str | None = None,
 ) -> dict:
     """Plan 2 is unconditionally on as of 2026-05-16 — the L5 result
     always comes from the split dispatcher. The historical selector
