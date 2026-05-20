@@ -10486,25 +10486,69 @@ def _dispatch_lever_5b_for_cluster(
             benchmarks=benchmarks,
         )
         if proposal is not None:
+            # Plan 9 Task 6 — materialize patch_body directly via
+            # to_proposal_dict() and bypass the per-lever generator's
+            # SQL re-synthesis. Cross-lever router is still consulted
+            # for the override event (provenance metadata only). The
+            # per-lever generator becomes a SAFETY NET, invoked only
+            # when to_proposal_dict() raises (missing required
+            # patch_body field on the LLM output). Closes the
+            # materialization-decoration loop: the LLM-emitted
+            # patch_body reaches the applier instead of being
+            # discarded.
+            proposal_dict: dict | None = None
+            materialization_source = "plan9_direct"
+            try:
+                proposal_dict = proposal.to_proposal_dict()
+            except Exception as exc:
+                logger.warning(
+                    "plan9.l5b_direct_materialization_failed "
+                    "intent_id=%s err=%s — falling back to per-lever "
+                    "generator (safety net).",
+                    proposal.intent_id, exc,
+                )
+                materialization_source = "plan9_legacy_fallback"
+                proposal_dict = None
+
             routed = route_to_per_lever_generator(proposal)
-            if routed is not None:
-                generator, override_event = routed
+            override_event = routed[1] if routed else None
+
+            if proposal_dict is None:
+                # Safety-net path: invoke the per-lever generator.
+                if routed is None:
+                    return []
+                generator = routed[0]
                 proposal_dict = generator(proposal)
-                fc = FailureCluster.from_legacy(cluster)
-                intent = proposal.to_repair_intent(cluster=fc, ag_id=ag_id)
-                stamp_repair_intent_on_proposal(proposal_dict, intent)
-                if override_event is not None:
-                    proposal_dict["cross_lever_override"] = (
-                        override_event.to_dict()
-                    )
-                    logger.info(
-                        "plan5.cross_lever_override intent_id=%s "
-                        "from=%s to=%s",
-                        override_event.intent_id,
-                        override_event.from_lever,
-                        override_event.to_lever,
-                    )
-                return [proposal_dict]
+
+            fc = FailureCluster.from_legacy(cluster)
+            intent = proposal.to_repair_intent(cluster=fc, ag_id=ag_id)
+            stamp_repair_intent_on_proposal(proposal_dict, intent)
+            _prov = proposal_dict.setdefault("provenance", {})
+            if isinstance(_prov, dict):
+                _prov["plan9_materialization_source"] = (
+                    materialization_source
+                )
+            if override_event is not None:
+                proposal_dict["cross_lever_override"] = (
+                    override_event.to_dict()
+                )
+                logger.info(
+                    "plan5.cross_lever_override intent_id=%s "
+                    "from=%s to=%s",
+                    override_event.intent_id,
+                    override_event.from_lever,
+                    override_event.to_lever,
+                )
+            logger.info(
+                "plan9.l5b_materialized intent_id=%s cluster_id=%s "
+                "ag_id=%s patch_type=%s source=%s",
+                proposal.intent_id,
+                cluster.get("cluster_id"),
+                ag_id,
+                proposal.patch_type.value,
+                materialization_source,
+            )
+            return [proposal_dict]
         # LLM declined OR routing failed → fall through to the existing
         # rich-path / lean-path branches below.
 

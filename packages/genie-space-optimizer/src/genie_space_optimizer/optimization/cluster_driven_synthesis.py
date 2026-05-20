@@ -639,7 +639,8 @@ def _derive_asset_slice_from_afs(
     metadata_snapshot: dict,
     *,
     column_k: int = PREFLIGHT_COLUMN_COVERAGE_K,
-) -> tuple[AssetSlice, Archetype] | None:
+    repair_proposal: Any = None,
+) -> tuple[AssetSlice, "Archetype | None"] | None:
     """Build an :class:`AssetSlice` + archetype pair from an AFS.
 
     Returns ``None`` when no archetype matches the cluster (caller
@@ -651,7 +652,37 @@ def _derive_asset_slice_from_afs(
     cleanly. We retry by removing the second table from consideration;
     if the reduced single-table scope still matches a non-JOIN
     archetype, we use that. Otherwise return ``None``.
+
+    Plan 9 Task 6 — when ``repair_proposal`` is supplied AND carries
+    non-empty ``target_objects``, build the AssetSlice via the
+    LLM-direct resolver and return ``(slice, None)``. The archetype
+    slot is None on the Plan-9 path; downstream consumers that read
+    ``archetype.prompt_template`` / ``archetype.output_shape`` must
+    fall back to ``repair_proposal.repair_shape`` and
+    ``repair_proposal.required_constructs`` (Plan 9 T2 + T3). Callers
+    that pass ``repair_proposal=None`` (the only call sites in PR1)
+    keep the pre-Plan-9 archetype-driven path verbatim.
     """
+    if repair_proposal is not None and getattr(
+        repair_proposal, "target_objects", ()
+    ):
+        from genie_space_optimizer.optimization.llm_direct_slice_resolver import (
+            resolve_target_objects_to_asset_slice,
+            UnknownTargetObjectError,
+        )
+        try:
+            slice_ = resolve_target_objects_to_asset_slice(
+                repair_proposal.target_objects, metadata_snapshot,
+            )
+            return (slice_, None)  # No archetype; Plan 9 direct path.
+        except UnknownTargetObjectError as exc:
+            logger.warning(
+                "plan9.l5b_target_objects_resolution_failed err=%s "
+                "— falling back to archetype path.",
+                exc,
+            )
+            # Fall through to pre-Plan-9 archetype-driven path below.
+
     archetype = pick_archetype(afs, metadata_snapshot)
     if archetype is None:
         return None
