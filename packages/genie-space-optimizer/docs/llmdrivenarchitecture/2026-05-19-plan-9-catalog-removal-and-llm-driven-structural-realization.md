@@ -5112,6 +5112,555 @@ EOF
 
 ---
 
+### Task 9.1: Harness-level `GSO_PLAN5_ANCHOR_ACTIVATION_V1` marker for every anchor (close T8's coverage gap)
+
+**Rationale:** T8's marker only fires from inside the L5b/L6 dispatchers. AGs that the harness drops upstream — via T9's pre-generation forbidden-set filter OR via the legacy collision-pair guard — never reach a dispatcher, so postmortem sees "no marker" for those AG-iteration pairs and cannot distinguish "filtered upstream" from "Plan-5 never tried." T9.1 closes this gap with a harness-level emit at every drop/entry point so every AG-iteration pair carries exactly one harness-level marker. In-dispatcher markers (from T8) remain as the downstream typed-status story for AGs that DO enter dispatch.
+
+**Postmortem invariant after T9.1:** For every AG-iteration pair, exactly one harness-level marker exists. If its status is `ANCHOR_ENTERED_PLAN5_DISPATCH`, exactly one in-dispatcher marker (from T8) also exists for that pair carrying the Plan-5 outcome.
+
+**Files:**
+
+- Modify: `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/plan9_activation_markers.py` (add 3 status values to `ActivationStatus`; update module docstring)
+- Modify: `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/harness.py` (emit at 4 anchor points within the per-AG loop body around lines 22578–24030; use per-AG dedup flag)
+- Test: `packages/genie-space-optimizer/tests/unit/test_plan9_harness_activation_emit.py` (new — 4 emit-point unit tests using stub harness fragments)
+- Test: `packages/genie-space-optimizer/tests/unit/test_plan9_activation_markers_emit.py` (extend with new-status assertion)
+
+**Per-AG dedup:** `ANCHOR_ENTERED_PLAN5_DISPATCH` may be reachable from two harness call sites within the same AG iteration (`generate_proposals_from_strategy` AND `_force_lever6_proposal_for_ag`). Use a per-AG local boolean `_anchor_activation_marker_emitted` initialized to `False` at the top of the per-AG loop body; gate every harness-level emit on it being `False` and set to `True` after each emit. Drop emits (forbidden-set, collision-guard) also set the flag because they `continue` past the dispatch call sites anyway, but the flag-gate is defensive.
+
+**Anchor navigation (DO NOT trust line numbers; navigate by code structure):**
+
+- Emit-point 1 — `ANCHOR_FORBIDDEN_SET_DROPPED`: inside the `if _prefiltered_ags:` block (T9's wire-in), AFTER the `decision_records.append({"decision_type": "AG_PREFILTERED_BY_FORBIDDEN_SET", ...})` loop and BEFORE the `continue`. Currently around `harness.py:22585-22602`.
+- Emit-point 2 — `ANCHOR_COLLISION_GUARD_DROPPED`: inside the `if _collision_pair_matches(_collision_pair, _forbidden_pair):` block, AFTER the existing `iteration_no_candidate_marker` emit (around `harness.py:22774-22792`) and BEFORE the loop falls through to the next AG. Co-located with the typed terminal marker emit so the two markers fire consecutively for one logical drop.
+- Emit-point 3 — `ANCHOR_ENTERED_PLAN5_DISPATCH` (main): IMMEDIATELY BEFORE the main `lever_proposals = generate_proposals_from_strategy(...)` call (around `harness.py:23493`). Find by searching for `lever_proposals = generate_proposals_from_strategy(`. Do NOT emit before the earlier `_sample = generate_proposals_from_strategy(...)` probe at ~23376 — that's an internal sampling call, not the AG-decision call.
+- Emit-point 4 — `ANCHOR_ENTERED_PLAN5_DISPATCH` (forced L6): IMMEDIATELY BEFORE the `return _force_lever6_proposal_for_ag(...)` call (around `harness.py:24030`). The per-AG dedup flag prevents double-emission when both paths fire for the same AG.
+
+**Skipped invariant test:** Leave `test_plan9_activation_markers_all_anchors_covered.py` skipped as-is. T9.1's per-point unit tests give us "every drop path / every entry path emits the right marker" coverage; the full one-marker-per-anchor invariant test requires the `two_ag_synthetic_iter1` fixture which is its own engineering task (deliberately deferred per T8). Add a NOTE comment in the placeholder file pointing at T9.1's per-point tests.
+
+- [ ] **Step 1: Write the failing test for the new ActivationStatus values + emit calls**
+
+Create `packages/genie-space-optimizer/tests/unit/test_plan9_harness_activation_emit.py`:
+
+```python
+"""Plan 9 Task 9.1 — harness-level GSO_PLAN5_ANCHOR_ACTIVATION_V1
+marker tests.
+
+Verifies:
+  1. ActivationStatus has the three new harness-level values.
+  2. emit_plan5_activation produces marker lines with each new
+     status when called with that status.
+  3. The marker_line payload carries status, ag_id, iteration,
+     and a non-empty reason for every drop-path emit.
+
+The actual harness-side wire-in is exercised by the focused
+keyword sweep (-k "activation_marker or plan9_activation") plus
+the existing test_plan9_activation_markers_emit.py.
+"""
+from __future__ import annotations
+
+import io
+from contextlib import redirect_stdout
+
+from genie_space_optimizer.optimization.plan9_activation_markers import (
+    ActivationStatus,
+    emit_plan5_activation,
+)
+
+
+def test_activation_status_has_three_new_harness_values():
+    """ActivationStatus must expose the harness-level vocabulary so
+    postmortem readers can attribute every AG-iteration pair."""
+    assert ActivationStatus.ANCHOR_FORBIDDEN_SET_DROPPED.value == (
+        "anchor_forbidden_set_dropped"
+    )
+    assert ActivationStatus.ANCHOR_COLLISION_GUARD_DROPPED.value == (
+        "anchor_collision_guard_dropped"
+    )
+    assert ActivationStatus.ANCHOR_ENTERED_PLAN5_DISPATCH.value == (
+        "anchor_entered_plan5_dispatch"
+    )
+
+
+def test_activation_status_now_has_eight_total_values():
+    """Five T8 values + three T9.1 values = eight."""
+    assert len(set(ActivationStatus)) == 8
+
+
+def test_emit_anchor_forbidden_set_dropped_writes_marker():
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        emit_plan5_activation(
+            run_id="run_t91",
+            iteration=3,
+            ag_id="AG_H001",
+            cluster_id="",
+            status=ActivationStatus.ANCHOR_FORBIDDEN_SET_DROPPED,
+            reason="matches_forbidden_signature",
+        )
+    output = buf.getvalue()
+    assert "GSO_PLAN5_ANCHOR_ACTIVATION_V1" in output
+    assert "anchor_forbidden_set_dropped" in output
+    assert "AG_H001" in output
+    assert "matches_forbidden_signature" in output
+
+
+def test_emit_anchor_collision_guard_dropped_writes_marker():
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        emit_plan5_activation(
+            run_id="run_t91",
+            iteration=4,
+            ag_id="AG_H002",
+            cluster_id="",
+            status=ActivationStatus.ANCHOR_COLLISION_GUARD_DROPPED,
+            reason="root_cause_axis_collision",
+        )
+    output = buf.getvalue()
+    assert "GSO_PLAN5_ANCHOR_ACTIVATION_V1" in output
+    assert "anchor_collision_guard_dropped" in output
+    assert "AG_H002" in output
+    assert "root_cause_axis_collision" in output
+
+
+def test_emit_anchor_entered_plan5_dispatch_writes_marker():
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        emit_plan5_activation(
+            run_id="run_t91",
+            iteration=5,
+            ag_id="AG_H003",
+            cluster_id="c_h003",
+            status=ActivationStatus.ANCHOR_ENTERED_PLAN5_DISPATCH,
+            reason="generate_proposals_from_strategy_invoked",
+        )
+    output = buf.getvalue()
+    assert "GSO_PLAN5_ANCHOR_ACTIVATION_V1" in output
+    assert "anchor_entered_plan5_dispatch" in output
+    assert "AG_H003" in output
+    assert "c_h003" in output
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd packages/genie-space-optimizer && uv run pytest tests/unit/test_plan9_harness_activation_emit.py -v`
+Expected: FAIL — `AttributeError: ANCHOR_FORBIDDEN_SET_DROPPED` (the enum doesn't have the new values yet).
+
+- [ ] **Step 3: Extend ActivationStatus with the three new values + update docstring**
+
+Edit `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/plan9_activation_markers.py`. Replace the existing `class ActivationStatus(StrEnum):` block with this extended version:
+
+```python
+class ActivationStatus(StrEnum):
+    # ─── In-dispatcher statuses (T8) ───────────────────────────
+    # Emitted from _dispatch_lever_5b_for_cluster /
+    # dispatch_lever_6_with_intent for AGs that enter Plan-5
+    # dispatch. Carry the typed Plan-5 outcome.
+    PLAN5_INTENT_INVOKED = "plan5_intent_invoked"
+    PLAN5_INTENT_DECLINED = "plan5_intent_declined"
+    PLAN5_INTENT_VALIDATOR_REJECTED = "plan5_intent_validator_rejected"
+    PLAN5_INTENT_ROUTED = "plan5_intent_routed"
+    PLAN5_INTENT_MATERIALIZED = "plan5_intent_materialized"
+    # ─── Harness-level statuses (T9.1) ─────────────────────────
+    # Emitted from the per-AG harness loop. Cover the AG-iteration
+    # pairs that never reach a dispatcher (forbidden-set filter
+    # drop, collision-guard drop) AND record when the harness
+    # successfully hands an AG to the Plan-5 pipeline. The latter
+    # is followed by exactly one in-dispatcher marker for that AG.
+    ANCHOR_FORBIDDEN_SET_DROPPED = "anchor_forbidden_set_dropped"
+    ANCHOR_COLLISION_GUARD_DROPPED = "anchor_collision_guard_dropped"
+    ANCHOR_ENTERED_PLAN5_DISPATCH = "anchor_entered_plan5_dispatch"
+```
+
+Also update the module docstring at the top of the file. Replace the existing docstring (lines 1-22 of the current file) with:
+
+```python
+"""Plan 9 Task 8 + Task 9.1 — GSO_PLAN5_ANCHOR_ACTIVATION_V1 marker.
+
+Marker types:
+
+  * Five IN-DISPATCHER statuses (T8) emitted from
+    _dispatch_lever_5b_for_cluster /
+    dispatch_lever_6_with_intent. One per AG-iteration pair that
+    enters dispatch; carries the typed Plan-5 outcome.
+
+      - PLAN5_INTENT_INVOKED
+      - PLAN5_INTENT_DECLINED
+      - PLAN5_INTENT_VALIDATOR_REJECTED
+      - PLAN5_INTENT_ROUTED
+      - PLAN5_INTENT_MATERIALIZED
+
+  * Three HARNESS-LEVEL statuses (T9.1) emitted from the per-AG
+    loop in harness.py. Cover AG-iteration pairs that never reach
+    a dispatcher AND record the hand-off when they do.
+
+      - ANCHOR_FORBIDDEN_SET_DROPPED  — T9 pre-generation filter
+        dropped the AG.
+      - ANCHOR_COLLISION_GUARD_DROPPED — legacy collision-pair
+        guard dropped the AG.
+      - ANCHOR_ENTERED_PLAN5_DISPATCH — harness handed the AG to
+        the Plan-5 pipeline; followed by exactly one in-dispatcher
+        marker for this AG.
+
+Postmortem invariant: every AG-iteration pair MUST produce
+EXACTLY ONE harness-level marker. AG-iteration pairs that enter
+dispatch produce EXACTLY ONE additional in-dispatcher marker.
+"""
+```
+
+- [ ] **Step 4: Re-run the unit test — expect PASS**
+
+Run: `cd packages/genie-space-optimizer && uv run pytest tests/unit/test_plan9_harness_activation_emit.py tests/unit/test_plan9_activation_markers_emit.py -v`
+Expected: PASS — all five tests (3 new in `test_plan9_harness_activation_emit.py` + 2 existing in `test_plan9_activation_markers_emit.py`), plus the `test_activation_status_has_three_new_harness_values` and `test_activation_status_now_has_eight_total_values` assertions.
+
+NOTE: the existing `test_activation_status_has_five_values` in `test_plan9_activation_markers_emit.py` (from T8) is now stale — it asserts `set(ActivationStatus) == {five values}` which will FAIL after the enum grows to eight. Step 5 fixes it.
+
+- [ ] **Step 5: Update the stale T8 enum-size assertion**
+
+Edit `packages/genie-space-optimizer/tests/unit/test_plan9_activation_markers_emit.py`. Find this T8 assertion:
+
+```python
+def test_activation_status_has_five_values():
+    assert set(ActivationStatus) == {
+        ActivationStatus.PLAN5_INTENT_INVOKED,
+        ActivationStatus.PLAN5_INTENT_DECLINED,
+        ActivationStatus.PLAN5_INTENT_VALIDATOR_REJECTED,
+        ActivationStatus.PLAN5_INTENT_ROUTED,
+        ActivationStatus.PLAN5_INTENT_MATERIALIZED,
+    }
+```
+
+Replace with:
+
+```python
+def test_activation_status_has_in_dispatcher_values():
+    """Plan 9 Task 8 — five in-dispatcher statuses must remain.
+    T9.1 added three harness-level statuses (covered separately
+    in test_plan9_harness_activation_emit.py); this test pins the
+    in-dispatcher contract so a rename or removal of any T8 value
+    fails loudly."""
+    in_dispatcher = {
+        ActivationStatus.PLAN5_INTENT_INVOKED,
+        ActivationStatus.PLAN5_INTENT_DECLINED,
+        ActivationStatus.PLAN5_INTENT_VALIDATOR_REJECTED,
+        ActivationStatus.PLAN5_INTENT_ROUTED,
+        ActivationStatus.PLAN5_INTENT_MATERIALIZED,
+    }
+    assert in_dispatcher.issubset(set(ActivationStatus))
+```
+
+Run: `cd packages/genie-space-optimizer && uv run pytest tests/unit/test_plan9_activation_markers_emit.py tests/unit/test_plan9_harness_activation_emit.py -v`
+Expected: ALL PASS.
+
+- [ ] **Step 6: Wire emit-point 1 — ANCHOR_FORBIDDEN_SET_DROPPED in the T9 filter block**
+
+Open `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/harness.py`. Locate the T9 wire-in by searching for `# Plan 9 Task 9 — drop forbidden AGs BEFORE generation.` Find the existing `if _prefiltered_ags:` block, which currently looks like this (around lines 22585-22602):
+
+```python
+            if _prefiltered_ags:
+                logger.info(
+                    "plan9.prefiltered_ags count=%d ag_ids=%s",
+                    len(_prefiltered_ags),
+                    [a.get("id", "?") for a in _prefiltered_ags],
+                )
+                for _dropped_ag in _prefiltered_ags:
+                    _current_iter_inputs.setdefault(
+                        "decision_records", [],
+                    ).append({
+                        "decision_type": "AG_PREFILTERED_BY_FORBIDDEN_SET",
+                        "ag_id": str(_dropped_ag.get("id", "")),
+                        "signatures": list(
+                            _dropped_ag.get("source_cluster_signatures") or []
+                        ),
+                        "reason": "matches_forbidden_signature",
+                    })
+                continue
+```
+
+Replace the inner `for _dropped_ag in _prefiltered_ags:` loop body and add the emit AFTER the `decision_records.append(...)` call AND before the `continue`. The replacement block:
+
+```python
+            if _prefiltered_ags:
+                # Plan 9 Task 9.1 — emit harness-level activation
+                # marker so postmortem can attribute these AGs.
+                from genie_space_optimizer.optimization.plan9_activation_markers import (
+                    ActivationStatus as _ActivationStatus_t91,
+                    emit_plan5_activation as _emit_plan5_activation_t91,
+                )
+                logger.info(
+                    "plan9.prefiltered_ags count=%d ag_ids=%s",
+                    len(_prefiltered_ags),
+                    [a.get("id", "?") for a in _prefiltered_ags],
+                )
+                for _dropped_ag in _prefiltered_ags:
+                    _current_iter_inputs.setdefault(
+                        "decision_records", [],
+                    ).append({
+                        "decision_type": "AG_PREFILTERED_BY_FORBIDDEN_SET",
+                        "ag_id": str(_dropped_ag.get("id", "")),
+                        "signatures": list(
+                            _dropped_ag.get("source_cluster_signatures") or []
+                        ),
+                        "reason": "matches_forbidden_signature",
+                    })
+                    try:
+                        _emit_plan5_activation_t91(
+                            run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            ag_id=str(_dropped_ag.get("id", "")),
+                            cluster_id="",
+                            status=(
+                                _ActivationStatus_t91
+                                .ANCHOR_FORBIDDEN_SET_DROPPED
+                            ),
+                            reason="matches_forbidden_signature",
+                        )
+                    except Exception:
+                        logger.debug(
+                            "plan9.t91 forbidden-set marker emit failed "
+                            "(non-fatal)", exc_info=True,
+                        )
+                _anchor_activation_marker_emitted = True
+                continue
+```
+
+NOTE: `_anchor_activation_marker_emitted` is a local boolean that must be initialized to `False` at the top of the per-AG loop body. Step 9 adds that initialization.
+
+- [ ] **Step 7: Wire emit-point 2 — ANCHOR_COLLISION_GUARD_DROPPED in the collision-guard block**
+
+In `harness.py`, locate the collision-guard block by searching for `if _collision_pair_matches(_collision_pair, _forbidden_pair):` Within that block, locate the existing typed-terminal-marker emit which prints `iteration_no_candidate_marker(...)` with `terminal_reason="ag_collision_with_forbidden_set"` (around lines 22774-22792). IMMEDIATELY AFTER that existing emit's `try`/`except` block and BEFORE the `# Risk-1 mitigation` comment, insert:
+
+```python
+                # Plan 9 Task 9.1 — harness-level activation marker.
+                # Co-located with the iteration_no_candidate marker so
+                # the two markers fire together for one logical drop.
+                try:
+                    from genie_space_optimizer.optimization.plan9_activation_markers import (
+                        ActivationStatus as _ActivationStatus_t91,
+                        emit_plan5_activation as _emit_plan5_activation_t91,
+                    )
+                    _emit_plan5_activation_t91(
+                        run_id=str(run_id or ""),
+                        iteration=int(iteration_counter),
+                        ag_id=str(ag_id or ""),
+                        cluster_id="",
+                        status=(
+                            _ActivationStatus_t91
+                            .ANCHOR_COLLISION_GUARD_DROPPED
+                        ),
+                        reason=f"{_collision_axis}_axis_collision",
+                    )
+                    _anchor_activation_marker_emitted = True
+                except Exception:
+                    logger.debug(
+                        "plan9.t91 collision-guard marker emit failed "
+                        "(non-fatal)", exc_info=True,
+                    )
+```
+
+NOTE: `_collision_axis` is already in scope from the existing if/elif chain that determines whether the match was on `root_cause`, `cluster_signature`, or `terminal_signature` (around lines 22657-22688). Reuse it.
+
+- [ ] **Step 8: Wire emit-points 3 + 4 — ANCHOR_ENTERED_PLAN5_DISPATCH**
+
+In `harness.py`, locate the main `lever_proposals = generate_proposals_from_strategy(...)` call (search for `lever_proposals = generate_proposals_from_strategy(`, around line 23493). Note: there may be more than one match. Skip the earlier `_sample = generate_proposals_from_strategy(...)` probe call (around 23376) — that's an internal sampling call, NOT the AG-decision call. Identify the right call site by the assignment target being `lever_proposals` (not `_sample`).
+
+IMMEDIATELY BEFORE the `lever_proposals = generate_proposals_from_strategy(` line, insert:
+
+```python
+                # Plan 9 Task 9.1 — emit harness-level activation
+                # marker BEFORE the dispatch. The in-dispatcher T8
+                # markers (PLAN5_INTENT_*) follow and carry the
+                # typed Plan-5 outcome.
+                if not _anchor_activation_marker_emitted:
+                    try:
+                        from genie_space_optimizer.optimization.plan9_activation_markers import (
+                            ActivationStatus as _ActivationStatus_t91,
+                            emit_plan5_activation as _emit_plan5_activation_t91,
+                        )
+                        _emit_plan5_activation_t91(
+                            run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            ag_id=str(ag_id or ""),
+                            cluster_id="",
+                            status=(
+                                _ActivationStatus_t91
+                                .ANCHOR_ENTERED_PLAN5_DISPATCH
+                            ),
+                            reason="generate_proposals_from_strategy_invoked",
+                        )
+                        _anchor_activation_marker_emitted = True
+                    except Exception:
+                        logger.debug(
+                            "plan9.t91 entered-plan5 marker emit failed "
+                            "(non-fatal)", exc_info=True,
+                        )
+```
+
+Then locate the `return _force_lever6_proposal_for_ag(...)` call (search for `return _force_lever6_proposal_for_ag(`, around line 24030). IMMEDIATELY BEFORE that `return` line, insert the SAME marker emit block (copy-paste verbatim with `reason="force_lever6_proposal_for_ag_invoked"`):
+
+```python
+                        # Plan 9 Task 9.1 — emit harness-level
+                        # activation marker BEFORE the forced-L6
+                        # dispatch. Dedup flag prevents double-
+                        # emission when both dispatch paths fire
+                        # for the same AG.
+                        if not _anchor_activation_marker_emitted:
+                            try:
+                                from genie_space_optimizer.optimization.plan9_activation_markers import (
+                                    ActivationStatus as _ActivationStatus_t91,
+                                    emit_plan5_activation as _emit_plan5_activation_t91,
+                                )
+                                _emit_plan5_activation_t91(
+                                    run_id=str(run_id or ""),
+                                    iteration=int(iteration_counter),
+                                    ag_id=str(ag_id or ""),
+                                    cluster_id="",
+                                    status=(
+                                        _ActivationStatus_t91
+                                        .ANCHOR_ENTERED_PLAN5_DISPATCH
+                                    ),
+                                    reason="force_lever6_proposal_for_ag_invoked",
+                                )
+                                _anchor_activation_marker_emitted = True
+                            except Exception:
+                                logger.debug(
+                                    "plan9.t91 forced-L6 marker emit "
+                                    "failed (non-fatal)", exc_info=True,
+                                )
+                        return _force_lever6_proposal_for_ag(
+```
+
+NOTE: indentation must match the existing `return _force_lever6_proposal_for_ag(` block exactly. Use whatever indentation the surrounding code uses — do not invent a new indent.
+
+- [ ] **Step 9: Initialize the per-AG dedup flag at the top of the per-AG loop body**
+
+In `harness.py`, find the per-AG `for ag in ...:` loop that contains the T9 wire-in (search for `# Plan 9 Task 9 — drop forbidden AGs BEFORE generation.` and walk up to the enclosing `for ag in ...:` statement). AT THE TOP of that loop body, BEFORE the `_forbidden_pair = _compute_forbidden_ag_set_pair(...)` line, insert:
+
+```python
+            # Plan 9 Task 9.1 — per-AG dedup flag for the harness-
+            # level GSO_PLAN5_ANCHOR_ACTIVATION_V1 marker. Every
+            # AG-iteration pair must emit EXACTLY ONE harness-level
+            # marker; this flag closes the door after the first emit.
+            _anchor_activation_marker_emitted = False
+```
+
+NOTE: indentation must match the existing per-AG loop body (one level deeper than `for ag in ...:`).
+
+- [ ] **Step 10: Add a NOTE comment to the deferred invariant test**
+
+Edit `packages/genie-space-optimizer/tests/unit/test_plan9_activation_markers_all_anchors_covered.py`. Replace the existing docstring + skip with:
+
+```python
+"""Plan 9 Task 8 — every anchor in every iteration emits exactly
+one PLAN5_ANCHOR_ACTIVATION_V1 marker.
+
+Integration smoke test against a synthetic 2-AG iteration. After
+the iteration, parse stdout for markers; assert one marker per
+(ag_id, iteration) pair.
+
+NOTE (Plan 9 Task 9.1): per-point unit tests for the three
+harness-level statuses live in test_plan9_harness_activation_emit.py
+and for the five in-dispatcher statuses in
+test_plan9_activation_markers_emit.py. This integration test
+remains a placeholder pending the two_ag_synthetic_iter1 fixture.
+"""
+import pytest
+
+# Test uses harness internals; mark for the integration runner.
+pytestmark = pytest.mark.integration
+
+
+def test_each_anchor_emits_exactly_one_activation_marker():
+    """Run a 2-AG iteration through a stub harness path and verify
+    each AG produces exactly one PLAN5_ANCHOR_ACTIVATION_V1 marker."""
+    pytest.skip(
+        "Placeholder — fill with harness stub when "
+        "tests/fixtures/two_ag_synthetic_iter1/ lands. Per-point "
+        "coverage for T8+T9.1 statuses is in "
+        "test_plan9_activation_markers_emit.py + "
+        "test_plan9_harness_activation_emit.py."
+    )
+```
+
+- [ ] **Step 11: Run the focused activation-marker sweep**
+
+Run:
+```bash
+cd packages/genie-space-optimizer && uv run pytest tests/unit \
+  -k "activation_marker or plan9_activation or plan9_harness_activation" \
+  -v --tb=short
+```
+Expected: all PASS, plus 1 skipped (the deferred invariant test).
+
+- [ ] **Step 12: Run the broader regression sweep to confirm no harness-loop regressions**
+
+Run:
+```bash
+cd packages/genie-space-optimizer && uv run pytest tests/unit \
+  -k "plan9 or activation or harness or forbidden_set or collision" \
+  --tb=short -q
+```
+Expected: ALL PASS. The harness emits are wrapped in `try/except` so a marker-emitter failure cannot break the harness; no harness test should regress.
+
+- [ ] **Step 13: Verify the harness still imports cleanly**
+
+Run:
+```bash
+cd packages/genie-space-optimizer && uv run python -c "from genie_space_optimizer.optimization import harness; print('OK')"
+```
+Expected: `OK` on stdout. A `SyntaxError` or `IndentationError` here means Step 8's `return _force_lever6_proposal_for_ag(` insertion drifted on indentation — fix and re-run.
+
+- [ ] **Step 14: Commit**
+
+```bash
+git add packages/genie-space-optimizer/src/genie_space_optimizer/optimization/plan9_activation_markers.py \
+        packages/genie-space-optimizer/src/genie_space_optimizer/optimization/harness.py \
+        packages/genie-space-optimizer/tests/unit/test_plan9_harness_activation_emit.py \
+        packages/genie-space-optimizer/tests/unit/test_plan9_activation_markers_emit.py \
+        packages/genie-space-optimizer/tests/unit/test_plan9_activation_markers_all_anchors_covered.py \
+        packages/genie-space-optimizer/docs/llmdrivenarchitecture/2026-05-19-plan-9-catalog-removal-and-llm-driven-structural-realization.md
+
+git commit -m "$(cat <<'EOF'
+plan9(t9.1): harness-level activation marker for every anchor
+
+T8 emitted PLAN5_ANCHOR_ACTIVATION_V1 only from the L5b/L6
+dispatchers, so AG-iteration pairs that the harness dropped
+upstream — via T9's pre-generation forbidden-set filter or via
+the legacy collision-pair guard — never produced a marker.
+Postmortem could not distinguish "filtered upstream" from
+"Plan-5 never tried" for those pairs.
+
+T9.1 adds three harness-level statuses on ActivationStatus and
+emits at four harness anchor points:
+
+  * ANCHOR_FORBIDDEN_SET_DROPPED  — emitted inside the T9
+    pre-generation filter's drop branch, one per dropped AG.
+  * ANCHOR_COLLISION_GUARD_DROPPED — emitted inside the legacy
+    collision-pair guard's drop branch, co-located with the
+    existing iteration_no_candidate_marker emit.
+  * ANCHOR_ENTERED_PLAN5_DISPATCH — emitted immediately before
+    generate_proposals_from_strategy() and immediately before
+    _force_lever6_proposal_for_ag(). The in-dispatcher T8
+    markers follow and carry the typed Plan-5 outcome.
+
+Per-AG dedup via _anchor_activation_marker_emitted flag
+(initialized False at the top of the per-AG loop body) ensures
+exactly one harness-level marker per AG-iteration pair, even
+when both dispatch entry points fire for the same AG.
+
+All harness emits wrapped in try/except so a marker-emitter
+failure cannot break the harness loop.
+
+Closes T8's observability gap. Postmortem invariant: every
+AG-iteration pair emits exactly one harness-level marker;
+pairs with ANCHOR_ENTERED_PLAN5_DISPATCH additionally emit
+exactly one in-dispatcher marker.
+
+Co-authored-by: Isaac
+EOF
+)"
+```
+
+---
+
 ### Task 10: Delete `pick_archetype`, `_derive_asset_slice_from_afs`, `ARCHETYPES`, `Archetype`
 
 **Rationale:** Reviewer's "delete pick_archetype" recommendation. After T1–T6, every L5b/L6 path can build its slice from `RepairProposal.target_objects` (via `llm_direct_slice_resolver`), its prompt fragment from `RepairShape` (via `_repair_shape_fragments`), and its output validator contract from `RepairProposal.required_constructs`. The catalog is dead code. T10 deletes it cleanly. Keep `_ARCHETYPE_NAME_TO_SHAPE` as a deprecated compatibility mapping in `repair_intent.py` for postmortem readers of pre-Plan-9 traces.
