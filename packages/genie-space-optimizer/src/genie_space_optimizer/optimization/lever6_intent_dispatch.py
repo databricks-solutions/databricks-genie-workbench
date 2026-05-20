@@ -111,15 +111,41 @@ def dispatch_lever_6_with_intent(
 
     # Plan 9 Task 6 — materialize RepairProposal.patch_body directly
     # via to_proposal_dict() instead of having the legacy generator
-    # re-do the SQL synthesis. The legacy body becomes a SAFETY NET
-    # invoked only when to_proposal_dict() raises (missing required
-    # patch_body field on the LLM output). Closes the materialization-
-    # decoration loop: the LLM-emitted patch_body reaches the applier
-    # instead of being thrown away.
+    # re-do the SQL synthesis.
+    # Plan 9 Task 6.1 — for ADD_SQL_SNIPPET_* patches, the flat
+    # output must be finalized into the applier-expected nested
+    # sql_snippet shape AND have validation_passed stamped after a
+    # clean validate_sql_snippet result. Finalizer returns None on
+    # validator failure → falls through to legacy safety net.
+    from genie_space_optimizer.optimization.sql_snippet_finalizer import (
+        finalize_sql_snippet_proposal_dict,
+    )
+
+    _SQL_SNIPPET_TYPES = _L6_PATCH_TYPES
+
     proposal_dict: dict | None = None
     materialization_source = "plan9_direct"
     try:
-        proposal_dict = proposal.to_proposal_dict()
+        base_dict = proposal.to_proposal_dict()
+        if proposal.patch_type in _SQL_SNIPPET_TYPES:
+            proposal_dict = finalize_sql_snippet_proposal_dict(
+                proposal,
+                base_dict,
+                cluster=cluster,
+                metadata_snapshot=metadata_snapshot,
+                w=w, spark=spark,
+                catalog=catalog, gold_schema=gold_schema,
+                warehouse_id=warehouse_id,
+            )
+            if proposal_dict is None:
+                # Finalizer rejected — treat as decline and fall
+                # through to the safety-net legacy generator.
+                raise RuntimeError(
+                    "plan9.finalizer_declined "
+                    "intent_id=" + proposal.intent_id
+                )
+        else:
+            proposal_dict = base_dict
     except Exception as exc:
         logger.warning(
             "plan9.l6_direct_materialization_failed intent_id=%s err=%s "

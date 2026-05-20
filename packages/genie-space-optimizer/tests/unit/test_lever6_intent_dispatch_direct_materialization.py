@@ -102,11 +102,14 @@ def test_dispatch_uses_to_proposal_dict_when_proposal_validates(monkeypatch):
     )
 
     assert result is not None
-    assert result["sql_expression"] == "amount * quantity"
-    assert result["name"] == "revenue_per_order"
+    # Plan 9 T6.1 — direct path finalizes into applier nested shape.
+    assert result["sql_snippet"]["sql"] == "amount * quantity"
+    assert result["sql_snippet"]["name"] == "revenue_per_order"
+    assert "validation_passed" in result
     # Stamp from to_repair_intent flow.
     assert result.get("intent_id") == "intent_h001_001"
     assert "repair_intent" in result
+    assert result["provenance"]["plan9_materialization_source"] == "plan9_direct"
     # Critical: legacy generator was NOT invoked for SQL generation.
     assert len(legacy_calls) == 0
 

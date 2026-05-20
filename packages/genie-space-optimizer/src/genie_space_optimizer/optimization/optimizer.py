@@ -10486,20 +10486,39 @@ def _dispatch_lever_5b_for_cluster(
             benchmarks=benchmarks,
         )
         if proposal is not None:
-            # Plan 9 Task 6 — materialize patch_body directly via
-            # to_proposal_dict() and bypass the per-lever generator's
-            # SQL re-synthesis. Cross-lever router is still consulted
-            # for the override event (provenance metadata only). The
-            # per-lever generator becomes a SAFETY NET, invoked only
-            # when to_proposal_dict() raises (missing required
-            # patch_body field on the LLM output). Closes the
-            # materialization-decoration loop: the LLM-emitted
-            # patch_body reaches the applier instead of being
-            # discarded.
+            # Plan 9 Task 6 — materialize RepairProposal.patch_body
+            # directly via to_proposal_dict().
+            # Plan 9 Task 6.1 — finalize ADD_SQL_SNIPPET_* patches.
+            from genie_space_optimizer.optimization.repair_intent import PatchType
+            from genie_space_optimizer.optimization.sql_snippet_finalizer import (
+                finalize_sql_snippet_proposal_dict,
+            )
+            _SQL_SNIPPET_TYPES = {
+                PatchType.ADD_SQL_SNIPPET_MEASURE,
+                PatchType.ADD_SQL_SNIPPET_FILTER,
+                PatchType.ADD_SQL_SNIPPET_EXPRESSION,
+            }
             proposal_dict: dict | None = None
             materialization_source = "plan9_direct"
             try:
-                proposal_dict = proposal.to_proposal_dict()
+                base_dict = proposal.to_proposal_dict()
+                if proposal.patch_type in _SQL_SNIPPET_TYPES:
+                    proposal_dict = finalize_sql_snippet_proposal_dict(
+                        proposal,
+                        base_dict,
+                        cluster=cluster,
+                        metadata_snapshot=metadata_snapshot,
+                        w=w, spark=spark,
+                        catalog=catalog, gold_schema=gold_schema,
+                        warehouse_id=warehouse_id,
+                    )
+                    if proposal_dict is None:
+                        raise RuntimeError(
+                            "plan9.finalizer_declined "
+                            "intent_id=" + proposal.intent_id
+                        )
+                else:
+                    proposal_dict = base_dict
             except Exception as exc:
                 logger.warning(
                     "plan9.l5b_direct_materialization_failed "
