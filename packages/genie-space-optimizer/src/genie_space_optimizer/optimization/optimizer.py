@@ -10440,9 +10440,19 @@ def _dispatch_lever_5b_for_cluster(
     from genie_space_optimizer.common.config import (
         plan5_lever_5b_llm_intent_enabled,
     )
+    # Plan 10 Phase A2 — gate no longer requires ``rca_evidence_typed``.
+    # Production evidence from runs ``59a173d3`` (airline) and
+    # ``ab65fefe`` (7now) showed the deterministic RCA classifier
+    # returning empty ``per_qid_evidence_typed`` for every failing
+    # anchor, which silently closed this gate (Leak 1) and forced
+    # fallback to the legacy archetype path. The LLM-direct lane is
+    # designed to work from the cluster's failure signal alone
+    # (``cluster_semantic_theme`` + ``primary_blame_set`` +
+    # ``sql_contexts``), so an empty ``rca_evidence_typed`` is a valid
+    # input — the synthesizer's prompt will simply render
+    # ``per_qid_evidence: []`` and lean on the typed cluster fields.
     if (
         plan5_lever_5b_llm_intent_enabled()
-        and rca_evidence_typed
         and llm_cluster is not None
         and ag_id
     ):

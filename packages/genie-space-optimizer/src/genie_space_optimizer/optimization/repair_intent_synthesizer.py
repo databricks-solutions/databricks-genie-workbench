@@ -342,17 +342,21 @@ def synthesize_repair_intent_for_cluster(
     intent_id = _stamp_intent_id(
         cluster_id=cluster.cluster_id, ag_id=ag_id, seq=seq,
     )
+    # Plan 10 Phase A1 — funnel parsed LLM output through
+    # ``RepairProposal.from_llm_output`` so Plan 9's ``target_objects``
+    # and ``required_constructs`` survive into the dataclass instead of
+    # being silently stripped by manual construction. The re-validation
+    # against ``LlmRepairProposalOutput`` is intentional defense-in-
+    # depth: ``parse_envelope`` already validated the envelope, but this
+    # call re-anchors the dataclass build on the typed contract that
+    # ``from_llm_output`` expects.
+    from genie_space_optimizer.skills.repair_intent_synthesis.output_schema import (
+        LlmRepairProposalOutput,
+    )
     parsed = response.parsed_output
-    proposal = RepairProposal(
-        intent_id=intent_id,
-        intent_name=str(parsed["intent_name"]),
-        intent_description=str(parsed["intent_description"]),
-        repair_shape=RepairShape(parsed["repair_shape"]),
-        patch_type=PatchType(parsed["patch_type"]),
-        rationale=str(parsed["rationale"]),
-        confidence=parsed["confidence"],
-        patch_body=dict(parsed.get("patch_body") or {}),
-        blame_set=tuple(str(b) for b in parsed.get("blame_set") or ()),
+    pydantic_proposal = LlmRepairProposalOutput.model_validate(parsed)
+    proposal = RepairProposal.from_llm_output(
+        pydantic_proposal, intent_id=intent_id,
     )
 
     try:

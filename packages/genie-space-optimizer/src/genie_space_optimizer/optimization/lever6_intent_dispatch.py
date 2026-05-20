@@ -73,7 +73,13 @@ def dispatch_lever_6_with_intent(
     legacy generator returns ``None``. Caller takes the heuristic
     fallback in that case.
     """
-    if not (rca_evidence_typed and llm_cluster is not None and ag_id):
+    # Plan 10 Phase A2 — mirror of the L5b gate fix in optimizer.py.
+    # ``rca_evidence_typed`` is no longer a precondition: production
+    # evidence (59a173d3 airline, ab65fefe 7now) showed it routinely
+    # empty for failing anchors, silently closing this short-circuit
+    # and forcing fallback. The synthesizer prompt tolerates empty
+    # per-qid evidence and leans on the typed ``llm_cluster`` fields.
+    if not (llm_cluster is not None and ag_id):
         return None
 
     from genie_space_optimizer.optimization.plan9_activation_markers import (

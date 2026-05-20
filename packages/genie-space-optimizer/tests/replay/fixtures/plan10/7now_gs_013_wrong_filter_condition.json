@@ -1,0 +1,2018 @@
+{
+  "cluster": {
+    "affected_judge": "schema_accuracy",
+    "affected_judge_fail_counts": {
+      "completeness": 1,
+      "expected_response": 1,
+      "logical_accuracy": 1,
+      "response_quality": 1,
+      "result_correctness": 1,
+      "schema_accuracy": 1,
+      "semantic_equivalence": 1
+    },
+    "affected_judges": [
+      "completeness",
+      "expected_response",
+      "logical_accuracy",
+      "response_quality",
+      "result_correctness",
+      "schema_accuracy",
+      "semantic_equivalence"
+    ],
+    "asi_blame_set": [
+      "time_window",
+      "time_window dimension included unnecessarily"
+    ],
+    "asi_counterfactual_fixes": [
+      "Result mismatch: expected 3 rows (hash=66330e11), got 6 rows (hash=3f056bd5). Check joins, filters, or aggregation logic in the generated SQL.",
+      "The generated SQL should either split into two CTEs like the expected SQL (one for day, one for mtd) and join on zone_combination, or it should not include time_window in the GROUP BY. Including time_window in GROUP BY produces 6 rows (2 per zone) instead of 3 rows (1 per zone with both day and mtd metrics side by side). The measures 7now_avg_txn_diff_day and 7now_avg_txn_diff_mtd already correspond to specific time windows, so the query should filter appropriately per measure rather than grouping by time_window.",
+      "The Genie Space should include an instruction clarifying that when comparing day vs MTD metrics, the results should be pivoted so each zone has one row with both day and MTD values side by side, rather than grouping by time_window to produce separate rows.",
+      "Remove time_window from the SELECT and GROUP BY, and instead use separate CTEs or filter conditions to compute day and mtd measures independently, then join on zone_combination. The expected approach separates the two time_window values into separate rows per zone rather than including time_window as a grouping dimension alongside both measures.",
+      "The Generated SQL includes time_window in the GROUP BY, producing separate rows for day and mtd per zone_combination (6 rows), whereas the Expected SQL joins day and mtd data into a single row per zone_combination (3 rows). The Genie Space should clarify that comparing day vs MTD means pivoting them into columns per zone, not listing them as separate rows. A metric view instruction or sample query showing the JOIN pattern would fix this."
+    ],
+    "asi_counterfactual_sources": [
+      "SQL_SHAPE"
+    ],
+    "asi_failure_type": "other",
+    "asi_wrong_clause": "None",
+    "attribution": {
+      "dominant_pattern_label": null,
+      "mean_confidence": 0.614,
+      "source_counts": {
+        "sql_diff": 5,
+        "trace_evidence": 2
+      }
+    },
+    "base_question_ids": [
+      "7now_delivery_analytics_space_gs_013"
+    ],
+    "cluster_id": "H001",
+    "cluster_signature": "fddb8cf80bd9ed52",
+    "confidence": 0.6,
+    "mean_judge_failure_ratio": 0.75,
+    "question_ids": [
+      "7now_delivery_analytics_space_gs_013"
+    ],
+    "question_traces": [
+      {
+        "base_question_id": "7now_delivery_analytics_space_gs_013",
+        "failed_judges": [
+          {
+            "asi_failure_type_raw": "other",
+            "blame_set": "[]",
+            "counterfactual_fix": "Add an instruction to Genie Space that states: When the user asks about same-store locations, filter to same_store_7now = Y and do not suggest expanding to non-same-store locations. Answer the question as asked without proposing alternative queries.",
+            "judge": "response_quality",
+            "rationale_snippet": "### response_quality\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\n\nThe user specifically asked for same-store locations only. The SQL query correctly filters for same_store_7now = Y, but the natural language response asks if the user wants to see both same-store and non-same-store locations instead. This is a misinterpretation of the users request - the assistant should have directly answered the question rather than suggesting an alternative that c",
+            "resolution_method": "sql_diff",
+            "resolved_root_cause": "wrong_filter_condition",
+            "verdict": "FAIL",
+            "wrong_clause": "None"
+          },
+          {
+            "asi_failure_type_raw": "wrong_aggregation",
+            "blame_set": "[]",
+            "counterfactual_fix": "Result mismatch: expected 3 rows (hash=66330e11), got 6 rows (hash=3f056bd5). Check joins, filters, or aggregation logic in the generated SQL.",
+            "judge": "result_correctness",
+            "rationale_snippet": "### result_correctness\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / RESULT_EXTRA_COLUMNS\n\nMismatch. GT rows=3 vs Genie rows=6. Hash GT=66330e11 vs Genie=3f056bd5.\n\n```json\n{\n  \"actual_value\": \"rows=6, hash=3f056bd5\",\n  \"affected_question_pattern\": null,\n  \"ambiguity_detected\": false,\n  \"blame_set\": [],\n  \"comparison\": {\n    \"column_type_difference\": false,\n    \"error\": null,\n    \"genie_column_types\": {\n      \"avg_txn_diff_day\": \"float64\",\n      \"avg_txn_diff_mtd\": \"float64\",\n      \"time_windo",
+            "resolution_method": "asi_metadata",
+            "resolved_root_cause": "wrong_aggregation",
+            "verdict": "FAIL",
+            "wrong_clause": "None"
+          },
+          {
+            "asi_failure_type_raw": "other",
+            "blame_set": "[time_window dimension included unnecessarily]",
+            "counterfactual_fix": "The generated SQL should either split into two CTEs like the expected SQL (one for day, one for mtd) and join on zone_combination, or it should not include time_window in the GROUP BY. Including time_window in GROUP BY produces 6 rows (2 per zone) instead of 3 rows (1 per zone with both day and mtd metrics side by side). The measures 7now_avg_txn_diff_day and 7now_avg_txn_diff_mtd already correspond to specific time windows, so the query should filter appropriately per measure rather than grouping by time_window.",
+            "judge": "completeness",
+            "rationale_snippet": "### completeness\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_INCOMPLETE_OR_PARTIAL_OUTPUT\n\nThe user asked to compare day vs MTD, implying a side-by-side comparison per zone. The generated SQL groups by time_window, producing separate rows for day and mtd per zone (6 rows total) rather than a single row per zone with both metrics (3 rows). This means the day measure is computed with both time_window filters and the mtd measure likewise, rather than each being computed with its appro",
+            "resolution_method": "sql_diff",
+            "resolved_root_cause": "wrong_filter_condition",
+            "verdict": "FAIL",
+            "wrong_clause": "None"
+          },
+          {
+            "asi_failure_type_raw": "other",
+            "blame_set": "[time_window]",
+            "counterfactual_fix": "The Genie Space should include an instruction clarifying that when comparing day vs MTD metrics, the results should be pivoted so each zone has one row with both day and MTD values side by side, rather than grouping by time_window to produce separate rows.",
+            "judge": "logical_accuracy",
+            "rationale_snippet": "### logical_accuracy\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_AGGREGATION\n\nThe generated SQL groups by both zone_combination and time_window, producing 6 rows (2 per zone) instead of the expected 3 rows (1 per zone with both day and MTD metrics). The expected approach uses separate CTEs filtered by time_window=day and time_window=mtd respectively, then joins them to produce one row per zone. The generated SQLs inclusion of time_window in GROUP BY means the d",
+            "resolution_method": "sql_diff",
+            "resolved_root_cause": "wrong_filter_condition",
+            "verdict": "FAIL",
+            "wrong_clause": "GROUP BY ALL"
+          },
+          {
+            "asi_failure_type_raw": null,
+            "blame_set": null,
+            "counterfactual_fix": null,
+            "judge": "expected_response",
+            "rationale_snippet": "",
+            "resolution_method": "sql_diff",
+            "resolved_root_cause": "wrong_filter_condition",
+            "verdict": "FAIL",
+            "wrong_clause": null
+          },
+          {
+            "asi_failure_type_raw": "wrong_column",
+            "blame_set": "[time_window]",
+            "counterfactual_fix": "Remove time_window from the SELECT and GROUP BY, and instead use separate CTEs or filter conditions to compute day and mtd measures independently, then join on zone_combination. The expected approach separates the two time_window values into separate rows per zone rather than including time_window as a grouping dimension alongside both measures.",
+            "judge": "schema_accuracy",
+            "rationale_snippet": "### schema_accuracy\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_INCORRECT_TABLE_OR_FIELD_USAGE\n\nThe Generated SQL includes time_window as a grouping dimension, producing 6 rows (2 per zone) instead of 3 rows (1 per zone). The expected approach computes day and mtd measures separately and joins them so each zone has one row with both metrics side by side. By grouping on time_window, the generated SQL produces rows where one measure is meaningful and the other is not (since 7now_avg_",
+            "resolution_method": "asi_metadata",
+            "resolved_root_cause": "wrong_column",
+            "verdict": "FAIL",
+            "wrong_clause": "GROUP BY ALL"
+          },
+          {
+            "asi_failure_type_raw": "other",
+            "blame_set": "[time_window]",
+            "counterfactual_fix": "The Generated SQL includes time_window in the GROUP BY, producing separate rows for day and mtd per zone_combination (6 rows), whereas the Expected SQL joins day and mtd data into a single row per zone_combination (3 rows). The Genie Space should clarify that comparing day vs MTD means pivoting them into columns per zone, not listing them as separate rows. A metric view instruction or sample query showing the JOIN pattern would fix this.",
+            "judge": "semantic_equivalence",
+            "rationale_snippet": "### semantic_equivalence\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_AGGREGATION\n\nThe Expected SQL produces one row per zone_combination with both day and MTD metrics as separate columns (via a JOIN). The Generated SQL produces two rows per zone_combination (one for day, one for mtd) because it groups by time_window. This results in a different grain (6 rows vs 3 rows), and the measures are computed differently - in the Expected SQL, each measure is computed on",
+            "resolution_method": "sql_diff",
+            "resolved_root_cause": "wrong_filter_condition",
+            "verdict": "FAIL",
+            "wrong_clause": "None"
+          }
+        ],
+        "question_id": "7now_delivery_analytics_space_gs_013",
+        "question_text": "Compare the YoY change in average 7Now transaction value for the current day versus month-to-date by zone for same-store locations.",
+        "trial_index": 1
+      }
+    ],
+    "root_cause": "wrong_filter_condition",
+    "signal_quality": {
+      "asi_ratio": 0.286,
+      "combined": 0.571,
+      "result_fetched_ratio": 1.0
+    },
+    "signal_type": "hard",
+    "sql_contexts": [
+      {
+        "comparison": {
+          "column_type_difference": false,
+          "error": null,
+          "genie_column_types": {
+            "avg_txn_diff_day": "float64",
+            "avg_txn_diff_mtd": "float64",
+            "time_window": "object",
+            "zone_combination": "object"
+          },
+          "genie_columns": [
+            "avg_txn_diff_day",
+            "avg_txn_diff_mtd",
+            "time_window",
+            "zone_combination"
+          ],
+          "genie_hash": "3f056bd5",
+          "genie_hash_sorted": "",
+          "genie_rows": 6,
+          "genie_sample": "avg_txn_diff_day,avg_txn_diff_mtd,time_window,zone_combination\n0.1000,,day,CORP OPS EASTERN (Sage Garcia)\n0.1000,,day,FRAN OPS UNITED (Tatum Mitchell)\n0.5000,,day,FRAN OPS EASTERN (Reese Taylor)\n,-0.1000,mtd,FRAN OPS UNITED (Tatum Mitchell)\n,0.0000,mtd,CORP OPS EASTERN (Sage Garcia)\n",
+          "genie_signature": {
+            "numeric_sums": {
+              "avg_txn_diff_day": 0.7,
+              "avg_txn_diff_mtd": 0.0
+            },
+            "row_count": 6,
+            "schema_hash": "3ec8c0d4"
+          },
+          "gt_column_types": {
+            "avg_txn_diff_day": "float64",
+            "avg_txn_diff_mtd": "float64",
+            "zone_combination": "object"
+          },
+          "gt_columns": [
+            "avg_txn_diff_day",
+            "avg_txn_diff_mtd",
+            "zone_combination"
+          ],
+          "gt_hash": "66330e11",
+          "gt_hash_sorted": "",
+          "gt_rows": 3,
+          "gt_sample": "avg_txn_diff_day,avg_txn_diff_mtd,zone_combination\n0.0652,-0.1034,FRAN OPS UNITED (Tatum Mitchell)\n0.1026,0.0026,CORP OPS EASTERN (Sage Garcia)\n0.5140,0.1228,FRAN OPS EASTERN (Reese Taylor)\n",
+          "gt_signature": {
+            "numeric_sums": {
+              "avg_txn_diff_day": 0.6818,
+              "avg_txn_diff_mtd": 0.022
+            },
+            "row_count": 3,
+            "schema_hash": "e2877290"
+          },
+          "hash_match_ordered": false,
+          "hash_match_sorted": false,
+          "match": false,
+          "match_type": "mismatch",
+          "order_sensitive": false
+        },
+        "expected_sql": "WITH day_data AS (SELECT zone_combination, MEASURE(`7now_avg_txn_diff_day`) AS avg_txn_diff_day FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = Y AND time_window = day GROUP BY zone_combination), mtd_data AS (SELECT zone_combination, MEASURE(`7now_avg_txn_diff_mtd`) AS avg_txn_diff_mtd FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = Y AND time_window = mtd GROUP BY zone_combination) SELECT d.zone_combination, d.avg_txn_diff_day, m.avg_txn_diff_mtd FROM day_data d JOIN mtd_data m ON d.zone_combination = m.zone_combination",
+        "generated_sql": "SELECT \n  `zone_combination`,\n  `time_window`,\n  ROUND(MEASURE(`7now_avg_txn_diff_day`), 1) AS `avg_txn_diff_day`,\n  ROUND(MEASURE(`7now_avg_txn_diff_mtd`), 1) AS `avg_txn_diff_mtd`\nFROM `prashanth_subrahmanyam_catalog`.`sales_reports`.`mv_7now_store_sales`\nWHERE `time_window` IN (day, mtd)\n  AND `same_store_7now` = Y\nGROUP BY ALL\nORDER BY `zone_combination`, `time_window`",
+        "metadata_snapshot": {
+          "_regression_mining_hints": "",
+          "_regression_rca_findings": [],
+          "benchmarks": {
+            "questions": [
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT location_number, SUM(cy_sales) AS total_cy_sales, SUM(py_sales) AS total_py_sales FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales WHERE time_window = 'mtd' GROUP BY location_number ORDER BY total_cy_sales DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "023456b51991402599263a44e4ac0a48",
+                "question": [
+                  "What are the total CY and PY sales for each store location in the fact table for the MTD time window?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "WITH store_counts AS (SELECT area_leader_name, MEASURE(`7now_store_count_mtd`) AS store_count_mtd, MEASURE(`7now_store_count_day`) AS store_count_day FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = 'Y' GROUP BY area_leader_name) SELECT area_leader_name, prashanth_subrahmanyam_catalog.sales_reports.fn_mtd_or_mtday(store_count_mtd, store_count_day) AS store_count FROM store_counts ORDER BY store_count DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "048e687195ef4ead963739b6a306983f",
+                "question": [
+                  "Use the fn_mtd_or_mtday function to return either the MTD store count or the day store count depending on whether today is the first of the month, broken down by area leader for same-store locations."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT zone_combination, MEASURE(`7now_psd_cy_orders_mtd`) AS psd_cy_orders_mtd FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE time_window = 'mtd' GROUP BY zone_combination ORDER BY MEASURE(`7now_psd_cy_orders_mtd`) DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "1299abc2f84541388f39c98d8e9cfbf8",
+                "question": [
+                  "Rank zones by their per store daily CY orders month-to-date in descending order."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "WITH region_data AS (SELECT region_combination, MEASURE(`7now_psd_cy_day`) AS psd_cy_day, MEASURE(`7now_psd_py_day`) AS psd_py_day, MEASURE(`7now_psd_pct_chg_day`) AS psd_pct_chg_day FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE time_window = 'day' AND same_store_7now = 'Y' GROUP BY region_combination) SELECT region_combination, psd_cy_day, psd_py_day, psd_pct_chg_day FROM region_data WHERE psd_pct_chg_day < -5"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "1656e0618bf34239a3354672ccecd5c5",
+                "question": [
+                  "Which regions have a YoY percentage change in 7Now PSD sales for the current day that is worse than -5%? Show the region, CY PSD, PY PSD, and the percentage change. (Filtered to same-store 7Now locations.)"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT l.zone_vp_name, SUM(f.cy_sales) AS total_cy_sales FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales f JOIN prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location l ON f.location_number = l.location_number WHERE f.time_window = 'day' GROUP BY l.zone_vp_name ORDER BY total_cy_sales DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "24b1afef2a7c4c6ebe28931d8a79786a",
+                "question": [
+                  "Which zone VP's stores have the highest total CY sales for the day time window?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT location_number, city_name, market_description, area_leader_name FROM prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location WHERE state_name = 'FL' AND open_status_code = 'O'"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "3af0d0ad0ce34314b6c148487036bbe9",
+                "question": [
+                  "List all open stores in Florida with their city, market description, and area leader name."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "WITH ranked AS (SELECT area_leader_name, MEASURE(`7now_psd_cy_day`) AS psd_cy_day FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = 'Y' AND time_window = 'day' GROUP BY area_leader_name) SELECT area_leader_name, psd_cy_day FROM ranked ORDER BY psd_cy_day DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "3fe0bc98d3944648af350efb5334cea7",
+                "question": [
+                  "Which area leaders have the highest per store daily CY sales for the current day across same-store locations? Rank them in descending order."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT zone_combination, prashanth_subrahmanyam_catalog.sales_reports.fn_mtd_or_mtday(MEASURE(`_7now_cy_sales_mtd`), MEASURE(`_7now_cy_sales_day`)) AS cy_sales_value FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales GROUP BY zone_combination"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "4023b98e7bf44e8f9101140a380d1ebe",
+                "question": [
+                  "Use the fn_mtd_or_mtday function to return either the MTD CY sales or the day CY sales depending on whether today is the first of the month, by zone."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT location_number, SUM(cy_tot_orders) AS total_orders, SUM(cy_cust_count) AS total_customers FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales WHERE time_window = 'day' GROUP BY location_number ORDER BY total_orders DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "4373729292154c18a47139e0cf3095fb",
+                "question": [
+                  "What is the total number of CY orders and CY customer count by store for the day time window?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT f.location_number, l.state_name, l.city_name, l.region_name, SUM(f.cy_sales) AS total_cy_sales, SUM(f.py_sales) AS total_py_sales FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales f JOIN prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location l ON f.location_number = l.location_number WHERE f.time_window = 'mtd' GROUP BY f.location_number, l.state_name, l.city_name, l.region_name ORDER BY total_cy_sales DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "530da653123241199ab9553319df63ab",
+                "question": [
+                  "Show me the CY and PY sales for each store along with its state, city, and region name."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT market_combination, MEASURE(`7now_psd_cy_orders_day`) AS psd_cy_orders_day, MEASURE(`7now_psd_py_orders_day`) AS psd_py_orders_day, MEASURE(`7now_orders_diff_day`) AS orders_diff_day FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = 'Y' AND time_window = 'day' GROUP BY market_combination ORDER BY MEASURE(`7now_psd_cy_orders_day`) DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "560c69512e7a41fab5e07808298da96d",
+                "question": [
+                  "What is the per store daily CY and PY orders for the current day by market, and what is the YoY absolute change in PSD delivery orders for same-store locations?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT area_leader_name, MEASURE(`7now_avg_txn_cy_day`) AS avg_txn_cy, MEASURE(`7now_avg_txn_py_day`) AS avg_txn_py, MEASURE(`7now_avg_txn_diff_day`) AS avg_txn_diff FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE time_window = 'day' GROUP BY area_leader_name"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "57fad9d675d64e519cf4211b80e1a15b",
+                "question": [
+                  "What is the average 7Now transaction value (CY vs PY) and the difference for the current day by area leader?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT zone_combination, MEASURE(`_7now_cy_sales_mtd`) AS cy_sales_mtd, MEASURE(`_7now_cy_orders_mtd`) AS cy_orders_mtd FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE time_window = 'mtd' AND same_store_7now = 'Y' GROUP BY zone_combination"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "5fc8c432b318459f8d0a42fa554b8d70",
+                "question": [
+                  "What are the total current year 7Now delivery sales and orders by zone for same-store locations, month-to-date?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT MEASURE(`_7now_mtd_days`) AS mtd_days FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE time_window = 'mtd' GROUP BY time_window"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "646999f20a66413a82c054585f9d3533",
+                "question": [
+                  "How many days are in the current MTD period for 7Now reporting?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT f.location_number, l.city_name, l.county_name, l.market_description, SUM(f.cy_tot_orders) AS total_cy_orders, SUM(f.py_tot_orders) AS total_py_orders FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales f JOIN prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location l ON f.location_number = l.location_number WHERE l.region_name = 'SOUTHERN COAST' AND f.time_window = 'day' GROUP BY f.location_number, l.city_name, l.county_name, l.market_description ORDER BY total_cy_orders DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "656ba42b054143e98ecfb2c65eda18ef",
+                "question": [
+                  "For each store in the SOUTHERN COAST region, show the store number, city, county, market description, and the total CY and PY orders from the day time window."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT market_combination, MEASURE(`7now_psd_pct_chg_mtd`) AS psd_pct_chg_mtd FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE time_window = 'mtd' AND same_store_7now = 'Y' GROUP BY market_combination ORDER BY MEASURE(`7now_psd_pct_chg_mtd`)"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "6f8b9ecde5084bf7a5607ef6d5e1ee28",
+                "question": [
+                  "Show me the YoY percentage change in 7Now PSD sales month-to-date by market for same-store locations."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT SUM(cy_sales) AS total_cy_sales, SUM(py_sales) AS total_py_sales FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales WHERE time_window = 'mtd' AND same_store_7now = 'N'"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "72cbc4e85c6b480db3a7922dddcbecee",
+                "question": [
+                  "What are the total CY and PY delivery sales for non-same-store locations month-to-date?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "WITH day_data AS (SELECT zone_combination, MEASURE(`7now_avg_txn_diff_day`) AS avg_txn_diff_day FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = 'Y' AND time_window = 'day' GROUP BY zone_combination), mtd_data AS (SELECT zone_combination, MEASURE(`7now_avg_txn_diff_mtd`) AS avg_txn_diff_mtd FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = 'Y' AND time_window = 'mtd' GROUP BY zone_combination) SELECT d.zone_combination, d.avg_txn_diff_day, m.avg_txn_diff_mtd FROM day_data d JOIN mtd_data m ON d.zone_combination = m.zone_combination"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "94d82f2b983c4ac5a512e2426e3b80c7",
+                "question": [
+                  "Compare the YoY change in average 7Now transaction value for the current day versus month-to-date by zone for same-store locations."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT location_number, zone_combination, region_combination FROM prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location WHERE state_name = 'VA'"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "9fe26518748a42a4920fdac08604d053",
+                "question": [
+                  "Which stores are in Virginia and what zone and region do they belong to?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT country_code, SUM(cy_cust_count) AS total_cy_customers, SUM(py_cust_count) AS total_py_customers FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales WHERE same_store_7now = 'Y' AND time_window = 'mtd' GROUP BY country_code"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "a6839cacb0db4dd39a61e57a44a5ddf6",
+                "question": [
+                  "What is the total CY and PY customer count by country code for same-store 7Now locations in the MTD time window?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT l.location_number, l.city_name, l.market_description, SUM(f.cy_sales) AS total_cy_sales, SUM(f.py_sales) AS total_py_sales FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales f JOIN prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location l ON f.location_number = l.location_number WHERE l.region_name = 'MID-ATLANTIC' AND f.time_window = 'mtd' GROUP BY l.location_number, l.city_name, l.market_description"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "aa8a8d604da44ff49d88e12c3307cd00",
+                "question": [
+                  "For each store in the MID-ATLANTIC region, show the store number, city, market description, and total CY sales and PY sales for the MTD time window."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT cy_day_date, SUM(cy_sales) AS total_cy_sales, SUM(cy_tot_orders) AS total_cy_orders FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales WHERE same_store_7now = 'N' AND time_window = 'day' GROUP BY cy_day_date ORDER BY cy_day_date"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "bbcac1bed8314ef081aa7fe78477a552",
+                "question": [
+                  "Show me the daily CY sales and CY orders by cy_day_date for non-same-store 7Now locations."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT location_number, py_day_date, SUM(py_sales) AS total_py_sales, SUM(py_tot_orders) AS total_py_orders FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales WHERE time_window = 'day' GROUP BY location_number, py_day_date ORDER BY py_day_date, location_number"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "c6a86e964d0c468ea6f06e2402385a54",
+                "question": [
+                  "What is the PY sales and PY orders for each store on the prior year date for the day time window?"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT zone_combination, MEASURE(`_7now_cy_sales_mtd`) AS cy_sales_mtd, MEASURE(`_7now_py_sales_mtd`) AS py_sales_mtd FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE time_window = 'mtd' GROUP BY zone_combination ORDER BY zone_combination"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "cd7efa0a29fd470781ca6a1e53ec10f5",
+                "question": [
+                  "Compare 7Now CY vs PY MTD delivery sales by zone."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT cy_day_date, SUM(cy_sales) AS total_cy_sales FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales WHERE time_window = 'day' AND same_store_7now = 'Y' GROUP BY cy_day_date ORDER BY cy_day_date"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "d721178f1f064a7a890c0f7087f4ecd1",
+                "question": [
+                  "Show me the daily CY sales trend by date for same-store 7Now locations."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT region_combination, time_window, MEASURE(`7now_psd_cy_day`) AS psd_cy_day, MEASURE(`7now_psd_py_day`) AS psd_py_day, MEASURE(`7now_psd_cy_mtd`) AS psd_cy_mtd, MEASURE(`7now_psd_py_mtd`) AS psd_py_mtd FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales GROUP BY region_combination, time_window"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "e93f9b4eec544d6c8cce24e6ae471952",
+                "question": [
+                  "Show me the per store daily CY and PY sales for the day and MTD time windows by region."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT l.zone_name, l.region_director_name, SUM(f.cy_cust_count) AS total_cy_customers, SUM(f.cy_sales) AS total_cy_sales FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales f JOIN prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location l ON f.location_number = l.location_number WHERE f.time_window = 'mtd' AND f.same_store_7now = 'Y' GROUP BY l.zone_name, l.region_director_name ORDER BY total_cy_sales DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "f6d447688f42468bbc681d4a723c3886",
+                "question": [
+                  "Show me the total CY customer count and CY sales by zone name and region director for same-store 7Now locations in the MTD time window."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "WITH region_data AS (SELECT region_combination, MEASURE(`7now_psd_cy_day`) AS psd_cy_day, MEASURE(`7now_psd_py_day`) AS psd_py_day, MEASURE(`7now_psd_pct_chg_day`) AS psd_pct_chg_day FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE time_window = 'day' AND same_store_7now = 'Y' GROUP BY region_combination) SELECT region_combination, psd_cy_day, psd_py_day, psd_pct_chg_day FROM region_data WHERE psd_pct_chg_day < -5"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "fbf745716c474135be81413b2048d08f",
+                "question": [
+                  "Which regions have a YoY percentage change in 7Now PSD sales for the current day that is worse than -5%? Show the region, CY PSD, PY PSD, and the percentage change. (Same-store locations only)"
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT f.location_number, l.state_name, l.zone_name, SUM(f.cy_sales) AS total_cy_sales FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales f JOIN prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location l ON f.location_number = l.location_number WHERE f.time_window = 'mtd' GROUP BY f.location_number, l.state_name, l.zone_name HAVING SUM(f.cy_sales) > 5000"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "ff77531970034fc381c32c133e8fa80c",
+                "question": [
+                  "Which stores have CY sales greater than 5000 in the MTD time window? Show the store number, state, zone name, and total CY sales."
+                ]
+              },
+              {
+                "answer": [
+                  {
+                    "content": [
+                      "SELECT l.market_description, SUM(f.cy_tot_orders) AS total_cy_orders FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales f JOIN prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location l ON f.location_number = l.location_number WHERE f.time_window = 'mtd' AND f.same_store_7now = 'Y' GROUP BY l.market_description ORDER BY total_cy_orders DESC"
+                    ],
+                    "format": "SQL"
+                  }
+                ],
+                "id": "ff8549f61bd04677a95e8ec7937e4dfd",
+                "question": [
+                  "What are the total CY orders by market description for same-store 7Now locations MTD?"
+                ]
+              }
+            ]
+          },
+          "config": {
+            "sample_questions": [
+              {
+                "id": "0192495b8316475eeb3ce430a02f3b81",
+                "question": [
+                  "Show Canada 7Now delivery PSD sales and orders by zone."
+                ]
+              },
+              {
+                "id": "0ab1fcc175cd9c68e47946c0e6b0426f",
+                "question": [
+                  "Compare 7Now CY vs PY MTD delivery sales by zone."
+                ]
+              },
+              {
+                "id": "141d69e6db816c06bc4a43a869b17767",
+                "question": [
+                  "What is the 7Now average delivery transaction size by zone?"
+                ]
+              },
+              {
+                "id": "26678440725153c2d3a10e9a3705df59",
+                "question": [
+                  "How many stores have 7Now delivery activity today vs month-to-date?"
+                ]
+              },
+              {
+                "id": "5130daf153742c3fead4115864dbe828",
+                "question": [
+                  "What is the 7Now order count change (diff) by zone for Day and MTD?"
+                ]
+              },
+              {
+                "id": "518b7dc2a88c4e51756509b8a2628eb9",
+                "question": [
+                  "Which markets have the highest 7Now delivery growth (% change) this month?"
+                ]
+              },
+              {
+                "id": "51e5193ed39999b8f61e2f31e57ef726",
+                "question": [
+                  "Show US-only 7Now delivery PSD performance excluding PDI and SAP stores."
+                ]
+              },
+              {
+                "id": "66afc8f83d1ccac1c376d2883ba5f68b",
+                "question": [
+                  "Show 7Now same-store delivery performance: PSD sales, orders, and average transaction for Day and MTD."
+                ]
+              },
+              {
+                "id": "7320915df9fd1b3bfa8ec06243a46663",
+                "question": [
+                  "Compare 7Now same-store vs all-store PSD sales for the current day."
+                ]
+              },
+              {
+                "id": "7862e79d5066b8282055f2514d104add",
+                "question": [
+                  "Show the top 10 markets by 7Now PSD sales for the current day."
+                ]
+              },
+              {
+                "id": "892100125288c67e6d2631fc1119e9d0",
+                "question": [
+                  "What are the 7Now Day and MTD headline KPIs: PSD sales, orders, avg txn, and % change?"
+                ]
+              },
+              {
+                "id": "95784ccef111219b5794af26d7959713",
+                "question": [
+                  "What are the 7Now delivery PSD sales by zone for the current day?"
+                ]
+              }
+            ]
+          },
+          "data_sources": {
+            "tables": [
+              {
+                "column_configs": [
+                  {
+                    "column_name": "country_code",
+                    "description": [
+                      "Two-letter country code: US or CA."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "country",
+                      "US or Canada"
+                    ]
+                  },
+                  {
+                    "column_name": "cy_cust_count",
+                    "description": [
+                      "DEFINITION:Number of unique customers for the current year period in 7NOW delivery salesAGGREGATION:SUM for total customer counts across stores or regions; do not average"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "current year customer count",
+                      "CY customers",
+                      "this year customers"
+                    ]
+                  },
+                  {
+                    "column_name": "cy_day_date",
+                    "description": [
+                      "Date of the current year delivery data."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "current date",
+                      "CY date",
+                      "delivery date"
+                    ]
+                  },
+                  {
+                    "column_name": "cy_day_of_month",
+                    "description": [
+                      "Day-of-month extracted from cy_day_date. Used for MTD PSD denominator calculation."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "day of month",
+                      "mtd days"
+                    ]
+                  },
+                  {
+                    "column_name": "cy_sales",
+                    "description": [
+                      "Current year delivery sales amount for this store.DEFINITION:Current year delivery sales amount for this store-day record. May be NULL when a store had no CY sales but had PY sales. Do NOT filter out NULL values \u2014 include all rows and let SUM handle NULLs naturally.DEFINITION:Current year delivery sales amount for this store-day record. This is a raw fact value that MUST be aggregated with SUM() when reporting across stores. May be NULL when a store had no CY sales but had PY sales. Do NOT filter out NULL values \u2014 include all rows and let SUM handle NULLs naturally. When querying sales per store, use SUM(cy_sales) grouped by location_number with WHERE time_window = 'mtd' for month-to-date totals or WHERE time_window = 'day' for daily totals.AGGREGATION:SUM. Always aggregate with SUM(cy_sales) when reporting across stores or time periods. Never include cy_sales in GROUP BY \u2014 it is a measure, not a dimension.GRAIN NOTE:One value per store-day-time_window combination. Must be summed across the time_window dimension after filtering to the desired period (day or mtd)."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "current year sales",
+                      "CY delivery sales",
+                      "CY sales",
+                      "total CY sales"
+                    ]
+                  },
+                  {
+                    "column_name": "cy_tot_orders",
+                    "description": [
+                      "Current year total delivery order count for this store.DEFINITION:Current year total delivery order count for this store-day record. May be NULL. Do NOT add IS NOT NULL filters."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "current year orders",
+                      "CY delivery orders"
+                    ]
+                  },
+                  {
+                    "column_name": "location_number",
+                    "description": [
+                      "Unique store identifier linking to mv_esr_dim_location.location_number"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "store number",
+                      "store",
+                      "store #",
+                      "location"
+                    ]
+                  },
+                  {
+                    "column_name": "operating_system",
+                    "description": [
+                      "Store POS system type."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "POS system",
+                      "OS"
+                    ]
+                  },
+                  {
+                    "column_name": "py_cust_count",
+                    "description": [
+                      "DEFINITION:Number of unique customers for the prior year period in 7NOW delivery salesAGGREGATION:SUM for total customer counts across stores or regions; do not average"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "prior year customer count",
+                      "PY customers",
+                      "last year customers"
+                    ]
+                  },
+                  {
+                    "column_name": "py_day_date",
+                    "description": [
+                      "Date of the prior year delivery data."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "prior year date",
+                      "PY date"
+                    ]
+                  },
+                  {
+                    "column_name": "py_sales",
+                    "description": [
+                      "Prior year delivery sales for this store (same day/period).DEFINITION:Prior year delivery sales amount for this store-day record. May be NULL when a store had no PY sales. Do NOT filter out NULL values \u2014 include all rows and let SUM handle NULLs naturally."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "prior year sales",
+                      "PY delivery sales"
+                    ]
+                  },
+                  {
+                    "column_name": "py_tot_orders",
+                    "description": [
+                      "Prior year total delivery order count for this store."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "prior year orders",
+                      "PY delivery orders"
+                    ]
+                  },
+                  {
+                    "column_name": "same_store_7now",
+                    "description": [
+                      "Y/N: in 7Now delivery same-store list. Pre-computed in source digital views.DEFINITION:Y/N flag indicating whether the store is in the 7Now delivery same-store comparison list. Only filter same_store_7now = 'Y' when the user EXPLICITLY asks for 'same-store', 'comp store', or 'same store' data. For all other 7Now queries, do NOT add this filter.VALUES:Y, N"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now same store",
+                      "delivery same store"
+                    ]
+                  },
+                  {
+                    "column_name": "time_window",
+                    "description": [
+                      "'day' for yesterday's delivery data, 'mtd' for month-to-date accumulationDEFINITION:Reporting period dimension: 'day' for a single day's delivery data, 'mtd' for month-to-date accumulation. When the user asks for 'daily' data or groups by cy_day_date, always filter time_window = 'day'. When the user asks for MTD data, filter time_window = 'mtd'. Do NOT omit this filter \u2014 without it, rows for both day and mtd will be summed together, producing incorrect totals.VALUES:day, mtdDEFINITION:Reporting period dimension that MUST be filtered in every query. Values: 'day' for a single day snapshot, 'mtd' for month-to-date accumulation. Without this filter, rows for both day and mtd are summed together producing doubled totals. Default: when the user does not specify a time grain, use time_window = 'mtd'. When the user says 'daily', 'for the day', 'day time window', or groups by cy_day_date, use time_window = 'day'.VALUES:day, mtd"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "period",
+                      "day or mtd"
+                    ]
+                  }
+                ],
+                "description": [
+                  "PURPOSE:Daily sales fact data for the 7NOW delivery channel, capturing current-year and prior-year sales, order counts, and customer counts by store and time window.BEST FOR:7NOW delivery sales trends, year-over-year comparisons, same-store sales analysis, order volume and customer count tracking by location and operating systemGRAIN:One row per combination of location_number, cy_day_date, operating_system, time_window, and same_store_7nowSCD:Append-only fact table with current-year (cy_) and prior-year (py_) columns for built-in YoY comparisonPrefer this metric view for aggregate questions over dates or periods when it covers the requested dimensions.Prefer this metric view for aggregate questions over dates or periods when it covers the requested dimensions; otherwise fall back to a regular table."
+                ],
+                "identifier": "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales"
+              },
+              {
+                "column_configs": [
+                  {
+                    "column_name": "7now_avg_txn_cy_day",
+                    "description": [
+                      "Average 7Now delivery transaction value (CY) for current day."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now average transaction",
+                      "delivery avg basket",
+                      "7now avg txn day"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_avg_txn_cy_mtd",
+                    "description": [
+                      "Average 7Now delivery transaction value (CY) month-to-date."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now avg txn MTD",
+                      "delivery avg basket MTD"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_avg_txn_diff_day",
+                    "description": [
+                      "YoY change in average 7Now transaction value for current day."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "delivery transaction change",
+                      "7now diff txn day"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_avg_txn_diff_mtd",
+                    "description": [
+                      "YoY change in average 7Now transaction value month-to-date."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now diff txn MTD",
+                      "delivery transaction change MTD"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_avg_txn_py_day",
+                    "description": [
+                      "Average 7Now delivery transaction value (PY) for same day prior year."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now PY avg transaction",
+                      "PY delivery avg basket"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_avg_txn_py_mtd",
+                    "description": [
+                      "Average 7Now delivery transaction value (PY) month-to-date prior year."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now PY avg txn MTD"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_orders_diff_day",
+                    "description": [
+                      "YoY absolute change in PSD delivery orders for current day."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "delivery order change",
+                      "7now cust diff day"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_orders_diff_mtd",
+                    "description": [
+                      "YoY absolute change in PSD delivery orders month-to-date."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now cust diff MTD",
+                      "delivery order change MTD"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_cy_day",
+                    "description": [
+                      "Per Store Daily CY delivery sales for current day. Primary 7Now daily metric."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now daily sales",
+                      "PSD CY day",
+                      "delivery sales per store",
+                      "7now PSD today",
+                      "PSD",
+                      "per-store-day",
+                      "per store day"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_cy_mtd",
+                    "description": [
+                      "Per Store Daily CY delivery sales month-to-date. Total MTD sales / (store count x days)."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now MTD sales",
+                      "PSD CY MTD",
+                      "delivery MTD sales per store"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_cy_orders_day",
+                    "description": [
+                      "Per Store Daily CY delivery orders for current day."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now daily orders",
+                      "delivery customers per store",
+                      "7now PSD orders day"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_cy_orders_mtd",
+                    "description": [
+                      "Per Store Daily CY delivery orders month-to-date."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now MTD orders",
+                      "delivery orders MTD"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_pct_chg_day",
+                    "description": [
+                      "YoY percentage change in 7Now PSD sales for the current day.DEFINITION:YoY percentage change in 7Now PSD sales for the current day. Values are expressed as whole-number percentage points (e.g., -5.2 means a 5.2% decline, 10.3 means a 10.3% increase). When the user says 'worse than -5%', filter WHERE psd_pct_chg_day < -5, NOT < -0.05.AGGREGATION:Pre-aggregated in metric view via MEASURE(). Use in CTE then apply threshold filters in outer query.GRAIN NOTE:One value per grouping dimension (zone, region, market, area leader, etc.) after MEASURE() aggregation.DEFINITION:YoY percentage change in 7Now PSD sales for the current day. Values are whole-number percentage points (e.g., -5.2 means 5.2% decline). When the user asks for values 'worse than -5%', use a CTE pattern: compute MEASURE() in inner query, then filter WHERE psd_pct_chg_day < -5 in outer query.AGGREGATION:Pre-aggregated via MEASURE(). Must be computed in a CTE first, then filtered in an outer SELECT. Do NOT apply threshold filters inside the same query that calls MEASURE().GRAIN NOTE:One value per grouping dimension (zone, region, market, area leader) after MEASURE() aggregation."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now sales change day",
+                      "delivery % change",
+                      "7now YoY change day"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_pct_chg_mtd",
+                    "description": [
+                      "YoY percentage change in 7Now PSD sales month-to-date.DEFINITION:YoY percentage change in 7Now PSD sales month-to-date. Values are expressed as whole-number percentage points (e.g., -5.2 means a 5.2% decline). When filtering by threshold, use whole numbers (e.g., < -5), NOT decimals (e.g., < -0.05).AGGREGATION:Pre-aggregated in metric view via MEASURE(). Use in CTE then apply threshold filters in outer query.DEFINITION:YoY percentage change in 7Now PSD sales month-to-date. Values are whole-number percentage points. Use CTE pattern for threshold filtering.AGGREGATION:Pre-aggregated via MEASURE(). Compute in CTE, filter in outer query.GRAIN NOTE:One value per grouping dimension after MEASURE() aggregation."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now sales change MTD",
+                      "delivery % change MTD",
+                      "7now YoY change MTD"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_py_day",
+                    "description": [
+                      "Per Store Daily PY delivery sales for same day prior year."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now PY daily sales",
+                      "PSD PY day",
+                      "prior year delivery sales"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_py_mtd",
+                    "description": [
+                      "Per Store Daily PY delivery sales month-to-date prior year."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now PY MTD sales",
+                      "PSD PY MTD"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_py_orders_day",
+                    "description": [
+                      "Per Store Daily PY delivery orders for same day prior year."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now PY daily orders",
+                      "PY delivery orders day"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_psd_py_orders_mtd",
+                    "description": [
+                      "Per Store Daily PY delivery orders month-to-date prior year."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now PY MTD orders"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_store_count_day",
+                    "description": [
+                      "Count of stores with 7Now delivery activity for the current day."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now stores",
+                      "delivery store count",
+                      "7now store count today"
+                    ]
+                  },
+                  {
+                    "column_name": "7now_store_count_mtd",
+                    "description": [
+                      "Count of stores with 7Now delivery activity month-to-date."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now stores MTD",
+                      "delivery store count MTD"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_cy_orders_day",
+                    "description": [
+                      "DEFINITION:Current year daily order count for 7NOW delivery sales"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now current year orders today",
+                      "CY daily orders"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_cy_orders_mtd",
+                    "description": [
+                      "DEFINITION:Current year month-to-date order count for 7NOW delivery sales"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now current year MTD orders",
+                      "CY MTD orders"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_cy_sales_day",
+                    "description": [
+                      "DEFINITION:Current year daily sales amount for 7NOW delivery"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now current year sales today",
+                      "CY daily sales"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_cy_sales_mtd",
+                    "description": [
+                      "DEFINITION:Current year month-to-date sales amount for 7NOW delivery"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now current year MTD sales",
+                      "CY MTD sales"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_mtd_days",
+                    "description": [
+                      "DEFINITION:Number of days included in the month-to-date calculation for 7NOW sales"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "MTD day count",
+                      "days in MTD period"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_py_orders_day",
+                    "description": [
+                      "DEFINITION:Prior year daily order count for 7NOW delivery sales"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now prior year orders today",
+                      "PY daily orders",
+                      "last year daily orders"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_py_orders_mtd",
+                    "description": [
+                      "DEFINITION:Prior year month-to-date order count for 7NOW delivery sales"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now prior year MTD orders",
+                      "PY MTD orders"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_py_sales_day",
+                    "description": [
+                      "DEFINITION:Prior year daily sales amount for 7NOW delivery"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now prior year sales today",
+                      "PY daily sales",
+                      "last year daily sales"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_py_sales_mtd",
+                    "description": [
+                      "DEFINITION:Prior year month-to-date sales amount for 7NOW delivery"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now prior year MTD sales",
+                      "PY MTD sales"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_store_count_day",
+                    "description": [
+                      "DEFINITION:Number of stores with 7NOW delivery activity for the given day"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "daily store count",
+                      "stores active today"
+                    ]
+                  },
+                  {
+                    "column_name": "_7now_store_count_mtd",
+                    "description": [
+                      "DEFINITION:Number of stores with 7NOW delivery activity month-to-date"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "MTD store count",
+                      "stores active MTD"
+                    ]
+                  },
+                  {
+                    "column_name": "area_leader_name",
+                    "description": [
+                      "Area leader responsible for a cluster of stores."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "area leader",
+                      "AL",
+                      "field leader"
+                    ]
+                  },
+                  {
+                    "column_name": "country_code",
+                    "description": [
+                      "Two-letter country code: US or CA. Used to split US Franchise from Canada."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "country",
+                      "US or Canada",
+                      "nation"
+                    ]
+                  },
+                  {
+                    "column_name": "location_number",
+                    "description": [
+                      "Unique store identifier. Joins to mv_esr_dim_location for hierarchy."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "store number",
+                      "store",
+                      "store #",
+                      "store id",
+                      "location"
+                    ]
+                  },
+                  {
+                    "column_name": "market_combination",
+                    "description": [
+                      "Combined market code and leader. Third level in org hierarchy below region."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "market",
+                      "market leader",
+                      "franchise market"
+                    ]
+                  },
+                  {
+                    "column_name": "operating_system",
+                    "description": [
+                      "Store POS system type. 7Now report excludes PDI and SAP stores."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "POS system",
+                      "OS",
+                      "store system"
+                    ]
+                  },
+                  {
+                    "column_name": "region_combination",
+                    "description": [
+                      "Combined region code and director. Second level in org hierarchy below zone."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "region",
+                      "region director",
+                      "franchise region"
+                    ]
+                  },
+                  {
+                    "column_name": "same_store_7now",
+                    "description": [
+                      "Y = in 7Now delivery same-store list for current month. N = has digital sales but not same-store. Default filter for 7Now PSD queries.DEFINITION:Y = in 7Now delivery same-store list for current month. N = has digital sales but not same-store. Only filter same_store_7now = 'Y' when the user explicitly asks for 'same-store' or 'comp store' data. For general 7Now queries (e.g., average transaction value, total sales) that do NOT mention same-store, do NOT add this filter.VALUES:Y, N"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "7now same store",
+                      "delivery same store",
+                      "same store 7now",
+                      "7now comp store"
+                    ]
+                  },
+                  {
+                    "column_name": "time_window",
+                    "description": [
+                      "Reporting period: 'day' for yesterday (PrevDay), 'mtd' for month-to-date. Replaces PBI Date Filter slicer.DEFINITION:Reporting period dimension: 'day' for a single day's delivery data, 'mtd' for month-to-date accumulation. When the user asks to see BOTH day AND MTD time windows (e.g., 'show day and MTD by region'), include time_window in both the SELECT and GROUP BY clauses so that day and MTD appear as separate rows. Do NOT collapse them into a single row per dimension.VALUES:day, mtd"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "period",
+                      "time window",
+                      "day or mtd",
+                      "reporting period"
+                    ]
+                  },
+                  {
+                    "column_name": "zone_combination",
+                    "description": [
+                      "Zone name and zone VP. Primary zone grouping for 7Now reports."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "zone",
+                      "zone vp",
+                      "franchise zone"
+                    ]
+                  }
+                ],
+                "description": [
+                  "PURPOSE:Pre-aggregated metric view providing 7NOW store-level sales KPIs including current-year and prior-year sales, orders, average transaction size, per-store-per-day (PSD) metrics, and percent change at daily and month-to-date granularity.BEST FOR:7NOW store performance dashboards, daily and MTD sales summaries, year-over-year percent change analysis, average transaction and per-store-per-day metricsPrefer this metric view for aggregate store-level questions over dates or periods when it covers the requested dimensions.Prefer this metric view for aggregate questions over dates or periods when it covers the requested dimensions; otherwise fall back to the regular fact table."
+                ],
+                "identifier": "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales"
+              },
+              {
+                "column_configs": [
+                  {
+                    "column_name": "calendar_day",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "calendar_month",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "calendar_sk",
+                    "description": [
+                      "DEFINITION:Surrogate key uniquely identifying each calendar date in the date dimension"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "date key",
+                      "date id",
+                      "calendar key"
+                    ]
+                  },
+                  {
+                    "column_name": "calendar_year",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "day_of_week",
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "full_date",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "is_month_to_date",
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "MTD",
+                      "month-to-date",
+                      "month to date"
+                    ]
+                  },
+                  {
+                    "column_name": "is_month_to_date_prior_year_same_date",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "is_month_to_date_prior_year_same_day",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "is_one_day_prior_year_same_date",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "is_one_day_prior_year_same_day",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "is_seven_day_prior_year_same_day",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "is_within_one_day",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "is_within_seven_days",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "previous_day_flag",
+                    "description": [
+                      "DEFINITION:Flag indicating whether the date represents the previous (most recent completed) day"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "yesterday flag",
+                      "prior day flag"
+                    ]
+                  },
+                  {
+                    "column_name": "use_mtdate_flag",
+                    "description": [
+                      "DEFINITION:Flag indicating whether to use the month-to-date date-based comparison (as opposed to day-of-week-based) for year-over-year calculations"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "month to date flag",
+                      "mtd date flag"
+                    ]
+                  }
+                ],
+                "description": [
+                  "PURPOSE:Date dimension table providing calendar attributes and flags for comparing current periods to prior-year same-date/same-day equivalents, supporting MTD, 1-day, and 7-day time window comparisons.BEST FOR:Time-based filtering for daily/MTD/prior-year comparisons, joining to fact tables for period-over-period sales analysisGRAIN:One row per calendar date (full_date)SCD:Snapshot/refresh \u2014 flags like is_within_one_day and is_month_to_date are recalculated relative to the current date on each refresh"
+                ],
+                "identifier": "prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_date"
+              },
+              {
+                "column_configs": [
+                  {
+                    "column_name": "acquisition_date",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "acquisition_description",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "area_leader_email",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "area_leader_name",
+                    "description": [
+                      "Name of the area leader responsible for a cluster of stores."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "area leader",
+                      "AL",
+                      "field leader"
+                    ]
+                  },
+                  {
+                    "column_name": "city_name",
+                    "description": [
+                      "DEFINITION:Name of the city where the store location resides"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "city",
+                      "town"
+                    ]
+                  },
+                  {
+                    "column_name": "country_code",
+                    "description": [
+                      "Two-letter country code: US for United States, CA for Canada"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "country",
+                      "nation"
+                    ]
+                  },
+                  {
+                    "column_name": "county_name",
+                    "description": [
+                      "DEFINITION:Name of the county where the store location resides"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "county"
+                    ]
+                  },
+                  {
+                    "column_name": "is_finance_monthly_same_store",
+                    "description": [
+                      "Y/N: ESR same-store flag. NOT used for 7Now \u2014 use same_store_7now from mv_7now_store_sales or mv_7now_fact_sales instead."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "same store",
+                      "same-store",
+                      "comp store"
+                    ]
+                  },
+                  {
+                    "column_name": "latitude",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "location_number",
+                    "description": [
+                      "Unique numeric identifier for each store location in the network"
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "store number",
+                      "store",
+                      "store #",
+                      "store id",
+                      "location"
+                    ]
+                  },
+                  {
+                    "column_name": "longitude",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "market_code",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "market_combination",
+                    "description": [
+                      "Combined market code and description. Third level in org hierarchy below region.DEFINITION:Combined market code and leader name (e.g., '1466-Blake Ramirez'). This is NOT the same as market_description. When users ask for 'market description' or 'market name', use the market_description column instead.VALUES:Format: code-leader_name (e.g., 1466-Blake Ramirez, 1507-Jordan Rodriguez)"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "market",
+                      "franchise market",
+                      "market name"
+                    ]
+                  },
+                  {
+                    "column_name": "market_description",
+                    "description": [
+                      "DEFINITION:Descriptive name of the market (e.g., DC/NOVA, EAST FLORIDA-RIS, NORTH FLORIDA). This is the CORRECT column when the user asks for 'market description', 'market name', or wants to group/filter by market label. Do NOT use market_combination for this purpose \u2014 market_combination contains a code-leader format like '1466-Blake Ramirez'. To get market_description for 7Now queries, JOIN mv_7now_fact_sales or mv_7now_store_sales to mv_esr_dim_location on location_number.VALUES:DC/NOVA, EAST FLORIDA-RIS, NORTH FLORIDA, SOUTHERN COAST, etc. Descriptive name of the market (e.g., DC/NOVA, EAST FLORIDA-RIS, NORTH FLORIDA). This is the CORRECT column when the user asks for 'market description', 'market name', or wants to group/filter by market label. Do NOT use market_combination for this purpose. To get market_description for 7Now queries, JOIN mv_7now_fact_sales to mv_esr_dim_location on location_number.VALUES:DC/NOVA, EAST FLORIDA-RIS, NORTH FLORIDA, SOUTHERN COAST, etc."
+                    ],
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "market description",
+                      "market name label",
+                      "market name",
+                      "market label"
+                    ]
+                  },
+                  {
+                    "column_name": "market_leader_name",
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "open_status_code",
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "operating_system",
+                    "description": [
+                      "Point-of-sale system the store uses (PDI, RISA, SAP, etc.)"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "POS system",
+                      "system",
+                      "store system"
+                    ]
+                  },
+                  {
+                    "column_name": "postal_code",
+                    "description": [
+                      "DEFINITION:Postal or ZIP code of the store location"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "zip code",
+                      "zip",
+                      "postcode"
+                    ]
+                  },
+                  {
+                    "column_name": "region_code",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "region_combination",
+                    "description": [
+                      "Combined region code and name. Second level in org hierarchy below zone."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "region",
+                      "franchise region",
+                      "region name"
+                    ]
+                  },
+                  {
+                    "column_name": "region_director_name",
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "region_name",
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "restaurant_flag",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "state_name",
+                    "description": [
+                      "DEFINITION:Name of the state or province where the store location resides"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "state",
+                      "province"
+                    ]
+                  },
+                  {
+                    "column_name": "zone_code",
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "zone_combination",
+                    "description": [
+                      "Combined zone code and name (e.g., '01 - FRAN OPS UNITED'). Primary zone grouping.DEFINITION:Combined zone name and zone VP (e.g., 'FRAN OPS UNITED (Tatum Mitchell)'). When users ask specifically for 'zone VP name' or 'zone vice president', use zone_vp_name column instead. Use zone_combination only when the user asks for 'zone' generically.VALUES:Format: ZONE_NAME (VP_Name) e.g., FRAN OPS UNITED (Tatum Mitchell)"
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "zone",
+                      "franchise zone",
+                      "zone name",
+                      "zone combo"
+                    ]
+                  },
+                  {
+                    "column_name": "zone_name",
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true
+                  },
+                  {
+                    "column_name": "zone_vp_name",
+                    "description": [
+                      "DEFINITION:Name of the Zone Vice President. Use this column when the user asks about 'zone VP', 'zone vice president', 'zone VP name', or 'zone VP stores'. To get zone_vp_name for 7Now queries, JOIN mv_7now_fact_sales to mv_esr_dim_location on location_number. This is the CORRECT column for zone VP ranking queries \u2014 do NOT use zone_combination for this purpose."
+                    ],
+                    "enable_entity_matching": true,
+                    "enable_format_assistance": true,
+                    "synonyms": [
+                      "zone VP",
+                      "zone vice president",
+                      "zone VP name",
+                      "zone VPs"
+                    ]
+                  }
+                ],
+                "description": [
+                  "PURPOSE:Location dimension table containing store attributes including geographic details, organizational hierarchy (zone, region, market, area), leadership contacts, and acquisition information.BEST FOR:Store lookups, geographic and organizational hierarchy reporting, filtering by market/region/zone, same-store identification, leadership roster analysisGRAIN:One row per store location (location_number)"
+                ],
+                "identifier": "prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location"
+              }
+            ]
+          },
+          "instructions": {
+            "join_specs": [
+              {
+                "id": "01f14fffdede1314bc3225c4d2967ef1",
+                "instruction": [
+                  "METRIC VIEW JOIN: Do NOT use a direct JOIN between mv_7now_fact_sales and mv_esr_dim_location. Instead, materialize mv_7now_fact_sales in a CTE (WITH clause) using MEASURE() and GROUP BY ALL, then JOIN the CTE result to mv_esr_dim_location. Direct JOINs on metric views cause METRIC_VIEW_JOIN_NOT_SUPPORTED errors."
+                ],
+                "left": {
+                  "alias": "mv_7now_fact_sales",
+                  "identifier": "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales"
+                },
+                "right": {
+                  "alias": "mv_esr_dim_location",
+                  "identifier": "prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location"
+                },
+                "sql": [
+                  "`mv_7now_fact_sales`.`location_number` = `mv_esr_dim_location`.`location_number`",
+                  "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"
+                ]
+              }
+            ],
+            "sql_snippets": {
+              "expressions": [
+                {
+                  "alias": "cy_month",
+                  "display_name": "7NOW Current Year Month",
+                  "id": "01f15002367912cfbf0b13692ada0658",
+                  "instruction": [
+                    "Use this expression to extract the month from the current year day date in mv_7now_fact_sales for monthly grouping of 7NOW sales data."
+                  ],
+                  "sql": [
+                    "MONTH(prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.cy_day_date)"
+                  ],
+                  "synonyms": [
+                    "CY month",
+                    "current year month number",
+                    "sales month"
+                  ]
+                },
+                {
+                  "alias": "py_quarter",
+                  "display_name": "7NOW Prior Year Quarter",
+                  "id": "01f1500237631614b3825b61cdca20b6",
+                  "instruction": [
+                    "Use this expression to extract the quarter from the prior year day date in mv_7now_fact_sales for quarterly year-over-year 7NOW comparisons."
+                  ],
+                  "sql": [
+                    "QUARTER(prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.py_day_date)"
+                  ],
+                  "synonyms": [
+                    "PY quarter",
+                    "last year quarter",
+                    "previous year quarter"
+                  ]
+                },
+                {
+                  "alias": "esr_date_month",
+                  "display_name": "ESR Date Month",
+                  "id": "01f15002382316dfb6bf0f4ff5f31cb6",
+                  "instruction": [
+                    "Use this expression to extract the month from the full_date column in mv_esr_dim_date for monthly grouping in ESR reporting."
+                  ],
+                  "sql": [
+                    "MONTH(prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_date.full_date)"
+                  ],
+                  "synonyms": [
+                    "calendar month",
+                    "date dimension month",
+                    "ESR full date month"
+                  ]
+                },
+                {
+                  "alias": "location_acquisition_month",
+                  "display_name": "ESR Location Acquisition Month",
+                  "id": "01f1500238ef1689bca5e4b8767c2a5a",
+                  "instruction": [
+                    "Use this expression to extract the month from the acquisition_date in mv_esr_dim_location for analyzing when stores were acquired in ESR reporting."
+                  ],
+                  "sql": [
+                    "MONTH(prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location.acquisition_date)"
+                  ],
+                  "synonyms": [
+                    "store acquisition month",
+                    "location onboarding month",
+                    "acquisition date month"
+                  ]
+                }
+              ],
+              "filters": [
+                {
+                  "display_name": "7NOW Month-to-Date Filter",
+                  "id": "01f15002315819788c10368a0379f5e6",
+                  "instruction": [
+                    "Apply this filter on the mv_7now_fact_sales table to restrict results to month-to-date records when analyzing 7NOW sales for the current month."
+                  ],
+                  "sql": [
+                    "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.time_window = 'mtd'"
+                  ],
+                  "synonyms": [
+                    "MTD filter",
+                    "month to date",
+                    "current month filter"
+                  ]
+                },
+                {
+                  "display_name": "7NOW Single Day Filter",
+                  "id": "01f15002328212c3b57bf4a57577e5a4",
+                  "instruction": [
+                    "Apply this filter on the mv_7now_fact_sales table to restrict results to a single day's worth of 7NOW sales data."
+                  ],
+                  "sql": [
+                    "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.time_window = 'day'"
+                  ],
+                  "synonyms": [
+                    "daily filter",
+                    "one day filter",
+                    "today filter"
+                  ]
+                },
+                {
+                  "display_name": "7NOW Same Store Filter",
+                  "id": "01f1500233ce17b4853e6a75e710c382",
+                  "instruction": [
+                    "Apply this filter on the mv_7now_fact_sales table to include only same-store 7NOW locations for comparable year-over-year analysis."
+                  ],
+                  "sql": [
+                    "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.same_store_7now = 'Y'"
+                  ],
+                  "synonyms": [
+                    "same store flag",
+                    "comp store 7NOW",
+                    "comparable store filter"
+                  ]
+                },
+                {
+                  "display_name": "7NOW Month-to-Date Filter (Qualified)",
+                  "id": "01f1500234ca178d94dd32ebc1c8a747",
+                  "instruction": [
+                    "Apply this filter using the fully qualified reference to prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.time_window to restrict to month-to-date 7NOW records."
+                  ],
+                  "sql": [
+                    "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.time_window = 'mtd'"
+                  ],
+                  "synonyms": [
+                    "MTD qualified filter",
+                    "month to date fully qualified",
+                    "7NOW MTD"
+                  ]
+                }
+              ],
+              "measures": [
+                {
+                  "alias": "total_py_sales",
+                  "display_name": "7NOW Prior Year Sales Total",
+                  "id": "01f150022ee6186ca9adb2eb4bc57050",
+                  "instruction": [
+                    "Use this measure to sum prior year sales from the mv_7now_fact_sales table when comparing year-over-year 7NOW delivery performance."
+                  ],
+                  "sql": [
+                    "SUM(prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.PY_SALES)"
+                  ],
+                  "synonyms": [
+                    "PY sales",
+                    "last year sales",
+                    "previous year 7NOW sales"
+                  ]
+                },
+                {
+                  "alias": "total_cy_sales_qualified",
+                  "display_name": "7NOW Current Year Sales Total (Qualified)",
+                  "id": "01f150022fa11058b07bc6ee617ffcea",
+                  "instruction": [
+                    "Use this measure to sum current year sales from prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales when the fully qualified column reference is needed."
+                  ],
+                  "sql": [
+                    "SUM(PRASHANTH_SUBRAHMANYAM_CATALOG.SALES_REPORTS.MV_7NOW_FACT_SALES.CY_SALES)"
+                  ],
+                  "synonyms": [
+                    "CY sales fully qualified",
+                    "current year 7NOW revenue",
+                    "this year sales"
+                  ]
+                },
+                {
+                  "alias": "total_cy_sales",
+                  "display_name": "7NOW Current Year Sales Total",
+                  "id": "01f15002304c129694fe312ab023072f",
+                  "instruction": [
+                    "Use this measure to sum current year sales from the mv_7now_fact_sales table for 7NOW delivery sales analysis."
+                  ],
+                  "sql": [
+                    "SUM(prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.CY_SALES)"
+                  ],
+                  "synonyms": [
+                    "CY sales",
+                    "current year sales",
+                    "this year 7NOW sales"
+                  ]
+                },
+                {
+                  "alias": "total_cy_cust_count",
+                  "display_name": "7NOW Current Year Customer Count",
+                  "id": "01f15002359718e7af65a9af1b0ac253",
+                  "instruction": [
+                    "Use this measure to sum the current year customer count from mv_7now_fact_sales when analyzing 7NOW delivery customer volume."
+                  ],
+                  "sql": [
+                    "SUM(prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales.cy_cust_count)"
+                  ],
+                  "synonyms": [
+                    "CY customer count",
+                    "current year customers",
+                    "7NOW customer total"
+                  ]
+                }
+              ]
+            },
+            "text_instructions": [
+              {
+                "content": [
+                  "## PURPOSE\n",
+                  "- Provide 7NOW delivery channel sales analytics including daily and month-to-date performance, year-over-year comparisons, order counts, customer counts, and store-level KPIs.\n",
+                  "- Intended for operations and sales leadership analyzing 7NOW delivery performance across stores, markets, zones, and regions.\n",
+                  "\n",
+                  "## DISAMBIGUATION\n",
+                  "- When the user asks about \"sales\" without specifying a time window (day vs. MTD), ask whether they mean a single day or month-to-date.\n",
+                  "- When the user asks about \"same store\" metrics, clarify whether they mean the 7NOW same-store flag (`same_store_7now`) or the finance monthly same-store flag (`is_finance_monthly_same_store`).\n",
+                  "- When the user references \"prior year,\" clarify whether they mean prior-year same date or prior-year same day of week, as the date dimension supports both comparisons.\n",
+                  "- \"Orders\" may refer to total orders or per-store-day orders; ask for clarification if ambiguous.\n",
+                  "- When the user mentions a geographic grouping (zone, region, market, area), confirm which level of the hierarchy they intend.\n",
+                  "\n",
+                  "## DATA QUALITY NOTES\n",
+                  "- The `same_store_7now` flag in the fact table and `is_finance_monthly_same_store` in the location dimension serve different same-store definitions; they are not interchangeable.\n",
+                  "- The date dimension flags (`is_within_one_day`, `is_within_seven_days`, `is_month_to_date`, etc.) control period filtering; rows outside these flags may represent future or incomplete periods.\n",
+                  "\n",
+                  "## CONSTRAINTS\n",
+                  "- Never expose `area_leader_email` in result sets unless the user explicitly requests contact information.\n",
+                  "- Always ensure queries against the fact sales table are filtered by a date or date-flag condition to prevent unbounded scans.\n",
+                  "\n",
+                  "## Instructions you must follow when providing summaries\n",
+                  "- Always state the date or date range covered.\n",
+                  "- Round currency to whole dollars and percentages to one decimal place."
+                ],
+                "id": "01f12a6c0c1b1d218f7995933fadfb1e"
+              }
+            ]
+          },
+          "version": 2
+        },
+        "question": "Compare the YoY change in average 7Now transaction value for the current day versus month-to-date by zone for same-store locations."
+      }
+    ]
+  },
+  "expected_dispatch_outcome": {
+    "current_code_failure_mode": "leak1_silent_gate_closure_via_empty_rca_evidence_typed",
+    "current_code_returns": "empty_list",
+    "post_plan10_expected": "non_empty_list_with_target_objects_populated",
+    "secondary_failure_mode_when_leak1_patched": "leak2_synthesizer_strips_target_objects",
+    "tertiary_failure_mode_when_leaks12_patched": "leak3_production_call_site_never_threads_repair_proposal"
+  },
+  "failing_qid": "7now_delivery_analytics_space_gs_013",
+  "failure_shape": "day_vs_mtd_grain",
+  "failure_summary": {
+    "expected_sql": "WITH day_data AS (SELECT zone_combination, MEASURE(`7now_avg_txn_diff_day`) AS avg_txn_diff_day FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = Y AND time_window = day GROUP BY zone_combination), mtd_data AS (SELECT zone_combination, MEASURE(`7now_avg_txn_diff_mtd`) AS avg_txn_diff_mtd FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = Y AND time_window = mtd GROUP BY zone_combination) SELECT d.zone_combination, d.avg_txn_diff_day, m.avg_txn_diff_mtd FROM day_data d JOIN mtd_data m ON d.zone_combination = m.zone_combination",
+    "generated_sql": "SELECT \n  `zone_combination`,\n  `time_window`,\n  ROUND(MEASURE(`7now_avg_txn_diff_day`), 1) AS `avg_txn_diff_day`,\n  ROUND(MEASURE(`7now_avg_txn_diff_mtd`), 1) AS `avg_txn_diff_mtd`\nFROM `prashanth_subrahmanyam_catalog`.`sales_reports`.`mv_7now_store_sales`\nWHERE `time_window` IN (day, mtd)\n  AND `same_store_7now` = Y\nGROUP BY ALL\nORDER BY `zone_combination`, `time_window`",
+    "question": "Compare the YoY change in average 7Now transaction value for the current day versus month-to-date by zone for same-store locations."
+  },
+  "fixture_id": "7now_gs_013_wrong_filter_condition",
+  "llm_cluster_seed": {
+    "cluster_id": "H001",
+    "confidence": "medium",
+    "member_qids": [
+      "7now_delivery_analytics_space_gs_013"
+    ],
+    "primary_blame_set": [
+      "time_window",
+      "time_window dimension included unnecessarily"
+    ],
+    "semantic_theme": "wrong_filter_condition",
+    "suggested_repair_shape": "period_over_period",
+    "unifying_evidence": "Result mismatch: expected 3 rows (hash=66330e11), got 6 rows (hash=3f056bd5). Check joins, filters, or aggregation logic in the generated SQL."
+  },
+  "minimal_metadata_snapshot": {
+    "data_sources": {},
+    "instructions": {
+      "example_question_sqls": []
+    },
+    "schema_columns": []
+  },
+  "observed_root_cause": "wrong_filter_condition",
+  "production_evidence": {
+    "comment": "The Plan 5 LLM-direct dispatch gate (optimizer.py:_dispatch_lever_5b_for_cluster) closed silently because the deterministic RCA classifier returned no typed evidence for this QID. This left rca_evidence_typed empty for the cluster, falling back to the legacy path with zero structural candidates.",
+    "rca_evidence_typed_per_qid_was_empty": true,
+    "rca_kinds_by_qid_was_empty": true,
+    "stage_was_skipped_entirely": false
+  },
+  "source_ag_id_synthetic": "AG_REPLAY_PLAN10_H001",
+  "source_cluster_id": "H001",
+  "source_iteration": 1,
+  "source_run_id": "ab65fefe-9bb5-411c-9818-f62633ec9cfd"
+}
