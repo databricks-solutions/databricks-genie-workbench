@@ -8184,15 +8184,16 @@ def critique_gate_enforcing_enabled() -> bool:
 def plan7_rollback_learning_enabled() -> bool:
     """Whether the Plan-7 rollback-learning helper runs.
 
-    True: when ``stages.acceptance`` returns a ``rolled_back`` outcome,
-    the harness dispatches one LLM hypothesis call per rolled-back
-    cluster and stamps surviving hypotheses onto
-    ``metadata_snapshot["_last_attempt_hypothesis_by_cluster"]``.
+    Plan 9 — default flipped to ON. With Plan 9's wire-in fixes,
+    proposals reliably carry repair_intent stamps so the
+    hypothesizer receives the typed inputs it needs.
 
-    False (default): no hypothesis call; existing learning behaviour
-    is byte-stable.
+    True (default): when stages.acceptance returns a rolled_back
+    outcome, the harness dispatches one LLM hypothesis call per
+    rolled-back cluster and stamps surviving hypotheses onto
+    metadata_snapshot["_last_attempt_hypothesis_by_cluster"].
+
+    Set GSO_PLAN7_ROLLBACK_LEARNING=0 to force off (escape hatch
+    for emergency rollback).
     """
-    raw = (
-        os.environ.get("GSO_PLAN7_ROLLBACK_LEARNING") or "false"
-    ).strip().lower()
-    return raw in _TRUTHY_VALUES
+    return _flag_default_on("GSO_PLAN7_ROLLBACK_LEARNING")
