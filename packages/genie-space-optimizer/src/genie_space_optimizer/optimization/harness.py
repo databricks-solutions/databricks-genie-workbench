@@ -22569,6 +22569,12 @@ def _run_lever_loop(
                 "source_cluster_signatures": list(_ag_source_signatures),
             }
 
+            # Plan 9 Task 9.1 — per-AG dedup flag for the harness-
+            # level GSO_PLAN5_ANCHOR_ACTIVATION_V1 marker. Every
+            # AG-iteration pair must emit EXACTLY ONE harness-level
+            # marker; this flag closes the door after the first emit.
+            _anchor_activation_marker_emitted = False
+
             # Phase D2 collision guard, broadened by Defect Plan 1 G2
             # (2026-05-12). The legacy axis (root_cause, blame,
             # lever_set) is preserved verbatim; the new signature axis
@@ -22583,6 +22589,12 @@ def _run_lever_loop(
                 )
             )
             if _prefiltered_ags:
+                # Plan 9 Task 9.1 — emit harness-level activation
+                # marker so postmortem can attribute these AGs.
+                from genie_space_optimizer.optimization.plan9_activation_markers import (
+                    ActivationStatus as _ActivationStatus_t91,
+                    emit_plan5_activation as _emit_plan5_activation_t91,
+                )
                 logger.info(
                     "plan9.prefiltered_ags count=%d ag_ids=%s",
                     len(_prefiltered_ags),
@@ -22599,6 +22611,24 @@ def _run_lever_loop(
                         ),
                         "reason": "matches_forbidden_signature",
                     })
+                    try:
+                        _emit_plan5_activation_t91(
+                            run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            ag_id=str(_dropped_ag.get("id", "")),
+                            cluster_id="",
+                            status=(
+                                _ActivationStatus_t91
+                                .ANCHOR_FORBIDDEN_SET_DROPPED
+                            ),
+                            reason="matches_forbidden_signature",
+                        )
+                    except Exception:
+                        logger.debug(
+                            "plan9.t91 forbidden-set marker emit failed "
+                            "(non-fatal)", exc_info=True,
+                        )
+                _anchor_activation_marker_emitted = True
                 continue
             # Phase 1.6 (2026-05-17) — build the typed view at the
             # collision-guard boundary so identity reconciliation
@@ -22790,6 +22820,31 @@ def _run_lever_loop(
                             "emit failed (non-fatal)",
                             exc_info=True,
                         )
+                # Plan 9 Task 9.1 — harness-level activation marker.
+                # Co-located with the iteration_no_candidate marker so
+                # the two markers fire together for one logical drop.
+                try:
+                    from genie_space_optimizer.optimization.plan9_activation_markers import (
+                        ActivationStatus as _ActivationStatus_t91,
+                        emit_plan5_activation as _emit_plan5_activation_t91,
+                    )
+                    _emit_plan5_activation_t91(
+                        run_id=str(run_id or ""),
+                        iteration=int(iteration_counter),
+                        ag_id=str(ag_id or ""),
+                        cluster_id="",
+                        status=(
+                            _ActivationStatus_t91
+                            .ANCHOR_COLLISION_GUARD_DROPPED
+                        ),
+                        reason=f"{_collision_axis}_axis_collision",
+                    )
+                    _anchor_activation_marker_emitted = True
+                except Exception:
+                    logger.debug(
+                        "plan9.t91 collision-guard marker emit failed "
+                        "(non-fatal)", exc_info=True,
+                    )
                 # Risk-1 mitigation — record this iter as a collision
                 # skip and bump the consecutive counter. The next loop
                 # iteration's top-of-body reset will see the flag and
@@ -23490,6 +23545,33 @@ def _run_lever_loop(
                             exc_info=True,
                         )
                 else:
+                    # Plan 9 Task 9.1 — emit harness-level activation
+                    # marker BEFORE the dispatch. The in-dispatcher T8
+                    # markers (PLAN5_INTENT_*) follow and carry the
+                    # typed Plan-5 outcome.
+                    if not _anchor_activation_marker_emitted:
+                        try:
+                            from genie_space_optimizer.optimization.plan9_activation_markers import (
+                                ActivationStatus as _ActivationStatus_t91,
+                                emit_plan5_activation as _emit_plan5_activation_t91,
+                            )
+                            _emit_plan5_activation_t91(
+                                run_id=str(run_id or ""),
+                                iteration=int(iteration_counter),
+                                ag_id=str(ag_id or ""),
+                                cluster_id="",
+                                status=(
+                                    _ActivationStatus_t91
+                                    .ANCHOR_ENTERED_PLAN5_DISPATCH
+                                ),
+                                reason="generate_proposals_from_strategy_invoked",
+                            )
+                            _anchor_activation_marker_emitted = True
+                        except Exception:
+                            logger.debug(
+                                "plan9.t91 entered-plan5 marker emit failed "
+                                "(non-fatal)", exc_info=True,
+                            )
                     lever_proposals = generate_proposals_from_strategy(
                         strategy=strategy,
                         action_group=ag,
@@ -24014,6 +24096,7 @@ def _run_lever_loop(
                     _forced_l6 = None
 
                     def _force_l6_call_for_this_ag():
+                        nonlocal _anchor_activation_marker_emitted
                         # Plan 9 Task 5 — derive per-AG typed cluster
                         # from the harness-stamped map.
                         _force_llm_cluster = None
@@ -24027,6 +24110,34 @@ def _run_lever_loop(
                             _force_llm_cluster = _llm_clusters_map.get(
                                 _force_cluster_id
                             )
+                        # Plan 9 Task 9.1 — emit harness-level
+                        # activation marker BEFORE the forced-L6
+                        # dispatch. Dedup flag prevents double-
+                        # emission when both dispatch paths fire
+                        # for the same AG.
+                        if not _anchor_activation_marker_emitted:
+                            try:
+                                from genie_space_optimizer.optimization.plan9_activation_markers import (
+                                    ActivationStatus as _ActivationStatus_t91,
+                                    emit_plan5_activation as _emit_plan5_activation_t91,
+                                )
+                                _emit_plan5_activation_t91(
+                                    run_id=str(run_id or ""),
+                                    iteration=int(iteration_counter),
+                                    ag_id=str(ag_id or ""),
+                                    cluster_id="",
+                                    status=(
+                                        _ActivationStatus_t91
+                                        .ANCHOR_ENTERED_PLAN5_DISPATCH
+                                    ),
+                                    reason="force_lever6_proposal_for_ag_invoked",
+                                )
+                                _anchor_activation_marker_emitted = True
+                            except Exception:
+                                logger.debug(
+                                    "plan9.t91 forced-L6 marker emit "
+                                    "failed (non-fatal)", exc_info=True,
+                                )
                         return _force_lever6_proposal_for_ag(
                             run_id=str(run_id),
                             iteration=int(iteration_counter),
