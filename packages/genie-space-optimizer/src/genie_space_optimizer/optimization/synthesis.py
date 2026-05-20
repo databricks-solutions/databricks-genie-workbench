@@ -669,14 +669,30 @@ def _gate_execute(
 
 def _gate_structural(
     proposal: dict, archetype: Any, blame_set: list[str] | None = None,
+    *,
+    typed_proposal: Any = None,
 ) -> GateResult:
-    """Gate 3 — archetype shape contract + blame_set referenced.
+    """Gate 3 — required-construct contract + blame_set referenced.
+
+    Plan 9 Task 3 — validator contract source priority:
+
+      1. ``typed_proposal.required_constructs`` if non-empty (LLM-emitted
+         contract).
+      2. ``archetype.output_shape["requires_constructs"]`` (legacy
+         fallback; deleted by T10 once catalog is retired).
+      3. None / empty → pass (no contract).
 
     Uses sqlglot to extract constructs; if sqlglot is unavailable falls
     back to substring check (conservative — may miss some cases but does
     not reject valid proposals).
     """
-    requires = archetype.output_shape.get("requires_constructs") if archetype else None
+    requires: list[str] | None = None
+    if typed_proposal is not None:
+        req = getattr(typed_proposal, "required_constructs", ()) or ()
+        if req:
+            requires = list(req)
+    if requires is None and archetype is not None:
+        requires = archetype.output_shape.get("requires_constructs")
     if not requires:
         return GateResult(True, "structural")
     sql = proposal.get("example_sql", "")
@@ -728,6 +744,28 @@ def _gate_structural(
             f"archetype requires {missing} but SQL does not contain them",
         )
     return GateResult(True, "structural")
+
+
+def check_output_shape(
+    proposal_dict: dict,
+    *,
+    archetype: Any = None,
+    proposal: Any = None,
+) -> GateResult:
+    """Plan 9 Task 3 — public structural-shape validator entrypoint.
+
+    Thin wrapper around the private ``_gate_structural`` that lets
+    callers pass either a typed ``RepairProposal`` (preferred — reads
+    LLM-emitted ``required_constructs``) or only the legacy archetype
+    (back-compat fallback). After T10 removes the catalog, callers
+    pass ``proposal=`` only.
+    """
+    return _gate_structural(
+        proposal_dict,
+        archetype,
+        blame_set=None,
+        typed_proposal=proposal,
+    )
 
 
 def _gate_arbiter(

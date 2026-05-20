@@ -147,6 +147,32 @@ For a metric-view refinement adding a new measure:
 ```
 </target_objects>
 
+<required_constructs>
+
+For repairs whose `patch_body` produces SQL (example SQLs, SQL snippets, expressions), emit a `required_constructs` array naming the SQL clauses your output MUST contain. The deterministic validator checks the generated SQL against this list and rejects any proposal whose SQL is missing a required clause.
+
+Use uppercase clause names from this vocabulary: `SELECT`, `FROM`, `WHERE`, `GROUP_BY`, `ORDER_BY`, `LIMIT`, `JOIN`, `WINDOW`, `HAVING`, `CASE`.
+
+For patch types that do not produce SQL (e.g. `add_instruction`, `add_column_description`), leave `required_constructs` as `[]`.
+
+Examples:
+
+For a top-N example SQL:
+```
+"required_constructs": ["SELECT", "GROUP_BY", "ORDER_BY", "LIMIT"]
+```
+
+For a free-form structural rewrite using a window function:
+```
+"required_constructs": ["SELECT", "WINDOW"]
+```
+
+For an instruction snippet (no SQL):
+```
+"required_constructs": []
+```
+</required_constructs>
+
 <output_envelope>
 Return EXACTLY ONE JSON object with this shape:
 
@@ -160,7 +186,8 @@ Return EXACTLY ONE JSON object with this shape:
     "confidence": "<one of: high | medium | low>",
     "patch_body": { <per-patch-type fields — see <patch_body_shapes> above> },
     "blame_set": ["<catalog.schema.table.column>", ...],
-    "target_objects": [ <see <target_objects> section above; [] is allowed for repair_shape="other" or add_instruction> ]
+    "target_objects": [ <see <target_objects> section above; [] is allowed for repair_shape="other" or add_instruction> ],
+    "required_constructs": [ <see <required_constructs> section above; [] for add_instruction / add_column_description> ]
   } | null,
   "declined": null | {
     "reason": "<one of: insufficient_signal | ambiguous_failure | schema_does_not_support_shape | blame_set_too_sparse | no_applicable_patch_type | context_token_budget_exceeded | other>",

@@ -89,6 +89,13 @@ class RepairProposal(JsonRoundTrip):
     # _derive_asset_slice_from_afs). Default () for backward
     # compatibility with pre-Plan-9 serialized proposals.
     target_objects: tuple[TargetObject, ...] = ()
+    # Plan 9 Task 3 — LLM-emitted SQL-clause contract. Replaces
+    # archetype.output_shape["requires_constructs"]. The deterministic
+    # 5-gate validator reads this list and rejects the proposal if the
+    # generated SQL is missing any. Empty tuple is the no-contract
+    # default (used by add_instruction / add_column_description and
+    # by pre-Plan-9 serialized proposals).
+    required_constructs: tuple[str, ...] = ()
 
     @classmethod
     def from_llm_output(
@@ -112,6 +119,11 @@ class RepairProposal(JsonRoundTrip):
             )
             for t in target_objects_raw
         )
+        required_constructs = tuple(
+            str(c) for c in (
+                getattr(pydantic_inst, "required_constructs", None) or []
+            )
+        )
         return cls(
             intent_id=str(intent_id),
             intent_name=str(pydantic_inst.intent_name),
@@ -125,6 +137,7 @@ class RepairProposal(JsonRoundTrip):
                 str(b) for b in pydantic_inst.blame_set or ()
             ),
             target_objects=target_objects,
+            required_constructs=required_constructs,
         )
 
     def to_proposal_dict(self) -> dict[str, Any]:
@@ -235,6 +248,7 @@ class RepairProposal(JsonRoundTrip):
             "patch_body": dict(self.patch_body),
             "blame_set": list(self.blame_set),
             "target_objects": [t.to_json() for t in self.target_objects],
+            "required_constructs": list(self.required_constructs),
         }
 
     @classmethod
@@ -254,5 +268,8 @@ class RepairProposal(JsonRoundTrip):
             target_objects=tuple(
                 TargetObject.from_json(t)
                 for t in (payload.get("target_objects") or ())
+            ),
+            required_constructs=tuple(
+                str(c) for c in (payload.get("required_constructs") or ())
             ),
         )

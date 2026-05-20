@@ -25,13 +25,15 @@ def test_output_subclasses_llm_output_contract() -> None:
 
 
 def test_required_fields_present_and_typed() -> None:
-    # Plan 9 Task 1 — target_objects added (LLM emits typed slice).
+    # Plan 9 Task 1 — target_objects (LLM emits typed slice).
+    # Plan 9 Task 3 — required_constructs (LLM emits SQL-clause contract).
     fields = LlmRepairProposalOutput.model_fields
     expected = {
         "intent_name", "intent_description", "repair_shape",
         "patch_type", "rationale", "confidence",
         "patch_body", "blame_set",
         "target_objects",
+        "required_constructs",
     }
     assert set(fields.keys()) == expected, (
         f"field drift: missing={expected - set(fields.keys())}, "

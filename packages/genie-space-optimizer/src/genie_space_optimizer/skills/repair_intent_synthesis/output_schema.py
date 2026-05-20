@@ -142,3 +142,15 @@ class LlmRepairProposalOutput(LLMOutputContract):
             "repairs."
         ),
     )
+    required_constructs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Plan 9 — SQL clause keywords your patch_body's SQL must "
+            "contain. The deterministic validator reads this list and "
+            "rejects the proposal if the generated SQL is missing "
+            "any. Use uppercase clause names: SELECT, FROM, WHERE, "
+            "GROUP_BY, ORDER_BY, LIMIT, JOIN, WINDOW, HAVING, CASE. "
+            "For patch types that do not produce SQL (e.g. "
+            "add_instruction, add_column_description), leave as []."
+        ),
+    )
