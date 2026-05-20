@@ -8002,6 +8002,89 @@ def _cluster_from_rca_example_theme(theme: Any) -> dict:
     }
 
 
+def _dispatch_plan11_synthesis_for_legacy_cluster(
+    cluster: dict,
+    metadata_snapshot: dict,
+    *,
+    benchmarks: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    warehouse_id: str = "",
+    w: Any = None,
+    spark: Any = None,
+) -> Any:
+    """Plan 11 — drop-in replacement for
+    :func:`run_cluster_driven_synthesis_for_single_cluster` when the
+    ``GSO_PLAN11_LLM_FIRST`` flag is on.
+
+    Converts the legacy cluster-dict shape (``cluster_id``,
+    ``question_ids``, ``asi_blame_set``, ``root_cause``, etc.) into a
+    :class:`FailureCluster` carrier and routes to
+    :func:`run_plan11_synthesis_for_single_cluster`. The return shape is
+    :class:`ClusterSynthesisResult` — same envelope the legacy
+    synthesizer returns — so the wider optimizer.py flow is unchanged.
+
+    ``benchmarks`` / ``catalog`` / ``gold_schema`` / ``warehouse_id`` /
+    ``spark`` are accepted for signature parity with the legacy
+    synthesizer; Plan 11 does not need them at this stage (validation
+    happens later via :func:`validate_patch` with its own kwargs).
+    """
+    from genie_space_optimizer.optimization.stages.plan11_types import (
+        FailureCluster,
+    )
+    from genie_space_optimizer.optimization.stages.synthesize import (
+        run_plan11_synthesis_for_single_cluster,
+    )
+
+    failure_cluster = FailureCluster(
+        cluster_id=str(cluster.get("cluster_id", "") or "C_unknown"),
+        semantic_theme=str(
+            cluster.get("semantic_theme")
+            or cluster.get("root_cause")
+            or "legacy_cluster"
+        ),
+        member_qids=tuple(
+            str(q) for q in (
+                cluster.get("member_qids")
+                or cluster.get("question_ids")
+                or ()
+            )
+        ),
+        unifying_evidence=str(
+            cluster.get("unifying_evidence")
+            or cluster.get("llm_rationale")
+            or cluster.get("root_cause", "")
+        ),
+        repair_hypothesis=str(
+            cluster.get("repair_hypothesis")
+            or cluster.get("suggested_repair_shape")
+            or ""
+        ),
+        primary_blame_set=tuple(
+            str(b) for b in (cluster.get("asi_blame_set") or ())
+        ),
+        confidence=cluster.get("llm_confidence", "medium"),  # type: ignore[arg-type]
+    )
+
+    iteration = int(metadata_snapshot.get("iteration") or 0)
+    optimization_run_id = str(
+        metadata_snapshot.get("optimization_run_id")
+        or metadata_snapshot.get("run_id")
+        or ""
+    )
+    ag_id = str(metadata_snapshot.get("ag_id") or cluster.get("ag_id") or "")
+
+    return run_plan11_synthesis_for_single_cluster(
+        cluster=failure_cluster,
+        schema_slice=dict(metadata_snapshot),
+        history=[],
+        optimization_run_id=optimization_run_id,
+        iteration=iteration,
+        ag_id=ag_id,
+        w=w,
+    )
+
+
 _RCA_SQL_SNIPPET_PATCH_TYPES: frozenset[str] = frozenset({
     "add_sql_snippet_measure",
     "add_sql_snippet_filter",
@@ -8309,6 +8392,9 @@ def _ag_structural_root_causes_for_clusters(
     filtered) and set-intersects against
     :data:`_SQL_SHAPE_ROOT_CAUSES`.
     """
+    # Plan 11: cluster_failure_keys is a pure read-only utility shared
+    # by both the legacy archetype path and the Plan 11 LLM-first
+    # path; plan11_llm_first_enabled() does not change behavior here.
     from genie_space_optimizer.optimization.forced_synthesis_dispatch import (
         cluster_failure_keys,
     )
@@ -10702,6 +10788,13 @@ def _dispatch_lever_5b_for_cluster(
     # Plan 8 Task 7 — stamp the typed RepairIntent on the lean fallback
     # proposal so ProposalSlate.repair_intents_by_id is non-empty when
     # the LLM intent short-circuit declines.
+    #
+    # Plan 11: stamp_proposals_from_archetype is a pure post-hoc utility
+    # that decorates a proposal dict with archetype metadata. It is
+    # shared between the legacy path and the Plan 11 LLM-first path
+    # (the latter still annotates its proposals for postmortem
+    # provenance); plan11_llm_first_enabled() does not change behavior
+    # at this call site.
     archetype_name = str(proposal.get("_archetype_name") or "")
     if archetype_name:
         try:
@@ -12227,6 +12320,12 @@ def _call_llm_for_stage_1_discovery(
 
     cluster_briefs = _format_cluster_briefs_afs(clusters or [], top_n=5)
 
+    # Plan 11: the three_stage_pipeline rendering helpers below are
+    # prompt-construction utilities reused by Stage 1 discovery for
+    # the legacy strategist. Plan 11's diagnose/cluster/synthesize
+    # stages have their own prompts and do not invoke this discovery
+    # path, but reuse the same skill catalogue — plan11_llm_first_enabled()
+    # has no impact on the rendered output here.
     from genie_space_optimizer.optimization.three_stage_pipeline import (
         _render_failure_type_routing_table,
         _render_rich_skill_catalogue,
@@ -12325,6 +12424,11 @@ def _call_llm_for_stage_1_discovery(
     if not isinstance(raw_picks, list):
         raw_picks = []
 
+    # Plan 11: _coerce_target_objects_for_skill is a pure shape-coercion
+    # utility (validates LLM-emitted target_objects against the skill's
+    # frontmatter constraints). Plan 11's synthesize stage produces
+    # target_objects on RepairProposal directly, so this coercion is
+    # legacy-only; plan11_llm_first_enabled() does not change behavior here.
     from genie_space_optimizer.optimization.three_stage_pipeline import (
         _coerce_target_objects_for_skill,
     )
@@ -17141,10 +17245,25 @@ def generate_proposals_from_strategy(
                     continue
 
                 # Cluster-driven path: discard strategist's fields,
-                # synthesize fresh via AFS engine.
-                from genie_space_optimizer.optimization.cluster_driven_synthesis import (
-                    run_cluster_driven_synthesis_for_single_cluster,
+                # synthesize fresh via AFS engine. Plan 11 routes to the
+                # LLM-first diagnose/cluster/synthesize stages when
+                # plan11_llm_first_enabled() — see the
+                # _dispatch_plan11_synthesis_for_legacy_cluster helper
+                # for the dict-cluster → FailureCluster adapter.
+                from genie_space_optimizer.common.config import (
+                    plan11_llm_first_enabled,
                 )
+                if plan11_llm_first_enabled():
+                    _dispatch_synth = (
+                        _dispatch_plan11_synthesis_for_legacy_cluster
+                    )
+                else:
+                    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+                        run_cluster_driven_synthesis_for_single_cluster,
+                    )
+                    _dispatch_synth = (
+                        run_cluster_driven_synthesis_for_single_cluster
+                    )
                 from genie_space_optimizer.optimization.afs import format_afs
                 from genie_space_optimizer.optimization.synthesis import (
                     instruction_only_fallback,
@@ -17169,7 +17288,7 @@ def generate_proposals_from_strategy(
                 # ClusterSynthesisResult instead of dict-or-None;
                 # read .proposal to preserve the legacy dict-or-None
                 # contract at this call site.
-                _synth_result = run_cluster_driven_synthesis_for_single_cluster(
+                _synth_result = _dispatch_synth(
                     source_cluster,
                     metadata_snapshot,
                     benchmarks=benchmarks,
@@ -17291,9 +17410,27 @@ def generate_proposals_from_strategy(
 
             if ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS:
                 try:
-                    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
-                        run_cluster_driven_synthesis_for_single_cluster,
+                    # Plan 11: flag-OFF path uses the legacy archetype
+                    # catalog; flag-ON path routes to the LLM-first
+                    # diagnose/cluster/synthesize stages via the
+                    # _dispatch_plan11_synthesis_for_legacy_cluster
+                    # adapter. The plan11_llm_first_enabled() guard
+                    # keeps the import lazy on the legacy path and
+                    # idempotent under flag-OFF replay.
+                    from genie_space_optimizer.common.config import (
+                        plan11_llm_first_enabled,
                     )
+                    if plan11_llm_first_enabled():
+                        _dispatch_synth = (
+                            _dispatch_plan11_synthesis_for_legacy_cluster
+                        )
+                    else:
+                        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+                            run_cluster_driven_synthesis_for_single_cluster,
+                        )
+                        _dispatch_synth = (
+                            run_cluster_driven_synthesis_for_single_cluster
+                        )
 
                     for _theme in _rca_themes_requesting_synthesis(
                         metadata_snapshot.get("_rca_themes") or [],
@@ -17303,7 +17440,7 @@ def generate_proposals_from_strategy(
                         # P3 task 1: read .proposal from the typed
                         # ClusterSynthesisResult to preserve legacy
                         # dict-or-None semantics at this call site.
-                        _synth_result_rca = run_cluster_driven_synthesis_for_single_cluster(
+                        _synth_result_rca = _dispatch_synth(
                             _cluster,
                             metadata_snapshot,
                             benchmarks=benchmarks,
