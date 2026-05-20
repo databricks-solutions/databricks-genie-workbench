@@ -5740,6 +5740,20 @@ def _flag_enabled(env_name: str) -> bool:
     return raw in _TRUTHY_VALUES
 
 
+def plan11_llm_first_enabled() -> bool:
+    """Plan 11: LLM-first diagnosis + synthesis, no closed taxonomy.
+
+    Default OFF. Enable per-deploy via ``GSO_PLAN11_LLM_FIRST=true`` in
+    the app.yaml or job env vars. When OFF, the legacy
+    cluster_driven_synthesis / forced_synthesis_dispatch /
+    three_stage_pipeline path runs unchanged.
+
+    Flipped to default-ON in PR 3 once Plan 11 has accumulated 2-3
+    stable deploys against the pilot.
+    """
+    return _flag_enabled("GSO_PLAN11_LLM_FIRST")
+
+
 def _flag_default_on(env_name: str) -> bool:
     raw = (os.environ.get(env_name) or "").strip().lower()
     if raw in _FALSY_VALUES:
