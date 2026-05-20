@@ -5906,9 +5906,25 @@ EOF
 
 ---
 
-### Task 11: Flip `plan7_rollback_learning_enabled()` default to ON
+### Task 11: Default-flip Plan 7 + close config.py documentation debt + pilot-flag triage
 
-**Rationale:** Reviewer's claim #4 fix. `plan7_rollback_learning_enabled()` at `config.py:8184-8198` currently defaults to `"false"`, whereas Plans 3/4/5/6 default-on via `_flag_default_on(...)`. Plan 7 is the cross-iteration learning loop — rolled-back hypotheses from iteration N ground iteration N+1's typed synthesis. With Plan 9's wire-in + materialization fixes, proposals now reliably carry `repair_intent` stamps, so `hypothesize_next_attempts_for_iteration` finally receives the typed inputs it needs.
+**Rationale:** Audit (2026-05-19) of `config.py` flags surfaced three categories of debt:
+
+1. **One genuinely default-OFF flag** that should be ON: `plan7_rollback_learning_enabled` uses literal `or "false"` while Plans 3/4/5/6 use `_flag_default_on`. With Plan 9's wire-in + materialization fixes (T1–T6), proposals reliably carry `repair_intent` stamps, so Plan 7's hypothesizer finally has the typed inputs it needs.
+2. **Twelve stale-or-misleading docstrings** introduced when the cycle-9 deploy systemically flipped many flags via `_flag_default_on` but never updated their docstrings — nine "Default OFF" docstrings that contradict default-ON code, plus three anomalies (stale section comment, Plan-8-T12 deferred-removal claim, and two contradictory "including unset" sentences).
+3. **Ten genuinely default-OFF flags with pilot-validation conditions** that may or may not be satisfied today.
+
+T11 is split into three sub-tasks (T11.A, T11.B, T11.C) that ship as one PR:
+
+- **T11.A** — functional flip (`plan7_rollback_learning_enabled` → ON).
+- **T11.B** — docstring cleanup (9 stale + 3 anomalies = 12 fixes). Zero behavior change.
+- **T11.C** — pilot-flag telemetry triage. Produces a markdown audit report listing the 10 genuinely default-OFF pilot-gated flags, each with: pilot condition (verbatim from docstring), telemetry source available today (postmortem markers, replay fixtures, etc.), and recommendation (flip-now / hold-pending-evidence / needs-investigation). Flips any flag whose pilot condition is already satisfied by existing telemetry.
+
+The audit matrix (2026-05-19) is referenced as authoritative input for T11.B and T11.C. The 9 STALE_OFF_BUT_ON functions are: `rca_card_builder_enabled`, `tier_gate_soft_signal_observability_enabled`, `rca_card_soft_evidence_enabled`, `acceptance_four_tier_gate_enabled`, `repair_planner_enabled`, `kit_aware_patch_cap_enabled`, `hub_table_scoped_variants_enabled`, `strategist_coverage_recall_enabled`, `archetype_learning_enabled`.
+
+---
+
+### Task 11.A: Flip `plan7_rollback_learning_enabled()` default to ON
 
 **Files:**
 
@@ -6012,6 +6028,432 @@ as escape hatch.
 EOF
 )"
 ```
+
+---
+
+### Task 11.B: Close docstring debt — 9 stale `_flag_default_on` docstrings + 3 anomalies
+
+**Rationale:** The cycle-9 systemic flip moved 9 functions from `_flag_enabled` (default-OFF) to `_flag_default_on` (default-ON) but never updated their "Default OFF" docstrings. Three additional anomalies need cleanup. Zero behavior change — pure documentation alignment. Read by humans (operators investigating prod behavior) and by future agents auditing flag state; misleading docstrings cause the exact mis-attribution that prompted this audit.
+
+**Files:**
+
+- Modify: `packages/genie-space-optimizer/src/genie_space_optimizer/common/config.py` (12 docstring edits, 0 logic edits)
+- Test: `packages/genie-space-optimizer/tests/unit/test_config_flag_docstring_truthfulness.py` (new — runs the audit-matrix-derived classifier and asserts no STALE_OFF_BUT_ON survivors)
+
+**Anchor-finding contract:** All 12 fixes navigate by function name (search for `def <function_name>(`). Line numbers given below are 2026-05-19 readings — do NOT trust them after edits drift the file.
+
+**The 9 STALE_OFF_BUT_ON docstrings (mechanical rewrite):**
+
+For each of the 9 functions below, the body is `return _flag_default_on("GSO_X")` — code is default-ON. Rewrite each docstring's "Default OFF" claim to match. Pattern:
+
+- Replace `"Default OFF for the initial pilot. Flip..."` (multi-line pilot rationale) with `"Default ON. Disable with GSO_X=0 (emergency rollback)."`
+- Replace `"Phase N Action N.M — <Feature> master gate. Default OFF."` (single-line) with `"Phase N Action N.M — <Feature> master gate. Default ON. Disable with GSO_X=0."`
+
+The 9 functions + their env-var names:
+
+| Function | Env var |
+|---|---|
+| `rca_card_builder_enabled` | `GSO_RCA_CARD_BUILDER` |
+| `tier_gate_soft_signal_observability_enabled` | `GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY` |
+| `rca_card_soft_evidence_enabled` | `GSO_RCA_CARD_SOFT_EVIDENCE` |
+| `acceptance_four_tier_gate_enabled` | `GSO_ACCEPTANCE_FOUR_TIER_GATE` |
+| `repair_planner_enabled` | `GSO_REPAIR_PLANNER` |
+| `kit_aware_patch_cap_enabled` | `GSO_KIT_AWARE_PATCH_CAP` |
+| `hub_table_scoped_variants_enabled` | `GSO_HUB_TABLE_SCOPED_VARIANTS` |
+| `strategist_coverage_recall_enabled` | `GSO_STRATEGIST_COVERAGE_RECALL` |
+| `archetype_learning_enabled` | `GSO_ARCHETYPE_LEARNING` |
+
+**Anomaly fix 10 — stale section comment above `critique_gate_enforcing_enabled` (around `config.py:8154-8159`):**
+
+Current text (read the file to confirm before editing):
+```
+# ── Plan 6 — LLM-driven candidate critique gate. ───────────────────────
+# Default ``false`` per roadmap.md:404 — "overall_recommendation is
+# advisory by default". Operators flip to true once they have reviewed
+# several iterations of verdicts and trust the critic. The verdict is
+# ALWAYS recorded (decision-emit) regardless of this flag so postmortem
+# can read what the critic said even in advisory mode.
+```
+
+Replace with:
+```
+# ── Plan 6 — LLM-driven candidate critique gate. ───────────────────────
+# Default-ON as of Plan 8 Task 4 (2026-05-15). When enforcing, the
+# harness filters proposals listed in CritiqueOutcome.dropped_by_critique
+# out of the slate before the acceptance gate sees them. The verdict
+# is ALWAYS recorded (decision-emit) regardless of this flag so
+# postmortem can read what the critic said even in shadow mode.
+```
+
+**Anomaly fix 11 — `critique_gate_enforcing_enabled` docstring (around `config.py:8162`):**
+
+Current docstring's last paragraph says:
+```
+Set ``GSO_CRITIQUE_GATE_ENFORCING=0`` to force off (escape hatch
+for emergency rollback; flag is removed in Plan 8 Task 12).
+```
+
+The "flag is removed in Plan 8 Task 12" claim is stale — Plan 8 T12 was deferred and the accessor is still called from `optimization/stages/candidate_critique.py`, `optimization/harness.py`, and `tests/unit/test_plan6_critique_stage_invoked_from_harness.py`. Replace with:
+
+```
+Set ``GSO_CRITIQUE_GATE_ENFORCING=0`` to force off (escape hatch
+for emergency rollback). The flag is retained as a safety hatch
+pending a future Plan that removes it once Plan 6 critique outcomes
+are demonstrably stable in production.
+```
+
+**Anomaly fix 12 — contradictory "including unset" claims:**
+
+Both `sql_shape_overlap_gate_enabled` (around `config.py:6998`) and `rich_synthesis_primary_for_sql_shape_enabled` (around `config.py:7024`) contain a sentence:
+
+```
+Anything else (including unset, ``0``, ``false``, ``no``, ``off``,
+empty) keeps the flag off.
+```
+
+This contradicts the line above in the same docstring (`Default: "1" (on)`) and contradicts the code (`os.environ.get("X", "1")` — unset returns `"1"` → True). Replace BOTH instances of the contradictory sentence with:
+
+```
+Anything else (``0``, ``false``, ``no``, ``off``, empty when
+explicitly set) turns the flag off; unset uses the default ``"1"``.
+```
+
+**TDD plan:**
+
+- [ ] **Step 1: Write the failing audit-classifier test**
+
+Create `packages/genie-space-optimizer/tests/unit/test_config_flag_docstring_truthfulness.py`:
+
+```python
+"""Plan 9 Task 11.B — docstring truthfulness gate.
+
+For each function in config.py that uses _flag_default_on, asserts
+that its docstring does NOT claim "Default OFF" / "Default-OFF" /
+"Default off" / "default off". Catches future regressions of the
+cycle-9-flip-without-docstring-update pattern.
+
+The 9 STALE_OFF_BUT_ON functions identified in the 2026-05-19 audit
+are explicitly enumerated as the "must pass" set; new functions
+added later must also satisfy the rule.
+"""
+from __future__ import annotations
+
+import ast
+import inspect
+import re
+from pathlib import Path
+
+from genie_space_optimizer.common import config as config_module
+
+
+def _config_source_path() -> Path:
+    return Path(inspect.getfile(config_module))
+
+
+def _functions_using_flag_default_on() -> dict[str, str]:
+    """Return {function_name: docstring} for every function in
+    config.py whose body calls _flag_default_on(...)."""
+    source = _config_source_path().read_text()
+    tree = ast.parse(source)
+    result: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        uses_default_on = False
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                func = child.func
+                name = (
+                    func.attr if isinstance(func, ast.Attribute)
+                    else (func.id if isinstance(func, ast.Name) else "")
+                )
+                if name == "_flag_default_on":
+                    uses_default_on = True
+                    break
+        if uses_default_on:
+            result[node.name] = ast.get_docstring(node) or ""
+    return result
+
+
+_STALE_PATTERN = re.compile(
+    r"\bdefault[\s\-]*off\b", flags=re.IGNORECASE,
+)
+
+
+def test_no_flag_default_on_function_claims_default_off():
+    """Every function using _flag_default_on must NOT have a
+    docstring that claims default-OFF. Mismatches were a
+    significant source of operator confusion."""
+    offenders: list[str] = []
+    for name, docstring in _functions_using_flag_default_on().items():
+        if _STALE_PATTERN.search(docstring):
+            offenders.append(name)
+    assert offenders == [], (
+        f"{len(offenders)} function(s) use _flag_default_on but "
+        f"claim default-OFF in docstrings: {sorted(offenders)}. "
+        "Each is default-ON; rewrite the docstring to say "
+        "'Default ON. Disable with GSO_X=0.'"
+    )
+
+
+def test_critique_gate_docstring_does_not_claim_plan_8_removal():
+    """Plan 8 Task 12 was deferred; the accessor is still called
+    from harness.py + candidate_critique.py. The docstring must
+    not claim the flag 'is removed in Plan 8 Task 12'."""
+    docstring = (
+        config_module.critique_gate_enforcing_enabled.__doc__ or ""
+    )
+    assert "removed in Plan 8 Task 12" not in docstring, (
+        "critique_gate_enforcing_enabled docstring still claims "
+        "Plan 8 T12 removal; T12 was deferred. Update docstring."
+    )
+
+
+def test_sql_shape_overlap_docstring_does_not_claim_unset_off():
+    """Code is os.environ.get('X', '1') — unset returns True. The
+    legacy docstring sentence 'Anything else (including unset, ...)
+    keeps the flag off' contradicts this."""
+    docstring = (
+        config_module.sql_shape_overlap_gate_enabled.__doc__ or ""
+    )
+    assert "including unset" not in docstring, (
+        "sql_shape_overlap_gate_enabled docstring contradicts code: "
+        "claims 'including unset ... keeps the flag off' but code "
+        "uses os.environ.get('X', '1'). Remove 'including unset'."
+    )
+
+
+def test_rich_synthesis_primary_docstring_does_not_claim_unset_off():
+    """Same contradiction as test above, applied to the sibling
+    function."""
+    docstring = (
+        config_module
+        .rich_synthesis_primary_for_sql_shape_enabled.__doc__
+        or ""
+    )
+    assert "including unset" not in docstring, (
+        "rich_synthesis_primary_for_sql_shape_enabled docstring "
+        "contradicts code: claims 'including unset ... keeps the "
+        "flag off' but code uses os.environ.get('X', '1'). Remove "
+        "'including unset'."
+    )
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd packages/genie-space-optimizer && uv run pytest tests/unit/test_config_flag_docstring_truthfulness.py -v`
+Expected: ALL FOUR tests FAIL — `test_no_flag_default_on_function_claims_default_off` lists 9 offenders; the other three fail on the targeted strings.
+
+- [ ] **Step 3: Apply the 9 STALE_OFF_BUT_ON docstring rewrites**
+
+For each of the 9 functions in the table above, navigate by `def <function_name>(` and rewrite the docstring per the pattern. Two example rewrites to anchor the style:
+
+`rca_card_builder_enabled` (~`config.py:6313`):
+```python
+def rca_card_builder_enabled() -> bool:
+    """Phase 1 Action 1.1 — when ON, ``build_rca_card`` runs the
+    deterministic-first evidence-grounded builder instead of returning
+    the legacy ``{"rca_id": ""}`` stub.
+
+    Default ON as of the cycle-9 deploy. Disable with
+    ``GSO_RCA_CARD_BUILDER=0`` for emergency rollback.
+    """
+    return _flag_default_on("GSO_RCA_CARD_BUILDER")
+```
+
+`repair_planner_enabled` (~`config.py:7714`):
+```python
+def repair_planner_enabled() -> bool:
+    """Phase 2 Action 2.1 — Repair Planner master gate. Default ON.
+    Disable with ``GSO_REPAIR_PLANNER=0``."""
+    return _flag_default_on("GSO_REPAIR_PLANNER")
+```
+
+Apply the same shape to the other 7 functions (`tier_gate_soft_signal_observability_enabled`, `rca_card_soft_evidence_enabled`, `acceptance_four_tier_gate_enabled`, `kit_aware_patch_cap_enabled`, `hub_table_scoped_variants_enabled`, `strategist_coverage_recall_enabled`, `archetype_learning_enabled`). Preserve any non-default-related text in the existing docstring (e.g., the multi-paragraph rationale on `acceptance_four_tier_gate_enabled`'s four tiers) — only rewrite the parts that claim default state.
+
+- [ ] **Step 4: Apply the 3 anomaly fixes**
+
+Per the "Anomaly fix 10/11/12" sections above. Anomaly 10 edits the section comment block (not a function docstring). Anomaly 11 edits the `critique_gate_enforcing_enabled` docstring. Anomaly 12 edits the same paragraph in BOTH `sql_shape_overlap_gate_enabled` AND `rich_synthesis_primary_for_sql_shape_enabled` docstrings.
+
+- [ ] **Step 5: Re-run the truthfulness test**
+
+Run: `cd packages/genie-space-optimizer && uv run pytest tests/unit/test_config_flag_docstring_truthfulness.py -v`
+Expected: 4 passed.
+
+- [ ] **Step 6: Run the broader config sweep to confirm no logic regression**
+
+Run: `cd packages/genie-space-optimizer && uv run pytest tests/unit -k "config or flag_default" --tb=line -q`
+Expected: ALL PASS. Pure docstring changes; logic is unchanged.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/genie-space-optimizer/src/genie_space_optimizer/common/config.py \
+        packages/genie-space-optimizer/tests/unit/test_config_flag_docstring_truthfulness.py
+git commit -m "$(cat <<'EOF'
+plan9(t11.b): close config.py docstring debt (12 fixes)
+
+Cycle-9 deploy flipped 9 functions from _flag_enabled (default-OFF)
+to _flag_default_on (default-ON) but never updated their "Default
+OFF" docstrings. Audit (2026-05-19) found the 9 mismatches plus
+3 anomalies.
+
+Fixes:
+  * 9 STALE_OFF_BUT_ON rewrites (rca_card_builder,
+    tier_gate_soft_signal_observability, rca_card_soft_evidence,
+    acceptance_four_tier_gate, repair_planner, kit_aware_patch_cap,
+    hub_table_scoped_variants, strategist_coverage_recall,
+    archetype_learning).
+  * Stale section comment above critique_gate (claimed
+    "Default false" while body uses _flag_default_on).
+  * critique_gate_enforcing_enabled docstring stripped of stale
+    "removed in Plan 8 Task 12" claim (T12 was deferred; accessor
+    is still called from harness.py + candidate_critique.py).
+  * sql_shape_overlap_gate_enabled + rich_synthesis_primary_for_
+    sql_shape_enabled — removed contradictory "including unset
+    keeps the flag off" sentence (code uses os.environ.get('X',
+    '1') — unset returns True).
+
+Zero behavior change. New test
+test_config_flag_docstring_truthfulness.py is the regression
+gate: any future _flag_default_on function with a "default off"
+claim in its docstring fails CI.
+EOF
+)"
+```
+
+---
+
+### Task 11.C: Pilot-flag telemetry triage + selective flips
+
+**Rationale:** The 2026-05-19 audit identified 10 functions that are GENUINELY default-OFF (using `_flag_enabled` or literal `or "false"`) AND have explicit pilot-validation conditions in their docstrings. T11.A handles `plan7_rollback_learning_enabled` (which has no pilot condition). T11.C handles the other 9: produces an evidence-grounded triage report for each, and flips any whose pilot condition is satisfied by telemetry that exists today.
+
+**The 9 flags T11.C triages** (in order of investigation priority — those with the most concrete pilot conditions first):
+
+| Flag | Pilot condition (verbatim from docstring) |
+|---|---|
+| `attribution_drift_with_debt_enabled` | "Phase 0.2 (offline replay under the new policy) must return pass_criterion_met=true before this flips." |
+| `l6_narrow_replacement_for_expression_enabled` | "flipped on after the P0 re-pilot confirms the synthesized narrow expressions clear the blast-radius gate AND improve target QID accuracy on the run-809960554692716 fixture." |
+| `l6_narrow_replacement_branch_c_enabled` | "Promote to default-on after one corpus pilot confirms Branch C survivors clear the blast-radius gate AND improve target-QID accuracy on the anchor runs." |
+| `partial_harvest_with_debt_enabled` | "Flip to default-on after one corpus pilot validates the pilot-default policy." |
+| `patch_subset_isolation_live_enabled` | "Flips after one corpus pilot validates diagnostic-mode attribution accuracy." |
+| `near_miss_reflection_strict_drop_enabled` | "operators flip to ON once the near-miss telemetry shows the gate is rejecting only truly repeated shapes." |
+| `rca_card_llm_normalization_enabled` | "Default OFF (deterministic-only) so the initial pilot can verify ..." (truncated — read docstring) |
+| `provisional_synthesis_llm_enabled` | "Phase 2 Action 2.5 — Provisional archetype LLM synthesis. Default OFF." (no explicit pilot condition stated — investigate intent) |
+| `stage_handlers_chunk_a_enabled` (+ `b/c/d`) | "Default-off ... flipped on after Phase 2 lands and replay parity is verified." (chunks B/C/D have NO_CLAIM docstrings; treat them as one group) |
+
+**Deliverable structure:**
+
+T11.C produces TWO artifacts:
+
+1. **A triage report** at `packages/genie-space-optimizer/docs/llmdrivenarchitecture/2026-05-19-t11c-pilot-flag-triage.md` — one section per flag with: (a) verbatim pilot condition, (b) candidate telemetry source(s) in the codebase (markers, replay fixtures, postmortem evidence anchors), (c) actual evidence available today (run IDs, marker counts, fixture pass/fail status, or "evidence not yet gathered"), (d) recommendation: `flip-now` / `hold-pending-evidence` / `needs-investigation` / `consider-deletion` (the last for orphaned flags that should be retired).
+
+2. **Selective flips** for any flag classified `flip-now`. Each flip is a separate sub-step (T11.C.1, T11.C.2, ...) with full TDD (new default-on test, monkeypatch off test, then either change the body from `_flag_enabled(...)` to `_flag_default_on(...)` OR change the literal `or "false"` to `or "true"`, then re-run integration tests for that flag's feature area).
+
+**TDD plan:**
+
+- [ ] **Step 1: Build the telemetry index**
+
+For each of the 9 flags, search the codebase for:
+
+- The function name in `grep -r` to find every call site.
+- Any nearby marker names (e.g., `GSO_*_V1` strings) emitted by code gated by this flag.
+- Any replay fixtures under `tests/fixtures/` or `tests/replay/` whose name references this flag's feature area.
+- Any postmortems under `runid_analysis/` or `packages/genie-space-optimizer/docs/postmortems/` that mention this flag or its feature area.
+
+Record findings in the triage report as the "candidate telemetry source(s)" column.
+
+- [ ] **Step 2: Gather actual evidence**
+
+For each candidate telemetry source, check what's available today:
+
+- Replay fixtures: do they exist? Do they currently pass with the flag ON? (Run the replay tests with `monkeypatch.setenv(GSO_X, "1")` and check.)
+- Markers: any committed run logs in the repo that show the marker firing? Or is the marker only emitted in production runs we don't have?
+- Postmortems: do the two committed postmortems (airline + 7Now from 2026-05-19) mention this flag's feature area? Do they provide evidence the pilot condition is satisfied?
+
+Where evidence is concrete (e.g., a replay fixture passes ON, or postmortem markers show N healthy invocations), record it. Where evidence is missing or weak, record "evidence not yet gathered" and classify as `hold-pending-evidence`.
+
+- [ ] **Step 3: Classify each flag**
+
+Apply this decision tree per flag:
+
+```
+IF pilot condition explicitly references a specific fixture / run / marker
+  AND that fixture/run/marker exists in the repo
+  AND running it with the flag ON shows the pilot condition is satisfied:
+    classify as `flip-now`
+ELIF pilot condition is vague ("after one corpus pilot")
+  AND the feature has been default-OFF for >= 1 deploy cycle
+  AND no negative evidence exists (no rollbacks, no incidents tied to it):
+    classify as `needs-investigation` (defer to operator review)
+ELIF flag is orphaned (no current call sites OR superseded by another flag):
+    classify as `consider-deletion`
+ELSE:
+    classify as `hold-pending-evidence`
+```
+
+- [ ] **Step 4: Write the triage report**
+
+Create `packages/genie-space-optimizer/docs/llmdrivenarchitecture/2026-05-19-t11c-pilot-flag-triage.md` with one section per flag in this format:
+
+```markdown
+### `<flag_name>`
+
+**Code path:** `config.py:<line>` — `_flag_enabled("<ENV_VAR>")` (default OFF)
+
+**Pilot condition (verbatim):**
+> <copy from docstring>
+
+**Candidate telemetry sources:**
+- <source 1>
+- <source 2>
+- ...
+
+**Evidence available today:**
+- <bullet per concrete evidence finding>
+
+**Recommendation:** `flip-now` / `hold-pending-evidence` / `needs-investigation` / `consider-deletion`
+
+**Rationale:** <one-paragraph justification grounded in the evidence above>
+```
+
+- [ ] **Step 5: For each `flip-now` flag, add a TDD sub-task**
+
+For each flag classified `flip-now` in Step 3, add a sub-task to T11.C with:
+
+1. A failing test (`test_<flag_name>_default_on`) that asserts the new default.
+2. The flip (either `_flag_enabled` → `_flag_default_on` OR literal `"false"` → `"true"`).
+3. Re-run the integration tests for the flag's feature area.
+4. A commit with message `plan9(t11.c.N): flip <flag_name> to default-ON (pilot condition met by <evidence>)`.
+
+- [ ] **Step 6: For `consider-deletion` flags, surface for review**
+
+If any flag classifies as `consider-deletion`, do NOT delete. Surface in the triage report's summary section as "Recommended for deletion in a future plan" and proceed.
+
+- [ ] **Step 7: Commit the triage report (separately from any flip commits)**
+
+```bash
+git add -f packages/genie-space-optimizer/docs/llmdrivenarchitecture/2026-05-19-t11c-pilot-flag-triage.md
+git commit -m "$(cat <<'EOF'
+plan9(t11.c): triage report for 9 pilot-gated default-OFF flags
+
+For each of the 9 genuinely default-OFF flags with explicit
+pilot-validation conditions, the report records: pilot condition
+verbatim, candidate telemetry sources in the codebase, evidence
+available today, recommendation (flip-now / hold-pending-evidence /
+needs-investigation / consider-deletion), and rationale.
+
+Flips for flags classified flip-now ship as separate commits
+(plan9(t11.c.N): ...).
+
+Closes Plan 9's T11.C audit task.
+EOF
+)"
+```
+
+**Stop conditions:** If Step 2's evidence-gathering balloons (e.g., a flag's "pilot condition" requires running a replay fixture that requires a Databricks workspace), STOP that flag at `hold-pending-evidence` and move on. T11.C is bounded by what telemetry exists in the repo today; it does NOT include running new pilots.
+
+**Out-of-scope for T11.C:** Designing new telemetry for flags whose pilot condition has no committed evidence anchor. Surface those as "needs-investigation" — a separate future plan can design the missing telemetry.
 
 ---
 
