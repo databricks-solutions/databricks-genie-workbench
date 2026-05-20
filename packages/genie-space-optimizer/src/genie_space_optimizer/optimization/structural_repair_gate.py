@@ -51,14 +51,15 @@ def enforce_structural_repair_shape(
     emitted_patch_shape: EmittedPatchShape,
     narrow_replacement_available: bool = False,
 ) -> StructuralRepairGateVerdict:
-    """Return ADMITTED or REJECTED based on shape mismatch.
+    """Plan 9 Task 7 — rejection priority:
 
-    Fails OPEN (admits) when ``intended_patch_shape`` is empty —
-    legacy RCA cards without Phase 2.3 metadata are not penalized.
-
-    Rejection fires iff:
-      * ``intended_patch_shape == "structural"``, AND
-      * ``emitted_patch_shape`` is NOT ``STRUCTURAL``
+      1. ABSENT emitted + 0.0 repairability → REJECT regardless of
+         intent (closes the 7Now fail-open bug).
+      2. intent == 'structural' AND emitted != STRUCTURAL → REJECT
+         (legacy rule).
+      3. Otherwise → ADMIT (legacy fail-open for non-structural intent
+         or for legacy RCA cards without Phase-2.3 metadata, IFF
+         emitted shape is non-ABSENT).
     """
     score = compute_repairability(
         intended_patch_shape=intended_patch_shape,
@@ -66,16 +67,32 @@ def enforce_structural_repair_shape(
         narrow_replacement_available=narrow_replacement_available,
     )
     intent = str(intended_patch_shape or "").strip().lower()
-    if intent != "structural":
+
+    # Plan 9 — degenerate ABSENT emission: 0.0 repairability, or legacy
+    # empty intent (compute_repairability fail-open returns 1.0 for "").
+    if emitted_patch_shape == EmittedPatchShape.ABSENT and (
+        score.value == 0.0 or not intent
+    ):
         return StructuralRepairGateVerdict(
-            outcome="admitted", terminal_reason="", repairability=score,
+            outcome="rejected",
+            terminal_reason=(
+                TerminalReason.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY.value
+            ),
+            repairability=score,
         )
-    if emitted_patch_shape == EmittedPatchShape.STRUCTURAL:
+
+    # Pre-Plan-9 — structural intent must match structural emitted.
+    if intent == "structural" and emitted_patch_shape != EmittedPatchShape.STRUCTURAL:
         return StructuralRepairGateVerdict(
-            outcome="admitted", terminal_reason="", repairability=score,
+            outcome="rejected",
+            terminal_reason=(
+                TerminalReason.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY.value
+            ),
+            repairability=score,
         )
+
     return StructuralRepairGateVerdict(
-        outcome="rejected",
-        terminal_reason=TerminalReason.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY.value,
+        outcome="admitted",
+        terminal_reason="",
         repairability=score,
     )
