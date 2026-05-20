@@ -8180,12 +8180,14 @@ def critique_gate_enforcing_enabled() -> bool:
 
 
 # ── Plan 7 — LLM-driven rollback learning. ──────────────────────────────
-# Default ``false`` for the first deploy — operators flip to true once
-# they have reviewed several iterations of hypotheses and trust the
-# downstream consumer (Plan 5's synthesizer reads stamped hypotheses
-# as additional grounding). The hypothesis is ALWAYS recorded
-# (decision-emit) when the flag is on, even when validators reject
-# it, so postmortem can see what the hypothesizer said.
+# Default-ON as of Plan 9 Task 11.A (2026-05-19). With Plan 9's
+# wire-in + materialization fixes (T1-T6), proposals reliably carry
+# repair_intent stamps so the Plan-7 hypothesizer receives the typed
+# inputs it needs. Plan 5's synthesizer reads stamped hypotheses as
+# additional grounding for the next iteration. The hypothesis is
+# ALWAYS recorded (decision-emit) when the flag is on, even when
+# validators reject it, so postmortem can see what the hypothesizer
+# said.
 
 
 def plan7_rollback_learning_enabled() -> bool:
