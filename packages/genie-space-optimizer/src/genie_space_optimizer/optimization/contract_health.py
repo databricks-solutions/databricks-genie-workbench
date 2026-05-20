@@ -19,7 +19,8 @@ from typing import Any, Mapping, Sequence
 
 
 HIGH_TIER_INVARIANT_IDS: frozenset[str] = frozenset(
-    {"I9", "I10", "I11", "I12", "I13", "I15", "I16"}
+    {"I9", "I10", "I11", "I12", "I13", "I15", "I16",
+     "I17", "I18", "I19", "I20"}
 )
 # Plan 10 Phase B (2026-05-19) — I15 + I16 are HIGH-tier because both
 # fire on the exact silent-leakage pattern the plan exists to prevent
@@ -27,6 +28,12 @@ HIGH_TIER_INVARIANT_IDS: frozenset[str] = frozenset(
 # archetype path despite Plan 9 activation). Adding them to the HIGH
 # tier ensures the merge-gate summary surfaces these violations
 # loudly even though RCO-2b's gate-blocking flip is still deferred.
+#
+# Plan 11 (2026-05-20) — I17/I18 enforce per-QID Stage 1 and per-cluster
+# Stage 3 coverage so missing markers fail the merge gate loudly instead
+# of silently shrinking the synthesis surface. I19/I20 cap the LLM
+# repair/narrow exhaustion rate at 20%, matching the I15/I16 framing of
+# "silent leakage of the new dispatch path."
 
 
 class SeverityTier(enum.Enum):

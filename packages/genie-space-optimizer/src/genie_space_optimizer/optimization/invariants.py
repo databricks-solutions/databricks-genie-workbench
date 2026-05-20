@@ -1099,6 +1099,201 @@ def check_i16_no_legacy_decline_after_activation(
     return violations
 
 
+def check_i17_stage1_diagnosis_coverage(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I17 — Plan 11. Every failing QID in a Plan 11 iteration must have
+    a GSO_PLAN11_STAGE1_DIAGNOSIS_V1 marker. Silent when no Plan 11
+    markers exist (pre-Plan-11 fixtures stay green).
+
+    Reads:
+      evidence["plan11_stage1_markers"]: list of dicts with keys
+        optimization_run_id, iteration, qid, outcome
+      evidence["failing_qids_per_iteration"]: dict mapping
+        "{run_id}:{iteration}" → list[str] of qids
+    """
+    stage1 = evidence.get("plan11_stage1_markers", [])
+    if not stage1:
+        return []
+
+    failing_map: dict[str, list[str]] = evidence.get(
+        "failing_qids_per_iteration", {}
+    )
+    covered: set[tuple[str, int, str]] = {
+        (m["optimization_run_id"], int(m["iteration"]), m["qid"])
+        for m in stage1
+    }
+    violations: list[dict] = []
+    for key, qids in failing_map.items():
+        run_id, _, iter_str = key.partition(":")
+        iteration = int(iter_str)
+        for qid in qids:
+            if (run_id, iteration, qid) not in covered:
+                violations.append(
+                    {
+                        "invariant": "I17",
+                        "run_id": run_id,
+                        "iteration": iteration,
+                        "missing_qid": qid,
+                        "message": (
+                            f"I17: QID {qid!r} in iteration {iteration} has no "
+                            f"GSO_PLAN11_STAGE1_DIAGNOSIS_V1 marker"
+                        ),
+                    }
+                )
+    return violations
+
+
+def check_i18_stage3_synthesis_coverage(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I18 — Plan 11. Every cluster_id emitted by Stage 2 must have a
+    GSO_PLAN11_STAGE3_SYNTHESIS_V1 marker on the same (run_id, iteration).
+    Silent when no Plan 11 markers exist.
+
+    Reads:
+      evidence["plan11_stage2_markers"]: list of dicts with keys
+        optimization_run_id, iteration, outcome, cluster_ids (list[str])
+      evidence["plan11_stage3_markers"]: list of dicts with keys
+        optimization_run_id, iteration, cluster_id, outcome
+    """
+    stage2 = evidence.get("plan11_stage2_markers", [])
+    stage3 = evidence.get("plan11_stage3_markers", [])
+    if not stage2:
+        return []
+
+    covered: set[tuple[str, int, str]] = {
+        (m["optimization_run_id"], int(m["iteration"]), m["cluster_id"])
+        for m in stage3
+    }
+    violations: list[dict] = []
+    for m in stage2:
+        if m.get("outcome") not in ("clustered",):
+            continue
+        run_id = m["optimization_run_id"]
+        iteration = int(m["iteration"])
+        for cid in m.get("cluster_ids", []):
+            if (run_id, iteration, cid) not in covered:
+                violations.append(
+                    {
+                        "invariant": "I18",
+                        "run_id": run_id,
+                        "iteration": iteration,
+                        "missing_cluster_id": cid,
+                        "message": (
+                            f"I18: cluster {cid!r} in iteration {iteration} has no "
+                            f"GSO_PLAN11_STAGE3_SYNTHESIS_V1 marker"
+                        ),
+                    }
+                )
+    return violations
+
+
+def check_i19_repair_loop_exhaustion_rate(
+    evidence: Mapping[str, Any],
+    *,
+    threshold_pct: float = 20.0,
+) -> list[dict]:
+    """I19 — Plan 11. If >20% of Stage 3 proposals exhaust the repair
+    loop, the LLM is fundamentally misaligned with the validator.
+    Emits one violation per (run_id, iteration) that exceeds the threshold.
+    Silent when no Plan 11 markers exist.
+
+    Reads:
+      evidence["plan11_stage3_markers"]: proposals_count per iteration
+      evidence["plan11_repair_loop_markers"]: outcome per attempt
+    """
+    stage3 = evidence.get("plan11_stage3_markers", [])
+    repair = evidence.get("plan11_repair_loop_markers", [])
+    if not stage3:
+        return []
+
+    from collections import defaultdict
+    proposals_by_iter: dict[tuple[str, int], int] = defaultdict(int)
+    for m in stage3:
+        key = (m["optimization_run_id"], int(m["iteration"]))
+        proposals_by_iter[key] += int(m.get("proposals_count", 0))
+
+    exhausted_by_iter: dict[tuple[str, int], int] = defaultdict(int)
+    for m in repair:
+        if m.get("outcome") == "exhausted":
+            key = (m["optimization_run_id"], int(m["iteration"]))
+            exhausted_by_iter[key] += 1
+
+    violations: list[dict] = []
+    for key, total in proposals_by_iter.items():
+        exhausted = exhausted_by_iter.get(key, 0)
+        pct = 100.0 * exhausted / max(1, total)
+        if pct > threshold_pct:
+            run_id, iteration = key
+            violations.append(
+                {
+                    "invariant": "I19",
+                    "run_id": run_id,
+                    "iteration": iteration,
+                    "exhaustion_pct": round(pct, 2),
+                    "threshold_pct": threshold_pct,
+                    "message": (
+                        f"I19: repair loop exhaustion {pct:.1f}% > "
+                        f"{threshold_pct}% in iteration {iteration}"
+                    ),
+                }
+            )
+    return violations
+
+
+def check_i20_narrow_replacement_exhaustion_rate(
+    evidence: Mapping[str, Any],
+    *,
+    threshold_pct: float = 20.0,
+) -> list[dict]:
+    """I20 — Plan 11. Same shape as I19, scoped to the narrow-replacement
+    loop. Emits one violation per (run_id, iteration) > threshold.
+    Silent when no Plan 11 markers exist.
+
+    Reads:
+      evidence["plan11_stage3_markers"]: proposals_count per iteration
+      evidence["plan11_narrow_replacement_markers"]: outcome per attempt
+    """
+    stage3 = evidence.get("plan11_stage3_markers", [])
+    narrow = evidence.get("plan11_narrow_replacement_markers", [])
+    if not stage3:
+        return []
+
+    from collections import defaultdict
+    proposals_by_iter: dict[tuple[str, int], int] = defaultdict(int)
+    for m in stage3:
+        key = (m["optimization_run_id"], int(m["iteration"]))
+        proposals_by_iter[key] += int(m.get("proposals_count", 0))
+
+    exhausted_by_iter: dict[tuple[str, int], int] = defaultdict(int)
+    for m in narrow:
+        if m.get("outcome") == "exhausted":
+            key = (m["optimization_run_id"], int(m["iteration"]))
+            exhausted_by_iter[key] += 1
+
+    violations: list[dict] = []
+    for key, total in proposals_by_iter.items():
+        exhausted = exhausted_by_iter.get(key, 0)
+        pct = 100.0 * exhausted / max(1, total)
+        if pct > threshold_pct:
+            run_id, iteration = key
+            violations.append(
+                {
+                    "invariant": "I20",
+                    "run_id": run_id,
+                    "iteration": iteration,
+                    "exhaustion_pct": round(pct, 2),
+                    "threshold_pct": threshold_pct,
+                    "message": (
+                        f"I20: narrow-replacement exhaustion {pct:.1f}% > "
+                        f"{threshold_pct}% in iteration {iteration}"
+                    ),
+                }
+            )
+    return violations
+
+
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
     violations. Empty list = green pilot."""
@@ -1120,6 +1315,10 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i12_replay_validity,  # Cycle 17 T3
         check_i15_activation_pair_completeness,  # Plan 10 Phase B1
         check_i16_no_legacy_decline_after_activation,  # Plan 10 Phase B2
+        check_i17_stage1_diagnosis_coverage,  # Plan 11
+        check_i18_stage3_synthesis_coverage,  # Plan 11
+        check_i19_repair_loop_exhaustion_rate,  # Plan 11
+        check_i20_narrow_replacement_exhaustion_rate,  # Plan 11
     ):
         try:
             violations.extend(check(evidence))
