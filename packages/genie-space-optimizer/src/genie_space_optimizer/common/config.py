@@ -6313,11 +6313,10 @@ def partial_harvest_with_debt_enabled() -> bool:
 def rca_card_builder_enabled() -> bool:
     """Phase 1 Action 1.1 — when ON, ``build_rca_card`` runs the
     deterministic-first evidence-grounded builder instead of returning
-    the legacy ``{"rca_id": ""}`` stub. Default OFF for the initial
-    pilot; flip default-on after one corpus pilot validates the
-    self-grounding-failure rate stays under 10%.
+    the legacy ``{"rca_id": ""}`` stub.
 
-    Enable with ``GSO_RCA_CARD_BUILDER=1``.
+    Default ON as of the cycle-9 deploy. Disable with
+    ``GSO_RCA_CARD_BUILDER=0`` for emergency rollback.
     """
     return _flag_default_on("GSO_RCA_CARD_BUILDER")
 
@@ -6520,7 +6519,8 @@ def tier_gate_soft_signal_observability_enabled() -> bool:
     classifier ``classify_acceptance_tier`` does not accept any
     soft-signal parameter; this is the anti-gaming contract.
 
-    Default OFF. Enable with ``GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY=1``.
+    Default ON. Disable with ``GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY=0``
+    for emergency rollback.
     """
     return _flag_default_on("GSO_TIER_GATE_SOFT_SIGNAL_OBSERVABILITY")
 
@@ -6537,7 +6537,8 @@ def rca_card_soft_evidence_enabled() -> bool:
         ``rca_card_supporting_soft_evidence`` for Phase 2 Section B's
         harness to lift into ``soft_evidence_matched_qids_by_kit``.
 
-    Default OFF. Enable with ``GSO_RCA_CARD_SOFT_EVIDENCE=1``.
+    Default ON. Disable with ``GSO_RCA_CARD_SOFT_EVIDENCE=0`` for
+    emergency rollback.
     """
     return _flag_default_on("GSO_RCA_CARD_SOFT_EVIDENCE")
 
@@ -6553,12 +6554,11 @@ def acceptance_four_tier_gate_enabled() -> bool:
       * ``tier_diagnostic_hold``  — rollback (improvement with unbounded debt; reflection emitted)
       * ``tier_loss``             — rollback (no improvement OR protected/passing→hard regression)
 
-    Default OFF for the initial pilot. The four-tier verdict adds a
+    Default ON as of the cycle-9 deploy. The four-tier verdict adds a
     ``tier_classification`` decision record per AG and threads
     ``accepted_class`` into the ``GSO_FULL_EVAL_V1`` marker payload
-    via the existing ``accepted_label`` slot.
-
-    Enable with ``GSO_ACCEPTANCE_FOUR_TIER_GATE=1``.
+    via the existing ``accepted_label`` slot. Disable with
+    ``GSO_ACCEPTANCE_FOUR_TIER_GATE=0`` for emergency rollback.
     """
     return _flag_default_on("GSO_ACCEPTANCE_FOUR_TIER_GATE")
 
@@ -6574,13 +6574,13 @@ def patch_subset_isolation_enabled() -> bool:
     Default-ON (2026-05-13 default-on flip plan). Diagnostic mode
     is observability-only: it produces attribution evidence without
     changing the accept/rollback verdict. The LIVE sibling flag
-    ``GSO_PATCH_SUBSET_ISOLATION_LIVE`` remains default-OFF because
-    it performs a behavior-changing live re-eval and is out of scope
-    for this plan.
+    ``GSO_PATCH_SUBSET_ISOLATION_LIVE`` stays disabled unless explicitly
+    enabled because it performs a behavior-changing live re-eval and is
+    out of scope for this plan.
 
     Rollback escape hatch: ``GSO_PATCH_SUBSET_ISOLATION=0`` restores
-    the silent default-OFF path (no orchestrator invocation, no
-    diagnostic marker).
+    the silent disabled path (no orchestrator invocation, no diagnostic
+    marker).
     """
     return _flag_default_on("GSO_PATCH_SUBSET_ISOLATION")
 
@@ -7011,8 +7011,8 @@ def sql_shape_overlap_gate_enabled() -> bool:
     ``docs/prompt_improvements/2026-05-16-phase-0-5-cheap-independent-wins.md``.
 
     Accepts (case-insensitive): ``1``, ``true``, ``yes``, ``y``.
-    Anything else (including unset, ``0``, ``false``, ``no``, ``off``,
-    empty) keeps the flag off.
+    Anything else (``0``, ``false``, ``no``, ``off``, empty when
+    explicitly set) turns the flag off; unset uses the default ``"1"``.
 
     Read at the call site each time ``_t24_counterfactual_scan`` runs,
     not cached, so tests can toggle via monkeypatch.
@@ -7039,8 +7039,8 @@ def rich_synthesis_primary_for_sql_shape_enabled() -> bool:
     is safe. See ``docs/prompt_improvements/2026-05-16-phase-0-5-cheap-independent-wins.md``.
 
     Accepts (case-insensitive): ``1``, ``true``, ``yes``, ``y``. Anything
-    else (including unset, ``0``, ``false``, ``no``, ``off``, empty)
-    keeps the flag off.
+    else (``0``, ``false``, ``no``, ``off``, empty when explicitly set)
+    turns the flag off; unset uses the default ``"1"``.
 
     Read at the call site each time ``_dispatch_lever_5b_for_cluster``
     runs, not cached, so tests can toggle via monkeypatch.
@@ -7525,14 +7525,14 @@ def proposal_failure_decided_enabled() -> bool:
 
     Default-ON (2026-05-13 default-on flip plan). The 2314bb2c
     trial validated that the producers + the iteration-level
-    coverage invariant are wired correctly; running default-OFF
-    silenced the marker on every iteration despite the code being
-    deployed. Flip is observability-only: the marker provides
+    coverage invariant are wired correctly; running with this flag
+    disabled silenced the marker on every iteration despite the code
+    being deployed. Flip is observability-only: the marker provides
     proposal-phase failure attribution but does not alter the
     accept/rollback verdict.
 
     Rollback escape hatch: ``GSO_PROPOSAL_FAILURE_DECIDED=0``
-    restores the silent default-OFF path.
+    restores the silent disabled path.
 
     Evidence anchor:
     runid_analysis/{ccf1d60d,31ecd96f,2314bb2c}/postmortem.md."""
@@ -7712,13 +7712,15 @@ def propagation_root_cause() -> str:
 
 # Section A — Repair Planner
 def repair_planner_enabled() -> bool:
-    """Phase 2 Action 2.1 — Repair Planner master gate. Default OFF."""
+    """Phase 2 Action 2.1 — Repair Planner master gate. Default ON.
+    Disable with ``GSO_REPAIR_PLANNER=0``."""
     return _flag_default_on("GSO_REPAIR_PLANNER")
 
 
 # Section B — Kit-aware patch cap
 def kit_aware_patch_cap_enabled() -> bool:
-    """Phase 2 Action 2.2 — Kit-aware patch cap master gate. Default OFF."""
+    """Phase 2 Action 2.2 — Kit-aware patch cap master gate. Default ON.
+    Disable with ``GSO_KIT_AWARE_PATCH_CAP=0``."""
     return _flag_default_on("GSO_KIT_AWARE_PATCH_CAP")
 
 
@@ -7740,7 +7742,8 @@ def co_beneficiary_downgrade_threshold() -> int:
 
 # Section C — Hub-table scoped variants
 def hub_table_scoped_variants_enabled() -> bool:
-    """Phase 2 Action 2.3 — Hub-table scoped variants master gate. Default OFF."""
+    """Phase 2 Action 2.3 — Hub-table scoped variants master gate. Default ON.
+    Disable with ``GSO_HUB_TABLE_SCOPED_VARIANTS=0``."""
     return _flag_default_on("GSO_HUB_TABLE_SCOPED_VARIANTS")
 
 
@@ -7754,13 +7757,15 @@ def hub_table_dependents_threshold() -> int:
 
 # Section D — Strategist coverage re-call
 def strategist_coverage_recall_enabled() -> bool:
-    """Phase 2 Action 2.4 — Strategist coverage re-call master gate. Default OFF."""
+    """Phase 2 Action 2.4 — Strategist coverage re-call master gate. Default ON.
+    Disable with ``GSO_STRATEGIST_COVERAGE_RECALL=0``."""
     return _flag_default_on("GSO_STRATEGIST_COVERAGE_RECALL")
 
 
 # Section E — In-loop archetype learning
 def archetype_learning_enabled() -> bool:
-    """Phase 2 Action 2.5 — Archetype learning master gate. Default OFF."""
+    """Phase 2 Action 2.5 — Archetype learning master gate. Default ON.
+    Disable with ``GSO_ARCHETYPE_LEARNING=0``."""
     return _flag_default_on("GSO_ARCHETYPE_LEARNING")
 
 
@@ -8152,11 +8157,11 @@ def plan5_lever_5b_llm_intent_enabled() -> bool:
 
 
 # ── Plan 6 — LLM-driven candidate critique gate. ───────────────────────
-# Default ``false`` per roadmap.md:404 — "overall_recommendation is
-# advisory by default". Operators flip to true once they have reviewed
-# several iterations of verdicts and trust the critic. The verdict is
-# ALWAYS recorded (decision-emit) regardless of this flag so postmortem
-# can read what the critic said even in advisory mode.
+# Default-ON as of Plan 8 Task 4 (2026-05-15). When enforcing, the
+# harness filters proposals listed in CritiqueOutcome.dropped_by_critique
+# out of the slate before the acceptance gate sees them. The verdict
+# is ALWAYS recorded (decision-emit) regardless of this flag so
+# postmortem can read what the critic said even in shadow mode.
 
 
 def critique_gate_enforcing_enabled() -> bool:
@@ -8167,7 +8172,9 @@ def critique_gate_enforcing_enabled() -> bool:
     acceptance gate sees them.
 
     Set ``GSO_CRITIQUE_GATE_ENFORCING=0`` to force off (escape hatch
-    for emergency rollback; flag is removed in Plan 8 Task 12).
+    for emergency rollback). The flag is retained as a safety hatch
+    pending a future Plan that removes it once Plan 6 critique outcomes
+    are demonstrably stable in production.
     """
     return _flag_default_on("GSO_CRITIQUE_GATE_ENFORCING")
 
