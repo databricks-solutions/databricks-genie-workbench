@@ -33,6 +33,35 @@ def reset_patch_outcome_emitter() -> None:
         _EMITTED_KEYS.clear()
 
 
+def emitted_intent_ids_for_iteration(
+    optimization_run_id: str,
+    iteration: int,
+) -> tuple[str, ...]:
+    """Plan 12 PR 7 Task 7.4 deferred wire-in — return the unique
+    ``intent_id``s the emitter has registered for the given
+    ``(run_id, iteration)`` since the last
+    :func:`reset_patch_outcome_emitter` call.
+
+    Consumed by the I25 evidence projection to compute
+    ``proposal_attempts_from_outcomes`` — the source-of-truth count
+    that's compared against the legacy ``proposal_count`` counter.
+
+    Returns an empty tuple when no outcomes have been emitted for
+    the given (run_id, iter). The harness MUST call
+    :func:`reset_patch_outcome_emitter` at iteration start (the same
+    contract the existing idempotency cache uses) so the snapshot
+    only reflects the current iteration.
+    """
+    run_id = str(optimization_run_id)
+    iter_int = int(iteration)
+    with _LOCK:
+        return tuple(sorted({
+            intent_id
+            for (run, it, _ag, intent_id) in _EMITTED_KEYS
+            if run == run_id and it == iter_int and intent_id
+        }))
+
+
 def emit_patch_outcome(
     *,
     optimization_run_id: str,

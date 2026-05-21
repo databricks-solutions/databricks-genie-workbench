@@ -5804,6 +5804,28 @@ def plan12_live_ag_retry_pivot_enabled() -> bool:
     return _flag_enabled("GSO_PLAN12_LIVE_AG_RETRY_PIVOT")
 
 
+def plan12_live_run_summary_eval_derive_enabled() -> bool:
+    """Plan 12 PR 7 Task 7.5 deferred — derive run_summary hard/soft
+    failure counts from the carrier eval_result. Default OFF.
+
+    When ON, the harness's ``build_run_summary`` callsite threads
+    ``_latest_eval_result`` (projected to the rows shape build_run_summary
+    expects) into the deriver. The result is that
+    ``hard_failures_count`` and ``soft_failures_count`` reflect the
+    actual eval rows instead of being defaulted to 0.
+
+    Closes the stale-write bug both 2026-05-20 postmortems flagged
+    where the legacy counter diverged from the actual eval result
+    under retry.
+
+    Default OFF preserves byte-stable replay against fixtures that
+    have ``hard_failures_count=0`` / ``soft_failures_count=0``
+    baked into their run_summary.json. Operators flip per-deploy via
+    the env var ``GSO_PLAN12_LIVE_RUN_SUMMARY_EVAL_DERIVE=true``.
+    """
+    return _flag_enabled("GSO_PLAN12_LIVE_RUN_SUMMARY_EVAL_DERIVE")
+
+
 def plan12_live_evidence_routing_enabled() -> bool:
     """Plan 12 PR 6 deferred evidence→lever routing. Default OFF.
 

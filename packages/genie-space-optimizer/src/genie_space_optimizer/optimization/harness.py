@@ -1440,6 +1440,25 @@ def _finalize_iteration_summary(
     ``decision_record_count``. Skipped silently for legacy callers
     that don't pass ``run_id``.
     """
+    # Plan 12 PR 7 Tasks 7.2 / 7.3 deferred wire-in — stash journey
+    # events on current_iter_inputs so project_iter_evidence can pass
+    # them to the deriver functions for I25's observability-consistency
+    # check. The stash is iteration-local: each iteration finalizes
+    # with its own journey slice, so the projection sees only this
+    # iteration's events. The legacy counters (decision-record count,
+    # iteration-summary emission counter) stay unchanged so byte-stable
+    # replay holds; I25 surfaces drift when the legacy counters and the
+    # journey-derived counts diverge.
+    try:
+        if isinstance(current_iter_inputs, dict):
+            current_iter_inputs["_journey_events_for_i25"] = tuple(
+                journey_events or ()
+            )
+    except Exception:
+        logger.debug(
+            "Plan 12 PR 7: journey events stash failed (non-fatal)",
+            exc_info=True,
+        )
     _run_iteration_invariants_and_append_records(
         run_id=run_id,
         iteration=iteration,
@@ -33183,6 +33202,28 @@ def _run_lever_loop(
             float(best_accuracy) if best_accuracy is not None
             else float(prev_accuracy)
         )
+        # Plan 12 PR 7 Task 7.5 deferred wire-in — thread
+        # ``_latest_eval_result`` (projected to the rows shape) into
+        # ``build_run_summary`` so ``hard_failures_count`` and
+        # ``soft_failures_count`` reflect the actual eval result. Flag
+        # OFF (default) preserves byte-stable run_summary.json against
+        # existing replay fixtures.
+        _eval_result_for_run_summary: dict | None = None
+        try:
+            from genie_space_optimizer.common.config import (
+                plan12_live_run_summary_eval_derive_enabled,
+            )
+            if plan12_live_run_summary_eval_derive_enabled():
+                _eval_result_for_run_summary = _latest_eval_result_to_rows(
+                    _latest_eval_result
+                )
+        except Exception:
+            logger.debug(
+                "Plan 12 PR 7 Task 7.5: eval_result projection failed "
+                "(non-fatal; falling back to default 0 counts)",
+                exc_info=True,
+            )
+            _eval_result_for_run_summary = None
         _run_summary = _build_run_summary(
             baseline=_baseline_for_summary,
             terminal_state={
@@ -33193,6 +33234,7 @@ def _run_lever_loop(
             accuracy_delta_pp=round(
                 _best_acc_for_delta - float(prev_accuracy), 1
             ),
+            eval_result=_eval_result_for_run_summary,
         )
 
         _run_overview = _render_run_overview(
@@ -36412,3 +36454,44 @@ def _resolve_effective_lever_with_evidence_policy(
             exc_info=True,
         )
     return effective_lever
+
+
+def _latest_eval_result_to_rows(
+    latest_eval_result: dict | None,
+) -> dict[str, list[dict]]:
+    """Plan 12 PR 7 Task 7.5 deferred wire-in — project the carrier
+    ``_latest_eval_result`` shape into the ``rows`` shape that
+    :func:`build_run_summary` consumes.
+
+    The carrier shape (built by ``_seed_eval_result_from_baseline_iter``
+    and refreshed by ``_extract_eval_result_from_gate``) is:
+
+      ``{question_ids, scores, arbiter_verdicts, failure_question_ids}``
+
+    where ``scores`` maps qid → ``"yes"`` / ``"no"``.
+
+    :func:`build_run_summary` expects ``{rows: [{score: float, ...}]}``
+    with ``score < 0.5`` → hard, ``score < 1.0`` → soft, ``== 1.0`` →
+    pass. The carrier's yes/no values map cleanly to 1.0 / 0.0 (hard
+    vs pass). There is NO soft signal in this carrier shape — soft
+    signals live on a separate channel that isn't threaded here.
+
+    Returns ``{"rows": []}`` for an empty / None carrier, matching the
+    deriver's "no eval result available" branch.
+    """
+    if not isinstance(latest_eval_result, dict) or not latest_eval_result:
+        return {"rows": []}
+    scores = latest_eval_result.get("scores") or {}
+    if not isinstance(scores, dict):
+        return {"rows": []}
+    rows: list[dict] = []
+    for qid, verdict in scores.items():
+        verdict_str = str(verdict or "").strip().lower()
+        # yes/true/1/pass → 1.0; anything else (no/empty/...) → 0.0.
+        score_float = (
+            1.0
+            if verdict_str in ("yes", "true", "1", "pass")
+            else 0.0
+        )
+        rows.append({"question_id": str(qid), "score": score_float})
+    return {"rows": rows}
