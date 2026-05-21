@@ -1294,6 +1294,45 @@ def check_i20_narrow_replacement_exhaustion_rate(
     return violations
 
 
+def check_i21_plan11_dispatch_coverage(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I21 — Plan 12. When ``plan11_llm_first_enabled()`` is True AND
+    the run has at least one hard failure, the marker stream MUST
+    contain either ``GSO_PLAN11_STAGE1_DIAGNOSIS_V1`` markers OR an
+    explicit ``GSO_PLAN11_DISPATCH_DECISION_V1`` marker with outcome
+    ∈ {"entered","skipped"}. Silent when the flag is off or there
+    are no hard failures (pre-Plan-12 fixtures stay green).
+
+    Reads:
+      evidence["plan11_flag_enabled"]: bool
+      evidence["hard_failures_present"]: bool
+      evidence["plan11_stage1_markers"]: list
+      evidence["plan11_dispatch_decision_markers"]: list
+    """
+    if not bool(evidence.get("plan11_flag_enabled")):
+        return []
+    if not bool(evidence.get("hard_failures_present")):
+        return []
+    stage1 = evidence.get("plan11_stage1_markers", [])
+    decisions = evidence.get("plan11_dispatch_decision_markers", [])
+    if stage1 or decisions:
+        return []
+    return [
+        {
+            "invariant": "I21",
+            "message": (
+                "I21: plan11_llm_first_enabled() is True and hard "
+                "failures exist, but no GSO_PLAN11_STAGE1_DIAGNOSIS_V1 "
+                "or GSO_PLAN11_DISPATCH_DECISION_V1 markers were "
+                "emitted. Plan 11 silently fell back to the legacy "
+                "lane (the exact bug the 2026-05-20 postmortems "
+                "diagnosed)."
+            ),
+        }
+    ]
+
+
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
     violations. Empty list = green pilot."""
@@ -1319,6 +1358,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i18_stage3_synthesis_coverage,  # Plan 11
         check_i19_repair_loop_exhaustion_rate,  # Plan 11
         check_i20_narrow_replacement_exhaustion_rate,  # Plan 11
+        check_i21_plan11_dispatch_coverage,  # Plan 12
     ):
         try:
             violations.extend(check(evidence))
