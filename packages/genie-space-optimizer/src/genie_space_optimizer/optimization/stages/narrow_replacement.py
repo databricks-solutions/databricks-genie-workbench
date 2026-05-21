@@ -28,6 +28,78 @@ from genie_space_optimizer.optimization.stages.plan11_types import FailureCluste
 from genie_space_optimizer.skills._loader import _SKILL_LOADER
 
 
+def narrow_replacement_from_drop_record(
+    *,
+    drop_record: Any,
+    cluster: Any,
+    w: Any,
+    optimization_run_id: str = "",
+    iteration: int = 0,
+    attempt: int = 1,
+    max_attempts: int | None = None,
+) -> Any:
+    """Plan 12 — narrow-replacement entry point that accepts a typed
+    :class:`BlastRadiusDropRecord` (the only supported entry going
+    forward — closes the ``narrow_skipped_no_original_patch_type``
+    failure mode both 2026-05-20 postmortems hit).
+
+    Reconstructs a :class:`RepairProposal` from the drop record's
+    ``original_patch_body`` + ``original_patch_type``, then dispatches
+    to :func:`narrow_replacement_with_llm`. Returns ``None`` when the
+    drop record's ``original_patch_type`` is empty or unknown
+    (pre-Plan-12 records) — the caller is responsible for emitting a
+    typed terminal outcome in that case.
+    """
+    from genie_space_optimizer.optimization.blast_radius_drop_record import (
+        BlastRadiusDropRecord,
+    )
+    from genie_space_optimizer.optimization.repair_intent import (
+        PatchType,
+        RepairShape,
+    )
+    from genie_space_optimizer.optimization.repair_proposal_typed import (
+        RepairProposal,
+    )
+
+    if not isinstance(drop_record, BlastRadiusDropRecord):
+        raise TypeError(
+            "drop_record must be a BlastRadiusDropRecord; got "
+            f"{type(drop_record).__name__}"
+        )
+    try:
+        ptype = PatchType(drop_record.original_patch_type)
+    except (ValueError, TypeError):
+        return None
+
+    reconstructed = RepairProposal(
+        intent_id=drop_record.intent_id,
+        intent_name="narrow_candidate",
+        intent_description="",
+        repair_shape=RepairShape.OTHER,
+        patch_type=ptype,
+        rationale="",
+        confidence="medium",
+        patch_body=dict(drop_record.original_patch_body),
+        blame_set=(),
+        target_objects=(),
+        required_constructs=(),
+        repair_hypothesis="",
+        target_qids=tuple(drop_record.target_qids),
+    )
+    return narrow_replacement_with_llm(
+        reconstructed,
+        collateral_qids=tuple(drop_record.collateral_qids),
+        protected_sql=dict(drop_record.protected_sql_by_qid),
+        cluster=cluster,
+        w=w,
+        optimization_run_id=optimization_run_id,
+        iteration=iteration,
+        ag_id=drop_record.ag_id,
+        attempt=attempt,
+        max_attempts=max_attempts,
+    )
+
+
 _SKILL_ID = "plan11_narrow"
 _PROMPT_CONST = "PLAN11_NARROW_PROMPT"
 _DEFAULT_MAX_ATTEMPTS = 2
