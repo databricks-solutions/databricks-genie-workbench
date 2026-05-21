@@ -22325,6 +22325,71 @@ def _run_lever_loop(
                             "Cycle 10 W8: ag_levers_unioned wiring failed (non-fatal)",
                             exc_info=True,
                         )
+                    # Plan 12 PR 5 deferred wire-in — AG retry pivot
+                    # decision. Consult next_patch_family_for_cluster
+                    # for each AG whose source cluster carries a
+                    # prior terminal signature; emit
+                    # GSO_PLAN12_AG_PIVOT_DECIDED_V1 markers and (when
+                    # the mutate flag is on) widen lever_directives to
+                    # include the recommended family's lever_key.
+                    #
+                    # Both flags default OFF so existing replays stay
+                    # byte-stable. Hard no-op when no AGs exist or the
+                    # parent flag is off; defensive try/except so a
+                    # bug here cannot abort the iteration.
+                    try:
+                        from genie_space_optimizer.common.config import (
+                            plan12_live_ag_retry_pivot_mutate_enabled,
+                        )
+                        # Build cluster_id → [signatures] mapping by
+                        # projecting _forbidden_set through target_qid
+                        # overlap with each cluster's question_ids.
+                        # Cheap because both sides are small.
+                        _cluster_id_to_signatures: dict[str, list] = {}
+                        _all_clusters_for_pivot = (
+                            list(clusters or [])
+                            + list(soft_signal_clusters or [])
+                        )
+                        for _c_pivot in _all_clusters_for_pivot:
+                            _cid_pivot = str(
+                                _c_pivot.get("cluster_id") or ""
+                            )
+                            if not _cid_pivot:
+                                continue
+                            _qids_pivot = {
+                                str(q)
+                                for q in (
+                                    _c_pivot.get("question_ids") or ()
+                                )
+                                if str(q)
+                            }
+                            if not _qids_pivot:
+                                continue
+                            _matched = [
+                                _sig
+                                for _sig in _forbidden_set
+                                if (
+                                    set(getattr(_sig, "target_qids", ()))
+                                    & _qids_pivot
+                                )
+                            ]
+                            if _matched:
+                                _cluster_id_to_signatures[_cid_pivot] = _matched
+                        _emit_plan12_ag_pivot_decision(
+                            action_groups=list(action_groups or []),
+                            forbidden_signatures=frozenset(_forbidden_set),
+                            cluster_id_to_signatures=_cluster_id_to_signatures,
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            mutate=plan12_live_ag_retry_pivot_mutate_enabled(),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Plan 12 PR 5: AG retry pivot wire-in failed "
+                            "(non-fatal)",
+                            exc_info=True,
+                        )
+
                     ag = action_groups[0] if action_groups else None
                     if _process_all_ags and len(action_groups) > 1:
                         pending_action_groups = list(
@@ -26892,6 +26957,15 @@ def _run_lever_loop(
                         ag_target_qids=_blast_target_qids,
                     ),
                     qid_to_reference_sql=reference_sqls or {},
+                    # Plan 12 PR 4 deferred wire-in — thread the
+                    # WorkspaceClient through so the inner
+                    # _attempt_llm_narrow_replacement_and_emit_outcome
+                    # helper can call the LLM when
+                    # GSO_PLAN12_LIVE_NARROW_REPLACEMENT=1. Default
+                    # behavior is unchanged because the inner helper
+                    # bails out unless BOTH w is supplied AND the
+                    # flag is on.
+                    w=w,
                 )
                 if _narrow_kept:
                     _blast_kept = list(_blast_kept) + _narrow_kept
@@ -27458,6 +27532,11 @@ def _run_lever_loop(
                         ag_target_qids=_blast_target_qids,
                     ),
                     qid_to_reference_sql=reference_sqls or {},
+                    # Plan 12 PR 4 deferred wire-in — same threading
+                    # as Site A. The inner helper remains a hard
+                    # no-op unless w is supplied AND the
+                    # GSO_PLAN12_LIVE_NARROW_REPLACEMENT flag is on.
+                    w=w,
                 )
                 if _narrow_kept:
                     _blast_kept = list(_blast_kept) + _narrow_kept
@@ -36283,6 +36362,56 @@ def _derive_prior_patch_family(action_group: dict) -> str:
     return ""
 
 
+# Plan 12 PR 5 deferred — patch_family → lever_key map. The reverse of
+# _LEVER_TO_DEFAULT_FAMILY, used by the active-mutation branch to
+# decide which lever_key to add to a pivoting AG's lever_directives.
+_FAMILY_TO_LEVER_KEY: dict[str, str] = {
+    "add_example_sql": "5",
+    "add_sql_snippet_expression": "6",
+    "add_sql_snippet_filter": "6",
+    "refine_metric_view": "2",
+    "add_column_description": "1",
+}
+
+
+def _apply_pivot_mutation(
+    ag: dict, recommended_family: str,
+) -> bool:
+    """Plan 12 PR 5 deferred — active AG mutation for the retry pivot.
+
+    Mutates ``ag["lever_directives"]`` to include the lever_key
+    corresponding to ``recommended_family``. The mutation is
+    additive: existing levers stay in the directives dict, so the
+    strategist's original choice still dispatches alongside the
+    recommended family. The downstream lever loop iterates
+    ``lever_directives.keys()``, so adding a new key gives the
+    recommended family's dispatcher a chance via its no-directive
+    fallback.
+
+    Returns True when the AG was actually mutated (recommended
+    family maps to a lever_key AND that key was missing from the
+    existing directives). Returns False otherwise.
+    """
+    target_lever_key = _FAMILY_TO_LEVER_KEY.get(
+        str(recommended_family or "")
+    )
+    if not target_lever_key:
+        return False
+    ld = ag.setdefault("lever_directives", {})
+    if not isinstance(ld, dict):
+        return False
+    if target_lever_key in ld:
+        return False  # already present — no widening needed
+    ld[target_lever_key] = {
+        # Marker that downstream postmortem renderers can use to
+        # distinguish strategist-emitted directives from
+        # pivot-seeded ones.
+        "_plan12_pivot_seeded": True,
+        "patch_type": str(recommended_family),
+    }
+    return True
+
+
 def _emit_plan12_ag_pivot_decision(
     *,
     action_groups: list[dict],
@@ -36290,9 +36419,9 @@ def _emit_plan12_ag_pivot_decision(
     cluster_id_to_signatures: dict[str, list],
     optimization_run_id: str,
     iteration: int,
+    mutate: bool = False,
 ) -> bool:
-    """Plan 12 PR 5 deferred wire-in — observation-only AG pivot
-    decision emitter.
+    """Plan 12 PR 5 — AG retry pivot decision emitter.
 
     Iterates the strategist's AGs and, for each AG with a non-empty
     ``source_cluster_ids``, consults
@@ -36302,10 +36431,19 @@ def _emit_plan12_ag_pivot_decision(
 
     Returns ``True`` if the helper ran (regardless of whether any
     marker fired) and ``False`` when the feature flag is OFF.
-    OBSERVATION-ONLY for this commit: ``pivot_applied`` is always
-    False — the AG itself is not mutated. Promotion to active
-    mutation is a separate commit once the marker stream has been
-    audited on a canary deploy.
+
+    ``mutate`` controls observation-only vs active-mutation mode:
+
+      * ``mutate=False`` (default): observation-only. The marker
+        records what the policy WOULD do for the next iteration's
+        AG, but the AG itself is NOT modified. ``pivot_applied``
+        is always False in this mode.
+      * ``mutate=True`` (the PR 5 deferred promotion): the AG's
+        ``lever_directives`` are widened to include the recommended
+        family's lever_key. The marker's ``pivot_applied`` is True
+        when a mutation actually happened. Gated by
+        :func:`plan12_live_ag_retry_pivot_mutate_enabled` at the
+        callsite.
 
     Args:
       action_groups: the strategist's next-iteration AG list. Each
@@ -36317,6 +36455,8 @@ def _emit_plan12_ag_pivot_decision(
         to its prior terminal signatures. The harness computes this
         once per iteration; the helper consumes it read-only.
       optimization_run_id, iteration: pass-through for the marker.
+      mutate: when True, the AG is actually mutated (active
+        promotion). When False, observation-only.
     """
     from genie_space_optimizer.common.config import (
         plan12_live_ag_retry_pivot_enabled,
@@ -36362,6 +36502,17 @@ def _emit_plan12_ag_pivot_decision(
         pivot_recommended = bool(
             prior_family and recommended != prior_family
         )
+        # Plan 12 PR 5 deferred promotion — active mutation when the
+        # mutate flag at the callsite is on AND the policy recommends
+        # a pivot. ``pivot_applied`` reflects whether the AG was
+        # actually mutated (could be False even when both flags are
+        # ON, e.g. when the recommended lever_key was already present).
+        pivot_applied = False
+        if mutate and pivot_recommended:
+            pivot_applied = _apply_pivot_mutation(
+                ag=ag,
+                recommended_family=str(recommended or ""),
+            )
         print(
             plan12_ag_pivot_decided_marker(
                 optimization_run_id=str(optimization_run_id or ""),
@@ -36372,7 +36523,7 @@ def _emit_plan12_ag_pivot_decision(
                 prior_patch_family=prior_family,
                 recommended_patch_family=str(recommended or prior_family),
                 pivot_recommended=pivot_recommended,
-                pivot_applied=False,  # observation-only in this commit
+                pivot_applied=pivot_applied,
             )
         )
     return True

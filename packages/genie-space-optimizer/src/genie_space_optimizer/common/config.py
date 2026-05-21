@@ -5782,6 +5782,35 @@ def plan12_live_narrow_replacement_enabled() -> bool:
     return _flag_enabled("GSO_PLAN12_LIVE_NARROW_REPLACEMENT")
 
 
+def plan12_live_ag_retry_pivot_mutate_enabled() -> bool:
+    """Plan 12 PR 5 deferred — PROMOTE AG retry pivot from
+    observation-only to active AG mutation. Default OFF.
+
+    Requires :func:`plan12_live_ag_retry_pivot_enabled` to also be
+    ON (the parent flag still gates the helper invocation).
+
+    When ON, the harness's AG-construction site (immediately after
+    the strategist returns the next iteration's AGs) does more than
+    emit the ``GSO_PLAN12_AG_PIVOT_DECIDED_V1`` marker: it MUTATES
+    each AG whose source cluster carries a survival-failure
+    terminal signature by ADDING the recommended patch-family's
+    lever_key to ``lever_directives`` (widening, not narrowing —
+    the strategist's original lever still dispatches).
+
+    The mutation widens the AG's lever set so the recommended
+    family's dispatcher gets a chance via its no-directive
+    fallback. The marker's ``pivot_applied`` field reports True
+    only when a mutation actually happened.
+
+    Default OFF preserves the observation-only mode that flag
+    :func:`plan12_live_ag_retry_pivot_enabled` provides on its own.
+    Operators promote per-deploy via env var
+    ``GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE=true`` after the
+    observation marker stream confirms the policy fires correctly.
+    """
+    return _flag_enabled("GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE")
+
+
 def plan12_live_ag_retry_pivot_enabled() -> bool:
     """Plan 12 PR 5 deferred AG retry policy. Default OFF.
 
