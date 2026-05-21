@@ -14624,6 +14624,91 @@ def _l6_dict_to_repair_proposal(
     )
 
 
+def _generate_proposals_for_lever6(
+    *,
+    action_group: dict,
+    metadata_snapshot: dict,
+    ag_id: str,
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    warehouse_id: str = "",
+    w: Any = None,
+    benchmarks: list[dict] | None = None,
+) -> list[dict]:
+    """Plan 12 — extracted L6 proposal generator with full
+    survival-contract threading.
+
+    For each structural SQL candidate emitted upstream by
+    ``rca_failed_question_sql``:
+
+      1. Run the legacy dict-shaped converter
+         :func:`_proposal_from_structural_sql_candidate`.
+      2. Look up ``rca_card_id`` / ``causal_target`` / ``repair_hypothesis``
+         from the cluster's ``_failure_clusters`` entry (by
+         ``source_cluster_ids`` membership).
+      3. Stamp those fields plus ``original_patch_type`` onto the
+         proposal dict so downstream consumers (narrow_replacement,
+         structural_repair_gate, applier) have them.
+      4. Return the list of proposal dicts. The Stage-3 callsite
+         continues to set ``proposal_id`` / ``scope`` / ``provenance``
+         on each entry.
+    """
+    target_qids = tuple(
+        str(q)
+        for q in (action_group.get("affected_questions") or [])
+        if str(q)
+    )
+    structural_candidates = [
+        c
+        for c in (action_group.get("_lever6_structural_candidates") or [])
+        if isinstance(c, dict)
+    ]
+
+    source_cids = set(action_group.get("source_cluster_ids", []))
+    all_clusters = (
+        metadata_snapshot.get("_failure_clusters")
+        or metadata_snapshot.get("failure_clusters")
+        or []
+    )
+    eligible_clusters = [
+        c for c in all_clusters if c.get("cluster_id") in source_cids
+    ]
+    primary_cluster = eligible_clusters[0] if eligible_clusters else {}
+
+    rca_card_id = str(primary_cluster.get("rca_card_id") or "")
+    causal_target = str(primary_cluster.get("causal_target") or "")
+    repair_hypothesis = str(primary_cluster.get("repair_hypothesis") or "")
+
+    proposals: list[dict] = []
+    for candidate in structural_candidates:
+        proposal = _proposal_from_structural_sql_candidate(
+            candidate,
+            metadata_snapshot=metadata_snapshot,
+            cluster_id=ag_id,
+            target_qids=target_qids,
+            spark=spark,
+            catalog=catalog,
+            gold_schema=gold_schema,
+            w=w,
+            warehouse_id=warehouse_id,
+            benchmarks=benchmarks,
+        )
+        if not proposal:
+            continue
+        # Plan 12 — survival-contract threading.
+        proposal["rca_card_id"] = rca_card_id
+        proposal["causal_target"] = causal_target
+        proposal["repair_hypothesis"] = repair_hypothesis
+        proposal["original_patch_type"] = str(
+            proposal.get("patch_type") or ""
+        )
+        proposal["target_qids"] = list(target_qids)
+        proposals.append(proposal)
+
+    return proposals
+
+
 def _lever6_reject_payload(
     *,
     reason: str,
@@ -17898,53 +17983,53 @@ def generate_proposals_from_strategy(
             ag_directives = action_group.get("lever_directives", {}).get("6", {})
             strategist_hints = ag_directives.get("sql_expressions", []) if isinstance(ag_directives, dict) else []
 
-            structural_candidates = [
-                c for c in (action_group.get("_lever6_structural_candidates") or [])
-                if isinstance(c, dict)
-            ]
-            target_qids = tuple(
-                str(q)
-                for q in (action_group.get("affected_questions") or [])
-                if str(q)
+            # Plan 12 — extracted, survival-contract-threaded L6 generator.
+            # Yields dicts already stamped with rca_card_id, causal_target,
+            # repair_hypothesis, original_patch_type, and target_qids
+            # from the upstream cluster context. Per-proposal shape fields
+            # (proposal_id / scope / change_description / provenance) are
+            # applied here for parity with the Stage-3 callsite at
+            # optimizer.py:17776.
+            proposals_l6 = _generate_proposals_for_lever6(
+                action_group=action_group,
+                metadata_snapshot=metadata_snapshot,
+                ag_id=ag_id,
+                spark=spark,
+                catalog=catalog,
+                gold_schema=gold_schema,
+                warehouse_id=warehouse_id,
+                w=w,
+                benchmarks=benchmarks,
             )
-            for candidate in structural_candidates:
-                proposal = _proposal_from_structural_sql_candidate(
-                    candidate,
-                    metadata_snapshot=metadata_snapshot,
-                    cluster_id=ag_id,
-                    target_qids=target_qids,
-                    spark=spark,
-                    catalog=catalog,
-                    gold_schema=gold_schema,
-                    w=w,
-                    warehouse_id=warehouse_id,
-                    benchmarks=benchmarks,
+            for proposal in proposals_l6:
+                proposal["proposal_id"] = f"P{len(proposals) + 1:03d}"
+                proposal["scope"] = "genie_config"
+                proposal["change_description"] = (
+                    f"[{ag_id}] RCA failed-row SQL Expression: "
+                    f"{proposal.get('display_name', 'unnamed')} "
+                    f"({proposal.get('snippet_type', '?')})"
                 )
-                if proposal:
-                    proposal["proposal_id"] = f"P{len(proposals) + 1:03d}"
-                    proposal["scope"] = "genie_config"
-                    proposal["change_description"] = (
-                        f"[{ag_id}] RCA failed-row SQL Expression: "
-                        f"{proposal.get('display_name', 'unnamed')} "
-                        f"({proposal.get('snippet_type', '?')})"
-                    )
-                    proposal["proposed_value"] = proposal.get("sql", "")
-                    proposal["dual_persistence"] = DUAL_PERSIST_PATHS.get(
-                        6,
-                        DUAL_PERSIST_PATHS[5],
-                    )
-                    proposal["questions_at_risk"] = 0
-                    proposal["net_impact"] = max(
-                        proposal.get("questions_fixed", 0) * 0.7,
-                        1.0,
-                    )
-                    proposal["provenance"] = {
-                        **provenance_base,
-                        "patch_type": proposal["patch_type"],
-                        "synthesis_source": "rca_failed_question_sql",
-                        "source_question_id": proposal.get("source_question_id", ""),
-                    }
-                    proposals.append(proposal)
+                proposal["proposed_value"] = proposal.get("sql", "")
+                proposal["dual_persistence"] = DUAL_PERSIST_PATHS.get(
+                    6,
+                    DUAL_PERSIST_PATHS[5],
+                )
+                proposal["questions_at_risk"] = 0
+                proposal["net_impact"] = max(
+                    proposal.get("questions_fixed", 0) * 0.7,
+                    1.0,
+                )
+                proposal["provenance"] = {
+                    **provenance_base,
+                    "patch_type": proposal["patch_type"],
+                    "synthesis_source": "rca_failed_question_sql",
+                    "source_question_id": proposal.get("source_question_id", ""),
+                    # Plan 12 — provenance now records the threaded RCA
+                    # fields so postmortems can prove the L6 lane saw them.
+                    "rca_card_id": proposal.get("rca_card_id", ""),
+                    "causal_target": proposal.get("causal_target", ""),
+                }
+                proposals.append(proposal)
 
             source_cids = set(action_group.get("source_cluster_ids", []))
             all_clusters = (
