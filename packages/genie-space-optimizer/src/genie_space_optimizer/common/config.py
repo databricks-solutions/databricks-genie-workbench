@@ -5782,6 +5782,28 @@ def plan12_live_narrow_replacement_enabled() -> bool:
     return _flag_enabled("GSO_PLAN12_LIVE_NARROW_REPLACEMENT")
 
 
+def plan12_live_ag_retry_pivot_enabled() -> bool:
+    """Plan 12 PR 5 deferred AG retry policy. Default OFF.
+
+    When ON, the harness's AG-construction site (immediately after
+    the strategist returns the next iteration's AGs) consults
+    :func:`next_patch_family_for_cluster` per AG, using the
+    loop-scoped ``_forbidden_set`` for prior terminal signatures.
+    For each AG whose source cluster carries a survival-failure
+    terminal signature, the policy emits a
+    ``GSO_PLAN12_AG_PIVOT_DECIDED_V1`` marker recording the
+    recommended pivot. The marker is OBSERVATION-ONLY for the first
+    deploy — the AG itself is not mutated. A follow-up commit
+    promotes the marker to an active mutation once the postmortem
+    stream confirms the policy is firing correctly.
+
+    Default OFF preserves byte-stable replay against the existing
+    harness suite. Operators flip per-deploy via the env var
+    ``GSO_PLAN12_LIVE_AG_RETRY_PIVOT=true``.
+    """
+    return _flag_enabled("GSO_PLAN12_LIVE_AG_RETRY_PIVOT")
+
+
 def _flag_default_on(env_name: str) -> bool:
     raw = (os.environ.get(env_name) or "").strip().lower()
     if raw in _FALSY_VALUES:

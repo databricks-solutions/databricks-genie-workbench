@@ -36137,3 +36137,145 @@ def _attempt_llm_narrow_replacement_and_emit_outcome(
         narrow_outcome=narrow_outcome,
     )
     return True
+
+
+# ── Plan 12 PR 5 deferred — AG retry pivot observation ────────────────
+
+
+# Map from each AG's lever_directives keys to the patch_family that
+# Plan 12's _TERMINATIONS_REQUIRING_PIVOT vocabulary recognizes. The
+# AG router stamps directives under string lever keys ("5", "6", ...);
+# the policy reasons in patch-family terms ("add_example_sql",
+# "add_sql_snippet_filter", ...). The deriver picks the first
+# patch_type it can find under the strategist's directive payload —
+# enough to feed next_patch_family_for_cluster a non-empty value.
+_LEVER_TO_DEFAULT_FAMILY: dict[str, str] = {
+    "5": "add_example_sql",
+    "6": "add_sql_snippet_expression",
+    "2": "refine_metric_view",
+    "1": "add_column_description",
+}
+
+
+def _derive_prior_patch_family(action_group: dict) -> str:
+    """Best-effort: read the strategist's choice for this AG and project
+    onto the patch_family vocabulary. Inspects ``lever_directives`` and
+    returns the first explicit ``patch_type`` it finds; falls back to
+    the lever-key → default-family table when the directive payload
+    has no patch_type stamped. Empty string when no directive at all.
+    """
+    ld = action_group.get("lever_directives") or {}
+    for lever_key, directive in ld.items():
+        if not isinstance(directive, dict):
+            continue
+        for list_key in (
+            "sql_expressions",
+            "example_sqls",
+            "metric_views",
+            "column_descriptions",
+        ):
+            items = directive.get(list_key) or []
+            for item in items:
+                if isinstance(item, dict):
+                    pt = str(item.get("patch_type") or "").strip()
+                    if pt:
+                        return pt
+        fallback = _LEVER_TO_DEFAULT_FAMILY.get(str(lever_key))
+        if fallback:
+            return fallback
+    return ""
+
+
+def _emit_plan12_ag_pivot_decision(
+    *,
+    action_groups: list[dict],
+    forbidden_signatures: frozenset,
+    cluster_id_to_signatures: dict[str, list],
+    optimization_run_id: str,
+    iteration: int,
+) -> bool:
+    """Plan 12 PR 5 deferred wire-in — observation-only AG pivot
+    decision emitter.
+
+    Iterates the strategist's AGs and, for each AG with a non-empty
+    ``source_cluster_ids``, consults
+    :func:`next_patch_family_for_cluster` using the prior terminal
+    signatures the harness tracks per cluster. Emits one
+    ``GSO_PLAN12_AG_PIVOT_DECIDED_V1`` marker per AG.
+
+    Returns ``True`` if the helper ran (regardless of whether any
+    marker fired) and ``False`` when the feature flag is OFF.
+    OBSERVATION-ONLY for this commit: ``pivot_applied`` is always
+    False — the AG itself is not mutated. Promotion to active
+    mutation is a separate commit once the marker stream has been
+    audited on a canary deploy.
+
+    Args:
+      action_groups: the strategist's next-iteration AG list. Each
+        AG must be a dict; AGs without ``source_cluster_ids`` are
+        silently skipped (no cluster to look up).
+      forbidden_signatures: the harness's loop-scoped forbidden_set
+        (frozen for safety; the helper does NOT mutate it).
+      cluster_id_to_signatures: precomputed mapping from cluster_id
+        to its prior terminal signatures. The harness computes this
+        once per iteration; the helper consumes it read-only.
+      optimization_run_id, iteration: pass-through for the marker.
+    """
+    from genie_space_optimizer.common.config import (
+        plan12_live_ag_retry_pivot_enabled,
+    )
+
+    if not plan12_live_ag_retry_pivot_enabled():
+        return False
+
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        plan12_ag_pivot_decided_marker,
+    )
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        next_patch_family_for_cluster,
+    )
+
+    del forbidden_signatures  # Reserved — future commits may use it for AG mutation.
+
+    for ag in action_groups or ():
+        if not isinstance(ag, dict):
+            continue
+        source_cids = list(ag.get("source_cluster_ids") or ())
+        if not source_cids:
+            continue
+        # One marker per (AG, primary_cluster) pair. AGs with multiple
+        # source clusters use the first as the routing anchor — mirrors
+        # the production lookup in
+        # _generate_proposals_for_lever6.primary_cluster.
+        cluster_id = str(source_cids[0])
+        prior_sigs = list(
+            cluster_id_to_signatures.get(cluster_id, ()) or ()
+        )
+        prior_terminal_reason = (
+            str(getattr(prior_sigs[-1], "terminal_reason", "") or "")
+            if prior_sigs
+            else ""
+        )
+        prior_family = _derive_prior_patch_family(ag)
+        recommended = next_patch_family_for_cluster(
+            cluster_id=cluster_id,
+            prior_terminal_signatures=prior_sigs,
+            prior_patch_family=prior_family,
+        )
+        pivot_recommended = bool(
+            prior_family and recommended != prior_family
+        )
+        print(
+            plan12_ag_pivot_decided_marker(
+                optimization_run_id=str(optimization_run_id or ""),
+                iteration=int(iteration or 0),
+                ag_id=str(ag.get("id") or ""),
+                cluster_id=cluster_id,
+                prior_terminal_reason=prior_terminal_reason,
+                prior_patch_family=prior_family,
+                recommended_patch_family=str(recommended or prior_family),
+                pivot_recommended=pivot_recommended,
+                pivot_applied=False,  # observation-only in this commit
+            )
+        )
+    return True

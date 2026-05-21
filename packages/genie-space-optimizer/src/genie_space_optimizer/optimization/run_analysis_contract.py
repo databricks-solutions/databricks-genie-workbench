@@ -1690,6 +1690,60 @@ def patch_outcome_marker(
     )
 
 
+def plan12_ag_pivot_decided_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    prior_terminal_reason: str,
+    prior_patch_family: str,
+    recommended_patch_family: str,
+    pivot_recommended: bool,
+    pivot_applied: bool,
+) -> str:
+    """Plan 12 PR 5 deferred — observation marker for the AG-retry
+    patch-family pivot policy.
+
+    Emitted at the harness's AG-construction site (immediately after
+    the strategist returns the next iteration's AGs) when
+    :func:`plan12_live_ag_retry_pivot_enabled` is True. One marker
+    per AG-with-prior-terminal-signature; the postmortem renderer
+    reads the stream to confirm the policy is firing correctly
+    before a follow-up commit promotes ``pivot_applied=True`` to an
+    actual AG mutation.
+
+    Fields:
+
+      - ``prior_terminal_reason`` — the terminal reason from the
+        prior iteration's terminal signature for this cluster (e.g.
+        ``no_applied_patches`` or ``structural_gate_dropped_instruction_only``).
+      - ``prior_patch_family`` — the patch family the strategist
+        chose for this AG (derived from its ``lever_directives``).
+      - ``recommended_patch_family`` — the family
+        :func:`next_patch_family_for_cluster` recommends. Differs
+        from ``prior_patch_family`` only when the pivot policy fires.
+      - ``pivot_recommended`` — True when the recommendation differs
+        from the prior choice.
+      - ``pivot_applied`` — currently always False (observation-only).
+        A future commit flips this when the AG mutation is wired in.
+    """
+    return marker_line(
+        "GSO_PLAN12_AG_PIVOT_DECIDED_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "cluster_id": str(cluster_id),
+            "prior_terminal_reason": str(prior_terminal_reason),
+            "prior_patch_family": str(prior_patch_family),
+            "recommended_patch_family": str(recommended_patch_family),
+            "pivot_recommended": bool(pivot_recommended),
+            "pivot_applied": bool(pivot_applied),
+        },
+    )
+
+
 def assemble_run_manifest_v2_line(
     *,
     optimization_run_id: str,
