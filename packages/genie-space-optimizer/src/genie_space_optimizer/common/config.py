@@ -5759,6 +5759,29 @@ def plan11_llm_first_enabled() -> bool:
     return _flag_default_on("GSO_PLAN11_LLM_FIRST")
 
 
+def plan12_live_narrow_replacement_enabled() -> bool:
+    """Plan 12 PR 4 deferred harness wire-in. Default OFF.
+
+    When ON, the harness's
+    ``_run_narrow_l6_replacement_loop`` swaps the legacy
+    ``narrow_skipped_no_original_patch_type`` typed-decline emission
+    for an actual ``narrow_replacement_from_drop_record`` LLM call
+    (the PR 4 wrapper that dispatches to ``narrow_replacement_with_llm``).
+    Result: a ``GSO_PATCH_OUTCOME_V1`` marker with
+    ``outcome_kind=blast_radius_rejected``,
+    ``narrow_replacement_attempted=True``, and
+    ``narrow_outcome=narrowed|exhausted`` instead of (or in addition
+    to) the legacy typed-decline record.
+
+    Default OFF preserves byte-stable replay against the existing
+    harness suite. Operators flip per-deploy via the env var
+    ``GSO_PLAN12_LIVE_NARROW_REPLACEMENT=true``. The flip will be
+    promoted to default-ON once the new outcome stream has cleared a
+    canary on the airline workspace.
+    """
+    return _flag_enabled("GSO_PLAN12_LIVE_NARROW_REPLACEMENT")
+
+
 def _flag_default_on(env_name: str) -> bool:
     raw = (os.environ.get(env_name) or "").strip().lower()
     if raw in _FALSY_VALUES:

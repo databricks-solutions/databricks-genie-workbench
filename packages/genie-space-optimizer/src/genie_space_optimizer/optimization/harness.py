@@ -3932,6 +3932,13 @@ def _run_narrow_l6_replacement_loop(
     iter_inputs: dict | None = None,
     qid_to_question_text: dict[str, str] | None = None,
     qid_to_reference_sql: dict[str, str] | None = None,
+    # Plan 12 PR 4 deferred wire-in — pass a Databricks WorkspaceClient
+    # here to opt into live narrow-replacement (gated by the
+    # GSO_PLAN12_LIVE_NARROW_REPLACEMENT env flag). Default None
+    # preserves byte-stable replay against every existing caller; the
+    # _attempt_llm_narrow_replacement_and_emit_outcome helper bails
+    # out unless both w is supplied AND the flag is on.
+    w: Any = None,
 ) -> list[dict]:
     """Cycle 9 W3 / Cycle 10 W4 / Cycle 16 T3 — for each L6 patch dropped
     at HCRF (``high_collateral_risk_flagged``), build a narrow-scope
@@ -4087,6 +4094,28 @@ def _run_narrow_l6_replacement_loop(
             # (empty original patch_type) from the legacy
             # ``narrow_not_applicable`` cases.
             if not diag.get("applicable"):
+                # Plan 12 PR 4 deferred wire-in — when the feature
+                # flag is on AND ``w`` is supplied AND the reason is
+                # ``narrow_skipped_no_original_patch_type``, attempt
+                # an actual LLM-based narrow replacement via the PR 4
+                # ``narrow_replacement_from_drop_record`` wrapper and
+                # emit a typed GSO_PATCH_OUTCOME_V1 capturing the
+                # narrow_outcome. The helper bails out cleanly when
+                # any precondition fails — flag-OFF callers see no
+                # behavior change (the legacy typed-decline emission
+                # below still runs unconditionally for byte-stable
+                # replay).
+                _attempt_llm_narrow_replacement_and_emit_outcome(
+                    drop=drop,
+                    diag=diag,
+                    ag_target_qids=tuple(blast_target_qids or ()),
+                    ag_root_cause=str(ag_root_cause or ""),
+                    run_id=str(run_id or ""),
+                    iteration=int(iteration or 0),
+                    ag_id=str(ag_id or ""),
+                    cluster_id=str(cluster_id or ""),
+                    w=w,
+                )
                 _emit_narrow_replacement_diagnostic_for_test(
                     diag=diag,
                     run_id=run_id,
@@ -35970,3 +35999,141 @@ def derive_proposal_attempts_from_patch_outcomes(
         for o in (patch_outcomes or [])
         if o.get("intent_id")
     })
+
+
+# ── Plan 12 PR 4 deferred — live narrow-replacement wire-in ───────────
+
+
+def _attempt_llm_narrow_replacement_and_emit_outcome(
+    *,
+    drop: dict,
+    diag: dict,
+    ag_target_qids: tuple[str, ...],
+    ag_root_cause: str,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    w: Any,
+) -> bool:
+    """Plan 12 PR 4 deferred — swap the legacy
+    ``narrow_skipped_no_original_patch_type`` typed-decline emission
+    for an actual ``narrow_replacement_from_drop_record`` LLM call
+    when the feature flag is on.
+
+    Bails out (returns ``False`` — no LLM call, no outcome emitted)
+    when ANY of the following hold, so flag-OFF + existing tests
+    stay byte-stable:
+
+      - :func:`plan12_live_narrow_replacement_enabled` is False
+      - ``w`` (workspace client) is None — production callers don't yet
+        thread it; tests pass an opaque sentinel
+      - ``diag.reason`` is not
+        ``"narrow_skipped_no_original_patch_type"``
+      - The drop's ``original_patch.intent_id`` is empty — I22's
+        outcome stream is keyed on intent_id; emitting an unkeyed
+        marker would defeat the coverage check
+
+    On success (``True``), emits exactly one ``GSO_PATCH_OUTCOME_V1``
+    with ``outcome_kind=blast_radius_rejected``,
+    ``narrow_replacement_attempted=True``, and
+    ``narrow_outcome="narrowed"`` (LLM produced a replacement) or
+    ``"exhausted"`` (LLM declined / returned None).
+
+    The caller (``_run_narrow_l6_replacement_loop``) is responsible
+    for ALSO emitting the legacy typed-decline record + marker so
+    downstream consumers of the existing decision-record schema
+    keep working. The outcome marker is additive, not a replacement
+    for the legacy emission.
+    """
+    from genie_space_optimizer.common.config import (
+        plan12_live_narrow_replacement_enabled,
+    )
+
+    if not plan12_live_narrow_replacement_enabled():
+        return False
+    if w is None:
+        return False
+    if str(diag.get("reason") or "") != "narrow_skipped_no_original_patch_type":
+        return False
+
+    original = (drop or {}).get("original_patch") or {}
+    intent_id = str(original.get("intent_id") or "")
+    if not intent_id:
+        return False
+
+    from genie_space_optimizer.optimization.blast_radius_drop_record import (
+        BlastRadiusDropRecord,
+    )
+    from genie_space_optimizer.optimization.patch_outcome import (
+        PatchOutcomeKind,
+    )
+    from genie_space_optimizer.optimization.patch_survival_emitter import (
+        emit_patch_outcome,
+    )
+    from genie_space_optimizer.optimization.stages.narrow_replacement import (
+        narrow_replacement_from_drop_record,
+    )
+    from genie_space_optimizer.optimization.stages.plan11_types import (
+        FailureCluster,
+    )
+
+    collateral_qids = tuple(
+        str(q) for q in (drop.get("collateral_qids") or ())
+    )
+    protected_sql_by_qid = dict(drop.get("protected_sql_by_qid") or {})
+
+    drop_record = BlastRadiusDropRecord(
+        intent_id=intent_id,
+        original_patch_type=str(
+            original.get("original_patch_type")
+            or original.get("patch_type")
+            or ""
+        ),
+        original_patch_body=dict(original.get("patch_body") or {}),
+        causal_target=str(original.get("causal_target") or ""),
+        failing_sql_anchor=str(original.get("failing_sql_anchor") or ""),
+        target_qids=tuple(str(q) for q in (original.get("target_qids") or ())),
+        collateral_qids=collateral_qids,
+        protected_sql_by_qid=protected_sql_by_qid,
+        rca_card_id=str(original.get("rca_card_id") or ""),
+        cluster_id=str(cluster_id or original.get("cluster_id") or ""),
+        ag_id=str(ag_id or original.get("ag_id") or ""),
+    )
+
+    # Build the minimal FailureCluster the wrapper expects. The
+    # narrow-replacement prompt reads ``cluster.repair_hypothesis`` for
+    # narrative; we fill it with the AG's root_cause so the LLM has
+    # context even when no upstream Plan 11 cluster object is around.
+    cluster = FailureCluster(
+        cluster_id=str(cluster_id or ""),
+        semantic_theme=str(ag_root_cause or ""),
+        member_qids=tuple(ag_target_qids or ()),
+        unifying_evidence="",
+        repair_hypothesis=str(ag_root_cause or ""),
+        primary_blame_set=tuple(),
+        confidence="medium",
+    )
+
+    narrowed = narrow_replacement_from_drop_record(
+        drop_record=drop_record,
+        cluster=cluster,
+        w=w,
+        optimization_run_id=str(run_id or ""),
+        iteration=int(iteration or 0),
+    )
+    narrow_outcome = "narrowed" if narrowed is not None else "exhausted"
+
+    emit_patch_outcome(
+        optimization_run_id=str(run_id or ""),
+        iteration=int(iteration or 0),
+        ag_id=str(ag_id or ""),
+        cluster_id=str(cluster_id or ""),
+        intent_id=intent_id,
+        outcome_kind=PatchOutcomeKind.BLAST_RADIUS_REJECTED,
+        terminal_reason="blast_radius_rejected",
+        collateral_qids=collateral_qids,
+        narrow_replacement_attempted=True,
+        narrow_outcome=narrow_outcome,
+    )
+    return True
