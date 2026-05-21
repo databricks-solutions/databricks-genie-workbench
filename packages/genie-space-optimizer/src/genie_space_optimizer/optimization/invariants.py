@@ -1333,6 +1333,85 @@ def check_i21_plan11_dispatch_coverage(
     ]
 
 
+def check_i22_patch_outcome_coverage(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I22 — Plan 12. Every Stage 3 proposal_id MUST have exactly one
+    matching ``GSO_PATCH_OUTCOME_V1`` marker. Reports BOTH missing
+    intents AND double emissions. Silent when no Stage 3 markers exist
+    (pre-Plan-12 fixtures stay green).
+
+    Reads:
+      evidence["plan11_stage3_markers"]: list of dicts with
+        optimization_run_id, iteration, cluster_id, proposal_ids
+      evidence["patch_outcome_markers"]: list of dicts with
+        optimization_run_id, iteration, intent_id, outcome_kind
+    """
+    stage3 = evidence.get("plan11_stage3_markers", [])
+    outcomes = evidence.get("patch_outcome_markers", [])
+    if not stage3:
+        return []
+
+    # Stage-3 declared intent IDs per (run, iter).
+    declared: dict[tuple[str, int], set[str]] = {}
+    for m in stage3:
+        key = (
+            str(m.get("optimization_run_id", "")),
+            int(m.get("iteration", 0)),
+        )
+        bucket = declared.setdefault(key, set())
+        for pid in m.get("proposal_ids", []) or []:
+            bucket.add(str(pid))
+
+    # Outcomes per (run, iter) — multiset of intent_ids.
+    from collections import Counter
+    seen: dict[tuple[str, int], Counter] = {}
+    for o in outcomes:
+        key = (
+            str(o.get("optimization_run_id", "")),
+            int(o.get("iteration", 0)),
+        )
+        bucket = seen.setdefault(key, Counter())
+        bucket[str(o.get("intent_id", ""))] += 1
+
+    violations: list[dict] = []
+    for key, intents in declared.items():
+        observed = seen.get(key, Counter())
+        for intent_id in intents:
+            count = observed.get(intent_id, 0)
+            if count == 0:
+                violations.append(
+                    {
+                        "invariant": "I22",
+                        "run_id": key[0],
+                        "iteration": key[1],
+                        "missing_intent_id": intent_id,
+                        "message": (
+                            f"I22: intent_id={intent_id!r} in "
+                            f"iteration {key[1]} has no "
+                            f"GSO_PATCH_OUTCOME_V1 marker"
+                        ),
+                    }
+                )
+            elif count > 1:
+                violations.append(
+                    {
+                        "invariant": "I22",
+                        "run_id": key[0],
+                        "iteration": key[1],
+                        "intent_id": intent_id,
+                        "double_count": count,
+                        "message": (
+                            f"I22: intent_id={intent_id!r} in "
+                            f"iteration {key[1]} has {count} "
+                            f"GSO_PATCH_OUTCOME_V1 markers (double "
+                            f"emission)"
+                        ),
+                    }
+                )
+    return violations
+
+
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
     violations. Empty list = green pilot."""
@@ -1359,6 +1438,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i19_repair_loop_exhaustion_rate,  # Plan 11
         check_i20_narrow_replacement_exhaustion_rate,  # Plan 11
         check_i21_plan11_dispatch_coverage,  # Plan 12
+        check_i22_patch_outcome_coverage,  # Plan 12
     ):
         try:
             violations.extend(check(evidence))
