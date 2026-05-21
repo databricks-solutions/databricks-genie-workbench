@@ -193,23 +193,49 @@ def build_run_summary(
     terminal_state: dict[str, Any],
     iteration_count: int,
     accuracy_delta_pp: float,
+    eval_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build run_summary.json — the high-level run outcome.
 
     Cycle 6 F-6: accuracy fields are normalized to 0-100 percent
     units at the boundary so downstream renderers never multiply.
+
+    Plan 12 PR 7 Task 7.5: ``hard_failures_count`` and
+    ``soft_failures_count`` are derived from ``eval_result.rows`` when
+    the kwarg is supplied. Closes the stale-write bug both 2026-05-20
+    postmortems flagged where the legacy counter diverged from the
+    actual eval result under retry. When ``eval_result`` is absent
+    (legacy callers not yet wired), both counts are 0 — byte-stable
+    against existing callers that haven't been threaded through.
     """
     normalized_baseline = dict(baseline or {})
     if "overall_accuracy" in normalized_baseline:
         normalized_baseline["overall_accuracy"] = _normalize_accuracy_pct(
             normalized_baseline["overall_accuracy"]
         )
+
+    hard = 0
+    soft = 0
+    rows = list((eval_result or {}).get("rows") or [])
+    for row in rows:
+        raw_score = row.get("score") if row.get("score") is not None else 0.0
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            score = 0.0
+        if score < 0.5:
+            hard += 1
+        elif score < 1.0:
+            soft += 1
+
     return {
         "schema_version": SCHEMA_VERSION,
         "baseline": normalized_baseline,
         "terminal_state": terminal_state,
         "iteration_count": iteration_count,
         "accuracy_delta_pp": _normalize_accuracy_pct(accuracy_delta_pp),
+        "hard_failures_count": hard,
+        "soft_failures_count": soft,
     }
 
 
