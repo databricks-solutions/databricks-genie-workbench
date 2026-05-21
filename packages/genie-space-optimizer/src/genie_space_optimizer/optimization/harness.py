@@ -35873,3 +35873,100 @@ def _compute_category_performance(
             category_stats[cat]["correct"] += 1
 
     return category_stats
+
+
+# ── Plan 12 PR 7 — Observability Hygiene ──────────────────────────────
+
+
+# Task 7.1 — evidence_bundle cache keyed by latest task_run_id, not
+# parent run_id. The legacy cache (keyed by parent) returned stale
+# rows when an iteration retried — both 2026-05-20 postmortems flagged
+# this as a contributor to the silent-evidence problem.
+_EVIDENCE_BUNDLE_CACHE: dict[str, Any] = {}
+
+
+def clear_evidence_bundle_cache() -> None:
+    """Drop every cached evidence bundle. The harness should call this
+    at the start of every parent-run-id boundary so a stale cache from
+    a prior session cannot contaminate the next.
+    """
+    _EVIDENCE_BUNDLE_CACHE.clear()
+
+
+def _fetch_evidence_bundle(task_run_id: str) -> Any:
+    """Placeholder for the actual evidence-bundle fetcher. Tests patch
+    this symbol; the production wire-in replaces it with whatever
+    Databricks-Jobs / MLflow call the harness currently uses.
+    """
+    raise NotImplementedError(
+        "Plan 12 PR 7 Task 7.1: harness callsite wire-in is deferred; "
+        "tests must patch this symbol via monkeypatch."
+    )
+
+
+def get_evidence_bundle_for_task_run(
+    *,
+    parent_run_id: str,
+    task_run_id: str,
+) -> Any:
+    """Plan 12 — fetch evidence bundle keyed by latest ``task_run_id``.
+
+    Closes the stale-cache bug observed in both 2026-05-20 postmortems
+    where a parent-keyed cache returned data from a prior task attempt
+    when the harness retried.
+
+    ``parent_run_id`` is accepted for call-site readability (and for
+    future per-parent invalidation policy) but is not part of the
+    cache key.
+    """
+    del parent_run_id  # Reserved for future per-parent invalidation.
+    key = str(task_run_id)
+    if key in _EVIDENCE_BUNDLE_CACHE:
+        return _EVIDENCE_BUNDLE_CACHE[key]
+    bundle = _fetch_evidence_bundle(task_run_id)
+    _EVIDENCE_BUNDLE_CACHE[key] = bundle
+    return bundle
+
+
+# Task 7.2 — Phase B end total from journey ledger.
+def derive_phase_b_end_total_from_journey(
+    journey_records: list[dict],
+) -> int:
+    """Plan 12 — derive Phase B end total from the canonical journey
+    ledger instead of an independent counter. The legacy counter
+    drifted under retry, producing silent undercount in postmortems.
+    """
+    return len(journey_records or [])
+
+
+# Task 7.3 — iteration_summary_count from journey ledger.
+def derive_iteration_summary_count_from_journey(
+    journey_records: list[dict],
+) -> int:
+    """Plan 12 — count ``iteration_summary_recorded`` events in the
+    journey ledger. Replaces the legacy counter that diverged from
+    the canonical event stream.
+    """
+    return sum(
+        1
+        for r in (journey_records or [])
+        if str(r.get("event")) == "iteration_summary_recorded"
+    )
+
+
+# Task 7.4 — proposal_attempts from GSO_PATCH_OUTCOME_V1 markers.
+def derive_proposal_attempts_from_patch_outcomes(
+    patch_outcomes: list[dict],
+) -> int:
+    """Plan 12 — single source of truth for ``proposal_attempts``.
+
+    Counts unique ``intent_id``s across ``GSO_PATCH_OUTCOME_V1``
+    markers. Duplicates (a future bug at the outcome emitter or a
+    replay artifact) are intentionally collapsed so the count matches
+    what I22's coverage check sees.
+    """
+    return len({
+        str(o.get("intent_id") or "")
+        for o in (patch_outcomes or [])
+        if o.get("intent_id")
+    })
