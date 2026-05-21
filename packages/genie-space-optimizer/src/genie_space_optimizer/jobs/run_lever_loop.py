@@ -333,6 +333,21 @@ _warehouse_id = ctx["warehouse_id"].value or ""
 if _warehouse_id:
     _os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] = _warehouse_id
 
+# Plan 12 canary — flip ON the umbrella for every Plan 12 live-wire
+# so the deployed lever loop exercises the full set of behaviors
+# (narrow_replacement, AG retry pivot + mutation, evidence-driven
+# lever routing, proposal_attempts deriver, run_summary eval-derive,
+# L6 applier APPLIED/VALIDATOR_REJECTED emissions). ``setdefault``
+# so an operator can still override per-flag via the Databricks job
+# spec without losing the umbrella default (which is what the
+# canary needs).
+#
+# Override semantics per :func:`_plan12_sub_flag_with_umbrella`:
+# any individual GSO_PLAN12_LIVE_* env var set truthy or falsy
+# wins over the umbrella. Operators disable a specific wire mid-
+# canary by setting e.g. GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE=0.
+_os.environ.setdefault("GSO_PLAN12_LIVE_ALL", "true")
+
 # RCO-2b — production posture flipped 2026-05-13.
 #
 # Cycle 11 originally pinned ``GSO_LOOP_INVARIANTS_STRICT=0`` here to

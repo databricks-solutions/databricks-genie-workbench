@@ -5740,6 +5740,69 @@ def _flag_enabled(env_name: str) -> bool:
     return raw in _TRUTHY_VALUES
 
 
+def _flag_state(env_name: str) -> str:
+    """Tri-state flag reader. Returns ``"on"`` when the env var is
+    explicitly truthy, ``"off"`` when explicitly falsy, ``"unset"``
+    when absent / empty. Used by the Plan 12 sub-flags to layer
+    explicit per-flag overrides on top of the umbrella default.
+    """
+    raw = (os.environ.get(env_name) or "").strip().lower()
+    if raw in _TRUTHY_VALUES:
+        return "on"
+    if raw in _FALSY_VALUES:
+        return "off"
+    return "unset"
+
+
+def plan12_live_all_enabled() -> bool:
+    """Plan 12 umbrella switch — enable EVERY Plan 12 live-wire when
+    set. Default OFF.
+
+    When the env var ``GSO_PLAN12_LIVE_ALL`` is truthy, all seven
+    Plan 12 sub-flags default to ON:
+
+      * GSO_PLAN12_LIVE_NARROW_REPLACEMENT
+      * GSO_PLAN12_LIVE_AG_RETRY_PIVOT
+      * GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE
+      * GSO_PLAN12_LIVE_EVIDENCE_ROUTING
+      * GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE
+      * GSO_PLAN12_LIVE_RUN_SUMMARY_EVAL_DERIVE
+      * GSO_PLAN12_LIVE_L6_APPLIER_EMIT_OUTCOMES
+
+    Override semantics: any sub-flag explicitly set (truthy OR falsy)
+    takes precedence over the umbrella. Setting the umbrella ON plus
+    ``GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE=false`` enables six of
+    seven sub-flags — the mutate flag stays OFF.
+
+    Designed for canary deploys: one env var enables every live-wire
+    so an operator doesn't have to track seven separate variables.
+    Once the canary stabilizes, individual sub-flags should be
+    promoted to ``_flag_default_on`` in their own functions and the
+    umbrella retired.
+    """
+    return _flag_enabled("GSO_PLAN12_LIVE_ALL")
+
+
+def _plan12_sub_flag_with_umbrella(env_name: str) -> bool:
+    """Plan 12 sub-flag override semantics. Returns:
+
+      * ``True``  when the sub-flag env var is explicitly truthy
+      * ``False`` when the sub-flag env var is explicitly falsy
+      * the umbrella's state (:func:`plan12_live_all_enabled`)
+        otherwise
+
+    This gives an operator one switch (the umbrella) for the canary
+    while still allowing per-flag disable when a specific wire
+    misbehaves.
+    """
+    state = _flag_state(env_name)
+    if state == "on":
+        return True
+    if state == "off":
+        return False
+    return plan12_live_all_enabled()
+
+
 def plan11_llm_first_enabled() -> bool:
     """Plan 11: LLM-first diagnosis + synthesis, no closed taxonomy.
 
@@ -5779,7 +5842,7 @@ def plan12_live_narrow_replacement_enabled() -> bool:
     promoted to default-ON once the new outcome stream has cleared a
     canary on the airline workspace.
     """
-    return _flag_enabled("GSO_PLAN12_LIVE_NARROW_REPLACEMENT")
+    return _plan12_sub_flag_with_umbrella("GSO_PLAN12_LIVE_NARROW_REPLACEMENT")
 
 
 def plan12_live_l6_applier_emit_outcomes_enabled() -> bool:
@@ -5809,7 +5872,9 @@ def plan12_live_l6_applier_emit_outcomes_enabled() -> bool:
     applier fixtures. Operators flip per-deploy via env var
     ``GSO_PLAN12_LIVE_L6_APPLIER_EMIT_OUTCOMES=true``.
     """
-    return _flag_enabled("GSO_PLAN12_LIVE_L6_APPLIER_EMIT_OUTCOMES")
+    return _plan12_sub_flag_with_umbrella(
+        "GSO_PLAN12_LIVE_L6_APPLIER_EMIT_OUTCOMES"
+    )
 
 
 def plan12_live_ag_retry_pivot_mutate_enabled() -> bool:
@@ -5838,7 +5903,9 @@ def plan12_live_ag_retry_pivot_mutate_enabled() -> bool:
     ``GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE=true`` after the
     observation marker stream confirms the policy fires correctly.
     """
-    return _flag_enabled("GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE")
+    return _plan12_sub_flag_with_umbrella(
+        "GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE"
+    )
 
 
 def plan12_live_ag_retry_pivot_enabled() -> bool:
@@ -5860,7 +5927,7 @@ def plan12_live_ag_retry_pivot_enabled() -> bool:
     harness suite. Operators flip per-deploy via the env var
     ``GSO_PLAN12_LIVE_AG_RETRY_PIVOT=true``.
     """
-    return _flag_enabled("GSO_PLAN12_LIVE_AG_RETRY_PIVOT")
+    return _plan12_sub_flag_with_umbrella("GSO_PLAN12_LIVE_AG_RETRY_PIVOT")
 
 
 def plan12_live_proposal_attempts_derive_enabled() -> bool:
@@ -5881,7 +5948,9 @@ def plan12_live_proposal_attempts_derive_enabled() -> bool:
     the regression if a future change reintroduces drift between
     the recorded counter and the deriver source-of-truth.
     """
-    return _flag_enabled("GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE")
+    return _plan12_sub_flag_with_umbrella(
+        "GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE"
+    )
 
 
 def plan12_live_run_summary_eval_derive_enabled() -> bool:
@@ -5903,7 +5972,9 @@ def plan12_live_run_summary_eval_derive_enabled() -> bool:
     baked into their run_summary.json. Operators flip per-deploy via
     the env var ``GSO_PLAN12_LIVE_RUN_SUMMARY_EVAL_DERIVE=true``.
     """
-    return _flag_enabled("GSO_PLAN12_LIVE_RUN_SUMMARY_EVAL_DERIVE")
+    return _plan12_sub_flag_with_umbrella(
+        "GSO_PLAN12_LIVE_RUN_SUMMARY_EVAL_DERIVE"
+    )
 
 
 def plan12_live_evidence_routing_enabled() -> bool:
@@ -5935,7 +6006,7 @@ def plan12_live_evidence_routing_enabled() -> bool:
     harness suite. Operators flip per-deploy via the env var
     ``GSO_PLAN12_LIVE_EVIDENCE_ROUTING=true``.
     """
-    return _flag_enabled("GSO_PLAN12_LIVE_EVIDENCE_ROUTING")
+    return _plan12_sub_flag_with_umbrella("GSO_PLAN12_LIVE_EVIDENCE_ROUTING")
 
 
 def _flag_default_on(env_name: str) -> bool:
