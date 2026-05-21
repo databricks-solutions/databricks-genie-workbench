@@ -265,3 +265,248 @@ def test_plan10_anchor_replay_produces_typed_proposal(
         f"{fixture['fixture_id']}: proposal_dict missing example_sql "
         "from to_proposal_dict projection"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Plan 11 — flag-ON anchor replay
+#
+# Same 4 anchors, but driven through the new diagnose → cluster →
+# synthesize stages. The legacy fallback / archetype path is bypassed
+# entirely; every LLM call is mocked at the per-stage import surface
+# so no real model is hit.
+#
+# Acceptance for each anchor: Stage 3's :class:`ClusterSynthesisResult`
+# carries a non-None ``proposal`` AND its ``skipped_reason`` is empty
+# (success path, not a closed-vocabulary decline).
+# ─────────────────────────────────────────────────────────────────────
+
+
+_PLAN11_ANCHOR_CASES = (
+    (
+        "airline_gs_009_plural_top_n_collapse.json",
+        "plural_top_n_collapse",
+        "Replace RANK() with ROW_NUMBER() OVER (...) and add LIMIT 10",
+        "add_example_sql",
+    ),
+    (
+        "airline_gs_024_missing_filter.json",
+        "missing_filter",
+        "Remove the filter on PAYMENT_CURRENCY_CD = USD from the WHERE clause",
+        "update_instruction_section",
+    ),
+    (
+        "7now_gs_013_wrong_filter_condition.json",
+        "wrong_filter_condition",
+        "Fix the date filter to use the correct column reference",
+        "add_example_sql",
+    ),
+    (
+        "7now_gs_026_plural_top_n_collapse.json",
+        "plural_top_n_collapse",
+        "Use ROW_NUMBER() with LIMIT 10 instead of RANK()",
+        "add_example_sql",
+    ),
+)
+
+
+def _plan11_patch_body(patch_type: str) -> dict:
+    """Build a minimal patch_body matching what each PatchType expects.
+
+    The Plan 11 dispatcher's Stage 3 doesn't validate patch_body shape —
+    that's deferred to validate_patch. These bodies are non-empty so
+    a downstream call to validate_patch could plausibly succeed.
+    """
+    if patch_type == "add_example_sql":
+        return {
+            "example_question": "Replay anchor question?",
+            "example_sql": "SELECT * FROM t ORDER BY x DESC LIMIT 10",
+        }
+    if patch_type == "update_instruction_section":
+        return {
+            "instruction_text": (
+                "## Filter Conventions\n"
+                "Do not filter on PAYMENT_CURRENCY_CD by default.\n"
+            ),
+        }
+    return {}
+
+
+def _plan11_stage_response(skill_id: str, payload: dict) -> LlmReasoningResponse:
+    return LlmReasoningResponse(
+        call_id=f"replay_call.{skill_id}",
+        skill_id=skill_id,
+        succeeded=True,
+        parsed_output=payload,
+        declined=None,
+        raw_text=json.dumps({"result": payload, "declined": None}),
+        tokens_input=200,
+        tokens_output=100,
+        duration_ms=1,
+        error=None,
+    )
+
+
+@pytest.mark.parametrize(
+    "fixture_name,expected_label,expected_hypothesis,expected_patch_type",
+    _PLAN11_ANCHOR_CASES,
+    ids=[name.replace(".json", "") for name, *_ in _PLAN11_ANCHOR_CASES],
+)
+def test_plan10_anchor_replay_with_plan11_flag_on(
+    fixture_name: str,
+    expected_label: str,
+    expected_hypothesis: str,
+    expected_patch_type: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plan 11 flag-ON: each Phase C anchor produces a non-None
+    :class:`ClusterSynthesisResult.proposal` via the new
+    diagnose → cluster → synthesize stages.
+
+    Mocks LlmReasoningCall at each stage's import surface so no real
+    LLM is needed. The downstream pipeline (validation, application)
+    is exercised separately in
+    ``test_plan11_validation_pipeline.py``.
+    """
+    monkeypatch.setenv("GSO_PLAN11_LLM_FIRST", "true")
+
+    fixture = _load_fixture(fixture_name)
+    qid = str(fixture["failing_qid"])
+    fixture_id = str(fixture["fixture_id"])
+
+    # ── Stage 1 mock — diagnose_failing_qids
+    diagnose_payload = {
+        "diagnoses": [
+            {
+                "qid": qid,
+                "rca_kind_label": expected_label,
+                "observed_failure": "Generated SQL does not match ground truth",
+                "generated_sql_issue": "Wrong aggregation / filter pattern",
+                "expected_sql_shape": expected_hypothesis[:80],
+                "blame_set": [],
+                "evidence_summary": (
+                    f"Judge said: {expected_hypothesis[:200]}"
+                ),
+                "confidence": "high",
+            },
+        ],
+    }
+
+    # ── Stage 2 mock — cluster_diagnoses
+    cluster_payload = {
+        "clusters": [
+            {
+                "semantic_theme": expected_label,
+                "member_qids": [qid],
+                "unifying_evidence": "single-qid replay cluster",
+                "repair_hypothesis": expected_hypothesis,
+                "primary_blame_set": [],
+                "confidence": "high",
+            },
+        ],
+    }
+
+    # ── Stage 3 mock — synthesize one proposal
+    synth_payload = {
+        "proposals": [
+            {
+                "intent_name": f"Fix {expected_label}"[:80],
+                "intent_description": expected_hypothesis[:100],
+                "repair_hypothesis": expected_hypothesis,
+                "patch_type": expected_patch_type,
+                "rationale": "Addresses the diagnosed root cause",
+                "confidence": "high",
+                "patch_body": _plan11_patch_body(expected_patch_type),
+                "blame_set": [],
+                "target_qids": [qid],
+            },
+        ],
+    }
+
+    from genie_space_optimizer.optimization.stages import (
+        cluster_plan11 as _stage2_mod,
+        diagnose as _stage1_mod,
+        synthesize as _stage3_mod,
+    )
+
+    def _stage_invoke(skill_id: str):
+        return {
+            "plan11_diagnose": lambda w, request: _plan11_stage_response(
+                skill_id, diagnose_payload,
+            ),
+            "plan11_cluster": lambda w, request: _plan11_stage_response(
+                skill_id, cluster_payload,
+            ),
+            "plan11_synthesize": lambda w, request: _plan11_stage_response(
+                skill_id, synth_payload,
+            ),
+        }[skill_id]
+
+    from unittest.mock import MagicMock as _MagicMock
+
+    with patch.object(_stage1_mod, "LlmReasoningCall") as MockS1, \
+         patch.object(_stage2_mod, "LlmReasoningCall") as MockS2, \
+         patch.object(_stage3_mod, "LlmReasoningCall") as MockS3:
+        MockS1.return_value.invoke = _stage_invoke("plan11_diagnose")
+        MockS2.return_value.invoke = _stage_invoke("plan11_cluster")
+        MockS3.return_value.invoke = _stage_invoke("plan11_synthesize")
+
+        diagnoses = _stage1_mod.diagnose_failing_qids(
+            failing_qids=[
+                {
+                    "qid": qid,
+                    "question_text": "replay question",
+                    "ground_truth_sql": "SELECT 1",
+                    "generated_sql": "SELECT 2",
+                    "judge_rationale": "wrong shape",
+                    "blame_set_seed": [],
+                },
+            ],
+            schema_columns=[],
+            optimization_run_id=f"replay_{fixture_id}",
+            iteration=1,
+            w=_MagicMock(),
+        )
+        assert len(diagnoses) == 1, (
+            f"{fixture_id}: Stage 1 dropped the diagnosis"
+        )
+        assert diagnoses[0].rca_kind_label == expected_label, (
+            f"{fixture_id}: Stage 1 returned wrong rca_kind_label"
+        )
+
+        clusters = _stage2_mod.cluster_diagnoses(
+            diagnoses=diagnoses,
+            schema_columns=[],
+            optimization_run_id=f"replay_{fixture_id}",
+            iteration=1,
+            namespace="hard",
+            w=_MagicMock(),
+        )
+        assert len(clusters) == 1, (
+            f"{fixture_id}: Stage 2 produced no clusters"
+        )
+        assert clusters[0].repair_hypothesis == expected_hypothesis, (
+            f"{fixture_id}: Stage 2 returned wrong repair_hypothesis"
+        )
+
+        result = _stage3_mod.run_plan11_synthesis_for_single_cluster(
+            cluster=clusters[0],
+            schema_slice={},
+            history=[],
+            optimization_run_id=f"replay_{fixture_id}",
+            iteration=1,
+            ag_id="AG_H001",
+            w=_MagicMock(),
+        )
+
+    assert result.skipped_reason == "", (
+        f"{fixture_id}: Stage 3 declined unexpectedly — "
+        f"skipped_reason={result.skipped_reason!r}"
+    )
+    assert result.proposal is not None, (
+        f"{fixture_id}: Stage 3 produced no proposal"
+    )
+    assert result.proposal.get("patch_type") == expected_patch_type, (
+        f"{fixture_id}: Stage 3 returned wrong patch_type "
+        f"{result.proposal.get('patch_type')!r} (expected "
+        f"{expected_patch_type!r})"
+    )
