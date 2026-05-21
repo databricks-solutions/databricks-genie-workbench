@@ -8211,6 +8211,53 @@ def _build_plan11_failing_qids_from_typed_evidence(
     return out
 
 
+def _build_plan11_failing_qids_from_raw(
+    *,
+    failing_qids: list[str],
+    eval_rows: list[dict],
+) -> list[dict]:
+    """Plan 12 — fallback Plan 11 Stage 1 input adapter.
+
+    Used when ``rca_evidence_typed`` is empty (the silent-fallthrough
+    bug observed in both 2026-05-20 postmortems). Reads
+    ``failing_qids + eval_rows`` directly so Plan 11's LLM lane runs
+    even without Plan 3's deterministic RCA classifier.
+
+    ``rca_evidence`` is an empty bundle (so the LLM cannot rely on
+    Plan 3's free-text fields); the LLM is responsible for forming
+    its own diagnosis from ``judge_rationale + generated_sql +
+    ground_truth_sql``.
+    """
+    by_qid = {
+        str(row.get("question_id") or ""): row
+        for row in (eval_rows or [])
+        if row.get("question_id")
+    }
+    out: list[dict] = []
+    for qid in failing_qids or []:
+        row = by_qid.get(str(qid))
+        if row is None:
+            continue
+        out.append(
+            {
+                "qid": str(qid),
+                "question_text": str(row.get("question") or ""),
+                "ground_truth_sql": str(row.get("ground_truth_sql") or ""),
+                "generated_sql": str(row.get("generated_sql") or ""),
+                "judge_rationale": str(row.get("judge_rationale") or ""),
+                "blame_set_seed": [],
+                "rca_evidence": {
+                    "observed_failure": str(row.get("judge_rationale") or ""),
+                    "generated_sql_issue": "",
+                    "expected_sql_shape": "",
+                    "suggested_repair_family": "",
+                    "confidence": "",
+                },
+            }
+        )
+    return out
+
+
 def _plan11_failure_cluster_to_legacy_dict(
     fc: Any,
     *,
