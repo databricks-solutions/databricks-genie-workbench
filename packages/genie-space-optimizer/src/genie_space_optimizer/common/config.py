@@ -5782,6 +5782,36 @@ def plan12_live_narrow_replacement_enabled() -> bool:
     return _flag_enabled("GSO_PLAN12_LIVE_NARROW_REPLACEMENT")
 
 
+def plan12_live_l6_applier_emit_outcomes_enabled() -> bool:
+    """Plan 12 PR 3 deferred — production wire-in at the L6 applier.
+
+    The Plan 11 / Plan 12 scaffold's ``emit_applied_outcome`` stand-in
+    proves the contract at the per-intent level; this flag activates
+    the equivalent emission in the production applier so deployed
+    runs satisfy I22's coverage check.
+
+    When ON, ``apply_patch_set`` emits one ``GSO_PATCH_OUTCOME_V1``
+    per patch at its terminal state:
+
+      * applied path           → APPLIED
+      * render-validation drop → VALIDATOR_REJECTED
+        (terminal_reason=validator_rejected_render)
+      * apply-action no-op     → VALIDATOR_REJECTED
+        (terminal_reason=applier_no_op)
+      * high-risk queued       → no emission (still pending)
+
+    Each emission is keyed on the patch's ``intent_id`` so I22's
+    coverage check sees an outcome for every Stage 3 proposal that
+    reached the applier. Patches without ``intent_id`` are silently
+    skipped — legacy paths and pre-Plan-12 fixtures stay byte-stable.
+
+    Default OFF preserves byte-stable replay against the existing
+    applier fixtures. Operators flip per-deploy via env var
+    ``GSO_PLAN12_LIVE_L6_APPLIER_EMIT_OUTCOMES=true``.
+    """
+    return _flag_enabled("GSO_PLAN12_LIVE_L6_APPLIER_EMIT_OUTCOMES")
+
+
 def plan12_live_ag_retry_pivot_mutate_enabled() -> bool:
     """Plan 12 PR 5 deferred — PROMOTE AG retry pivot from
     observation-only to active AG mutation. Default OFF.

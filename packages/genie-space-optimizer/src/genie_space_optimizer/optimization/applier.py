@@ -3964,6 +3964,70 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
+def _emit_l6_applier_outcome(
+    *,
+    patch: dict,
+    outcome_kind: str,
+    terminal_reason: str = "",
+    applied_patch_id: str = "",
+    validator_errors: tuple[str, ...] = (),
+) -> bool:
+    """Plan 12 PR 3 deferred production wire-in for L6 applier outcomes.
+
+    Emits one ``GSO_PATCH_OUTCOME_V1`` marker per patch terminal
+    transition (applied / validator_rejected) keyed on the patch's
+    ``intent_id``. The harness's lever loop stamps the identity
+    fields (``intent_id``, ``ag_id``, ``cluster_id``, plus the
+    iteration context via ``_run_id`` / ``_iteration``) on each Plan
+    11 / Plan 12 patch before invoking the applier.
+
+    Returns True when the marker actually fired; False otherwise.
+    Bails out cleanly (no emission) when ANY of the following hold:
+
+      - :func:`plan12_live_l6_applier_emit_outcomes_enabled` is False
+      - The patch's ``intent_id`` is empty (legacy patches without
+        Plan 11/12 identity threading)
+
+    Failures inside the emit path are swallowed with debug logging
+    so a bug here can never abort the applier — the existing
+    ``applier_decisions`` audit trail remains the source of truth
+    for the apply outcome.
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            plan12_live_l6_applier_emit_outcomes_enabled,
+        )
+        if not plan12_live_l6_applier_emit_outcomes_enabled():
+            return False
+        intent_id = str(patch.get("intent_id") or "")
+        if not intent_id:
+            return False
+        from genie_space_optimizer.optimization.patch_outcome import (
+            PatchOutcomeKind,
+        )
+        from genie_space_optimizer.optimization.patch_survival_emitter import (
+            emit_patch_outcome,
+        )
+        emit_patch_outcome(
+            optimization_run_id=str(patch.get("_run_id") or ""),
+            iteration=int(patch.get("_iteration") or 0),
+            ag_id=str(patch.get("ag_id") or ""),
+            cluster_id=str(patch.get("cluster_id") or ""),
+            intent_id=intent_id,
+            outcome_kind=PatchOutcomeKind(str(outcome_kind)),
+            terminal_reason=str(terminal_reason),
+            validator_errors=tuple(validator_errors or ()),
+            applied_patch_id=str(applied_patch_id or ""),
+        )
+        return True
+    except Exception:
+        logger.debug(
+            "Plan 12 PR 3: L6 applier outcome emit failed (non-fatal)",
+            exc_info=True,
+        )
+        return False
+
+
 def apply_patch_set(
     w: WorkspaceClient | None,
     space_id: str,
@@ -4111,6 +4175,16 @@ def apply_patch_set(
                     error=str(_render_err),
                 )
             )
+            # Plan 12 PR 3 deferred — emit VALIDATOR_REJECTED for the
+            # patch's intent_id. The render-raises path is the
+            # canonical L6 validation-reject site (the L6 gate refuses
+            # add_sql_snippet_* without validation_passed=True).
+            _emit_l6_applier_outcome(
+                patch=patch,
+                outcome_kind="validator_rejected",
+                terminal_reason="validator_rejected_render",
+                validator_errors=(str(_render_err),),
+            )
             continue
 
         if risk == "high" and not force_apply:
@@ -4166,6 +4240,20 @@ def apply_patch_set(
                     reason="render_and_apply_succeeded",
                 )
             )
+            # Plan 12 PR 3 deferred production wire-in — emit the
+            # APPLIED outcome for the patch's intent_id. Closes the
+            # I22 coverage check on the live applier path; the
+            # scaffold's ``emit_applied_outcome`` stand-in was for
+            # the contract-only replay tests.
+            _emit_l6_applier_outcome(
+                patch=patch,
+                outcome_kind="applied",
+                applied_patch_id=str(
+                    patch.get("applied_patch_id")
+                    or patch.get("patch_id")
+                    or f"ap_{patch.get('intent_id') or idx}"
+                ),
+            )
             rollback_commands.append(rendered.get("rollback_command", ""))
             if target:
                 patched_objects.add(target)
@@ -4176,6 +4264,16 @@ def apply_patch_set(
                     decision="dropped_no_op",
                     reason="apply_action_returned_false",
                 )
+            )
+            # Plan 12 PR 3 deferred — apply_action no-op surfaces as
+            # VALIDATOR_REJECTED with a distinguishing terminal_reason.
+            # The applier_decisions audit (above) is the legacy
+            # consumer; this marker is the I22-monitored typed
+            # surface.
+            _emit_l6_applier_outcome(
+                patch=patch,
+                outcome_kind="validator_rejected",
+                terminal_reason="applier_no_op",
             )
 
     sort_genie_config(config)
