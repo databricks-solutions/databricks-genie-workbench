@@ -14680,6 +14680,12 @@ def _generate_proposals_for_lever6(
     causal_target = str(primary_cluster.get("causal_target") or "")
     repair_hypothesis = str(primary_cluster.get("repair_hypothesis") or "")
 
+    optimization_run_id_l6 = str(
+        metadata_snapshot.get("optimization_run_id") or ""
+    )
+    iteration_l6 = int(metadata_snapshot.get("iteration") or 0)
+    cluster_id_l6 = str(primary_cluster.get("cluster_id") or "")
+
     proposals: list[dict] = []
     for candidate in structural_candidates:
         proposal = _proposal_from_structural_sql_candidate(
@@ -14695,6 +14701,33 @@ def _generate_proposals_for_lever6(
             benchmarks=benchmarks,
         )
         if not proposal:
+            # Plan 12 — candidate failed to promote through the legacy
+            # converter (identifier-allowlist firewall, SQL validation,
+            # missing target_table, or unknown snippet_type). Emit a
+            # CONTRACT_FAILED terminal outcome so I22 sees what
+            # happened. Without this, the L6 lane silently drops
+            # the candidate and the postmortem has no per-intent record.
+            from genie_space_optimizer.optimization.patch_outcome import (
+                PatchOutcomeKind,
+            )
+            from genie_space_optimizer.optimization.patch_survival_emitter import (
+                emit_patch_outcome,
+            )
+            intent_id_l6 = (
+                f"l6_{ag_id}_"
+                f"{candidate.get('source_question_id') or 'unknown'}"
+            )
+            emit_patch_outcome(
+                optimization_run_id=optimization_run_id_l6,
+                iteration=iteration_l6,
+                ag_id=str(ag_id),
+                cluster_id=cluster_id_l6,
+                intent_id=intent_id_l6,
+                outcome_kind=PatchOutcomeKind.CONTRACT_FAILED,
+                terminal_reason=(
+                    "l6_structural_candidate_failed_pre_repair_proposal"
+                ),
+            )
             continue
         # Plan 12 — survival-contract threading.
         proposal["rca_card_id"] = rca_card_id
