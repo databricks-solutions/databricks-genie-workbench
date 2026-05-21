@@ -13,6 +13,11 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
+# NOTE: ``common.config`` re-exports symbols from this module, so a
+# top-level import would create a circular dependency at module-load.
+# Check #6's three configurable thresholds are imported lazily inside
+# ``calculate_score`` instead.
+
 
 # First 10 checks are config checks; the last 2 are optimization checks.
 CONFIG_CHECK_COUNT = 10
@@ -341,18 +346,90 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         findings.append("No join specifications for multi-source space")
         next_steps.append("Add join specifications to help Genie correctly join your data sources")
 
-    # 6. Data source count 1-12 (Gap 10: adjusted from 1-10)
-    passed = 1 <= total_sources <= 12
-    detail = f"{total_sources} data source(s)"
-    severity = "pass"
-    if not passed and total_sources > 12:
-        detail += " — consider multi-room architecture"
-        severity = "fail"
-    _check(checks, "Data source count 1-12", passed, detail=detail, severity=severity)
-    if not passed and (tables or metric_views):
-        if total_sources > 12:
-            findings.append(f"{total_sources} data sources — more than 12 reduces Genie accuracy")
-            next_steps.append("Consider multi-room architecture or reducing to the most relevant 5-12 data sources")
+    # 6. Data source count — configurable soft cap (default 12).
+    #
+    # Default behaviour (no env vars set) matches the original binary
+    # check: pass at 1-12, fail above 12. Above the cap, the check
+    # downgrades from fail to a non-blocking *warning* when both
+    # composition signals are favourable:
+    #
+    #   - metric_view_ratio >= GSO_MIN_METRIC_VIEW_RATIO (default 0.5), AND
+    #   - no raw table has more columns than GSO_MAX_WIDE_TABLE_COLUMNS
+    #     (default 60).
+    #
+    # In that case the space can still reach Ready to Optimize / Trusted
+    # tiers because ``get_maturity_label`` gates on ``passed``, not
+    # ``severity``. See issue #212 / Epic #199.
+    #
+    # Lazy import to avoid the circular dependency described at the top
+    # of this module.
+    from genie_space_optimizer.common.config import (
+        get_max_safe_data_sources,
+        get_max_wide_table_columns,
+        get_min_metric_view_ratio,
+    )
+    max_safe_sources = get_max_safe_data_sources()
+    wide_col_threshold = get_max_wide_table_columns()
+    min_mv_ratio = get_min_metric_view_ratio()
+
+    if total_sources == 0:
+        # Check #1 already covers "no data sources"; nothing more to do here.
+        passed = False
+        _check(checks, "Data source count", passed,
+               detail="No data sources configured", severity="fail")
+    elif total_sources <= max_safe_sources:
+        passed = True
+        _check(checks, "Data source count", passed,
+               detail=f"{total_sources} data source(s)", severity="pass")
+    else:
+        # Over the soft cap — decide warning vs fail by composition.
+        mv_count = len(metric_views)
+        mv_ratio = mv_count / total_sources if total_sources else 0.0
+        wide_table_count = sum(
+            1 for t in tables
+            if len(t.get("columns", []) or []) + len(t.get("column_configs", []) or [])
+               > wide_col_threshold
+        )
+        safe_composition = mv_ratio >= min_mv_ratio and wide_table_count == 0
+        if safe_composition:
+            passed = True
+            severity = "warning"
+            detail = (
+                f"{total_sources} data sources "
+                f"({mv_count} metric views, {wide_table_count} wide tables) — "
+                f"over recommended cap {max_safe_sources} but composition is safe"
+            )
+            warnings.append(
+                f"{total_sources} data sources exceeds the recommended cap of "
+                f"{max_safe_sources}, but composition is safe "
+                f"(metric-view ratio {mv_ratio:.0%} ≥ {min_mv_ratio:.0%}, no raw "
+                f"tables above {wide_col_threshold} columns). This is advisory."
+            )
+            warning_next_steps.append(
+                "Monitor accuracy and consider multi-room architecture or further "
+                "metric-view consolidation if Genie SQL quality degrades."
+            )
+        else:
+            passed = False
+            severity = "fail"
+            detail = (
+                f"{total_sources} data sources "
+                f"(wide_tables={wide_table_count}, "
+                f"metric_view_ratio={mv_ratio:.0%}) — exceeds cap {max_safe_sources}"
+            )
+            findings.append(
+                f"{total_sources} data sources — more than the recommended "
+                f"cap of {max_safe_sources} reduces Genie accuracy, especially "
+                f"with {wide_table_count} wide raw table(s) and a metric-view "
+                f"ratio of {mv_ratio:.0%}."
+            )
+            next_steps.append(
+                f"Consider multi-room architecture, reducing to the most relevant "
+                f"{max_safe_sources} data sources, or converting wide raw tables "
+                f"into metric views as a semantic layer."
+            )
+        _check(checks, "Data source count", passed,
+               detail=detail, severity=severity)
 
     # 7. 8+ example SQLs (Gap 4: tightened from 5; Gap 9: usage_guidance check)
     example_sqls = space_data.get("instructions", {}).get("example_question_sqls", [])

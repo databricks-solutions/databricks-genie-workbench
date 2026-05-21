@@ -321,26 +321,26 @@ class TestJoinSpecs:
 
 class TestTableCount:
     def test_0_tables_fails(self, empty_space_data):
-        check = _check_by_label(calculate_score(empty_space_data), "Data source count 1-12")
+        check = _check_by_label(calculate_score(empty_space_data), "Data source count")
         assert check["passed"] is False
 
     def test_1_table_passes(self):
         tables = [{"name": "t", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "Data source count 1-12")
+        check = _check_by_label(calculate_score(data), "Data source count")
         assert check["passed"] is True
 
     def test_12_tables_passes(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(12)]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "Data source count 1-12")
+        check = _check_by_label(calculate_score(data), "Data source count")
         assert check["passed"] is True
 
     def test_9_tables_clean_pass(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(9)]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
-        check = _check_by_label(result, "Data source count 1-12")
+        check = _check_by_label(result, "Data source count")
         assert check["passed"] is True
         assert check["severity"] == "pass"
         assert not any("focused rooms" in w for w in result["warnings"])
@@ -348,16 +348,109 @@ class TestTableCount:
     def test_13_tables_fails(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(13)]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "Data source count 1-12")
+        check = _check_by_label(calculate_score(data), "Data source count")
         assert check["passed"] is False
 
     def test_metric_views_counted_toward_limit(self):
-        """10 tables + 5 metric views = 15 data sources → fails."""
+        """10 tables + 5 metric views = 15 data sources, MV ratio 33% < 50% default → fails."""
         tables = [{"name": f"t{i}", "columns": []} for i in range(10)]
         mvs = [{"identifier": f"cat.sch.mv{i}"} for i in range(5)]
         data = {"data_sources": {"tables": tables, "metric_views": mvs}, "instructions": {}, "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "Data source count 1-12")
+        check = _check_by_label(calculate_score(data), "Data source count")
         assert check["passed"] is False
+
+
+class TestDataSourceCountSoftCap:
+    """Issue #212 — soft cap with warning band for safe over-cap composition."""
+
+    def test_over_cap_safe_composition_passes_with_warning(self):
+        """16 sources, 10 MVs (62%), 0 wide tables → passed=True, severity=warning."""
+        tables = [{"name": f"t{i}", "columns": [{"name": "c"}]} for i in range(6)]
+        mvs = [{"identifier": f"cat.sch.mv{i}"} for i in range(10)]
+        data = {"data_sources": {"tables": tables, "metric_views": mvs},
+                "instructions": {}, "benchmarks": {}}
+        result = calculate_score(data)
+        check = _check_by_label(result, "Data source count")
+        assert check["passed"] is True
+        assert check["severity"] == "warning"
+        assert any("composition is safe" in w for w in result["warnings"])
+        # advisory only — should NOT be in findings (Quick Fix should stay quiet)
+        assert not any("data sources" in f for f in result["findings"])
+
+    def test_over_cap_with_wide_raw_table_fails(self):
+        """16 sources, 10 MVs but one raw table has 80 columns → fail."""
+        tables = [{"name": f"t{i}", "columns": [{"name": f"c{j}"} for j in range(2)]}
+                  for i in range(5)]
+        # one wide table
+        tables.append({"name": "wide", "columns": [{"name": f"c{j}"} for j in range(80)]})
+        mvs = [{"identifier": f"cat.sch.mv{i}"} for i in range(10)]
+        data = {"data_sources": {"tables": tables, "metric_views": mvs},
+                "instructions": {}, "benchmarks": {}}
+        result = calculate_score(data)
+        check = _check_by_label(result, "Data source count")
+        assert check["passed"] is False
+        assert check["severity"] == "fail"
+        assert any("data sources" in f for f in result["findings"])
+
+    def test_over_cap_with_low_metric_view_ratio_fails(self):
+        """16 sources, 3 MVs (19%), no wide tables → fail (MV ratio below default 0.5)."""
+        tables = [{"name": f"t{i}", "columns": [{"name": "c"}]} for i in range(13)]
+        mvs = [{"identifier": f"cat.sch.mv{i}"} for i in range(3)]
+        data = {"data_sources": {"tables": tables, "metric_views": mvs},
+                "instructions": {}, "benchmarks": {}}
+        result = calculate_score(data)
+        check = _check_by_label(result, "Data source count")
+        assert check["passed"] is False
+        assert check["severity"] == "fail"
+
+    def test_warning_band_unblocks_ready_to_optimize(self):
+        """Maturity gates on `passed`, not `severity` — verify directly.
+
+        Constructing a fixture that satisfies all 10 production checks is brittle;
+        the point of this test is that ``get_maturity_label`` treats
+        ``passed=True, severity="warning"`` the same as a clean pass.
+        """
+        checks = [{"passed": True, "severity": "pass"}] * 5 + \
+                 [{"passed": True, "severity": "warning"}] + \
+                 [{"passed": True, "severity": "pass"}] * 4 + \
+                 [{"passed": False}, {"passed": False}]
+        assert get_maturity_label(checks) == "Ready to Optimize"
+
+        # And if the over-cap check were fail instead of warning, it would NOT unblock.
+        checks_fail = checks.copy()
+        checks_fail[5] = {"passed": False, "severity": "fail"}
+        assert get_maturity_label(checks_fail) == "Not Ready"
+
+    def test_env_var_raises_cap(self, monkeypatch):
+        """Raising GSO_MAX_SAFE_DATA_SOURCES makes a former fail into a clean pass."""
+        monkeypatch.setenv("GSO_MAX_SAFE_DATA_SOURCES", "20")
+        tables = [{"name": f"t{i}", "columns": []} for i in range(18)]
+        data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "Data source count")
+        assert check["passed"] is True
+        assert check["severity"] == "pass"
+
+    def test_env_var_lowers_cap(self, monkeypatch):
+        """Lowering GSO_MAX_SAFE_DATA_SOURCES makes a former pass into a fail."""
+        monkeypatch.setenv("GSO_MAX_SAFE_DATA_SOURCES", "4")
+        tables = [{"name": f"t{i}", "columns": []} for i in range(8)]
+        data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "Data source count")
+        assert check["passed"] is False
+        assert check["severity"] == "fail"
+
+    def test_env_var_lowers_wide_table_threshold(self, monkeypatch):
+        """Tightening GSO_MAX_WIDE_TABLE_COLUMNS pulls safe spaces into fail."""
+        monkeypatch.setenv("GSO_MAX_WIDE_TABLE_COLUMNS", "1")
+        tables = [{"name": f"t{i}", "columns": [{"name": "c1"}, {"name": "c2"}]}
+                  for i in range(6)]  # every table now counts as wide (2 > 1)
+        mvs = [{"identifier": f"cat.sch.mv{i}"} for i in range(10)]
+        data = {"data_sources": {"tables": tables, "metric_views": mvs},
+                "instructions": {}, "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "Data source count")
+        # MV ratio is still 62% (≥ 50%) but every raw table is "wide" → fail.
+        assert check["passed"] is False
+        assert check["severity"] == "fail"
 
 
 # ---------------------------------------------------------------------------

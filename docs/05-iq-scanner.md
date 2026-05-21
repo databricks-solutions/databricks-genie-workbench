@@ -35,7 +35,7 @@ The first 10 checks evaluate configuration quality. The last 2 checks evaluate o
 | 3 | **Column descriptions** | ≥50% of columns have descriptions | Finding + next step to add descriptions |
 | 4 | **Text instructions** | Present and >50 characters total | Finding to add business context instructions |
 | 5 | **Join specifications** | At least 1 join spec (for multi-source spaces) | Finding to add join specs |
-| 6 | **Data source count 1–12** | Between 1 and 12 tables + metric views | Finding to reduce data sources or use multi-room architecture |
+| 6 | **Data source count** | At or below `GSO_MAX_SAFE_DATA_SOURCES` (default 12) → pass. Above → see "Soft cap" below; either passes with `severity="warning"` or fails | Finding (fail branch) or advisory warning (warning branch) — see below |
 | 7 | **8+ example SQLs** | At least 8 example question-SQL pairs | Finding to add more examples |
 | 8 | **SQL snippets** | At least 1 function, expression, measure, or filter | Finding to add SQL snippets |
 | 9 | **Entity/format matching** | At least 1 column with entity matching or format assistance | Finding to enable on categorical/date/number columns |
@@ -47,6 +47,29 @@ The first 10 checks evaluate configuration quality. The last 2 checks evaluate o
 |---|-------|--------------|------------|
 | 11 | **Optimization workflow completed** | A terminal optimization run exists (`CONVERGED`, `STALLED`, or `MAX_ITERATIONS`) | "Space has not been through the optimization workflow" |
 | 12 | **Optimization accuracy ≥ 85%** | Best accuracy from optimization is ≥ 0.85 | "Optimization accuracy is X% — target ≥ 85%" |
+
+## Soft cap on check #6 (configurable, issue #212)
+
+Check #6 ("Data source count") was a hard binary fail at >12 sources. As of
+issue #212, it has three outcomes and three env-var-driven thresholds, with
+defaults that preserve the original behaviour.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `GSO_MAX_SAFE_DATA_SOURCES` | `12` | Soft cap on `len(tables) + len(metric_views)`. |
+| `GSO_MAX_WIDE_TABLE_COLUMNS` | `60` | A raw table with more columns than this is "wide". |
+| `GSO_MIN_METRIC_VIEW_RATIO` | `0.5` | Minimum `metric_views / total_sources` for the warning band. |
+
+Decision logic:
+
+1. `total_sources <= GSO_MAX_SAFE_DATA_SOURCES` → **pass** (`severity="pass"`).
+2. `total_sources > GSO_MAX_SAFE_DATA_SOURCES` AND `metric_view_ratio >= GSO_MIN_METRIC_VIEW_RATIO` AND no wide raw tables → **passed=True, severity="warning"**. The space can reach Ready to Optimize / Trusted because `get_maturity_label` gates on `passed`, not `severity`. An advisory entry is appended to `warnings` and `warning_next_steps`; nothing is added to `findings`, so Quick Fix is not triggered.
+3. `total_sources > GSO_MAX_SAFE_DATA_SOURCES` AND (wide raw tables OR low metric-view ratio) → **passed=False, severity="fail"** (original behaviour).
+
+This is a tactical landing under Epic #199 (Configurable Maturity Scoring). The
+three env vars will be absorbed into the registry refactor planned by that
+epic; the default behaviour stays identical for any deploy that does not set
+them.
 
 ## Severity Levels
 
