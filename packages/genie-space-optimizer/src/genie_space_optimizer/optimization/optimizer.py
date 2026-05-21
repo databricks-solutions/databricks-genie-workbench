@@ -2106,10 +2106,21 @@ def cluster_failures(
         plan4_llm_clustering_enabled,
     )
 
+    # Plan 12 Step 1.3.5 — derive _failing_qids / _eval_rows_failing
+    # from eval_results when the iteration scope didn't pre-stamp them.
+    # Closes the "build_failing_qids_empty" decline path for the
+    # typical-production case (Plan 11 ON, Plan 3 typed evidence empty,
+    # but eval_results carries the failing rows). Explicit pre-stamping
+    # by a caller wins — we only populate when truly absent so future
+    # per-iteration stamping takes precedence.
+    if metadata_snapshot.get("_failing_qids") is None:
+        _stamp_failing_qids_from_eval_results(eval_results, metadata_snapshot)
+
     plan12_failing_qids = list(metadata_snapshot.get("_failing_qids") or [])
     if not plan12_failing_qids and rca_evidence_typed:
-        # Last-ditch: derive from rca_evidence_typed if the iteration
-        # scope didn't stamp _failing_qids on metadata_snapshot yet.
+        # Last-ditch: derive from rca_evidence_typed if both the
+        # iteration scope and the eval-results derivation came back
+        # empty (e.g. eval_results was malformed).
         plan12_failing_qids = list(rca_evidence_typed.keys())
 
     plan11_clusters = _decide_and_run_plan11_dispatch(
@@ -8255,6 +8266,91 @@ def _build_plan11_failing_qids_from_typed_evidence(
             }
         )
     return out
+
+
+def _extract_eval_rows_for_stamping(eval_results: dict) -> list[dict]:
+    """Plan 12 Step 1.3.5 — best-effort row extraction matching the
+    shape-detection logic inside :func:`cluster_failures` (the legacy
+    heuristic clusterer accepts an MLflow ``EvaluationResult``, a
+    nested dict with ``eval_result.tables['eval_results']``, or a
+    plain ``rows`` / ``eval_results`` / ``table`` list).
+
+    Returns a list of plain dicts; callers should NEVER assume a
+    pandas-shaped object survives this function. Empty list on any
+    extraction failure — the stamper treats that as "no failing
+    rows to derive from."
+    """
+    if not isinstance(eval_results, dict):
+        return []
+    results_obj = eval_results.get("eval_result")
+    table: Any = None
+    if results_obj is not None and hasattr(results_obj, "tables"):
+        try:
+            table = results_obj.tables.get("eval_results")
+        except Exception:
+            table = None
+    elif results_obj is not None and hasattr(results_obj, "eval_results"):
+        table = results_obj.eval_results
+    if table is None:
+        table = (
+            eval_results.get("eval_results")
+            or eval_results.get("rows")
+            or eval_results.get("table")
+        )
+    if table is None:
+        return []
+    # Coerce pandas DataFrame → list of row dicts.
+    if hasattr(table, "iterrows"):
+        try:
+            return [row.to_dict() for _, row in table.iterrows()]
+        except Exception:
+            return []
+    if isinstance(table, list):
+        return [r for r in table if isinstance(r, dict)]
+    return []
+
+
+def _row_is_failing(row: dict) -> bool:
+    """Plan 12 Step 1.3.5 — single source of truth for "is this row a
+    hard failure." Mirrors the score < 0.5 threshold the legacy
+    heuristic clusterer + Plan 7's build_run_summary use, and
+    defaults malformed / missing scores to 0.0 (hard) so the count
+    NEVER under-reports.
+    """
+    raw = row.get("score") if row.get("score") is not None else 0.0
+    try:
+        score = float(raw)
+    except (TypeError, ValueError):
+        score = 0.0
+    return score < 0.5
+
+
+def _stamp_failing_qids_from_eval_results(
+    eval_results: dict,
+    metadata_snapshot: dict,
+) -> None:
+    """Plan 12 Step 1.3.5 — derive ``_failing_qids`` /
+    ``_eval_rows_failing`` from ``eval_results.rows`` and stamp them on
+    ``metadata_snapshot`` so :func:`_decide_and_run_plan11_dispatch`
+    can build a non-empty Stage 1 input even when Plan 3's typed
+    evidence is empty (the typical production case from the
+    2026-05-20 postmortems).
+
+    Idempotent / non-destructive: only stamps when ``_failing_qids`` is
+    absent. Callers that explicitly pre-stamp (e.g. a future
+    per-iteration harness wire-in) take precedence.
+    """
+    if metadata_snapshot.get("_failing_qids") is not None:
+        return
+    rows = _extract_eval_rows_for_stamping(eval_results)
+    failing = [row for row in rows if _row_is_failing(row)]
+    failing_qids: list[str] = []
+    for row in failing:
+        qid = str(row.get("question_id") or "")
+        if qid:
+            failing_qids.append(qid)
+    metadata_snapshot["_failing_qids"] = failing_qids
+    metadata_snapshot["_eval_rows_failing"] = failing
 
 
 def _build_plan11_failing_qids_from_raw(
