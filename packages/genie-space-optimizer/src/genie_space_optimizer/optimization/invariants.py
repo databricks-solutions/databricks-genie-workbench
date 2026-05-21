@@ -1495,6 +1495,67 @@ def check_i24_ag_collision_quality_failure(
     return violations
 
 
+def check_i25_observability_consistency(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I25 — Plan 12. Observability aggregations must equal their
+    authoritative sources. Catches the four undercount bugs both
+    2026-05-20 postmortems flagged: phase_b_end_total drifted from
+    journey records, iteration_summary_count from journey events,
+    proposal_attempts from GSO_PATCH_OUTCOME_V1 markers, and
+    run_summary hard_failures_count from eval_result rows.
+
+    Silent when all evidence keys are absent (pre-Plan-12 fixtures
+    stay green; missing-equals-missing → 0 == 0). Each diverging
+    field produces its own typed violation entry so the postmortem
+    can name the failed pipeline by field.
+
+    Reads (all default to 0):
+      phase_b_end_total_recorded / journey_records_count
+      iteration_summary_count_recorded / iteration_summary_count_from_journey
+      proposal_attempts_recorded / proposal_attempts_from_outcomes
+      run_summary_hard_count_recorded / run_summary_hard_count_from_eval
+    """
+    checks = (
+        (
+            "phase_b_end_total",
+            "phase_b_end_total_recorded",
+            "journey_records_count",
+        ),
+        (
+            "iteration_summary_count",
+            "iteration_summary_count_recorded",
+            "iteration_summary_count_from_journey",
+        ),
+        (
+            "proposal_attempts",
+            "proposal_attempts_recorded",
+            "proposal_attempts_from_outcomes",
+        ),
+        (
+            "run_summary_hard_count",
+            "run_summary_hard_count_recorded",
+            "run_summary_hard_count_from_eval",
+        ),
+    )
+    violations: list[dict] = []
+    for field, recorded_key, source_key in checks:
+        recorded = int(evidence.get(recorded_key, 0) or 0)
+        source = int(evidence.get(source_key, 0) or 0)
+        if recorded != source:
+            violations.append({
+                "invariant": "I25",
+                "field": field,
+                "recorded": recorded,
+                "from_source": source,
+                "message": (
+                    f"I25: {field} mismatch — recorded={recorded} but "
+                    f"source-of-truth={source}"
+                ),
+            })
+    return violations
+
+
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
     violations. Empty list = green pilot."""
@@ -1524,6 +1585,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i22_patch_outcome_coverage,  # Plan 12
         check_i23_narrow_attempt_coverage,  # Plan 12
         check_i24_ag_collision_quality_failure,  # Plan 12
+        check_i25_observability_consistency,  # Plan 12
     ):
         try:
             violations.extend(check(evidence))
