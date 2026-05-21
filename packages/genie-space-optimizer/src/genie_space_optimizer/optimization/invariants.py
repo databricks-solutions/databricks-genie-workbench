@@ -1453,6 +1453,48 @@ def check_i23_narrow_attempt_coverage(
     return violations
 
 
+def check_i24_ag_collision_quality_failure(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I24 — Plan 12. Repeated ``ag_collision_with_forbidden_set``
+    terminations on the same cluster indicate the AG regenerator is
+    receiving a stale strategy (the prior terminal signature was not
+    added to the forbidden_set before the next iteration). Two or
+    more collisions on a single cluster = HIGH-tier violation.
+
+    One collision per cluster is tolerated (could be a transient
+    AG-LLM hiccup); the second collision proves the retry policy
+    isn't taking effect. Cross-cluster collisions don't aggregate —
+    each cluster has its own AG strategy.
+
+    Reads:
+      evidence["iteration_terminal_markers"]: list of dicts with
+        iteration, cluster_id, terminal_reason
+    """
+    from collections import Counter
+
+    markers = evidence.get("iteration_terminal_markers", [])
+    by_cluster: Counter[str] = Counter()
+    for m in markers:
+        if m.get("terminal_reason") == "ag_collision_with_forbidden_set":
+            by_cluster[str(m.get("cluster_id") or "")] += 1
+
+    violations: list[dict] = []
+    for cluster_id, count in by_cluster.items():
+        if count >= 2:
+            violations.append({
+                "invariant": "I24",
+                "cluster_id": cluster_id,
+                "collision_count": count,
+                "message": (
+                    f"I24: cluster {cluster_id!r} hit "
+                    f"ag_collision_with_forbidden_set {count} times — "
+                    f"AG regenerator received a stale strategy"
+                ),
+            })
+    return violations
+
+
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
     violations. Empty list = green pilot."""
@@ -1481,6 +1523,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i21_plan11_dispatch_coverage,  # Plan 12
         check_i22_patch_outcome_coverage,  # Plan 12
         check_i23_narrow_attempt_coverage,  # Plan 12
+        check_i24_ag_collision_quality_failure,  # Plan 12
     ):
         try:
             violations.extend(check(evidence))
