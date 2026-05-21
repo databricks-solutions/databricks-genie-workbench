@@ -8116,6 +8116,42 @@ def _dispatch_plan11_synthesis_for_legacy_cluster(
     )
 
 
+def _build_blast_radius_drop_record(
+    *,
+    patch: dict,
+    collateral_qids: tuple[str, ...],
+    protected_sql_by_qid: dict[str, str],
+) -> Any:
+    """Plan 12 — construct a :class:`BlastRadiusDropRecord` from the
+    dict-shaped patch + the collateral the blast-radius gate detected.
+
+    Falls back from ``original_patch_type`` to ``patch_type`` so Plan
+    11 / pre-Plan-12 patches still carry the required field. I23's
+    coverage check only fires when ``original_patch_type`` is
+    non-empty, so empty pre-Plan-12 records stay green.
+    """
+    from genie_space_optimizer.optimization.blast_radius_drop_record import (
+        BlastRadiusDropRecord,
+    )
+    return BlastRadiusDropRecord(
+        intent_id=str(patch.get("intent_id") or ""),
+        original_patch_type=str(
+            patch.get("original_patch_type")
+            or patch.get("patch_type")
+            or ""
+        ),
+        original_patch_body=dict(patch.get("patch_body") or {}),
+        causal_target=str(patch.get("causal_target") or ""),
+        failing_sql_anchor=str(patch.get("failing_sql_anchor") or ""),
+        target_qids=tuple(str(q) for q in (patch.get("target_qids") or [])),
+        collateral_qids=tuple(str(q) for q in collateral_qids),
+        protected_sql_by_qid=dict(protected_sql_by_qid or {}),
+        rca_card_id=str(patch.get("rca_card_id") or ""),
+        cluster_id=str(patch.get("cluster_id") or ""),
+        ag_id=str(patch.get("ag_id") or ""),
+    )
+
+
 def _build_plan11_failing_qids_from_typed_evidence(
     rca_evidence_typed: dict,
 ) -> list[dict]:
