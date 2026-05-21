@@ -5743,15 +5743,20 @@ def _flag_enabled(env_name: str) -> bool:
 def plan11_llm_first_enabled() -> bool:
     """Plan 11: LLM-first diagnosis + synthesis, no closed taxonomy.
 
-    Default OFF. Enable per-deploy via ``GSO_PLAN11_LLM_FIRST=true`` in
-    the app.yaml or job env vars. When OFF, the legacy
+    Default ON as of PR 3 — matches the canonical Plan 3 / 4 / 5 / 7
+    pattern of routing through the LLM lane by default and falling
+    back to the legacy lane only when explicitly disabled. Override
+    per-deploy by setting ``GSO_PLAN11_LLM_FIRST`` to any falsy value
+    (``0`` / ``false`` / ``no`` / ``off``) in the app.yaml ``env:``
+    block or the job's runtime environment to fall back to
     cluster_driven_synthesis / forced_synthesis_dispatch /
-    three_stage_pipeline path runs unchanged.
+    three_stage_pipeline.
 
-    Flipped to default-ON in PR 3 once Plan 11 has accumulated 2-3
-    stable deploys against the pilot.
+    PR 2 wired the two real-synthesis callsites in optimizer.py
+    (lines 17240 + 17407) behind this flag; PR 3 flips the default.
+    PR 4 will delete the legacy archetype/dispatch files entirely.
     """
-    return _flag_enabled("GSO_PLAN11_LLM_FIRST")
+    return _flag_default_on("GSO_PLAN11_LLM_FIRST")
 
 
 def _flag_default_on(env_name: str) -> bool:

@@ -503,6 +503,11 @@ class TestLever5Intercept:
         assert fb2 is None
 
     def test_teaching_kit_primary_proposal_carries_target_qids_and_kit_provenance(self, monkeypatch):
+        # Plan 11 PR 3 — GSO_PLAN11_LLM_FIRST defaults ON. This test
+        # probes the legacy cluster_driven_synthesis engine, so disable
+        # Plan 11 routing.
+        monkeypatch.setenv("GSO_PLAN11_LLM_FIRST", "0")
+
         from genie_space_optimizer.optimization import optimizer
         from genie_space_optimizer.optimization.cluster_driven_synthesis import (
             ClusterSynthesisResult,
@@ -556,6 +561,11 @@ class TestLever5Intercept:
         assert primary["provenance"]["target_qids"] == ["q1"]
 
     def test_lever5_intercept_appends_teaching_kit_supporting_proposals(self, monkeypatch):
+        # Plan 11 PR 3 — GSO_PLAN11_LLM_FIRST defaults ON. This test
+        # probes the legacy cluster_driven_synthesis engine, so disable
+        # Plan 11 routing.
+        monkeypatch.setenv("GSO_PLAN11_LLM_FIRST", "0")
+
         from genie_space_optimizer.optimization import optimizer
         from genie_space_optimizer.optimization.cluster_driven_synthesis import (
             ClusterSynthesisResult,

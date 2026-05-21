@@ -39,6 +39,10 @@ def test_rca_example_synthesis_request_omits_benchmark_question_and_expected_sql
 
 
 def test_rca_example_synthesis_uses_cluster_driven_engine(monkeypatch):
+    # Plan 11 PR 3 — GSO_PLAN11_LLM_FIRST defaults ON. This test probes
+    # the legacy archetype path explicitly, so disable Plan 11 routing.
+    monkeypatch.setenv("GSO_PLAN11_LLM_FIRST", "0")
+
     from genie_space_optimizer.optimization import optimizer
     from genie_space_optimizer.optimization.cluster_driven_synthesis import (
         ClusterSynthesisResult,

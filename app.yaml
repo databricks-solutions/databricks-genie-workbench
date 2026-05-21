@@ -97,6 +97,14 @@ env:
     value: "__GSO_JOB_ID__"
   - name: GSO_WAREHOUSE_ID
     valueFrom: sql-warehouse
+  # Plan 11 — LLM-first open-taxonomy optimizer. Routes the synthesis
+  # callsites at optimizer.py:17240 + :17407 through the new
+  # diagnose → cluster → synthesize stages (PR 2 wired the branches;
+  # PR 3 flips the default ON). Override per-deploy by setting
+  # GSO_PLAN11_LLM_FIRST=false to fall back to the legacy archetype
+  # path while Plan 11 stabilizes against a workspace.
+  - name: GSO_PLAN11_LLM_FIRST
+    value: "true"
 
 # ---------------------------------------------------------------------------
 # Resources
