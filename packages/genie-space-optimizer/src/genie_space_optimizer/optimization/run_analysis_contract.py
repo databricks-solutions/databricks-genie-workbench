@@ -1634,6 +1634,62 @@ def plan11_dispatch_decision_marker(
     )
 
 
+_VALID_PATCH_OUTCOME_KINDS: frozenset[str] = frozenset({
+    "applied",
+    "validator_rejected",
+    "blast_radius_rejected",
+    "contract_failed",
+})
+
+
+def patch_outcome_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    intent_id: str,
+    outcome_kind: str,
+    terminal_reason: str = "",
+    validator_errors: list[str] | None = None,
+    collateral_qids: list[str] | None = None,
+    narrow_replacement_attempted: bool = False,
+    narrow_outcome: str = "",
+    applied_patch_id: str = "",
+) -> str:
+    """Plan 12 — exactly-once-per-intent_id terminal outcome marker.
+
+    Emitted by ``patch_survival_emitter.emit_patch_outcome`` (the single
+    canonical emission point — see that module for idempotency). Invariant
+    I22 enforces 1:1 coverage with Stage 3 proposal IDs; double-emit
+    is a contract violation.
+    """
+    if outcome_kind not in _VALID_PATCH_OUTCOME_KINDS:
+        raise ValueError(
+            f"unknown outcome_kind {outcome_kind!r}; must be one of "
+            f"{sorted(_VALID_PATCH_OUTCOME_KINDS)}"
+        )
+    return marker_line(
+        "GSO_PATCH_OUTCOME_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "cluster_id": str(cluster_id),
+            "intent_id": str(intent_id),
+            "outcome_kind": str(outcome_kind),
+            "terminal_reason": str(terminal_reason),
+            "validator_errors": list(validator_errors or []),
+            "collateral_qids": list(collateral_qids or []),
+            "narrow_replacement_attempted": bool(
+                narrow_replacement_attempted
+            ),
+            "narrow_outcome": str(narrow_outcome),
+            "applied_patch_id": str(applied_patch_id),
+        },
+    )
+
+
 def assemble_run_manifest_v2_line(
     *,
     optimization_run_id: str,
