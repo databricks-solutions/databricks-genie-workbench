@@ -612,3 +612,91 @@ OUTPUT_CLASS = ActionGroupSlate
 # sites. The ``execute`` alias is what the stage registry, conformance
 # test, and Phase H capture decorator import.
 execute = select
+
+
+# ── Plan 12 PR 5 — AG retry policy ─────────────────────────────────────
+
+
+# Closed vocabulary of terminal reasons that demand a patch-family
+# pivot on the NEXT iteration's AG for the same cluster. The strings
+# match :class:`TerminalReason` enum values verbatim.
+#
+# ``narrow_loop_exhausted`` is a forward-looking entry: it's not in
+# TerminalReason today, but Plan 12 PR 4's narrow-replacement loop
+# will produce it once the harness wire-in lands. Keeping it in the
+# set means the policy is already correct when that enum value is
+# added; no membership check breaks in the meantime because
+# build_terminal_signature() would refuse to construct one with that
+# (non-existent) reason today.
+_TERMINATIONS_REQUIRING_PIVOT: frozenset[str] = frozenset({
+    "no_applied_patches",
+    "structural_gate_dropped_instruction_only",
+    "narrow_loop_exhausted",
+    "applyability_rejected",
+})
+
+# When a pivot is required, prefer ``add_example_sql`` — the most
+# forgiving patch family (no SQL-validation surface, no structural
+# repair gates, no blast-radius collision risk beyond the question
+# itself). This is the canonical "we tried structural / instruction
+# and it didn't apply; teach by example" fallback.
+_PIVOT_FROM_FAMILY_AFTER_FAILURE: str = "add_example_sql"
+
+
+def regenerate_action_groups_with_signatures(
+    *,
+    prior_clusters: list,
+    prior_terminal_signatures: "list",
+    existing_forbidden_set: set,
+    inner_regenerate,
+    **kwargs,
+):
+    """Plan 12 — wrapper that adds prior :class:`TerminalSignature`
+    entries to the forbidden_set BEFORE delegating to the real AG
+    regenerator. Closes the ``ag_collision_with_forbidden_set``
+    retry-budget waste both 2026-05-20 postmortems observed: the
+    regenerator was called with a stale forbidden_set, the LLM
+    proposed the same AG again, and the iteration burned budget
+    without producing a meaningful retry.
+
+    ``existing_forbidden_set`` is preserved by union; the wrapper
+    never replaces a caller-provided set.
+
+    The wrapper itself does no LLM work — it just makes the
+    forbidden_set complete before `inner_regenerate` runs.
+    """
+    expanded = set(existing_forbidden_set or set())
+    for sig in (prior_terminal_signatures or ()):
+        expanded.add(sig)
+    return inner_regenerate(
+        prior_clusters=prior_clusters,
+        forbidden_set=expanded,
+        **kwargs,
+    )
+
+
+def next_patch_family_for_cluster(
+    *,
+    cluster_id: str,
+    prior_terminal_signatures: "list",
+    prior_patch_family: str,
+) -> str:
+    """Plan 12 — choose the next patch family for a cluster.
+
+    If the most recent terminal signature carries a survival-failure
+    ``terminal_reason`` (``no_applied_patches``,
+    ``structural_gate_dropped_instruction_only``,
+    ``narrow_loop_exhausted``, ``applyability_rejected``), pivot to
+    ``add_example_sql`` — the canonical "teach by example" fallback.
+    Otherwise, retain the prior family.
+
+    ``cluster_id`` is accepted for future per-cluster policy
+    (currently the policy is global) and to make the signature
+    readable at call sites.
+    """
+    del cluster_id  # Reserved for per-cluster policy refinement.
+    for sig in (prior_terminal_signatures or ())[::-1]:
+        reason = str(getattr(sig, "terminal_reason", "") or "")
+        if reason in _TERMINATIONS_REQUIRING_PIVOT:
+            return _PIVOT_FROM_FAMILY_AFTER_FAILURE
+    return str(prior_patch_family or _PIVOT_FROM_FAMILY_AFTER_FAILURE)
