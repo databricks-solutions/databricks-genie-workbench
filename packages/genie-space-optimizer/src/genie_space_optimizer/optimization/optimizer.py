@@ -8116,6 +8116,57 @@ def _dispatch_plan11_synthesis_for_legacy_cluster(
     )
 
 
+def _apply_evidence_to_lever_policy(
+    target_lever: int,
+    cluster_or_action_group: dict,
+) -> int:
+    """Plan 12 PR 6 — re-route Lever 1 to a generating lane when the
+    cluster's evidence demands generation.
+
+    Closes the routing bug observed in postmortem dc89d1a9-... where
+    gs_004 (wrong-aggregation evidence) was routed to Lever 1
+    (non-generating ``add_column_description``) despite the failure
+    mode requiring a structural example-SQL or metric-view edit.
+
+    Lookup order for the evidence_kind: ``asi_failure_type`` →
+    ``root_cause`` → empty string. The policy (see
+    :mod:`evidence_to_lever_policy`) decides whether Lever 1 is
+    eligible. If not, the preferred family from
+    :func:`eligible_lever_families` is mapped to its integer lever:
+
+      * ``"5b"`` / ``"5"`` / ``5`` → 5
+      * ``"6"``  / ``6``         → 6
+      * ``"2"``  / ``2``         → 2
+
+    Non-Lever-1 ``target_lever`` values pass through unchanged — those
+    are already generating lanes and don't need the safety net.
+    """
+    if target_lever != 1:
+        return target_lever
+    from genie_space_optimizer.optimization.evidence_to_lever_policy import (
+        eligible_lever_families,
+        refuses_non_generating_lane,
+    )
+    evidence_kind = str(
+        cluster_or_action_group.get("asi_failure_type")
+        or cluster_or_action_group.get("root_cause")
+        or ""
+    )
+    if not refuses_non_generating_lane(evidence_kind):
+        return target_lever
+    eligible = eligible_lever_families(evidence_kind)
+    if not eligible:
+        return target_lever  # defensive — policy never returns empty
+    preferred = eligible[0]
+    if preferred in ("5b", "5", 5):
+        return 5
+    if preferred in ("6", 6):
+        return 6
+    if preferred in ("2", 2):
+        return 2
+    return target_lever
+
+
 def _build_blast_radius_drop_record(
     *,
     patch: dict,
