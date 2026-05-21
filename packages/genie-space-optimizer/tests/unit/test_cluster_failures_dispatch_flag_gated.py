@@ -96,6 +96,10 @@ def test_dispatch_uses_llm_when_flag_on_and_typed_evidence_present(
 
 
 def test_dispatch_skips_llm_when_flag_off(monkeypatch) -> None:
+    # Plan 11 (default ON) would intercept this dispatch via the new
+    # Stage 1/2 wiring; this test probes the legacy Plan 4 dispatch
+    # specifically, so disable Plan 11 first.
+    monkeypatch.setenv("GSO_PLAN11_LLM_FIRST", "0")
     monkeypatch.setenv("GSO_PLAN4_LLM_CLUSTERING", "0")
     rca = {"gs_001": _evidence("gs_001"), "gs_002": _evidence("gs_002")}
     eval_results = {"eval_results": []}
@@ -196,6 +200,10 @@ def test_dispatch_skips_llm_when_only_one_qid_in_typed_evidence(
     monkeypatch,
 ) -> None:
     """<2 qids → cluster_failures_llm returns None internally."""
+    # Plan 11 (default ON) clusters single-qid sets and would steal
+    # this test from Plan 4. Disable Plan 11 so the test probes the
+    # legacy Plan 4 size-gate it was written for.
+    monkeypatch.setenv("GSO_PLAN11_LLM_FIRST", "0")
     monkeypatch.setenv("GSO_PLAN4_LLM_CLUSTERING", "true")
     rca = {"gs_001": _evidence("gs_001")}
     client = MagicMock(name="OpenAIClientShouldNotBeCalled")

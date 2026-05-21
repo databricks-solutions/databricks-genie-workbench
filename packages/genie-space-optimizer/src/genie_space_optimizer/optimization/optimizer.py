@@ -2093,14 +2093,86 @@ def cluster_failures(
     Callers that pass ``held_out_qids=None`` get the legacy "train+held-
     out mixed" behaviour but SHOULD be updated.
     """
+    # ── Plan 11 — LLM-first diagnose + cluster (top priority). ─────────
+    # When plan11_llm_first_enabled() (default ON as of PR 3), run the
+    # new Stage 1 (diagnose_failing_qids) + Stage 2 (cluster_diagnoses)
+    # pair end-to-end and project the resulting FailureCluster objects
+    # back onto the legacy cluster-dict shape so downstream code
+    # (proposal shaping, lever dispatch, postmortem rendering) is
+    # unchanged. Plan 11's stages internally emit
+    # GSO_PLAN11_STAGE1_DIAGNOSIS_V1 + GSO_PLAN11_STAGE2_CLUSTERING_V1
+    # markers + the I17/I18 coverage invariants.
+    #
+    # When the Plan 11 LLM call declines / errors / yields no clusters,
+    # fall through to the Plan 4 branch below (which itself falls
+    # through to the deterministic heuristic).
+    from genie_space_optimizer.common.config import (
+        plan11_llm_first_enabled,
+        plan4_llm_clustering_enabled,
+    )
+    if plan11_llm_first_enabled() and rca_evidence_typed:
+        from genie_space_optimizer.optimization.stages.cluster_plan11 import (
+            cluster_diagnoses,
+        )
+        from genie_space_optimizer.optimization.stages.diagnose import (
+            diagnose_failing_qids,
+        )
+
+        _failing_qids_input = _build_plan11_failing_qids_from_typed_evidence(
+            rca_evidence_typed,
+        )
+        _schema_columns_list: list[str] = list(
+            metadata_snapshot.get("schema_columns") or []
+        )
+        if not _schema_columns_list:
+            _seen: set[str] = set()
+            for ev in rca_evidence_typed.values():
+                for b in getattr(ev, "blame_set", ()) or ():
+                    s = str(b)
+                    if s and s not in _seen:
+                        _seen.add(s)
+                        _schema_columns_list.append(s)
+        _namespace_p11 = namespace or (
+            "hard" if signal_type == "hard" else "soft"
+        )
+        _iteration_p11 = int(metadata_snapshot.get("iteration") or 0)
+        _optimization_run_id_p11 = str(
+            metadata_snapshot.get("optimization_run_id") or run_id or ""
+        )
+
+        _diagnoses = diagnose_failing_qids(
+            failing_qids=_failing_qids_input,
+            schema_columns=_schema_columns_list,
+            optimization_run_id=_optimization_run_id_p11,
+            iteration=_iteration_p11,
+            w=w,
+        )
+        if _diagnoses:
+            _failure_clusters = cluster_diagnoses(
+                diagnoses=_diagnoses,
+                schema_columns=_schema_columns_list,
+                optimization_run_id=_optimization_run_id_p11,
+                iteration=_iteration_p11,
+                namespace=_namespace_p11,
+                w=w,
+            )
+            if _failure_clusters:
+                return [
+                    _plan11_failure_cluster_to_legacy_dict(
+                        fc, signal_type=signal_type,
+                    )
+                    for fc in _failure_clusters
+                ]
+        # Plan 11 declined / errored at Stage 1 or 2 — fall through to
+        # Plan 4 (or the heuristic) so a clustering result is still
+        # produced. The Plan 11 markers from Stage 1/2 carry the
+        # diagnostic for postmortem.
+
     # ── Plan 4 — LLM-driven short-circuit. ─────────────────────────────
     # Lazy-imported to avoid load-order coupling with cluster_llm (which
     # imports rca_evidence_typed, which is part of the optimization
     # package this file lives in). When the flag is off OR no typed
     # evidence is supplied, fall through to the heuristic body verbatim.
-    from genie_space_optimizer.common.config import (
-        plan4_llm_clustering_enabled,
-    )
     if (
         plan4_llm_clustering_enabled()
         and rca_evidence_typed
@@ -8083,6 +8155,101 @@ def _dispatch_plan11_synthesis_for_legacy_cluster(
         ag_id=ag_id,
         w=w,
     )
+
+
+def _build_plan11_failing_qids_from_typed_evidence(
+    rca_evidence_typed: dict,
+) -> list[dict]:
+    """Plan 11 Stage 1 input adapter.
+
+    Projects :class:`PerQidRcaEvidence` (Plan 3's per-QID typed RCA
+    output) into the ``failing_qids`` shape Plan 11's
+    :func:`diagnose_failing_qids` expects. Three fields the Plan 11
+    SKILL.md asks for (``question_text``, ``ground_truth_sql``,
+    ``generated_sql``) are NOT carried on PerQidRcaEvidence and are
+    left empty — Plan 11's diagnose-stage LLM is robust to partial
+    inputs (it reads ``judge_rationale`` + ``rca_evidence`` as the
+    primary narrative). A future enrichment pass can hydrate those
+    fields from ``eval_results``.
+
+    The ``rca_evidence`` sub-key bundles the richer free-text fields
+    from PerQidRcaEvidence (``generated_sql_issue``,
+    ``expected_sql_shape``, ``suggested_repair_family``) so the LLM
+    can disagree with Plan 3's deterministic classifier when the
+    evidence supports a different ``rca_kind_label``.
+    """
+    out: list[dict] = []
+    for qid, ev in rca_evidence_typed.items():
+        blame_set = list(getattr(ev, "blame_set", ()) or ())
+        out.append(
+            {
+                "qid": str(qid),
+                "question_text": "",
+                "ground_truth_sql": "",
+                "generated_sql": "",
+                "judge_rationale": str(
+                    getattr(ev, "observed_failure", "") or ""
+                ),
+                "blame_set_seed": blame_set,
+                "rca_evidence": {
+                    "observed_failure": str(
+                        getattr(ev, "observed_failure", "") or ""
+                    ),
+                    "generated_sql_issue": str(
+                        getattr(ev, "generated_sql_issue", "") or ""
+                    ),
+                    "expected_sql_shape": str(
+                        getattr(ev, "expected_sql_shape", "") or ""
+                    ),
+                    "suggested_repair_family": str(
+                        getattr(ev, "suggested_repair_family", "") or ""
+                    ),
+                    "confidence": str(getattr(ev, "confidence", "") or ""),
+                },
+            }
+        )
+    return out
+
+
+def _plan11_failure_cluster_to_legacy_dict(
+    fc: Any,
+    *,
+    signal_type: str = "hard",
+) -> dict:
+    """Plan 11 Stage 2 output adapter.
+
+    Projects :class:`FailureCluster` (Plan 11's typed cluster carrier)
+    into the legacy cluster-dict shape that the rest of optimizer.py
+    consumes. Mirrors :meth:`LlmCluster.to_legacy_dict` field-for-field
+    so downstream consumers (proposal shaping, lever dispatch,
+    postmortem rendering) need no Plan 11 awareness.
+
+    Plan 11 specifics: ``repair_hypothesis`` (free text) is stamped on
+    a same-named key; ``suggested_repair_shape`` is set to
+    ``"other"`` (the legacy ``RepairShape.OTHER`` value, deliberately
+    the LLM's free-form escape hatch — see ``repair_intent.py``).
+    ``source`` is ``"llm_plan11"`` so postmortems can distinguish
+    Plan 11 clusters from legacy Plan 4 LLM clusters.
+    """
+    return {
+        "cluster_id": str(fc.cluster_id),
+        "question_ids": list(fc.member_qids),
+        "asi_blame_set": list(fc.primary_blame_set),
+        "asi_blame_set_normalized": list(fc.primary_blame_set),
+        "root_cause": str(fc.semantic_theme),
+        "asi_failure_type": str(fc.semantic_theme),
+        "failure_keys": [
+            str(fc.semantic_theme),
+            str(fc.repair_hypothesis),
+        ],
+        "semantic_theme": str(fc.semantic_theme),
+        "suggested_repair_shape": "other",
+        "repair_hypothesis": str(fc.repair_hypothesis),
+        "llm_confidence": str(fc.confidence),
+        "llm_rationale": str(fc.unifying_evidence),
+        "source": "llm_plan11",
+        "signal_type": str(signal_type),
+    }
 
 
 _RCA_SQL_SNIPPET_PATCH_TYPES: frozenset[str] = frozenset({
