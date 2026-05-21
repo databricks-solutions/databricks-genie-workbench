@@ -1,0 +1,14 @@
+{
+  "qid": "gs_009",
+  "question": "Top 10 customers by total order count",
+  "ground_truth_sql": "SELECT customer_id, COUNT(*) AS n FROM catalog.schema.orders GROUP BY customer_id ORDER BY n DESC LIMIT 10",
+  "generated_sql": "SELECT customer_id, RANK() OVER (ORDER BY COUNT(*) DESC) AS r FROM catalog.schema.orders GROUP BY customer_id",
+  "judge_rationale": "Generated SQL uses RANK() without LIMIT; returns all customers ranked rather than top 10",
+  "score": 0.0,
+  "blame_set_expected": ["catalog.schema.orders.customer_id"],
+  "expected_repair_hypothesis": "Replace RANK() with ROW_NUMBER() and add LIMIT 10",
+  "expected_patch_type": "add_sql_snippet_expression",
+  "expected_target_table": "catalog.schema.orders",
+  "expected_intent_id": "intent_gs_009_topn",
+  "expected_outcome_kind": "applied"
+}

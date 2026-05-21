@@ -1,0 +1,14 @@
+{
+  "qid": "gs_021",
+  "question": "Revenue month-to-date",
+  "ground_truth_sql": "SELECT SUM(revenue) FROM catalog.schema.orders WHERE order_date >= DATE_TRUNC('month', CURRENT_DATE)",
+  "generated_sql": "SELECT SUM(revenue) FROM catalog.schema.orders WHERE order_date >= CURRENT_DATE - INTERVAL 30 DAY",
+  "judge_rationale": "Used trailing-30-day window instead of month-to-date",
+  "score": 0.0,
+  "blame_set_expected": ["catalog.schema.orders.order_date"],
+  "expected_repair_hypothesis": "Replace trailing-30 with MTD using DATE_TRUNC",
+  "expected_patch_type": "add_sql_snippet_filter",
+  "expected_target_table": "catalog.schema.orders",
+  "expected_intent_id": "intent_gs_021_mtd",
+  "expected_outcome_kind": "applied"
+}

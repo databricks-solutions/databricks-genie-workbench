@@ -1,0 +1,16 @@
+{
+  "qid": "gs_024",
+  "question": "Returning customer revenue last quarter",
+  "ground_truth_sql": "SELECT SUM(revenue) FROM catalog.schema.orders WHERE customer_segment = 'returning' AND order_date BETWEEN DATEADD(quarter, -1, DATE_TRUNC('quarter', CURRENT_DATE)) AND DATE_TRUNC('quarter', CURRENT_DATE)",
+  "generated_sql": "SELECT SUM(revenue) FROM catalog.schema.orders WHERE order_date BETWEEN '...' AND '...'",
+  "judge_rationale": "Missing customer_segment='returning' filter",
+  "score": 0.0,
+  "blame_set_expected": ["catalog.schema.orders.customer_segment"],
+  "expected_repair_hypothesis": "Add customer_segment filter scoped to returning",
+  "expected_patch_type": "add_sql_snippet_filter",
+  "expected_target_table": "catalog.schema.orders",
+  "collateral_qids_protected": ["gs_003"],
+  "expected_intent_id": "intent_gs_024_returning",
+  "expected_outcome_kind": "blast_radius_rejected",
+  "expected_narrow_outcome": "narrowed"
+}

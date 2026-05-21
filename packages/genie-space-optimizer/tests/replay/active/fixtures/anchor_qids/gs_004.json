@@ -1,0 +1,15 @@
+{
+  "qid": "gs_004",
+  "question": "Average order value by category, top 5",
+  "ground_truth_sql": "SELECT category, SUM(revenue) / COUNT(DISTINCT order_id) AS aov FROM catalog.schema.orders GROUP BY category ORDER BY aov DESC LIMIT 5",
+  "generated_sql": "SELECT category, SUM(quantity) / COUNT(orders) AS aov FROM catalog.schema.orders GROUP BY category",
+  "judge_rationale": "Generated wrong measure: SUM(quantity)/COUNT(orders) instead of SUM(revenue)/COUNT(DISTINCT order_id)",
+  "score": 0.0,
+  "blame_set_expected": ["catalog.schema.orders.revenue"],
+  "expected_repair_hypothesis": "Add example SQL teaching the correct AOV measure",
+  "expected_patch_type": "add_example_sql",
+  "expected_evidence_kind": "wrong_aggregation",
+  "expected_lever": "5b",
+  "expected_intent_id": "intent_gs_004_aov",
+  "expected_outcome_kind": "applied"
+}

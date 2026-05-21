@@ -1,0 +1,14 @@
+{
+  "qid": "gs_026",
+  "question": "Top 5 categories by revenue last month",
+  "ground_truth_sql": "SELECT category, SUM(revenue) AS rev FROM catalog.schema.orders WHERE order_date >= DATEADD(month, -1, CURRENT_DATE) GROUP BY category ORDER BY rev DESC LIMIT 5",
+  "generated_sql": "SELECT category, RANK() OVER (ORDER BY SUM(revenue) DESC) AS r FROM catalog.schema.orders WHERE order_date >= DATEADD(month, -1, CURRENT_DATE) GROUP BY category",
+  "judge_rationale": "Generated SQL uses RANK() without LIMIT; returns all categories ranked rather than top 5",
+  "score": 0.0,
+  "blame_set_expected": ["catalog.schema.orders.revenue"],
+  "expected_repair_hypothesis": "Replace RANK() with ROW_NUMBER() and add LIMIT 5",
+  "expected_patch_type": "add_sql_snippet_expression",
+  "expected_target_table": "catalog.schema.orders",
+  "expected_intent_id": "intent_gs_026_topn_categories",
+  "expected_outcome_kind": "applied"
+}
