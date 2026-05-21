@@ -298,3 +298,46 @@ class RepairProposal(JsonRoundTrip):
                 str(q) for q in (payload.get("target_qids") or ())
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SurvivalContractResult:
+    """Plan 12 — outcome of :func:`validate_survival_contract`.
+
+    Carries the boolean verdict and a closed-vocabulary tuple of missing
+    field names so the caller can build a typed ``terminal_reason``
+    string for the resulting CONTRACT_FAILED ``PatchOutcome`` (e.g.
+    ``missing_required_field_target_objects``).
+    """
+
+    is_valid: bool
+    missing_fields: tuple[str, ...]
+
+
+def validate_survival_contract(
+    proposal: "RepairProposal",
+) -> SurvivalContractResult:
+    """Plan 12 — every RepairProposal exiting Stage 3 must carry:
+
+      * ``intent_id`` (non-empty)
+      * ``target_objects`` (non-empty)
+      * ``blame_set`` (non-empty)
+      * ``target_qids`` (non-empty)
+
+    Missing fields are returned in a closed-vocabulary tuple so the
+    caller can emit a CONTRACT_FAILED PatchOutcome with a typed
+    ``terminal_reason`` like ``missing_required_field_target_objects``.
+    """
+    missing: list[str] = []
+    if not proposal.intent_id:
+        missing.append("intent_id")
+    if not proposal.target_objects:
+        missing.append("target_objects")
+    if not proposal.blame_set:
+        missing.append("blame_set")
+    if not proposal.target_qids:
+        missing.append("target_qids")
+    return SurvivalContractResult(
+        is_valid=not missing,
+        missing_fields=tuple(missing),
+    )

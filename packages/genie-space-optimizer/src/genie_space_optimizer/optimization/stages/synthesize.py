@@ -76,6 +76,59 @@ def _build_request(
     )
 
 
+def _target_objects_from_blame_set(
+    blame_set: list[str] | tuple[str, ...],
+) -> tuple:
+    """Plan 12 — derive RepairProposal.target_objects from blame_set
+    entries when the Stage 3 LLM did not emit a target_objects field
+    (the current Plan 11 ``Plan11SynthesizeOutput`` schema doesn't).
+
+    Groups ``catalog.schema.table.column`` entries by their
+    ``catalog.schema.table`` prefix and emits one
+    :class:`TargetObject` (asset_kind=TABLE) per table with the
+    union of column suffixes. Three-component entries (no column
+    suffix) become a TABLE TargetObject with empty ``columns``.
+    Entries that don't parse as dotted FQNs are dropped silently —
+    they could not satisfy ``TargetObject.identifier`` invariants.
+    """
+    from genie_space_optimizer.optimization.target_object_typed import (
+        AssetKind,
+        TargetObject,
+    )
+
+    by_table: dict[str, list[str]] = {}
+    table_order: list[str] = []
+    for raw in blame_set or ():
+        s = str(raw).strip()
+        if not s:
+            continue
+        parts = s.split(".")
+        if len(parts) >= 4:
+            table_id = ".".join(parts[:3])
+            column = parts[3]
+        elif len(parts) == 3:
+            table_id = s
+            column = ""
+        else:
+            continue
+        if table_id not in by_table:
+            by_table[table_id] = []
+            table_order.append(table_id)
+        if column and column not in by_table[table_id]:
+            by_table[table_id].append(column)
+
+    out: list[TargetObject] = []
+    for table_id in table_order:
+        out.append(
+            TargetObject(
+                asset_kind=AssetKind.TABLE,
+                identifier=table_id,
+                columns=tuple(by_table[table_id]),
+            )
+        )
+    return tuple(out)
+
+
 def _safe_patch_type(raw: str) -> PatchType | None:
     """Resolve a free-form patch_type string to the closed enum.
 
@@ -160,6 +213,16 @@ def run_plan11_synthesis_for_single_cluster(
             # Unknown patch_type — skip (the repair loop will pick it up
             # when validate_patch returns patch_type_unknown).
             continue
+        item_blame_set = [str(b) for b in (item.get("blame_set") or [])]
+        # Plan 12 — derive target_objects from blame_set so the Plan 11
+        # synthesize output passes the survival contract until the
+        # ``Plan11SynthesizeOutput`` schema is extended to emit
+        # target_objects directly. Falls back to a primary blame_set
+        # from the cluster if the LLM left blame_set empty.
+        effective_blame_set = (
+            item_blame_set
+            or [str(b) for b in (cluster.primary_blame_set or ())]
+        )
         proposals.append(
             RepairProposal(
                 intent_id=f"{cluster.cluster_id}_{idx:03d}",
@@ -170,7 +233,10 @@ def run_plan11_synthesis_for_single_cluster(
                 rationale=str(item.get("rationale", "")),
                 confidence=item.get("confidence", "low"),  # type: ignore[arg-type]
                 patch_body=dict(item.get("patch_body") or {}),
-                blame_set=tuple(str(b) for b in (item.get("blame_set") or [])),
+                blame_set=tuple(effective_blame_set),
+                target_objects=_target_objects_from_blame_set(
+                    effective_blame_set,
+                ),
                 repair_hypothesis=str(item.get("repair_hypothesis", "")),
                 target_qids=tuple(
                     str(q) for q in (item.get("target_qids") or [])
@@ -196,6 +262,44 @@ def run_plan11_synthesis_for_single_cluster(
             tokens_output=tokens_out,
         )
     )
+
+    # Plan 12 — survival-contract validation at Stage 3 exit. Proposals
+    # that fail the contract get a CONTRACT_FAILED GSO_PATCH_OUTCOME_V1
+    # marker (idempotent per intent_id) and are dropped from the
+    # returned list. The Stage 3 marker above carries the pre-filter
+    # proposal_ids so I22's coverage check sees a matching outcome for
+    # every declared intent_id (CONTRACT_FAILED for the dropped ones,
+    # APPLIED / VALIDATOR_REJECTED / BLAST_RADIUS_REJECTED for the
+    # survivors once downstream stages run).
+    from genie_space_optimizer.optimization.patch_outcome import (
+        PatchOutcomeKind,
+    )
+    from genie_space_optimizer.optimization.patch_survival_emitter import (
+        emit_patch_outcome,
+    )
+    from genie_space_optimizer.optimization.repair_proposal_typed import (
+        validate_survival_contract,
+    )
+
+    surviving: list[RepairProposal] = []
+    for p in proposals:
+        result = validate_survival_contract(p)
+        if result.is_valid:
+            surviving.append(p)
+            continue
+        reason = (
+            "missing_required_fields_" + "_".join(result.missing_fields)
+        )
+        emit_patch_outcome(
+            optimization_run_id=optimization_run_id,
+            iteration=iteration,
+            ag_id=ag_id,
+            cluster_id=cluster.cluster_id,
+            intent_id=p.intent_id or "<empty>",
+            outcome_kind=PatchOutcomeKind.CONTRACT_FAILED,
+            terminal_reason=reason,
+        )
+    proposals = surviving
 
     if not proposals:
         return ClusterSynthesisResult(

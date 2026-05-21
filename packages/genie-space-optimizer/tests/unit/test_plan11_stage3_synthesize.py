@@ -14,7 +14,11 @@ def _make_cluster() -> FailureCluster:
         member_qids=("gs_009",),
         unifying_evidence="RANK() doesn't bound row count",
         repair_hypothesis="Use ROW_NUMBER() and LIMIT 10",
-        primary_blame_set=(),
+        # Plan 12 — non-empty blame_set on the cluster so the Stage 3
+        # survival contract (target_objects + blame_set required) passes
+        # via synthesize.py's blame_set fallback + target_objects
+        # derivation. The Plan 11 LLM doesn't emit target_objects today.
+        primary_blame_set=("catalog.schema.orders.order_id",),
         confidence="high",
     )
 
