@@ -23330,6 +23330,38 @@ def _run_lever_loop(
             for lever_key in lever_keys:
                 lever_int = int(lever_key)
                 levers_attempted.append(lever_int)
+                # Plan 12 PR 6 deferred wire-in — consult the
+                # evidence→lever policy ONCE per (AG, lever_key) before
+                # either dispatch branch (BoN or single-shot) calls
+                # generate_proposals_from_strategy. Flag OFF (default)
+                # returns lever_int unchanged and emits no marker, so
+                # existing replays remain byte-stable. Flag ON emits
+                # one GSO_PLAN12_EVIDENCE_ROUTING_DECIDED_V1 marker and
+                # may re-route Lever 1 → Lever 5/6/2 when the AG's
+                # evidence demands a generating lane.
+                try:
+                    _effective_lever = (
+                        _resolve_effective_lever_with_evidence_policy(
+                            target_lever=lever_int,
+                            action_group=ag,
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(iteration_counter),
+                            ag_id=str(ag_id or ""),
+                            cluster_id=str(
+                                (ag.get("source_cluster_ids") or [""])[0]
+                            ),
+                        )
+                    )
+                except Exception:
+                    # Defensive — a bug in the policy or marker emit
+                    # must NEVER crash the lever loop. Fall back to the
+                    # strategist-chosen lever.
+                    logger.debug(
+                        "Plan 12 PR 6: evidence-routing resolve failed "
+                        "(non-fatal; using lever_int unchanged)",
+                        exc_info=True,
+                    )
+                    _effective_lever = lever_int
                 # Phase 3 followup (2026-05-13): real pre-call snapshot for
                 # L5 structural-gate drops. The optimizer._LEVER5_GATE_DROPS
                 # buffer at optimizer.py:8007 is populated in-place by
@@ -23461,7 +23493,10 @@ def _run_lever_loop(
                                 strategy=strategy,
                                 action_group=ag,
                                 metadata_snapshot=metadata_snapshot,
-                                target_lever=lever_int,
+                                # Plan 12 PR 6 — effective lever from
+                                # the evidence→lever policy. Equals
+                                # ``lever_int`` when the flag is OFF.
+                                target_lever=_effective_lever,
                                 apply_mode=apply_mode,
                                 w=w,
                                 spark=spark,
@@ -23605,7 +23640,10 @@ def _run_lever_loop(
                         strategy=strategy,
                         action_group=ag,
                         metadata_snapshot=metadata_snapshot,
-                        target_lever=lever_int,
+                        # Plan 12 PR 6 — effective lever from the
+                        # evidence→lever policy. Equals ``lever_int``
+                        # when the flag is OFF.
+                        target_lever=_effective_lever,
                         apply_mode=apply_mode,
                         w=w,
                         spark=spark,
@@ -36279,3 +36317,98 @@ def _emit_plan12_ag_pivot_decision(
             )
         )
     return True
+
+
+def _resolve_effective_lever_with_evidence_policy(
+    *,
+    target_lever: int,
+    action_group: dict,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+) -> int:
+    """Plan 12 PR 6 deferred wire-in — evidence→lever routing.
+
+    Sits in front of every call to
+    :func:`generate_proposals_from_strategy` in the harness's lever
+    loop (Best-of-N at ``harness.py:~23464`` and single-shot at
+    ``harness.py:~23604``). Consults
+    :func:`_apply_evidence_to_lever_policy` to decide whether the
+    strategist's chosen ``target_lever`` should be re-routed to a
+    generating lane when the AG's evidence demands it.
+
+    Returns the lever the harness should pass as ``target_lever``
+    to ``generate_proposals_from_strategy``.
+
+    Flag OFF (default) — returns ``target_lever`` unchanged. No
+    policy call, no marker. Preserves byte-stable replay against the
+    existing harness suite. This is the critical safeguard for
+    rollout: every existing replay anchor stays green until an
+    operator flips ``GSO_PLAN12_LIVE_EVIDENCE_ROUTING=true``.
+
+    Flag ON — invokes the policy. Emits one
+    ``GSO_PLAN12_EVIDENCE_ROUTING_DECIDED_V1`` marker per call
+    (whether re-routed or not, so postmortems see every
+    consultation). When the policy re-routes, the returned lever is
+    the policy's preferred family mapped to its integer lever:
+
+      * ``"5b"`` / ``"5"`` / ``5`` → 5
+      * ``"6"``  / ``6``           → 6
+      * ``"2"``  / ``2``           → 2
+
+    Args:
+      target_lever: the integer lever the harness's ``lever_keys``
+        loop selected for this directive.
+      action_group: the strategist's AG dict. The policy reads
+        ``asi_failure_type`` (preferred) or ``root_cause`` (fallback)
+        for the evidence_kind. AGs without either field route as
+        "unknown" — the policy's safest default refuses Lever 1.
+      optimization_run_id, iteration, ag_id, cluster_id: pass-through
+        identifiers for the marker payload.
+    """
+    from genie_space_optimizer.common.config import (
+        plan12_live_evidence_routing_enabled,
+    )
+
+    if not plan12_live_evidence_routing_enabled():
+        return int(target_lever)
+
+    from genie_space_optimizer.optimization.optimizer import (
+        _apply_evidence_to_lever_policy,
+    )
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        plan12_evidence_routing_decided_marker,
+    )
+
+    target_lever_int = int(target_lever)
+    effective_lever = int(
+        _apply_evidence_to_lever_policy(target_lever_int, action_group)
+    )
+    reroute_applied = effective_lever != target_lever_int
+    evidence_kind = str(
+        action_group.get("asi_failure_type")
+        or action_group.get("root_cause")
+        or ""
+    )
+    try:
+        print(
+            plan12_evidence_routing_decided_marker(
+                optimization_run_id=str(optimization_run_id or ""),
+                iteration=int(iteration or 0),
+                ag_id=str(ag_id or ""),
+                cluster_id=str(cluster_id or ""),
+                evidence_kind=evidence_kind,
+                target_lever_before=target_lever_int,
+                target_lever_after=effective_lever,
+                reroute_applied=reroute_applied,
+            ),
+            flush=True,
+        )
+    except Exception:
+        logger.debug(
+            "Plan 12 PR 6: evidence-routing marker emit failed "
+            "(non-fatal)",
+            exc_info=True,
+        )
+    return effective_lever

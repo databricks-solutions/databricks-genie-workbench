@@ -5804,6 +5804,38 @@ def plan12_live_ag_retry_pivot_enabled() -> bool:
     return _flag_enabled("GSO_PLAN12_LIVE_AG_RETRY_PIVOT")
 
 
+def plan12_live_evidence_routing_enabled() -> bool:
+    """Plan 12 PR 6 deferred evidence→lever routing. Default OFF.
+
+    When ON, every call to
+    :func:`generate_proposals_from_strategy` in the harness's lever
+    loop (``harness.py:~23464`` Best-of-N and ``harness.py:~23604``
+    single-shot) is preceded by a call to
+    :func:`_apply_evidence_to_lever_policy`. The policy reroutes
+    ``target_lever=1`` (non-generating ``add_column_description``)
+    away from the dispatcher when the AG's evidence demands
+    generation (``wrong_aggregation``, ``missing_filter``,
+    ``top_n_collapse``, ...). Closes the routing regression seen in
+    postmortem ``dc89d1a9-...`` where ``gs_004`` burned an iteration
+    on a metadata-only Lever-1 patch that could not address the
+    wrong-aggregation evidence.
+
+    Every consultation emits one
+    ``GSO_PLAN12_EVIDENCE_ROUTING_DECIDED_V1`` marker. The marker
+    records the *before* and *after* lever plus a
+    ``reroute_applied`` boolean so postmortem replays can audit the
+    policy's per-AG decisions before flipping a future
+    high-tier invariant (I26-class) that asserts no
+    ``add_column_description`` dispatch survives for
+    generating-required evidence.
+
+    Default OFF preserves byte-stable replay against the existing
+    harness suite. Operators flip per-deploy via the env var
+    ``GSO_PLAN12_LIVE_EVIDENCE_ROUTING=true``.
+    """
+    return _flag_enabled("GSO_PLAN12_LIVE_EVIDENCE_ROUTING")
+
+
 def _flag_default_on(env_name: str) -> bool:
     raw = (os.environ.get(env_name) or "").strip().lower()
     if raw in _FALSY_VALUES:

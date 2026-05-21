@@ -1744,6 +1744,60 @@ def plan12_ag_pivot_decided_marker(
     )
 
 
+def plan12_evidence_routing_decided_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    evidence_kind: str,
+    target_lever_before: int,
+    target_lever_after: int,
+    reroute_applied: bool,
+) -> str:
+    """Plan 12 PR 6 deferred — observation marker for the evidence→lever
+    routing policy.
+
+    Emitted by the harness's lever loop immediately before each call
+    to :func:`generate_proposals_from_strategy` when
+    :func:`plan12_live_evidence_routing_enabled` is True. One marker
+    per lever-call (BoN and single-shot both emit). The marker
+    records what
+    :func:`_apply_evidence_to_lever_policy` decided for this
+    ``(target_lever_before, evidence_kind)`` pair so postmortem
+    replays can audit every routing decision before a high-tier
+    invariant codifies the policy.
+
+    Fields:
+
+      - ``evidence_kind`` — the value the policy looked up, drawn
+        from ``ag.asi_failure_type`` (preferred) or ``ag.root_cause``
+        (fallback) or the empty string (unknown bucket).
+      - ``target_lever_before`` — the integer lever the harness's
+        ``lever_keys`` loop chose for this directive.
+      - ``target_lever_after`` — the integer lever the policy
+        recommends. Equals ``target_lever_before`` when the policy
+        passes through (target_lever ≠ 1 or evidence permits Lever 1).
+      - ``reroute_applied`` — True when ``target_lever_after`` differs
+        from ``target_lever_before``. The harness uses the rerouted
+        lever in the subsequent
+        :func:`generate_proposals_from_strategy` call.
+    """
+    return marker_line(
+        "GSO_PLAN12_EVIDENCE_ROUTING_DECIDED_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "cluster_id": str(cluster_id),
+            "evidence_kind": str(evidence_kind),
+            "target_lever_before": int(target_lever_before),
+            "target_lever_after": int(target_lever_after),
+            "reroute_applied": bool(reroute_applied),
+        },
+    )
+
+
 def assemble_run_manifest_v2_line(
     *,
     optimization_run_id: str,
