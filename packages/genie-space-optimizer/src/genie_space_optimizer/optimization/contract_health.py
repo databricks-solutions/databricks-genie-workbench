@@ -20,7 +20,7 @@ from typing import Any, Mapping, Sequence
 
 HIGH_TIER_INVARIANT_IDS: frozenset[str] = frozenset(
     {"I9", "I10", "I11", "I12", "I13", "I15", "I16",
-     "I17", "I18", "I19", "I20", "I21", "I22"}
+     "I17", "I18", "I19", "I20", "I21", "I22", "I23"}
 )
 # Plan 10 Phase B (2026-05-19) — I15 + I16 are HIGH-tier because both
 # fire on the exact silent-leakage pattern the plan exists to prevent

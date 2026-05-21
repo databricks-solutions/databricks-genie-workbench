@@ -1412,6 +1412,47 @@ def check_i22_patch_outcome_coverage(
     return violations
 
 
+def check_i23_narrow_attempt_coverage(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I23 — Plan 12. Every blast-radius drop record carrying the
+    required Plan 12 metadata (``original_patch_type`` non-empty) MUST
+    have at least one matching ``GSO_PLAN11_NARROW_REPLACEMENT_V1``
+    marker. Silent on records lacking the required field so
+    pre-Plan-12 drops (which set ``original_patch_type=""``) stay
+    green.
+
+    Reads:
+      evidence["blast_radius_drop_records"]: list of dicts with
+        keys intent_id, original_patch_type
+      evidence["plan11_narrow_replacement_markers"]: list with patch_id
+    """
+    drops = evidence.get("blast_radius_drop_records", [])
+    narrows = evidence.get("plan11_narrow_replacement_markers", [])
+    if not drops:
+        return []
+    attempted = {str(m.get("patch_id") or "") for m in narrows}
+    violations: list[dict] = []
+    for d in drops:
+        if not str(d.get("original_patch_type") or ""):
+            continue
+        intent_id = str(d.get("intent_id") or "")
+        if intent_id and intent_id not in attempted:
+            violations.append(
+                {
+                    "invariant": "I23",
+                    "missing_intent_id": intent_id,
+                    "message": (
+                        f"I23: blast-radius-dropped intent "
+                        f"{intent_id!r} carries required Plan 12 "
+                        f"metadata but no narrow-replacement attempt "
+                        f"was logged"
+                    ),
+                }
+            )
+    return violations
+
+
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
     violations. Empty list = green pilot."""
@@ -1439,6 +1480,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i20_narrow_replacement_exhaustion_rate,  # Plan 11
         check_i21_plan11_dispatch_coverage,  # Plan 12
         check_i22_patch_outcome_coverage,  # Plan 12
+        check_i23_narrow_attempt_coverage,  # Plan 12
     ):
         try:
             violations.extend(check(evidence))
