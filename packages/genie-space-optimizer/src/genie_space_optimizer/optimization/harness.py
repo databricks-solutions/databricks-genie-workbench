@@ -32592,7 +32592,24 @@ def _run_lever_loop(
                             int(L) for L in (_iter_levers_for_ledger or ())
                         ),
                         rca_card_id_or_provisional=str(_iter_rca_card_id or ""),
-                        proposal_attempts=int(_iter_proposal_attempts or 0),
+                        # Plan 12 PR 7 Task 7.4 writer-path swap —
+                        # _iter_proposal_attempts is declared but never
+                        # incremented anywhere in the harness, so the
+                        # legacy ledger entry always wrote 0. Swap it
+                        # for the deriver, sourced from the
+                        # patch-outcome emitter's registry (unique
+                        # intent_ids registered this iteration).
+                        # Flag-gated for byte-stability; flag OFF
+                        # preserves the legacy zero-write.
+                        proposal_attempts=int(
+                            _derive_iter_proposal_attempts(
+                                optimization_run_id=str(run_id or ""),
+                                iteration=int(_iter_num),
+                                legacy_counter=int(
+                                    _iter_proposal_attempts or 0
+                                ),
+                            )
+                        ),
                         selected_proposal_id=str(
                             _iter_selected_proposal_id or ""
                         ),
@@ -36454,6 +36471,52 @@ def _resolve_effective_lever_with_evidence_policy(
             exc_info=True,
         )
     return effective_lever
+
+
+def _derive_iter_proposal_attempts(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    legacy_counter: int,
+) -> int:
+    """Plan 12 PR 7 Task 7.4 deferred writer-path swap.
+
+    Returns the number of unique proposal intent_ids that reached the
+    patch-outcome emitter during this iteration. Replaces the legacy
+    ``_iter_proposal_attempts`` counter (declared but never
+    incremented — always 0) at the candidate-ledger writer.
+
+    Flag OFF (default): returns ``legacy_counter`` unchanged so the
+    candidate-ledger entry remains byte-stable against existing
+    fixtures. Flag ON: returns the deriver value.
+
+    Failure containment: any exception in the deriver chain falls
+    back to ``legacy_counter`` so a bug in the emitter introspection
+    can never crash the iteration's terminal write.
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            plan12_live_proposal_attempts_derive_enabled,
+        )
+        if not plan12_live_proposal_attempts_derive_enabled():
+            return int(legacy_counter)
+        from genie_space_optimizer.optimization.patch_survival_emitter import (
+            emitted_intent_ids_for_iteration,
+        )
+        intents = emitted_intent_ids_for_iteration(
+            optimization_run_id=str(optimization_run_id),
+            iteration=int(iteration),
+        )
+        return derive_proposal_attempts_from_patch_outcomes([
+            {"intent_id": iid} for iid in intents
+        ])
+    except Exception:
+        logger.debug(
+            "Plan 12 PR 7 Task 7.4: proposal_attempts deriver fallback "
+            "to legacy counter (non-fatal)",
+            exc_info=True,
+        )
+        return int(legacy_counter)
 
 
 def _latest_eval_result_to_rows(

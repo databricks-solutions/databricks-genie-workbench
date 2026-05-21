@@ -64,7 +64,14 @@ def test_build_bundle_creates_manifest_with_resolved_opt_run_id(
     manifest = manifest_from_dict(json.loads(paths.manifest.read_text()))
     assert manifest.resolved["optimization_run_id"] == "opt-abc"
     assert manifest.resolved["lever_loop_task_run_id"] == "tr-1"
-    assert manifest.inputs == {"job_id": "j-1", "run_id": "r-1", "profile": "p"}
+    # Plan 12 PR 7 Task 7.1.3 — lever_task_run_id is now part of the
+    # cache key so retries against the same parent run_id rebuild.
+    assert manifest.inputs == {
+        "job_id": "j-1",
+        "run_id": "r-1",
+        "profile": "p",
+        "lever_task_run_id": "tr-1",
+    }
     assert paths.job_run.exists()
 
 

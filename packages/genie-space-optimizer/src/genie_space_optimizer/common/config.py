@@ -5804,6 +5804,27 @@ def plan12_live_ag_retry_pivot_enabled() -> bool:
     return _flag_enabled("GSO_PLAN12_LIVE_AG_RETRY_PIVOT")
 
 
+def plan12_live_proposal_attempts_derive_enabled() -> bool:
+    """Plan 12 PR 7 Task 7.4 deferred writer-path swap. Default OFF.
+
+    When ON, the candidate-ledger writer at ``harness.py:~32595``
+    computes ``proposal_attempts`` via
+    :func:`derive_proposal_attempts_from_patch_outcomes` over the
+    patch-outcome emitter's registry instead of the legacy
+    ``_iter_proposal_attempts`` counter (which is declared at
+    ``harness.py:19243`` but never incremented anywhere, so the
+    legacy write was always 0).
+
+    Default OFF preserves byte-stable candidate-ledger entries
+    against fixtures with ``proposal_attempts: 0``. Operators flip
+    per-deploy via env var
+    ``GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE=true``. I25 catches
+    the regression if a future change reintroduces drift between
+    the recorded counter and the deriver source-of-truth.
+    """
+    return _flag_enabled("GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE")
+
+
 def plan12_live_run_summary_eval_derive_enabled() -> bool:
     """Plan 12 PR 7 Task 7.5 deferred — derive run_summary hard/soft
     failure counts from the carrier eval_result. Default OFF.

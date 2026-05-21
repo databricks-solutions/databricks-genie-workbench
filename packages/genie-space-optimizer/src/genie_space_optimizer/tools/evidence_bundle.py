@@ -678,14 +678,37 @@ def build_bundle(
     paths = bundle_paths_for(root=output_root, optimization_run_id=optimization_run_id)
 
     # Idempotence: short-circuit when an existing manifest matches inputs.
+    #
+    # Plan 12 PR 7 Task 7.1.3 — the cache key now includes
+    # ``lever_task_run_id`` so that a parent run id reused across
+    # retry attempts (new lever_task_run_id) is detected as a cache
+    # miss and the bundle is rebuilt. Both 2026-05-20 postmortems
+    # flagged the old (job_id, run_id, profile)-only key as a
+    # contributor to the silent-evidence problem — a retried
+    # lever-loop task wrote a new stdout stream but the cached
+    # manifest pointed at the prior attempt's evidence.
+    #
+    # Backwards-compatible: legacy manifests written before this
+    # change have ``lever_task_run_id`` only in ``resolved.*``, not in
+    # ``inputs.*``. We consult ``resolved`` as a fallback so a freshly
+    # built bundle under the new code can still cache-hit when read
+    # against an older manifest with matching task_run_id.
     if paths.manifest.exists():
         try:
             existing = json.loads(paths.manifest.read_text())
-            if existing.get("inputs") == {
-                "job_id": job_id,
-                "run_id": run_id,
-                "profile": profile,
-            }:
+            existing_inputs = existing.get("inputs") or {}
+            existing_resolved = existing.get("resolved") or {}
+            existing_task_run_id = str(
+                existing_inputs.get("lever_task_run_id")
+                or existing_resolved.get("lever_loop_task_run_id")
+                or ""
+            )
+            if (
+                existing_inputs.get("job_id") == job_id
+                and existing_inputs.get("run_id") == run_id
+                and existing_inputs.get("profile") == profile
+                and existing_task_run_id == str(lever_task_run_id or "")
+            ):
                 return BundleResult(
                     paths=paths, manifest=manifest_from_dict(existing)
                 )
@@ -1016,7 +1039,15 @@ def build_bundle(
         schema_version=SCHEMA_VERSION,
         bundle_version=BUNDLE_VERSION,
         captured_at_utc=dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        inputs={"job_id": job_id, "run_id": run_id, "profile": profile},
+        inputs={
+            "job_id": job_id,
+            "run_id": run_id,
+            "profile": profile,
+            # Plan 12 PR 7 Task 7.1.3 — stamp lever_task_run_id into
+            # the cache key so retry attempts (same parent run_id,
+            # new lever_task_run_id) are detected as cache misses.
+            "lever_task_run_id": lever_task_run_id,
+        },
         resolved={
             "optimization_run_id": optimization_run_id,
             "lever_loop_task_run_id": lever_task_run_id,
