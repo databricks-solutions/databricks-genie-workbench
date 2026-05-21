@@ -14534,6 +14534,96 @@ def _proposal_from_structural_sql_candidate(
     }
 
 
+def _l6_dict_to_repair_proposal(
+    candidate: dict,
+    *,
+    intent_id: str,
+    rca_card_id: str,
+    causal_target: str,
+    repair_hypothesis: str,
+) -> Any:
+    """Plan 12 — bridge the legacy L6 candidate dict (output of
+    :func:`_proposal_from_structural_sql_candidate`) into a typed
+    :class:`RepairProposal` that satisfies the survival contract.
+
+    Returns ``None`` if the candidate cannot be promoted (missing
+    ``target_table``, empty ``target_qids``, or unknown ``patch_type``).
+    """
+    from genie_space_optimizer.optimization.repair_intent import (
+        PatchType,
+        RepairShape,
+    )
+    from genie_space_optimizer.optimization.repair_proposal_typed import (
+        RepairProposal,
+    )
+    from genie_space_optimizer.optimization.target_object_typed import (
+        AssetKind,
+        TargetObject,
+    )
+
+    target_table = str(candidate.get("target_table") or "").strip()
+    target_qids = tuple(
+        str(q)
+        for q in (
+            candidate.get("target_qids")
+            or candidate.get("affected_questions")
+            or []
+        )
+        if str(q)
+    )
+    if not target_table or not target_qids:
+        return None
+
+    try:
+        ptype = PatchType(str(candidate.get("patch_type") or ""))
+    except ValueError:
+        return None
+
+    target_object = TargetObject(
+        asset_kind=AssetKind.TABLE,
+        identifier=target_table,
+        columns=(causal_target,) if causal_target else (),
+    )
+
+    if causal_target:
+        blame_set: tuple[str, ...] = (causal_target,)
+    elif target_table:
+        blame_set = (target_table,)
+    else:
+        blame_set = ()
+
+    raw_conf = float(candidate.get("confidence", 0.85) or 0.0)
+    confidence: str
+    if raw_conf >= 0.8:
+        confidence = "high"
+    elif raw_conf >= 0.5:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return RepairProposal(
+        intent_id=str(intent_id),
+        intent_name=str(candidate.get("display_name") or "L6 SQL snippet"),
+        intent_description=str(
+            candidate.get("instruction") or candidate.get("rationale") or ""
+        ),
+        repair_shape=RepairShape.OTHER,
+        patch_type=ptype,
+        rationale=str(candidate.get("rationale") or ""),
+        confidence=confidence,  # type: ignore[arg-type]
+        patch_body={
+            "name": str(candidate.get("display_name") or "l6_snippet"),
+            "sql_expression": str(candidate.get("sql") or ""),
+            "usage_guidance": str(candidate.get("instruction") or ""),
+        },
+        blame_set=blame_set,
+        target_objects=(target_object,),
+        required_constructs=(),
+        repair_hypothesis=str(repair_hypothesis or ""),
+        target_qids=target_qids,
+    )
+
+
 def _lever6_reject_payload(
     *,
     reason: str,
