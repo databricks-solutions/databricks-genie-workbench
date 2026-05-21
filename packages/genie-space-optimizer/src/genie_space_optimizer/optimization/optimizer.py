@@ -2094,79 +2094,38 @@ def cluster_failures(
     out mixed" behaviour but SHOULD be updated.
     """
     # ── Plan 11 — LLM-first diagnose + cluster (top priority). ─────────
-    # When plan11_llm_first_enabled() (default ON as of PR 3), run the
-    # new Stage 1 (diagnose_failing_qids) + Stage 2 (cluster_diagnoses)
-    # pair end-to-end and project the resulting FailureCluster objects
-    # back onto the legacy cluster-dict shape so downstream code
-    # (proposal shaping, lever dispatch, postmortem rendering) is
-    # unchanged. Plan 11's stages internally emit
-    # GSO_PLAN11_STAGE1_DIAGNOSIS_V1 + GSO_PLAN11_STAGE2_CLUSTERING_V1
-    # markers + the I17/I18 coverage invariants.
-    #
-    # When the Plan 11 LLM call declines / errors / yields no clusters,
-    # fall through to the Plan 4 branch below (which itself falls
-    # through to the deterministic heuristic).
+    # Plan 12 PR 1 split the silent `and rca_evidence_typed`
+    # short-circuit into an explicit dispatch helper that emits one
+    # GSO_PLAN11_DISPATCH_DECISION_V1 marker per call (outcome
+    # "entered" / "skipped" + typed skip_reason). This closes the
+    # silent-fallthrough bug both 2026-05-20 postmortems observed and
+    # lets Plan 11 run even when Plan 3's deterministic RCA classifier
+    # produced empty typed evidence (the raw-eval fallback adapter
+    # builds Stage 1 input from failing_qids + eval_rows directly).
     from genie_space_optimizer.common.config import (
-        plan11_llm_first_enabled,
         plan4_llm_clustering_enabled,
     )
-    if plan11_llm_first_enabled() and rca_evidence_typed:
-        from genie_space_optimizer.optimization.stages.cluster_plan11 import (
-            cluster_diagnoses,
-        )
-        from genie_space_optimizer.optimization.stages.diagnose import (
-            diagnose_failing_qids,
-        )
 
-        _failing_qids_input = _build_plan11_failing_qids_from_typed_evidence(
-            rca_evidence_typed,
-        )
-        _schema_columns_list: list[str] = list(
-            metadata_snapshot.get("schema_columns") or []
-        )
-        if not _schema_columns_list:
-            _seen: set[str] = set()
-            for ev in rca_evidence_typed.values():
-                for b in getattr(ev, "blame_set", ()) or ():
-                    s = str(b)
-                    if s and s not in _seen:
-                        _seen.add(s)
-                        _schema_columns_list.append(s)
-        _namespace_p11 = namespace or (
-            "hard" if signal_type == "hard" else "soft"
-        )
-        _iteration_p11 = int(metadata_snapshot.get("iteration") or 0)
-        _optimization_run_id_p11 = str(
-            metadata_snapshot.get("optimization_run_id") or run_id or ""
-        )
+    plan12_failing_qids = list(metadata_snapshot.get("_failing_qids") or [])
+    if not plan12_failing_qids and rca_evidence_typed:
+        # Last-ditch: derive from rca_evidence_typed if the iteration
+        # scope didn't stamp _failing_qids on metadata_snapshot yet.
+        plan12_failing_qids = list(rca_evidence_typed.keys())
 
-        _diagnoses = diagnose_failing_qids(
-            failing_qids=_failing_qids_input,
-            schema_columns=_schema_columns_list,
-            optimization_run_id=_optimization_run_id_p11,
-            iteration=_iteration_p11,
-            w=w,
-        )
-        if _diagnoses:
-            _failure_clusters = cluster_diagnoses(
-                diagnoses=_diagnoses,
-                schema_columns=_schema_columns_list,
-                optimization_run_id=_optimization_run_id_p11,
-                iteration=_iteration_p11,
-                namespace=_namespace_p11,
-                w=w,
-            )
-            if _failure_clusters:
-                return [
-                    _plan11_failure_cluster_to_legacy_dict(
-                        fc, signal_type=signal_type,
-                    )
-                    for fc in _failure_clusters
-                ]
-        # Plan 11 declined / errored at Stage 1 or 2 — fall through to
-        # Plan 4 (or the heuristic) so a clustering result is still
-        # produced. The Plan 11 markers from Stage 1/2 carry the
-        # diagnostic for postmortem.
+    plan11_clusters = _decide_and_run_plan11_dispatch(
+        failing_qids=plan12_failing_qids,
+        rca_evidence_typed=rca_evidence_typed or {},
+        metadata_snapshot=metadata_snapshot,
+        namespace=namespace or ("hard" if signal_type == "hard" else "soft"),
+        signal_type=signal_type,
+        run_id=run_id or "",
+        w=w,
+    )
+    if plan11_clusters:
+        return plan11_clusters
+    # Plan 11 declined / errored / skipped — fall through to Plan 4 (or
+    # the heuristic). The dispatch marker carries the diagnostic; the
+    # Stage 1/2 markers carry the abstain reason when LLM ran.
 
     # ── Plan 4 — LLM-driven short-circuit. ─────────────────────────────
     # Lazy-imported to avoid load-order coupling with cluster_llm (which
@@ -8256,6 +8215,138 @@ def _build_plan11_failing_qids_from_raw(
             }
         )
     return out
+
+
+def _decide_and_run_plan11_dispatch(
+    *,
+    failing_qids: list[str],
+    rca_evidence_typed: dict,
+    metadata_snapshot: dict,
+    namespace: str,
+    signal_type: str,
+    run_id: str,
+    w: Any,
+) -> list[dict] | None:
+    """Plan 12 — explicit Plan 11 dispatch decision with typed marker.
+
+    Replaces the silent ``and rca_evidence_typed`` short-circuit at the
+    old optimizer.py:2113. Returns ``None`` when Plan 11 was skipped
+    (caller falls through to Plan 4); returns a non-empty list of
+    legacy cluster dicts when Plan 11 produced clusters.
+
+    Emits exactly one ``GSO_PLAN11_DISPATCH_DECISION_V1`` marker per
+    invocation, carrying outcome ∈ {"entered","skipped"} and a typed
+    ``skip_reason`` from ``VALID_PLAN11_SKIP_REASONS`` when skipped.
+    """
+    from genie_space_optimizer.common.config import plan11_llm_first_enabled
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        plan11_dispatch_decision_marker,
+    )
+
+    iteration_p11 = int(metadata_snapshot.get("iteration") or 0)
+    optimization_run_id_p11 = str(
+        metadata_snapshot.get("optimization_run_id") or run_id or ""
+    )
+    namespace_p11 = str(namespace or signal_type)
+
+    def _emit_skipped(reason: str) -> None:
+        print(
+            plan11_dispatch_decision_marker(
+                optimization_run_id=optimization_run_id_p11,
+                iteration=iteration_p11,
+                namespace=namespace_p11,
+                outcome="skipped",
+                skip_reason=reason,
+                failing_qids_count=len(failing_qids or []),
+                rca_evidence_typed_present=bool(rca_evidence_typed),
+            )
+        )
+
+    if not plan11_llm_first_enabled():
+        _emit_skipped("flag_disabled")
+        return None
+
+    if not failing_qids:
+        _emit_skipped("no_failing_qids")
+        return None
+
+    # Build the Plan 11 Stage 1 input. Prefer typed evidence when
+    # present (the legacy path); otherwise reconstruct from raw eval
+    # rows (Plan 12 fallback — closes the silent-fallthrough bug).
+    if rca_evidence_typed:
+        failing_qids_input = _build_plan11_failing_qids_from_typed_evidence(
+            rca_evidence_typed,
+        )
+    else:
+        eval_rows = list(metadata_snapshot.get("_eval_rows_failing") or [])
+        failing_qids_input = _build_plan11_failing_qids_from_raw(
+            failing_qids=list(failing_qids),
+            eval_rows=eval_rows,
+        )
+
+    if not failing_qids_input:
+        _emit_skipped("build_failing_qids_empty")
+        return None
+
+    # We have inputs — emit the "entered" decision before running.
+    print(
+        plan11_dispatch_decision_marker(
+            optimization_run_id=optimization_run_id_p11,
+            iteration=iteration_p11,
+            namespace=namespace_p11,
+            outcome="entered",
+            skip_reason="",
+            failing_qids_count=len(failing_qids_input),
+            rca_evidence_typed_present=bool(rca_evidence_typed),
+        )
+    )
+
+    from genie_space_optimizer.optimization.stages.cluster_plan11 import (
+        cluster_diagnoses,
+    )
+    from genie_space_optimizer.optimization.stages.diagnose import (
+        diagnose_failing_qids,
+    )
+
+    schema_columns_list: list[str] = list(
+        metadata_snapshot.get("schema_columns") or []
+    )
+    if not schema_columns_list and rca_evidence_typed:
+        seen: set[str] = set()
+        for ev in rca_evidence_typed.values():
+            for b in getattr(ev, "blame_set", ()) or ():
+                s = str(b)
+                if s and s not in seen:
+                    seen.add(s)
+                    schema_columns_list.append(s)
+
+    diagnoses = diagnose_failing_qids(
+        failing_qids=failing_qids_input,
+        schema_columns=schema_columns_list,
+        optimization_run_id=optimization_run_id_p11,
+        iteration=iteration_p11,
+        w=w,
+    )
+    if not diagnoses:
+        # Stage 1 emits its own STAGE1 markers with the abstain reason.
+        # Caller falls back to Plan 4 / heuristic.
+        return None
+
+    failure_clusters = cluster_diagnoses(
+        diagnoses=diagnoses,
+        schema_columns=schema_columns_list,
+        optimization_run_id=optimization_run_id_p11,
+        iteration=iteration_p11,
+        namespace=namespace_p11,
+        w=w,
+    )
+    if not failure_clusters:
+        return None
+
+    return [
+        _plan11_failure_cluster_to_legacy_dict(fc, signal_type=signal_type)
+        for fc in failure_clusters
+    ]
 
 
 def _plan11_failure_cluster_to_legacy_dict(
