@@ -1582,6 +1582,58 @@ def plan11_narrow_replacement_marker(
     )
 
 
+VALID_PLAN11_SKIP_REASONS: frozenset[str] = frozenset({
+    "flag_disabled",
+    "no_failing_qids",
+    "build_failing_qids_empty",
+    "stage1_llm_declined",
+    "stage2_llm_declined",
+    "stage1_returned_no_diagnoses",
+    "stage2_returned_no_clusters",
+})
+
+
+def plan11_dispatch_decision_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    namespace: str,
+    outcome: str,
+    skip_reason: str = "",
+    failing_qids_count: int = 0,
+    rca_evidence_typed_present: bool = False,
+) -> str:
+    """Plan 12 — explicit dispatch-decision marker.
+
+    Emitted at exactly one point: the entry to the Plan 11 LLM lane in
+    optimizer.py (after PR 1 splits the silent ``and rca_evidence_typed``
+    short-circuit). Either ``outcome="entered"`` (we ran Stage 1) or
+    ``outcome="skipped"`` with a typed ``skip_reason``. Replaces the
+    silent fallthrough that both 2026-05-20 postmortems observed.
+    """
+    if outcome not in ("entered", "skipped"):
+        raise ValueError(
+            f"outcome must be 'entered' or 'skipped', got {outcome!r}"
+        )
+    if outcome == "skipped" and skip_reason not in VALID_PLAN11_SKIP_REASONS:
+        raise ValueError(
+            f"unknown skip_reason {skip_reason!r}; must be one of "
+            f"{sorted(VALID_PLAN11_SKIP_REASONS)}"
+        )
+    return marker_line(
+        "GSO_PLAN11_DISPATCH_DECISION_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "namespace": str(namespace),
+            "outcome": str(outcome),
+            "skip_reason": str(skip_reason),
+            "failing_qids_count": int(failing_qids_count),
+            "rca_evidence_typed_present": bool(rca_evidence_typed_present),
+        },
+    )
+
+
 def assemble_run_manifest_v2_line(
     *,
     optimization_run_id: str,
