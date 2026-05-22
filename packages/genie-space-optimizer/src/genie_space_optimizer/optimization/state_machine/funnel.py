@@ -42,3 +42,28 @@ def stage_index(stage: FunnelStage) -> int:
 
 def is_terminal(stage: FunnelStage) -> bool:
     return stage == FunnelStage.TERMINATED
+
+
+# Stages from which backward-to-PROPOSED is a legal escalation cycle.
+_ESCALATION_REJECTION_STAGES: frozenset[FunnelStage] = frozenset(
+    {FunnelStage.NORMALIZED, FunnelStage.APPLYABLE}
+)
+
+
+def is_legal_transition(from_stage: FunnelStage, to_stage: FunnelStage) -> bool:
+    """Return True iff the funnel allows ``from_stage -> to_stage``.
+
+    Legal transitions:
+      - Forward by exactly one stage in ``_STAGE_ORDER``.
+      - Any non-terminal stage may transition to ``TERMINATED``.
+      - From ``NORMALIZED`` or ``APPLYABLE`` back to ``PROPOSED`` (escalation cycle).
+
+    Everything else is illegal.
+    """
+    if from_stage == FunnelStage.TERMINATED:
+        return False
+    if to_stage == FunnelStage.TERMINATED:
+        return True
+    if to_stage == FunnelStage.PROPOSED and from_stage in _ESCALATION_REJECTION_STAGES:
+        return True
+    return stage_index(to_stage) == stage_index(from_stage) + 1
