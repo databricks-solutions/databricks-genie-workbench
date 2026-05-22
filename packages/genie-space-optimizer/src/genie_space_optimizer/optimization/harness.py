@@ -19781,14 +19781,36 @@ def _run_lever_loop(
                 if os.environ.get("GSO_PHASE_H_BUNDLE_ROOT")
                 else Path(f"/tmp/gso/{run_id}")
             )
-            _sm_final_states = run_state_machine_iteration_and_persist(
-                eval_rows=_sm_eval_rows,
-                iteration=int(iteration_counter),
-                run_id=str(run_id),
-                run_root=sm_run_root,
-                workspace_client=w,
-                forbidden_signatures=tuple(_forbidden_set),
-            )
+            # Plan v4 Task 4.1 safety net — Phase 5 (legacy deletion) is
+            # intentionally deferred so the legacy iteration body below
+            # can still take over if the SM raises. Without this guard,
+            # an SM-internal exception (malformed proposal, store miss
+            # at an unexpected callsite, etc.) would kill the lever
+            # loop. With it, the SM yields gracefully and the legacy
+            # lane runs the iteration normally. Operators can grep for
+            # ``GSO_PLAN_V4_SM_FAILED`` to find these incidents in the
+            # trial run logs.
+            _sm_final_states: tuple = ()
+            try:
+                _sm_final_states = run_state_machine_iteration_and_persist(
+                    eval_rows=_sm_eval_rows,
+                    iteration=int(iteration_counter),
+                    run_id=str(run_id),
+                    run_root=sm_run_root,
+                    workspace_client=w,
+                    forbidden_signatures=tuple(_forbidden_set),
+                )
+            except Exception as _sm_exc:
+                logger.warning(
+                    "GSO_PLAN_V4_SM_FAILED iteration=%d exc=%s — "
+                    "falling back to legacy iteration body",
+                    int(iteration_counter), _sm_exc, exc_info=True,
+                )
+                print(
+                    f"GSO_PLAN_V4_SM_FAILED iteration={iteration_counter} "
+                    f"exc={type(_sm_exc).__name__}:{_sm_exc}",
+                    flush=True,
+                )
             # Preserve legacy applier yield-gate signal (kept until the
             # legacy applier callsites are deleted in a later task).
             _canary_applied_this_iteration = any(
