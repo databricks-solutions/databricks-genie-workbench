@@ -1,0 +1,30 @@
+{
+  "qid": "gs_021",
+  "eval_rows": [
+    {
+      "question_id": "gs_021",
+      "feedback/result_correctness/value": "no",
+      "feedback/arbiter/value": "missing_filter",
+      "sql": "SELECT SUM(sales) FROM mv_7now_fact_sales WHERE 1=1",
+      "expected_shape": "WHERE time_window = 'mtd'"
+    }
+  ],
+  "expected_evidence_kind": "missing_filter",
+  "mocked_diagnosis": {
+    "rca_kind_label": "missing_filter",
+    "evidence_summary": "MTD filter missing; query aggregates over full history.",
+    "observed_failure": "Result includes pre-MTD rows.",
+    "expected_sql_shape": "WHERE time_window = 'mtd'",
+    "confidence": "high",
+    "rca_card_id": "rca_gs_021_mtd"
+  },
+  "mocked_proposal": {
+    "intent_id": "intent_gs_021_mtd_filter",
+    "patch_type": "add_sql_snippet_filter",
+    "target_objects": ["mv_7now_fact_sales"],
+    "target_qids": ["gs_021"],
+    "rca_card_id": "rca_gs_021_mtd",
+    "causal_target": "time_window",
+    "original_patch_body": "time_window = 'mtd'"
+  }
+}

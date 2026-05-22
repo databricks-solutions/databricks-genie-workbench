@@ -1,0 +1,30 @@
+{
+  "qid": "gs_009",
+  "eval_rows": [
+    {
+      "question_id": "gs_009",
+      "feedback/result_correctness/value": "no",
+      "feedback/arbiter/value": "wrong_top_n",
+      "sql": "SELECT origin_city, COUNT(*) c FROM flights GROUP BY 1 ORDER BY c DESC",
+      "expected_shape": "ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) rank, WHERE rank <= 3"
+    }
+  ],
+  "expected_evidence_kind": "plural_top_n_collapse",
+  "mocked_diagnosis": {
+    "rca_kind_label": "plural_top_n_collapse",
+    "evidence_summary": "Top-N collapsed by ORDER BY without rank window.",
+    "observed_failure": "Returned one row instead of three.",
+    "expected_sql_shape": "ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rank ... WHERE rank <= 3",
+    "confidence": "high",
+    "rca_card_id": "rca_gs_009_top_n"
+  },
+  "mocked_proposal": {
+    "intent_id": "intent_gs_009_row_number",
+    "patch_type": "add_sql_snippet_expression",
+    "target_objects": ["flights"],
+    "target_qids": ["gs_009"],
+    "rca_card_id": "rca_gs_009_top_n",
+    "causal_target": "ROW_NUMBER",
+    "original_patch_body": "ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rank"
+  }
+}

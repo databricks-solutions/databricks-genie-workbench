@@ -1,0 +1,30 @@
+{
+  "qid": "gs_026",
+  "eval_rows": [
+    {
+      "question_id": "gs_026",
+      "feedback/result_correctness/value": "no",
+      "feedback/arbiter/value": "wrong_top_n",
+      "sql": "SELECT zone, SUM(cy_sales) s FROM mv_7now_fact_sales GROUP BY 1",
+      "expected_shape": "ROW_NUMBER over SUM(cy_sales) DESC LIMIT 3"
+    }
+  ],
+  "expected_evidence_kind": "plural_top_n_collapse",
+  "mocked_diagnosis": {
+    "rca_kind_label": "plural_top_n_collapse",
+    "evidence_summary": "Zone ranking collapsed without window function.",
+    "observed_failure": "All zones returned instead of top-3.",
+    "expected_sql_shape": "ROW_NUMBER() OVER (ORDER BY SUM(cy_sales) DESC)",
+    "confidence": "high",
+    "rca_card_id": "rca_gs_026_zone_top_n"
+  },
+  "mocked_proposal": {
+    "intent_id": "intent_gs_026_row_number_sum",
+    "patch_type": "add_sql_snippet_expression",
+    "target_objects": ["mv_7now_fact_sales"],
+    "target_qids": ["gs_026"],
+    "rca_card_id": "rca_gs_026_zone_top_n",
+    "causal_target": "ROW_NUMBER",
+    "original_patch_body": "ROW_NUMBER() OVER (ORDER BY SUM(mv_7now_fact_sales.cy_sales) DESC) AS rank"
+  }
+}

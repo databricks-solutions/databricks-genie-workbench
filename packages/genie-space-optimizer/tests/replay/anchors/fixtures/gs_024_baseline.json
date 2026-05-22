@@ -1,0 +1,30 @@
+{
+  "qid": "gs_024",
+  "eval_rows": [
+    {
+      "question_id": "gs_024",
+      "feedback/result_correctness/value": "no",
+      "feedback/arbiter/value": "missing_filter",
+      "sql": "SELECT payment_amt FROM tkt_payment",
+      "expected_shape": "WHERE payment_currency_cd = 'USD'"
+    }
+  ],
+  "expected_evidence_kind": "missing_filter",
+  "mocked_diagnosis": {
+    "rca_kind_label": "missing_filter",
+    "evidence_summary": "Payment query missing currency filter; sums over multiple currencies.",
+    "observed_failure": "Aggregate includes non-USD rows.",
+    "expected_sql_shape": "WHERE PAYMENT_CURRENCY_CD = 'USD'",
+    "confidence": "high",
+    "rca_card_id": "rca_gs_024_missing_filter"
+  },
+  "mocked_proposal": {
+    "intent_id": "intent_gs_024_currency_filter",
+    "patch_type": "add_sql_snippet_filter",
+    "target_objects": ["tkt_payment"],
+    "target_qids": ["gs_024"],
+    "rca_card_id": "rca_gs_024_missing_filter",
+    "causal_target": "PAYMENT_CURRENCY_CD",
+    "original_patch_body": "PAYMENT_CURRENCY_CD = 'USD'"
+  }
+}
