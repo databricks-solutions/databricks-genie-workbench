@@ -171,7 +171,13 @@ def test_harness_filters_applyable_patches_before_patch_cap() -> None:
     source = inspect.getsource(harness._run_lever_loop)
     filter_idx = source.index("filter_applyable_patches(")
     cap_idx = source.index("select_target_aware_causal_patch_cap(")
-    apply_idx = source.index("\n            apply_log = apply_patch_set(")
+    # Plan v3 wrapped the legacy apply_patch_set callsite in an if/else
+    # (race-prevention against the canary), so the literal indentation
+    # changed. Match the main AG-level apply via its unique nesting
+    # (16 leading spaces inside the new ``else`` block), which avoids
+    # accidentally matching the synthetic TVF apply earlier in the file
+    # (whose binding is ``_tvf_apply_log`` — different prefix).
+    apply_idx = source.index("\n                apply_log = apply_patch_set(")
 
     assert filter_idx < cap_idx < apply_idx
     snippet = source[filter_idx - 600 : filter_idx + 1800]

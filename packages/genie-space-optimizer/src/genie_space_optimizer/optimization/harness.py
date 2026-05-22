@@ -19189,6 +19189,12 @@ def _run_lever_loop(
         _phase35_recorder,
     )
 
+    # Plan v3 — accumulate canary final-states across iterations so the
+    # end-of-loop OPTIMIZER_OUTCOME_V1 emission has the full per-QID
+    # iteration history to classify against.
+    _canary_states_by_qid: dict[str, list] = {}
+    _canary_any_hard_rows_seen: bool = False
+
     for _iter_num in range(1, max_iterations + 1):
         # Phase 3 (2026-05-17) — advance tape-replay binding to the
         # current iteration. ``_tape_binding_set_iteration`` is a
@@ -19748,12 +19754,19 @@ def _run_lever_loop(
 
             iteration_counter += 1
 
-            # Plan v3 canary — fire the typed state machine in parallel
-            # with the legacy lane. Flag-gated by
+            # Plan v3 canary — fire the typed state machine alongside the
+            # legacy lane. Flag-gated by
             # ``plan_v3_state_machine_iteration_enabled()`` (default OFF
             # locally, default ON via setdefault in run_lever_loop.py).
             # Wrapped in try/except inside the helper so any failure
             # never disturbs the legacy iteration body.
+            #
+            # When the canary reaches APPLIED on any state, ``_canary_
+            # applied_this_iteration`` is set; the in-iteration legacy
+            # applier callsites then yield (skip) so the two lanes do
+            # not double-apply.
+            _canary_applied_this_iteration = False
+            _canary_final_states: tuple = ()
             try:
                 from genie_space_optimizer.optimization.optimizer import (
                     maybe_run_state_machine_canary_iteration,
@@ -19765,13 +19778,48 @@ def _run_lever_loop(
                     )
                 if not _canary_eval_rows and _baseline_rows_seed:
                     _canary_eval_rows = list(_baseline_rows_seed)
-                maybe_run_state_machine_canary_iteration(
+                _canary_final_states = maybe_run_state_machine_canary_iteration(
                     eval_rows=_canary_eval_rows,
                     iteration=int(iteration_counter),
                     run_id=str(run_id),
                     workspace_client=w,
                     space_id=str(space_id),
+                    metadata_snapshot=metadata_snapshot,
+                    domain=domain,
+                    catalog=catalog,
+                    schema=schema,
+                    phase_h_anchor_run_id=_phase_h_anchor_run_id,
+                    spark=spark,
+                    exp_name=exp_name,
+                    benchmarks=benchmarks,
+                    predict_fn=predict_fn,
+                    scorers=scorers,
+                    reference_sqls=reference_sqls if reference_sqls else None,
+                    uc_schema=uc_schema,
+                    max_benchmark_count=max_benchmark_count,
                 )
+                _canary_applied_this_iteration = any(
+                    getattr(s, "applied", None) is not None
+                    for s in (_canary_final_states or ())
+                )
+                if _canary_applied_this_iteration:
+                    logger.info(
+                        "Plan v3 canary applied a patch at iteration %d — "
+                        "legacy applier will yield for this iteration",
+                        int(iteration_counter),
+                    )
+                # Accumulate states per QID for end-of-loop outcome
+                # classification + SM10 marker emission.
+                for _s in (_canary_final_states or ()):
+                    _canary_states_by_qid.setdefault(
+                        str(_s.qid), [],
+                    ).append(_s)
+                if _canary_eval_rows:
+                    from genie_space_optimizer.optimization.evaluation import (
+                        row_is_hard_failure as _row_is_hard,
+                    )
+                    if any(_row_is_hard(dict(r)) for r in _canary_eval_rows):
+                        _canary_any_hard_rows_seen = True
             except Exception:
                 # Helper already swallows internal failures; this outer
                 # except is for import / scope-binding edge cases.
@@ -23183,11 +23231,36 @@ def _run_lever_loop(
                             + _kv("Tier action", _esc_tier) + "\n"
                             + _bar("!")
                         )
-                        _tvf_apply_log = apply_patch_set(
-                            w, space_id, [_synthetic_patch], metadata_snapshot,
-                            apply_mode=apply_mode,
-                            force_apply=True,
-                        )
+                        # Plan v3 race-prevention — same gate as the AG-level
+                        # applier below. Synthesize a no-op log if the
+                        # canary already applied this iteration.
+                        if locals().get("_canary_applied_this_iteration"):
+                            logger.info(
+                                "Plan v3 canary applied at iteration %d — "
+                                "synthetic TVF apply yielding",
+                                int(iteration_counter),
+                            )
+                            _tvf_apply_log = {
+                                "applied": [],
+                                "patch_deployed": False,
+                                "patch_error": "canary_applied_yielded_by_legacy",
+                                "queued_high": [],
+                                "rollback_commands": [],
+                                "patched_objects": [],
+                                "validation_errors": [],
+                                "dropped_patches": [],
+                                "applier_decisions": [],
+                                "pre_snapshot": metadata_snapshot,
+                                "post_snapshot": metadata_snapshot,
+                                "space_id": space_id,
+                                "deploy_target": None,
+                            }
+                        else:
+                            _tvf_apply_log = apply_patch_set(
+                                w, space_id, [_synthetic_patch], metadata_snapshot,
+                                apply_mode=apply_mode,
+                                force_apply=True,
+                            )
                         _tvf_lever = 3
                         for idx, entry in enumerate(_tvf_apply_log.get("applied", [])):
                             write_patch(
@@ -29165,9 +29238,37 @@ def _run_lever_loop(
                 _pre_ag_snapshot_capture.get("digest", ""),
             )
 
-            apply_log = apply_patch_set(
-                w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
-            )
+            # Plan v3 race-prevention: when the canary already applied
+            # a patch this iteration, the legacy lane must yield to
+            # avoid double-mutation of the Genie space. Synthesize a
+            # no-op apply_log so the downstream legacy code reads
+            # "patch_deployed=False, applied=[]" and skips its
+            # post-apply work cleanly.
+            if locals().get("_canary_applied_this_iteration"):
+                logger.info(
+                    "Plan v3 canary applied at iteration %d — legacy AG "
+                    "applier yielding for AG %s",
+                    int(iteration_counter), ag_id,
+                )
+                apply_log = {
+                    "space_id": space_id,
+                    "pre_snapshot": metadata_snapshot,
+                    "post_snapshot": metadata_snapshot,
+                    "applied": [],
+                    "queued_high": [],
+                    "rollback_commands": [],
+                    "deploy_target": None,
+                    "patched_objects": [],
+                    "validation_errors": [],
+                    "patch_deployed": False,
+                    "patch_error": "canary_applied_yielded_by_legacy",
+                    "dropped_patches": [],
+                    "applier_decisions": [],
+                }
+            else:
+                apply_log = apply_patch_set(
+                    w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
+                )
 
             # Cycle 5 T1 — productive-iteration accounting. Accumulate the
             # number of applied patches across ALL AGs in this iteration so
@@ -34221,6 +34322,53 @@ def _run_lever_loop(
         logger.warning(
             "Plan 5 capture-artifact upload step failed: %s",
             _upload_exc,
+        )
+
+    # Plan v3 SM10 — emit exactly one GSO_OPTIMIZER_OUTCOME_V1 marker
+    # per lever-loop run, classified from the accumulated canary
+    # trajectories. Guarded by the umbrella flag + try/except so a
+    # classification failure cannot break the loop's return contract.
+    try:
+        from genie_space_optimizer.common.config import (
+            plan_v3_state_machine_iteration_enabled as _plan_v3_on,
+        )
+        if _plan_v3_on() and (
+            _canary_states_by_qid or _canary_any_hard_rows_seen
+        ):
+            from genie_space_optimizer.optimization.state_machine.outcome import (
+                classify_run_outcome,
+            )
+            from genie_space_optimizer.optimization.state_machine.trajectory import (
+                build_trajectory,
+            )
+            from genie_space_optimizer.optimization.state_machine.markers import (
+                optimizer_outcome_marker,
+            )
+            _trajectories = tuple(
+                build_trajectory(qid=qid, iterations=tuple(states))
+                for qid, states in sorted(_canary_states_by_qid.items())
+            )
+            _outcome = classify_run_outcome(
+                _trajectories,
+                hard_rows_in_eval=_canary_any_hard_rows_seen,
+            )
+            _deepest_by_qid = {
+                t.qid: t.deepest_stage_ever.value
+                for t in _trajectories
+            }
+            print(
+                optimizer_outcome_marker(
+                    run_id=str(run_id),
+                    outcome=_outcome,
+                    hard_qids_count=len(_trajectories),
+                    deepest_stage_by_qid=_deepest_by_qid,
+                ),
+                flush=True,
+            )
+    except Exception:
+        logger.debug(
+            "Plan v3 outcome-marker emission failed (non-fatal)",
+            exc_info=True,
         )
 
     return _build_loop_out_with_pretty_print(

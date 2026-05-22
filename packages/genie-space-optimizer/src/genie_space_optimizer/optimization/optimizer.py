@@ -120,6 +120,12 @@ def run_state_machine_iteration_and_persist(
     return final_states
 
 
+def _os_env_run_root() -> str:
+    """Operator override for the canary's trajectory output root."""
+    import os as _os
+    return _os.environ.get("GSO_PLAN_V3_RUN_ROOT", "")
+
+
 def _row_is_failing(row) -> bool:
     """Tolerant predicate for canary's ``live_hard_qids`` projection.
 
@@ -139,6 +145,59 @@ def _row_is_failing(row) -> bool:
     return str(raw).strip().lower() in ("no", "false", "0", "0.0")
 
 
+def _build_canary_stage_ctx_and_eval_kwargs(
+    *, run_id, iteration, space_id, domain, catalog, schema,
+    phase_h_anchor_run_id, w, spark, exp_name, benchmarks,
+    predict_fn, scorers, reference_sqls, uc_schema,
+    max_benchmark_count,
+):
+    """Construct minimal-but-real ``StageContext`` + ``RunEvaluationKwargs``
+    for the canary's evaluated_gate, mirroring ``_run_gate_checks``'s
+    F1 setup at harness.py:16368–16404.
+
+    Lazy import to avoid pulling stages package at module load.
+    """
+    from genie_space_optimizer.optimization.stages import (
+        RunEvaluationKwargs,
+        StageContext,
+    )
+    stage_ctx = StageContext(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        space_id=str(space_id),
+        domain=str(domain),
+        catalog=str(catalog),
+        schema=str(schema),
+        apply_mode="real",
+        journey_emit=lambda *a, **k: None,
+        decision_emit=lambda record: None,
+        mlflow_anchor_run_id=phase_h_anchor_run_id,
+        feature_flags={},
+    )
+    eval_kwargs: RunEvaluationKwargs = {
+        "space_id": str(space_id),
+        "experiment_name": str(exp_name),
+        "iteration": int(iteration),
+        "benchmarks": benchmarks,
+        "domain": str(domain),
+        "model_id": None,
+        "eval_scope": "full",
+        "predict_fn": predict_fn,
+        "scorers": scorers,
+        "spark": spark,
+        "w": w,
+        "catalog": str(catalog),
+        "gold_schema": str(schema),
+        "uc_schema": str(uc_schema),
+        "reference_sqls": reference_sqls if reference_sqls else None,
+        "model_creation_kwargs": {},
+        "max_benchmark_count": int(max_benchmark_count or 0),
+        "run_name": f"canary_eval_iter_{int(iteration):03d}",
+        "extra_tags": {},
+    }
+    return stage_ctx, eval_kwargs
+
+
 def maybe_run_state_machine_canary_iteration(
     *,
     eval_rows,
@@ -148,6 +207,21 @@ def maybe_run_state_machine_canary_iteration(
     space_id: str = "",
     metadata_snapshot=None,
     forbidden_signatures: tuple[str, ...] = (),
+    # Plumbed-from-harness fields for evaluated_gate / applier_gate
+    # to operate against real state. All optional so tests can still
+    # build minimal contexts.
+    domain: str = "",
+    catalog: str = "",
+    schema: str = "",
+    phase_h_anchor_run_id=None,
+    spark=None,
+    exp_name: str = "",
+    benchmarks=None,
+    predict_fn=None,
+    scorers=None,
+    reference_sqls=None,
+    uc_schema: str = "",
+    max_benchmark_count: int = 0,
 ) -> tuple:
     """Plan v3 — the harness's per-iteration canary callsite.
 
@@ -186,6 +260,37 @@ def maybe_run_state_machine_canary_iteration(
         if not initial_states:
             return ()
 
+        # Build real stage_ctx + eval_kwargs only when the harness has
+        # supplied the necessary callsite vars; otherwise leave them
+        # None and rely on the evaluated_gate's exception-as-terminal
+        # safety net (it raises OPTIMIZER_INVARIANT_VIOLATION cleanly,
+        # not a crash).
+        stage_ctx_obj = None
+        eval_kwargs_obj = None
+        if predict_fn is not None and scorers is not None and benchmarks:
+            stage_ctx_obj, eval_kwargs_obj = (
+                _build_canary_stage_ctx_and_eval_kwargs(
+                    run_id=run_id, iteration=iteration, space_id=space_id,
+                    domain=domain, catalog=catalog, schema=schema,
+                    phase_h_anchor_run_id=phase_h_anchor_run_id,
+                    w=workspace_client, spark=spark, exp_name=exp_name,
+                    benchmarks=benchmarks, predict_fn=predict_fn,
+                    scorers=scorers, reference_sqls=reference_sqls,
+                    uc_schema=uc_schema,
+                    max_benchmark_count=max_benchmark_count,
+                )
+            )
+
+        snapshot_dict = dict(metadata_snapshot or {})
+        schema_cols = tuple(
+            str(c) for c in (snapshot_dict.get("schema_columns") or ())
+        )
+        eval_qids_tuple = tuple(
+            str(r.get("question_id") or "")
+            for r in (eval_rows or ())
+            if r.get("question_id")
+        )
+
         ctx = TransformerContext(
             iteration=int(iteration),
             run_id=str(run_id),
@@ -197,8 +302,12 @@ def maybe_run_state_machine_canary_iteration(
             extras={"workspace_client": workspace_client},
             w=workspace_client,
             space_id=str(space_id),
-            metadata_snapshot=dict(metadata_snapshot or {}),
+            metadata_snapshot=snapshot_dict,
+            schema_columns=schema_cols,
             baseline_eval_rows=tuple(eval_rows or ()),
+            eval_qids=eval_qids_tuple,
+            stage_ctx=stage_ctx_obj,
+            eval_kwargs=eval_kwargs_obj,
             live_hard_qids=tuple(
                 str(r.get("question_id") or "")
                 for r in (eval_rows or ())
@@ -211,9 +320,36 @@ def maybe_run_state_machine_canary_iteration(
         print(
             f"GSO_PLAN_V3_CANARY_V1 iteration={iteration} "
             f"states={len(final_states)} "
-            f"terminated={sum(1 for s in final_states if s.terminal is not None)}",
+            f"terminated={sum(1 for s in final_states if s.terminal is not None)} "
+            f"applied={sum(1 for s in final_states if s.applied is not None)}",
             flush=True,
         )
+
+        # Persist trajectories under a stable run_root so postmortems
+        # can read them. Default: /tmp/gso/<run_id>/. Operators can
+        # override via GSO_PLAN_V3_RUN_ROOT.
+        try:
+            from pathlib import Path as _Path
+            from genie_space_optimizer.optimization.state_machine.persistence import (
+                write_qstate, write_trajectory,
+            )
+            from genie_space_optimizer.optimization.state_machine.trajectory import (
+                build_trajectory,
+            )
+            run_root = _Path(
+                _os_env_run_root() or f"/tmp/gso/{run_id}",
+            )
+            for s in final_states:
+                write_qstate(run_root=run_root, state=s)
+                traj = build_trajectory(qid=s.qid, iterations=(s,))
+                write_trajectory(run_root=run_root, trajectory=traj)
+        except Exception as persist_exc:
+            print(
+                f"GSO_PLAN_V3_CANARY_PERSIST_FAILED iteration={iteration} "
+                f"exc={type(persist_exc).__name__}:{persist_exc}",
+                flush=True,
+            )
+
         return final_states
     except Exception as exc:
         import logging
