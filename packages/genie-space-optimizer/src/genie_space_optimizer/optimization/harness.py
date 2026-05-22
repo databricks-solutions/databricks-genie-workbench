@@ -36709,6 +36709,31 @@ def _emit_plan12_ag_pivot_decision(
     return True
 
 
+def apply_plan12_reroute_to_ag(
+    *, ag: dict, routing_decision: dict,
+) -> dict:
+    """Plan 12: mutate the AG's target_lever and lever_directives when
+    routing decided to reroute. Returns a new dict; does not mutate the
+    input.
+
+    Closes PLAN12_ROUTING_DIRECTIVE_MISMATCH (postmortem dc89d1a9):
+    routing marker said L1→L5 but the directive consumer kept reading
+    target_lever=1. This helper is the consumer.
+    """
+    if not routing_decision.get("reroute_applied"):
+        return ag
+    new_lever = int(routing_decision["new_lever"])
+    original_lever = int(routing_decision["original_lever"])
+    out = dict(ag)
+    out["target_lever"] = new_lever
+    directives = dict(ag.get("lever_directives") or {})
+    if new_lever not in directives:
+        directives[new_lever] = {}
+    out["lever_directives"] = directives
+    out["rerouted_from_lever"] = original_lever
+    return out
+
+
 def _resolve_effective_lever_with_evidence_policy(
     *,
     target_lever: int,
