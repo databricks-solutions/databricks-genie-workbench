@@ -32,3 +32,20 @@ def qstate_transition_marker(
         ),
     }
     return marker_line("GSO_QSTATE_TRANSITION_V1", payload)
+
+
+def optimizer_outcome_marker(
+    *,
+    run_id: str,
+    outcome: str,
+    hard_qids_count: int,
+    deepest_stage_by_qid: dict[str, str],
+) -> str:
+    """Emit one GSO_OPTIMIZER_OUTCOME_V1 marker per lever-loop run."""
+    payload = {
+        "run_id": run_id,
+        "outcome": outcome,
+        "hard_qids_count": hard_qids_count,
+        "deepest_stage_by_qid": deepest_stage_by_qid,
+    }
+    return marker_line("GSO_OPTIMIZER_OUTCOME_V1", payload)
