@@ -311,3 +311,62 @@ def narrow_replacement_with_llm(
         )
     )
     return narrowed
+
+
+# ─── Plan v3 state-machine integration ─────────────────────────────────
+
+
+class NarrowReplacementContractError(ValueError):
+    """Raised when BlastRadiusDropRecord is missing fields required by narrow replacement."""
+
+
+_NARROW_REQUIRED_FIELDS: tuple[str, ...] = (
+    "intent_id",
+    "target_qids",
+    "original_patch_type",
+    "original_patch_body",
+    "failing_sql_anchor",
+    "causal_target",
+    "rca_card_id",
+)
+
+
+def require_complete_drop_record(record) -> None:
+    """Raise NarrowReplacementContractError if any required field is missing/empty.
+
+    Phase 1 promotion: ``narrow_skipped_no_original_patch_type`` was an
+    outcome record. It becomes a contract violation here so the drop
+    record producers (blast_radius gate) must provide complete metadata.
+    """
+    missing: list[str] = []
+    for field_name in _NARROW_REQUIRED_FIELDS:
+        value = getattr(record, field_name, None)
+        if value in (None, "", (), [], {}):
+            missing.append(field_name)
+    if missing:
+        raise NarrowReplacementContractError(
+            f"BlastRadiusDropRecord missing required field(s) for narrow replacement: "
+            f"{missing}. Producer must populate all of {_NARROW_REQUIRED_FIELDS}."
+        )
+
+
+def build_narrow_replacement_llm_input(record) -> dict:
+    """Build the LLM input payload for narrow_replacement_with_llm from a complete drop record.
+
+    Projects the tuple-typed ``target_qids`` into a primary singular
+    ``target_qid`` (first element) for callers that expect the
+    single-QID shape, while preserving the full tuple under
+    ``target_qids`` for callers that want the complete set.
+    """
+    require_complete_drop_record(record)
+    return {
+        "target_qid": record.target_qids[0],
+        "target_qids": list(record.target_qids),
+        "collateral_qids": list(record.collateral_qids),
+        "original_patch_type": record.original_patch_type,
+        "original_patch_body": dict(record.original_patch_body),
+        "failing_sql_anchor": record.failing_sql_anchor,
+        "causal_target": record.causal_target,
+        "rca_card_id": record.rca_card_id,
+        "protected_sql_by_qid": dict(record.protected_sql_by_qid),
+    }
