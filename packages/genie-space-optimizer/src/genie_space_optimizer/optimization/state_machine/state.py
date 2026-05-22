@@ -100,6 +100,57 @@ class QuestionStateInIteration(JsonRoundTrip):
             return a
         return a if stage_index(a) >= stage_index(b) else b
 
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "QuestionStateInIteration":  # type: ignore[override]
+        # The base mixin's from_json doesn't reconstruct nested JsonRoundTrip
+        # dataclasses or Enums — it only narrows list-typed fields to tuple/
+        # frozenset/set. We override to rebuild the nested typed surface.
+        return cls(
+            qid=str(payload["qid"]),
+            iteration=int(payload["iteration"]),
+            current_stage=FunnelStage(payload["current_stage"]),
+            deepest_stage_reached=FunnelStage(payload["deepest_stage_reached"]),
+            seen=HardQidSeenRecord.from_json(payload["seen"]),
+            diagnosed=(
+                DiagnosisRecord.from_json(payload["diagnosed"])
+                if payload.get("diagnosed") is not None
+                else None
+            ),
+            clustered=(
+                ClusterMembershipRecord.from_json(payload["clustered"])
+                if payload.get("clustered") is not None
+                else None
+            ),
+            proposals=tuple(
+                ProposalAttempt.from_json(p)
+                for p in (payload.get("proposals") or ())
+            ),
+            applied=(
+                AppliedRecord.from_json(payload["applied"])
+                if payload.get("applied") is not None
+                else None
+            ),
+            evaluated=(
+                EvaluatedRecord.from_json(payload["evaluated"])
+                if payload.get("evaluated") is not None
+                else None
+            ),
+            accepted=(
+                AcceptanceDecisionRecord.from_json(payload["accepted"])
+                if payload.get("accepted") is not None
+                else None
+            ),
+            terminal=(
+                TerminalRecord.from_json(payload["terminal"])
+                if payload.get("terminal") is not None
+                else None
+            ),
+            transitions=tuple(
+                StageTransition.from_json(t)
+                for t in (payload.get("transitions") or ())
+            ),
+        )
+
 
 def build_initial_state(
     *,

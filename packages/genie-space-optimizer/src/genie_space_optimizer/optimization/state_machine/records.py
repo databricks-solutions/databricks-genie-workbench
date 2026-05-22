@@ -57,6 +57,19 @@ class ProposalAttempt(JsonRoundTrip):
     escalated_to_attempt_index: int | None = None
     patch_outcome_id: str | None = None
 
+    @classmethod
+    def from_json(cls, payload: dict) -> "ProposalAttempt":  # type: ignore[override]
+        return cls(
+            attempt_index=int(payload["attempt_index"]),
+            intent_id=str(payload["intent_id"]),
+            patch_type=str(payload["patch_type"]),
+            deepest_stage_in_attempt=FunnelStage(payload["deepest_stage_in_attempt"]),
+            outcome=payload["outcome"],
+            outcome_reason=str(payload["outcome_reason"]),
+            escalated_to_attempt_index=payload.get("escalated_to_attempt_index"),
+            patch_outcome_id=payload.get("patch_outcome_id"),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class AppliedRecord(JsonRoundTrip):
@@ -100,6 +113,15 @@ class TerminalRecord(JsonRoundTrip):
     deepest_stage_reached: FunnelStage
     forbidden_signature: str
 
+    @classmethod
+    def from_json(cls, payload: dict) -> "TerminalRecord":  # type: ignore[override]
+        return cls(
+            kind=payload["kind"],
+            reason=str(payload["reason"]),
+            deepest_stage_reached=FunnelStage(payload["deepest_stage_reached"]),
+            forbidden_signature=str(payload["forbidden_signature"]),
+        )
+
 
 TransitionKind = Literal["llm", "validation_gate", "batch"]
 
@@ -113,3 +135,15 @@ class StageTransition(JsonRoundTrip):
     transition_kind: TransitionKind
     proposal_attempt_index: int | None = None
     reason: str = ""
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "StageTransition":  # type: ignore[override]
+        return cls(
+            from_stage=FunnelStage(payload["from_stage"]),
+            to_stage=FunnelStage(payload["to_stage"]),
+            at_ms=int(payload["at_ms"]),
+            transformer_name=str(payload["transformer_name"]),
+            transition_kind=payload["transition_kind"],
+            proposal_attempt_index=payload.get("proposal_attempt_index"),
+            reason=str(payload.get("reason") or ""),
+        )
