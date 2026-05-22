@@ -14,6 +14,9 @@ from genie_space_optimizer.optimization.evidence_to_lever_policy import (
     eligible_lever_families,
 )
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
+from genie_space_optimizer.optimization.state_machine.markers import (
+    gate_reasoning_marker,
+)
 from genie_space_optimizer.optimization.state_machine.records import (
     TerminalRecord,
 )
@@ -25,6 +28,19 @@ from genie_space_optimizer.optimization.state_machine.verdict import GateVerdict
 
 def _predicate(state, ctx):
     if state.clustered is None:
+        print(
+            gate_reasoning_marker(
+                gate="plan12_routing_gate",
+                qid=state.qid,
+                verdict="rejected",
+                predicate_inputs={
+                    "clustered_present": False,
+                    "diagnosed_present": state.diagnosed is not None,
+                },
+                reason="routing_gate_invoked_without_cluster_record",
+            ),
+            flush=True,
+        )
         return GateVerdict.reject_terminal(TerminalRecord(
             kind="OPTIMIZER_INVARIANT_VIOLATION",
             reason="routing_gate_invoked_without_cluster_record",
@@ -34,6 +50,20 @@ def _predicate(state, ctx):
 
     evidence_kind = state.diagnosed.rca_kind_label if state.diagnosed else ""
     if not evidence_kind:
+        print(
+            gate_reasoning_marker(
+                gate="plan12_routing_gate",
+                qid=state.qid,
+                verdict="rejected",
+                predicate_inputs={
+                    "clustered_present": True,
+                    "diagnosed_present": state.diagnosed is not None,
+                    "evidence_kind": evidence_kind,
+                },
+                reason="routing_gate_empty_evidence_kind",
+            ),
+            flush=True,
+        )
         return GateVerdict.reject_terminal(TerminalRecord(
             kind="OPTIMIZER_INVARIANT_VIOLATION",
             reason="routing_gate_empty_evidence_kind",

@@ -14,6 +14,9 @@ from genie_space_optimizer.optimization.blast_radius_drop_record import (
     BlastRadiusDropRecord,
 )
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
+from genie_space_optimizer.optimization.state_machine.markers import (
+    gate_reasoning_marker,
+)
 from genie_space_optimizer.optimization.state_machine.records import (
     ProposalAttempt,
     TerminalRecord,
@@ -164,6 +167,19 @@ def _project_verdict_to_gate(
         reason=verdict.rationale or "narrow_replacement_unfixable",
         deepest_stage_reached=state.deepest_stage_reached,
         forbidden_signature="",
+    )
+    print(
+        gate_reasoning_marker(
+            gate="narrow_replacement_gate",
+            qid=state.qid,
+            verdict="rejected",
+            predicate_inputs={
+                "llm_decision": verdict.decision,
+                "scoped_patch_present": verdict.scoped_patch is not None,
+            },
+            reason=verdict.rationale or "narrow_replacement_unfixable",
+        ),
+        flush=True,
     )
     return GateVerdict.reject_terminal(terminal)
 

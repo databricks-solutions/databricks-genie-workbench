@@ -12,6 +12,9 @@ postmortem renderers + run-outcome classifier treat as
 from __future__ import annotations
 
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
+from genie_space_optimizer.optimization.state_machine.markers import (
+    gate_reasoning_marker,
+)
 from genie_space_optimizer.optimization.state_machine.records import (
     AcceptanceDecisionRecord, TerminalRecord,
 )
@@ -96,6 +99,21 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
         reason = "target_unchanged: post_score <= pre_score"
     else:
         reason = f"collateral_regressions={list(collateral)}"
+    print(
+        gate_reasoning_marker(
+            gate="acceptance_gate",
+            qid=state.qid,
+            verdict="rejected",
+            predicate_inputs={
+                "pre_apply_score": state.evaluated.pre_apply_score,
+                "post_apply_score": state.evaluated.post_apply_score,
+                "target_fixed": target_fixed,
+                "collateral_regressions": list(collateral),
+            },
+            reason=reason,
+        ),
+        flush=True,
+    )
     return GateVerdict.reject_terminal(TerminalRecord(
         kind="OPTIMIZER_TRIED_NO_GAIN",
         reason=reason,

@@ -10,6 +10,9 @@ take over once the legacy gate has rejected.
 from __future__ import annotations
 
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
+from genie_space_optimizer.optimization.state_machine.markers import (
+    gate_reasoning_marker,
+)
 from genie_space_optimizer.optimization.state_machine.records import (
     ProposalAttempt,
 )
@@ -96,6 +99,54 @@ def _proposal_passes_structural_check(
     return (False, verdict.terminal_reason or "structural_repair_rejected")
 
 
+def _shape_inputs_for_marker(
+    state: QuestionStateInIteration, ctx: TransformerContext,
+) -> dict:
+    """Best-effort capture of the structural predicate's inputs for the
+    gate-reasoning marker.
+
+    Mirrors the substring-tag heuristics used inside
+    ``_proposal_passes_structural_check``. When the typed
+    ``RepairProposal`` is missing from the store (the common
+    ``proposal_store_miss`` rejection path), the shape fields fall back
+    to ``""``/``None`` so the marker still carries the latest
+    ProposalAttempt's ``patch_type`` for downstream RCA.
+    """
+    inputs: dict = {}
+    if state.proposals:
+        latest = state.proposals[-1]
+        inputs["attempt_patch_type"] = latest.patch_type
+        inputs["intent_id"] = latest.intent_id
+    proposal = None
+    if state.proposals:
+        proposal = ctx.proposal_store.lookup(state.proposals[-1].intent_id)
+    if proposal is not None:
+        patch_type_str = (
+            proposal.patch_type.value
+            if hasattr(proposal.patch_type, "value")
+            else str(proposal.patch_type)
+        )
+        inputs["intended_patch_shape"] = _patch_type_to_intended_shape(
+            patch_type_str,
+        )
+        try:
+            from genie_space_optimizer.optimization.terminal_signature import (
+                resolve_emitted_patch_shape,
+            )
+            emitted = resolve_emitted_patch_shape([
+                {"patch_type": patch_type_str},
+            ])
+            inputs["emitted_patch_shape"] = (
+                emitted.value if hasattr(emitted, "value") else str(emitted)
+            )
+        except Exception:  # pragma: no cover — defensive
+            inputs["emitted_patch_shape"] = ""
+    else:
+        inputs["intended_patch_shape"] = ""
+        inputs["emitted_patch_shape"] = ""
+    return inputs
+
+
 def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> GateVerdict:
     passed, reason = _proposal_passes_structural_check(state, ctx)
     if passed:
@@ -108,6 +159,16 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
         deepest_stage_in_attempt=FunnelStage.PROPOSED,
         outcome="structural_repair_rejected",
         outcome_reason=reason,
+    )
+    print(
+        gate_reasoning_marker(
+            gate="structural_repair_gate",
+            qid=state.qid,
+            verdict="rejected",
+            predicate_inputs=_shape_inputs_for_marker(state, ctx),
+            reason=reason,
+        ),
+        flush=True,
     )
     return GateVerdict.reject_proposal(rejected_attempt)
 

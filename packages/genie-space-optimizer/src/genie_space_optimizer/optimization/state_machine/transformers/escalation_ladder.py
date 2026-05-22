@@ -21,6 +21,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
+from genie_space_optimizer.optimization.state_machine.markers import (
+    gate_reasoning_marker,
+)
 from genie_space_optimizer.optimization.state_machine.records import (
     ProposalAttempt,
     StageTransition,
@@ -200,17 +203,35 @@ def _invoke_rung_4_narrowed_example_sql(state, ctx) -> Any:
     return _dispatch_via_synth(state, ctx, "narrowed_example_sql")
 
 
-def _terminate_safe_noop(state: QuestionStateInIteration, name: str) -> QuestionStateInIteration:
+def _terminate_safe_noop(
+    state: QuestionStateInIteration, name: str,
+    *, predicate_inputs: dict | None = None, reason: str = "all_escalation_rungs_exhausted",
+) -> QuestionStateInIteration:
+    print(
+        gate_reasoning_marker(
+            gate=name,
+            qid=state.qid,
+            verdict="rejected",
+            predicate_inputs=predicate_inputs or {
+                "proposal_count": len(state.proposals),
+                "latest_outcome": (
+                    state.proposals[-1].outcome if state.proposals else ""
+                ),
+            },
+            reason=reason,
+        ),
+        flush=True,
+    )
     return state.terminate(
         transition=StageTransition(
             from_stage=state.current_stage, to_stage=FunnelStage.TERMINATED,
             at_ms=int(time.time() * 1000),
             transformer_name=name, transition_kind="llm",
-            reason="all_escalation_rungs_exhausted",
+            reason=reason,
         ),
         terminal=TerminalRecord(
             kind="OPTIMIZER_STALLED_SAFE_NOOP",
-            reason="all_escalation_rungs_exhausted",
+            reason=reason,
             deepest_stage_reached=state.deepest_stage_reached,
             forbidden_signature=_compute_forbidden_signature(state),
         ),

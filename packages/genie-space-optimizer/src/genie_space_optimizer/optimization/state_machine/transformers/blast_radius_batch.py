@@ -11,6 +11,9 @@ import time
 from dataclasses import dataclass
 
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
+from genie_space_optimizer.optimization.state_machine.markers import (
+    gate_reasoning_marker,
+)
 from genie_space_optimizer.optimization.state_machine.records import (
     ProposalAttempt,
     StageTransition,
@@ -159,6 +162,21 @@ class _BlastRadiusBatchTransformer:
                     f"reason={drop_reason} collateral={collateral} "
                     f"drop_record_id={drop_intent}"
                 ),
+            )
+            print(
+                gate_reasoning_marker(
+                    gate="blast_radius_batch",
+                    qid=s.qid,
+                    verdict="rejected",
+                    predicate_inputs={
+                        "intent_id": latest.intent_id,
+                        "patch_type": latest.patch_type,
+                        "collateral_qids": list(collateral),
+                        "drop_record_id": drop_intent,
+                    },
+                    reason=drop_reason or "blast_radius_rejected",
+                ),
+                flush=True,
             )
             out.append(s.advance(
                 to_stage=self.to_stage_on_reject,

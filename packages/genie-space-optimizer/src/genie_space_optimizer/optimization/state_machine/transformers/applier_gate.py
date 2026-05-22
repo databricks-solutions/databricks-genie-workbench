@@ -15,6 +15,7 @@ import time
 
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
 from genie_space_optimizer.optimization.state_machine.markers import (
+    gate_reasoning_marker,
     patch_outcome_marker_from_attempt,
 )
 from genie_space_optimizer.optimization.state_machine.records import (
@@ -133,6 +134,21 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
         deepest_stage_in_attempt=FunnelStage.APPLYABLE,
         outcome="applyability_rejected",
         outcome_reason=reason or "applier_failure",
+    )
+    print(
+        gate_reasoning_marker(
+            gate="applier_gate",
+            qid=state.qid,
+            verdict="rejected",
+            predicate_inputs={
+                "intent_id": latest.intent_id,
+                "patch_type": latest.patch_type,
+                "apply_call_id": call_id,
+                "apply_ok": ok,
+            },
+            reason=reason or "applier_failure",
+        ),
+        flush=True,
     )
     print(
         patch_outcome_marker_from_attempt(

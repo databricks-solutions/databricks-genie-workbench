@@ -8,6 +8,9 @@ plus the pre/post SQL strings for trajectory comparison.
 from __future__ import annotations
 
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
+from genie_space_optimizer.optimization.state_machine.markers import (
+    gate_reasoning_marker,
+)
 from genie_space_optimizer.optimization.state_machine.records import EvaluatedRecord
 from genie_space_optimizer.optimization.state_machine.state import (
     QuestionStateInIteration,
@@ -78,6 +81,19 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
     except Exception as exc:
         # Any failure to obtain a post-apply score is terminal — we
         # cannot make an accept/reject decision without it.
+        print(
+            gate_reasoning_marker(
+                gate="evaluated_gate",
+                qid=state.qid,
+                verdict="rejected",
+                predicate_inputs={
+                    "eval_qids": list(ctx.eval_qids),
+                    "exception_type": type(exc).__name__,
+                },
+                reason=f"post_apply_eval_failed:{exc}",
+            ),
+            flush=True,
+        )
         return GateVerdict.reject_terminal(TerminalRecord(
             kind="OPTIMIZER_INVARIANT_VIOLATION",
             reason=f"post_apply_eval_failed:{exc}",

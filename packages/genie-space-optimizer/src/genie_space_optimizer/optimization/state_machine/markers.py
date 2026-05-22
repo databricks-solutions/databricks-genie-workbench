@@ -1,6 +1,8 @@
 """Witness marker builders for state machine transitions and run outcomes."""
 from __future__ import annotations
 
+import json
+
 from genie_space_optimizer.optimization.run_analysis_contract import marker_line
 from genie_space_optimizer.optimization.state_machine.records import (
     StageTransition,
@@ -108,6 +110,22 @@ def canary_exit_marker(
         f"GSO_PLAN_V3_CANARY_V1 iteration={iteration} reason={reason} "
         f"states={states} terminated={terminated} applied={applied} "
         f"exc={exc!r}"
+    )
+
+
+def gate_reasoning_marker(
+    *, gate: str, qid: str, verdict: str,
+    predicate_inputs: dict, reason: str,
+) -> str:
+    """Emit GSO_GATE_REASONING_V1 whenever a transformer rejects.
+
+    predicate_inputs MUST contain the field-level inputs that produced
+    the verdict so postmortems can RCA without code spelunking.
+    """
+    inputs_json = json.dumps(predicate_inputs, sort_keys=True, default=str)
+    return (
+        f"GSO_GATE_REASONING_V1 gate={gate} qid={qid} verdict={verdict} "
+        f"reason={reason} predicate_inputs={inputs_json}"
     )
 
 
