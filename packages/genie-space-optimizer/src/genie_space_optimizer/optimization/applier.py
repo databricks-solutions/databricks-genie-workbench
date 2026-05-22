@@ -4618,3 +4618,32 @@ def verify_repo_update(patch: dict, w: WorkspaceClient | None = None) -> dict:
         "target": patch.get("target", ""),
         "verified": True,
     }
+
+
+# ─── Plan v3 state-machine integration ─────────────────────────────────
+
+
+class UntypedProposalError(TypeError):
+    """Raised when a non-typed proposal (raw dict from legacy L6 path) reaches the applier."""
+
+
+def require_typed_repair_proposal(candidate) -> None:
+    """Raise UntypedProposalError unless ``candidate`` is a RepairProposal instance.
+
+    Phase 1 gate at the applier boundary. The legacy L6 dict path
+    (``_proposal_from_structural_sql_candidate``) must be migrated to
+    return RepairProposal; this guard makes the migration discoverable
+    rather than silent.
+    """
+    from genie_space_optimizer.optimization.repair_proposal_typed import RepairProposal
+    if isinstance(candidate, RepairProposal):
+        return
+    if isinstance(candidate, dict):
+        raise UntypedProposalError(
+            "Applier received raw dict candidate; expected RepairProposal. "
+            "The L6 legacy lane (_proposal_from_structural_sql_candidate) "
+            "must be migrated to return RepairProposal per Phase 1 PR1.2."
+        )
+    raise UntypedProposalError(
+        f"Applier received unsupported candidate type: {type(candidate).__name__}"
+    )
