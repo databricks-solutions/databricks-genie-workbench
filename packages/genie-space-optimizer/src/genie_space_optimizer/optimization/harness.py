@@ -19754,107 +19754,93 @@ def _run_lever_loop(
 
             iteration_counter += 1
 
-            # Plan v3 canary — fire the typed state machine alongside the
-            # legacy lane. Flag-gated by
-            # ``plan_v3_state_machine_iteration_enabled()`` (default OFF
-            # locally, default ON via setdefault in run_lever_loop.py).
-            # Wrapped in try/except inside the helper so any failure
-            # never disturbs the legacy iteration body.
+            # Plan v4 — state machine is the iteration body. No sidecar,
+            # no canary. The SM's transformers are the only path from
+            # hard QID to APPLIED. The legacy iteration body below is
+            # preserved only to provide a baseline for equivalence
+            # assertions; Phase 5 deletes it.
             #
-            # When the canary reaches APPLIED on any state, ``_canary_
-            # applied_this_iteration`` is set; the in-iteration legacy
-            # applier callsites then yield (skip) so the two lanes do
-            # not double-apply.
-            _canary_applied_this_iteration = False
-            _canary_final_states: tuple = ()
+            # ``_canary_applied_this_iteration`` is kept for now to
+            # preserve the legacy applier yield-gate (which still reads
+            # it); it is derived from the SM's final states below.
+            from genie_space_optimizer.optimization.optimizer import (
+                run_state_machine_iteration_and_persist,
+            )
+            from pathlib import Path
+
+            _sm_eval_rows: list[dict] = []
+            if _latest_eval_result and isinstance(_latest_eval_result, dict):
+                _sm_eval_rows = list(
+                    _latest_eval_result.get("eval_rows") or [],
+                )
+            if not _sm_eval_rows and _baseline_rows_seed:
+                _sm_eval_rows = list(_baseline_rows_seed)
+
+            sm_run_root = (
+                Path(os.environ.get("GSO_PHASE_H_BUNDLE_ROOT"))
+                if os.environ.get("GSO_PHASE_H_BUNDLE_ROOT")
+                else Path(f"/tmp/gso/{run_id}")
+            )
+            _sm_final_states = run_state_machine_iteration_and_persist(
+                eval_rows=_sm_eval_rows,
+                iteration=int(iteration_counter),
+                run_id=str(run_id),
+                run_root=sm_run_root,
+                workspace_client=w,
+                forbidden_signatures=tuple(_forbidden_set),
+            )
+            # Preserve legacy applier yield-gate signal (kept until the
+            # legacy applier callsites are deleted in a later task).
+            _canary_applied_this_iteration = any(
+                getattr(s, "applied", None) is not None
+                for s in (_sm_final_states or ())
+            )
+            if _canary_applied_this_iteration:
+                logger.info(
+                    "Plan v4 SM applied a patch at iteration %d — "
+                    "legacy applier will yield for this iteration",
+                    int(iteration_counter),
+                )
+            # Accumulate states per QID for end-of-loop outcome
+            # classification + SM10 marker emission.
+            for _s in (_sm_final_states or ()):
+                _canary_states_by_qid.setdefault(
+                    str(_s.qid), [],
+                ).append(_s)
+            if _sm_eval_rows:
+                from genie_space_optimizer.optimization.evaluation import (
+                    row_is_hard_failure as _row_is_hard,
+                )
+                if any(_row_is_hard(dict(r)) for r in _sm_eval_rows):
+                    _canary_any_hard_rows_seen = True
+            # Task 2.4 — emit cross-lane equivalence marker per QID per
+            # iteration. ``_iter_traces`` is keyed by iteration (not by
+            # QID) and does not currently expose per-QID terminal_kind,
+            # so the legacy terminal is reported as ``unknown`` until a
+            # later task plumbs that signal. The SM terminal is
+            # authoritative.
             try:
-                from genie_space_optimizer.optimization.optimizer import (
-                    maybe_run_state_machine_canary_iteration,
+                from genie_space_optimizer.optimization.state_machine.markers import (
+                    sm_legacy_equivalence_marker,
                 )
-                _canary_eval_rows: list[dict] = []
-                if _latest_eval_result and isinstance(_latest_eval_result, dict):
-                    _canary_eval_rows = list(
-                        _latest_eval_result.get("eval_rows") or [],
+                for s in (_sm_final_states or ()):
+                    sm_terminal = (
+                        s.terminal.terminal_kind if getattr(s, "terminal", None) is not None
+                        else ("applied" if getattr(s, "applied", None) is not None else "in_progress")
                     )
-                if not _canary_eval_rows and _baseline_rows_seed:
-                    _canary_eval_rows = list(_baseline_rows_seed)
-                _canary_final_states = maybe_run_state_machine_canary_iteration(
-                    eval_rows=_canary_eval_rows,
-                    iteration=int(iteration_counter),
-                    run_id=str(run_id),
-                    workspace_client=w,
-                    space_id=str(space_id),
-                    metadata_snapshot=metadata_snapshot,
-                    domain=domain,
-                    catalog=catalog,
-                    schema=schema,
-                    phase_h_anchor_run_id=_phase_h_anchor_run_id,
-                    spark=spark,
-                    exp_name=exp_name,
-                    benchmarks=benchmarks,
-                    predict_fn=predict_fn,
-                    scorers=scorers,
-                    reference_sqls=reference_sqls if reference_sqls else None,
-                    uc_schema=uc_schema,
-                    max_benchmark_count=max_benchmark_count,
-                )
-                _canary_applied_this_iteration = any(
-                    getattr(s, "applied", None) is not None
-                    for s in (_canary_final_states or ())
-                )
-                if _canary_applied_this_iteration:
-                    logger.info(
-                        "Plan v3 canary applied a patch at iteration %d — "
-                        "legacy applier will yield for this iteration",
-                        int(iteration_counter),
-                    )
-                # Accumulate states per QID for end-of-loop outcome
-                # classification + SM10 marker emission.
-                for _s in (_canary_final_states or ()):
-                    _canary_states_by_qid.setdefault(
-                        str(_s.qid), [],
-                    ).append(_s)
-                if _canary_eval_rows:
-                    from genie_space_optimizer.optimization.evaluation import (
-                        row_is_hard_failure as _row_is_hard,
-                    )
-                    if any(_row_is_hard(dict(r)) for r in _canary_eval_rows):
-                        _canary_any_hard_rows_seen = True
-                # Task 2.4 — emit cross-lane equivalence marker per QID per
-                # iteration. ``_iter_traces`` is keyed by iteration (not by
-                # QID) and does not currently expose per-QID terminal_kind,
-                # so the legacy terminal is reported as ``unknown`` until a
-                # later task plumbs that signal. The SM terminal is
-                # authoritative on the canary side.
-                try:
-                    from genie_space_optimizer.optimization.state_machine.markers import (
-                        sm_legacy_equivalence_marker,
-                    )
-                    for s in (_canary_final_states or ()):
-                        sm_terminal = (
-                            s.terminal.terminal_kind if getattr(s, "terminal", None) is not None
-                            else ("applied" if getattr(s, "applied", None) is not None else "in_progress")
-                        )
-                        legacy_terminal = "unknown"
-                        print(
-                            sm_legacy_equivalence_marker(
-                                iteration=int(iteration_counter),
-                                qid=str(s.qid),
-                                sm_terminal=str(sm_terminal),
-                                legacy_terminal=legacy_terminal,
-                            ),
-                            flush=True,
-                        )
-                except Exception:
-                    logger.debug(
-                        "Plan v3 equivalence marker emission failed; legacy lane unaffected",
-                        exc_info=True,
+                    legacy_terminal = "unknown"
+                    print(
+                        sm_legacy_equivalence_marker(
+                            iteration=int(iteration_counter),
+                            qid=str(s.qid),
+                            sm_terminal=str(sm_terminal),
+                            legacy_terminal=legacy_terminal,
+                        ),
+                        flush=True,
                     )
             except Exception:
-                # Helper already swallows internal failures; this outer
-                # except is for import / scope-binding edge cases.
                 logger.debug(
-                    "Plan v3 canary helper raised at lookup time; legacy lane unaffected",
+                    "Plan v4 equivalence marker emission failed; legacy lane unaffected",
                     exc_info=True,
                 )
 
