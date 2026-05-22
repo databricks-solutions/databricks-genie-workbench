@@ -142,3 +142,33 @@ def canary_input_marker(
         f"eval_rows={eval_rows} hard_rows={hard_rows} "
         f"initial_states={initial_states}"
     )
+
+
+def sm_legacy_equivalence_marker(
+    *, iteration: int, qid: str,
+    sm_terminal: str, legacy_terminal: str,
+) -> str:
+    """Emit GSO_PLAN_V3_EQUIVALENCE_V1 per QID per iteration.
+
+    Agreement: SM and legacy reached the same terminal.
+    Divergence reason taxonomy:
+      sm_advanced_legacy_stalled: SM reached APPLIED/ACCEPTED, legacy did not.
+      legacy_advanced_sm_stalled: legacy reached APPLIED/ACCEPTED, SM did not.
+      different_rejection: both rejected but for different reasons.
+    """
+    agreement = "yes" if sm_terminal == legacy_terminal else "no"
+    divergence = "none"
+    if agreement == "no":
+        sm_advanced = sm_terminal in ("applied", "accepted")
+        legacy_advanced = legacy_terminal in ("applied", "accepted")
+        if sm_advanced and not legacy_advanced:
+            divergence = "sm_advanced_legacy_stalled"
+        elif legacy_advanced and not sm_advanced:
+            divergence = "legacy_advanced_sm_stalled"
+        else:
+            divergence = "different_rejection"
+    return (
+        f"GSO_PLAN_V3_EQUIVALENCE_V1 iteration={iteration} qid={qid} "
+        f"sm_terminal={sm_terminal} legacy_terminal={legacy_terminal} "
+        f"agreement={agreement} divergence_reason={divergence}"
+    )

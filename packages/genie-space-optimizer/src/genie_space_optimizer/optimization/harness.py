@@ -19820,6 +19820,36 @@ def _run_lever_loop(
                     )
                     if any(_row_is_hard(dict(r)) for r in _canary_eval_rows):
                         _canary_any_hard_rows_seen = True
+                # Task 2.4 — emit cross-lane equivalence marker per QID per
+                # iteration. ``_iter_traces`` is keyed by iteration (not by
+                # QID) and does not currently expose per-QID terminal_kind,
+                # so the legacy terminal is reported as ``unknown`` until a
+                # later task plumbs that signal. The SM terminal is
+                # authoritative on the canary side.
+                try:
+                    from genie_space_optimizer.optimization.state_machine.markers import (
+                        sm_legacy_equivalence_marker,
+                    )
+                    for s in (_canary_final_states or ()):
+                        sm_terminal = (
+                            s.terminal.terminal_kind if getattr(s, "terminal", None) is not None
+                            else ("applied" if getattr(s, "applied", None) is not None else "in_progress")
+                        )
+                        legacy_terminal = "unknown"
+                        print(
+                            sm_legacy_equivalence_marker(
+                                iteration=int(iteration_counter),
+                                qid=str(s.qid),
+                                sm_terminal=str(sm_terminal),
+                                legacy_terminal=legacy_terminal,
+                            ),
+                            flush=True,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Plan v3 equivalence marker emission failed; legacy lane unaffected",
+                        exc_info=True,
+                    )
             except Exception:
                 # Helper already swallows internal failures; this outer
                 # except is for import / scope-binding edge cases.
