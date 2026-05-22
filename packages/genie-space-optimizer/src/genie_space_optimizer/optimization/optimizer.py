@@ -29,6 +29,30 @@ from genie_space_optimizer.optimization.rca_execution import (
     clusters_share_defect_identity,
 )
 
+
+def _build_state_machine_initial_states(
+    *, eval_rows, iteration: int,
+):
+    """Plan v3 PR 1.1 — wrap build_initial_states_from_eval_rows for the
+    iteration loop callsite.
+
+    Kept as a thin wrapper so the optimizer module surface owns the
+    call site that the dispatch-decision marker (legacy) reports on.
+    Phase 5 will delete the legacy marker writer; the state machine's
+    witness markers replace it.
+
+    Lazy import: ``state_machine.transformers.dispatch_input`` pulls
+    from ``optimization.evaluation`` which transitively imports back
+    into ``optimization.optimizer`` (via ``stages.clustering``). A
+    top-level import would create a circular reference at module-load
+    time. The lazy import resolves at call time, after all modules
+    have finished loading.
+    """
+    from genie_space_optimizer.optimization.state_machine.transformers.dispatch_input import (
+        build_initial_states_from_eval_rows,
+    )
+    return build_initial_states_from_eval_rows(eval_rows, iteration=iteration)
+
 from genie_space_optimizer.common.config import (
     ADAPTIVE_STRATEGIST_PROMPT,
     APPLY_MODE,
