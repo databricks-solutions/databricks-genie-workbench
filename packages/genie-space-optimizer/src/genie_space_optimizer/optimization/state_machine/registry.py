@@ -22,6 +22,9 @@ from genie_space_optimizer.optimization.state_machine.transformers.cluster_batch
 from genie_space_optimizer.optimization.state_machine.transformers.diagnose_llm import (
     plan11_stage1_diagnosis,
 )
+from genie_space_optimizer.optimization.state_machine.transformers.escalation_ladder import (
+    escalation_ladder,
+)
 from genie_space_optimizer.optimization.state_machine.transformers.routing_gate import (
     routing_gate,
 )
@@ -33,8 +36,7 @@ from genie_space_optimizer.optimization.state_machine.transformers.synthesize_ll
 )
 
 
-# Phase 2 production wiring. Phase 3 inserts escalation_ladder at PROPOSED
-# *after* structural_repair_gate; the registry update is the only change.
+# Phase 2 production wiring.
 PHASE2_REGISTRY = {
     FunnelStage.HARD_QID_SEEN: (plan11_stage1_diagnosis,),
     FunnelStage.DIAGNOSED:     (plan11_stage2_clustering,),
@@ -42,10 +44,21 @@ PHASE2_REGISTRY = {
     FunnelStage.PROPOSED:      (structural_repair_gate,),  # P3 appends escalation_ladder
     FunnelStage.NORMALIZED:    (blast_radius_batch,),
     FunnelStage.APPLYABLE:     (applier_gate,),
-    # APPLIED → EVALUATED → ACCEPTED transformers land in Phase 3.
+    # APPLIED → EVALUATED → ACCEPTED transformers land in Phase 3 PR 3.3.
+}
+
+
+# Phase 3 update: escalation_ladder runs immediately after
+# structural_repair_gate at PROPOSED so a failed structural check
+# triggers the softer artifact in the same orchestrator step.
+# PR 3.3 will further append evaluated_gate at APPLIED and
+# acceptance_gate at EVALUATED.
+PHASE3_REGISTRY = {
+    **PHASE2_REGISTRY,
+    FunnelStage.PROPOSED: (structural_repair_gate, escalation_ladder),
 }
 
 
 def build_production_state_machine() -> StateMachine:
     """Return the production StateMachine wired with the current phase's transformers."""
-    return StateMachine(transformers=PHASE2_REGISTRY)
+    return StateMachine(transformers=PHASE3_REGISTRY)
