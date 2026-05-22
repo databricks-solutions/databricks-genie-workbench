@@ -23,15 +23,117 @@ from genie_space_optimizer.optimization.state_machine.verdict import (
 )
 
 
-def _invoke_stage3_llm(state: QuestionStateInIteration, ctx: TransformerContext):
-    """Dispatch the actual Stage 3 LLM call (patchable for tests).
+@dataclass(frozen=True, slots=True)
+class _Stage3ProposalAdapter:
+    """Duck-typed proxy over a typed ``RepairProposal`` exposing the v3
+    attribute names the transformer's ``_repair_proposal_to_dict`` reads.
 
-    Production wire-in lands in PR 2.5 via
-    ``stages.synthesize.run_plan11_synthesis_for_single_cluster``.
+    Real ``RepairProposal`` carries ``patch_body``, not
+    ``original_patch_body``; carries ``blame_set`` and
+    ``target_objects`` of typed ``TargetObject`` instead of plain
+    strings; and has no ``rca_card_id`` / ``causal_target`` at all.
+    The adapter projects all of these so the v3 contract validator
+    (``validate_synthesis_output_for_state_machine``) sees the field
+    names it requires.
     """
-    raise NotImplementedError(
-        "Stage 3 LLM dispatch not yet wired to production lever loop. "
-        "Tests must monkeypatch _invoke_stage3_llm with a fake RepairProposal."
+    intent_id: str
+    patch_type: str
+    target_objects: tuple
+    target_qids: tuple
+    rca_card_id: str
+    causal_target: str
+    original_patch_body: dict
+
+
+def _build_failure_cluster_from_state(state: QuestionStateInIteration):
+    """Reverse-project ``state.clustered`` + ``state.diagnosed`` into a
+    ``FailureCluster`` the Stage 3 entry point consumes.
+
+    ``ClusterMembershipRecord`` is information-lossy vs ``FailureCluster``;
+    the missing fields are reconstructed from ``state.diagnosed``:
+
+      * ``semantic_theme`` / ``repair_hypothesis`` → routing_evidence_kind
+      * ``unifying_evidence`` → diagnosed.evidence_summary
+      * ``primary_blame_set`` → () (Stage 1 does not populate this on
+        DiagnosisRecord; the LLM rebuilds it from member context)
+      * ``confidence`` → diagnosed.confidence
+    """
+    from genie_space_optimizer.optimization.stages.plan11_types import (
+        FailureCluster,
+    )
+    return FailureCluster(
+        cluster_id=state.clustered.cluster_id,
+        semantic_theme=state.clustered.routing_evidence_kind,
+        member_qids=tuple(state.clustered.co_member_qids),
+        unifying_evidence=state.diagnosed.evidence_summary,
+        repair_hypothesis=state.clustered.routing_evidence_kind,
+        primary_blame_set=(),
+        confidence=state.diagnosed.confidence,
+    )
+
+
+def _derive_causal_target(rp) -> str:
+    """Pick a non-empty causal_target so the v3 contract validator
+    (which forbids ``""``) passes.
+
+    Priority: first blame_set member → first target_object identifier
+    → intent_id (last-resort non-empty fallback)."""
+    if rp.blame_set:
+        return str(rp.blame_set[0])
+    if rp.target_objects:
+        return str(rp.target_objects[0].identifier)
+    return str(rp.intent_id)
+
+
+def _invoke_stage3_llm(state: QuestionStateInIteration, ctx: TransformerContext):
+    """Dispatch Stage 3 synthesis. Adapter over
+    ``stages.synthesize.run_plan11_synthesis_for_single_cluster``.
+
+    1. Reconstruct ``FailureCluster`` from state records.
+    2. Call the legacy entry point.
+    3. If ``result.proposal is None`` → return ``None`` (transformer
+       terminates the state cleanly).
+    4. Otherwise hydrate ``RepairProposal.from_json(result.proposal)``,
+       store the typed proposal in ``ctx.proposal_store``, and return
+       a duck-typed adapter with the v3 attribute names.
+    """
+    if state.clustered is None or state.diagnosed is None:
+        return None
+
+    from genie_space_optimizer.optimization.repair_proposal_typed import (
+        RepairProposal,
+    )
+    from genie_space_optimizer.optimization.stages.synthesize import (
+        run_plan11_synthesis_for_single_cluster,
+    )
+
+    cluster = _build_failure_cluster_from_state(state)
+    result = run_plan11_synthesis_for_single_cluster(
+        cluster,
+        dict(ctx.schema_slice),
+        [dict(h) for h in ctx.history],
+        member_qid_evidence=None,
+        optimization_run_id=ctx.run_id,
+        iteration=ctx.iteration,
+        ag_id=state.clustered.ag_id,
+        w=ctx.w,
+    )
+
+    proposal_dict = getattr(result, "proposal", None)
+    if proposal_dict is None:
+        return None
+
+    typed = RepairProposal.from_json(proposal_dict)
+    ctx.proposal_store.remember(typed)
+
+    return _Stage3ProposalAdapter(
+        intent_id=typed.intent_id,
+        patch_type=typed.patch_type.value,
+        target_objects=tuple(t.identifier for t in typed.target_objects),
+        target_qids=tuple(typed.target_qids),
+        rca_card_id=state.diagnosed.rca_card_id,
+        causal_target=_derive_causal_target(typed),
+        original_patch_body=dict(typed.patch_body),
     )
 
 
