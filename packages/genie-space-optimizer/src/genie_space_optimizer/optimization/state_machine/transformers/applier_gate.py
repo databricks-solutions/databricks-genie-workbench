@@ -36,15 +36,64 @@ from genie_space_optimizer.optimization.state_machine.verdict import (
 def _apply_via_genie_api(
     state: QuestionStateInIteration, ctx: TransformerContext,
 ) -> tuple[str, bool, str]:
-    """Wrap the legacy applier; patchable for tests.
+    """Adapter over ``applier.apply_patch_set``.
 
-    Returns ``(apply_call_id, succeeded, error_reason)``. Production
-    wire-in lands in PR 2.5 — routes to ``applier.apply_patch_set``.
+    1. Look up the typed ``RepairProposal`` in ``ctx.proposal_store``.
+       Store miss → ``(call_id="", False, "proposal_store_miss:...")``.
+    2. Stamp the proposal's ``patch_type`` on a copy of its
+       ``patch_body`` (the applier dispatches on the ``patch_type``
+       key inside each patch dict, not a separate arg).
+    3. Call ``apply_patch_set`` with ``force_apply=True`` — the v3
+       chain's structural + blast gates upstream already enforced
+       the risk policy, so the applier's own risk-tier review is
+       redundant here.
+    4. Map the apply_log to ``(apply_call_id, succeeded, error_reason)``.
+       ``apply_call_id`` is synthesized as
+       ``apply_{iteration}_{intent_id}`` for the v3 audit trail
+       (the legacy applier does not emit a call_id of its own).
     """
-    raise NotImplementedError(
-        "Genie API apply not wired to production yet. "
-        "Tests must monkeypatch _apply_via_genie_api."
+    if not state.proposals:
+        return ("", False, "no_proposal_attempt_on_state")
+
+    latest = state.proposals[-1]
+    proposal = ctx.proposal_store.lookup(latest.intent_id)
+    if proposal is None:
+        return ("", False, f"proposal_store_miss:{latest.intent_id}")
+
+    patch_type_str = (
+        proposal.patch_type.value
+        if hasattr(proposal.patch_type, "value")
+        else str(proposal.patch_type)
     )
+    patch_dict = dict(proposal.patch_body)
+    patch_dict.setdefault("patch_type", patch_type_str)
+    patch_dict.setdefault("type", patch_type_str)
+    patches = [patch_dict]
+
+    apply_call_id = f"apply_{ctx.iteration}_{latest.intent_id}"
+
+    try:
+        from genie_space_optimizer.optimization.applier import (
+            apply_patch_set,
+        )
+        apply_log = apply_patch_set(
+            ctx.w,
+            ctx.space_id,
+            patches,
+            dict(ctx.metadata_snapshot),
+            force_apply=True,
+        )
+    except Exception as exc:  # pragma: no cover — exception path under test
+        return (apply_call_id, False, f"applier_raised:{exc}")
+
+    if apply_log.get("patch_deployed"):
+        return (apply_call_id, True, "")
+    error = (
+        apply_log.get("patch_error")
+        or (apply_log.get("validation_errors") or [""])[0]
+        or "apply_failed_no_reason"
+    )
+    return (apply_call_id, False, str(error))
 
 
 def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> GateVerdict:
