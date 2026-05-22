@@ -243,7 +243,11 @@ def maybe_run_state_machine_canary_iteration(
     from genie_space_optimizer.common.config import (
         plan_v3_state_machine_iteration_enabled,
     )
+    from genie_space_optimizer.optimization.state_machine.markers import (
+        canary_exit_marker,
+    )
     if not plan_v3_state_machine_iteration_enabled():
+        print(canary_exit_marker(iteration=iteration, reason="flag_off"), flush=True)
         return ()
 
     try:
@@ -258,6 +262,10 @@ def maybe_run_state_machine_canary_iteration(
             eval_rows=list(eval_rows or []), iteration=int(iteration),
         )
         if not initial_states:
+            print(
+                canary_exit_marker(iteration=iteration, reason="dispatch_input_empty"),
+                flush=True,
+            )
             return ()
 
         # Build real stage_ctx + eval_kwargs only when the harness has
@@ -318,10 +326,12 @@ def maybe_run_state_machine_canary_iteration(
         sm = build_production_state_machine()
         final_states = sm.run_iteration(initial_states, ctx)
         print(
-            f"GSO_PLAN_V3_CANARY_V1 iteration={iteration} "
-            f"states={len(final_states)} "
-            f"terminated={sum(1 for s in final_states if s.terminal is not None)} "
-            f"applied={sum(1 for s in final_states if s.applied is not None)}",
+            canary_exit_marker(
+                iteration=iteration, reason="run_succeeded",
+                states=len(final_states),
+                terminated=sum(1 for s in final_states if s.terminal is not None),
+                applied=sum(1 for s in final_states if s.applied is not None),
+            ),
             flush=True,
         )
 
@@ -358,8 +368,10 @@ def maybe_run_state_machine_canary_iteration(
             int(iteration), exc, exc_info=True,
         )
         print(
-            f"GSO_PLAN_V3_CANARY_FAILED iteration={iteration} "
-            f"exc={type(exc).__name__}:{exc}",
+            canary_exit_marker(
+                iteration=iteration, reason="run_failed",
+                exc=f"{type(exc).__name__}:{exc}",
+            ),
             flush=True,
         )
         return ()

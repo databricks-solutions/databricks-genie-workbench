@@ -79,3 +79,33 @@ def patch_outcome_marker_from_attempt(
         "patch_outcome_id": attempt.patch_outcome_id or "",
     }
     return marker_line("GSO_PATCH_OUTCOME_V1", payload)
+
+
+_CANARY_EXIT_REASONS = frozenset({
+    "flag_off",
+    "empty_eval_rows",
+    "dispatch_input_empty",
+    "import_failed",
+    "run_succeeded",
+    "run_failed",
+    "persist_failed",
+})
+
+
+def canary_exit_marker(
+    *, iteration: int, reason: str,
+    states: int = 0, terminated: int = 0, applied: int = 0,
+    exc: str = "",
+) -> str:
+    """Emit GSO_PLAN_V3_CANARY_V1 with a closed-vocabulary reason.
+
+    Every exit path from maybe_run_state_machine_canary_iteration must
+    call this. Replaces the prior silent ``return ()`` paths.
+    """
+    if reason not in _CANARY_EXIT_REASONS:
+        raise ValueError(f"unknown canary exit reason: {reason}")
+    return (
+        f"GSO_PLAN_V3_CANARY_V1 iteration={iteration} reason={reason} "
+        f"states={states} terminated={terminated} applied={applied} "
+        f"exc={exc!r}"
+    )
