@@ -245,12 +245,14 @@ def maybe_run_state_machine_canary_iteration(
     )
     from genie_space_optimizer.optimization.state_machine.markers import (
         canary_exit_marker,
+        canary_input_marker,
     )
     if not plan_v3_state_machine_iteration_enabled():
         print(canary_exit_marker(iteration=iteration, reason="flag_off"), flush=True)
         return ()
 
     try:
+        from genie_space_optimizer.optimization.evaluation import row_is_hard_failure
         from genie_space_optimizer.optimization.state_machine.registry import (
             build_production_state_machine,
         )
@@ -258,8 +260,21 @@ def maybe_run_state_machine_canary_iteration(
             TransformerContext,
             ValidationContext,
         )
+        eval_rows_list = list(eval_rows or [])
         initial_states = _build_state_machine_initial_states(
-            eval_rows=list(eval_rows or []), iteration=int(iteration),
+            eval_rows=eval_rows_list, iteration=int(iteration),
+        )
+        hard_count = sum(
+            1 for r in eval_rows_list if row_is_hard_failure(dict(r))
+        )
+        print(
+            canary_input_marker(
+                iteration=iteration,
+                eval_rows=len(eval_rows_list),
+                hard_rows=hard_count,
+                initial_states=len(initial_states),
+            ),
+            flush=True,
         )
         if not initial_states:
             print(

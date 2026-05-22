@@ -109,3 +109,18 @@ def canary_exit_marker(
         f"states={states} terminated={terminated} applied={applied} "
         f"exc={exc!r}"
     )
+
+
+def canary_input_marker(
+    *, iteration: int, eval_rows: int, hard_rows: int, initial_states: int,
+) -> str:
+    """Emit GSO_PLAN_V3_CANARY_INPUT_V1 at the canary's entry point.
+
+    Distinguishes "didn't run" from "ran on the wrong data" from "ran on
+    nothing." Without this the silent-empty-states exit is invisible.
+    """
+    return (
+        f"GSO_PLAN_V3_CANARY_INPUT_V1 iteration={iteration} "
+        f"eval_rows={eval_rows} hard_rows={hard_rows} "
+        f"initial_states={initial_states}"
+    )
