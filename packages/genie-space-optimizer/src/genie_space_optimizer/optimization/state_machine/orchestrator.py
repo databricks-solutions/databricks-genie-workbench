@@ -29,8 +29,19 @@ class StateMachine:
         state: QuestionStateInIteration,
         ctx: TransformerContext,
     ) -> QuestionStateInIteration:
-        """Apply transformers registered for state.current_stage; emit witness markers."""
-        registered = self.transformers.get(state.current_stage, ())
+        """Apply transformers registered for ``state.current_stage``; emit witness markers.
+
+        Multiple transformers may be registered at a single stage (e.g.
+        ``structural_repair_gate`` then ``escalation_ladder`` at PROPOSED).
+        They run in registration order, but the loop **breaks** as soon
+        as the state's stage diverges from the original — the
+        downstream transformers are registered for a stage the state
+        is no longer at, so calling them would route incorrectly. The
+        next ``step()`` invocation picks up the new stage and applies
+        its registered transformers.
+        """
+        original_stage = state.current_stage
+        registered = self.transformers.get(original_stage, ())
         for transformer in registered:
             new_state = transformer.transform(state, ctx)
             # Find the newly appended transitions (always exactly one per
@@ -48,6 +59,12 @@ class StateMachine:
                 )
             state = new_state
             if state.current_stage == FunnelStage.TERMINATED:
+                return state
+            if state.current_stage != original_stage:
+                # Stage advanced; the remaining transformers in this
+                # iteration are registered for the *original* stage and
+                # would route incorrectly. The next ``step()`` looks up
+                # transformers for the new stage and applies them.
                 return state
         return state
 

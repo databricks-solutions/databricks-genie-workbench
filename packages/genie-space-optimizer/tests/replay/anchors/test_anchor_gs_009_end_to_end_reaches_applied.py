@@ -97,11 +97,29 @@ def stub_all_llm_and_side_effects():
     ), patch(
         "genie_space_optimizer.optimization.state_machine.transformers.applier_gate._apply_via_genie_api",
         return_value=(applier["apply_call_id"], applier["succeeded"], ""),
+    ), patch(
+        # Phase 3 PR 3.3: evaluated_gate runs at APPLIED.
+        "genie_space_optimizer.optimization.state_machine.transformers.evaluated_gate._run_post_apply_eval",
+        return_value=(1.0, "SELECT_POST", "row_post_gs_009"),
+    ), patch(
+        # Phase 3 PR 3.3: acceptance_gate runs at EVALUATED.
+        "genie_space_optimizer.optimization.state_machine.transformers.acceptance_gate._assess_collateral",
+        return_value=(),  # no collateral regressions
     ):
         yield
 
 
 def test_gs_009_reaches_applied_end_to_end(tmp_path: Path, stub_all_llm_and_side_effects):
+    """gs_009 reaches APPLIED (or further) via the production registry.
+
+    With Phase 2 wiring the test asserted exactly APPLIED. After Phase 3
+    PR 3.3 added evaluated_gate at APPLIED and acceptance_gate at
+    EVALUATED, the registry drives the state further: APPLIED → EVALUATED
+    → ACCEPTED (or TERMINATED with OPTIMIZER_TRIED_NO_GAIN on
+    regression). The stubs here send the eval through to ACCEPTED, so
+    the assertion is "deepest reached APPLIED or later" and the
+    applied record is still present along the way.
+    """
     payload = _load()
     final = run_state_machine_iteration_and_persist(
         eval_rows=[payload["eval_row"]],
@@ -112,7 +130,12 @@ def test_gs_009_reaches_applied_end_to_end(tmp_path: Path, stub_all_llm_and_side
     assert len(final) == 1
     s = final[0]
     assert s.qid == "gs_009"
-    assert s.current_stage == FunnelStage.APPLIED, f"deepest_reached={s.deepest_stage_reached.value}"
+    # Phase 2 contract: state machine MUST reach APPLIED at minimum.
+    # Phase 3 additions drive further; we accept any post-APPLIED state.
+    from genie_space_optimizer.optimization.state_machine.funnel import stage_index
+    assert stage_index(s.deepest_stage_reached) >= stage_index(FunnelStage.APPLIED), (
+        f"deepest_reached={s.deepest_stage_reached.value}"
+    )
     assert s.applied is not None
     assert s.applied.apply_call_id == "apply_gs_009_abc"
 
