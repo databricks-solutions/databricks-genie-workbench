@@ -4,6 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Union
 
+from genie_space_optimizer.optimization.state_machine.proposal_store import (
+    ProposalStore,
+)
 from genie_space_optimizer.optimization.state_machine.records import (
     ProposalAttempt,
     TerminalRecord,
@@ -48,9 +51,46 @@ class ValidationContext:
 
 @dataclass(frozen=True, slots=True)
 class TransformerContext:
-    """Per-iteration context passed to every transformer."""
+    """Per-iteration context passed to every transformer.
+
+    Phase 2+3-followup adds typed-but-optional fields used by the
+    production-wired transformer seams (see
+    ``docs/llmdrivenarchitecture/v3/2026-05-22-production-seam-wire-in-plan.md``).
+    All new fields carry safe defaults so the long tail of existing
+    tests that construct ``TransformerContext`` with only the first
+    three positionals continues to work unchanged.
+    """
     iteration: int
     run_id: str
     validation_context: ValidationContext
     forbidden_signatures: tuple[str, ...] = ()
     extras: Mapping[str, Any] = field(default_factory=dict)
+    # Bridge from ``ProposalAttempt.intent_id`` to the typed
+    # ``RepairProposal`` body. Stage 3 writes; gates and the escalation
+    # ladder read. Per-iteration scoped via default_factory.
+    proposal_store: ProposalStore = field(default_factory=ProposalStore)
+
+    # --- diagnose / cluster / synthesize lane -------------------------------
+    schema_columns: tuple[str, ...] = ()
+    w: Any | None = None
+    recent_diagnoses: tuple[Mapping[str, Any], ...] = ()
+    schema_slice: Mapping[str, Any] = field(default_factory=dict)
+    history: tuple[Mapping[str, Any], ...] = ()
+
+    # --- gates lane ---------------------------------------------------------
+    live_hard_qids: tuple[str, ...] = ()
+
+    # --- apply lane ---------------------------------------------------------
+    space_id: str = ""
+    metadata_snapshot: Mapping[str, Any] = field(default_factory=dict)
+
+    # --- evaluated / acceptance lane ---------------------------------------
+    eval_qids: tuple[str, ...] = ()
+    baseline_eval: Any | None = None
+    eval_kwargs: Any | None = None
+    stage_ctx: Any | None = None
+    post_apply_arbiter_accuracy: float = 0.0
+    baseline_arbiter_accuracy: float = 0.0
+    min_gain_pp: float = 0.0
+    baseline_eval_rows: tuple[Mapping[str, Any], ...] = ()
+    post_apply_eval_rows: tuple[Mapping[str, Any], ...] = ()
