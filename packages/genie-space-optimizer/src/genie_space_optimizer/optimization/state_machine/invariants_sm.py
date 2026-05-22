@@ -139,3 +139,35 @@ def check_sm7_proposal_attempt_typing(
                 ),
             })
     return violations
+
+
+def check_sm8_dispatch_input_honesty(
+    *,
+    eval_hard_qids: Iterable[str],
+    state_qids: Iterable[str],
+) -> list[dict]:
+    """SM8: every hard eval row has a corresponding QuestionStateInIteration."""
+    missing = set(eval_hard_qids) - set(state_qids)
+    if not missing:
+        return []
+    return [{
+        "invariant": "SM8",
+        "message": (
+            f"SM8: {len(missing)} hard QID(s) in eval_results have no "
+            f"QuestionStateInIteration: {sorted(missing)}. The dispatch input adapter "
+            "skipped them — Plan 11 silent fallthrough."
+        ),
+    }]
+
+
+def check_sm10_outcome_mandatory(*, outcome_marker_count: int) -> list[dict]:
+    """SM10: exactly one GSO_OPTIMIZER_OUTCOME_V1 per run."""
+    if outcome_marker_count == 1:
+        return []
+    return [{
+        "invariant": "SM10",
+        "message": (
+            f"SM10: run emitted {outcome_marker_count} GSO_OPTIMIZER_OUTCOME_V1 markers; "
+            "exactly one required."
+        ),
+    }]
