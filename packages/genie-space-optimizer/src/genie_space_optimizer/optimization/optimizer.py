@@ -53,6 +53,72 @@ def _build_state_machine_initial_states(
     )
     return build_initial_states_from_eval_rows(eval_rows, iteration=iteration)
 
+
+def run_state_machine_iteration_and_persist(
+    *,
+    eval_rows,
+    iteration: int,
+    run_id: str,
+    run_root,
+    workspace_client=None,
+    forbidden_signatures: tuple[str, ...] = (),
+):
+    """Plan v3 PR 2.5 — run one iteration of the production state machine
+    and persist trajectories.
+
+    Returns the final tuple of ``QuestionStateInIteration`` objects. Side
+    effects: writes ``qstate_<qid>.json`` per state and
+    ``trajectory_<qid>.json`` per QID under ``run_root``.
+
+    Lazy imports throughout: this entry point is called from the lever
+    loop alongside the legacy iteration; pulling the state_machine
+    surfaces at module-load time would create the same circular
+    reference the dispatch-input wrapper avoided in PR 1.1.
+    """
+    from pathlib import Path
+
+    from genie_space_optimizer.optimization.state_machine.persistence import (
+        write_qstate,
+        write_trajectory,
+    )
+    from genie_space_optimizer.optimization.state_machine.registry import (
+        build_production_state_machine,
+    )
+    from genie_space_optimizer.optimization.state_machine.trajectory import (
+        build_trajectory,
+    )
+    from genie_space_optimizer.optimization.state_machine.verdict import (
+        TransformerContext,
+        ValidationContext,
+    )
+
+    run_root = Path(run_root)
+    initial_states = _build_state_machine_initial_states(
+        eval_rows=eval_rows, iteration=iteration,
+    )
+    if not initial_states:
+        return ()
+
+    ctx = TransformerContext(
+        iteration=iteration,
+        run_id=run_id,
+        validation_context=ValidationContext(
+            iteration, run_id, {"workspace_client": workspace_client},
+        ),
+        forbidden_signatures=forbidden_signatures,
+        extras={"workspace_client": workspace_client},
+    )
+
+    sm = build_production_state_machine()
+    final_states = sm.run_iteration(initial_states, ctx)
+
+    for s in final_states:
+        write_qstate(run_root=run_root, state=s)
+        traj = build_trajectory(qid=s.qid, iterations=(s,))
+        write_trajectory(run_root=run_root, trajectory=traj)
+
+    return final_states
+
 from genie_space_optimizer.common.config import (
     ADAPTIVE_STRATEGIST_PROMPT,
     APPLY_MODE,
