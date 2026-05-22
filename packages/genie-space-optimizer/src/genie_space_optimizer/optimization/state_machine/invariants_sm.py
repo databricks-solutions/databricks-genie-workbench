@@ -171,3 +171,24 @@ def check_sm10_outcome_mandatory(*, outcome_marker_count: int) -> list[dict]:
             "exactly one required."
         ),
     }]
+
+
+def check_sm9_routing_directive_agreement(
+    *,
+    cluster_levers: Mapping[str, int],
+    directives_by_cluster: Mapping[str, tuple[int, ...]],
+) -> list[dict]:
+    """SM9: effective_target_lever must match directives_present per cluster."""
+    violations: list[dict] = []
+    for cluster_id, lever in cluster_levers.items():
+        directives = directives_by_cluster.get(cluster_id, ())
+        if directives != (lever,):
+            violations.append({
+                "invariant": "SM9",
+                "message": (
+                    f"SM9: cluster={cluster_id} effective_target_lever={lever} but "
+                    f"directives_present={directives}. Routing decision diverged from "
+                    "the executed directive."
+                ),
+            })
+    return violations
