@@ -31,6 +31,9 @@ from genie_space_optimizer.optimization.state_machine.transformers.diagnose_llm 
 from genie_space_optimizer.optimization.state_machine.transformers.escalation_ladder import (
     escalation_ladder,
 )
+from genie_space_optimizer.optimization.state_machine.transformers.narrow_replacement_gate import (
+    narrow_replacement_gate,
+)
 from genie_space_optimizer.optimization.state_machine.transformers.routing_gate import (
     routing_gate,
 )
@@ -58,13 +61,17 @@ PHASE2_REGISTRY = {
 #   * escalation_ladder runs immediately after structural_repair_gate
 #     at PROPOSED so a failed structural check triggers the softer
 #     artifact in the same orchestrator step.
+#   * narrow_replacement_gate runs immediately after blast_radius_batch
+#     at NORMALIZED so a collateral-risk drop can hand off to the
+#     LLM-driven narrow-replacement flow in the same orchestrator step.
 #   * evaluated_gate runs at APPLIED to record post-apply eval scores.
 #   * acceptance_gate runs at EVALUATED to decide accept-or-rollback.
 PHASE3_REGISTRY = {
     **PHASE2_REGISTRY,
-    FunnelStage.PROPOSED:  (structural_repair_gate, escalation_ladder),
-    FunnelStage.APPLIED:   (evaluated_gate,),
-    FunnelStage.EVALUATED: (acceptance_gate,),
+    FunnelStage.PROPOSED:   (structural_repair_gate, escalation_ladder),
+    FunnelStage.NORMALIZED: (blast_radius_batch, narrow_replacement_gate),
+    FunnelStage.APPLIED:    (evaluated_gate,),
+    FunnelStage.EVALUATED:  (acceptance_gate,),
 }
 
 

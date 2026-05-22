@@ -34,7 +34,29 @@ def test_registry_has_structural_repair_at_proposed():
 def test_registry_has_blast_radius_at_normalized():
     sm = build_production_state_machine()
     transformers = sm.transformers[FunnelStage.NORMALIZED]
-    assert [t.name for t in transformers] == ["blast_radius_batch"]
+    # Phase 3 Task 1.6: narrow_replacement_gate is appended after
+    # blast_radius_batch at NORMALIZED to take over on a collateral-risk drop.
+    assert [t.name for t in transformers] == [
+        "blast_radius_batch", "narrow_replacement_gate",
+    ]
+
+
+def test_normalized_stage_runs_blast_radius_then_narrow_replacement():
+    from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
+    from genie_space_optimizer.optimization.state_machine.registry import (
+        PHASE3_REGISTRY,
+    )
+    from genie_space_optimizer.optimization.state_machine.transformers.blast_radius_batch import (
+        blast_radius_batch,
+    )
+    from genie_space_optimizer.optimization.state_machine.transformers.narrow_replacement_gate import (
+        narrow_replacement_gate,
+    )
+
+    chain = PHASE3_REGISTRY[FunnelStage.NORMALIZED]
+    assert chain == (blast_radius_batch, narrow_replacement_gate), (
+        f"NORMALIZED chain must be (blast_radius_batch, narrow_replacement_gate); got {chain}"
+    )
 
 
 def test_registry_has_applier_at_applyable():
