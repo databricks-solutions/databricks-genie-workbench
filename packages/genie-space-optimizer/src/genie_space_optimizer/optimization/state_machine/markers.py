@@ -49,3 +49,33 @@ def optimizer_outcome_marker(
         "deepest_stage_by_qid": deepest_stage_by_qid,
     }
     return marker_line("GSO_OPTIMIZER_OUTCOME_V1", payload)
+
+
+def patch_outcome_marker_from_attempt(
+    *,
+    run_id: str,
+    iteration: int,
+    qid: str,
+    attempt,
+) -> str:
+    """Emit GSO_PATCH_OUTCOME_V1 derived from a ProposalAttempt terminal outcome.
+
+    Plan 12's PatchOutcome contract is preserved as the over-the-wire
+    shape, but the state machine is the source of truth: the marker is
+    emitted at the same moment ``ProposalAttempt`` is appended to the
+    state. This eliminates the "marker fires without state" and "state
+    advances without marker" drift modes.
+    """
+    payload = {
+        "run_id": run_id,
+        "iteration": iteration,
+        "qid": qid,
+        "intent_id": attempt.intent_id,
+        "patch_type": attempt.patch_type,
+        "outcome": attempt.outcome,
+        "outcome_reason": attempt.outcome_reason,
+        "deepest_stage_in_attempt": attempt.deepest_stage_in_attempt.value,
+        "attempt_index": attempt.attempt_index,
+        "patch_outcome_id": attempt.patch_outcome_id or "",
+    }
+    return marker_line("GSO_PATCH_OUTCOME_V1", payload)
