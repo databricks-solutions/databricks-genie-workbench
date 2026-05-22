@@ -129,35 +129,37 @@ def build_terminal_signature(
 def resolve_emitted_patch_shape(
     applied_patches: Sequence[object],
 ) -> EmittedPatchShape:
-    """Classify a list of applied patches into one ``EmittedPatchShape``.
+    """Classify a list of applied patches into one EmittedPatchShape.
 
-    Used by Task 5 to populate the reflection_buffer entry's
-    ``emitted_patch_shape`` field. Returns the *highest-severity*
-    shape present (STRUCTURAL > METADATA > INSTRUCTION > ABSENT) so
-    a mixed-patch iteration is recorded as STRUCTURAL.
+    Reads the typed PatchSemantic via patch_semantic.semantic_for_patch_type.
+    Unknown patch_types raise — new patch types must register their
+    semantic class in patch_semantic.PATCH_TYPE_SEMANTICS, which makes the
+    "I forgot to update the substring tuple" failure mode impossible.
+
+    Returns the highest-severity shape present
+    (STRUCTURAL > METADATA > INSTRUCTION > ABSENT).
     """
+    from genie_space_optimizer.optimization.patch_semantic import (
+        PatchSemantic,
+        semantic_for_patch_type,
+    )
+
     has_structural = False
     has_metadata = False
     has_instruction = False
     for patch in applied_patches or ():
-        ptype = ""
         if isinstance(patch, dict):
             ptype = str(patch.get("patch_type") or "")
         else:
             ptype = str(getattr(patch, "patch_type", "") or "")
-        ptype_l = ptype.lower()
-        if any(tag in ptype_l for tag in (
-            "metric_view", "example_sql", "narrow_l6",
-            "join", "routing", "grain", "sql_pattern",
-        )):
+        if not ptype:
+            continue
+        sem = semantic_for_patch_type(ptype)
+        if sem is PatchSemantic.STRUCTURAL:
             has_structural = True
-        elif any(tag in ptype_l for tag in (
-            "comment", "description", "metadata", "doc",
-        )):
+        elif sem is PatchSemantic.METADATA:
             has_metadata = True
-        elif any(tag in ptype_l for tag in (
-            "instruction", "gsl", "space_instruction",
-        )):
+        elif sem is PatchSemantic.INSTRUCTION:
             has_instruction = True
     if has_structural:
         return EmittedPatchShape.STRUCTURAL
