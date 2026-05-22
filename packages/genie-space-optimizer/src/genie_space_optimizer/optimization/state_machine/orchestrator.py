@@ -67,3 +67,11 @@ class StateMachine:
             if state.current_stage == prior_stage:
                 return state
         return state
+
+    def run_iteration(
+        self,
+        states: tuple[QuestionStateInIteration, ...],
+        ctx: TransformerContext,
+    ) -> tuple[QuestionStateInIteration, ...]:
+        """Drive each state to settled (terminal or fixed-point); return the batch."""
+        return tuple(self.run_until_settled(s, ctx) for s in states)
