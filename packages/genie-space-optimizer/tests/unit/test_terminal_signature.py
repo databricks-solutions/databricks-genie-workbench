@@ -176,10 +176,16 @@ def test_emitted_patch_shape_enum_values_kept_for_reflection_buffer():
 def test_resolve_emitted_patch_shape_helper():
     """The helper classifies a list of applied patches into one
     ``EmittedPatchShape``. Used by Task 5 to populate the
-    reflection_buffer entry."""
-    structural = [{"patch_type": "metric_view_create"}]
-    metadata = [{"patch_type": "comment_change"}]
-    instruction = [{"patch_type": "instruction_update"}]
+    reflection_buffer entry.
+
+    v4 Task 1.2 replaced the substring classifier with typed PatchSemantic
+    reads. The fixtures below use real PatchType enum values rather than
+    synthetic substring-matchable names — unknown types now soft-skip
+    rather than misclassify silently.
+    """
+    structural = [{"patch_type": "add_metric_view"}]
+    metadata = [{"patch_type": "update_column_description"}]
+    instruction = [{"patch_type": "add_instruction"}]
     assert resolve_emitted_patch_shape(structural) == EmittedPatchShape.STRUCTURAL
     assert resolve_emitted_patch_shape(metadata) == EmittedPatchShape.METADATA
     assert resolve_emitted_patch_shape(instruction) == EmittedPatchShape.INSTRUCTION

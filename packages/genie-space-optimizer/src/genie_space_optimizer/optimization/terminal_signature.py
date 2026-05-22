@@ -131,18 +131,30 @@ def resolve_emitted_patch_shape(
 ) -> EmittedPatchShape:
     """Classify a list of applied patches into one EmittedPatchShape.
 
-    Reads the typed PatchSemantic via patch_semantic.semantic_for_patch_type.
-    Unknown patch_types raise — new patch types must register their
-    semantic class in patch_semantic.PATCH_TYPE_SEMANTICS, which makes the
-    "I forgot to update the substring tuple" failure mode impossible.
+    Reads the typed PatchSemantic via patch_semantic.PATCH_TYPE_SEMANTICS.
+
+    Soft-classification policy: unknown patch_types are skipped (logged
+    once at debug level) rather than raising. The strict-KeyError variant
+    lives in ``patch_semantic.semantic_for_patch_type`` and is what the
+    SM gates call directly when they require a typed verdict. This
+    shape-aggregator runs over arbitrary serialized patch lists from
+    Delta / replay fixtures / legacy snapshots, which historically used
+    raw strings like ``add_sql_snippet`` that aren't in the typed
+    PatchType enum. Soft-classifying preserves byte-stability against
+    those legacy strings while keeping the strict reader available
+    for new producers.
 
     Returns the highest-severity shape present
     (STRUCTURAL > METADATA > INSTRUCTION > ABSENT).
     """
+    import logging
+
     from genie_space_optimizer.optimization.patch_semantic import (
+        PATCH_TYPE_SEMANTICS,
         PatchSemantic,
-        semantic_for_patch_type,
     )
+
+    _logger = logging.getLogger(__name__)
 
     has_structural = False
     has_metadata = False
@@ -154,7 +166,14 @@ def resolve_emitted_patch_shape(
             ptype = str(getattr(patch, "patch_type", "") or "")
         if not ptype:
             continue
-        sem = semantic_for_patch_type(ptype)
+        sem = PATCH_TYPE_SEMANTICS.get(ptype.strip())
+        if sem is None:
+            _logger.debug(
+                "resolve_emitted_patch_shape: unknown patch_type %r; "
+                "skipping (add to PATCH_TYPE_SEMANTICS if it's a real type)",
+                ptype,
+            )
+            continue
         if sem is PatchSemantic.STRUCTURAL:
             has_structural = True
         elif sem is PatchSemantic.METADATA:
