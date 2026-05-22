@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
 from genie_space_optimizer.optimization.state_machine.orchestrator import StateMachine
+from genie_space_optimizer.optimization.state_machine.transformers.acceptance_gate import (
+    acceptance_gate,
+)
 from genie_space_optimizer.optimization.state_machine.transformers.applier_gate import (
     applier_gate,
 )
@@ -18,6 +21,9 @@ from genie_space_optimizer.optimization.state_machine.transformers.blast_radius_
 )
 from genie_space_optimizer.optimization.state_machine.transformers.cluster_batch import (
     plan11_stage2_clustering,
+)
+from genie_space_optimizer.optimization.state_machine.transformers.evaluated_gate import (
+    evaluated_gate,
 )
 from genie_space_optimizer.optimization.state_machine.transformers.diagnose_llm import (
     plan11_stage1_diagnosis,
@@ -48,14 +54,17 @@ PHASE2_REGISTRY = {
 }
 
 
-# Phase 3 update: escalation_ladder runs immediately after
-# structural_repair_gate at PROPOSED so a failed structural check
-# triggers the softer artifact in the same orchestrator step.
-# PR 3.3 will further append evaluated_gate at APPLIED and
-# acceptance_gate at EVALUATED.
+# Phase 3 update:
+#   * escalation_ladder runs immediately after structural_repair_gate
+#     at PROPOSED so a failed structural check triggers the softer
+#     artifact in the same orchestrator step.
+#   * evaluated_gate runs at APPLIED to record post-apply eval scores.
+#   * acceptance_gate runs at EVALUATED to decide accept-or-rollback.
 PHASE3_REGISTRY = {
     **PHASE2_REGISTRY,
-    FunnelStage.PROPOSED: (structural_repair_gate, escalation_ladder),
+    FunnelStage.PROPOSED:  (structural_repair_gate, escalation_ladder),
+    FunnelStage.APPLIED:   (evaluated_gate,),
+    FunnelStage.EVALUATED: (acceptance_gate,),
 }
 
 
