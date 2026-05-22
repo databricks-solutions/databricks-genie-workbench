@@ -34363,16 +34363,12 @@ def _run_lever_loop(
         )
 
     # Plan v3 SM10 — emit exactly one GSO_OPTIMIZER_OUTCOME_V1 marker
-    # per lever-loop run, classified from the accumulated canary
-    # trajectories. Guarded by the umbrella flag + try/except so a
-    # classification failure cannot break the loop's return contract.
+    # per lever-loop run, classified from the accumulated SM
+    # trajectories. The SM is now authoritative (Phase 4); the umbrella
+    # flag was deleted. Wrapped in try/except so a classification
+    # failure cannot break the loop's return contract.
     try:
-        from genie_space_optimizer.common.config import (
-            plan_v3_state_machine_iteration_enabled as _plan_v3_on,
-        )
-        if _plan_v3_on() and (
-            _canary_states_by_qid or _canary_any_hard_rows_seen
-        ):
+        if _canary_states_by_qid or _canary_any_hard_rows_seen:
             from genie_space_optimizer.optimization.state_machine.outcome import (
                 classify_run_outcome,
             )

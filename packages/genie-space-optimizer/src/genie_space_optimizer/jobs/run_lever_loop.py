@@ -348,16 +348,6 @@ if _warehouse_id:
 # canary by setting e.g. GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE=0.
 _os.environ.setdefault("GSO_PLAN12_LIVE_ALL", "true")
 
-# Plan v3 — activate the typed state machine to run alongside the
-# legacy iteration loop. The harness's iteration body invokes
-# ``run_state_machine_iteration_and_persist`` when this flag is
-# truthy. Trajectories land under the run root for the postmortem
-# layer to read.
-#
-# ``setdefault`` keeps the local-test path (where the env var is
-# never set) on the legacy-only path, so unit tests stay byte-stable.
-_os.environ.setdefault("GSO_PLAN_V3_STATE_MACHINE_ITERATION", "true")
-
 # RCO-2b — production posture flipped 2026-05-13.
 #
 # Cycle 11 originally pinned ``GSO_LOOP_INVARIANTS_STRICT=0`` here to
