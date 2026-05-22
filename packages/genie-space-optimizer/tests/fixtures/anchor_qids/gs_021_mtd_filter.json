@@ -1,0 +1,28 @@
+{
+  "qid": "gs_021",
+  "space_id": "7now_delivery_analytics_space",
+  "baseline_sql": "SELECT SUM(sales) FROM mv_7now_fact_sales WHERE store_id = 1",
+  "expected_shape": "mtd_filter",
+  "rca_card": {
+    "rca_card_id": "rca_gs_021_missing_mtd_v1",
+    "rca_kind_label": "missing_filter",
+    "intended_patch_shape": "structural",
+    "evidence_summary": "Question asks for MTD; SQL has no time_window filter.",
+    "observed_failure": "result is all-time sum, not MTD",
+    "expected_sql_shape": "WHERE time_window = 'mtd'"
+  },
+  "expected_proposal": {
+    "patch_type": "add_sql_snippet_filter",
+    "target_object": "mv_7now_fact_sales.time_window",
+    "snippet": "time_window = 'mtd'",
+    "target_qids": ["gs_021"],
+    "rca_card_id": "rca_gs_021_missing_mtd_v1",
+    "causal_target": "mv_7now_fact_sales.time_window",
+    "failing_sql_anchor": "FROM mv_7now_fact_sales"
+  },
+  "passing_dependents_outside_target": [
+    "gs_006", "gs_007", "gs_008", "gs_010", "gs_011",
+    "gs_012", "gs_014", "gs_015", "gs_016", "gs_017",
+    "gs_018", "gs_019"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "qid": "gs_024",
+  "space_id": "airline_ticketing_and_fare_analysis",
+  "baseline_sql": "SELECT SUM(amount) FROM payments GROUP BY product",
+  "expected_shape": "currency_filtered_amount",
+  "rca_card": {
+    "rca_card_id": "rca_gs_024_missing_filter_v1",
+    "rca_kind_label": "missing_filter",
+    "intended_patch_shape": "structural",
+    "evidence_summary": "amount column mixes currencies; needs currency = 'USD' filter to be comparable.",
+    "observed_failure": "sums include EUR and GBP rows",
+    "expected_sql_shape": "SUM(amount) WHERE currency = 'USD'"
+  },
+  "expected_proposal": {
+    "patch_type": "add_sql_snippet_filter",
+    "target_object": "payments.amount",
+    "snippet": "WHERE currency = 'USD'",
+    "target_qids": ["gs_024"],
+    "rca_card_id": "rca_gs_024_missing_filter_v1",
+    "causal_target": "payments.currency",
+    "failing_sql_anchor": "SUM(amount)"
+  },
+  "passing_dependents_outside_target": ["gs_003"]
+}

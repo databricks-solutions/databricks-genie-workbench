@@ -1,0 +1,25 @@
+{
+  "qid": "gs_004",
+  "space_id": "7now_delivery_analytics_space",
+  "baseline_sql": "SELECT SUM(order_count) FROM mv_7now_fact_sales",
+  "expected_shape": "metric_example_sql",
+  "rca_card": {
+    "rca_card_id": "rca_gs_004_wrong_metric_v1",
+    "rca_kind_label": "wrong_aggregation",
+    "intended_patch_shape": "structural",
+    "evidence_summary": "Wrong metric: should be COUNT(DISTINCT order_id), not SUM(order_count).",
+    "observed_failure": "double-counts re-orders",
+    "expected_sql_shape": "COUNT(DISTINCT order_id) FROM orders"
+  },
+  "expected_proposal": {
+    "patch_type": "add_example_sql",
+    "target_object": "orders",
+    "example_question": "How many unique orders were placed last month?",
+    "example_sql": "SELECT COUNT(DISTINCT order_id) FROM orders WHERE order_date >= date_trunc('month', current_date - interval '1 month')",
+    "target_qids": ["gs_004"],
+    "rca_card_id": "rca_gs_004_wrong_metric_v1",
+    "causal_target": "orders.order_id",
+    "failing_sql_anchor": "SUM(order_count)"
+  },
+  "passing_dependents_outside_target": []
+}

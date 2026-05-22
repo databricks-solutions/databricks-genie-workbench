@@ -1,0 +1,28 @@
+{
+  "qid": "gs_026",
+  "space_id": "7now_delivery_analytics_space",
+  "baseline_sql": "SELECT store_id, SUM(cy_sales) AS s FROM mv_7now_fact_sales GROUP BY store_id ORDER BY s DESC",
+  "expected_shape": "deterministic_top_n",
+  "rca_card": {
+    "rca_card_id": "rca_gs_026_top_n_collapse_v1",
+    "rca_kind_label": "plural_top_n_collapse",
+    "intended_patch_shape": "structural",
+    "evidence_summary": "RANK over SUM creates ties; ROW_NUMBER required for deterministic top-N.",
+    "observed_failure": "13 rows returned when 10 expected",
+    "expected_sql_shape": "ROW_NUMBER() OVER (PARTITION BY 1 ORDER BY SUM(cy_sales) DESC)"
+  },
+  "expected_proposal": {
+    "patch_type": "add_sql_snippet_expression",
+    "target_object": "mv_7now_fact_sales.store_id",
+    "snippet": "ROW_NUMBER() OVER (PARTITION BY 1 ORDER BY SUM(mv_7now_fact_sales.cy_sales) DESC)",
+    "target_qids": ["gs_026"],
+    "rca_card_id": "rca_gs_026_top_n_collapse_v1",
+    "causal_target": "mv_7now_fact_sales.cy_sales",
+    "failing_sql_anchor": "ORDER BY SUM(cy_sales) DESC"
+  },
+  "passing_dependents_outside_target": [
+    "gs_003", "gs_006", "gs_007", "gs_008", "gs_010",
+    "gs_011", "gs_012", "gs_014", "gs_015", "gs_016",
+    "gs_017", "gs_018"
+  ]
+}
