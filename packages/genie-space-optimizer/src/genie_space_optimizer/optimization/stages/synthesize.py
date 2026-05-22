@@ -354,3 +354,104 @@ def validate_synthesis_output_for_state_machine(proposal_payload: dict) -> None:
             f"Stage 3 RepairProposal missing required field(s): {missing}. "
             f"State machine requires {_STAGE3_REQUIRED_FIELDS}."
         )
+
+
+# ─── Escalation rung dispatcher (Plan v3 step §M) ──────────────────────
+
+
+from enum import StrEnum  # noqa: E402 — placed near consumers
+
+
+class EscalationRungHint(StrEnum):
+    """Closed set of escalation rung shapes the unified dispatcher
+    emits. Rungs 1, 3, 4 of the v3 escalation ladder route through
+    ``synthesize_escalation_for_state``; rung 2 uses the existing
+    ``narrow_replacement_with_llm``."""
+
+    SCOPED_L6 = "scoped_l6"                  # rung 1 — narrower structural fix
+    ADD_EXAMPLE_SQL = "add_example_sql"      # rung 3 — teaching artifact
+    NARROWED_EXAMPLE_SQL = "narrowed_example_sql"  # rung 4 — single-QID example
+
+
+def synthesize_escalation_for_state(
+    *,
+    rung_hint: EscalationRungHint,
+    failed_proposal,
+    failure_reason: str,
+    cluster,
+    schema_slice: dict,
+    history: list,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    w,
+):
+    """Unified LLM dispatch for escalation rungs 1, 3, 4.
+
+    Reuses ``run_plan11_synthesis_for_single_cluster``'s prompt-building
+    + LLM-call machinery by appending a rung-conditional hint marker
+    to the cluster's ``repair_hypothesis``. The LLM picks up the hint
+    in the prompt and shapes its proposal accordingly:
+
+      * ``SCOPED_L6`` — ask for a narrower structural patch than the
+        rejected one.
+      * ``ADD_EXAMPLE_SQL`` — ask for a question-scoped teaching
+        artifact in place of a structural fix.
+      * ``NARROWED_EXAMPLE_SQL`` — ask for an example SQL targeting
+        ONLY the failed QID (single-QID member projection).
+
+    Returns the same ``ClusterSynthesisResult`` shape as
+    ``run_plan11_synthesis_for_single_cluster`` so the adapter
+    callers in ``escalation_ladder.py`` consume one type.
+
+    Parameters
+    ----------
+    failed_proposal
+        The ``RepairProposal`` that the gate just rejected — used to
+        derive context for the hint (its patch_type, target_objects,
+        blame_set inform what "narrower" means).
+    failure_reason
+        The rejection reason string. Surfaced into the
+        ``repair_hypothesis`` so the LLM sees *why* the prior attempt
+        failed and avoids re-emitting the same shape.
+    """
+    from genie_space_optimizer.optimization.stages.plan11_types import (
+        FailureCluster,
+    )
+
+    hint_marker = f"escalation_rung:{rung_hint.value}"
+    reason_marker = f"prior_failure:{failure_reason}"
+    enriched_hypothesis = (
+        f"{cluster.repair_hypothesis} | {hint_marker} | {reason_marker}"
+    ).strip(" |")
+
+    # NARROWED_EXAMPLE_SQL projects the cluster down to the single
+    # failed QID — the rung's whole point is to avoid collateral
+    # exposure to co-members.
+    if rung_hint == EscalationRungHint.NARROWED_EXAMPLE_SQL:
+        member_qids = tuple(failed_proposal.target_qids[:1]) or (
+            cluster.member_qids[:1]
+        )
+    else:
+        member_qids = cluster.member_qids
+
+    escalation_cluster = FailureCluster(
+        cluster_id=cluster.cluster_id,
+        semantic_theme=cluster.semantic_theme,
+        member_qids=member_qids,
+        unifying_evidence=cluster.unifying_evidence,
+        repair_hypothesis=enriched_hypothesis,
+        primary_blame_set=cluster.primary_blame_set,
+        confidence=cluster.confidence,
+    )
+
+    return run_plan11_synthesis_for_single_cluster(
+        escalation_cluster,
+        dict(schema_slice),
+        list(history),
+        member_qid_evidence=None,
+        optimization_run_id=optimization_run_id,
+        iteration=iteration,
+        ag_id=ag_id,
+        w=w,
+    )

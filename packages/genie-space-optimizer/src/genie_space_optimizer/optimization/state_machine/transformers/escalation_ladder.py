@@ -34,41 +34,170 @@ from genie_space_optimizer.optimization.state_machine.verdict import (
 )
 
 
-def _invoke_rung_1_scoped_l6(state, ctx) -> Any:
-    """Rung 1: ask LLM for a scoped L6 narrower than the rejected one.
-
-    Patchable for tests. Production wire-in calls into ``stages.synthesize``
-    (a new ``synthesize_scoped_l6_escalation`` entry point that Phase 4
-    will add). Until then this is a test-only seam.
-    """
-    raise NotImplementedError(
-        "Rung 1 scoped-L6 LLM dispatch not wired to production yet. "
-        "Tests must monkeypatch _invoke_rung_1_scoped_l6."
+def _build_cluster_from_state(state):
+    """Reverse-project ``state.clustered`` + ``state.diagnosed`` into
+    a ``FailureCluster`` for the rung dispatchers (same shape the
+    Stage 3 wire-in uses)."""
+    from genie_space_optimizer.optimization.stages.plan11_types import (
+        FailureCluster,
+    )
+    return FailureCluster(
+        cluster_id=state.clustered.cluster_id if state.clustered else "",
+        semantic_theme=(
+            state.clustered.routing_evidence_kind if state.clustered else ""
+        ),
+        member_qids=(
+            tuple(state.clustered.co_member_qids) if state.clustered
+            else (state.qid,)
+        ),
+        unifying_evidence=(
+            state.diagnosed.evidence_summary if state.diagnosed else ""
+        ),
+        repair_hypothesis=(
+            state.clustered.routing_evidence_kind if state.clustered else ""
+        ),
+        primary_blame_set=(),
+        confidence=(
+            state.diagnosed.confidence if state.diagnosed else "low"
+        ),
     )
 
 
+def _adapter_from_dict(proposal_dict, state, ctx):
+    """Hydrate ``RepairProposal.from_json(proposal_dict)``, store it in
+    ``ctx.proposal_store``, and return a duck-typed adapter exposing the
+    v3 ``intent_id`` / ``patch_type`` attributes the escalation_ladder
+    consumes.
+
+    Returns ``None`` when the proposal dict is missing or fails to
+    hydrate — the ladder maps that to a safe-noop terminal.
+    """
+    if not proposal_dict:
+        return None
+    from genie_space_optimizer.optimization.repair_proposal_typed import (
+        RepairProposal,
+    )
+    try:
+        typed = RepairProposal.from_json(proposal_dict)
+    except Exception:
+        return None
+    ctx.proposal_store.remember(typed)
+
+    @dataclass(frozen=True, slots=True)
+    class _Adapter:
+        intent_id: str
+        patch_type: str
+
+    return _Adapter(
+        intent_id=typed.intent_id,
+        patch_type=(
+            typed.patch_type.value
+            if hasattr(typed.patch_type, "value")
+            else str(typed.patch_type)
+        ),
+    )
+
+
+def _dispatch_via_synth(state, ctx, rung_hint_value: str):
+    """Common path for rungs 1/3/4 — call the unified dispatcher."""
+    if not state.proposals:
+        return None
+    latest = state.proposals[-1]
+    failed = ctx.proposal_store.lookup(latest.intent_id)
+    if failed is None:
+        return None
+
+    from genie_space_optimizer.optimization.stages.synthesize import (
+        EscalationRungHint, synthesize_escalation_for_state,
+    )
+    cluster = _build_cluster_from_state(state)
+    result = synthesize_escalation_for_state(
+        rung_hint=EscalationRungHint(rung_hint_value),
+        failed_proposal=failed,
+        failure_reason=latest.outcome_reason,
+        cluster=cluster,
+        schema_slice=dict(ctx.schema_slice),
+        history=[dict(h) for h in ctx.history],
+        optimization_run_id=ctx.run_id,
+        iteration=ctx.iteration,
+        ag_id=state.clustered.ag_id if state.clustered else "",
+        w=ctx.w,
+    )
+    return _adapter_from_dict(getattr(result, "proposal", None), state, ctx)
+
+
+def _invoke_rung_1_scoped_l6(state, ctx) -> Any:
+    """Rung 1: scoped L6 narrower than the rejected one. Routes through
+    the unified ``synthesize_escalation_for_state`` with the
+    ``SCOPED_L6`` rung hint."""
+    return _dispatch_via_synth(state, ctx, "scoped_l6")
+
+
 def _invoke_rung_2_narrowed_l6(state, ctx) -> Any:
-    """Rung 2: build narrow replacement from the BlastRadiusDropRecord."""
-    raise NotImplementedError(
-        "Rung 2 narrow-replacement LLM dispatch not wired to production yet. "
-        "Tests must monkeypatch _invoke_rung_2_narrowed_l6."
+    """Rung 2: narrow replacement built off the blast-radius rejection.
+    Routes through the existing ``narrow_replacement_with_llm`` (the
+    v3 plan's "rung 2 uses existing entry point" decision)."""
+    if not state.proposals:
+        return None
+    latest = state.proposals[-1]
+    failed = ctx.proposal_store.lookup(latest.intent_id)
+    if failed is None:
+        return None
+
+    cluster = _build_cluster_from_state(state)
+    # ``collateral_qids`` for narrow-replacement: the QIDs the blast
+    # gate flagged as outside-target. Latest ProposalAttempt's
+    # outcome_reason carries them in the string form
+    # ``reason=... collateral=('q_other',) drop_record_id=...`` —
+    # parse defensively, fall back to empty when absent.
+    collateral_qids: tuple[str, ...] = ()
+    # protected_sql: pre-apply SQL for non-target QIDs that pass — for
+    # v3 iteration 1, leave empty; the narrow-replacement loop handles
+    # absence by working from the failed_proposal alone.
+    protected_sql: dict[str, str] = {}
+
+    from genie_space_optimizer.optimization.stages.narrow_replacement import (
+        narrow_replacement_with_llm,
+    )
+    narrowed = narrow_replacement_with_llm(
+        failed,
+        collateral_qids=collateral_qids,
+        protected_sql=protected_sql,
+        cluster=cluster,
+        w=ctx.w,
+        optimization_run_id=ctx.run_id,
+        iteration=ctx.iteration,
+        ag_id=state.clustered.ag_id if state.clustered else "",
+    )
+    if narrowed is None:
+        return None
+    ctx.proposal_store.remember(narrowed)
+
+    @dataclass(frozen=True, slots=True)
+    class _Adapter:
+        intent_id: str
+        patch_type: str
+
+    return _Adapter(
+        intent_id=narrowed.intent_id,
+        patch_type=(
+            narrowed.patch_type.value
+            if hasattr(narrowed.patch_type, "value")
+            else str(narrowed.patch_type)
+        ),
     )
 
 
 def _invoke_rung_3_add_example_sql(state, ctx) -> Any:
-    """Rung 3: question-scoped add_example_sql teaching artifact."""
-    raise NotImplementedError(
-        "Rung 3 add_example_sql LLM dispatch not wired to production yet. "
-        "Tests must monkeypatch _invoke_rung_3_add_example_sql."
-    )
+    """Rung 3: question-scoped add_example_sql teaching artifact via
+    the unified dispatcher with ``ADD_EXAMPLE_SQL`` rung hint."""
+    return _dispatch_via_synth(state, ctx, "add_example_sql")
 
 
 def _invoke_rung_4_narrowed_example_sql(state, ctx) -> Any:
-    """Rung 4: narrowed example_sql (target_qid only, no collateral exposure)."""
-    raise NotImplementedError(
-        "Rung 4 narrowed-example_sql LLM dispatch not wired to production yet. "
-        "Tests must monkeypatch _invoke_rung_4_narrowed_example_sql."
-    )
+    """Rung 4: narrowed example_sql (single-QID, no collateral exposure)
+    via the unified dispatcher with ``NARROWED_EXAMPLE_SQL`` rung hint."""
+    return _dispatch_via_synth(state, ctx, "narrowed_example_sql")
 
 
 def _terminate_safe_noop(state: QuestionStateInIteration, name: str) -> QuestionStateInIteration:
