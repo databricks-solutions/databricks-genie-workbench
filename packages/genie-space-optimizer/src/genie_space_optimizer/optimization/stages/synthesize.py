@@ -316,3 +316,41 @@ def run_plan11_synthesis_for_single_cluster(
         attempted_archetypes=(),
         skipped_reason="",
     )
+
+
+# ─── Plan v3 state-machine integration ─────────────────────────────────
+
+
+class StageThreeContractError(ValueError):
+    """Raised when Stage 3 synthesis output is missing fields required by the state machine."""
+
+
+_STAGE3_REQUIRED_FIELDS: tuple[str, ...] = (
+    "intent_id",
+    "patch_type",
+    "target_objects",
+    "target_qids",
+    "rca_card_id",
+    "causal_target",
+    "original_patch_body",
+)
+
+
+def validate_synthesis_output_for_state_machine(proposal_payload: dict) -> None:
+    """Raise StageThreeContractError if any state-machine-required field is missing or empty.
+
+    Called at Stage 3 exit. The L6 lane writes a ProposalAttempt to the
+    per-QID state ONLY when this validation passes; otherwise the
+    transformer emits a contract_failed ProposalAttempt and the run-level
+    invariant SM7 catches it.
+    """
+    missing: list[str] = []
+    for field in _STAGE3_REQUIRED_FIELDS:
+        value = proposal_payload.get(field, None)
+        if value in (None, "", (), [], {}):
+            missing.append(field)
+    if missing:
+        raise StageThreeContractError(
+            f"Stage 3 RepairProposal missing required field(s): {missing}. "
+            f"State machine requires {_STAGE3_REQUIRED_FIELDS}."
+        )
