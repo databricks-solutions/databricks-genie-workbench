@@ -27,16 +27,56 @@ from genie_space_optimizer.optimization.state_machine.verdict import (
 def _assess_collateral(
     state: QuestionStateInIteration, ctx: TransformerContext,
 ) -> tuple[str, ...]:
-    """Wrap legacy arbiter collateral check.
+    """Compute per-QID collateral regression by comparing
+    ``ctx.baseline_eval_rows`` (pre-apply) with
+    ``ctx.post_apply_eval_rows`` (set by §H's eval step).
 
-    Returns tuple of regressed QIDs. Empty tuple means "no regressions
-    detected". Patchable for tests; production wire-in lands alongside
-    the deployed-smoke gate that the user deferred.
+    A QID is collateral-regressed when:
+      * It is *not* in the rejected proposal's ``target_qids`` (those
+        are intentional fixes), AND
+      * Its baseline ``feedback/result_correctness/value`` was > 0
+        (was passing), AND
+      * Its post-apply value is <= 0 (now failing).
+
+    When either side has no rows (v3 iteration 1 without the harness
+    plumbing), returns ``()`` — the acceptance gate falls back to
+    target_fixed-only acceptance, which is the safer-side default.
     """
-    raise NotImplementedError(
-        "Collateral assessment not wired to production yet. "
-        "Tests must monkeypatch _assess_collateral."
-    )
+    baseline = ctx.baseline_eval_rows or ()
+    post = ctx.post_apply_eval_rows or ()
+    if not baseline or not post:
+        return ()
+
+    # Target QIDs are the intentional fixes — never count them as collateral.
+    target_qids: set[str] = set()
+    if state.proposals:
+        latest = state.proposals[-1]
+        proposal = ctx.proposal_store.lookup(latest.intent_id)
+        if proposal is not None:
+            target_qids = {str(q) for q in proposal.target_qids}
+    target_qids.add(state.qid)  # always exclude the state's own target
+
+    def _score(row: dict) -> float:
+        return float(row.get("feedback/result_correctness/value", 0.0) or 0.0)
+
+    pre_by_qid = {
+        str(r.get("question_id") or ""): _score(r) for r in baseline
+    }
+    post_by_qid = {
+        str(r.get("question_id") or ""): _score(r) for r in post
+    }
+    regressed: list[str] = []
+    for qid, pre_score in pre_by_qid.items():
+        if qid in target_qids or not qid:
+            continue
+        if pre_score <= 0:
+            continue  # was already failing; no regression
+        post_score = post_by_qid.get(qid)
+        if post_score is None:
+            continue  # not re-evaluated post-apply — silent on regression
+        if post_score <= 0:
+            regressed.append(qid)
+    return tuple(regressed)
 
 
 def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> GateVerdict:
