@@ -19748,6 +19748,38 @@ def _run_lever_loop(
 
             iteration_counter += 1
 
+            # Plan v3 canary — fire the typed state machine in parallel
+            # with the legacy lane. Flag-gated by
+            # ``plan_v3_state_machine_iteration_enabled()`` (default OFF
+            # locally, default ON via setdefault in run_lever_loop.py).
+            # Wrapped in try/except inside the helper so any failure
+            # never disturbs the legacy iteration body.
+            try:
+                from genie_space_optimizer.optimization.optimizer import (
+                    maybe_run_state_machine_canary_iteration,
+                )
+                _canary_eval_rows: list[dict] = []
+                if _latest_eval_result and isinstance(_latest_eval_result, dict):
+                    _canary_eval_rows = list(
+                        _latest_eval_result.get("eval_rows") or [],
+                    )
+                if not _canary_eval_rows and _baseline_rows_seed:
+                    _canary_eval_rows = list(_baseline_rows_seed)
+                maybe_run_state_machine_canary_iteration(
+                    eval_rows=_canary_eval_rows,
+                    iteration=int(iteration_counter),
+                    run_id=str(run_id),
+                    workspace_client=w,
+                    space_id=str(space_id),
+                )
+            except Exception:
+                # Helper already swallows internal failures; this outer
+                # except is for import / scope-binding edge cases.
+                logger.debug(
+                    "Plan v3 canary helper raised at lookup time; legacy lane unaffected",
+                    exc_info=True,
+                )
+
             # Phase H iteration content completeness — pre-stamp the trace /
             # summary entries so any subsequent ``continue`` / ``break``
             # leaves a renderable iteration in the operator transcript. The

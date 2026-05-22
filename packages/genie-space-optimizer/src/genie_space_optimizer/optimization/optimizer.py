@@ -119,6 +119,115 @@ def run_state_machine_iteration_and_persist(
 
     return final_states
 
+
+def _row_is_failing(row) -> bool:
+    """Tolerant predicate for canary's ``live_hard_qids`` projection.
+
+    Accepts both string (``"no" / "0" / "false"``) and numeric
+    (``0.0 / 0``) shapes of ``feedback/result_correctness/value`` —
+    the legacy ``row_is_hard_failure`` already uses ``_rc_str`` which
+    handles these via Python ``or``-cascade quirks; the canary
+    matches that behaviour with explicit type-tolerant casting.
+    """
+    raw = row.get("feedback/result_correctness/value")
+    if raw is None:
+        raw = row.get("result_correctness/value") or row.get("result_correctness")
+    if raw is None or raw == "":
+        return False
+    if isinstance(raw, (int, float)):
+        return float(raw) <= 0.0
+    return str(raw).strip().lower() in ("no", "false", "0", "0.0")
+
+
+def maybe_run_state_machine_canary_iteration(
+    *,
+    eval_rows,
+    iteration: int,
+    run_id: str,
+    workspace_client=None,
+    space_id: str = "",
+    metadata_snapshot=None,
+    forbidden_signatures: tuple[str, ...] = (),
+) -> tuple:
+    """Plan v3 — the harness's per-iteration canary callsite.
+
+    When ``plan_v3_state_machine_iteration_enabled()`` is true (the
+    notebook stamps it default-on via ``setdefault``), this fires the
+    typed state-machine iteration alongside the legacy lane. Returns
+    the final tuple of states or ``()`` when flag-off / error.
+
+    Trajectory persistence is skipped (the harness has no
+    filesystem-backed run_root). The orchestrator still emits
+    ``GSO_QSTATE_TRANSITION_V1`` markers to stdout — postmortems
+    read those.
+
+    All failures inside the canary are caught and logged via
+    ``GSO_PLAN_V3_CANARY_FAILED`` so the legacy lane is never
+    disturbed. Operators flip ``GSO_PLAN_V3_STATE_MACHINE_ITERATION``
+    to falsy to short-circuit.
+    """
+    from genie_space_optimizer.common.config import (
+        plan_v3_state_machine_iteration_enabled,
+    )
+    if not plan_v3_state_machine_iteration_enabled():
+        return ()
+
+    try:
+        from genie_space_optimizer.optimization.state_machine.registry import (
+            build_production_state_machine,
+        )
+        from genie_space_optimizer.optimization.state_machine.verdict import (
+            TransformerContext,
+            ValidationContext,
+        )
+        initial_states = _build_state_machine_initial_states(
+            eval_rows=list(eval_rows or []), iteration=int(iteration),
+        )
+        if not initial_states:
+            return ()
+
+        ctx = TransformerContext(
+            iteration=int(iteration),
+            run_id=str(run_id),
+            validation_context=ValidationContext(
+                int(iteration), str(run_id),
+                {"workspace_client": workspace_client},
+            ),
+            forbidden_signatures=tuple(forbidden_signatures),
+            extras={"workspace_client": workspace_client},
+            w=workspace_client,
+            space_id=str(space_id),
+            metadata_snapshot=dict(metadata_snapshot or {}),
+            baseline_eval_rows=tuple(eval_rows or ()),
+            live_hard_qids=tuple(
+                str(r.get("question_id") or "")
+                for r in (eval_rows or ())
+                if _row_is_failing(r)
+            ),
+        )
+
+        sm = build_production_state_machine()
+        final_states = sm.run_iteration(initial_states, ctx)
+        print(
+            f"GSO_PLAN_V3_CANARY_V1 iteration={iteration} "
+            f"states={len(final_states)} "
+            f"terminated={sum(1 for s in final_states if s.terminal is not None)}",
+            flush=True,
+        )
+        return final_states
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "GSO_PLAN_V3_CANARY_FAILED iteration=%d exc=%s",
+            int(iteration), exc, exc_info=True,
+        )
+        print(
+            f"GSO_PLAN_V3_CANARY_FAILED iteration={iteration} "
+            f"exc={type(exc).__name__}:{exc}",
+            flush=True,
+        )
+        return ()
+
 from genie_space_optimizer.common.config import (
     ADAPTIVE_STRATEGIST_PROMPT,
     APPLY_MODE,
