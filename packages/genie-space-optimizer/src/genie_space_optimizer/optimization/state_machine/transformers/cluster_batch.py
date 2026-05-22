@@ -58,16 +58,132 @@ def build_stage2_batch_input(
 # ─── BatchTransformer assembly ─────────────────────────────────────────
 
 
-def _invoke_stage2_llm(batch_input: Stage2BatchInput, ctx: TransformerContext):
-    """Dispatch the actual Stage 2 LLM call. Patchable for tests.
+@dataclass(frozen=True, slots=True)
+class _ClusterMember:
+    """Adapter shape matching what ``transform_batch`` reads from
+    ``response.parsed_output.members``."""
+    qid: str
+    cluster_id: str
+    ag_id: str
+    co_member_qids: tuple[str, ...]
+    routing_evidence_kind: str
 
-    Production wire-in lands in PR 2.5 (route through
-    ``stages.cluster_plan11`` Stage 2 alongside legacy code). Phase 5
-    deletes the legacy callsite.
+
+@dataclass(frozen=True, slots=True)
+class _ClusterParsed:
+    members: tuple[_ClusterMember, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ClusterResponse:
+    succeeded: bool
+    parsed_output: _ClusterParsed | None = None
+    declined: str | None = None
+
+
+def _state_to_per_qid_diagnosis(state: QuestionStateInIteration):
+    """Reverse-project a DIAGNOSED state into a ``PerQidDiagnosis``.
+
+    ``DiagnosisRecord`` does not carry ``generated_sql_issue`` or
+    ``blame_set`` — those are synthesized empty here. The clustering
+    LLM mostly uses ``rca_kind_label`` + ``evidence_summary``.
     """
-    raise NotImplementedError(
-        "Stage 2 LLM dispatch not yet wired to production lever loop. "
-        "Tests must monkeypatch _invoke_stage2_llm with a fake response."
+    # Lazy import to avoid loading the stages package at module import time.
+    from genie_space_optimizer.optimization.stages.plan11_types import (
+        PerQidDiagnosis,
+    )
+    d = state.diagnosed
+    return PerQidDiagnosis(
+        qid=state.qid,
+        rca_kind_label=d.rca_kind_label,
+        observed_failure=d.observed_failure,
+        generated_sql_issue="",
+        expected_sql_shape=d.expected_sql_shape,
+        blame_set=(),
+        evidence_summary=d.evidence_summary,
+        confidence=d.confidence,
+    )
+
+
+def _failure_cluster_to_members(cluster, all_member_qids: tuple[str, ...]):
+    """Fan one FailureCluster out into per-QID adapter members.
+
+    ``ag_id`` is synthesized as ``AG_{cluster_id}``; production lever
+    loop will reconcile this with the legacy AG numbering at the
+    harness callsite.
+
+    ``routing_evidence_kind`` is mandatory and must be non-empty
+    (``ClusterMembershipRecord`` validator). Fall-back chain:
+    ``repair_hypothesis → semantic_theme → cluster_id``.
+    """
+    routing_evidence = (
+        cluster.repair_hypothesis
+        or cluster.semantic_theme
+        or f"cluster_{cluster.cluster_id}"
+    )
+    ag_id = f"AG_{cluster.cluster_id}"
+    return tuple(
+        _ClusterMember(
+            qid=str(qid),
+            cluster_id=str(cluster.cluster_id),
+            ag_id=ag_id,
+            co_member_qids=all_member_qids,
+            routing_evidence_kind=str(routing_evidence),
+        )
+        for qid in cluster.member_qids
+    )
+
+
+def _invoke_stage2_llm(
+    batch_input: Stage2BatchInput, ctx: TransformerContext,
+    states: tuple[QuestionStateInIteration, ...] = (),
+):
+    """Dispatch Stage 2 clustering. Adapter over
+    ``stages.cluster_plan11.cluster_diagnoses``.
+
+    The ``batch_input`` carries the projected fields used by the legacy
+    Stage 2 prompt path; the full ``states`` are passed so the adapter
+    can rebuild ``PerQidDiagnosis`` (which needs more fields than the
+    projection carries).
+
+    Returns a ``_ClusterResponse`` exposing ``.succeeded`` and
+    ``.parsed_output.members`` — the shape the existing transformer
+    happy-path consumes.
+    """
+    if not states:
+        return _ClusterResponse(
+            succeeded=False, declined="no_states_in_batch",
+        )
+
+    diagnoses = [_state_to_per_qid_diagnosis(s) for s in states if s.diagnosed]
+    if not diagnoses:
+        return _ClusterResponse(
+            succeeded=False, declined="no_diagnosed_states_in_batch",
+        )
+
+    from genie_space_optimizer.optimization.stages.cluster_plan11 import (
+        cluster_diagnoses,
+    )
+
+    clusters = cluster_diagnoses(
+        diagnoses=diagnoses,
+        schema_columns=list(ctx.schema_columns),
+        optimization_run_id=ctx.run_id,
+        iteration=ctx.iteration,
+        namespace="hard",
+        w=ctx.w,
+    )
+    if not clusters:
+        return _ClusterResponse(
+            succeeded=False, declined="cluster_returned_empty",
+        )
+
+    members: list[_ClusterMember] = []
+    for cluster in clusters:
+        all_qids = tuple(str(q) for q in cluster.member_qids)
+        members.extend(_failure_cluster_to_members(cluster, all_qids))
+    return _ClusterResponse(
+        succeeded=True, parsed_output=_ClusterParsed(members=tuple(members)),
     )
 
 
@@ -98,7 +214,7 @@ class _Plan11Stage2BatchTransformer:
         batch_input = build_stage2_batch_input(
             states, forbidden_signatures=ctx.forbidden_signatures,
         )
-        response = _invoke_stage2_llm(batch_input, ctx)
+        response = _invoke_stage2_llm(batch_input, ctx, states)
         now_ms = int(time.time() * 1000)
 
         if not getattr(response, "succeeded", False):

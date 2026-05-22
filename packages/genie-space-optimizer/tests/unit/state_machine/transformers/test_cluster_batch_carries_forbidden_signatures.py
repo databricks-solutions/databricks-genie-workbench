@@ -43,7 +43,7 @@ def test_forbidden_signatures_appear_in_llm_input():
 
     seen_input = {}
 
-    def _capture(batch_input, ctx_):
+    def _capture(batch_input, ctx_, states=()):
         seen_input["payload"] = batch_input
         return _R()
 
