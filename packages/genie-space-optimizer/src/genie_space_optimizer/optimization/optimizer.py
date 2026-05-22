@@ -121,9 +121,18 @@ def run_state_machine_iteration_and_persist(
 
 
 def _os_env_run_root() -> str:
-    """Operator override for the canary's trajectory output root."""
+    """Operator override for the canary's trajectory output root.
+
+    Resolution order:
+      1. GSO_PLAN_V3_RUN_ROOT (explicit operator override)
+      2. GSO_PHASE_H_BUNDLE_ROOT (default; postmortem bundle assembler reads this)
+      3. "" (caller falls back to /tmp/gso/<run_id> — non-durable; only for tests)
+    """
     import os as _os
-    return _os.environ.get("GSO_PLAN_V3_RUN_ROOT", "")
+    explicit = _os.environ.get("GSO_PLAN_V3_RUN_ROOT", "")
+    if explicit:
+        return explicit
+    return _os.environ.get("GSO_PHASE_H_BUNDLE_ROOT", "")
 
 
 def _row_is_failing(row) -> bool:
