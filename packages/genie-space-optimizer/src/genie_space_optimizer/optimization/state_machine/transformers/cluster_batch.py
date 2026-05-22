@@ -78,6 +78,18 @@ class _Plan11Stage2BatchTransformer:
     to_stage_on_success: FunnelStage = FunnelStage.CLUSTERED
     to_stage_on_reject: FunnelStage = FunnelStage.TERMINATED
 
+    def transform(
+        self,
+        state: QuestionStateInIteration,
+        ctx: TransformerContext,
+    ) -> QuestionStateInIteration:
+        """Single-state adapter so the StateMachine orchestrator's
+        per-state ``step()`` can call BatchTransformer implementations.
+        Wraps the input in a 1-tuple, runs ``transform_batch``, returns
+        the single result."""
+        out = self.transform_batch((state,), ctx)
+        return out[0]
+
     def transform_batch(
         self,
         states: tuple[QuestionStateInIteration, ...],

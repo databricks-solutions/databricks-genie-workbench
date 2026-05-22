@@ -45,6 +45,16 @@ class _BlastRadiusBatchTransformer:
     to_stage_on_success: FunnelStage = FunnelStage.APPLYABLE
     to_stage_on_reject: FunnelStage = FunnelStage.PROPOSED
 
+    def transform(
+        self,
+        state: QuestionStateInIteration,
+        ctx: TransformerContext,
+    ) -> QuestionStateInIteration:
+        """Single-state adapter so the orchestrator's per-state
+        ``step()`` can call this BatchTransformer."""
+        out = self.transform_batch((state,), ctx)
+        return out[0]
+
     def transform_batch(
         self,
         states: tuple[QuestionStateInIteration, ...],
