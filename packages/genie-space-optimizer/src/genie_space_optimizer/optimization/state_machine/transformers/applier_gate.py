@@ -52,6 +52,12 @@ def _apply_via_genie_api(
        ``apply_call_id`` is synthesized as
        ``apply_{iteration}_{intent_id}`` for the v3 audit trail
        (the legacy applier does not emit a call_id of its own).
+
+    Test-stub override:
+      When ``ctx.extras["applier"]`` is callable, it is invoked with
+      ``(state, ctx, proposal)`` and expected to return the same
+      ``(apply_call_id, succeeded, error_reason)`` tuple. Lets the
+      synthetic anchor replay bypass the real Genie API.
     """
     if not state.proposals:
         return ("", False, "no_proposal_attempt_on_state")
@@ -60,6 +66,23 @@ def _apply_via_genie_api(
     proposal = ctx.proposal_store.lookup(latest.intent_id)
     if proposal is None:
         return ("", False, f"proposal_store_miss:{latest.intent_id}")
+
+    extras = getattr(ctx, "extras", {}) or {}
+    stub = extras.get("applier") if extras else None
+    apply_call_id = f"apply_{ctx.iteration}_{latest.intent_id}"
+    if callable(stub):
+        try:
+            return stub(state=state, ctx=ctx, proposal=proposal)
+        except TypeError:
+            return stub()
+    # When the test wires synthesize_llm but no live Genie client
+    # (``ctx.w is None`` and ``ctx.space_id == ""``), short-circuit the
+    # apply step to a deterministic success. The v3 contract is "apply
+    # is a side effect we can mock out for synthetic replay"; the eval
+    # / acceptance gates downstream consume the records, not the live
+    # space state.
+    if "synthesize_llm" in extras and ctx.w is None and not ctx.space_id:
+        return (apply_call_id, True, "")
 
     patch_type_str = (
         proposal.patch_type.value
@@ -70,8 +93,6 @@ def _apply_via_genie_api(
     patch_dict.setdefault("patch_type", patch_type_str)
     patch_dict.setdefault("type", patch_type_str)
     patches = [patch_dict]
-
-    apply_call_id = f"apply_{ctx.iteration}_{latest.intent_id}"
 
     try:
         from genie_space_optimizer.optimization.applier import (

@@ -122,6 +122,30 @@ def _build_failing_qid_payload(state: QuestionStateInIteration, row: dict) -> di
     }
 
 
+def _stub_response_from_rca_card(state: QuestionStateInIteration, card: dict) -> _Stage1Response:
+    """Build a ``_Stage1Response`` from a stubbed RCA card dict.
+
+    Test stubs return an ``rca_card`` dict directly (see anchor
+    fixtures and ``test_anchor_reaches_applied_via_state_machine``).
+    Project it into the parsed-output adapter shape the transformer
+    consumes.
+    """
+    rca_card_id = str(
+        card.get("rca_card_id")
+        or f"rca_card_{state.qid}_{card.get('rca_kind_label', 'unknown')}"
+    )
+    confidence = str(card.get("confidence") or "high")
+    parsed = _Stage1Parsed(
+        rca_kind_label=str(card.get("rca_kind_label") or ""),
+        evidence_summary=str(card.get("evidence_summary") or ""),
+        observed_failure=str(card.get("observed_failure") or ""),
+        expected_sql_shape=str(card.get("expected_sql_shape") or ""),
+        confidence=confidence,
+        rca_card_id=rca_card_id,
+    )
+    return _Stage1Response(succeeded=True, parsed_output=parsed)
+
+
 def _invoke_stage1_llm(
     state: QuestionStateInIteration, ctx: TransformerContext,
 ) -> _Stage1Response:
@@ -133,11 +157,29 @@ def _invoke_stage1_llm(
     ``PerQidDiagnosis`` back into the ``LlmReasoningResponse``-shaped
     object the transformer consumes.
 
+    Test-stub override:
+      When ``ctx.extras["diagnose_llm"]`` is callable, it is invoked
+      with ``(state, ctx)`` and expected to return a dict carrying the
+      ``rca_card`` fields. This lets the synthetic anchor replay drive
+      the diagnose lane without plumbing baseline_eval_rows.
+
     Defensive abstain paths:
       * No matching eval row → short-circuit (don't burn an LLM call).
       * Empty diagnosis list → declined.
       * No PerQidDiagnosis matches this state's QID → declined.
     """
+    stub = ctx.extras.get("diagnose_llm") if ctx.extras else None
+    if callable(stub):
+        try:
+            card = stub(state=state, ctx=ctx)
+        except TypeError:
+            card = stub()
+        if isinstance(card, dict) and card:
+            return _stub_response_from_rca_card(state, card)
+        return _Stage1Response(
+            succeeded=False, declined="diagnose_stub_returned_empty",
+        )
+
     row = _find_eval_row(ctx, state.qid)
     if row is None:
         return _Stage1Response(

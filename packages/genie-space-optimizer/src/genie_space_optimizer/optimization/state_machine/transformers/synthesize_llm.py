@@ -85,6 +85,129 @@ def _derive_causal_target(rp) -> str:
     return str(rp.intent_id)
 
 
+def _stub_proposal_adapter(
+    state: QuestionStateInIteration,
+    ctx: TransformerContext,
+    proposal_payload: dict,
+):
+    """Translate a stub-emitted proposal dict (anchor fixture
+    ``expected_proposal``) into a typed ``RepairProposal`` registered
+    in ``ctx.proposal_store`` plus a ``_Stage3ProposalAdapter`` the
+    transformer consumes.
+
+    Fixture-key conventions:
+      * ``patch_type`` — closed enum string (``add_sql_snippet_*`` /
+        ``add_example_sql`` / ``add_instruction``).
+      * ``target_object`` — single qualified identifier
+        (``table.column``); mapped to a one-element
+        ``TargetObject(asset_kind=COLUMN)``.
+      * ``snippet`` — sql expression string. Mapped to ``sql_expression``
+        for ``add_sql_snippet_*`` patch types and the ``name`` is
+        synthesized from the QID.
+      * ``example_question`` / ``example_sql`` — passed through to the
+        ``ADD_EXAMPLE_SQL`` patch body verbatim.
+    """
+    from genie_space_optimizer.optimization.repair_intent import (
+        PatchType, RepairShape,
+    )
+    from genie_space_optimizer.optimization.repair_proposal_typed import (
+        RepairProposal,
+    )
+    from genie_space_optimizer.optimization.target_object_typed import (
+        AssetKind, TargetObject,
+    )
+
+    patch_type_str = str(proposal_payload.get("patch_type") or "")
+    try:
+        patch_type = PatchType(patch_type_str)
+    except ValueError:
+        return None
+
+    target_object_id = str(proposal_payload.get("target_object") or "")
+    if not target_object_id:
+        return None
+    target_object = TargetObject(
+        asset_kind=AssetKind.COLUMN,
+        identifier=target_object_id,
+        columns=(),
+    )
+
+    target_qids = tuple(
+        str(q) for q in (proposal_payload.get("target_qids") or (state.qid,))
+    )
+    rca_card_id = str(
+        proposal_payload.get("rca_card_id")
+        or (state.diagnosed.rca_card_id if state.diagnosed else "")
+    )
+    causal_target = str(
+        proposal_payload.get("causal_target") or target_object_id
+    )
+
+    # Build the per-patch-type body the typed RepairProposal validator
+    # accepts.
+    body: dict = {}
+    if patch_type in (
+        PatchType.ADD_SQL_SNIPPET_EXPRESSION,
+        PatchType.ADD_SQL_SNIPPET_FILTER,
+        PatchType.ADD_SQL_SNIPPET_MEASURE,
+    ):
+        body = {
+            "name": f"{patch_type.value}_{state.qid}",
+            "sql_expression": str(proposal_payload.get("snippet") or ""),
+        }
+    elif patch_type == PatchType.ADD_EXAMPLE_SQL:
+        body = {
+            "example_question": str(
+                proposal_payload.get("example_question") or ""
+            ),
+            "example_sql": str(proposal_payload.get("example_sql") or ""),
+        }
+    elif patch_type == PatchType.ADD_INSTRUCTION:
+        body = {
+            "instruction_text": str(
+                proposal_payload.get("instruction_text") or ""
+            ),
+        }
+    else:
+        body = dict(proposal_payload)
+
+    intent_id = f"stub_{state.qid}_{patch_type.value}"
+    typed = RepairProposal(
+        intent_id=intent_id,
+        intent_name=intent_id,
+        intent_description=str(
+            proposal_payload.get("evidence_summary") or "stub proposal"
+        ),
+        repair_shape=RepairShape.OTHER,
+        patch_type=patch_type,
+        rationale=str(
+            proposal_payload.get("rationale")
+            or "synthesized via stub_synthesize_llm"
+        ),
+        confidence="high",
+        patch_body=body,
+        blame_set=(causal_target,),
+        target_objects=(target_object,),
+        repair_hypothesis=str(
+            (state.clustered.routing_evidence_kind
+             if state.clustered else "")
+            or "stub"
+        ),
+        target_qids=target_qids,
+    )
+    ctx.proposal_store.remember(typed)
+
+    return _Stage3ProposalAdapter(
+        intent_id=intent_id,
+        patch_type=patch_type.value,
+        target_objects=tuple(t.identifier for t in typed.target_objects),
+        target_qids=target_qids,
+        rca_card_id=rca_card_id,
+        causal_target=causal_target,
+        original_patch_body=dict(body),
+    )
+
+
 def _invoke_stage3_llm(state: QuestionStateInIteration, ctx: TransformerContext):
     """Dispatch Stage 3 synthesis. Adapter over
     ``stages.synthesize.run_plan11_synthesis_for_single_cluster``.
@@ -96,8 +219,26 @@ def _invoke_stage3_llm(state: QuestionStateInIteration, ctx: TransformerContext)
     4. Otherwise hydrate ``RepairProposal.from_json(result.proposal)``,
        store the typed proposal in ``ctx.proposal_store``, and return
        a duck-typed adapter with the v3 attribute names.
+
+    Test-stub override:
+      When ``ctx.extras["synthesize_llm"]`` is callable, it is invoked
+      with ``(state, ctx)`` and expected to return a proposal-dict
+      shaped like the anchor fixture's ``expected_proposal`` field.
+      The dict is translated to a typed ``RepairProposal`` via
+      ``_stub_proposal_adapter`` and bypasses the live LLM call.
     """
     if state.clustered is None or state.diagnosed is None:
+        return None
+
+    extras = getattr(ctx, "extras", {}) or {}
+    stub = extras.get("synthesize_llm") if extras else None
+    if callable(stub):
+        try:
+            payload = stub(state=state, ctx=ctx)
+        except TypeError:
+            payload = stub()
+        if isinstance(payload, dict) and payload:
+            return _stub_proposal_adapter(state, ctx, payload)
         return None
 
     from genie_space_optimizer.optimization.repair_proposal_typed import (

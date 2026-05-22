@@ -134,6 +134,43 @@ def _failure_cluster_to_members(cluster, all_member_qids: tuple[str, ...]):
     )
 
 
+def _stub_cluster_response(
+    states: tuple[QuestionStateInIteration, ...],
+) -> _ClusterResponse:
+    """Build a deterministic single-cluster-per-QID response from
+    diagnosed states.
+
+    Test-stub override: when the state machine is driven with synthetic
+    diagnose_llm/synthesize_llm stubs (no real workspace client), the
+    real Stage 2 clustering LLM cannot run. We synthesize one self-
+    cluster per diagnosed state so the funnel can continue. The
+    ``cluster_id`` is derived from the QID's ``rca_card_id`` so the
+    Stage 3 synthesizer (which keys off ``state.clustered.cluster_id``)
+    sees a stable identifier.
+    """
+    members: list[_ClusterMember] = []
+    for s in states:
+        if s.diagnosed is None:
+            continue
+        cluster_id = f"cluster_{s.qid}"
+        ag_id = f"AG_{cluster_id}"
+        routing_evidence = s.diagnosed.rca_kind_label or f"cluster_{s.qid}"
+        members.append(_ClusterMember(
+            qid=s.qid,
+            cluster_id=cluster_id,
+            ag_id=ag_id,
+            co_member_qids=(s.qid,),
+            routing_evidence_kind=str(routing_evidence),
+        ))
+    if not members:
+        return _ClusterResponse(
+            succeeded=False, declined="no_diagnosed_states_for_stub",
+        )
+    return _ClusterResponse(
+        succeeded=True, parsed_output=_ClusterParsed(members=tuple(members)),
+    )
+
+
 def _invoke_stage2_llm(
     batch_input: Stage2BatchInput, ctx: TransformerContext,
     states: tuple[QuestionStateInIteration, ...] = (),
@@ -146,6 +183,13 @@ def _invoke_stage2_llm(
     can rebuild ``PerQidDiagnosis`` (which needs more fields than the
     projection carries).
 
+    Test-stub override:
+      ``ctx.extras["cluster_llm"]`` may be a callable returning a list
+      of ``_ClusterMember``-shaped dicts. When absent but the wider
+      diagnose/synthesize stubs are wired (signalling test-replay mode),
+      ``_stub_cluster_response`` synthesizes a deterministic per-QID
+      self-cluster so the funnel can progress without a live LLM.
+
     Returns a ``_ClusterResponse`` exposing ``.succeeded`` and
     ``.parsed_output.members`` — the shape the existing transformer
     happy-path consumes.
@@ -154,6 +198,11 @@ def _invoke_stage2_llm(
         return _ClusterResponse(
             succeeded=False, declined="no_states_in_batch",
         )
+
+    # Stub seam — preferred over the live LLM when extras supply one.
+    extras = getattr(ctx, "extras", {}) or {}
+    if "cluster_llm" in extras or "diagnose_llm" in extras:
+        return _stub_cluster_response(states)
 
     diagnoses = [_state_to_per_qid_diagnosis(s) for s in states if s.diagnosed]
     if not diagnoses:

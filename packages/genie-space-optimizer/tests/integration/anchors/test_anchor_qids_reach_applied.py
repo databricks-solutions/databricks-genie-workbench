@@ -73,3 +73,65 @@ def test_anchor_proposal_passes_structural_repair_gate(fixture_name):
         f"{fixture['qid']} structural verdict was {verdict.outcome} "
         f"reason={verdict.terminal_reason}"
     )
+
+
+from unittest.mock import MagicMock
+
+
+@pytest.mark.parametrize("fixture_name", [
+    "gs_009_top_n_row_number.json",
+    "gs_024_currency_filter.json",
+    "gs_026_sum_row_number.json",
+    "gs_021_mtd_filter.json",
+    "gs_004_wrong_metric.json",
+])
+def test_anchor_reaches_applied_via_state_machine(fixture_name):
+    from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
+    from genie_space_optimizer.optimization.state_machine.registry import (
+        build_production_state_machine,
+    )
+    from genie_space_optimizer.optimization.state_machine.transformers.dispatch_input import (
+        build_initial_states_from_eval_rows,
+    )
+    from genie_space_optimizer.optimization.state_machine.verdict import (
+        TransformerContext, ValidationContext,
+    )
+
+    fixture = _load_fixture(fixture_name)
+    # Build a synthetic hard eval row from the fixture.
+    eval_row = {
+        "question_id": fixture["qid"],
+        "feedback/result_correctness/value": "no",
+        "score": 0.0,
+        "sql": fixture["baseline_sql"],
+        "expected_shape": fixture["expected_shape"],
+        "eval_row_id": f"row_{fixture['qid']}",
+    }
+    initial = build_initial_states_from_eval_rows([eval_row], iteration=1)
+    assert len(initial) == 1
+
+    # Wire stub LLMs that return the fixture's expected_proposal.
+    stub_diagnose = MagicMock(return_value=fixture["rca_card"])
+    stub_synth = MagicMock(return_value=fixture["expected_proposal"])
+    stub_narrow = MagicMock(return_value={
+        "decision": "narrow_to",
+        "narrowed_patch": fixture["expected_proposal"],
+        "rationale": "test stub",
+    })
+
+    ctx = TransformerContext(
+        iteration=1, run_id="anchor_test",
+        validation_context=ValidationContext(1, "anchor_test", {}),
+        extras={
+            "diagnose_llm": stub_diagnose,
+            "synthesize_llm": stub_synth,
+            "narrow_replacement_llm": stub_narrow,
+        },
+    )
+    sm = build_production_state_machine()
+    final = sm.run_iteration(initial, ctx)
+    assert len(final) == 1
+    deepest = final[0].deepest_stage_reached
+    assert deepest in (FunnelStage.APPLIED, FunnelStage.EVALUATED, FunnelStage.ACCEPTED), (
+        f"{fixture['qid']} deepest stage was {deepest}, expected APPLIED+"
+    )
