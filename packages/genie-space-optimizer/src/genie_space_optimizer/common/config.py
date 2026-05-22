@@ -5754,6 +5754,31 @@ def _flag_state(env_name: str) -> str:
     return "unset"
 
 
+def plan_v3_state_machine_iteration_enabled() -> bool:
+    """Plan v3 umbrella switch — enable the typed state machine to run
+    alongside the legacy iteration loop. Default OFF in code.
+
+    Set via env var ``GSO_PLAN_V3_STATE_MACHINE_ITERATION=true``. The
+    lever-loop notebook (``jobs/run_lever_loop.py``) stamps this to
+    ``true`` via ``os.environ.setdefault`` so deployed runs activate
+    the state machine while local unit tests (which never set the env)
+    stay byte-stable.
+
+    When ON, the harness's iteration loop calls
+    ``run_state_machine_iteration_and_persist`` in addition to the
+    legacy lane. The state machine builds initial states from raw eval
+    rows via the Plan 11 dispatch input adapter, routes them through
+    the typed transformer chain (Stage 1 diagnose → Stage 2 cluster →
+    routing → Stage 3 synthesize → structural gate → blast-radius →
+    applier → evaluated → acceptance), and persists trajectories to
+    ``<run_root>/trajectories/trajectory_<qid>.json``.
+
+    Legacy code keeps running; the two paths are independent. Phase 5
+    will delete the legacy lane once the canary signal is clean.
+    """
+    return _flag_enabled("GSO_PLAN_V3_STATE_MACHINE_ITERATION")
+
+
 def plan12_live_all_enabled() -> bool:
     """Plan 12 umbrella switch — enable EVERY Plan 12 live-wire when
     set. Default OFF.
