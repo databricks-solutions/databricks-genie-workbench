@@ -2009,3 +2009,45 @@ def stamp_proposals_from_archetype(
             seq=seq,
         )
         stamp_repair_intent_on_proposal(proposal, intent)
+
+
+def choose_l6_synthesis_order(*, rca_card: dict | None) -> tuple[str, ...]:
+    """Return the order in which L6 synthesis branches should run.
+
+    Closes the gs_021 blank-target-metadata bug: when the RCA card has
+    enough scoped metadata to construct a typed proposal, the
+    RCA-backed branch runs first and the broad branch is only the
+    fallback if no RCA branch produces a candidate.
+    """
+    if not rca_card:
+        return ("broad_emit",)
+    targets = rca_card.get("target_objects") or []
+    if not targets:
+        return ("broad_emit",)
+    return ("rca_backed_scoped", "broad_emit")
+
+
+def _proposal_from_rca_backed_scoped_synthesis(
+    *, ag: dict, rca_card: dict | None,
+) -> dict | None:
+    """Build a typed L6 proposal directly from the RCA card's metadata.
+
+    All proposal fields (target_object, target_qids, rca_card_id,
+    causal_target, failing_sql_anchor) come from the RCA card, not
+    from downstream fallbacks. This closes the gs_021 blank-target-
+    metadata regression.
+    """
+    if not rca_card or not rca_card.get("target_objects"):
+        return None
+    target_obj = rca_card["target_objects"][0]
+    return {
+        "patch_type": rca_card.get(
+            "preferred_patch_type", "add_sql_snippet_filter",
+        ),
+        "target_object": target_obj,
+        "snippet": rca_card.get("expected_snippet", ""),
+        "target_qids": list(ag.get("affected_questions") or []),
+        "rca_card_id": rca_card["rca_card_id"],
+        "causal_target": rca_card.get("causal_target", target_obj),
+        "failing_sql_anchor": rca_card.get("failing_sql_anchor", ""),
+    }
