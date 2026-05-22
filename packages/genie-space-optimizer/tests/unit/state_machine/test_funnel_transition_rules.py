@@ -40,3 +40,14 @@ def test_terminated_is_absorbing():
         if target == FunnelStage.TERMINATED:
             continue
         assert not is_legal_transition(FunnelStage.TERMINATED, target)
+
+
+def test_same_stage_decoration_allowed():
+    """Decoration gates (e.g., routing at CLUSTERED) can transition to the same stage."""
+    assert is_legal_transition(FunnelStage.CLUSTERED, FunnelStage.CLUSTERED)
+    assert is_legal_transition(FunnelStage.PROPOSED, FunnelStage.PROPOSED)
+
+
+def test_same_stage_terminated_still_blocked():
+    """TERMINATED is absorbing; even same-stage transitions out of it are illegal."""
+    assert not is_legal_transition(FunnelStage.TERMINATED, FunnelStage.TERMINATED)

@@ -57,6 +57,10 @@ def is_legal_transition(from_stage: FunnelStage, to_stage: FunnelStage) -> bool:
       - Forward by exactly one stage in ``_STAGE_ORDER``.
       - Any non-terminal stage may transition to ``TERMINATED``.
       - From ``NORMALIZED`` or ``APPLYABLE`` back to ``PROPOSED`` (escalation cycle).
+      - From any non-terminal stage to itself — "decoration gates" that
+        enrich an existing record (e.g. Plan 12 routing gate at
+        CLUSTERED rewrites ``effective_target_lever`` on the cluster
+        record without advancing the funnel).
 
     Everything else is illegal.
     """
@@ -65,5 +69,7 @@ def is_legal_transition(from_stage: FunnelStage, to_stage: FunnelStage) -> bool:
     if to_stage == FunnelStage.TERMINATED:
         return True
     if to_stage == FunnelStage.PROPOSED and from_stage in _ESCALATION_REJECTION_STAGES:
+        return True
+    if from_stage == to_stage:  # decoration gates (e.g., routing at CLUSTERED)
         return True
     return stage_index(to_stage) == stage_index(from_stage) + 1
