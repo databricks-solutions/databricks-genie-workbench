@@ -1,0 +1,24 @@
+{
+  "qid": "gs_009",
+  "space_id": "airline_ticketing_and_fare_analysis",
+  "baseline_sql": "SELECT carrier, RANK() OVER (ORDER BY revenue DESC) AS rk FROM fare_facts ORDER BY rk LIMIT 10",
+  "expected_shape": "deterministic_top_n",
+  "rca_card": {
+    "rca_card_id": "rca_gs_009_top_n_collapse_v1",
+    "rca_kind_label": "plural_top_n_collapse",
+    "intended_patch_shape": "structural",
+    "evidence_summary": "RANK() with ties returns more than 10 rows; ROW_NUMBER() or LIMIT 10 with deterministic tie-break is required.",
+    "observed_failure": "result has 14 rows when 10 expected",
+    "expected_sql_shape": "ROW_NUMBER() OVER (ORDER BY revenue DESC, carrier ASC) <= 10"
+  },
+  "expected_proposal": {
+    "patch_type": "add_sql_snippet_expression",
+    "target_object": "fare_facts.carrier",
+    "snippet": "ROW_NUMBER() OVER (ORDER BY revenue DESC, carrier ASC)",
+    "target_qids": ["gs_009"],
+    "rca_card_id": "rca_gs_009_top_n_collapse_v1",
+    "causal_target": "fare_facts.carrier",
+    "failing_sql_anchor": "RANK() OVER (ORDER BY revenue DESC)"
+  },
+  "passing_dependents_outside_target": []
+}
