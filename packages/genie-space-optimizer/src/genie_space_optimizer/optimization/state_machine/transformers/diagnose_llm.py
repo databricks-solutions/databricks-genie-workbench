@@ -69,24 +69,119 @@ def build_diagnosis_record_from_llm_result(
 # ─── Transformer assembly ──────────────────────────────────────────────
 
 
-def _invoke_stage1_llm(state: QuestionStateInIteration, ctx: TransformerContext):
+@dataclass(frozen=True, slots=True)
+class _Stage1Parsed:
+    """Parsed-output projection consumed by ``build_diagnosis_record_from_llm_result``.
+
+    Mirrors the field set the legacy ``LlmReasoningResponse.parsed_output``
+    exposes for Stage 1, but synthesized from ``PerQidDiagnosis`` (which
+    omits ``rca_card_id`` — derived deterministically here).
+    """
+    rca_kind_label: str
+    evidence_summary: str
+    observed_failure: str
+    expected_sql_shape: str
+    confidence: str
+    rca_card_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Stage1Response:
+    """``LlmReasoningResponse``-shaped adapter wrapping diagnose output."""
+    succeeded: bool
+    parsed_output: _Stage1Parsed | None = None
+    declined: str | None = None
+
+
+def _find_eval_row(ctx: TransformerContext, qid: str) -> dict | None:
+    """Return the eval row whose ``question_id`` matches ``qid``."""
+    for row in ctx.baseline_eval_rows:
+        if str(row.get("question_id") or "") == qid:
+            return dict(row)
+    return None
+
+
+def _build_failing_qid_payload(state: QuestionStateInIteration, row: dict) -> dict:
+    """Project (state, eval_row) into the dict shape ``diagnose_failing_qids``
+    consumes — same schema as the legacy
+    ``_build_plan11_failing_qids_from_raw`` builder in optimizer.py."""
+    return {
+        "qid": state.qid,
+        "question_text": str(row.get("question") or ""),
+        "ground_truth_sql": str(row.get("ground_truth_sql") or ""),
+        "generated_sql": str(row.get("generated_sql") or ""),
+        "judge_rationale": str(row.get("judge_rationale") or ""),
+        "blame_set_seed": [],
+        "rca_evidence": {
+            "observed_failure": str(row.get("judge_rationale") or ""),
+            "generated_sql_issue": "",
+            "expected_sql_shape": "",
+            "suggested_repair_family": "",
+            "confidence": "",
+        },
+    }
+
+
+def _invoke_stage1_llm(
+    state: QuestionStateInIteration, ctx: TransformerContext,
+) -> _Stage1Response:
     """Dispatch the actual Stage 1 LLM call.
 
-    Kept as a module-level function so unit tests can monkeypatch it
-    cleanly (no need to import the real LlmReasoningCall or pull in
-    the workspace client). Production callers exercise this via the
-    transformer's ``transform()`` method.
+    Adapter over ``stages.diagnose.diagnose_failing_qids``: builds the
+    single-element failing_qids payload from ``ctx.baseline_eval_rows``,
+    invokes the existing Stage 1 entry point, and projects the matching
+    ``PerQidDiagnosis`` back into the ``LlmReasoningResponse``-shaped
+    object the transformer consumes.
 
-    The real implementation will route through
-    ``stages.cluster_plan11`` Stage 1's existing LLM dispatch (kept
-    running alongside through Phase 4). Phase 5 deletes the legacy
-    callsite and this helper becomes the only Stage 1 entry point.
+    Defensive abstain paths:
+      * No matching eval row → short-circuit (don't burn an LLM call).
+      * Empty diagnosis list → declined.
+      * No PerQidDiagnosis matches this state's QID → declined.
     """
-    raise NotImplementedError(
-        "Stage 1 LLM dispatch not yet wired to production lever loop. "
-        "Tests must monkeypatch _invoke_stage1_llm with a fake "
-        "LlmReasoningResponse. Phase 2 wire-in lives in PR 2.5."
+    row = _find_eval_row(ctx, state.qid)
+    if row is None:
+        return _Stage1Response(
+            succeeded=False,
+            declined=f"no_eval_row_for_qid:{state.qid}",
+        )
+
+    # Lazy import — diagnose imports through harness in some paths.
+    from genie_space_optimizer.optimization.stages.diagnose import (
+        diagnose_failing_qids,
     )
+
+    payload = _build_failing_qid_payload(state, row)
+    diagnoses = diagnose_failing_qids(
+        failing_qids=[payload],
+        schema_columns=list(ctx.schema_columns),
+        optimization_run_id=ctx.run_id,
+        iteration=ctx.iteration,
+        w=ctx.w,
+        recent_diagnoses=(
+            [dict(d) for d in ctx.recent_diagnoses] or None
+        ),
+    )
+    if not diagnoses:
+        return _Stage1Response(
+            succeeded=False, declined="diagnose_returned_empty",
+        )
+
+    matching = next((d for d in diagnoses if d.qid == state.qid), None)
+    if matching is None:
+        return _Stage1Response(
+            succeeded=False,
+            declined=f"diagnose_returned_no_matching_qid:{state.qid}",
+        )
+
+    parsed = _Stage1Parsed(
+        rca_kind_label=matching.rca_kind_label,
+        evidence_summary=matching.evidence_summary,
+        observed_failure=matching.observed_failure,
+        expected_sql_shape=matching.expected_sql_shape,
+        confidence=matching.confidence,
+        rca_card_id=f"rca_card_{state.qid}_{matching.rca_kind_label}",
+    )
+    return _Stage1Response(succeeded=True, parsed_output=parsed)
 
 
 class _Stage1Abstain(Exception):
