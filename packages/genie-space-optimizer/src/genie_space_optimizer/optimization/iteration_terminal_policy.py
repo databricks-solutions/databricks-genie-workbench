@@ -82,7 +82,14 @@ _ROUTING_TABLE: dict[TerminalReason, tuple[str, bool]] = {
     TerminalReason.AG_COLLISION_WITH_FORBIDDEN_SET: ("skip_no_op", False),
     TerminalReason.NO_STRUCTURAL_CANDIDATE: ("retry_strategy_switch", True),
     TerminalReason.PROPOSAL_GENERATION_EMPTY: ("retry_strategy_switch", True),
-    TerminalReason.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY: ("skip_productive", True),
+    # Plan 12 pivot trigger (2026-05-22): instruction-only structural
+    # drops now retry within-iteration. Pre-fix this was skip_productive
+    # — combined with the legacy archetype fallback (removed in the
+    # PR-4 deletion commit), every hard-failure iteration burned
+    # budget without giving the LLM-first synthesis path a second
+    # chance. Aligned with PROPOSAL_GENERATION_EMPTY and
+    # NO_STRUCTURAL_CANDIDATE.
+    TerminalReason.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY: ("retry_strategy_switch", True),
     TerminalReason.APPLYABILITY_REJECTED: ("skip_productive", True),
     TerminalReason.BLAST_RADIUS_REJECTED: ("skip_productive", True),
     TerminalReason.COLLATERAL_RISK_REJECTED: ("skip_productive", True),

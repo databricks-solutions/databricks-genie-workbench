@@ -4,6 +4,13 @@ the iteration scope didn't pre-stamp them. This closes the
 "build_failing_qids_empty" decline path the dispatch helper
 previously emitted when typed evidence was empty AND no metadata
 was stamped — the typical production case.
+
+2026-05-22 update: the stamping predicate now delegates to
+:func:`evaluation.row_is_hard_failure` (rc=no AND arbiter not in
+correct-verdicts), matching the canonical predicate the accuracy
+gate and legacy clustering use. The row shape these tests construct
+mirrors the production replay-fixture shape: ``arbiter`` +
+``question_id`` + ``result_correctness``. No ``score`` field.
 """
 from unittest.mock import MagicMock, patch
 
@@ -13,10 +20,37 @@ def _eval_results_with_rows(rows):
     return {"rows": rows}
 
 
+def _hard(qid: str) -> dict:
+    """Production-shaped row that the canonical predicate classifies as hard."""
+    return {
+        "question_id": qid,
+        "result_correctness": "no",
+        "arbiter": "ground_truth_correct",
+    }
+
+
+def _passing(qid: str) -> dict:
+    return {
+        "question_id": qid,
+        "result_correctness": "yes",
+        "arbiter": "both_correct",
+    }
+
+
+def _soft_arbiter_override(qid: str) -> dict:
+    """rc=no but arbiter overrides to correct — stays soft."""
+    return {
+        "question_id": qid,
+        "result_correctness": "no",
+        "arbiter": "both_correct",
+    }
+
+
 def test_stamp_failing_qids_from_dict_eval_results(monkeypatch):
     """The plain-dict eval_results.rows path: cluster_failures should
-    extract failing rows (score<0.5) and stamp them on
-    metadata_snapshot before the Plan 11 dispatch runs."""
+    extract canonical hard rows (rc=no AND arbiter not in correct set)
+    and stamp them on metadata_snapshot before the Plan 11 dispatch
+    runs."""
     monkeypatch.setenv("GSO_PLAN11_LLM_FIRST", "1")
 
     from genie_space_optimizer.optimization import optimizer
@@ -28,16 +62,10 @@ def test_stamp_failing_qids_from_dict_eval_results(monkeypatch):
     metadata_snapshot: dict = {"iteration": 1, "optimization_run_id": "run_x"}
 
     eval_results = _eval_results_with_rows([
-        {"question_id": "gs_009", "question": "Top 10 customers", "score": 0.0,
-         "ground_truth_sql": "GT", "generated_sql": "GEN",
-         "judge_rationale": "wrong"},
-        {"question_id": "gs_021", "question": "Revenue MTD", "score": 0.0,
-         "ground_truth_sql": "GT", "generated_sql": "GEN",
-         "judge_rationale": "wrong"},
-        # passing — should NOT be stamped
-        {"question_id": "gs_007", "question": "x", "score": 1.0},
-        # soft signal — should NOT be stamped as failing (< 0.5)
-        {"question_id": "gs_011", "question": "y", "score": 0.7},
+        _hard("gs_009"),
+        _hard("gs_021"),
+        _passing("gs_007"),
+        _soft_arbiter_override("gs_011"),  # rc=no but arbiter=both_correct
     ])
 
     # Stub the LLM stages so the dispatch helper terminates without a
@@ -89,9 +117,7 @@ def test_explicit_stamp_takes_precedence(monkeypatch):
         _stage2_mod, "cluster_diagnoses", return_value=[],
     ):
         optimizer.cluster_failures(
-            eval_results=_eval_results_with_rows([
-                {"question_id": "gs_009", "score": 0.0},
-            ]),
+            eval_results=_eval_results_with_rows([_hard("gs_009")]),
             metadata_snapshot=metadata_snapshot,
             rca_evidence_typed=None,
             signal_type="hard",
@@ -127,10 +153,19 @@ def test_no_stamp_when_no_rows(monkeypatch):
     assert not metadata_snapshot.get("_eval_rows_failing")
 
 
-def test_stamp_handles_malformed_score(monkeypatch):
-    """Non-numeric / missing score defaults to 0.0 (hard) so the count
-    NEVER under-reports failures — same robustness contract as
-    build_run_summary."""
+def test_stamp_handles_missing_correctness_fields(monkeypatch):
+    """Rows missing ``result_correctness`` should NOT be stamped as
+    hard. Under the canonical predicate, a row with no rc evidence is
+    not classifiable as hard — the optimizer must require a judge
+    verdict, not infer one from absence of data.
+
+    This is a deliberate semantic change from the pre-2026-05-22
+    behavior, which defaulted missing scores to ``0.0 < 0.5 → hard``.
+    That defensive over-counting was actively wrong: it masked the
+    real ``failing_qids_count=0`` bug (production rows don't carry
+    ``score`` at all) by sometimes inflating the count to a non-zero
+    value driven by malformed data.
+    """
     monkeypatch.setenv("GSO_PLAN11_LLM_FIRST", "1")
 
     from genie_space_optimizer.optimization import optimizer
@@ -142,9 +177,10 @@ def test_stamp_handles_malformed_score(monkeypatch):
     metadata_snapshot: dict = {"iteration": 1, "optimization_run_id": "run_x"}
 
     eval_results = _eval_results_with_rows([
-        {"question_id": "gs_001"},  # missing score
-        {"question_id": "gs_002", "score": "not_a_number"},  # bad type
-        {"question_id": "gs_003", "score": 1.0},  # passing
+        {"question_id": "gs_unknown_a"},  # no rc, no arbiter
+        {"question_id": "gs_unknown_b", "result_correctness": ""},  # empty
+        _passing("gs_passing"),  # rc=yes, arbiter=both_correct
+        _hard("gs_real_hard"),  # canonical hard
     ])
 
     with patch.object(
@@ -161,9 +197,11 @@ def test_stamp_handles_malformed_score(monkeypatch):
             w=MagicMock(),
         )
 
-    # gs_001 + gs_002 stamped (defensive: score < 0.5 means hard);
-    # gs_003 (passing) excluded.
-    assert metadata_snapshot["_failing_qids"] == ["gs_001", "gs_002"]
+    # Only the canonical hard row is stamped.
+    assert metadata_snapshot["_failing_qids"] == ["gs_real_hard"], (
+        "Missing/empty rc fields are not hard; only rc=no AND arbiter "
+        f"not-correct qualifies. Got {metadata_snapshot.get('_failing_qids')!r}"
+    )
 
 
 def test_dispatch_marker_now_says_entered_not_build_failing_qids_empty(
@@ -187,11 +225,7 @@ def test_dispatch_marker_now_says_entered_not_build_failing_qids_empty(
         _stage2_mod, "cluster_diagnoses", return_value=[],
     ):
         optimizer.cluster_failures(
-            eval_results=_eval_results_with_rows([
-                {"question_id": "gs_009", "question": "q", "score": 0.0,
-                 "ground_truth_sql": "GT", "generated_sql": "GEN",
-                 "judge_rationale": "wrong"},
-            ]),
+            eval_results=_eval_results_with_rows([_hard("gs_009")]),
             metadata_snapshot={"iteration": 1, "optimization_run_id": "run_x"},
             rca_evidence_typed=None,
             signal_type="hard",

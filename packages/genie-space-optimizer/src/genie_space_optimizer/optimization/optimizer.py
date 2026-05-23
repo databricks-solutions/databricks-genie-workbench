@@ -135,25 +135,6 @@ def _os_env_run_root() -> str:
     return _os.environ.get("GSO_PHASE_H_BUNDLE_ROOT", "")
 
 
-def _row_is_failing(row) -> bool:
-    """Tolerant predicate for canary's ``live_hard_qids`` projection.
-
-    Accepts both string (``"no" / "0" / "false"``) and numeric
-    (``0.0 / 0``) shapes of ``feedback/result_correctness/value`` —
-    the legacy ``row_is_hard_failure`` already uses ``_rc_str`` which
-    handles these via Python ``or``-cascade quirks; the canary
-    matches that behaviour with explicit type-tolerant casting.
-    """
-    raw = row.get("feedback/result_correctness/value")
-    if raw is None:
-        raw = row.get("result_correctness/value") or row.get("result_correctness")
-    if raw is None or raw == "":
-        return False
-    if isinstance(raw, (int, float)):
-        return float(raw) <= 0.0
-    return str(raw).strip().lower() in ("no", "false", "0", "0.0")
-
-
 def _build_canary_stage_ctx_and_eval_kwargs(
     *, run_id, iteration, space_id, domain, catalog, schema,
     phase_h_anchor_run_id, w, spark, exp_name, benchmarks,
@@ -8526,18 +8507,25 @@ def _extract_eval_rows_for_stamping(eval_results: dict) -> list[dict]:
 
 
 def _row_is_failing(row: dict) -> bool:
-    """Plan 12 Step 1.3.5 — single source of truth for "is this row a
-    hard failure." Mirrors the score < 0.5 threshold the legacy
-    heuristic clusterer + Plan 7's build_run_summary use, and
-    defaults malformed / missing scores to 0.0 (hard) so the count
-    NEVER under-reports.
+    """Plan 11 dispatch — canonical hard-failure predicate.
+
+    Delegates to :func:`evaluation.row_is_hard_failure`, the same Tier
+    1.4 predicate the accuracy gate and legacy clustering use. Sharing
+    this predicate closes the 2026-05-22 postmortem regression where
+    the dispatch adapter saw zero failing QIDs because its score-only
+    predicate didn't match the row shape carried by production
+    eval_results (which has ``result_correctness`` + ``arbiter`` but
+    no ``score`` field).
+
+    A row is hard iff ``result_correctness == "no"`` AND the arbiter
+    verdict is NOT in the correct set (``both_correct`` /
+    ``genie_correct``). Arbiter overrides keep rc=no rows soft so they
+    do not enter the optimizer's repair lane.
     """
-    raw = row.get("score") if row.get("score") is not None else 0.0
-    try:
-        score = float(raw)
-    except (TypeError, ValueError):
-        score = 0.0
-    return score < 0.5
+    from genie_space_optimizer.optimization.evaluation import (
+        row_is_hard_failure as _row_is_hard_failure_canonical,
+    )
+    return _row_is_hard_failure_canonical(row)
 
 
 def _stamp_failing_qids_from_eval_results(
