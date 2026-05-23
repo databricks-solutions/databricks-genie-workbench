@@ -53,6 +53,48 @@ def test_envelope_parse_returns_verdict_when_only_declined_present() -> None:
     assert parsed.needed_evidence == ("table_metadata",)
 
 
+def test_envelope_parse_does_not_crash_on_long_abstain_explanation_trial10() -> None:
+    """Pin the exact Trial 10 failure shape (dc89d1a9 + 98ec8950).
+
+    Stage 2 (cluster) declined with an explanation of 207 and 335 chars
+    respectively. Under the prior strict 200-char cap this raised
+    ``ValueError`` inside ``AbstainVerdict.__post_init__``, propagated
+    out of ``parse_envelope`` (which does NOT catch ValueError from the
+    dataclass constructor), crashed the SM transformer, and cascaded
+    into a legacy-fallback ``InputProjectionContractViolation`` that
+    aborted the entire lever-loop iteration.
+
+    The fix is the truncate-with-headroom soft cap in
+    ``AbstainVerdict``. This test enumerates both production lengths
+    plus the new cap boundary to lock the behavior in.
+    """
+    import json
+
+    for explanation_len in (207, 335, 999, 1000, 1001, 5000):
+        explanation = "x" * explanation_len
+        raw = json.dumps({
+            "result": None,
+            "declined": {
+                "reason": "ambiguous_failure",
+                "explanation": explanation,
+                "needed_evidence": ["clustering_evidence"],
+                "suggested_next_step": "defer_to_next_iteration",
+            },
+        })
+        parsed = parse_envelope(raw, _DummyResult)
+        assert isinstance(parsed, AbstainVerdict), (
+            f"length={explanation_len}: expected AbstainVerdict, "
+            f"got {type(parsed).__name__}"
+        )
+        assert parsed.reason == AbstainReason.AMBIGUOUS_FAILURE
+        # ≤1000 chars after truncation; under-1000 untouched.
+        assert len(parsed.explanation) <= 1000
+        if explanation_len <= 1000:
+            assert parsed.explanation == explanation
+        else:
+            assert parsed.explanation.endswith("...")
+
+
 def test_envelope_parse_rejects_both_populated() -> None:
     raw = (
         '{"result": {"answer": "y"}, "declined": '

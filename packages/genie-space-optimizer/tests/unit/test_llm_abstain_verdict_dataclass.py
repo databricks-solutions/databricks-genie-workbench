@@ -40,15 +40,70 @@ def test_abstain_verdict_round_trips_to_and_from_json() -> None:
     assert rebuilt == verdict
 
 
-def test_abstain_verdict_explanation_max_len_enforced_at_construction() -> None:
-    too_long = "x" * 201
-    with pytest.raises(ValueError, match="explanation must be"):
-        AbstainVerdict(
+def test_abstain_verdict_accepts_explanations_under_soft_cap_without_truncation() -> None:
+    """The cap was raised from 200 to 1000 chars after Trial 10 (PR-3).
+
+    Production LLM outputs were 207 / 335 chars (well-formed,
+    semantically-correct abstain explanations) that crashed the SM
+    under the prior strict 200-char raise. Anything under the new soft
+    cap must round-trip unchanged.
+    """
+    for length in (201, 207, 335, 999, 1000):
+        explanation = "x" * length
+        verdict = AbstainVerdict(
             reason=AbstainReason.OTHER,
-            explanation=too_long,
+            explanation=explanation,
             needed_evidence=(),
             suggested_next_step="",
         )
+        assert verdict.explanation == explanation
+        assert len(verdict.explanation) == length
+
+
+def test_abstain_verdict_truncates_explanations_over_soft_cap_without_raising() -> None:
+    """Past the soft cap the dataclass truncates gracefully — it must
+    never raise on LLM-emitted explanations.
+
+    Rationale: ``AbstainVerdict`` is constructed inside
+    ``parse_envelope`` from raw LLM output. The 200-char cap was
+    enforced *client-side only* (Databricks endpoint rejects the JSON
+    Schema ``maxLength`` keyword via ``_UNSUPPORTED_KEYWORDS`` in
+    ``prompt_io.py``) so the LLM could not be told about it via
+    response_format. A strict raise turned every overlong abstain
+    verdict into a SM-stage exception that cascaded into a legacy
+    fallback and tripped ``InputProjectionContractViolation``. The
+    truncate-with-headroom contract is the safer alternative.
+    """
+    over = "x" * 5_000
+    verdict = AbstainVerdict(
+        reason=AbstainReason.OTHER,
+        explanation=over,
+        needed_evidence=(),
+        suggested_next_step="",
+    )
+    assert len(verdict.explanation) == 1_000
+    assert verdict.explanation.endswith("...")
+    assert verdict.explanation.startswith("xxx")
+
+
+def test_abstain_verdict_truncation_is_round_trippable() -> None:
+    """Truncated verdicts must still serialize and deserialize cleanly.
+
+    A second ``from_json`` of an already-truncated payload must be a
+    fixpoint (no further truncation, no raise) so postmortem replay
+    doesn't double-truncate.
+    """
+    over = "x" * 5_000
+    verdict = AbstainVerdict(
+        reason=AbstainReason.OTHER,
+        explanation=over,
+        needed_evidence=(),
+        suggested_next_step="",
+    )
+    payload = verdict.to_json()
+    rebuilt = AbstainVerdict.from_json(payload)
+    assert rebuilt == verdict
+    assert len(rebuilt.explanation) == 1_000
 
 
 def test_abstain_verdict_needed_evidence_is_tuple() -> None:

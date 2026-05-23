@@ -54,7 +54,12 @@ You will receive — in the user message — these fields:
       }
     ]
   } | null,
-  "declined": null | <AbstainVerdict>
+  "declined": null | {
+    "reason": "<missing_schema_context | ambiguous_failure | unsafe_patch | no_applicable_patch_type | insufficient_blame_set | context_token_budget_exceeded | other>",
+    "explanation": "<≤1000 chars: why you decline>",
+    "needed_evidence": ["<short label>", ...],
+    "suggested_next_step": "<short imperative>"
+  }
 }
 </output_envelope>
 

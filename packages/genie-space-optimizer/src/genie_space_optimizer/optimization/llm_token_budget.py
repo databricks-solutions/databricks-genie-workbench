@@ -156,7 +156,7 @@ class IterationTokenBudget:
             f"Per-iteration {limit_type} {attempted} would exceed "
             f"limit {limit}"
         )
-        explanation = explanation[:200]
+        explanation = explanation[:1000]
         return AbstainVerdict(
             reason=AbstainReason.CONTEXT_TOKEN_BUDGET_EXCEEDED,
             explanation=explanation,

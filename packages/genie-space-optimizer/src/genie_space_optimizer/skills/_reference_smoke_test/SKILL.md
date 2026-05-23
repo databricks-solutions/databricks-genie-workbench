@@ -22,7 +22,7 @@ Return ONE JSON object matching this shape:
   "result": { "echoed": "<the input value>" } | null,
   "declined": null | {
     "reason": "<one of: missing_schema_context | ambiguous_failure | unsafe_patch | no_applicable_patch_type | insufficient_blame_set | context_token_budget_exceeded | other>",
-    "explanation": "<≤200 chars>",
+    "explanation": "<≤1000 chars>",
     "needed_evidence": ["<short label>", ...],
     "suggested_next_step": "<short imperative>"
   }

@@ -146,7 +146,7 @@ Return EXACTLY ONE JSON object with this shape:
   } | null,
   "declined": null | {
     "reason": "<one of: insufficient_signal | ambiguous_failure | context_token_budget_exceeded | other>",
-    "explanation": "<≤200 chars: why you decline>",
+    "explanation": "<≤1000 chars: why you decline>",
     "needed_evidence": ["<short label for what evidence type would help>", ...],
     "suggested_next_step": "<short imperative>"
   }

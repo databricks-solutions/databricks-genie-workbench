@@ -61,7 +61,7 @@ Return EXACTLY ONE JSON object with this shape:
   } | null,
   "declined": null | {
     "reason": "<one of: missing_schema_context | ambiguous_failure | unsafe_patch | no_applicable_patch_type | insufficient_blame_set | context_token_budget_exceeded | other>",
-    "explanation": "<≤200 chars: why you decline>",
+    "explanation": "<≤1000 chars: why you decline>",
     "needed_evidence": ["<short label>", ...],
     "suggested_next_step": "<short imperative>"
   }

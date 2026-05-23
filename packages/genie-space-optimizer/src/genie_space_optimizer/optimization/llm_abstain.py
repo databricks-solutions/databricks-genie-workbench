@@ -42,19 +42,40 @@ class AbstainReason(StrEnum):
     OTHER = "other"
 
 
-_MAX_EXPLANATION_CHARS = 200
+# Soft cap (in characters) on ``AbstainVerdict.explanation``. Raised
+# from 200 to 1000 after Trial 10 (PR-3) when production LLM outputs of
+# 207 and 335 chars crashed the SM. The cap is a *client-side
+# ergonomics* constraint to keep payloads small enough to inline in
+# MLflow span attributes and postmortem summaries; it is NOT a wire
+# contract — the Databricks endpoint rejects JSON Schema ``maxLength``
+# (see ``prompt_io.py :: _UNSUPPORTED_KEYWORDS``), so the LLM cannot be
+# told about it via response_format. Past the cap we truncate
+# gracefully instead of raising; a raise here cascades into
+# ``GSO_PLAN_V4_SM_FAILED`` and a downstream
+# ``InputProjectionContractViolation`` in the legacy fallback path.
+_MAX_EXPLANATION_CHARS = 1000
+
+# Sentinel appended to a truncated explanation so the truncation is
+# observable in markers and replay fixtures without adding a new field
+# (which would break the ``JsonRoundTrip`` wire format pinned in
+# ``test_abstain_verdict_round_trips_to_and_from_json``).
+_TRUNCATION_MARKER = "..."
 
 
 @dataclass(frozen=True, slots=True)
 class AbstainVerdict(JsonRoundTrip):
     """Typed payload an LLM emits when it declines to answer.
 
-    ``explanation`` is constrained to ≤200 chars so the payload stays
-    small enough to inline in MLflow span attributes and postmortem
-    summaries without truncation. ``needed_evidence`` is a tuple of
-    short labels naming evidence types upstream stages should provide
-    next iteration. ``suggested_next_step`` is a short imperative the
-    deterministic fallback can route on.
+    ``explanation`` carries a free-text rationale, soft-capped at
+    ``_MAX_EXPLANATION_CHARS`` (1000) chars to keep the payload small
+    enough to inline in MLflow span attributes and postmortem
+    summaries. Past the cap the dataclass truncates the explanation in
+    place and appends ``"..."`` rather than raising — see the module
+    docstring above ``_MAX_EXPLANATION_CHARS`` for the rationale.
+    ``needed_evidence`` is a tuple of short labels naming evidence
+    types upstream stages should provide next iteration.
+    ``suggested_next_step`` is a short imperative the deterministic
+    fallback can route on.
     """
 
     reason: AbstainReason
@@ -64,10 +85,9 @@ class AbstainVerdict(JsonRoundTrip):
 
     def __post_init__(self) -> None:
         if len(self.explanation) > _MAX_EXPLANATION_CHARS:
-            raise ValueError(
-                f"explanation must be ≤{_MAX_EXPLANATION_CHARS} chars; "
-                f"got {len(self.explanation)}"
-            )
+            head_len = _MAX_EXPLANATION_CHARS - len(_TRUNCATION_MARKER)
+            truncated = self.explanation[:head_len] + _TRUNCATION_MARKER
+            object.__setattr__(self, "explanation", truncated)
 
     @classmethod
     def from_json(cls, payload: dict) -> "AbstainVerdict":  # type: ignore[override]
