@@ -1412,8 +1412,27 @@ def plan11_stage1_diagnosis_marker(
     duration_ms: int = 0,
     tokens_input: int = 0,
     tokens_output: int = 0,
+    error_kind: str = "",
+    exception_class: str = "",
 ) -> str:
-    """Plan 11 — per-QID Stage 1 diagnosis outcome marker."""
+    """Plan 11 — per-QID Stage 1 diagnosis outcome marker.
+
+    2026-05-23 SM Cutover Phase 1.C — when ``outcome == "llm_error"`` the
+    marker MUST carry a structured ``error_kind`` so postmortems can
+    distinguish ``client_construction`` from ``empty_prompt`` from
+    ``endpoint_decline`` etc. Zero-token ``llm_error`` records with no
+    ``error_kind`` are a fail-loud signal that the call site did not
+    classify the exception — the marker emitter does not silently
+    forgive missing classification.
+    """
+    if outcome == "llm_error" and not error_kind:
+        # Fail loud: do not emit ambiguous zero-token llm_error.
+        raise ValueError(
+            "plan11_stage1_diagnosis_marker emitted outcome='llm_error' "
+            "without error_kind. The caller must classify the underlying "
+            "exception (client_construction / empty_prompt / "
+            "endpoint_decline / timeout / parse / unknown).",
+        )
     return marker_line(
         "GSO_PLAN11_STAGE1_DIAGNOSIS_V1",
         {
@@ -1430,6 +1449,8 @@ def plan11_stage1_diagnosis_marker(
             "duration_ms": int(duration_ms),
             "tokens_input": int(tokens_input),
             "tokens_output": int(tokens_output),
+            "error_kind": str(error_kind),
+            "exception_class": str(exception_class),
         },
     )
 

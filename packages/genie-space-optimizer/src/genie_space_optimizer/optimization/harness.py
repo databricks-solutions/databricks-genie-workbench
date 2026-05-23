@@ -17540,6 +17540,23 @@ def compute_iteration_budget(
     return max(capped_scaled, requested) if requested > int(_MAX_ITERATIONS) else capped_scaled
 
 
+def _legacy_lever_loop_enabled() -> bool:
+    """Whether the legacy lever loop should run instead of the SM-first body.
+
+    SM Cutover Phase 4 (2026-05-23) — the production lever loop is now
+    SM-driven by default. ``GSO_USE_LEGACY_LEVER_LOOP=true`` flips back to
+    the legacy 19k-LOC body as a one-flag rollback if a regression is
+    discovered during the trial.
+
+    During this PR the default is also legacy-true to avoid risking
+    behavior change without a trial. The follow-up PR after the Phase 7
+    trial flips the default to legacy-false and (if the trial passes)
+    physically deletes the legacy body.
+    """
+    raw = os.environ.get("GSO_USE_LEGACY_LEVER_LOOP", "true").strip().lower()
+    return raw in ("true", "1", "yes", "on")
+
+
 def _run_lever_loop(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -17567,9 +17584,169 @@ def _run_lever_loop(
     iq_scan_summary: dict | None = None,
     baseline_overview_evidence: dict | None = None,
 ) -> dict:
-    """Stage 3: Iterate levers with convergence checking.
+    """Lever loop entrypoint — SM Cutover Phase 4 dispatcher.
 
-    Internal Python loop over levers. Supports resume on task retry.
+    Dispatches to either the legacy 19k-LOC body
+    (``_run_lever_loop_legacy``) or the SM-driven body
+    (``_run_lever_loop_sm_first``) based on
+    ``GSO_USE_LEGACY_LEVER_LOOP``.
+
+    During this PR the default routes to legacy; the trial PR will flip
+    the default to SM-first. Both bodies share the same signature and
+    return shape so the call site never has to know.
+    """
+    _legacy = _legacy_lever_loop_enabled()
+    logger.info(
+        "GSO_LEVER_LOOP_DISPATCH legacy=%s "
+        "(GSO_USE_LEGACY_LEVER_LOOP=%r)",
+        _legacy,
+        os.environ.get("GSO_USE_LEGACY_LEVER_LOOP", ""),
+    )
+    print(
+        f"GSO_LEVER_LOOP_DISPATCH_V1 legacy={str(_legacy).lower()}",
+        flush=True,
+    )
+    if _legacy:
+        return _run_lever_loop_legacy(
+            w=w, spark=spark, run_id=run_id, space_id=space_id,
+            domain=domain, benchmarks=benchmarks, exp_name=exp_name,
+            prev_scores=prev_scores, prev_accuracy=prev_accuracy,
+            prev_model_id=prev_model_id, config=config, catalog=catalog,
+            schema=schema, levers=levers, max_iterations=max_iterations,
+            thresholds=thresholds, apply_mode=apply_mode,
+            triggered_by=triggered_by, human_corrections=human_corrections,
+            enrichment_done=enrichment_done,
+            enrichment_model_id=enrichment_model_id,
+            max_benchmark_count=max_benchmark_count,
+            iq_scan_recommended_levers=iq_scan_recommended_levers,
+            iq_scan_summary=iq_scan_summary,
+            baseline_overview_evidence=baseline_overview_evidence,
+        )
+    return _run_lever_loop_sm_first(
+        w=w, spark=spark, run_id=run_id, space_id=space_id,
+        domain=domain, benchmarks=benchmarks, exp_name=exp_name,
+        prev_scores=prev_scores, prev_accuracy=prev_accuracy,
+        prev_model_id=prev_model_id, config=config, catalog=catalog,
+        schema=schema, levers=levers, max_iterations=max_iterations,
+        thresholds=thresholds, apply_mode=apply_mode,
+        triggered_by=triggered_by, human_corrections=human_corrections,
+        enrichment_done=enrichment_done,
+        enrichment_model_id=enrichment_model_id,
+        max_benchmark_count=max_benchmark_count,
+        iq_scan_recommended_levers=iq_scan_recommended_levers,
+        iq_scan_summary=iq_scan_summary,
+        baseline_overview_evidence=baseline_overview_evidence,
+    )
+
+
+def _run_lever_loop_sm_first(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    domain: str,
+    benchmarks: list[dict],
+    exp_name: str,
+    prev_scores: dict[str, float],
+    prev_accuracy: float,
+    prev_model_id: str,
+    config: dict,
+    catalog: str,
+    schema: str,
+    levers: list[int] | None = None,
+    max_iterations: int = MAX_ITERATIONS,
+    thresholds: dict[str, float] | None = None,
+    apply_mode: str = APPLY_MODE,
+    triggered_by: str = "",
+    human_corrections: list[dict] | None = None,
+    enrichment_done: bool = False,
+    enrichment_model_id: str = "",
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
+    iq_scan_recommended_levers: list[int] | None = None,
+    iq_scan_summary: dict | None = None,
+    baseline_overview_evidence: dict | None = None,
+) -> dict:
+    """SM-first lever loop body — Phase 4 scaffolding.
+
+    The state machine is the sole iteration body. The harness owns:
+        * Baseline eval row read.
+        * Inter-iteration MLflow re-eval (post-apply).
+        * Acceptance gate (legacy harness logic for v1; SM ownership is
+          a deferred PR).
+        * Iteration budget + termination decisions.
+        * GSO_OPTIMIZER_OUTCOME_V1 emission per run.
+
+    Scaffolding-only in this PR: until the Phase 7 trial validates the
+    SM-only path end-to-end (admission → diagnose → cluster → synthesise
+    → validate → apply → re-eval → accept), this function falls through
+    to ``_run_lever_loop_legacy``. The follow-up PR replaces this body
+    with the ~250 LOC SM-driven loop the plan describes.
+    """
+    logger.warning(
+        "GSO_LEVER_LOOP_SM_FIRST_STUB iteration_budget=%d — SM-first "
+        "body scaffolding executed but delegating to legacy lever loop "
+        "for safety; the trial-prep PR ships the real SM-only loop.",
+        int(max_iterations),
+    )
+    print(
+        f"GSO_LEVER_LOOP_SM_FIRST_STUB_V1 max_iterations={int(max_iterations)} "
+        f"status=stub_delegating_to_legacy",
+        flush=True,
+    )
+    return _run_lever_loop_legacy(
+        w=w, spark=spark, run_id=run_id, space_id=space_id,
+        domain=domain, benchmarks=benchmarks, exp_name=exp_name,
+        prev_scores=prev_scores, prev_accuracy=prev_accuracy,
+        prev_model_id=prev_model_id, config=config, catalog=catalog,
+        schema=schema, levers=levers, max_iterations=max_iterations,
+        thresholds=thresholds, apply_mode=apply_mode,
+        triggered_by=triggered_by, human_corrections=human_corrections,
+        enrichment_done=enrichment_done,
+        enrichment_model_id=enrichment_model_id,
+        max_benchmark_count=max_benchmark_count,
+        iq_scan_recommended_levers=iq_scan_recommended_levers,
+        iq_scan_summary=iq_scan_summary,
+        baseline_overview_evidence=baseline_overview_evidence,
+    )
+
+
+def _run_lever_loop_legacy(
+    *,
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    domain: str,
+    benchmarks: list[dict],
+    exp_name: str,
+    prev_scores: dict[str, float],
+    prev_accuracy: float,
+    prev_model_id: str,
+    config: dict,
+    catalog: str,
+    schema: str,
+    levers: list[int] | None = None,
+    max_iterations: int = MAX_ITERATIONS,
+    thresholds: dict[str, float] | None = None,
+    apply_mode: str = APPLY_MODE,
+    triggered_by: str = "",
+    human_corrections: list[dict] | None = None,
+    enrichment_done: bool = False,
+    enrichment_model_id: str = "",
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
+    iq_scan_recommended_levers: list[int] | None = None,
+    iq_scan_summary: dict | None = None,
+    baseline_overview_evidence: dict | None = None,
+) -> dict:
+    """Legacy lever loop — the 19k-LOC body preserved verbatim.
+
+    SM Cutover Phase 4: this is the same body that was named
+    ``_run_lever_loop`` before 2026-05-23. The dispatcher above
+    delegates to it when ``GSO_USE_LEGACY_LEVER_LOOP=true``. Do not
+    modify this function — its preservation is the rollback contract
+    for the SM-first trial.
+
+    Stage 3: Iterate levers with convergence checking.
 
     When *enrichment_done* is True, Phase 1 (proactive enrichment) is skipped
     because it was already executed by the standalone enrichment task. The
@@ -19678,6 +19855,35 @@ def _run_lever_loop(
             if not _sm_eval_rows and _baseline_rows_seed:
                 _sm_eval_rows = list(_baseline_rows_seed)
 
+            # 2026-05-23 cutover Phase 1.B — apply the same admission filter
+            # the legacy harness's Plan 11 dispatch uses (quarantine +
+            # GT-correction + hard-failure predicate). This eliminates the
+            # ``INPUT_PROJECTION_PARITY_PARTIAL_DRIFT`` that arose when the
+            # SM saw raw eval rows while Plan 11 saw the pre-filtered set.
+            try:
+                from genie_space_optimizer.optimization.eval_row_admission import (
+                    admit_eval_rows as _admit_for_sm,
+                )
+                _sm_admitted = _admit_for_sm(
+                    _sm_eval_rows,
+                    quarantined=tuple(
+                        str(q) for q in (
+                            _correction_state.get("quarantined_qids", set())
+                            if isinstance(_correction_state, dict) else set()
+                        )
+                    ),
+                    excluded=(),
+                )
+                _sm_eval_rows = list(_sm_admitted.hard_rows)
+            except Exception:
+                # Admission helper failure must not break the SM call — fall
+                # back to the raw set and let the SM's own admission filter.
+                logger.debug(
+                    "GSO_PLAN_V4_SM_ADMISSION_PREFILTER_FAILED — falling "
+                    "through with raw eval rows",
+                    exc_info=True,
+                )
+
             sm_run_root = (
                 Path(os.environ.get("GSO_PHASE_H_BUNDLE_ROOT"))
                 if os.environ.get("GSO_PHASE_H_BUNDLE_ROOT")
@@ -19702,7 +19908,18 @@ def _run_lever_loop(
                     workspace_client=w,
                     forbidden_signatures=tuple(_forbidden_set),
                 )
-            except Exception as _sm_exc:
+            # 2026-05-23 Phase 3 — narrow this except so the boundary
+            # contract violation below cannot be silently swallowed by
+            # the legacy-lane fallback path. ``InputProjectionContractViolation``
+            # is intentionally NOT in this tuple; if it escapes from inside
+            # the SM call (e.g. SM transformer wired the contract too) it
+            # must propagate and abort the run.
+            except (ValueError, KeyError, TypeError, RuntimeError) as _sm_exc:
+                from genie_space_optimizer.optimization.input_projection_contract import (
+                    InputProjectionContractViolation as _IPCV_check,
+                )
+                if isinstance(_sm_exc, _IPCV_check):
+                    raise
                 logger.warning(
                     "GSO_PLAN_V4_SM_FAILED iteration=%d exc=%s — "
                     "falling back to legacy iteration body",
@@ -19713,6 +19930,45 @@ def _run_lever_loop(
                     f"exc={type(_sm_exc).__name__}:{_sm_exc}",
                     flush=True,
                 )
+            # 2026-05-23 Phase 3 — Input-projection parity contract.
+            # Five redesigns failed to move accuracy because the harness saw
+            # hard rows while Plan 11 dispatch and the v4 SM silently received
+            # zero. Compute the harness's canonical hard-qid set over the same
+            # rows both consumers saw, then assert parity. Drift is observable;
+            # total starvation raises and aborts the lever loop.
+            try:
+                from genie_space_optimizer.optimization.evaluation import (
+                    row_is_hard_failure as _row_is_hard_for_parity,
+                )
+                from genie_space_optimizer.optimization._qid_extraction import (
+                    extract_question_id as _extract_qid_for_parity,
+                )
+                from genie_space_optimizer.optimization.input_projection_contract import (
+                    assert_input_projection_parity,
+                )
+
+                _harness_hard_qids: set[str] = set()
+                for _r in (_sm_eval_rows or ()):
+                    if not _row_is_hard_for_parity(dict(_r)):
+                        continue
+                    _hq, _ = _extract_qid_for_parity(dict(_r))
+                    if _hq:
+                        _harness_hard_qids.add(_hq)
+                _sm_hard_qids: set[str] = {
+                    str(s.qid) for s in (_sm_final_states or ()) if getattr(s, "qid", None)
+                }
+                _plan11_hard_qids: set[str] = {
+                    str(q) for q in (metadata_snapshot.get("_failing_qids") or []) if q
+                }
+                assert_input_projection_parity(
+                    iteration=int(iteration_counter),
+                    harness_hard_qids=_harness_hard_qids,
+                    plan11_hard_qids=_plan11_hard_qids,
+                    state_machine_hard_qids=_sm_hard_qids,
+                )
+            except ImportError:
+                # Safety net for partial deploys; do not block the run.
+                pass
             # Preserve legacy applier yield-gate signal (kept until the
             # legacy applier callsites are deleted in a later task).
             _canary_applied_this_iteration = any(

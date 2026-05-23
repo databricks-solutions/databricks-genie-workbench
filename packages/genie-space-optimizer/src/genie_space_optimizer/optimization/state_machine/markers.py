@@ -53,6 +53,58 @@ def optimizer_outcome_marker(
     return marker_line("GSO_OPTIMIZER_OUTCOME_V1", payload)
 
 
+def input_projection_parity_marker(
+    *,
+    iteration: int,
+    harness_hard_qids: list[str],
+    plan11_hard_qids: list[str],
+    state_machine_hard_qids: list[str],
+    missing_from_plan11: list[str],
+    missing_from_sm: list[str],
+) -> str:
+    """Emit one GSO_INPUT_PROJECTION_PARITY_V1 per iteration that has hard rows.
+
+    Reports the three hard-qid sets the harness, the Plan 11 dispatch
+    adapter, and the v4 state-machine entry adapter independently produced
+    from the same eval rows. Drift between them is observable here BEFORE
+    it becomes silent starvation. The companion fail-closed marker
+    ``GSO_INPUT_PROJECTION_CONTRACT_VIOLATION_V1`` fires only when BOTH
+    authoritative consumers see zero while the harness sees more than zero.
+    """
+    payload = {
+        "iteration": iteration,
+        "harness_hard_qids": sorted(harness_hard_qids),
+        "plan11_hard_qids": sorted(plan11_hard_qids),
+        "state_machine_hard_qids": sorted(state_machine_hard_qids),
+        "missing_from_plan11": sorted(missing_from_plan11),
+        "missing_from_sm": sorted(missing_from_sm),
+    }
+    return marker_line("GSO_INPUT_PROJECTION_PARITY_V1", payload)
+
+
+def input_projection_contract_violation_marker(
+    *,
+    iteration: int,
+    harness_hard_count: int,
+    plan11_hard_count: int,
+    sm_hard_count: int,
+) -> str:
+    """Emit one GSO_INPUT_PROJECTION_CONTRACT_VIOLATION_V1 on starvation.
+
+    Fires only when the harness saw N>0 hard rows AND both Plan 11 dispatch
+    AND the state machine entry adapter received zero. Companion to the
+    typed :class:`InputProjectionContractViolation` exception so the run
+    aborts loudly instead of silently degrading to the legacy lane.
+    """
+    payload = {
+        "iteration": iteration,
+        "harness_hard_count": harness_hard_count,
+        "plan11_hard_count": plan11_hard_count,
+        "sm_hard_count": sm_hard_count,
+    }
+    return marker_line("GSO_INPUT_PROJECTION_CONTRACT_VIOLATION_V1", payload)
+
+
 def patch_outcome_marker_from_attempt(
     *,
     run_id: str,

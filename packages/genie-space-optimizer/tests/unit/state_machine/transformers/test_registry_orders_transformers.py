@@ -17,12 +17,13 @@ def test_registry_has_clustering_at_diagnosed():
     assert [t.name for t in transformers] == ["plan11_stage2_clustering"]
 
 
-def test_registry_has_routing_then_synthesis_at_clustered():
+def test_registry_has_only_synthesis_at_clustered():
     sm = build_production_state_machine()
     transformers = sm.transformers[FunnelStage.CLUSTERED]
-    # Plan 12 routing decoration runs BEFORE Stage 3 synthesis so the
-    # synthesizer reads effective_target_lever from the cluster record.
-    assert [t.name for t in transformers] == ["plan12_routing_gate", "plan11_stage3_synthesis"]
+    # SM Cutover Phase 3 (2026-05-23) — routing_gate was quarantined to
+    # ``optimization/_legacy/``. CLUSTERED now flows directly into
+    # Stage 3 synthesis with no in-SM routing decoration.
+    assert [t.name for t in transformers] == ["plan11_stage3_synthesis"]
 
 
 def test_registry_has_structural_repair_at_proposed():
@@ -65,10 +66,15 @@ def test_registry_has_applier_at_applyable():
     assert [t.name for t in transformers] == ["applier_gate"]
 
 
-def test_registry_has_escalation_after_structural_repair_at_proposed():
-    """Phase 3 PR 3.2: escalation_ladder is appended after
-    structural_repair_gate at PROPOSED."""
+def test_registry_has_only_structural_repair_at_proposed():
+    """SM Cutover Phase 3 (2026-05-23) — escalation_ladder was quarantined to
+    ``optimization/_legacy/``. PROPOSED runs structural_repair_gate only;
+    a declined gate terminates the QID for this iteration with
+    ``STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY`` (which the harness's
+    terminal policy routes to ``retry_strategy_switch`` — the next
+    iteration tries a different patch family).
+    """
     sm = build_production_state_machine()
     transformers = sm.transformers[FunnelStage.PROPOSED]
     names = [t.name for t in transformers]
-    assert names == ["structural_repair_gate", "escalation_ladder"]
+    assert names == ["structural_repair_gate"]

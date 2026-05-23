@@ -27,7 +27,10 @@ from genie_space_optimizer.optimization.state_machine.trajectory import (
 from genie_space_optimizer.optimization.state_machine.transformers.dispatch_input import (
     build_initial_states_from_eval_rows,
 )
-from genie_space_optimizer.optimization.state_machine.transformers.routing_gate import (
+# SM Cutover Phase 3 — routing_gate quarantined to ``_legacy/``. This
+# replay harness is itself a legacy fixture used by the pre-cutover
+# tests; the post-cutover state machine has no in-SM routing step.
+from genie_space_optimizer.optimization._legacy.state_machine.transformers.routing_gate import (  # noqa: E501
     routing_gate,
 )
 from genie_space_optimizer.optimization.state_machine.verdict import (

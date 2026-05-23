@@ -99,6 +99,15 @@ def run_state_machine_iteration_and_persist(
     if not initial_states:
         return ()
 
+    # 2026-05-23 cutover Phase 1 — the diagnose / synthesize / gate
+    # transformers need the same eval rows the dispatch admission used,
+    # in order to find the per-qid evaluation row that grounds the LLM
+    # prompt and that the validation gates inspect. Without this, every
+    # SM Stage 1 transition terminated with ``no_eval_row_for_qid`` in
+    # the 2026-05-23 trial (see runid 1084707218370768 / 538827243617302
+    # postmortems). The tuple snapshot is intentional: the SM does not
+    # mutate caller state.
+    _baseline_eval_rows = tuple(dict(r) for r in (eval_rows or ()))
     ctx = TransformerContext(
         iteration=iteration,
         run_id=run_id,
@@ -107,6 +116,8 @@ def run_state_machine_iteration_and_persist(
         ),
         forbidden_signatures=forbidden_signatures,
         extras={"workspace_client": workspace_client},
+        baseline_eval_rows=_baseline_eval_rows,
+        w=workspace_client,
     )
 
     sm = build_production_state_machine()
@@ -8545,13 +8556,32 @@ def _stamp_failing_qids_from_eval_results(
     """
     if metadata_snapshot.get("_failing_qids") is not None:
         return
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
+
     rows = _extract_eval_rows_for_stamping(eval_results)
     failing = [row for row in rows if _row_is_failing(row)]
     failing_qids: list[str] = []
     for row in failing:
-        qid = str(row.get("question_id") or "")
-        if qid:
-            failing_qids.append(qid)
+        # 2026-05-23 admission fix: production MLflow rows carry the qid under
+        # inputs/question_id, nested inputs.question_id, or
+        # request.kwargs.question_id. The previous single-key row.get
+        # ("question_id") returned "" for every such row and starved Plan 11
+        # dispatch with failing_qids_count=0. Delegate to the canonical
+        # extractor (built in Cycle 8 for exactly this divergence). The
+        # ``source`` tag is logged when it falls back to a trace-id alias
+        # so producer-side qid misrouting remains visible.
+        qid, qid_source = extract_question_id(row)
+        if not qid:
+            continue
+        if qid_source == "trace_fallback":
+            logger.warning(
+                "Admitting hard row via trace-id fallback (client_request_id=%s); "
+                "expected canonical inputs/question_id from producer.",
+                qid,
+            )
+        failing_qids.append(qid)
     metadata_snapshot["_failing_qids"] = failing_qids
     metadata_snapshot["_eval_rows_failing"] = failing
 
@@ -8573,11 +8603,22 @@ def _build_plan11_failing_qids_from_raw(
     its own diagnosis from ``judge_rationale + generated_sql +
     ground_truth_sql``.
     """
-    by_qid = {
-        str(row.get("question_id") or ""): row
-        for row in (eval_rows or [])
-        if row.get("question_id")
-    }
+    # 2026-05-23 admission fix: production MLflow rows carry the qid
+    # under inputs/question_id, nested inputs.question_id, or
+    # request.kwargs.question_id. Single-key row.get("question_id")
+    # excluded every such row from the by_qid dict, so the Plan 11 raw
+    # fallback adapter returned an empty list even when failing_qids
+    # was non-empty. Delegate to the canonical extractor.
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
+
+    by_qid: dict[str, dict] = {}
+    for row in (eval_rows or []):
+        qid_str, qid_source = extract_question_id(row)
+        if not qid_str or qid_source == "":
+            continue
+        by_qid[qid_str] = row
     out: list[dict] = []
     for qid in failing_qids or []:
         row = by_qid.get(str(qid))

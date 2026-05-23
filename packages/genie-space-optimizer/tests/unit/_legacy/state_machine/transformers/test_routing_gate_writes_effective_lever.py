@@ -1,4 +1,14 @@
 """Routing gate is the sole source of ClusterMembershipRecord.effective_target_lever."""
+
+import pytest
+
+# SM Cutover Phase 3 (2026-05-23): routing_gate and escalation_ladder
+# transformers were quarantined to ``optimization/_legacy/`` because the
+# production state machine no longer mimics the legacy lever-cascade
+# escalation inside the SM. These tests are kept for archival reference
+# but are excluded from default test runs.
+pytestmark = pytest.mark.skip(reason="legacy: routing_gate/escalation_ladder quarantined in SM Cutover Phase 3")
+
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
 from genie_space_optimizer.optimization.state_machine.records import (
     ClusterMembershipRecord,
@@ -9,7 +19,7 @@ from genie_space_optimizer.optimization.state_machine.records import (
 from genie_space_optimizer.optimization.state_machine.state import (
     build_initial_state,
 )
-from genie_space_optimizer.optimization.state_machine.transformers.routing_gate import (
+from genie_space_optimizer.optimization._legacy.state_machine.transformers.routing_gate import (
     routing_gate,
 )
 from genie_space_optimizer.optimization.state_machine.verdict import (

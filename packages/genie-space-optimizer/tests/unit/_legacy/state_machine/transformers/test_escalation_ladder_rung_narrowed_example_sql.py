@@ -1,4 +1,14 @@
 """Rung 4 fires only when prior rungs are exhausted (≥3 attempts) and outcome is still rejected."""
+
+import pytest
+
+# SM Cutover Phase 3 (2026-05-23): routing_gate and escalation_ladder
+# transformers were quarantined to ``optimization/_legacy/`` because the
+# production state machine no longer mimics the legacy lever-cascade
+# escalation inside the SM. These tests are kept for archival reference
+# but are excluded from default test runs.
+pytestmark = pytest.mark.skip(reason="legacy: routing_gate/escalation_ladder quarantined in SM Cutover Phase 3")
+
 from dataclasses import dataclass
 from unittest.mock import patch
 
@@ -8,7 +18,7 @@ from genie_space_optimizer.optimization.state_machine.records import (
     ProposalAttempt, StageTransition,
 )
 from genie_space_optimizer.optimization.state_machine.state import build_initial_state
-from genie_space_optimizer.optimization.state_machine.transformers.escalation_ladder import (
+from genie_space_optimizer.optimization._legacy.state_machine.transformers.escalation_ladder import (
     escalation_ladder,
 )
 from genie_space_optimizer.optimization.state_machine.verdict import (
@@ -54,7 +64,7 @@ def test_rung_4_chosen_at_attempt_count_three():
         original_patch_body: str = "SELECT ..."
 
     with patch(
-        "genie_space_optimizer.optimization.state_machine.transformers.escalation_ladder._invoke_rung_4_narrowed_example_sql",
+        "genie_space_optimizer.optimization._legacy.state_machine.transformers.escalation_ladder._invoke_rung_4_narrowed_example_sql",
         return_value=_NarrowedEx(),
     ):
         s2 = escalation_ladder.transform(s, TransformerContext(1, "r", ValidationContext(1, "r", {})))

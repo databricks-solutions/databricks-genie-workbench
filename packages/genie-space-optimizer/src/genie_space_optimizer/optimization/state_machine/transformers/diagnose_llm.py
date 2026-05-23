@@ -94,9 +94,22 @@ class _Stage1Response:
 
 
 def _find_eval_row(ctx: TransformerContext, qid: str) -> dict | None:
-    """Return the eval row whose ``question_id`` matches ``qid``."""
+    """Return the eval row whose canonical question id matches ``qid``.
+
+    2026-05-23 admission fix: production MLflow rows carry the qid under
+    ``inputs/question_id``, nested ``inputs.question_id``, or
+    ``request.kwargs.question_id``. Single-key ``row.get("question_id")``
+    returned ``""`` for every such row and prevented downstream diagnose
+    transformers from ever pairing a hard state with its source row.
+    Delegate to the canonical extractor (Cycle 8).
+    """
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
+
     for row in ctx.baseline_eval_rows:
-        if str(row.get("question_id") or "") == qid:
+        candidate_qid, _source = extract_question_id(dict(row))
+        if candidate_qid == qid:
             return dict(row)
     return None
 

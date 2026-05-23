@@ -1,10 +1,14 @@
 """Production registry: maps FunnelStage → tuple of registered transformers.
 
 Single source of truth for what the StateMachine does in production.
-Phase 3 appends escalation_ladder at PROPOSED and adds evaluated_gate
-+ acceptance_gate at APPLIED and EVALUATED respectively. Phase 5
-deletes the legacy lane that runs alongside; the registry alone
-defines behaviour.
+
+2026-05-23 SM Cutover Phase 3 — ``routing_gate`` and
+``escalation_ladder`` have been quarantined to
+``optimization/_legacy/state_machine/transformers/``. The production
+state machine is now a single linear sequence: a declined stage
+terminates the QID for the iteration; there is no in-SM escalation
+ladder mimicking the legacy ``lever 1 → lever 5 → lever 6`` cascade.
+See ``docs/llmdrivenarchitecture/v3/2026-05-21-optimizer-state-machine-design.md``.
 """
 from __future__ import annotations
 
@@ -28,14 +32,8 @@ from genie_space_optimizer.optimization.state_machine.transformers.evaluated_gat
 from genie_space_optimizer.optimization.state_machine.transformers.diagnose_llm import (
     plan11_stage1_diagnosis,
 )
-from genie_space_optimizer.optimization.state_machine.transformers.escalation_ladder import (
-    escalation_ladder,
-)
 from genie_space_optimizer.optimization.state_machine.transformers.narrow_replacement_gate import (
     narrow_replacement_gate,
-)
-from genie_space_optimizer.optimization.state_machine.transformers.routing_gate import (
-    routing_gate,
 )
 from genie_space_optimizer.optimization.state_machine.transformers.structural_repair_gate import (
     structural_repair_gate,
@@ -49,18 +47,15 @@ from genie_space_optimizer.optimization.state_machine.transformers.synthesize_ll
 PHASE2_REGISTRY = {
     FunnelStage.HARD_QID_SEEN: (plan11_stage1_diagnosis,),
     FunnelStage.DIAGNOSED:     (plan11_stage2_clustering,),
-    FunnelStage.CLUSTERED:     (routing_gate, plan11_stage3_synthesis),
-    FunnelStage.PROPOSED:      (structural_repair_gate,),  # P3 appends escalation_ladder
+    FunnelStage.CLUSTERED:     (plan11_stage3_synthesis,),  # routing_gate quarantined Phase 3
+    FunnelStage.PROPOSED:      (structural_repair_gate,),
     FunnelStage.NORMALIZED:    (blast_radius_batch,),
     FunnelStage.APPLYABLE:     (applier_gate,),
-    # APPLIED → EVALUATED → ACCEPTED transformers land in Phase 3 PR 3.3.
 }
 
 
-# Phase 3 update:
-#   * escalation_ladder runs immediately after structural_repair_gate
-#     at PROPOSED so a failed structural check triggers the softer
-#     artifact in the same orchestrator step.
+# Phase 3 production wiring (post-2026-05-23 SM Cutover):
+#   * structural_repair_gate decline → terminate (no escalation_ladder).
 #   * narrow_replacement_gate runs immediately after blast_radius_batch
 #     at NORMALIZED so a collateral-risk drop can hand off to the
 #     LLM-driven narrow-replacement flow in the same orchestrator step.
@@ -68,7 +63,6 @@ PHASE2_REGISTRY = {
 #   * acceptance_gate runs at EVALUATED to decide accept-or-rollback.
 PHASE3_REGISTRY = {
     **PHASE2_REGISTRY,
-    FunnelStage.PROPOSED:   (structural_repair_gate, escalation_ladder),
     FunnelStage.NORMALIZED: (blast_radius_batch, narrow_replacement_gate),
     FunnelStage.APPLIED:    (evaluated_gate,),
     FunnelStage.EVALUATED:  (acceptance_gate,),

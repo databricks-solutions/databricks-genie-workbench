@@ -1,4 +1,14 @@
 """Rung 1: a structural_repair_rejected proposal becomes a scoped L6 candidate."""
+
+import pytest
+
+# SM Cutover Phase 3 (2026-05-23): routing_gate and escalation_ladder
+# transformers were quarantined to ``optimization/_legacy/`` because the
+# production state machine no longer mimics the legacy lever-cascade
+# escalation inside the SM. These tests are kept for archival reference
+# but are excluded from default test runs.
+pytestmark = pytest.mark.skip(reason="legacy: routing_gate/escalation_ladder quarantined in SM Cutover Phase 3")
+
 from dataclasses import dataclass
 from unittest.mock import patch
 
@@ -11,7 +21,7 @@ from genie_space_optimizer.optimization.state_machine.records import (
     StageTransition,
 )
 from genie_space_optimizer.optimization.state_machine.state import build_initial_state
-from genie_space_optimizer.optimization.state_machine.transformers.escalation_ladder import (
+from genie_space_optimizer.optimization._legacy.state_machine.transformers.escalation_ladder import (
     escalation_ladder,
 )
 from genie_space_optimizer.optimization.state_machine.verdict import (
@@ -60,7 +70,7 @@ def test_rung_1_produces_scoped_l6_attempt():
         original_patch_body: str = "ROW_NUMBER() OVER (PARTITION BY flights.flight_no ORDER BY COUNT(*) DESC)"
 
     with patch(
-        "genie_space_optimizer.optimization.state_machine.transformers.escalation_ladder._invoke_rung_1_scoped_l6",
+        "genie_space_optimizer.optimization._legacy.state_machine.transformers.escalation_ladder._invoke_rung_1_scoped_l6",
         return_value=_ScopedProposal(),
     ):
         s2 = escalation_ladder.transform(

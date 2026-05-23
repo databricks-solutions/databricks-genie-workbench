@@ -1,0 +1,54 @@
+{
+  "_provenance": {
+    "purpose": "Production-shape eval rows for canonical-qid admission tests.",
+    "derived_from": "packages/genie-space-optimizer/docs/runid_analysis/98ec8950-d7d4-40b3-b5c0-36dcfb3fb610/evidence/replay_fixture_from_latest_export_274908836064880.json",
+    "shape_note": "The replay fixture stores POST-normalized rows with top-level question_id. Production eval rows reach the dispatch adapter in MLflow-flattened shape (inputs/question_id) or nested (inputs.question_id) or request.kwargs.question_id. This fixture re-creates the shape variability that the harness's _get_question_id at harness.py:13634 already handles, but the dispatch adapter at optimizer.py:8552 and dispatch_input.py:23/47 do not.",
+    "hard_qid_predicate": "row_is_hard_failure (evaluation.py:3649) — result_correctness=='no' AND arbiter NOT IN {genie_correct, both_correct}"
+  },
+  "eval_rows": [
+    {
+      "_shape": "mlflow_flattened",
+      "_expected_qid": "airline_ticketing_and_fare_analysis_gs_009",
+      "_expected_hard": true,
+      "inputs/question_id": "airline_ticketing_and_fare_analysis_gs_009",
+      "feedback/result_correctness/value": "no",
+      "feedback/arbiter/value": "ground_truth_correct",
+      "outputs/predictions/sql": "SELECT * FROM tkt RANK() OVER (ORDER BY x) LIMIT 10",
+      "inputs/expected_sql": "SELECT * FROM tkt ROW_NUMBER() OVER (ORDER BY x) LIMIT 10"
+    },
+    {
+      "_shape": "nested_inputs_dict",
+      "_expected_qid": "airline_ticketing_and_fare_analysis_gs_024",
+      "_expected_hard": true,
+      "inputs": {"question_id": "airline_ticketing_and_fare_analysis_gs_024"},
+      "result_correctness": "no",
+      "arbiter": "ground_truth_correct",
+      "outputs/predictions/sql": "SELECT SUM(amount) FROM tkt_payment",
+      "inputs/expected_sql": "SELECT SUM(amount) FROM tkt_payment WHERE status='OK'"
+    },
+    {
+      "_shape": "request_kwargs_json_string",
+      "_expected_qid": "airline_ticketing_and_fare_analysis_gs_021",
+      "_expected_hard": true,
+      "request": "{\"kwargs\": {\"question_id\": \"airline_ticketing_and_fare_analysis_gs_021\"}}",
+      "feedback/result_correctness/value": "no",
+      "feedback/arbiter/value": "ground_truth_correct"
+    },
+    {
+      "_shape": "passing_row_should_not_be_hard",
+      "_expected_qid": "airline_ticketing_and_fare_analysis_gs_004",
+      "_expected_hard": false,
+      "inputs/question_id": "airline_ticketing_and_fare_analysis_gs_004",
+      "feedback/result_correctness/value": "yes",
+      "feedback/arbiter/value": "both_correct"
+    },
+    {
+      "_shape": "arbiter_override_should_not_be_hard",
+      "_expected_qid": "airline_ticketing_and_fare_analysis_gs_019",
+      "_expected_hard": false,
+      "inputs/question_id": "airline_ticketing_and_fare_analysis_gs_019",
+      "feedback/result_correctness/value": "no",
+      "feedback/arbiter/value": "both_correct"
+    }
+  ]
+}

@@ -1,4 +1,12 @@
 """When structural_repair_gate rejects, the orchestrator routes to escalation_ladder in the same step."""
+import pytest
+
+# SM Cutover Phase 3 (2026-05-23): escalation_ladder was quarantined to
+# ``optimization/_legacy/``. The orchestrator no longer routes a declined
+# structural_repair_gate to an in-SM escalation cascade — declined means
+# terminate for the iteration. This test is kept as archival reference.
+pytestmark = pytest.mark.skip(reason="legacy: escalation_ladder quarantined in SM Cutover Phase 3")
+
 from dataclasses import dataclass
 from unittest.mock import patch
 
@@ -49,7 +57,7 @@ def test_failed_structural_check_triggers_escalation_in_same_step():
         "_proposal_passes_structural_check",
         return_value=(False, "absent_anchor"),
     ), patch(
-        "genie_space_optimizer.optimization.state_machine.transformers.escalation_ladder."
+        "genie_space_optimizer.optimization._legacy.state_machine.transformers.escalation_ladder."
         "_invoke_rung_1_scoped_l6",
         return_value=_Scoped(),
     ):

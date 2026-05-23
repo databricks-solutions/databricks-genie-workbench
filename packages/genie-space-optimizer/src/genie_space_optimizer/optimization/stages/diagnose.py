@@ -31,6 +31,45 @@ _SKILL_ID = "plan11_diagnose"
 _PROMPT_CONST = "PLAN11_DIAGNOSE_PROMPT"
 
 
+def _classify_llm_error(
+    exception_class: str,
+    tokens_input: int,
+    request: LlmReasoningRequest,
+) -> str:
+    """Map an LLM-call exception class to a structured ``error_kind``.
+
+    Phase 1.C of the SM cutover. The 2026-05-23 trial emitted
+    ``outcome="llm_error"`` markers with ``tokens_input=0`` and no
+    further detail, leaving postmortems unable to distinguish a
+    pre-flight client failure (no endpoint reachable) from a mid-flight
+    parse failure. This classifier maps the exception class name from
+    ``LlmReasoningResponse.error`` (formatted as ``"ClassName: msg"``)
+    into one of: client_construction, empty_prompt, endpoint_decline,
+    timeout, parse, unknown.
+    """
+    if not exception_class:
+        # Empty prompt is the only way to get an "llm_error" without an
+        # underlying exception class (the call short-circuits).
+        if tokens_input == 0 and not (
+            request.user_prompt and request.system_msg
+        ):
+            return "empty_prompt"
+        return "unknown"
+
+    cls = exception_class.lower()
+    if "timeout" in cls:
+        return "timeout"
+    if "envelopecontract" in cls or "parse" in cls or "json" in cls:
+        return "parse"
+    if "connection" in cls or "endpoint" in cls or "httpx" in cls or "permission" in cls:
+        return "endpoint_decline"
+    if "client" in cls or "config" in cls or "auth" in cls:
+        return "client_construction"
+    if tokens_input == 0 and not (request.user_prompt and request.system_msg):
+        return "empty_prompt"
+    return "unknown"
+
+
 def _build_request(
     *,
     failing_qids: list[dict[str, Any]],
@@ -106,6 +145,16 @@ def diagnose_failing_qids(
             abstain_reason = str(getattr(resp.declined, "reason", ""))
             abstain_explanation = str(getattr(resp.declined, "explanation", ""))
         outcome = "declined" if resp.declined is not None else "llm_error"
+        # SM Cutover Phase 1.C — classify llm_error so the zero-token
+        # marker postmortems saw in 2026-05-23 ("opaque llm_error with
+        # tokens_input=0") becomes actionable.
+        error_kind = ""
+        exception_class = ""
+        if outcome == "llm_error":
+            raw_err = str(getattr(resp, "error", "") or "")
+            # Error format from llm_reasoning_call.invoke: "ClassName: message".
+            exception_class = raw_err.split(":", 1)[0].strip() if raw_err else ""
+            error_kind = _classify_llm_error(exception_class, tokens_in, request)
         for qid_input in failing_qids:
             qid = str(qid_input.get("qid", ""))
             print(
@@ -119,6 +168,8 @@ def diagnose_failing_qids(
                     duration_ms=duration_ms,
                     tokens_input=tokens_in,
                     tokens_output=tokens_out,
+                    error_kind=error_kind,
+                    exception_class=exception_class,
                 )
             )
         return []
