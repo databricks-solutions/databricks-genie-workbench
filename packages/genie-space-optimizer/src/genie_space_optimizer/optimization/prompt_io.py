@@ -75,6 +75,112 @@ def _strip_unsupported(node: Any) -> Any:
     return node
 
 
+def _flatten_nullable_anyof(node: Any) -> Any:
+    """Promote ``T`` out of Pydantic's ``T | None`` ``anyOf`` shape.
+
+    Pydantic emits nullable Generic fields (e.g.
+    ``AbstainableEnvelope[T].result: T | None = None``) as::
+
+        {"anyOf": [<schema-for-T>, {"type": "null"}], "default": null,
+         "title": "Result"}
+
+    Naively dropping ``anyOf`` in ``_strip_unsupported`` deletes the
+    typed branch entirely and leaves only ``{"default": null}`` — which
+    Databricks model serving rejects with a 400 BadRequestError before
+    inference (root cause of the 2026-05-22 dc89d1a9 trial).
+
+    This helper detects that exact pattern (any number of branches where
+    AT MOST one is ``{"type": "null"}`` and the rest are a single typed
+    branch) and inlines the non-null branch's keys into the parent,
+    preserving sibling annotations like ``default``, ``title``,
+    ``description``. The post-parse XOR check in ``parse_envelope`` keeps
+    enforcing "exactly one of result/declined" — JSON Schema doesn't have
+    to encode that constraint.
+
+    Conservative on purpose: if ``anyOf`` has multiple non-null branches
+    (a true union like ``int | str | None``), we leave it alone so
+    ``_strip_unsupported`` can still drop it. The downstream contract
+    must not rely on such unions for active prompts; if one shows up the
+    schema test will surface it.
+    """
+    if isinstance(node, dict):
+        any_of = node.get("anyOf")
+        if isinstance(any_of, list):
+            null_branches = [
+                b for b in any_of
+                if isinstance(b, dict) and b.get("type") == "null"
+            ]
+            non_null = [
+                b for b in any_of
+                if not (isinstance(b, dict) and b.get("type") == "null")
+            ]
+            if len(null_branches) >= 1 and len(non_null) == 1:
+                inlined_branch = _flatten_nullable_anyof(non_null[0])
+                merged: dict[str, Any] = {}
+                if isinstance(inlined_branch, dict):
+                    merged.update(inlined_branch)
+                for k, v in node.items():
+                    if k == "anyOf":
+                        continue
+                    if k in merged and k in {
+                        "type", "properties", "items", "enum",
+                        "additionalProperties", "required",
+                    }:
+                        # Non-null branch is the source of truth for shape.
+                        continue
+                    merged[k] = _flatten_nullable_anyof(v)
+                return merged
+        return {k: _flatten_nullable_anyof(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_flatten_nullable_anyof(item) for item in node]
+    return node
+
+
+# Databricks Foundation Model endpoint enforces this regex on
+# ``tools[*].custom.name`` and, internally, on
+# ``response_format.json_schema.name`` (which it translates into a tool
+# name). Pinned by the 2026-05-23 dc89d1a9 / 98ec8950 lever-loop trials
+# where every Plan 11 ``AbstainableEnvelope[T]`` call was rejected with
+# ``tools.0.custom.name failed ^[a-zA-Z0-9_-]{1,128}$`` before tokens
+# were consumed (root cause analysis in
+# docs/llmdrivenarchitecture/v5/
+# stage1-tool-name-and-request-envelope-contract_e7b21f04.plan.md).
+_DATABRICKS_SCHEMA_NAME_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+_SCHEMA_NAME_FORBIDDEN_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _safe_schema_name(raw: str) -> str:
+    """Project a Pydantic class ``__name__`` (possibly a generic alias
+    like ``"AbstainableEnvelope[Plan11DiagnoseOutput]"``) to a string
+    that satisfies the Databricks endpoint's tool-name regex
+    ``^[a-zA-Z0-9_-]{1,128}$``.
+
+    Rules (intentionally minimal — every char that the regex already
+    accepts is preserved exactly so existing names like ``_Example``
+    or ``Plan11DiagnoseOutput`` round-trip unchanged):
+      * Every forbidden char is replaced with ``_``. Brackets, commas,
+        spaces, dots, slashes — all become ``_``.
+      * Leading/trailing ``_`` are NOT stripped — ``_`` is in the
+        accept set, and pre-existing names like ``_Example`` rely on
+        the underscore staying put.
+      * Runs of ``_`` are NOT collapsed (would also mutate
+        already-safe names that legitimately use ``__``).
+      * If the input is missing or empty, the sentinel ``"schema"`` is
+        used so the length ≥1 bound is never violated.
+      * If the result exceeds 128 chars, it is truncated. (No active
+        envelope name approaches this length so this branch is
+        defensive.)
+    """
+    if not isinstance(raw, str) or not raw:
+        return "schema"
+    sanitized = _SCHEMA_NAME_FORBIDDEN_RE.sub("_", raw)
+    if len(sanitized) > 128:
+        sanitized = sanitized[:128]
+    if not sanitized:
+        sanitized = "schema"
+    return sanitized
+
+
 def build_response_format(model_cls: type[BaseModel]) -> dict[str, Any]:
     """Build a Databricks-safe ``response_format`` payload from a
     Pydantic model.
@@ -111,6 +217,10 @@ def build_response_format(model_cls: type[BaseModel]) -> dict[str, Any]:
         return node
 
     schema = _inline(schema)
+    # PR-C step 2: collapse Pydantic's nullable ``anyOf`` shape into the
+    # non-null branch BEFORE stripping. Otherwise ``T | None`` Generic
+    # fields lose their typed payload entirely (the dc89d1a9 root cause).
+    schema = _flatten_nullable_anyof(schema)
     schema = _strip_unsupported(schema)
     schema.setdefault("type", "object")
 
@@ -121,7 +231,13 @@ def build_response_format(model_cls: type[BaseModel]) -> dict[str, Any]:
     return {
         "type": "json_schema",
         "json_schema": {
-            "name": model_cls.__name__,
+            # Pydantic generic aliases like ``AbstainableEnvelope[T]``
+            # set ``__name__`` to a string containing ``[`` and ``]``,
+            # which violates the Databricks endpoint's tool-name regex
+            # and causes a 400 ``BadRequestError`` with tokens_input=0
+            # before inference. ``_safe_schema_name`` projects the raw
+            # name onto the regex's accept set.
+            "name": _safe_schema_name(model_cls.__name__),
             "schema": schema,
             "strict": not permissive,
         },

@@ -1414,6 +1414,8 @@ def plan11_stage1_diagnosis_marker(
     tokens_output: int = 0,
     error_kind: str = "",
     exception_class: str = "",
+    error_message: str = "",
+    endpoint: str = "",
 ) -> str:
     """Plan 11 — per-QID Stage 1 diagnosis outcome marker.
 
@@ -1424,6 +1426,16 @@ def plan11_stage1_diagnosis_marker(
     ``error_kind`` are a fail-loud signal that the call site did not
     classify the exception — the marker emitter does not silently
     forgive missing classification.
+
+    2026-05-23 PR-A (Stage 1 BadRequest diagnostic instrumentation) —
+    on ``llm_error`` the marker now also carries:
+      * ``error_message`` — first 500 chars of the underlying exception
+        text (already populated by ``LlmReasoningCall.invoke`` as
+        ``"ClassName: <message>"``). This is what makes a 400 BadRequest
+        actionable in postmortems instead of an opaque ``error_kind``.
+      * ``endpoint`` — the model-serving endpoint name the call was
+        routed to. Postmortems join on this when triaging endpoint
+        decommissions / region mismatches.
     """
     if outcome == "llm_error" and not error_kind:
         # Fail loud: do not emit ambiguous zero-token llm_error.
@@ -1451,6 +1463,79 @@ def plan11_stage1_diagnosis_marker(
             "tokens_output": int(tokens_output),
             "error_kind": str(error_kind),
             "exception_class": str(exception_class),
+            "error_message": str(error_message)[:500],
+            "endpoint": str(endpoint),
+        },
+    )
+
+
+def plan11_stage1_request_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    qid: str,
+    skill_id: str,
+    call_id: str,
+    system_msg_chars: int,
+    user_prompt_chars: int,
+    max_tokens: int,
+    response_format_keywords: list[str],
+    endpoint: str,
+    constraint_violations: list[dict[str, str]] | None = None,
+) -> str:
+    """Plan 11 — Stage 1 LLM request fingerprint marker.
+
+    Emitted alongside every ``llm_error`` Stage 1 outcome so postmortems
+    can see *what request shape* triggered the endpoint rejection
+    without re-running the lever loop. Carries only sizes and structural
+    fingerprints — never the prompt body — so it stays in stdout-safe
+    bounds.
+
+    Fields:
+      * ``skill_id`` — the reasoning skill the call routed to.
+      * ``call_id`` — the per-invocation identifier (joins to MLflow
+        traces and the on-disk ``llm_errors/`` dump).
+      * ``system_msg_chars`` / ``user_prompt_chars`` — raw char counts
+        of the rendered prompts as they were sent.
+      * ``max_tokens`` — the requested completion budget.
+      * ``response_format_keywords`` — top-level JSON-schema keywords
+        in the response_format the request bound (``["type", "schema",
+        "name", "strict"]`` etc.). When the endpoint rejects a request
+        because of an unsupported keyword, this is what tells us which
+        keyword was in play.
+      * ``endpoint`` — the model-serving endpoint name.
+      * ``constraint_violations`` (PR-2C, 2026-05-23) — when
+        ``RequestEnvelopeInvalidError`` is raised by the local
+        pre-flight (``DatabricksEndpointRequestContract.validate``),
+        this carries the structured list of failing rules so the
+        postmortem doesn't need to parse the error body. Empty list
+        on every other ``llm_error`` outcome.
+
+    PR-A (2026-05-23) — pure diagnostic; no behavior change.
+    PR-2C (2026-05-23) — adds ``constraint_violations`` (still pure
+    diagnostic; populated only when pre-flight refuses to dispatch).
+    """
+    return marker_line(
+        "GSO_PLAN11_STAGE1_REQUEST_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "qid": str(qid),
+            "skill_id": str(skill_id),
+            "call_id": str(call_id),
+            "system_msg_chars": int(system_msg_chars),
+            "user_prompt_chars": int(user_prompt_chars),
+            "max_tokens": int(max_tokens),
+            "response_format_keywords": [
+                str(k) for k in (response_format_keywords or [])
+            ],
+            "endpoint": str(endpoint),
+            "constraint_violations": [
+                {"field": str(v.get("field", "")),
+                 "constraint": str(v.get("constraint", ""))}
+                for v in (constraint_violations or [])
+                if isinstance(v, dict)
+            ],
         },
     )
 

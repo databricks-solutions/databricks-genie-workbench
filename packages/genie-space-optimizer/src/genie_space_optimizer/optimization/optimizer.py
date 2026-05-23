@@ -19,6 +19,10 @@ from typing import Any, Callable, Iterable
 
 from databricks.sdk import WorkspaceClient
 from genie_space_optimizer._workspace_client import make_workspace_client
+from genie_space_optimizer.optimization.databricks_request_contract import (
+    DEFAULT_CONTRACT as _DATABRICKS_REQUEST_CONTRACT,
+    RequestEnvelopeInvalidError,
+)
 from genie_space_optimizer.optimization.llm_client import (
     _openai_client_cache,
     _resolve_bearer_token,
@@ -604,6 +608,28 @@ def _traced_llm_call(
                 if response_format is not None:
                     call_kwargs["response_format"] = response_format
 
+                # PR-2C — local pre-flight against the Databricks
+                # endpoint contract. The dc89d1a9 / 98ec8950 trials
+                # showed every Plan 11 Stage 1 call rejected at the
+                # wire with ``tools.0.custom.name failed
+                # ^[a-zA-Z0-9_-]{1,128}$`` because the response_format
+                # name carried ``[`` and ``]``. PR-1B sanitizes the
+                # name; PR-2C catches every *future* envelope-shape
+                # mismatch locally so a malformed request never burns
+                # the retry budget or pollutes MLflow with 400s.
+                #
+                # Raises ``RequestEnvelopeInvalidError`` (typed) on
+                # any violation; ``_classify_llm_error`` routes the
+                # class name to ``error_kind="request_envelope_invalid"``
+                # automatically. The retry loop's ``except`` clause
+                # detects this class and breaks out — retrying a
+                # deterministically-broken envelope is wasted budget.
+                _preflight_violations = (
+                    _DATABRICKS_REQUEST_CONTRACT.validate(call_kwargs)
+                )
+                if _preflight_violations:
+                    raise RequestEnvelopeInvalidError(_preflight_violations)
+
                 response = client.chat.completions.create(**call_kwargs)
 
                 if not response.choices:
@@ -682,6 +708,25 @@ def _traced_llm_call(
 
                 return text, response
 
+            except RequestEnvelopeInvalidError as exc:
+                # PR-2C — local pre-flight refused to dispatch. The
+                # envelope is deterministically malformed; retrying
+                # the same call_kwargs would produce the same violation
+                # list. Break out immediately so callers see one clean
+                # ``request_envelope_invalid`` classification rather
+                # than ``max_retries`` identical retry events.
+                last_err = exc
+                span.add_event(SpanEvent(
+                    name="request_envelope_invalid",
+                    attributes={
+                        "error": str(exc)[:500],
+                        "constraint_violations": [
+                            f"{v.field}|{v.constraint}"
+                            for v in exc.violations
+                        ],
+                    },
+                ))
+                break
             except Exception as exc:
                 last_err = exc
                 span.add_event(SpanEvent(
