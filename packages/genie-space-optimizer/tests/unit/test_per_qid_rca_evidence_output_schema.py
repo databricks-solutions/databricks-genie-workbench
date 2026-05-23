@@ -99,12 +99,14 @@ def test_extra_fields_are_forbidden() -> None:
 
 def test_envelope_response_format_is_databricks_safe() -> None:
     """AbstainableEnvelope[PerQidRcaEvidenceOutput] must build a clean
-    response_format (no anyOf/oneOf/$ref/pattern keywords)."""
+    response_format (no anyOf/oneOf/$ref/pattern keywords).
+
+    PR-C: assert via structural dict-key walk so we don't
+    false-positive on description prose containing "pattern" now that
+    descriptions are preserved through the strip.
+    """
+    from tests._schema_utils import assert_no_forbidden_schema_keys
+
     EnvCls = AbstainableEnvelope[PerQidRcaEvidenceOutput]
     fmt = build_response_format(EnvCls)
-    schema_blob = repr(fmt)
-    for forbidden in ("anyOf", "oneOf", "$ref", "pattern"):
-        assert forbidden not in schema_blob, (
-            f"envelope schema for PerQidRcaEvidenceOutput contains "
-            f"forbidden keyword {forbidden!r}: {schema_blob[:500]}"
-        )
+    assert_no_forbidden_schema_keys(fmt)

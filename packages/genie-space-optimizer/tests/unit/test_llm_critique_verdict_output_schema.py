@@ -148,12 +148,14 @@ def test_extra_fields_are_forbidden() -> None:
 def test_envelope_response_format_is_databricks_strict_safe() -> None:
     """AbstainableEnvelope[LlmCritiqueVerdictOutput] must build a clean
     response_format with no anyOf / oneOf / $ref / pattern (Plan 2
-    Foundation Model API strict-mode requirement)."""
+    Foundation Model API strict-mode requirement).
+
+    Uses ``assert_no_forbidden_schema_keys`` (PR-C) instead of the
+    pre-PR-C ``forbidden in repr(fmt)`` substring check, which false-
+    positives on prose containing the literal word ``pattern``.
+    """
+    from tests._schema_utils import assert_no_forbidden_schema_keys
+
     EnvCls = AbstainableEnvelope[LlmCritiqueVerdictOutput]
     fmt = build_response_format(EnvCls)
-    schema_blob = repr(fmt)
-    for forbidden in ("anyOf", "oneOf", "$ref", "pattern"):
-        assert forbidden not in schema_blob, (
-            f"envelope schema for LlmCritiqueVerdictOutput contains "
-            f"forbidden keyword {forbidden!r}: {schema_blob[:500]}"
-        )
+    assert_no_forbidden_schema_keys(fmt)

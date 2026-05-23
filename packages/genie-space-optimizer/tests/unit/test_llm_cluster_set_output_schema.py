@@ -73,11 +73,17 @@ def test_set_output_rejects_extra_fields() -> None:
 
 
 def test_envelope_response_format_is_databricks_strict_safe() -> None:
+    """No Databricks-unsupported JSON Schema keyword leaks as a dict key.
+
+    The pre-PR-C version of this test did ``forbidden in repr(fmt)``,
+    which also matches the word ``pattern`` inside description text.
+    Post-PR-C the typed branches preserve their descriptions and the
+    substring check would false-positive on prose like "failure
+    pattern". ``assert_no_forbidden_schema_keys`` walks the schema and
+    only flags STRUCTURAL dict keys.
+    """
+    from tests._schema_utils import assert_no_forbidden_schema_keys
+
     EnvCls = AbstainableEnvelope[LlmClusterSetOutput]
     fmt = build_response_format(EnvCls)
-    schema_blob = repr(fmt)
-    for forbidden in ("anyOf", "oneOf", "$ref", "pattern"):
-        assert forbidden not in schema_blob, (
-            f"envelope schema for LlmClusterSetOutput contains "
-            f"forbidden keyword {forbidden!r}: {schema_blob[:500]}"
-        )
+    assert_no_forbidden_schema_keys(fmt)

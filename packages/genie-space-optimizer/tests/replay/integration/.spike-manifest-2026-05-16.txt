@@ -1,8 +1,10 @@
 # Phase 4.5 spike manifest — Run B (59a173d3)
-# Total recorded I/O paths: 35
+# Total recorded I/O paths: 37
 # Termination: completed_iteration
 # Exception (if any): 
 
+spark.sql(1 args, [])
+spark.sql(1 args, [])
 spark.sql(1 args, [])
 spark.sql(1 args, [])
 spark.sql(1 args, [])

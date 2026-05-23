@@ -58,6 +58,9 @@ requirements.txt
 # Other non-runtime files
 *.md
 !backend/references/schema.md
+# GSO skills/ prompt files are loaded at runtime by skills/_loader.py
+!packages/genie-space-optimizer/src/genie_space_optimizer/skills/**/SKILL.md
+!packages/genie-space-optimizer/src/genie_space_optimizer/skills/CATALOGUE.md
 deploy.sh
 deploy-config.sh
 databricks.yml

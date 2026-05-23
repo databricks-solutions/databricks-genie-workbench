@@ -76,12 +76,16 @@ def test_envelope_parse_propagates_malformed_json() -> None:
 
 def test_envelope_build_response_format_is_databricks_safe() -> None:
     """The envelope's response_format must lack the JSON Schema
-    keywords Databricks Foundation Model API rejects."""
+    keywords Databricks Foundation Model API rejects.
+
+    PR-C note: this asserts the SUFFICIENT condition (no forbidden
+    structural keys). The NECESSARY condition (typed result/declined
+    branches survive the strip) lives in
+    ``test_abstainable_envelope_schema_branches.py`` — the dc89d1a9
+    failure proved this test alone is not enough.
+    """
+    from tests._schema_utils import assert_no_forbidden_schema_keys
+
     EnvCls = AbstainableEnvelope[_DummyResult]
     fmt = build_response_format(EnvCls)
-    schema_blob = repr(fmt)
-    for forbidden in ("anyOf", "oneOf", "$ref", "pattern"):
-        assert forbidden not in schema_blob, (
-            f"envelope schema contains forbidden keyword "
-            f"{forbidden!r}: {schema_blob}"
-        )
+    assert_no_forbidden_schema_keys(fmt)

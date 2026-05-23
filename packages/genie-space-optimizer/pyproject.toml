@@ -39,6 +39,9 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "integration: integration tests (SM end-to-end, tape replay)",
+]
 
 [tool.ty.src]
 include = ["src/**"]

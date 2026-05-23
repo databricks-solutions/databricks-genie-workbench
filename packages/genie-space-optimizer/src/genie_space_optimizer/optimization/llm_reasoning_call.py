@@ -29,6 +29,7 @@ What it deliberately does NOT do:
 """
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -117,7 +118,7 @@ class LlmReasoningCall:
                 tokens_input=0,
                 tokens_output=0,
                 duration_ms=duration_ms,
-                error=f"{type(exc).__name__}: {exc}",
+                error=_format_provider_error(exc),
             )
 
         duration_ms = int((time.monotonic() - t0) * 1000)
@@ -173,6 +174,55 @@ class LlmReasoningCall:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
+
+
+def _format_provider_error(exc: BaseException) -> str:
+    """Render a provider exception as a string that preserves the raw
+    400/500 body where one exists.
+
+    PR-C reviewer P0 #2: pre-PR-C this was ``f"{type(exc).__name__}:
+    {exc}"`` which, for an OpenAI ``BadRequestError`` from Databricks
+    model serving, dropped the structured error body. The result was
+    that every Stage 1 400 looked like the same opaque
+    ``BadRequestError: Error code: 400`` line — making it impossible
+    to distinguish a malformed schema from a token-budget overflow or
+    an auth failure without re-running with extra logging.
+
+    Strategy (highest-fidelity first, falls back gracefully):
+
+      1. ``exc.body`` — the OpenAI SDK's parsed JSON error body. This
+         is the most structured source. Serialize with ``json.dumps``
+         so the diagnose-marker classifier can pattern-match on the
+         canonical keys (``response_format``, ``token``, etc.).
+      2. ``exc.response.text`` — raw HTTP response body, used when the
+         SDK could not parse the JSON but the HTTP layer captured it.
+      3. ``str(exc)`` — the SDK's default formatting. Usually contains
+         a stringified body too but with Python repr quoting.
+
+    The leading ``"{type(exc).__name__}: "`` prefix is kept so the
+    classifier's existing exception-class checks (e.g.
+    ``"BadRequestError" in exc_name``) continue to work.
+    """
+    cls = type(exc).__name__
+    parts: list[str] = []
+
+    body = getattr(exc, "body", None)
+    if body is not None:
+        try:
+            parts.append(f"body={json.dumps(body, default=str)}")
+        except (TypeError, ValueError):
+            parts.append(f"body={body!r}")
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        text = getattr(response, "text", None)
+        if isinstance(text, str) and text and (
+            body is None or text not in repr(body)
+        ):
+            parts.append(f"response_text={text[:1000]}")
+
+    parts.append(f"str={exc}")
+    return f"{cls}: " + " | ".join(parts)
 
 
 def _extract_token_usage(response_obj: Any) -> tuple[int, int]:
