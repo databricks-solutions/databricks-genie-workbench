@@ -14702,64 +14702,6 @@ def _run_arbiter_corrections(
     }
 
 
-def _select_lever_for_cluster(
-    cluster: dict, rotation_holder: dict,
-) -> int:
-    """Wedge in front of ``_map_to_lever`` that consults
-    ``RCA_REPAIR_MATRIX`` for typed RCA cards before falling back to
-    the legacy single-int router.
-
-    Args:
-        cluster: The cluster dict carrying ``rca_card``,
-            ``asi_failure_type``, ``root_cause``, ``asi_blame_set``,
-            ``affected_judge``.
-        rotation_holder: Per-run dict whose ``"tried"`` sub-dict maps
-            ``cluster_id`` → ``frozenset[int]`` of lever families that
-            have already been tried-and-failed in this run.
-
-    Selection order:
-
-    1. Resolve the cluster's ``RcaKind``. If ``UNKNOWN``, fall back to
-       ``_map_to_lever`` (legacy).
-    2. Read ``tried = rotation_holder["tried"].get(cluster_id, frozenset())``.
-    3. Call ``next_untried_repair(rca_kind, tried)``. If it returns a
-       pair, use the pair's lever family. Otherwise fall back to
-       ``_map_to_lever`` (legacy exhaustion).
-
-    This helper does NOT mutate ``rotation_holder``. Marking levers as
-    tried happens at the proposal-failure emit sites via
-    :func:`_mark_lever_tried`.
-    """
-    from genie_space_optimizer.optimization.lever_rotation import (
-        next_untried_repair,
-        resolve_rca_kind_for_cluster,
-    )
-    from genie_space_optimizer.optimization.optimizer import _map_to_lever
-    from genie_space_optimizer.optimization.rca import RcaKind
-
-    rca_kind = resolve_rca_kind_for_cluster(cluster)
-    if rca_kind is RcaKind.UNKNOWN:
-        return _map_to_lever(
-            cluster.get("root_cause", ""),
-            asi_failure_type=cluster.get("asi_failure_type"),
-            blame_set=cluster.get("asi_blame_set"),
-            judge=cluster.get("affected_judge"),
-        )
-
-    tried_by_cluster = rotation_holder.get("tried", {})
-    tried = tried_by_cluster.get(str(cluster.get("cluster_id") or ""), frozenset())
-    pair = next_untried_repair(rca_kind, tried=tried)
-    if pair is not None:
-        return int(pair[0])
-
-    return _map_to_lever(
-        cluster.get("root_cause", ""),
-        asi_failure_type=cluster.get("asi_failure_type"),
-        blame_set=cluster.get("asi_blame_set"),
-        judge=cluster.get("affected_judge"),
-    )
-
-
 def _mark_lever_tried(
     rotation_holder: dict,
     *,
@@ -15259,55 +15201,15 @@ def _analyze_and_distribute(
     _rotation_holder_local: dict = rotation_holder if rotation_holder is not None else {"tried": {}}
     _rotation_decision_records: list[dict] = []
     for ci, c in enumerate(clusters, 1):
-        mapped = _select_lever_for_cluster(c, _rotation_holder_local)
+        mapped = _map_to_lever(
+            c.get("root_cause", ""),
+            asi_failure_type=c.get("asi_failure_type"),
+            blame_set=c.get("asi_blame_set"),
+            judge=c.get("affected_judge"),
+        )
         c["_mapped_lever"] = mapped
         lever_assignments.setdefault(mapped, []).append(c)
 
-        # 2026-05-17 rotation telemetry — when the selector chose a
-        # lever different from ``_map_to_lever``'s legacy result for a
-        # typed RcaKind, append a ``lever_rotation_decided`` record to
-        # the return dict so the caller (``_run_lever_loop``) extends
-        # ``_current_iter_inputs["decision_records"]`` with it.
-        try:
-            from genie_space_optimizer.optimization.lever_rotation import (
-                next_untried_repair,
-                resolve_rca_kind_for_cluster,
-            )
-            from genie_space_optimizer.optimization.rca import RcaKind
-            from genie_space_optimizer.optimization.decision_emitters import (
-                lever_rotation_decided_record,
-            )
-
-            _rk = resolve_rca_kind_for_cluster(c)
-            if _rk is not RcaKind.UNKNOWN:
-                _legacy_lever = _map_to_lever(
-                    c.get("root_cause", ""),
-                    asi_failure_type=c.get("asi_failure_type"),
-                    blame_set=c.get("asi_blame_set"),
-                    judge=c.get("affected_judge"),
-                )
-                _tried = _rotation_holder_local.get("tried", {}).get(
-                    str(c.get("cluster_id") or ""), frozenset(),
-                )
-                _pair = next_untried_repair(_rk, tried=_tried)
-                if _pair is not None and mapped != _legacy_lever:
-                    _rec = lever_rotation_decided_record(
-                        run_id=run_id,
-                        iteration=iteration_counter,
-                        cluster_id=str(c.get("cluster_id") or ""),
-                        rca_kind=_rk.value,
-                        selected_lever=int(_pair[0]),
-                        selected_patch_type=str(_pair[1]),
-                        legacy_lever=int(_legacy_lever),
-                        tried_lever_families=tuple(sorted(_tried)),
-                    )
-                    _rotation_decision_records.append(_rec.to_dict())
-        except Exception:
-            logger.debug(
-                "rotation bridge: lever_rotation_decided emit failed "
-                "(non-fatal)",
-                exc_info=True,
-            )
         blame = c.get("asi_blame_set", c.get("blame_set", []))
         qids = c.get("question_ids", [])
         asi_ft = c.get("asi_failure_type", "n/a")
