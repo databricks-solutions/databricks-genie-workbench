@@ -304,12 +304,18 @@ def _make_arbiter_scorer(
             'Respond with JSON only: {"verdict": "<genie_correct|ground_truth_correct|both_correct|neither_correct>", '
             '"failure_type": "<wrong_aggregation|wrong_filter|wrong_table|wrong_column|wrong_join|wrong_measure|missing_instruction|misinterpreted_request|formatting_error|incorrect_function_usage|other>", '
             '"blame_set": ["<blamed_object>"], '
+            '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+            '"blame_rationale": "<one-sentence explanation in plain English>", '
             '"rca_kind": "<metric_view_routing_confusion|measure_swap|canonical_dimension_missed|missing_required_dimension|extra_defensive_filter|unknown>", '
             '"expected_objects": ["<table_or_column_or_measure_expected>"], '
             '"actual_objects": ["<table_or_column_or_measure_generated>"], '
             '"patch_family": "<contrastive_metric_routing|contrastive_measure_disambiguation|canonical_dimension_guidance|required_dimension_guidance|avoid_unrequested_defensive_filters|unknown>", '
             '"recommended_levers": [1, 5], '
-            '"rationale": "<brief explanation>"}'
+            '"rationale": "<brief explanation>"}\n'
+            "BLAME_SET_STRUCTURED RULES (Trial 14):\n"
+            "  - Pick the kind that best fits the blamed object: column/table/join for schema blame, filter for an extra/wrong WHERE predicate (ref = the literal predicate text), instruction for a missing Genie Space rule.\n"
+            "  - For column/table/join, ref MUST be a fully-qualified name (catalog.schema.table[.column]) drawn from the SQL.\n"
+            "  - Keep blame_set in sync — it must mirror the ref values of entries whose kind is column, table, or join (back-compat)."
         )
 
         logger.info(
@@ -369,6 +375,8 @@ def _make_arbiter_scorer(
                     severity="major",
                     confidence=0.85,
                     blame_set=result.get("blame_set", []),
+                    blame_set_structured=result.get("blame_set_structured"),
+                    blame_rationale=result.get("blame_rationale"),
                     counterfactual_fix=result.get("rationale", ""),
                     expected_objects=result.get("expected_objects") or [],
                     actual_objects=result.get("actual_objects") or [],

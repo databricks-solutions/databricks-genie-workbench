@@ -19900,6 +19900,14 @@ def _run_lever_loop_legacy(
             # trial run logs.
             _sm_final_states: tuple = ()
             try:
+                # Trial 13 typed-evidence cutover — pass metadata_snapshot
+                # through so ``run_state_machine_iteration_and_persist`` can
+                # extract ``_rca_evidence_typed`` and surface it on the
+                # TransformerContext. Before this kwarg was added the SM
+                # canonical lane silently dropped Plan 12 typed RCA evidence
+                # and hard QIDs whose rows lacked embedded blame/rca
+                # aborted Stage 1 with
+                # ``evidence_card_empty:blame_set_empty,rca_evidence_empty``.
                 _sm_final_states = run_state_machine_iteration_and_persist(
                     eval_rows=_sm_eval_rows,
                     iteration=int(iteration_counter),
@@ -19907,6 +19915,8 @@ def _run_lever_loop_legacy(
                     run_root=sm_run_root,
                     workspace_client=w,
                     forbidden_signatures=tuple(_forbidden_set),
+                    space_id=str(space_id or ""),
+                    metadata_snapshot=metadata_snapshot,
                 )
             # 2026-05-23 Phase 3 — narrow this except so the boundary
             # contract violation below cannot be silently swallowed by

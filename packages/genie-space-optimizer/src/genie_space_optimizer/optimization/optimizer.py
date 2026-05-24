@@ -66,6 +66,8 @@ def run_state_machine_iteration_and_persist(
     run_root,
     workspace_client=None,
     forbidden_signatures: tuple[str, ...] = (),
+    space_id: str = "",
+    metadata_snapshot=None,
 ):
     """Plan v3 PR 2.5 — run one iteration of the production state machine
     and persist trajectories.
@@ -73,6 +75,18 @@ def run_state_machine_iteration_and_persist(
     Returns the final tuple of ``QuestionStateInIteration`` objects. Side
     effects: writes ``qstate_<qid>.json`` per state and
     ``trajectory_<qid>.json`` per QID under ``run_root``.
+
+    ``space_id`` and ``metadata_snapshot`` thread through to
+    ``TransformerContext`` so ``applier_gate`` can actually call
+    :func:`applier.apply_patch_set` (which validates ``metadata_snapshot``
+    against the :class:`SerializedSpace` schema and PATCHes the Genie
+    Space at ``/api/2.0/genie/spaces/{space_id}``). Production callers
+    that operate against a live workspace already provide both; tests
+    that drive the SM with a :class:`FakeWorkspaceClient` need them
+    to advance past ``APPLYABLE`` to ``APPLIED``. The defaults match
+    the pre-existing ``TransformerContext`` defaults (empty string,
+    empty dict), so callers that did not previously pass these
+    arguments are unaffected.
 
     Lazy imports throughout: this entry point is called from the lever
     loop alongside the legacy iteration; pulling the state_machine
@@ -111,18 +125,73 @@ def run_state_machine_iteration_and_persist(
     # the 2026-05-23 trial (see runid 1084707218370768 / 538827243617302
     # postmortems). The tuple snapshot is intentional: the SM does not
     # mutate caller state.
-    _baseline_eval_rows = tuple(dict(r) for r in (eval_rows or ()))
-    ctx = TransformerContext(
-        iteration=iteration,
-        run_id=run_id,
-        validation_context=ValidationContext(
+    #
+    # Trial 13 Phase 8 — single normalization boundary. Every eval row
+    # entering the lever loop is projected into a
+    # :class:`CanonicalEvalRow` exactly once, here. Downstream
+    # consumers that still rely on the dict API see a Mapping shim
+    # over ``raw``; new consumers should reach for the typed
+    # attributes (``.qid``, ``.namespaced_qid``, ``.question_text``,
+    # ``.judge_rationales``, ``.asi_metadata``). Future row-shape
+    # extensions land in :func:`normalize_eval_row` exclusively; the
+    # golden CI test enforces this invariant.
+    from genie_space_optimizer.optimization.canonical_eval_row import (
+        normalize_eval_row,
+    )
+    _baseline_eval_rows = tuple(
+        normalize_eval_row(r) for r in (eval_rows or ())
+    )
+    _ctx_kwargs: dict = {
+        "iteration": iteration,
+        "run_id": run_id,
+        "validation_context": ValidationContext(
             iteration, run_id, {"workspace_client": workspace_client},
         ),
-        forbidden_signatures=forbidden_signatures,
-        extras={"workspace_client": workspace_client},
-        baseline_eval_rows=_baseline_eval_rows,
-        w=workspace_client,
+        "forbidden_signatures": forbidden_signatures,
+        "extras": {"workspace_client": workspace_client},
+        "baseline_eval_rows": _baseline_eval_rows,
+        "w": workspace_client,
+        "space_id": space_id,
+    }
+    if metadata_snapshot is not None:
+        # ``TransformerContext`` accepts a Mapping; preserving caller
+        # references is fine because the applier deep-copies before
+        # mutating. Falling through when ``None`` keeps the existing
+        # ``default_factory=dict`` behaviour.
+        _ctx_kwargs["metadata_snapshot"] = dict(metadata_snapshot)
+    # Trial 13 typed-evidence cutover — surface Plan 12's per-QID typed
+    # RCA evidence into the SM canonical lane via TransformerContext.
+    # ``metadata_snapshot["_rca_evidence_typed"]`` is the established
+    # carrier (Plan 11 batch path at ``_build_plan11_failing_qids_from_typed_evidence``
+    # reads from the same key). Without this thread, the SM lane silently
+    # dropped typed evidence at Stage 1 and aborted hard QIDs whose rows
+    # alone did not carry blame/rca with
+    # ``evidence_card_empty:blame_set_empty,rca_evidence_empty``.
+    _rca_evidence_typed = (
+        (metadata_snapshot or {}).get("_rca_evidence_typed") or {}
     )
+    if _rca_evidence_typed:
+        _ctx_kwargs["rca_evidence_typed"] = dict(_rca_evidence_typed)
+
+    # Trial 13i — derive run-level ``schema_columns`` from the same
+    # carriers the Plan 11 batch lane already consults
+    # (``metadata_snapshot["schema_columns"]`` -> typed evidence union ->
+    # identifier allowlist) so the SM canonical lane stops sending
+    # ``"schema_columns": []`` to every Stage 1 LLM call. The post-Trial-13h
+    # workbench replay surfaced QIDs declining with
+    # ``insufficient_blame_set`` solely because the LLM had no schema list
+    # to ground against.
+    from genie_space_optimizer.optimization.schema_columns import (
+        _derive_schema_columns,
+    )
+    _schema_columns_tuple, _schema_columns_source = _derive_schema_columns(
+        metadata_snapshot=metadata_snapshot,
+        rca_evidence_typed=_rca_evidence_typed or None,
+        uc_columns=(metadata_snapshot or {}).get("uc_columns"),
+    )
+    _ctx_kwargs["schema_columns"] = _schema_columns_tuple
+    _ctx_kwargs["schema_columns_source"] = _schema_columns_source
+    ctx = TransformerContext(**_ctx_kwargs)
 
     sm = build_production_state_machine()
     final_states = sm.run_iteration(initial_states, ctx)
@@ -8468,54 +8537,49 @@ def _build_blast_radius_drop_record(
 
 def _build_plan11_failing_qids_from_typed_evidence(
     rca_evidence_typed: dict,
+    eval_rows: list[dict] | None = None,
+    *,
+    schema_columns: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict]:
     """Plan 11 Stage 1 input adapter.
 
     Projects :class:`PerQidRcaEvidence` (Plan 3's per-QID typed RCA
     output) into the ``failing_qids`` shape Plan 11's
-    :func:`diagnose_failing_qids` expects. Three fields the Plan 11
-    SKILL.md asks for (``question_text``, ``ground_truth_sql``,
-    ``generated_sql``) are NOT carried on PerQidRcaEvidence and are
-    left empty — Plan 11's diagnose-stage LLM is robust to partial
-    inputs (it reads ``judge_rationale`` + ``rca_evidence`` as the
-    primary narrative). A future enrichment pass can hydrate those
-    fields from ``eval_results``.
+    :func:`diagnose_failing_qids` expects.
 
-    The ``rca_evidence`` sub-key bundles the richer free-text fields
-    from PerQidRcaEvidence (``generated_sql_issue``,
-    ``expected_sql_shape``, ``suggested_repair_family``) so the LLM
-    can disagree with Plan 3's deterministic classifier when the
-    evidence supports a different ``rca_kind_label``.
+    Trial 12 fix: when ``eval_rows`` is supplied, the matching row is
+    located via the canonical QID extractor and the Stage 1 card is
+    hydrated through :func:`eval_row_access.build_stage1_evidence_card`.
+    Typed evidence fields win per-field (the prior contract); the row
+    supplies ``question_text`` / ``ground_truth_sql`` / ``generated_sql``
+    which ``PerQidRcaEvidence`` does not carry. If ``eval_rows`` is
+    omitted or no row matches, the card falls back to typed-only
+    hydration (legacy behavior).
     """
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
+    from genie_space_optimizer.optimization.eval_row_access import (
+        build_stage1_evidence_card,
+    )
+
+    by_qid: dict[str, dict] = {}
+    for row in (eval_rows or []):
+        qid_str, qid_source = extract_question_id(row)
+        if not qid_str or qid_source == "":
+            continue
+        by_qid[qid_str] = row
+
     out: list[dict] = []
     for qid, ev in rca_evidence_typed.items():
-        blame_set = list(getattr(ev, "blame_set", ()) or ())
+        row = by_qid.get(str(qid))
         out.append(
-            {
-                "qid": str(qid),
-                "question_text": "",
-                "ground_truth_sql": "",
-                "generated_sql": "",
-                "judge_rationale": str(
-                    getattr(ev, "observed_failure", "") or ""
-                ),
-                "blame_set_seed": blame_set,
-                "rca_evidence": {
-                    "observed_failure": str(
-                        getattr(ev, "observed_failure", "") or ""
-                    ),
-                    "generated_sql_issue": str(
-                        getattr(ev, "generated_sql_issue", "") or ""
-                    ),
-                    "expected_sql_shape": str(
-                        getattr(ev, "expected_sql_shape", "") or ""
-                    ),
-                    "suggested_repair_family": str(
-                        getattr(ev, "suggested_repair_family", "") or ""
-                    ),
-                    "confidence": str(getattr(ev, "confidence", "") or ""),
-                },
-            }
+            build_stage1_evidence_card(
+                str(qid),
+                row,
+                typed_evidence=ev,
+                schema_columns=tuple(schema_columns or ()),
+            )
         )
     return out
 
@@ -8635,6 +8699,8 @@ def _build_plan11_failing_qids_from_raw(
     *,
     failing_qids: list[str],
     eval_rows: list[dict],
+    rca_evidence_typed: dict | None = None,
+    schema_columns: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict]:
     """Plan 12 — fallback Plan 11 Stage 1 input adapter.
 
@@ -8647,6 +8713,15 @@ def _build_plan11_failing_qids_from_raw(
     Plan 3's free-text fields); the LLM is responsible for forming
     its own diagnosis from ``judge_rationale + generated_sql +
     ground_truth_sql``.
+
+    Trial 13 symmetry: the optional ``rca_evidence_typed`` kwarg lets
+    callers backfill typed evidence per QID when a partial map is
+    available. The current dispatch branch at
+    ``_decide_and_run_plan11_dispatch`` only invokes this builder when
+    the typed map is empty, but threading the kwarg matches the SM
+    canonical lane (``diagnose_llm._build_failing_qid_payload``) and
+    the Plan 11 typed-evidence builder so all three Stage 1 input
+    paths accept identical inputs.
     """
     # 2026-05-23 admission fix: production MLflow rows carry the qid
     # under inputs/question_id, nested inputs.question_id, or
@@ -8654,10 +8729,21 @@ def _build_plan11_failing_qids_from_raw(
     # excluded every such row from the by_qid dict, so the Plan 11 raw
     # fallback adapter returned an empty list even when failing_qids
     # was non-empty. Delegate to the canonical extractor.
+    #
+    # Trial 12 hydration fix: per-row card construction goes through
+    # eval_row_access.build_stage1_evidence_card so the Stage 1 LLM
+    # receives non-empty question/SQL/ASI evidence regardless of row
+    # shape (top-level / slash-flattened / dotted / nested / request
+    # kwargs). Trial 11 root cause was empty cards from flat row.get(...)
+    # against namespaced production rows.
     from genie_space_optimizer.optimization._qid_extraction import (
         extract_question_id,
     )
+    from genie_space_optimizer.optimization.eval_row_access import (
+        build_stage1_evidence_card,
+    )
 
+    typed_by_qid: dict = rca_evidence_typed or {}
     by_qid: dict[str, dict] = {}
     for row in (eval_rows or []):
         qid_str, qid_source = extract_question_id(row)
@@ -8669,22 +8755,14 @@ def _build_plan11_failing_qids_from_raw(
         row = by_qid.get(str(qid))
         if row is None:
             continue
+        typed_ev = typed_by_qid.get(str(qid))
         out.append(
-            {
-                "qid": str(qid),
-                "question_text": str(row.get("question") or ""),
-                "ground_truth_sql": str(row.get("ground_truth_sql") or ""),
-                "generated_sql": str(row.get("generated_sql") or ""),
-                "judge_rationale": str(row.get("judge_rationale") or ""),
-                "blame_set_seed": [],
-                "rca_evidence": {
-                    "observed_failure": str(row.get("judge_rationale") or ""),
-                    "generated_sql_issue": "",
-                    "expected_sql_shape": "",
-                    "suggested_repair_family": "",
-                    "confidence": "",
-                },
-            }
+            build_stage1_evidence_card(
+                str(qid),
+                row,
+                typed_evidence=typed_ev,
+                schema_columns=tuple(schema_columns or ()),
+            )
         )
     return out
 
@@ -8745,16 +8823,83 @@ def _decide_and_run_plan11_dispatch(
     # Build the Plan 11 Stage 1 input. Prefer typed evidence when
     # present (the legacy path); otherwise reconstruct from raw eval
     # rows (Plan 12 fallback — closes the silent-fallthrough bug).
+    eval_rows = list(metadata_snapshot.get("_eval_rows_failing") or [])
+
+    # Trial 13i — derive ``schema_columns`` BEFORE building the Stage 1
+    # cards so the seed FQN normalizer inside
+    # ``build_stage1_evidence_card`` has a non-empty universe to match
+    # against on this lane (the SM lane derives the same value on
+    # ``TransformerContext`` for the same reason). Stashed on
+    # ``_schema_columns_batch`` for the downstream ``diagnose_failing_qids``
+    # call so the LLM prompt receives the same list the card normalizer
+    # used.
+    from genie_space_optimizer.optimization.schema_columns import (
+        _derive_schema_columns,
+    )
+    _schema_columns_batch, _schema_columns_source_batch = (
+        _derive_schema_columns(
+            metadata_snapshot=metadata_snapshot,
+            rca_evidence_typed=rca_evidence_typed or None,
+            uc_columns=(metadata_snapshot or {}).get("uc_columns"),
+        )
+    )
+
     if rca_evidence_typed:
         failing_qids_input = _build_plan11_failing_qids_from_typed_evidence(
             rca_evidence_typed,
+            eval_rows=eval_rows,
+            schema_columns=_schema_columns_batch,
         )
     else:
-        eval_rows = list(metadata_snapshot.get("_eval_rows_failing") or [])
         failing_qids_input = _build_plan11_failing_qids_from_raw(
             failing_qids=list(failing_qids),
             eval_rows=eval_rows,
+            rca_evidence_typed=rca_evidence_typed,
+            schema_columns=_schema_columns_batch,
         )
+
+    # Trial 13 Track 6 — emit the namespace-drift observability marker
+    # whenever the SM-vs-Plan11 dispatch QID sets disagree. Replaces the
+    # Trial 12 count-only "starved" check, which missed the
+    # ``airline_..._gs_009`` vs ``gs_009`` namespace mismatch observed
+    # in the 98ec8950 / dc89d1a9 postmortems. Fires BEFORE the dispatch
+    # decision marker so emission ordering matches the legacy path.
+    sm_hard_qid_count = int(
+        metadata_snapshot.get("_sm_hard_qid_count") or 0
+    )
+    harness_hard_qid_count = int(
+        metadata_snapshot.get("_harness_hard_qid_count") or 0
+    )
+    sm_hard_qids_list: list[str] = [
+        str(q) for q in (metadata_snapshot.get("_sm_hard_qids") or []) if q
+    ]
+    plan11_dispatch_qids_list: list[str] = [
+        str(card.get("qid") or "")
+        for card in (failing_qids_input or [])
+        if str(card.get("qid") or "").strip()
+    ]
+    # Provide list-based input when the SM list was threaded through
+    # the metadata snapshot; otherwise the marker falls back to the
+    # legacy count-based "starved" classifier so older call sites
+    # remain observable.
+    if sm_hard_qids_list or sm_hard_qid_count > 0:
+        from genie_space_optimizer.optimization.state_machine.markers import (
+            plan11_dispatch_starved_marker,
+        )
+
+        _drift_line = plan11_dispatch_starved_marker(
+            run_id=optimization_run_id_p11,
+            iteration=iteration_p11,
+            plan11_failing_qids_count=len(plan11_dispatch_qids_list),
+            sm_hard_qid_count=sm_hard_qid_count or len(sm_hard_qids_list),
+            harness_hard_qid_count=harness_hard_qid_count,
+            sm_hard_qids=sm_hard_qids_list or None,
+            plan11_dispatch_qids=(
+                plan11_dispatch_qids_list if sm_hard_qids_list else None
+            ),
+        )
+        if _drift_line:
+            print(_drift_line, flush=True)
 
     if not failing_qids_input:
         _emit_skipped("build_failing_qids_empty")
@@ -8773,6 +8918,54 @@ def _decide_and_run_plan11_dispatch(
         )
     )
 
+    # Trial 13i — emit per-QID input-quality markers on the batch lane
+    # so postmortems see the same provenance + seed-normalization stats
+    # whether Stage 1 ran via the SM canonical lane or the legacy batch
+    # lane. Mirrors ``diagnose_llm._invoke_stage1_llm``.
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        plan11_stage1_input_quality_marker,
+    )
+    for _card in failing_qids_input:
+        _seed_stats = _card.get("_seed_normalization") or {}
+        # Trial 14 — derive the typed blame-kind histogram from the
+        # ``_blame_structured`` stamp on the card (mirrors the SM lane
+        # in ``diagnose_llm._invoke_stage1_llm``).
+        _blame_structured_entries = _card.get("_blame_structured") or ()
+        _blame_kind_distribution: dict[str, int] = {}
+        for _entry in _blame_structured_entries:
+            if not isinstance(_entry, dict):
+                continue
+            _kind = str(_entry.get("kind") or "").strip().lower()
+            if not _kind:
+                continue
+            _blame_kind_distribution[_kind] = (
+                _blame_kind_distribution.get(_kind, 0) + 1
+            )
+        print(
+            plan11_stage1_input_quality_marker(
+                optimization_run_id=optimization_run_id_p11,
+                iteration=iteration_p11,
+                qid=str(_card.get("qid") or ""),
+                schema_columns_source=str(_schema_columns_source_batch),
+                schema_columns_size=len(_schema_columns_batch),
+                seeds_pre_normalize=int(
+                    _seed_stats.get("seeds_pre_normalize") or 0
+                ),
+                seeds_post_normalize=int(
+                    _seed_stats.get("seeds_post_normalize") or 0
+                ),
+                seeds_normalized=int(_seed_stats.get("seeds_normalized") or 0),
+                seeds_dropped=int(_seed_stats.get("seeds_dropped") or 0),
+                contract_violation=(
+                    "missing_schema_columns"
+                    if not _schema_columns_batch
+                    else ""
+                ),
+                blame_kind_distribution=_blame_kind_distribution,
+            ),
+            flush=True,
+        )
+
     from genie_space_optimizer.optimization.stages.cluster_plan11 import (
         cluster_diagnoses,
     )
@@ -8780,17 +8973,11 @@ def _decide_and_run_plan11_dispatch(
         diagnose_failing_qids,
     )
 
-    schema_columns_list: list[str] = list(
-        metadata_snapshot.get("schema_columns") or []
-    )
-    if not schema_columns_list and rca_evidence_typed:
-        seen: set[str] = set()
-        for ev in rca_evidence_typed.values():
-            for b in getattr(ev, "blame_set", ()) or ():
-                s = str(b)
-                if s and s not in seen:
-                    seen.add(s)
-                    schema_columns_list.append(s)
+    # Trial 13i — reuse the ``schema_columns`` derived above before card
+    # construction so the seed normalizer and the LLM prompt see one
+    # identical list (the SM lane wires the same value onto
+    # ``TransformerContext`` for the same reason).
+    schema_columns_list: list[str] = list(_schema_columns_batch)
 
     diagnoses = diagnose_failing_qids(
         failing_qids=failing_qids_input,
@@ -8803,6 +8990,64 @@ def _decide_and_run_plan11_dispatch(
         # Stage 1 emits its own STAGE1 markers with the abstain reason.
         # Caller falls back to Plan 4 / heuristic.
         return None
+
+    # Trial 13 Track 3 — non-actionable diagnosis hard gate (Plan 11
+    # batch lane). The SM Stage 1 transformer enforces the same gate
+    # for the canonical lane; this filter mirrors it so the batch
+    # lane cannot smuggle a non-actionable diagnosis into Stage 2.
+    # dc89d1a9 advanced 21/24 ``diagnosed`` outcomes that failed every
+    # actionability check into Stage 2; Stage 3 emitted six
+    # ``empty_synthesis`` and zero patches were applied.
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        classify_non_actionable_reason,
+        plan11_stage1_non_actionable_reject_marker,
+    )
+
+    actionable_diagnoses = []
+    for diag in diagnoses:
+        reason = classify_non_actionable_reason(
+            rca_kind_label=diag.rca_kind_label,
+            evidence_summary=diag.evidence_summary,
+            blame_set=diag.blame_set,
+        )
+        if not reason:
+            actionable_diagnoses.append(diag)
+            continue
+        print(
+            plan11_stage1_non_actionable_reject_marker(
+                optimization_run_id=optimization_run_id_p11,
+                iteration=iteration_p11,
+                qid=str(diag.qid),
+                reason=reason,
+                rca_kind_label=str(diag.rca_kind_label),
+                blame_set_size=len(diag.blame_set or ()),
+                evidence_summary_chars=len(diag.evidence_summary or ""),
+            ),
+            flush=True,
+        )
+    if not actionable_diagnoses:
+        # Every diagnosis failed the actionability gate; downstream
+        # clustering / synthesis would produce empty proposals. Bail
+        # out early so the caller can fall back to Plan 4 / heuristic.
+        return None
+    diagnoses = actionable_diagnoses
+
+    # Pre-flight assertion: no non-actionable diagnosis may reach
+    # Stage 2. If this assertion fires, a refactor reintroduced the
+    # silent advance and the gate above is no longer protecting the
+    # cluster input — fail loud rather than emitting empty_synthesis.
+    for diag in diagnoses:
+        gate_reason = classify_non_actionable_reason(
+            rca_kind_label=diag.rca_kind_label,
+            evidence_summary=diag.evidence_summary,
+            blame_set=diag.blame_set,
+        )
+        assert not gate_reason, (
+            f"Plan 11 Stage 2 pre-flight violated: non-actionable "
+            f"diagnosis qid={diag.qid!r} reached cluster input with "
+            f"reason={gate_reason!r}. The actionability gate must "
+            f"filter non-actionable diagnoses before Stage 2."
+        )
 
     failure_clusters = cluster_diagnoses(
         diagnoses=diagnoses,

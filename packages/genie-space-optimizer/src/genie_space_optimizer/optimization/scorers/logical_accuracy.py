@@ -64,6 +64,8 @@ def _make_logical_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             f"{context}\n\n"
             'Respond with JSON only: {"correct": true/false, "failure_type": "<wrong_aggregation|wrong_filter|wrong_groupby|wrong_orderby|wrong_measure|incorrect_function_usage|tvf_parameter_error|missing_instruction|business_logic_missing|formatting_error>", '
             '"wrong_clause": "<the problematic SQL clause>", "blame_set": ["<column_or_function>"], '
+            '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+            '"blame_rationale": "<one-sentence explanation in plain English>", '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
             '"rca_kind": "<metric_view_routing_confusion|measure_swap|canonical_dimension_missed|missing_required_dimension|extra_defensive_filter|unknown>", '
             '"expected_objects": ["<table_or_column_or_measure_expected>"], '
@@ -71,7 +73,12 @@ def _make_logical_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             '"patch_family": "<contrastive_metric_routing|contrastive_measure_disambiguation|canonical_dimension_guidance|required_dimension_guidance|avoid_unrequested_defensive_filters|unknown>", '
             '"recommended_levers": [1, 5], '
             '"rationale": "<brief explanation>"}\n'
-            'If correct, set failure_type to "", blame_set to [], and counterfactual_fix to "".'
+            "BLAME_SET_STRUCTURED RULES (Trial 14):\n"
+            "  - Prefer kind=column for blamed columns/measures; kind=filter for extra/wrong WHERE predicates (ref = the literal predicate text, e.g. \"col = 'val'\").\n"
+            "  - Use kind=instruction for blamed Genie Space rules / business-logic gaps.\n"
+            "  - For column/table/join, ref MUST be a fully-qualified name (catalog.schema.table[.column]) drawn from the SQL.\n"
+            "  - Keep blame_set in sync — it must mirror the ref values of entries whose kind is column, table, or join (back-compat).\n"
+            'If correct, set failure_type to "", blame_set to [], blame_set_structured to [], blame_rationale to "", and counterfactual_fix to "".'
         )
 
         logger.info(
@@ -196,6 +203,8 @@ def _make_logical_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             confidence=base_confidence,
             wrong_clause=result.get("wrong_clause", ""),
             blame_set=result.get("blame_set", []),
+            blame_set_structured=result.get("blame_set_structured"),
+            blame_rationale=result.get("blame_rationale"),
             counterfactual_fix=result.get("counterfactual_fix") or (
                 f"Fix {result.get('failure_type', 'logic issue')} "
                 f"involving {', '.join(result.get('blame_set', ['unknown']))}"

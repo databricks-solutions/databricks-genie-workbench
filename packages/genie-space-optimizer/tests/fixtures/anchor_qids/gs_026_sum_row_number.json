@@ -9,7 +9,8 @@
     "intended_patch_shape": "structural",
     "evidence_summary": "RANK over SUM creates ties; ROW_NUMBER required for deterministic top-N.",
     "observed_failure": "13 rows returned when 10 expected",
-    "expected_sql_shape": "ROW_NUMBER() OVER (PARTITION BY 1 ORDER BY SUM(cy_sales) DESC)"
+    "expected_sql_shape": "ROW_NUMBER() OVER (PARTITION BY 1 ORDER BY SUM(cy_sales) DESC)",
+    "blame_set": ["sales_fact.cy_sales", "RANK"]
   },
   "expected_proposal": {
     "patch_type": "add_sql_snippet_expression",

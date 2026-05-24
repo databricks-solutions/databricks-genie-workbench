@@ -96,13 +96,32 @@ def asset_routing_scorer(inputs: dict, outputs: dict, expectations: dict) -> Fee
 
     metadata = None
     if not correct:
+        # Trial 14 — emit a structured blame entry for the routing
+        # decision. asset_routing blames a Genie Space *instruction*
+        # (which asset type the engine should pick), not a schema
+        # object, so ``kind=instruction`` with ``ref=None`` and the
+        # routing target in ``description``. The legacy
+        # ``blame_set=[...]`` mirror is retained so older readers and
+        # the back-compat flat key keep working.
+        routing_token = f"asset_routing:{expected_type}"
         metadata = build_asi_metadata(
             failure_type="asset_routing_error",
             severity="major",
             confidence=0.95,
             expected_value=expected_type,
             actual_value=actual_asset,
-            blame_set=[f"asset_routing:{expected_type}"],
+            blame_set=[routing_token],
+            blame_set_structured=[
+                {
+                    "kind": "instruction",
+                    "ref": None,
+                    "description": routing_token,
+                }
+            ],
+            blame_rationale=(
+                f"asset_routing prefers {expected_type} but Genie chose "
+                f"{actual_asset or 'unknown'}"
+            ),
             counterfactual_fix=f"Add instruction to prefer {expected_type} for this query pattern",
         )
         metadata = with_genie_equivalent_eval(

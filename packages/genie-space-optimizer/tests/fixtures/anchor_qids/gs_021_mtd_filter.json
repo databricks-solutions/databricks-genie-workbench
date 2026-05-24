@@ -9,7 +9,8 @@
     "intended_patch_shape": "structural",
     "evidence_summary": "Question asks for MTD; SQL has no time_window filter.",
     "observed_failure": "result is all-time sum, not MTD",
-    "expected_sql_shape": "WHERE time_window = 'mtd'"
+    "expected_sql_shape": "WHERE time_window = 'mtd'",
+    "blame_set": ["mv_7now_fact_sales.time_window"]
   },
   "expected_proposal": {
     "patch_type": "add_sql_snippet_filter",

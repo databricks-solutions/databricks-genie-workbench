@@ -66,9 +66,15 @@ def _make_semantic_equivalence_judge(w: WorkspaceClient, catalog: str, schema: s
             f"{context}\n\n"
             'Respond with JSON only: {"equivalent": true/false, "failure_type": "<different_metric|different_grain|different_scope|misinterpreted_request>", '
             '"blame_set": ["<metric_or_dimension>"], '
+            '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+            '"blame_rationale": "<one-sentence explanation in plain English>", '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
             '"rationale": "<brief explanation>"}\n'
-            'If equivalent, set failure_type to "", blame_set to [], and counterfactual_fix to "".'
+            "BLAME_SET_STRUCTURED RULES (Trial 14):\n"
+            "  - Prefer kind=column for the blamed metric/dimension column; kind=filter for differing WHERE predicates that change the metric.\n"
+            "  - For column/table/join, ref MUST be a fully-qualified name (catalog.schema.table[.column]) drawn from the SQL.\n"
+            "  - Keep blame_set in sync — it must mirror the ref values of entries whose kind is column, table, or join (back-compat).\n"
+            'If equivalent, set failure_type to "", blame_set to [], blame_set_structured to [], blame_rationale to "", and counterfactual_fix to "".'
         )
 
         logger.info(
@@ -202,6 +208,8 @@ def _make_semantic_equivalence_judge(w: WorkspaceClient, catalog: str, schema: s
             severity="major",
             confidence=base_confidence,
             blame_set=result.get("blame_set", []),
+            blame_set_structured=result.get("blame_set_structured"),
+            blame_rationale=result.get("blame_rationale"),
             counterfactual_fix=result.get("counterfactual_fix") or (
                 f"Fix {result.get('failure_type', 'semantic mismatch')} "
                 f"involving {', '.join(result.get('blame_set', ['unknown']))}"

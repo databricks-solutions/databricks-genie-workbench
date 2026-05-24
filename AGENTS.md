@@ -259,3 +259,56 @@ optimization code, consult the relevant doc for design rationale.
   - Read before modifying: `scanner.py` (scoring rules), `prompts_create/`, `plan_builder.py`
 - **GSL instruction schema (near-term)**: `docs/gsl-instruction-schema.md` — section vocabulary and format rules for `instructions.text_instructions[0].content` that the Create Agent and Fix Agent must follow. You MUST read this before modifying Create Agent or Fix Agent prompts.
   - Read before modifying: `backend/services/plan_builder.py` (Create Agent parallel-generation prompts), `backend/prompts_create/_plan.py` (Create Agent plan-step prompt template), `backend/prompts.py` (Fix Agent prompt), `backend/services/fix_agent.py`, `backend/services/create_agent_tools.py`
+
+## /goal Harness Contract
+
+When a `/goal` is active in this session, Claude MUST obey the contract
+in `packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/01-harness-contract.md`.
+
+The eight invariants in that file are non-negotiable:
+
+1. **One trial fits in one assistant message** — no mid-trial turn-ends.
+   Use `Bash run_in_background: true` + `BashOutput` polling for the
+   ~45-minute lever-loop runs.
+2. **The `EVIDENCE FOR EVALUATOR` block is the LAST surface of every
+   assistant message** under `/goal` — re-emit it after any
+   long-running tool call. Format defined in
+   `packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/04-evidence-for-evaluator-protocol.md`.
+3. **Trial number is read from `### Trial N` rows in
+   `packages/genie-space-optimizer/docs/llmdrivenarchitecture/v5/lever-loop-architecture-and-iteration-tracker.md`**,
+   never from any session-local counter — `/goal --resume` resets the
+   goal-internal counter, so all budget bounds must reference the
+   persistent tracker.
+4. **Offline iteration first.** Invoke the
+   `gso-offline-funnel-iterate` skill before every real trial; record
+   the offline justification (`real_trial_required_reason ∈
+   {genie_api, mlflow_reeval}`) in the next tracker row. Most fix
+   iterations should never escalate to a real trial.
+5. **Pre-trial gate is mandatory** —
+   `packages/genie-space-optimizer/scripts/pretrial_gate.sh` must exit
+   zero before any `./scripts/deploy.sh` invocation; the PreToolUse
+   hook enforces this, but the model should also explicitly run it at
+   the start of any trial turn so the failure surfaces in transcript.
+6. **Generalizable fixes only** — no per-QID overfits, no re-imports
+   from `_legacy/`, no closed-vocab archetypes, no hand-rolled QID
+   extraction. PostToolUse `Edit|Write` hooks
+   (`forbid_legacy_imports.sh` + `check_invariants.sh`) enforce
+   automatically.
+7. **Real trials always run BOTH anchor spaces** —
+   `dc89d1a9-2020-4f42-994d-1ae05b865398` and
+   `98ec8950-d7d4-40b3-b5c0-36dcfb3fb610` — in parallel via `Task`
+   subagent fan-out. A fix that passes on one but not the other is a
+   bug class to surface, not hide.
+8. **Whack-a-mole detection** — if the funnel deepest-stage-reached
+   has not advanced across three consecutive trials, end the turn
+   with `verdict = WHACK_A_MOLE_DETECTED` and hand control back to
+   the operator.
+
+The canonical skill sequence per turn is documented in
+`packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/01-harness-contract.md`
+§"Skill call order". The pasteable goal conditions live in
+`packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/conditions/`.
+The operator runbook for launching `/goal` safely is in
+`packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/06-operator-runbook.md`.
+
+When NO `/goal` is active, this contract is dormant — operate normally.

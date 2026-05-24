@@ -86,6 +86,17 @@ def _classify_llm_error(
         return "request_envelope_invalid"
     if "timeout" in cls:
         return "timeout"
+    # Trial 13 Track 4 — ``string_too_long`` errors raised by Pydantic
+    # on a post-LLM-parse response. These fire when the LLM returned
+    # semantically-correct content but local validation rejected it
+    # because a field cap was set too low. Trial 13 also relaxes the
+    # caps and replaces the rejection with a graceful-truncate
+    # validator; this arm exists so future regressions (a new field
+    # without the truncate validator, an LLM that emits structured
+    # blobs we didn't anticipate) surface a typed error_kind instead
+    # of falling through to ``unknown`` or ``parse``.
+    if "string_too_long" in msg or "should have at most" in msg:
+        return "response_post_parse_field_length"
     if "envelopecontract" in cls or "parse" in cls or "json" in cls:
         return "parse"
     # BadRequestError + status-400 rejections: inspect the body so the
@@ -312,6 +323,31 @@ def _build_request(
     )
 
 
+def _lookup_seed_for_qid(
+    failing_qids: list[dict[str, Any]], qid: str
+) -> tuple[str, ...]:
+    """Return the ``blame_set_seed`` attached to ``qid`` in the input cards.
+
+    Trial 13h seed-backfill safety net: when the Stage 1 LLM emits an empty
+    ``blame_set`` (or emits entries that all fail the ``schema_columns``
+    filter), we fall back on the seed already plumbed into the input card by
+    ``build_stage1_evidence_card``. The seed is guaranteed non-empty by the
+    Stage 1 input-evidence contract (``min_blame_set_size >= 1``), so this
+    lookup is the load-bearing fallback for the ``effective_blame_set``
+    chain at Stage 1 (analogous to the Stage 3 chain established in
+    Trial 13g).
+
+    Returns an empty tuple if the qid is not in the list (defensive — the
+    parse loop only iterates over LLM-returned items, but the seed lookup
+    is keyed by qid).
+    """
+    for card in failing_qids:
+        if str(card.get("qid", "")) == qid:
+            raw_seed = card.get("blame_set_seed") or ()
+            return tuple(str(s) for s in raw_seed if str(s).strip())
+    return ()
+
+
 def diagnose_failing_qids(
     *,
     failing_qids: list[dict[str, Any]],
@@ -477,6 +513,33 @@ def diagnose_failing_qids(
             if schema_col_set
             else tuple(str(b) for b in raw_blame)
         )
+
+        # Trial 13h — seed-backfill safety net. The pre-13h failure mode
+        # was a confident Stage 1 diagnosis with blame_set: [] that the
+        # non-actionable gate (classify_non_actionable_reason ->
+        # "zero_blame_set") correctly but unnecessarily terminated.
+        # Backfill whenever the post-schema-filter result is empty —
+        # covers both "LLM emitted []" and "LLM emitted entries that all
+        # failed the schema_columns filter" (hallucinated FQNs). The
+        # blame_set_seed on the input card is guaranteed non-empty by the
+        # Stage 1 input-evidence contract and is the trusted last-mile
+        # signal for what objects are implicated in the failure.
+        blame_set_llm_emitted = len(raw_blame)
+        blame_set_post_schema_dropped = blame_set_llm_emitted - len(valid_blame)
+        blame_set_source = "llm" if valid_blame else "empty"
+        if not valid_blame:
+            raw_seed = _lookup_seed_for_qid(
+                failing_qids, str(item.get("qid", ""))
+            )
+            seed_valid = (
+                tuple(s for s in raw_seed if s in schema_col_set)
+                if schema_col_set
+                else raw_seed
+            )
+            if seed_valid:
+                valid_blame = seed_valid
+                blame_set_source = "seed_backfill"
+
         diag = PerQidDiagnosis(
             qid=str(item.get("qid", "")),
             rca_kind_label=str(item.get("rca_kind_label", "")),
@@ -501,6 +564,9 @@ def diagnose_failing_qids(
                 duration_ms=duration_ms,
                 tokens_input=tokens_in,
                 tokens_output=tokens_out,
+                blame_set_source=blame_set_source,
+                blame_set_llm_emitted=blame_set_llm_emitted,
+                blame_set_post_schema_dropped=blame_set_post_schema_dropped,
             )
         )
 

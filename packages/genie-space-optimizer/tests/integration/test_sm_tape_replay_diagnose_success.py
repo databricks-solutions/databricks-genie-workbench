@@ -47,11 +47,29 @@ _HARD_QIDS = ("gs_001", "gs_004", "gs_013")
 
 
 def _hard_row(qid: str) -> dict:
-    """Build a production-shape row that ``row_is_hard_failure`` admits."""
+    """Build a production-shape row that ``row_is_hard_failure`` admits.
+
+    Trial 12: rows must carry enough fields for the Stage 1 input
+    evidence contract to pass (otherwise the pre-flight short-circuits
+    and the LLM is never invoked). Adds question text, ground-truth
+    SQL, generated SQL, and a minimal ASI metadata blob carrying the
+    blame seed and rca_kind.
+    """
     return {
         "inputs/question_id": qid,
+        "inputs/question": f"What is the total for {qid}?",
+        "inputs/ground_truth_sql": f"SELECT SUM(amount) FROM orders WHERE id = '{qid}';",
+        "outputs/response": "SELECT amount FROM orders;",
         "feedback/result_correctness/value": "no",
+        "feedback/result_correctness/rationale": (
+            f"Generated SQL for {qid} omitted aggregation."
+        ),
         "feedback/arbiter/value": "ground_truth_correct",
+        "feedback/asi/metadata": {
+            "blame_set": ["catalog.schema.orders.amount"],
+            "rca_kind": "wrong_aggregation",
+            "failure_type": "missing_aggregation",
+        },
         "score": 0.0,
         "sql": "SELECT 1",
         "expected_shape": "SELECT count(*) FROM x",

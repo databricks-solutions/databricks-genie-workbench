@@ -1,0 +1,58 @@
+{
+  "_schema_version": "production_case_v1",
+  "_provenance": {
+    "source_run_id": "dc89d1a9-2020-4f42-994d-1ae05b865398",
+    "source_qid": "7now_delivery_analytics_space_gs_013",
+    "source_artifacts": [
+      "packages/genie-space-optimizer/tests/replay/fixtures/plan10/7now_gs_013_wrong_filter_condition.json::cluster.question_traces[0]",
+      "docs/runid_analysis/dc89d1a9-2020-4f42-994d-1ae05b865398/evidence/replay_fixture_from_latest_export_383718083419518.json",
+      "docs/runid_analysis/dc89d1a9-2020-4f42-994d-1ae05b865398/postmortem.md"
+    ],
+    "field_sources_snapshot": {
+      "blame_set_seed": "present",
+      "generated_sql": "present",
+      "ground_truth_sql": "present",
+      "judge_rationale": "present",
+      "question_text": "present",
+      "rca_evidence": "present"
+    },
+    "violations_snapshot": [],
+    "postmortem_root_cause": "Stage-1 input card empty for question_text; Plan 11 projection missed gs_013 in all four iterations.",
+    "sanitization_notes": "7now_delivery_analytics_space_ -> domain_b_ Row payload replaced with sanitized captured real-row evidence; joined_row_fields removed."
+  },
+  "qid": "domain_b_gs_013",
+  "row": {
+    "request": {
+      "kwargs": {
+        "question_id": "domain_b_gs_013"
+      },
+      "question": "Compare the YoY change in average 7Now transaction value for the current day versus month-to-date by zone for same-store locations."
+    },
+    "expected_response/value": "WITH day_data AS (SELECT zone_combination, MEASURE(`7now_avg_txn_diff_day`) AS avg_txn_diff_day FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = Y AND time_window = day GROUP BY zone_combination), mtd_data AS (SELECT zone_combination, MEASURE(`7now_avg_txn_diff_mtd`) AS avg_txn_diff_mtd FROM prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales WHERE same_store_7now = Y AND time_window = mtd GROUP BY zone_combination) SELECT d.zone_combination, d.avg_txn_diff_day, m.avg_txn_diff_mtd FROM day_data d JOIN mtd_data m ON d.zone_combination = m.zone_combination",
+    "response": {
+      "response": "SELECT \n  `zone_combination`,\n  `time_window`,\n  ROUND(MEASURE(`7now_avg_txn_diff_day`), 1) AS `avg_txn_diff_day`,\n  ROUND(MEASURE(`7now_avg_txn_diff_mtd`), 1) AS `avg_txn_diff_mtd`\nFROM `prashanth_subrahmanyam_catalog`.`sales_reports`.`mv_7now_store_sales`\nWHERE `time_window` IN (day, mtd)\n  AND `same_store_7now` = Y\nGROUP BY ALL\nORDER BY `zone_combination`, `time_window`"
+    },
+    "arbiter/value": "ground_truth_correct",
+    "result_correctness/value": "no",
+    "client_request_id": "sanitized-plan10-gs013"
+  },
+  "typed_evidence": {
+    "qid": "domain_b_gs_013",
+    "observed_failure": "Average delivery time includes incomplete deliveries and stale historical data outside the recent window.",
+    "generated_sql_issue": "WHERE clause omits both delivery_status = 'COMPLETED' and the trailing-30-day delivered_at filter.",
+    "expected_sql_shape": "Filter to completed deliveries within the last 30 days before averaging delivery_minutes.",
+    "blame_set": [
+      "main.public.deliveries.delivery_status",
+      "main.public.deliveries.delivered_at"
+    ],
+    "suggested_repair_family": "add_sql_snippet_filter",
+    "repair_hint_patch_type": "UPDATE_FILTER_CONDITION",
+    "confidence": "medium",
+    "quoted_evidence": [
+      "GROUP BY store_id",
+      "no delivery_status filter",
+      "no time window"
+    ]
+  },
+  "expected_card_violations": []
+}

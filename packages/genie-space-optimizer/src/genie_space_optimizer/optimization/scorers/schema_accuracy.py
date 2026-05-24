@@ -70,6 +70,8 @@ def _make_schema_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             'Respond with JSON only: {"correct": true/false, '
             '"failure_type": "<wrong_table|wrong_column|wrong_join|missing_join_spec|wrong_join_spec|missing_column|incorrect_function_usage|tvf_parameter_error>", '
             '"wrong_clause": "<the problematic SQL clause>", "blame_set": ["<table_or_column>"], '
+            '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+            '"blame_rationale": "<one-sentence explanation in plain English>", '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
             '"rca_kind": "<metric_view_routing_confusion|measure_swap|canonical_dimension_missed|missing_required_dimension|extra_defensive_filter|unknown>", '
             '"expected_objects": ["<table_or_column_or_measure_expected>"], '
@@ -78,7 +80,13 @@ def _make_schema_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             '"recommended_levers": [1, 5], '
             '"rationale": "<brief explanation>", '
             '"join_assessment": null}\n'
-            'If correct, set failure_type to "", blame_set to [], counterfactual_fix to "", and join_assessment to null.\n'
+            "BLAME_SET_STRUCTURED RULES (Trial 14):\n"
+            "  - Prefer kind=column for missing/wrong columns, kind=table for missing/wrong tables, kind=join for join issues.\n"
+            "  - Use kind=filter only when the blame is an extra/wrong WHERE predicate (ref = the literal predicate text).\n"
+            "  - Use kind=instruction for Genie Space rule/instruction blame (rare for schema_accuracy).\n"
+            "  - For column/table/join, ref MUST be a fully-qualified name (catalog.schema.table[.column]) drawn from the SQL.\n"
+            "  - Keep blame_set in sync — it must mirror the ref values of entries whose kind is column, table, or join (back-compat).\n"
+            'If correct, set failure_type to "", blame_set to [], blame_set_structured to [], blame_rationale to "", counterfactual_fix to "", and join_assessment to null.\n'
             'If failure_type is wrong_join, missing_join_spec, or wrong_join_spec, '
             'set join_assessment to: {"issue": "<missing_join|wrong_condition|wrong_direction>", '
             '"left_table": "<fully_qualified_table_name>", "right_table": "<fully_qualified_table_name>", '
@@ -214,6 +222,8 @@ def _make_schema_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             confidence=base_confidence,
             wrong_clause=result.get("wrong_clause", ""),
             blame_set=result.get("blame_set", []),
+            blame_set_structured=result.get("blame_set_structured"),
+            blame_rationale=result.get("blame_rationale"),
             counterfactual_fix=result.get("counterfactual_fix") or (
                 f"Fix {result.get('failure_type', 'schema issue')} "
                 f"involving {', '.join(result.get('blame_set', ['unknown']))}"

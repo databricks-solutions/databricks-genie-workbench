@@ -105,6 +105,120 @@ def input_projection_contract_violation_marker(
     return marker_line("GSO_INPUT_PROJECTION_CONTRACT_VIOLATION_V1", payload)
 
 
+def _classify_dispatch_drift(
+    sm_hard_qids: list[str] | None,
+    plan11_dispatch_qids: list[str] | None,
+    *,
+    sm_hard_qid_count_fallback: int,
+    plan11_failing_qids_count_fallback: int,
+) -> str:
+    """Classify SM-vs-Plan11 dispatch QID drift.
+
+    Set-based classification (Trial 13): cardinality alone cannot tell
+    "Plan 11 emitted ``gs_009`` while SM emitted
+    ``airline_..._gs_009``" from a clean run. The classifier walks the
+    sets directly when both lists are provided; otherwise it falls
+    back to the legacy count-based "starved" check so the older call
+    sites continue to behave the same.
+
+    Returns one of: ``"none"``, ``"starved"``, ``"namespace_mismatch"``,
+    ``"partial_drift"``.
+    """
+    sm_set = (
+        set(q for q in (sm_hard_qids or []) if str(q or "").strip())
+        if sm_hard_qids is not None
+        else None
+    )
+    p11_set = (
+        set(q for q in (plan11_dispatch_qids or []) if str(q or "").strip())
+        if plan11_dispatch_qids is not None
+        else None
+    )
+
+    # Set-aware classification when both lists are supplied.
+    if sm_set is not None and p11_set is not None:
+        if not sm_set and not p11_set:
+            return "none"
+        if sm_set and not p11_set:
+            return "starved"
+        if not sm_set and p11_set:
+            # Symmetric to "starved": Plan 11 sees QIDs the SM never
+            # admitted. Treat as a drift event so postmortems can
+            # attribute it.
+            return "namespace_mismatch"
+        intersection = sm_set & p11_set
+        if not intersection:
+            return "namespace_mismatch"
+        if sm_set ^ p11_set:
+            return "partial_drift"
+        return "none"
+
+    # Legacy count-based fallback (call sites that haven't been
+    # migrated yet).
+    if (
+        plan11_failing_qids_count_fallback == 0
+        and sm_hard_qid_count_fallback > 0
+    ):
+        return "starved"
+    return "none"
+
+
+def plan11_dispatch_starved_marker(
+    *,
+    run_id: str,
+    iteration: int,
+    plan11_failing_qids_count: int,
+    sm_hard_qid_count: int,
+    harness_hard_qid_count: int = 0,
+    sm_hard_qids: list[str] | None = None,
+    plan11_dispatch_qids: list[str] | None = None,
+) -> str:
+    """Emit GSO_PLAN11_DISPATCH_STARVED_V1 with a typed ``drift_kind``.
+
+    Trial 13 widening: the marker now classifies the QID-set drift
+    between the state machine and the Plan 11 dispatch lane:
+
+    * ``starved`` — Plan 11 saw zero QIDs while SM had ≥1.
+    * ``namespace_mismatch`` — both sides non-empty AND the
+      intersection is empty (e.g. SM emits
+      ``airline_ticketing_and_fare_analysis_gs_009`` while dispatch
+      emits ``gs_009``). The 98ec8950 + dc89d1a9 postmortems
+      observed this shape; cardinality alone did not catch it.
+    * ``partial_drift`` — intersection non-empty AND symmetric
+      difference non-empty (some QIDs drift between lanes).
+    * ``none`` — sets match. Returns ``""`` (caller skips emission).
+
+    Backwards-compatible: callers that pass only the counts (no
+    ``sm_hard_qids`` / ``plan11_dispatch_qids`` lists) fall back to
+    the Trial-12 count-based ``starved`` check.
+    """
+    drift_kind = _classify_dispatch_drift(
+        sm_hard_qids,
+        plan11_dispatch_qids,
+        sm_hard_qid_count_fallback=int(sm_hard_qid_count),
+        plan11_failing_qids_count_fallback=int(plan11_failing_qids_count),
+    )
+    if drift_kind == "none":
+        return ""
+    payload = {
+        "run_id": run_id,
+        "iteration": iteration,
+        "plan11_failing_qids_count": int(plan11_failing_qids_count),
+        "sm_hard_qid_count": int(sm_hard_qid_count),
+        "harness_hard_qid_count": int(harness_hard_qid_count),
+        "drift_kind": drift_kind,
+        "sm_hard_qids": (
+            [str(q) for q in sm_hard_qids] if sm_hard_qids is not None else []
+        ),
+        "plan11_dispatch_qids": (
+            [str(q) for q in plan11_dispatch_qids]
+            if plan11_dispatch_qids is not None
+            else []
+        ),
+    }
+    return marker_line("GSO_PLAN11_DISPATCH_STARVED_V1", payload)
+
+
 def patch_outcome_marker_from_attempt(
     *,
     run_id: str,

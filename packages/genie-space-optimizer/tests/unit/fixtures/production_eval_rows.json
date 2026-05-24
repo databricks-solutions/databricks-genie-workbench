@@ -3,7 +3,7 @@
     "purpose": "Production-shape eval rows for canonical-qid admission tests.",
     "derived_from": "packages/genie-space-optimizer/docs/runid_analysis/98ec8950-d7d4-40b3-b5c0-36dcfb3fb610/evidence/replay_fixture_from_latest_export_274908836064880.json",
     "shape_note": "The replay fixture stores POST-normalized rows with top-level question_id. Production eval rows reach the dispatch adapter in MLflow-flattened shape (inputs/question_id) or nested (inputs.question_id) or request.kwargs.question_id. This fixture re-creates the shape variability that the harness's _get_question_id at harness.py:13634 already handles, but the dispatch adapter at optimizer.py:8552 and dispatch_input.py:23/47 do not.",
-    "hard_qid_predicate": "row_is_hard_failure (evaluation.py:3649) — result_correctness=='no' AND arbiter NOT IN {genie_correct, both_correct}"
+    "hard_qid_predicate": "row_is_hard_failure (evaluation.py:3649) \u2014 result_correctness=='no' AND arbiter NOT IN {genie_correct, both_correct}"
   },
   "eval_rows": [
     {
@@ -20,7 +20,9 @@
       "_shape": "nested_inputs_dict",
       "_expected_qid": "airline_ticketing_and_fare_analysis_gs_024",
       "_expected_hard": true,
-      "inputs": {"question_id": "airline_ticketing_and_fare_analysis_gs_024"},
+      "inputs": {
+        "question_id": "airline_ticketing_and_fare_analysis_gs_024"
+      },
       "result_correctness": "no",
       "arbiter": "ground_truth_correct",
       "outputs/predictions/sql": "SELECT SUM(amount) FROM tkt_payment",
@@ -49,6 +51,171 @@
       "inputs/question_id": "airline_ticketing_and_fare_analysis_gs_019",
       "feedback/result_correctness/value": "no",
       "feedback/arbiter/value": "both_correct"
+    }
+  ],
+  "_hydration_provenance": {
+    "purpose": "Stage 1 hydration TDD: each row exercises one of the 5 documented row shapes via synthetic data.",
+    "shapes": [
+      "top_level",
+      "mlflow_slash_flattened",
+      "dotted_flat_keys",
+      "nested_inputs_dict",
+      "request_kwargs_json_string"
+    ],
+    "note": "These are SYNTHETIC; Trial 13 captures the actual production row shapes in production_eval_rows_real.json. Synthetic rows remain to keep Trial 12 acceptance tests green while Phase 8 (CanonicalEvalRow) migration is rolled out."
+  },
+  "hydration_rows": [
+    {
+      "_shape": "top_level",
+      "_expected_qid": "gs_009",
+      "_expected_hard": true,
+      "question_id": "gs_009",
+      "question": "What are the top 10 origin-destination airport pairs by coupon count?",
+      "expected_sql": "SELECT * FROM tkt ORDER BY x LIMIT 10",
+      "generated_sql": "SELECT * FROM tkt RANK() OVER (ORDER BY x) <= 10",
+      "judge_rationale": "Genie used RANK() which can return more than 10 rows.",
+      "result_correctness": "no",
+      "arbiter": "ground_truth_correct",
+      "arbiter/metadata": {
+        "failure_type": "wrong_aggregation",
+        "wrong_clause": "GROUP BY",
+        "blame_set": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "counterfactual_fix": "switch GROUP BY to include col_b",
+        "expected_objects": [
+          "table.col_a"
+        ],
+        "actual_objects": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "rca_kind": "missing_filter",
+        "patch_family": "add_sql_snippet_expression"
+      }
+    },
+    {
+      "_shape": "mlflow_slash_flattened",
+      "_expected_qid": "gs_021",
+      "_expected_hard": true,
+      "inputs/question_id": "gs_021",
+      "inputs/question": "Show me CY and PY sales for each store along with state, city, region.",
+      "inputs/expected_sql": "SELECT store, state, city, region, CY_sales, PY_sales FROM stores",
+      "outputs/response": "SELECT store, state, city, region, CY_sales FROM stores",
+      "judge_rationale": "Generated SQL omitted PY_sales column.",
+      "feedback/result_correctness/value": "no",
+      "feedback/arbiter/value": "ground_truth_correct",
+      "arbiter/metadata": {
+        "failure_type": "wrong_aggregation",
+        "wrong_clause": "GROUP BY",
+        "blame_set": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "counterfactual_fix": "switch GROUP BY to include col_b",
+        "expected_objects": [
+          "table.col_a"
+        ],
+        "actual_objects": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "rca_kind": "missing_filter",
+        "patch_family": "add_sql_snippet_expression"
+      }
+    },
+    {
+      "_shape": "dotted_flat_keys",
+      "_expected_qid": "gs_024",
+      "_expected_hard": true,
+      "inputs.question_id": "gs_024",
+      "inputs.question": "Show payment distribution by form_of_payment_code.",
+      "inputs.expected_sql": "SELECT form_of_payment_code, COUNT(*) FROM tkt GROUP BY form_of_payment_code",
+      "outputs.response": "SELECT form_of_payment_code FROM tkt",
+      "judge_rationale": "Missing COUNT and GROUP BY.",
+      "result_correctness": "no",
+      "arbiter": "ground_truth_correct",
+      "arbiter/metadata": {
+        "failure_type": "wrong_aggregation",
+        "wrong_clause": "GROUP BY",
+        "blame_set": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "counterfactual_fix": "switch GROUP BY to include col_b",
+        "expected_objects": [
+          "table.col_a"
+        ],
+        "actual_objects": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "rca_kind": "missing_filter",
+        "patch_family": "add_sql_snippet_expression"
+      }
+    },
+    {
+      "_shape": "nested_inputs_dict",
+      "_expected_qid": "gs_026",
+      "_expected_hard": true,
+      "inputs": {
+        "question_id": "gs_026",
+        "question": "Which zone VPs stores have the highest total CY sales for the day time window?",
+        "expected_sql": "SELECT store, SUM(sales) FROM zones WHERE time='day' GROUP BY store ORDER BY 2 DESC"
+      },
+      "outputs": {
+        "response": "SELECT store, SUM(sales) FROM zones GROUP BY store"
+      },
+      "judge_rationale": "Missing WHERE time='day' clause.",
+      "result_correctness": "no",
+      "arbiter": "ground_truth_correct",
+      "arbiter/metadata": {
+        "failure_type": "wrong_aggregation",
+        "wrong_clause": "GROUP BY",
+        "blame_set": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "counterfactual_fix": "switch GROUP BY to include col_b",
+        "expected_objects": [
+          "table.col_a"
+        ],
+        "actual_objects": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "rca_kind": "missing_filter",
+        "patch_family": "add_sql_snippet_expression"
+      }
+    },
+    {
+      "_shape": "request_kwargs_json_string",
+      "_expected_qid": "gs_004",
+      "_expected_hard": true,
+      "request": "{\"kwargs\": {\"question_id\": \"gs_004\", \"question\": \"Show me total CY customer count and CY sales by zone.\", \"expected_sql\": \"SELECT zone, COUNT(DISTINCT customer), SUM(sales) FROM zones GROUP BY zone\"}}",
+      "response": "{\"response\": \"SELECT zone, COUNT(customer) FROM zones GROUP BY zone\"}",
+      "judge_rationale": "Generated SQL omits DISTINCT and SUM(sales).",
+      "feedback/result_correctness/value": "no",
+      "feedback/arbiter/value": "ground_truth_correct",
+      "arbiter/metadata": {
+        "failure_type": "wrong_aggregation",
+        "wrong_clause": "GROUP BY",
+        "blame_set": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "counterfactual_fix": "switch GROUP BY to include col_b",
+        "expected_objects": [
+          "table.col_a"
+        ],
+        "actual_objects": [
+          "table.col_a",
+          "table.col_b"
+        ],
+        "rca_kind": "missing_filter",
+        "patch_family": "add_sql_snippet_expression"
+      }
     }
   ]
 }

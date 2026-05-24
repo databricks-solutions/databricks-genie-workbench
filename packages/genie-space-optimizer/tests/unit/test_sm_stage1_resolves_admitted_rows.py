@@ -67,7 +67,20 @@ def test_context_baseline_eval_rows_is_populated_for_sm(
 
     assert "baseline_eval_rows" in captured
     assert len(captured["baseline_eval_rows"]) == len(production_rows)
-    assert all(isinstance(r, dict) for r in captured["baseline_eval_rows"])
+    # Trial 13 Phase 8 — every row in baseline_eval_rows is now a
+    # ``CanonicalEvalRow`` (Mapping-compatible) projected by
+    # ``normalize_eval_row``. The Mapping shim keeps legacy dict
+    # consumers working.
+    from collections.abc import Mapping
+
+    from genie_space_optimizer.optimization.canonical_eval_row import (
+        CanonicalEvalRow,
+    )
+    assert all(
+        isinstance(r, CanonicalEvalRow)
+        for r in captured["baseline_eval_rows"]
+    )
+    assert all(isinstance(r, Mapping) for r in captured["baseline_eval_rows"])
 
 
 def test_find_eval_row_resolves_production_shape_row_via_ctx(

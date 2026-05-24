@@ -9,7 +9,8 @@
     "intended_patch_shape": "structural",
     "evidence_summary": "amount column mixes currencies; needs currency = 'USD' filter to be comparable.",
     "observed_failure": "sums include EUR and GBP rows",
-    "expected_sql_shape": "SUM(amount) WHERE currency = 'USD'"
+    "expected_sql_shape": "SUM(amount) WHERE currency = 'USD'",
+    "blame_set": ["payments.currency", "payments.amount"]
   },
   "expected_proposal": {
     "patch_type": "add_sql_snippet_filter",

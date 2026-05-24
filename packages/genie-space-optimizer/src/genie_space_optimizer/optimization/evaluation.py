@@ -3144,6 +3144,8 @@ def build_asi_metadata(
     confidence: float = 0.5,
     wrong_clause: str | None = None,
     blame_set: list[str] | None = None,
+    blame_set_structured: Any = None,
+    blame_rationale: str | None = None,
     quoted_metadata_text: str | None = None,
     missing_metadata: str | None = None,
     ambiguity_detected: bool = False,
@@ -3159,13 +3161,55 @@ def build_asi_metadata(
     recommended_levers: list[int] | None = None,
     **extra: Any,
 ) -> dict:
-    """Build an ASI metadata dict conforming to ASI_SCHEMA."""
+    """Build an ASI metadata dict conforming to ASI_SCHEMA.
+
+    Trial 14 — accepts a structured ``blame_set_structured`` payload
+    (``list[dict]`` / JSON-string / legacy ``list[str]``) and a free-
+    text ``blame_rationale``. The coercion funnel
+    (:func:`coerce_blame_entries`) classifies every token against the
+    closed ``BLAME_KINDS`` vocabulary, then re-projects schema-
+    resolvable entries back to a legacy ``blame_set`` mirror via
+    :func:`legacy_blame_set_from_entries`. This keeps existing
+    free-text readers working while the structured field carries the
+    typed signal.
+    """
+    # Trial 14 — local import keeps the optimization package's
+    # bootstrap order unchanged (evaluation.py is imported very
+    # early; blame_entry has no cross-cutting deps so a deferred
+    # import here is safe and avoids any cycles via the scorers
+    # subpackage that imports evaluation.build_asi_metadata).
+    from genie_space_optimizer.optimization.blame_entry import (
+        coerce_blame_entries,
+        legacy_blame_set_from_entries,
+    )
+
+    entries = coerce_blame_entries(
+        raw_structured=blame_set_structured,
+        legacy_strings=blame_set or (),
+    )
+    legacy_mirror = legacy_blame_set_from_entries(entries)
+    # Back-compat — if the caller passed legacy strings that all
+    # mapped to non-schema kinds (filter/instruction), keep the
+    # original ``blame_set`` payload so existing readers still see the
+    # tokens they used to see. The structured field carries the typed
+    # routing for new readers.
+    if not legacy_mirror and blame_set:
+        legacy_value = [
+            str(token or "").strip()
+            for token in blame_set
+            if str(token or "").strip()
+        ]
+    else:
+        legacy_value = legacy_mirror
+
     md: dict = {
         "failure_type": failure_type if failure_type in FAILURE_TAXONOMY else "other",
         "severity": severity,
         "confidence": confidence,
         "wrong_clause": wrong_clause,
-        "blame_set": blame_set or [],
+        "blame_set": legacy_value,
+        "blame_set_structured": [entry.to_dict() for entry in entries],
+        "blame_rationale": (blame_rationale or "").strip(),
         "quoted_metadata_text": quoted_metadata_text,
         "missing_metadata": missing_metadata,
         "ambiguity_detected": ambiguity_detected,
@@ -7999,7 +8043,21 @@ def run_evaluation(
                             if parsed:
                                 row_dict[mkey] = parsed
 
-                _ASI_FLAT_FIELDS = ("failure_type", "blame_set", "wrong_clause", "counterfactual_fix", "severity", "confidence")
+                # Trial 14 — promote the structured blame fields to flat
+                # ``metadata/<judge>/<field>`` keys so downstream readers
+                # (Stage 1 hydration, workbench capture, postmortem
+                # tooling) can see them without dict-walking the nested
+                # ``<judge>/metadata`` object.
+                _ASI_FLAT_FIELDS = (
+                    "failure_type",
+                    "blame_set",
+                    "blame_set_structured",
+                    "blame_rationale",
+                    "wrong_clause",
+                    "counterfactual_fix",
+                    "severity",
+                    "confidence",
+                )
                 for col_name in list(row_dict.keys()):
                     if not col_name.endswith("/metadata"):
                         continue

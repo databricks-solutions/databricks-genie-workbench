@@ -40,6 +40,10 @@ node_modules/
 # pytest cache
 .pytest_cache/
 
+# Local lever-loop workbench — generated run outputs only.
+# Source code under devtools/local_lever_workbench/ is committed.
+devtools/local_lever_workbench/runs/
+
 # Build artifacts
 .build/
 

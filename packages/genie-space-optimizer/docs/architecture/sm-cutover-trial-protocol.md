@@ -21,6 +21,99 @@ The dispatcher default is **legacy = true** in this PR — no production
 behaviour changes until the trial-prep PR explicitly flips the
 default to SM-first.
 
+## Pre-trial local checks (mandatory)
+
+Full Databricks trials must be **confirmation runs**, never discovery
+runs. Every contract failure that historically appeared first in a
+deployed trial has a local reproduction now; running these tests
+before deploying ensures the trial only exercises real endpoint /
+Genie API / re-eval behaviour rather than re-discovering tape-drift,
+hydration regressions, or stage-contract failures.
+
+Run **all** of the following from
+`packages/genie-space-optimizer/`. They must each finish green in
+under ten seconds; a longer wall time is itself a regression signal.
+
+| # | Command | What it pins |
+|---|---|---|
+| 1 | `pytest tests/unit/test_eval_row_access_handles_production_shapes.py -q` | Stage 1 evidence-card hydration covers the five production MLflow row shapes. |
+| 2 | `pytest tests/integration/test_databricks_request_contract_golden.py -q` | The Databricks request envelope is wire-valid (no PR-1B/1C regression). |
+| 3 | `pytest tests/integration/test_sm_tape_replay_diagnose_success.py -q` | Stage 1 tape-replay scaffold still works end-to-end. |
+| 4 | `pytest tests/integration/test_sm_forward_pipeline_to_proposed.py -q` | Production-shaped rows reach at least `FunnelStage.PROPOSED` under tape replay. **The forward-pipeline smoke gate.** |
+| 5 | `pytest tests/integration/test_sm_forward_pipeline_failure_modes.py -q` | Every known failure mode (empty card, non-actionable diagnosis, Stage 2 drop, Stage 3 contract failure, tape exhaustion) surfaces locally with a typed terminal. |
+| 6 | `pytest tests/integration/test_sm_forward_pipeline_to_normalized.py -q` | `PROPOSED → NORMALIZED` boundary: structural patches advance past NORMALIZED; empty-body patches terminate with `OPTIMIZER_INVARIANT_VIOLATION` quoting the missing field. |
+| 7 | `pytest tests/integration/test_sm_forward_pipeline_to_applyable.py -q` | `NORMALIZED → APPLYABLE` boundary: safe-by-default patches advance past NORMALIZED to APPLYABLE (no `blast_radius_batch` rejection markers); patches carrying `passing_dependents` outside the target set cycle back to PROPOSED with a typed `blast_radius_rejected` ProposalAttempt and a `GSO_GATE_REASONING_V1` line naming the collateral QIDs. |
+| 8 | `pytest tests/integration/test_sm_forward_pipeline_to_applied.py -q` | `APPLYABLE → APPLIED` boundary: with a `FakeWorkspaceClient` recording every `w.api_client.do("PATCH", "/api/2.0/genie/spaces/{space_id}", body=...)`, every hard QID reaches `APPLIED`, the recorded PATCH body decodes into a `serialized_space` carrying the synthesized example SQL, and the `applier_gate` emits `GSO_PATCH_OUTCOME_V1 outcome="applied"`. The companion failure-path test wires the fake to raise on every PATCH and pins the typed `applyability_rejected` `ProposalAttempt` + `GSO_GATE_REASONING_V1` shape postmortems read. |
+| 9 | `pytest tests/integration/test_stage1_card_from_production_replay_rows.py -q` | **Production-grounded** Stage 1 card-completeness contract. For every committed `ProductionCase` under `tests/integration/fixtures/production_replay/`, the canonical card builder must produce a violation set equal to the postmortem snapshot (today: `["question_text_empty"]` for all 7 cases). The companion XFAIL strict test pins the **target** contract (zero violations) and flips to a hard failure the moment the multi-source `row_question` ladder lands. Also runs the corpus sanitization audit. |
+| 10 | `pytest tests/integration/test_sm_diagnosis_actionable_gate.py -q` | `DIAGNOSED → CLUSTERED` boundary: non-actionable diagnoses (zero `blame_set`, empty `evidence_summary`, insufficient-evidence sentinel) must terminate with a typed `diagnosis_not_actionable` reason — Trial 12 saw 21/24 non-actionable diagnoses silently advance into Stage 2. XFAIL strict today; flips green when the gate transformer lands. |
+| 11 | `pytest tests/integration/test_sm_stage3_empty_synthesis_terminates.py -q` | Stage 3 `{"proposals": []}` must terminate with a typed `stage3_silent_decline` reason AND emit a `GSO_PATCH_OUTCOME_V1` line so postmortems can attribute zero-applied iterations to Stage 3 instead of inferring it. Trial 12 saw 6/6 actionable clusters land here silently. XFAIL strict today. |
+| 12 | `pytest tests/integration/test_plan11_hard_qid_parity.py -q` | Plan 11 partial-drift gate: any non-empty `missing_from_plan11` set must raise `InputProjectionContractViolation`. dc89 ran for four iterations with partial drift while the contract only failed-closed on total starvation. XFAIL strict today. |
+| 13 | `pytest tests/unit/test_plan11_diagnose_output_schema_caps.py -q` | `Plan11DiagnoseOutput.DiagnosisItem` Pydantic schema-cap audit + truncation contract. Pins minimum field caps (200 universal, 1000 narrative) AND asserts `model_validate` truncates rather than raises on overlong responses. Both target contracts XFAIL strict today — Trial 11 caught at least one production string exceeding the declared cap; recoverable shape mismatch was classified as `llm_error` downstream. |
+
+A single command short-circuits the whole suite:
+
+```bash
+pytest \
+  tests/unit/test_eval_row_access_handles_production_shapes.py \
+  tests/integration/test_databricks_request_contract_golden.py \
+  tests/integration/test_sm_tape_replay_diagnose_success.py \
+  tests/integration/test_sm_forward_pipeline_to_proposed.py \
+  tests/integration/test_sm_forward_pipeline_failure_modes.py \
+  tests/integration/test_sm_forward_pipeline_to_normalized.py \
+  tests/integration/test_sm_forward_pipeline_to_applyable.py \
+  tests/integration/test_sm_forward_pipeline_to_applied.py \
+  tests/integration/test_stage1_card_from_production_replay_rows.py \
+  tests/integration/test_sm_diagnosis_actionable_gate.py \
+  tests/integration/test_sm_stage3_empty_synthesis_terminates.py \
+  tests/integration/test_plan11_hard_qid_parity.py \
+  tests/unit/test_plan11_diagnose_output_schema_caps.py \
+  -q
+```
+
+The new tests #9–#13 are deliberately XFAIL-heavy today. XFAIL `strict=True` keeps the suite green while pinning the **target** contract every follow-up implementation PR must satisfy. The moment a contract test starts passing, the suite goes red — forcing the maintainer to delete the `xfail` marker in the same diff that lands the fix. This converts the historical "trial → postmortem → unanchored fix → next trial regresses" loop into "postmortem → committed `ProductionCase` → strict xfail contract → fix removes xfail in lockstep".
+
+If any of these fail, **do not deploy**. Fix the underlying contract
+before promoting to a Databricks run.
+
+### Failure-becomes-fixture rule
+
+Any production failure that blocks a stage MUST become either:
+
+- A new `TapeEntry` factory in
+  `tests/integration/sm_forward_tapes.py` exercising the exact
+  failure shape, OR
+- A new fixture row in
+  `tests/unit/fixtures/production_eval_rows.json` with the
+  `_expected_hard`/`_expected_qid` markers wired so the SM forward
+  tests admit and observe it (note: this corpus is **shape-only**;
+  see below), OR
+- A new sanitized `ProductionCase` in
+  `tests/integration/fixtures/production_replay/<run_tag>__<qid>.json`
+  for any failure where the production row shape itself is the
+  load-bearing signal (e.g. `question_text_empty` from a bare
+  `question_id`-only row).
+
+paired with an assertion in the relevant
+`test_sm_forward_pipeline_*.py` or `test_*_gate.py` file before the
+next deploy. This keeps the local pre-trial suite a strictly growing
+superset of every known stage-contract failure, so the loop "trial →
+postmortem → local repro → fix → trial" runs against shrinking
+discovery scope each cycle.
+
+#### When to use which corpus
+
+- `tests/unit/fixtures/production_eval_rows.json::hydration_rows` —
+  shape-ladder. Each row is fully evidenced. Use for "if the row
+  carries the question, the builders/SM advance" mechanics tests.
+  Producing a green test against this corpus does NOT prove
+  production rows hydrate.
+- `tests/integration/fixtures/production_replay/` — sanitized
+  snapshots of the actual upstream payload production sends Stage 1
+  for hard QIDs. Use for "does production hydrate"; failures here
+  are the canonical signal that the canonical row→card path is
+  incomplete. See `SCHEMA.md` in that directory for the case-file
+  format and the sanitization rules.
+
 ## Trial steps
 
 ### 1. Deploy

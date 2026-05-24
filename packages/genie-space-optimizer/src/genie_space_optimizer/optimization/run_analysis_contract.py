@@ -1397,6 +1397,158 @@ def llm_contract_failure_marker(
     )
 
 
+STAGE1_BLAME_SET_SOURCES = frozenset({"llm", "seed_backfill", "empty"})
+
+
+# Trial 13i — closed vocabulary for the ``schema_columns`` provenance
+# label emitted on ``GSO_PLAN11_STAGE1_INPUT_QUALITY_V1``. Mirrors
+# ``schema_columns.SCHEMA_COLUMNS_SOURCE_LABELS`` (kept in sync via
+# the unit test ``test_plan11_stage1_input_quality_marker.py``).
+STAGE1_INPUT_QUALITY_SOURCES = frozenset({
+    "metadata_snapshot",
+    "typed_evidence_union",
+    "identifier_allowlist",
+    "empty",
+})
+
+
+# Trial 13k — closed vocabulary for the derived
+# ``seed_normalization_verdict`` field emitted on
+# ``GSO_PLAN11_STAGE1_INPUT_QUALITY_V1``. Lets postmortems and CI
+# canaries grep one field instead of computing
+# ``seeds_pre_normalize`` vs ``seeds_post_normalize`` arithmetic.
+STAGE1_SEED_NORMALIZATION_VERDICTS = frozenset({
+    "no_seeds",      # seeds_pre_normalize == 0
+    "all_dropped",   # pre > 0 and post == 0  (Trial 13k canary)
+    "partial_drop",  # pre > post > 0
+    "ok",            # post == pre and pre > 0
+})
+
+
+def _seed_normalization_verdict(
+    seeds_pre_normalize: int, seeds_post_normalize: int
+) -> str:
+    """Map ``(pre, post)`` seed counts onto the closed verdict vocabulary."""
+    pre = int(seeds_pre_normalize or 0)
+    post = int(seeds_post_normalize or 0)
+    if pre <= 0:
+        return "no_seeds"
+    if post <= 0:
+        return "all_dropped"
+    if post < pre:
+        return "partial_drop"
+    return "ok"
+
+
+def plan11_stage1_input_quality_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    qid: str,
+    schema_columns_source: str,
+    schema_columns_size: int,
+    seeds_pre_normalize: int = 0,
+    seeds_post_normalize: int = 0,
+    seeds_normalized: int = 0,
+    seeds_dropped: int = 0,
+    contract_violation: str = "",
+    blame_kind_distribution: dict[str, int] | None = None,
+) -> str:
+    """Plan 11 — per-QID Stage 1 input-quality marker (Trial 13i).
+
+    Emitted exactly once per QID at Stage 1 pre-flight, BEFORE the LLM
+    is invoked, so postmortems can see the input shape that drove the
+    downstream outcome regardless of whether Stage 1 succeeded,
+    abstained, or short-circuited.
+
+    Fields:
+
+      * ``schema_columns_source`` — one of
+        :data:`STAGE1_INPUT_QUALITY_SOURCES`. Reflects where the
+        run-level ``ctx.schema_columns`` list originated:
+
+        - ``"metadata_snapshot"``: caller populated
+          ``metadata_snapshot["schema_columns"]`` explicitly. Production
+          does not write this key today, so seeing it in the wild
+          implies a future plumbing change has landed.
+        - ``"typed_evidence_union"``: union of
+          ``rca_evidence_typed[*].blame_set``. Healthy default for the
+          SM lane when Plan 3 typed evidence is present.
+        - ``"identifier_allowlist"``: re-projected from
+          ``_build_identifier_allowlist`` because typed evidence was
+          empty. Acceptable for the batch lane but signals the SM lane
+          fell back to the secondary source.
+        - ``"empty"``: every source returned nothing. Deploy-block
+          canary — Stage 1 will abstain with
+          ``missing_schema_columns`` and no patches can be applied.
+      * ``schema_columns_size`` — length of ``ctx.schema_columns``;
+        cross-checks the source label (``"empty"`` ⇔ size 0).
+      * ``seeds_pre_normalize`` / ``seeds_post_normalize`` —
+        ``blame_set_seed`` size before and after the FQN normalizer ran.
+        A drop of > 50% on production is a warn canary.
+      * ``seeds_normalized`` — bare-identifier tokens that were
+        successfully swapped for 4-part FQNs by suffix-matching against
+        ``schema_columns``. Sustained ``seeds_normalized > 0`` on the
+        capture/SM lane signals the ASI judges are emitting column-name
+        tokens (current 2026-05 wild shape) rather than schema FQNs.
+      * ``seeds_dropped`` — tokens rejected by the normalizer
+        (compound text or ambiguous suffix). Sustained
+        ``seeds_dropped > 0`` rate > 5% is a drift signal —
+        ``STAGE1_SEED_DRIFT`` postmortem verdict.
+      * ``contract_violation`` — non-empty when the pre-flight
+        contract rejected the input (e.g. ``"missing_schema_columns"``).
+        Caller may also short-circuit Stage 1 with the same field tag.
+      * ``blame_kind_distribution`` (Trial 14) — per-kind histogram of
+        the typed ``blame_set_structured`` payload pre-normalization,
+        e.g. ``{"column": 2, "filter": 1}``. Keys are restricted to
+        the closed :data:`BLAME_KINDS` vocabulary from
+        ``blame_entry.py``. Empty dict when no judge emitted a
+        structured payload (legacy free-text path). Postmortems use
+        this to distinguish "judges identified schema blame but the
+        normalizer dropped it" (kind=column with all_dropped verdict)
+        from "judges identified only behaviour blame" (kind=filter /
+        instruction only — ``seeds_all_filter_kind`` contract tag).
+    """
+    # Trial 14 — normalize the kind distribution onto the closed
+    # vocabulary so postmortems never see drifted keys leak into the
+    # marker payload. Unknown kinds are dropped silently — the
+    # coercer in ``blame_entry.coerce_blame_entries`` already
+    # collapsed them onto ``instruction`` before we get here.
+    from genie_space_optimizer.optimization.blame_entry import BLAME_KINDS
+
+    raw_distribution = blame_kind_distribution or {}
+    distribution: dict[str, int] = {
+        str(k): int(v)
+        for k, v in raw_distribution.items()
+        if str(k) in BLAME_KINDS and int(v or 0) > 0
+    }
+
+    return marker_line(
+        "GSO_PLAN11_STAGE1_INPUT_QUALITY_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "qid": str(qid),
+            "schema_columns_source": str(schema_columns_source),
+            "schema_columns_size": int(schema_columns_size),
+            "seeds_pre_normalize": int(seeds_pre_normalize),
+            "seeds_post_normalize": int(seeds_post_normalize),
+            "seeds_normalized": int(seeds_normalized),
+            "seeds_dropped": int(seeds_dropped),
+            # Trial 13k — derived single-field verdict for postmortem
+            # triage. Closed vocabulary: see
+            # ``STAGE1_SEED_NORMALIZATION_VERDICTS``.
+            "seed_normalization_verdict": _seed_normalization_verdict(
+                seeds_pre_normalize, seeds_post_normalize
+            ),
+            # Trial 14 — typed blame kind histogram. Empty dict when
+            # the upstream judges only emitted legacy free-text.
+            "blame_kind_distribution": distribution,
+            "contract_violation": str(contract_violation),
+        },
+    )
+
+
 def plan11_stage1_diagnosis_marker(
     *,
     optimization_run_id: str,
@@ -1416,6 +1568,9 @@ def plan11_stage1_diagnosis_marker(
     exception_class: str = "",
     error_message: str = "",
     endpoint: str = "",
+    blame_set_source: str = "",
+    blame_set_llm_emitted: int = 0,
+    blame_set_post_schema_dropped: int = 0,
 ) -> str:
     """Plan 11 — per-QID Stage 1 diagnosis outcome marker.
 
@@ -1436,6 +1591,36 @@ def plan11_stage1_diagnosis_marker(
       * ``endpoint`` — the model-serving endpoint name the call was
         routed to. Postmortems join on this when triaging endpoint
         decommissions / region mismatches.
+
+    Trial 13h — Stage 1 blame_set provenance fields. The post-13g
+    workbench replay surfaced QIDs where the Stage 1 LLM emitted a
+    confident diagnosis with ``blame_set: []`` (or with entries that all
+    failed the ``schema_columns`` filter), which the non-actionable gate
+    correctly but unnecessarily terminated. ``diagnose_failing_qids``
+    now backfills from ``blame_set_seed`` whenever the post-schema-filter
+    result is empty, and these three fields surface where the final
+    ``blame_set`` came from:
+
+      * ``blame_set_source`` — one of ``STAGE1_BLAME_SET_SOURCES``:
+        - ``"llm"``: LLM-emitted entries survived schema filter (healthy).
+        - ``"seed_backfill"``: LLM-emitted entries were empty or all
+          schema-dropped, and we filled from ``blame_set_seed``. A
+          sustained rate of this signals Stage 1 LLM drift.
+        - ``"empty"``: both LLM and seed yielded zero schema-valid
+          entries. The diagnosis will be classified
+          ``non_actionable_diagnosis:zero_blame_set`` downstream.
+      * ``blame_set_llm_emitted`` — raw count from the LLM before the
+        schema filter. Sustained ``blame_set_llm_emitted == 0`` means
+        the model is omitting the field; sustained
+        ``blame_set_post_schema_dropped > 0`` means it is hallucinating
+        schema symbols.
+      * ``blame_set_post_schema_dropped`` — count of LLM-emitted entries
+        dropped by the ``schema_columns`` filter.
+
+    These three fields default to ``""`` / ``0`` for backward
+    compatibility — pre-13h call sites (e.g. ``outcome != "diagnosed"``
+    paths and the legacy batch lane) leave them unset and the marker
+    payload simply records the defaults.
     """
     if outcome == "llm_error" and not error_kind:
         # Fail loud: do not emit ambiguous zero-token llm_error.
@@ -1486,6 +1671,9 @@ def plan11_stage1_diagnosis_marker(
             "error_message": str(error_message)[:500],
             "endpoint": str(endpoint),
             "diagnosis_actionable": diagnosis_actionable,
+            "blame_set_source": str(blame_set_source),
+            "blame_set_llm_emitted": int(blame_set_llm_emitted),
+            "blame_set_post_schema_dropped": int(blame_set_post_schema_dropped),
         },
     )
 

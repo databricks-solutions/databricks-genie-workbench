@@ -67,12 +67,23 @@ from genie_space_optimizer.optimization.llm_reasoning_io import (
 
 @dataclass(frozen=True)
 class TapeEntry:
-    """One captured LLM call from a real production run."""
+    """One captured LLM call from a real production run.
+
+    ``qid`` is the optional per-entry QID tag that lets the replay
+    harness route a request to the correct response even when the SM
+    dispatches QIDs in a different order than the tape was authored
+    in. When ``qid`` is empty the harness falls back to capture order
+    (the legacy behaviour every existing tape relies on). Stock
+    factories populate ``qid`` so any test built on them is
+    automatically order-resilient — that means an upstream Stage 1
+    abstain on a single QID cannot misalign every downstream call.
+    """
 
     kind: str  # "response" or "exception"
     skill_id: str
     call_id: str = ""
     iteration: int = 0
+    qid: str = ""
     # Response branch
     parsed_output: dict | None = None
     raw_text: str = ""
@@ -90,6 +101,7 @@ class TapeEntry:
             skill_id=str(payload["skill_id"]),
             call_id=str(payload.get("call_id", "")),
             iteration=int(payload.get("iteration", 0)),
+            qid=str(payload.get("qid", "") or ""),
             parsed_output=(
                 dict(payload["parsed_output"])
                 if isinstance(payload.get("parsed_output"), dict)
@@ -124,52 +136,154 @@ class TapeReplayHarness:
         assert harness.consumed_count == len(harness.tape)
         assert harness.unconsumed() == []
 
-    The harness consumes entries strictly in skill-filtered order. If the
-    SM requests a skill that has no remaining tape entries, the harness
-    raises ``TapeExhaustedError`` — that is itself a diagnostic signal
-    (the replay drifted from the recorded trajectory).
+    Two routing modes share one harness:
+
+    * **Arrival order** (legacy) — when tape entries have no ``qid``,
+      the harness consumes entries strictly in capture order, filtered
+      by ``skill_id``. Every existing tape uses this mode.
+    * **QID-keyed** — when a tape entry has ``qid`` populated, the
+      harness only consumes it for a request whose ``call_id``
+      mentions that QID (the request's ``call_id`` always ends with
+      ``.{qid}`` because every Stage 1/2/3 factory and production
+      caller builds call_ids that way). This is order-resilient: an
+      upstream Stage 1 abstain on one QID does not cause the rest of
+      the SM to consume the wrong response. Fixes the
+      ``diagnose_returned_no_matching_qid`` aliasing the workbench
+      surfaced when an early QID abort skewed the tape cursor.
+
+    If the SM requests a skill that has no remaining matching tape
+    entries, the harness raises ``TapeExhaustedError`` — that is itself
+    a diagnostic signal (the replay drifted from the recorded
+    trajectory).
     """
 
     tape: list[TapeEntry]
-    _cursor_by_skill: dict[str, int] = field(default_factory=dict)
+    _consumed: list[bool] = field(default_factory=list)
     _invocations: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        for skill in {e.skill_id for e in self.tape}:
-            self._cursor_by_skill[skill] = 0
+        self._consumed = [False] * len(self.tape)
 
     @property
     def consumed_count(self) -> int:
-        return sum(self._cursor_by_skill.values())
+        return sum(1 for c in self._consumed if c)
 
     def unconsumed(self) -> list[TapeEntry]:
-        out: list[TapeEntry] = []
-        for skill, cursor in self._cursor_by_skill.items():
-            entries_for_skill = [e for e in self.tape if e.skill_id == skill]
-            out.extend(entries_for_skill[cursor:])
-        return out
+        return [
+            entry
+            for entry, consumed in zip(self.tape, self._consumed)
+            if not consumed
+        ]
 
     @property
     def invocations(self) -> list[dict[str, Any]]:
         """Return the recorded ``LlmReasoningCall.invoke`` calls."""
         return list(self._invocations)
 
-    def _next_entry(self, skill_id: str) -> TapeEntry:
-        entries = [e for e in self.tape if e.skill_id == skill_id]
-        cursor = self._cursor_by_skill.get(skill_id, 0)
-        if cursor >= len(entries):
-            raise TapeExhaustedError(
-                f"Tape exhausted for skill_id={skill_id!r}: "
-                f"{len(entries)} entries replayed, but the SM requested "
-                f"another call. Either the tape under-represents the "
-                f"production run (re-capture) or the SM is drifting from "
-                f"the recorded trajectory."
-            )
-        self._cursor_by_skill[skill_id] = cursor + 1
-        return entries[cursor]
+    @staticmethod
+    def _request_mentions_qid(request: LlmReasoningRequest, qid: str) -> bool:
+        """Return True iff ``request`` is keyed to ``qid``.
+
+        Two routing channels are recognized:
+
+        1. ``call_id`` ends with the QID after a ``.`` separator, e.g.
+           ``..diagnose.iter_1.gs_009``. Used by tests that synthesize
+           per-QID call_ids.
+
+        2. ``user_prompt`` JSON carries the QID as a value of a top-level
+           ``qid``-shaped field (``qid``, ``question_id``, ``failing_qid``,
+           or in ``failing_qids[*].qid`` / ``failing_qids[*].question_id``).
+           Used by production stages whose ``call_id`` is per-iteration
+           (e.g. ``plan11_stage1_diagnose.iter_1``) and whose per-QID
+           identity lives only in the payload body. Without this channel
+           an upstream abstain on a single QID would silently misalign
+           every downstream tape entry — a workbench-only fragility that
+           does not exist at the wire boundary.
+        """
+        if not qid:
+            return False
+        call_id = getattr(request, "call_id", "") or ""
+        if call_id and (call_id.endswith(f".{qid}") or call_id == qid):
+            return True
+        user_prompt = getattr(request, "user_prompt", "") or ""
+        if not user_prompt:
+            return False
+        # Cheap pre-check: bail out before paying for json.loads on every
+        # tape lookup if the qid token is not even a substring.
+        if qid not in user_prompt:
+            return False
+        try:
+            payload = json.loads(user_prompt)
+        except (ValueError, TypeError):
+            return False
+        return TapeReplayHarness._payload_mentions_qid(payload, qid)
+
+    @staticmethod
+    def _payload_mentions_qid(payload: Any, qid: str) -> bool:
+        """Recognise the QID-bearing fields used by Plan 11 user prompts.
+
+        Recognised shapes:
+          * ``{"qid": "<qid>"}`` / ``{"question_id": "<qid>"}`` /
+            ``{"failing_qid": "<qid>"}`` (top-level scalar)
+          * ``{"failing_qids": [{"qid": "<qid>"}, ...]}`` (Stage 1 batched
+            shape — production today emits a 1-element list per call).
+          * ``{"cluster": {"qids": [...]}}`` and similar grouped shapes —
+            handled by recursion through dict values.
+        """
+        if not isinstance(payload, dict):
+            return False
+        for key in ("qid", "question_id", "failing_qid"):
+            if payload.get(key) == qid:
+                return True
+        failing = payload.get("failing_qids")
+        if isinstance(failing, list):
+            for item in failing:
+                if isinstance(item, dict) and (
+                    item.get("qid") == qid
+                    or item.get("question_id") == qid
+                ):
+                    return True
+        return False
+
+    def _next_entry(self, request: LlmReasoningRequest) -> TapeEntry:
+        skill_id = request.skill_id
+        # First pass: prefer a QID-keyed match if any unconsumed entry
+        # for this skill carries a qid that matches the request.
+        for idx, entry in enumerate(self.tape):
+            if self._consumed[idx] or entry.skill_id != skill_id:
+                continue
+            if entry.qid and self._request_mentions_qid(request, entry.qid):
+                self._consumed[idx] = True
+                return entry
+        # Second pass: legacy arrival order over remaining qid-less
+        # entries for this skill.
+        for idx, entry in enumerate(self.tape):
+            if self._consumed[idx] or entry.skill_id != skill_id:
+                continue
+            if not entry.qid:
+                self._consumed[idx] = True
+                return entry
+        # Third pass: if every remaining entry for this skill is
+        # QID-keyed but none matches the request, fall back to the
+        # first remaining qid-keyed entry. This preserves backward
+        # compatibility for tests that authored QID tapes whose
+        # call_id conventions diverge from production.
+        for idx, entry in enumerate(self.tape):
+            if self._consumed[idx] or entry.skill_id != skill_id:
+                continue
+            self._consumed[idx] = True
+            return entry
+        raise TapeExhaustedError(
+            f"Tape exhausted for skill_id={skill_id!r} "
+            f"call_id={getattr(request, 'call_id', '')!r}: every entry "
+            f"for this skill is already consumed but the SM requested "
+            f"another call. Either the tape under-represents the "
+            f"production run (re-capture) or the SM is drifting from "
+            f"the recorded trajectory."
+        )
 
     def _invoke(self, *, w: Any, request: LlmReasoningRequest) -> LlmReasoningResponse:
-        entry = self._next_entry(request.skill_id)
+        entry = self._next_entry(request)
         self._invocations.append(
             {
                 "skill_id": request.skill_id,

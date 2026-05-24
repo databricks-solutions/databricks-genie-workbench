@@ -90,9 +90,16 @@ def _make_completeness_judge(w: WorkspaceClient, catalog: str, schema: str):
             f"{context}\n\n"
             'Respond with JSON only: {"complete": true/false, "failure_type": "<missing_column|missing_filter|missing_temporal_filter|missing_aggregation|partial_answer|missing_instruction|business_logic_missing>", '
             '"blame_set": ["<missing_element>"], '
+            '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+            '"blame_rationale": "<one-sentence explanation in plain English>", '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
             '"rationale": "<brief explanation>"}\n'
-            'If complete, set failure_type to "", blame_set to [], and counterfactual_fix to "".'
+            "BLAME_SET_STRUCTURED RULES (Trial 14):\n"
+            "  - Prefer kind=column for a missing column, kind=table for a missing table, kind=filter for a missing WHERE predicate.\n"
+            "  - Use kind=instruction for a missing Genie Space instruction or rule (description = the missing instruction).\n"
+            "  - For column/table/join, ref MUST be a fully-qualified name (catalog.schema.table[.column]) drawn from the SQL or expected SQL.\n"
+            "  - Keep blame_set in sync — it must mirror the ref values of entries whose kind is column, table, or join (back-compat).\n"
+            'If complete, set failure_type to "", blame_set to [], blame_set_structured to [], blame_rationale to "", and counterfactual_fix to "".'
         )
 
         logger.info(
@@ -226,6 +233,8 @@ def _make_completeness_judge(w: WorkspaceClient, catalog: str, schema: str):
             severity="major",
             confidence=base_confidence,
             blame_set=result.get("blame_set", []),
+            blame_set_structured=result.get("blame_set_structured"),
+            blame_rationale=result.get("blame_rationale"),
             counterfactual_fix=result.get("counterfactual_fix") or (
                 f"Fix {result.get('failure_type', 'completeness issue')} "
                 f"involving {', '.join(result.get('blame_set', ['unknown']))}"

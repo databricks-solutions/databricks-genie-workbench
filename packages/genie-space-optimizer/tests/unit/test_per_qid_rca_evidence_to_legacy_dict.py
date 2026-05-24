@@ -132,3 +132,59 @@ def test_legacy_dict_unknown_repair_family_still_produces_full_dict() -> None:
     assert legacy["recommended_levers"] == list(
         recommended_levers_for_rca_kind(RcaKind.UNKNOWN)
     )
+
+
+# ── Trial 14 — RCA legacy bridge works when ASI carries only structured ──
+
+
+def test_legacy_dict_bridge_with_only_structured_asi_blame() -> None:
+    """Trial 14 — the RCA-evidence legacy projector reads
+    ``expected_objects`` from ``self.blame_set`` (already a tuple of
+    FQNs in :class:`PerQidRcaEvidence`). The bridge MUST still
+    work when the ``asi`` dict carries the new typed
+    ``blame_set_structured`` field instead of the legacy
+    ``blame_set`` list.
+
+    This locks the Phase D contract: the legacy dict shape does not
+    accidentally start depending on ASI's typed payload, so older
+    consumers reading ``actual_objects`` / ``asi_features`` from
+    ``to_legacy_dict`` are byte-stable when the ASI judges flip from
+    string to structured emission.
+    """
+    typed = _make_typed()
+    asi_with_only_structured = {
+        # Trial 14 — no legacy ``blame_set`` key; only structured.
+        "blame_set_structured": [
+            {
+                "kind": "column",
+                "ref": "sales.fact_sales.revenue_sum",
+                "description": None,
+            }
+        ],
+        "blame_rationale": "wrong measure family",
+        "actual_objects": ["sales.fact_sales.revenue_sum"],
+        "counterfactual_fix": "swap to MEASURE() expression",
+    }
+    legacy = typed.to_legacy_dict(
+        judge={"verdict": "wrong_measure"},
+        asi=asi_with_only_structured,
+        sql="SELECT 1",
+    )
+    # expected_objects always comes from the typed evidence's
+    # blame_set tuple, not from ASI — guard against accidental drift.
+    assert legacy["expected_objects"] == [
+        "sales.fact_sales.revenue",
+        "sales.fact_sales.product",
+    ]
+    # actual_objects passes through from ASI.
+    assert legacy["actual_objects"] == ["sales.fact_sales.revenue_sum"]
+    # asi_features carries the full ASI dict including the new
+    # structured field — downstream consumers can opt-in to read it.
+    assert legacy["asi_features"]["blame_set_structured"] == [
+        {
+            "kind": "column",
+            "ref": "sales.fact_sales.revenue_sum",
+            "description": None,
+        }
+    ]
+    assert legacy["asi_features"]["blame_rationale"] == "wrong measure family"

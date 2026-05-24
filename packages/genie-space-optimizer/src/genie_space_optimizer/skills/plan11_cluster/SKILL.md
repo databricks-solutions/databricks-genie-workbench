@@ -35,8 +35,8 @@ cluster, in your own words.
       {
         "semantic_theme": "<short LLM-invented label>",
         "member_qids": ["<qid>", ...],
-        "unifying_evidence": "<≤400 chars>",
-        "repair_hypothesis": "<≤300 chars FREE TEXT — what kind of repair would fix this cluster>",
+        "unifying_evidence": "<≤2000 chars>",
+        "repair_hypothesis": "<≤1500 chars FREE TEXT — what kind of repair would fix this cluster>",
         "primary_blame_set": ["<catalog.schema.table.column>", ...],
         "confidence": "<high | medium | low>"
       }

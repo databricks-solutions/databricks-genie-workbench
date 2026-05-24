@@ -9,7 +9,8 @@
     "intended_patch_shape": "structural",
     "evidence_summary": "RANK() with ties returns more than 10 rows; ROW_NUMBER() or LIMIT 10 with deterministic tie-break is required.",
     "observed_failure": "result has 14 rows when 10 expected",
-    "expected_sql_shape": "ROW_NUMBER() OVER (ORDER BY revenue DESC, carrier ASC) <= 10"
+    "expected_sql_shape": "ROW_NUMBER() OVER (ORDER BY revenue DESC, carrier ASC) <= 10",
+    "blame_set": ["fare_facts.carrier", "RANK"]
   },
   "expected_proposal": {
     "patch_type": "add_sql_snippet_expression",

@@ -1,25 +1,30 @@
 """PR-B acceptance test — SM tape replay of dc89d1a9 BadRequest cascade.
 
-This test is the unit-speed counterpart of the 45-minute lever-loop
-trial that produced postmortem ``dc89d1a9``. It feeds the same hard
-QID set the production run admitted through the state machine, with
-``LlmReasoningCall.invoke`` patched to replay the recorded
-``BadRequestError`` exceptions from the dc89d1a9 tape, and asserts:
+Trial 12 update: the dc89d1a9 production failure shape (Stage 1
+``BadRequestError`` → ``diagnose_returned_empty``) is now blocked one
+boundary earlier by the ``Stage1InputEvidenceContract`` pre-flight.
+With empty input cards (no question text / ground truth / generated
+SQL / ASI metadata) the LLM is never invoked, so:
 
-  1. Every admitted QID terminates with declined reason
-     ``diagnose_returned_empty`` (the production failure signature).
-  2. The PR-A diagnostic instrumentation fires on the replay path —
-     each ``GSO_PLAN11_STAGE1_DIAGNOSIS_V1`` marker now carries an
-     ``error_kind`` that pinpoints ``response_format_invalid``
-     (instead of the ``unknown`` the production trial emitted).
-  3. The entire replay finishes well under 5 seconds without any
-     Databricks network round-trip.
+  * the tape stays untouched (no BadRequestError replay),
+  * no ``GSO_PLAN11_STAGE1_DIAGNOSIS_V1`` marker fires,
+  * instead each admitted QID emits
+    ``GSO_PLAN11_STAGE1_INPUT_CARD_EMPTY_V1`` with typed
+    ``violations`` and ``field_sources``,
+  * and the terminal reason becomes ``abstain:
+    evidence_card_empty:<violation_csv>``.
 
-Acceptance criterion (per the PR-B plan): ``pytest`` reproduces
-``diagnose_returned_empty`` in < 5s offline.
+The dc89d1a9 failure mode is *deprecated* by the new contract — these
+tests are now pinned to the Trial 12 cascade (per the
+``gso-postmortem`` skill's "Trial 12 — Stage 1 input evidence contract"
+section). The previous PR-A instrumentation invariants (``error_kind``,
+``GSO_PLAN11_STAGE1_REQUEST_V1`` markers, on-disk error dumps) are no
+longer reachable from the empty-card path; the test that asserted them
+is now scoped to documenting the deprecation explicitly.
 
-If this test ever regresses, the next debug cycle starts here — not at
-deploying a new wheel.
+If a future change re-introduces the dc89d1a9 path (e.g. by relaxing
+the input contract), these tests light up immediately and point at the
+contract layer that regressed.
 """
 from __future__ import annotations
 
@@ -76,19 +81,22 @@ def _hard_row(qid: str) -> dict:
 
 
 @pytest.mark.integration
-def test_dc89d1a9_replay_reproduces_diagnose_returned_empty(
+def test_dc89d1a9_replay_blocked_by_stage1_input_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Drive one SM iteration with the dc89d1a9 tape and assert every
-    admitted QID lands on ``diagnose_returned_empty``."""
+    """Trial 12 cascade — the dc89d1a9 BadRequest replay must NOT reach
+    the LLM. The Stage 1 input evidence contract pre-flight rejects
+    the empty cards built from ``_hard_row``, so every admitted QID
+    terminates with the typed contract violation instead of the legacy
+    ``diagnose_returned_empty`` signature.
+
+    Per the ``gso-postmortem`` skill: when
+    ``GSO_PLAN11_STAGE1_INPUT_CARD_EMPTY_V1`` fires, classify the run
+    as ``STAGE1_INPUT_CARD_EMPTY_*`` and do NOT classify as the
+    deprecated ``PLAN11_STAGE1_EVIDENCE_HYDRATION_EMPTY``.
+    """
     monkeypatch.setenv("GSO_PHASE_H_BUNDLE_ROOT", str(tmp_path))
     tape = load_tape(_TAPE_PATH)
-    assert len(tape) == len(_HARD_QIDS), (
-        f"dc89d1a9 tape carries {len(tape)} entries but the test feeds "
-        f"{len(_HARD_QIDS)} hard QIDs — keep them aligned so the cursor "
-        f"never under-runs and surfaces the failure deterministically."
-    )
-
     harness = TapeReplayHarness(tape=tape)
     rows = [_hard_row(qid) for qid in _HARD_QIDS]
 
@@ -97,8 +105,9 @@ def test_dc89d1a9_replay_reproduces_diagnose_returned_empty(
         FunnelStage,
     )
 
+    buf = io.StringIO()
     t0 = time.monotonic()
-    with harness.patch():
+    with redirect_stdout(buf), harness.patch():
         final_states = opt_mod.run_state_machine_iteration_and_persist(
             eval_rows=rows,
             iteration=1,
@@ -108,69 +117,78 @@ def test_dc89d1a9_replay_reproduces_diagnose_returned_empty(
             forbidden_signatures=(),
         )
     elapsed = time.monotonic() - t0
+    stdout = buf.getvalue()
     assert elapsed < 5.0, (
-        f"Replay took {elapsed:.2f}s; the PR-B acceptance ceiling is "
-        f"5s. If this regresses the replay has fallen back to a real "
-        f"Databricks call (or the SM is doing real work it should be "
-        f"mocking)."
+        f"Replay took {elapsed:.2f}s; the PR-B acceptance ceiling is 5s."
     )
 
-    # Invariant 1 — every QID was admitted into the SM.
     qids_seen = {s.qid for s in final_states}
     assert qids_seen == set(_HARD_QIDS), (
-        f"SM admitted {qids_seen!r}, expected {set(_HARD_QIDS)!r}. "
-        f"If this regresses the canonical-row-shape adapter has "
-        f"drifted again."
+        f"SM admitted {qids_seen!r}, expected {set(_HARD_QIDS)!r}."
     )
 
-    # Invariant 2 — every QID terminated at HARD_QID_SEEN (the SM
-    # never escaped Stage 1 because diagnose_failing_qids returned
-    # []). This is the exact production failure signature dc89d1a9
-    # recorded.
     for s in final_states:
         assert s.deepest_stage_reached == FunnelStage.HARD_QID_SEEN, (
             f"{s.qid} reached {s.deepest_stage_reached!r}; expected "
-            f"HARD_QID_SEEN — the LLM call must error out before any "
-            f"transformer escapes Stage 1, otherwise the replay "
-            f"drifted from dc89d1a9."
+            f"HARD_QID_SEEN — Trial 12 pre-flight should terminate at "
+            f"Stage 1 input."
         )
-        # Invariant 2b — terminal record names diagnose_returned_empty,
-        # the exact failure signature the dc89d1a9 postmortem recorded.
         assert s.terminal is not None, f"{s.qid} not terminated"
-        assert s.terminal.reason == "abstain: diagnose_returned_empty", (
+        assert s.terminal.reason.startswith(
+            "abstain: evidence_card_empty:"
+        ), (
             f"{s.qid} terminal.reason={s.terminal.reason!r}; expected "
-            f"'abstain: diagnose_returned_empty'."
+            f"the Trial 12 typed contract violation prefix "
+            f"'abstain: evidence_card_empty:'. If this regresses, the "
+            f"Stage 1 input evidence contract pre-flight is no longer "
+            f"intercepting empty cards."
         )
 
-    # Invariant 3 — tape was fully consumed (one entry per QID).
-    assert harness.consumed_count == len(_HARD_QIDS), (
-        f"Replay consumed {harness.consumed_count}/{len(_HARD_QIDS)} "
-        f"tape entries; unconsumed={harness.unconsumed()!r}."
+    empty_markers = [
+        json.loads(m.group(1))
+        for m in re.finditer(
+            r"GSO_PLAN11_STAGE1_INPUT_CARD_EMPTY_V1 (\{.+\})", stdout,
+        )
+    ]
+    assert len(empty_markers) == len(_HARD_QIDS), (
+        f"Expected {len(_HARD_QIDS)} "
+        f"GSO_PLAN11_STAGE1_INPUT_CARD_EMPTY_V1 markers (one per hard "
+        f"QID); got {len(empty_markers)}."
+    )
+    for marker in empty_markers:
+        assert marker["qid"] in _HARD_QIDS, marker
+        assert isinstance(marker["violations"], list), marker
+        assert marker["violations"], (
+            f"{marker['qid']} carries an empty violations list; "
+            f"contract emission must be fail-loud about which fields "
+            f"are missing."
+        )
+        assert isinstance(marker["field_sources"], dict), marker
+        assert "question_text" in marker["field_sources"], marker
+
+    assert harness.consumed_count == 0, (
+        f"Replay consumed {harness.consumed_count} tape entries; "
+        f"expected 0 because the input contract pre-flight should "
+        f"short-circuit before any LLM call. If non-zero, the contract "
+        f"layer is bypassed and the dc89d1a9 BadRequest path is "
+        f"reachable again."
     )
 
 
 @pytest.mark.integration
-def test_dc89d1a9_replay_surfaces_pr_a_instrumentation(
+def test_dc89d1a9_replay_does_not_emit_legacy_pr_a_instrumentation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The replay exercises the PR-A marker emission code paths.
+    """Trial 12 deprecation pin — the dc89d1a9 ``_hard_row`` no longer
+    reaches the LLM, so the PR-A instrumentation surface
+    (``GSO_PLAN11_STAGE1_DIAGNOSIS_V1`` with ``outcome=llm_error``,
+    ``GSO_PLAN11_STAGE1_REQUEST_V1`` fingerprint, on-disk error dump)
+    must be absent on this path.
 
-    On the production trial every Stage 1 marker carried
-    ``error_kind="unknown"`` and no ``error_message``. With PR-A in
-    place the same replay must now expose:
-
-      * ``error_kind == "response_format_invalid"`` (the dc89d1a9
-        BadRequest body explicitly references ``response_format`` and
-        ``json_schema``).
-      * a non-empty ``error_message`` truncated to ≤500 chars on the
-        marker.
-      * one ``GSO_PLAN11_STAGE1_REQUEST_V1`` request-fingerprint
-        marker per failing QID.
-      * one on-disk dump at ``{tmp_path}/llm_errors/stage1_1_<qid>.json``
-        containing the full untruncated body.
-
-    Together these prove the diagnostic instrumentation reaches the
-    marker even when the LLM call route is a tape replay.
+    The PR-A instrumentation invariants are still exercised wherever a
+    real LLM call fails — they are simply unreachable from a contract
+    pre-flight rejection. This test pins that distinction so a future
+    relaxation of the input contract surfaces here immediately.
     """
     monkeypatch.setenv("GSO_PHASE_H_BUNDLE_ROOT", str(tmp_path))
 
@@ -204,45 +222,37 @@ def test_dc89d1a9_replay_surfaces_pr_a_instrumentation(
         )
     ]
 
-    # Filter to llm_error outcomes (one per QID).
-    llm_error_diags = [d for d in diag_payloads if d["outcome"] == "llm_error"]
-    assert len(llm_error_diags) == len(_HARD_QIDS), (
-        f"Expected one llm_error diagnosis marker per hard QID; got "
-        f"{len(llm_error_diags)} out of {len(diag_payloads)} total."
+    llm_error_diags = [
+        d for d in diag_payloads if d.get("outcome") == "llm_error"
+    ]
+    assert llm_error_diags == [], (
+        f"Expected zero llm_error diagnosis markers (the input "
+        f"contract pre-flight should short-circuit the LLM call); got "
+        f"{len(llm_error_diags)}."
+    )
+    assert req_payloads == [], (
+        f"Expected zero GSO_PLAN11_STAGE1_REQUEST_V1 markers on the "
+        f"contract-rejected path; got {len(req_payloads)}."
+    )
+    assert harness.consumed_count == 0, (
+        f"Tape was consumed {harness.consumed_count} times; expected "
+        f"0 because the pre-flight should block the LLM call."
     )
 
-    for payload in llm_error_diags:
-        assert payload["exception_class"] == "BadRequestError", payload
-        assert payload["error_kind"] == "response_format_invalid", (
-            f"{payload['qid']} error_kind={payload['error_kind']!r}; "
-            f"expected response_format_invalid (the tape body explicitly "
-            f"references response_format and json_schema)."
-        )
-        assert "response_format" in payload["error_message"], payload
-        assert payload["endpoint"], payload
-        # Truncation invariant.
-        assert len(payload["error_message"]) <= 500, payload
-
-    # Invariant: one request fingerprint per failing QID.
-    assert len(req_payloads) == len(_HARD_QIDS), (
-        f"Expected one GSO_PLAN11_STAGE1_REQUEST_V1 marker per hard "
-        f"QID; got {len(req_payloads)}."
-    )
-    for payload in req_payloads:
-        assert payload["skill_id"] == "plan11_diagnose"
-        assert payload["max_tokens"] > 0
-        assert payload["system_msg_chars"] > 0
-        assert payload["user_prompt_chars"] > 0
-        assert any("json_schema" in k for k in payload["response_format_keywords"])
-
-    # Invariant: full untruncated body persisted to disk.
     dumps = sorted((tmp_path / "llm_errors").glob("stage1_1_*.json"))
-    assert len(dumps) == len(_HARD_QIDS), (
-        f"Expected {len(_HARD_QIDS)} disk dumps under "
-        f"{tmp_path / 'llm_errors'}; got {len(dumps)} ({[d.name for d in dumps]})."
+    assert dumps == [], (
+        f"Expected zero disk dumps under {tmp_path / 'llm_errors'} on "
+        f"the contract-rejected path; got "
+        f"{[d.name for d in dumps]}."
     )
-    for dump_path in dumps:
-        dump = json.loads(dump_path.read_text())
-        assert dump["skill_id"] == "plan11_diagnose"
-        assert "response_format" in dump["error_message"]
-        assert dump["endpoint"]
+
+    empty_markers = [
+        json.loads(m.group(1))
+        for m in re.finditer(
+            r"GSO_PLAN11_STAGE1_INPUT_CARD_EMPTY_V1 (\{.+\})", stdout,
+        )
+    ]
+    assert empty_markers, (
+        "Expected at least one GSO_PLAN11_STAGE1_INPUT_CARD_EMPTY_V1 "
+        "marker proving the contract pre-flight fired."
+    )

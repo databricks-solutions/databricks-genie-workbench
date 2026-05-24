@@ -38,18 +38,51 @@ You will receive — in the user message — these fields:
   avoid repeating diagnoses that did not lead to a successful repair.
 </context_inputs>
 
+<blame_set_requirements>
+The `blame_set` field is load-bearing — downstream stages use it to
+choose which schema objects to repair. A diagnosed QID with an empty
+`blame_set` is silently classified as `non_actionable_diagnosis:
+zero_blame_set` and dropped from the optimization run.
+
+RULES:
+
+1. `blame_set` MUST be non-empty for every diagnosed QID.
+2. Every entry MUST appear verbatim in `schema_columns` (a 4-part
+   `catalog.schema.table.column` FQN). Entries that do not match
+   `schema_columns` are silently dropped by the framework's validator
+   — so emitting 5 hallucinated names and 0 real ones leaves you with
+   an empty `blame_set` after validation.
+3. Ground the `blame_set` in this priority order:
+   a. Tables/columns referenced by name in `judge_rationale`.
+   b. Tables/columns referenced in `generated_sql_issue` or
+      `expected_sql_shape` (cite the actual columns the diagnosis
+      implicates).
+   c. The `blame_set_seed` already attached to the failing QID —
+      it is always present and guaranteed schema-valid by the input
+      contract. Use it as a fallback when steps (a) and (b) do not
+      yield schema-valid FQNs.
+4. If after working through (a)–(c) you still cannot produce a single
+   schema-valid entry, do NOT emit a populated diagnosis with
+   `blame_set: []`. Instead, emit the `declined` envelope with
+   `reason: "insufficient_blame_set"` so the framework records a
+   real decline rather than a silent drop.
+</blame_set_requirements>
+
 <output_envelope>
 {
   "result": {
     "diagnoses": [
       {
         "qid": "<qid>",
-        "rca_kind_label": "<free-text label, ≤80 chars, your own words>",
-        "observed_failure": "<≤200 chars>",
-        "generated_sql_issue": "<≤300 chars, cite specific SQL fragments>",
-        "expected_sql_shape": "<≤300 chars>",
-        "blame_set": ["<catalog.schema.table.column>", ...],
-        "evidence_summary": "<≤400 chars narrative>",
+        "rca_kind_label": "<free-text label, ≤200 chars, your own words>",
+        "observed_failure": "<≤1000 chars>",
+        "generated_sql_issue": "<≤1500 chars, cite specific SQL fragments>",
+        "expected_sql_shape": "<≤1500 chars>",
+        "blame_set": [
+          "main.airline.fact_tickets.payment_amt",
+          "main.airline.fact_tickets.payment_currency_cd"
+        ],
+        "evidence_summary": "<≤2000 chars narrative>",
         "confidence": "<high | medium | low>"
       }
     ]
@@ -63,14 +96,37 @@ You will receive — in the user message — these fields:
 }
 </output_envelope>
 
+INVALID — `confidence: "high"` paired with `blame_set: []` causes a
+silent drop at the non-actionable gate. If you have enough evidence
+to be confident, you have enough evidence to cite at least one schema
+column (use `blame_set_seed` if all else fails):
+
+```json
+{
+  "qid": "airline_tickets_gs_009",
+  "rca_kind_label": "RANK() instead of LIMIT plus unrequested defensive NULL filters",
+  "observed_failure": "...",
+  "generated_sql_issue": "...",
+  "expected_sql_shape": "...",
+  "blame_set": [],
+  "evidence_summary": "...",
+  "confidence": "high"
+}
+```
+
 <instructions>
 1. Diagnose every QID in failing_qids — partial responses are rejected.
 2. rca_kind_label is your free-text classification. Examples:
    "top-N collapsed to single row", "defensive filter dropped wrong rows",
    "join discovery missed bridge table". Pick whatever phrasing matches
    the evidence. Downstream stages read this verbatim.
-3. blame_set values MUST appear in schema_columns. References outside
-   the schema are silently dropped by the framework's validator.
+3. `blame_set` MUST be non-empty AND every entry MUST appear verbatim
+   in `schema_columns`. Non-matching entries are silently dropped by
+   the framework's validator; if the post-validation `blame_set` is
+   empty, the diagnosis is silently dropped at the non-actionable gate
+   even when `confidence: "high"`. See `<blame_set_requirements>` for
+   the grounding-priority rules and when to use the `declined`
+   envelope with `reason: "insufficient_blame_set"` instead.
 4. Decline only if the evidence for ALL qids is too thin to diagnose
    (rare). Partial diagnosis (some qids high-confidence, others low) is
    the expected case — set confidence: "low" and proceed.

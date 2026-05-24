@@ -90,6 +90,18 @@ def test_happy_path_advances_to_diagnosed(monkeypatch):
                 "ground_truth_sql": "SELECT COUNT(*) FROM t",
                 "generated_sql": "SELECT 1",
                 "judge_rationale": "wrong aggregate",
+                # Trial 12 Stage1InputEvidenceContract: blame_set_seed
+                # and rca_evidence.* are populated from ASI metadata
+                # by build_stage1_evidence_card; supply minimal ASI
+                # so the contract pre-flight does not skip the call.
+                "feedback/asi/metadata": {
+                    "failure_type": "missing_filter",
+                    "wrong_clause": "WHERE",
+                    "blame_set": ["orders.status"],
+                    "counterfactual_fix": "add WHERE clause",
+                    "patch_family": "add_sql_snippet_expression",
+                    "rca_kind": "filter_dropped",
+                },
             },
         ),
     )

@@ -72,10 +72,25 @@ class TransformerContext:
 
     # --- diagnose / cluster / synthesize lane -------------------------------
     schema_columns: tuple[str, ...] = ()
+    # Trial 13i — provenance label for ``schema_columns``. Populated by
+    # the SM + workbench seam via ``_derive_schema_columns``; consumed by
+    # ``plan11_stage1_input_quality_marker`` so postmortems can tell
+    # ``"empty"`` (deploy-block canary) from ``"typed_evidence_union"``
+    # (healthy default path) without re-running the derivation.
+    # Member of ``SCHEMA_COLUMNS_SOURCE_LABELS``.
+    schema_columns_source: str = ""
     w: Any | None = None
     recent_diagnoses: tuple[Mapping[str, Any], ...] = ()
     schema_slice: Mapping[str, Any] = field(default_factory=dict)
     history: tuple[Mapping[str, Any], ...] = ()
+    # Plan 12 typed RCA evidence keyed by QID. Threaded into the SM
+    # canonical lane so ``diagnose_llm._invoke_stage1_llm`` can hand it
+    # to ``build_stage1_evidence_card`` — symmetric to the Plan 11
+    # batch path at ``optimizer.py:_build_plan11_failing_qids_from_typed_evidence``.
+    # Without this field the SM lane silently dropped Plan 12's typed
+    # evidence at the Stage 1 boundary (see Trial 12 / 13 postmortems:
+    # ``evidence_card_empty:blame_set_empty,rca_evidence_empty``).
+    rca_evidence_typed: Mapping[str, Any] = field(default_factory=dict)
 
     # --- gates lane ---------------------------------------------------------
     live_hard_qids: tuple[str, ...] = ()

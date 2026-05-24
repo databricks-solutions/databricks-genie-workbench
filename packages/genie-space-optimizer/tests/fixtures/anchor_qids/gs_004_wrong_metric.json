@@ -9,7 +9,8 @@
     "intended_patch_shape": "structural",
     "evidence_summary": "Wrong metric: should be COUNT(DISTINCT order_id), not SUM(order_count).",
     "observed_failure": "double-counts re-orders",
-    "expected_sql_shape": "COUNT(DISTINCT order_id) FROM orders"
+    "expected_sql_shape": "COUNT(DISTINCT order_id) FROM orders",
+    "blame_set": ["orders.order_id", "SUM"]
   },
   "expected_proposal": {
     "patch_type": "add_example_sql",

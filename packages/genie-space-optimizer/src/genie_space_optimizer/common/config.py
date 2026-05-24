@@ -4521,9 +4521,12 @@ JUDGE_PROMPTS = {
         '"failure_type": "<wrong_table|wrong_column|wrong_join|missing_column>", '
         '"wrong_clause": "<problematic SQL clause>", '
         '"blame_set": ["<table_or_column>"], '
+        '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+        '"blame_rationale": "<one-sentence explanation in plain English>", '
         '"counterfactual_fix": "<specific metadata change referencing exact table/column names>", '
         '"rationale": "<brief explanation>"}\n'
-        'If correct, set failure_type to "", blame_set to [], counterfactual_fix to "".\n'
+        "Trial 14: blame_set_structured uses a closed kind vocabulary; ref MUST be a fully-qualified name for column/table/join kinds. Keep blame_set in sync as the legacy list[str] mirror of column/table/join refs.\n"
+        'If correct, set failure_type to "", blame_set to [], blame_set_structured to [], blame_rationale to "", counterfactual_fix to "".\n'
         "</output_schema>"
     ),
     "logical_accuracy": (
@@ -4564,9 +4567,12 @@ JUDGE_PROMPTS = {
         '"failure_type": "<wrong_aggregation|wrong_filter|wrong_groupby|wrong_orderby>", '
         '"wrong_clause": "<problematic SQL clause>", '
         '"blame_set": ["<column_or_function>"], '
+        '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+        '"blame_rationale": "<one-sentence explanation in plain English>", '
         '"counterfactual_fix": "<specific metadata change referencing exact table/column names>", '
         '"rationale": "<brief explanation>"}\n'
-        'If correct, set failure_type to "", blame_set to [], counterfactual_fix to "".\n'
+        "Trial 14: blame_set_structured uses a closed kind vocabulary; ref MUST be a fully-qualified name for column/table/join kinds. Use kind=filter for blamed WHERE predicates (ref = the literal predicate text). Keep blame_set in sync as the legacy list[str] mirror of column/table/join refs.\n"
+        'If correct, set failure_type to "", blame_set to [], blame_set_structured to [], blame_rationale to "", counterfactual_fix to "".\n'
         "</output_schema>"
     ),
     "semantic_equivalence": (
@@ -4605,9 +4611,12 @@ JUDGE_PROMPTS = {
         'Respond with JSON only: {"equivalent": true/false, '
         '"failure_type": "<different_metric|different_grain|different_scope>", '
         '"blame_set": ["<metric_or_dimension>"], '
+        '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+        '"blame_rationale": "<one-sentence explanation in plain English>", '
         '"counterfactual_fix": "<specific metadata change referencing exact table/column names>", '
         '"rationale": "<brief explanation>"}\n'
-        'If equivalent, set failure_type to "", blame_set to [], counterfactual_fix to "".\n'
+        "Trial 14: blame_set_structured uses a closed kind vocabulary; ref MUST be a fully-qualified name for column/table/join kinds. Use kind=filter for blamed WHERE predicates. Keep blame_set in sync as the legacy list[str] mirror of column/table/join refs.\n"
+        'If equivalent, set failure_type to "", blame_set to [], blame_set_structured to [], blame_rationale to "", counterfactual_fix to "".\n'
         "</output_schema>"
     ),
     "completeness": (
@@ -4646,9 +4655,12 @@ JUDGE_PROMPTS = {
         'Respond with JSON only: {"complete": true/false, '
         '"failure_type": "<missing_column|missing_filter|missing_temporal_filter|missing_aggregation|partial_answer>", '
         '"blame_set": ["<missing_element>"], '
+        '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+        '"blame_rationale": "<one-sentence explanation in plain English>", '
         '"counterfactual_fix": "<specific metadata change referencing exact table/column names>", '
         '"rationale": "<brief explanation>"}\n'
-        'If complete, set failure_type to "", blame_set to [], counterfactual_fix to "".\n'
+        "Trial 14: blame_set_structured uses a closed kind vocabulary; ref MUST be a fully-qualified name for column/table/join kinds. Use kind=instruction for missing Genie Space rules (description = the missing instruction). Keep blame_set in sync as the legacy list[str] mirror of column/table/join refs.\n"
+        'If complete, set failure_type to "", blame_set to [], blame_set_structured to [], blame_rationale to "", counterfactual_fix to "".\n'
         "</output_schema>"
     ),
     "arbiter": (
@@ -4688,7 +4700,10 @@ JUDGE_PROMPTS = {
         'Respond with JSON only: {"verdict": "<genie_correct|ground_truth_correct|both_correct|neither_correct>", '
         '"failure_type": "<wrong_aggregation|wrong_filter|wrong_table|other>", '
         '"blame_set": ["<blamed_object>"], '
+        '"blame_set_structured": [{"kind": "column|table|join|filter|instruction", "ref": "<FQN or expression>", "description": "<short text, optional>"}], '
+        '"blame_rationale": "<one-sentence explanation in plain English>", '
         '"rationale": "<brief explanation>"}\n'
+        "Trial 14: blame_set_structured uses a closed kind vocabulary; ref MUST be a fully-qualified name for column/table/join kinds. Keep blame_set in sync as the legacy list[str] mirror of column/table/join refs.\n"
         "</output_schema>"
     ),
     "response_quality": (
@@ -4821,7 +4836,14 @@ ASI_SCHEMA = {
     "severity": "str (critical|major|minor)",
     "confidence": "float (0.0-1.0)",
     "wrong_clause": "str|None (SELECT, FROM, WHERE, JOIN, GROUP BY, ORDER BY, MEASURE)",
-    "blame_set": "list[str] (metadata fields blamed: table names, column names, instructions)",
+    "blame_set": "list[str] (legacy; list[str] mirror of column/table/join refs from blame_set_structured)",
+    # Trial 14 — typed blame_set carries the closed BLAME_KINDS vocabulary
+    # ({column, table, join, filter, instruction}). Stage 1 hydrates its
+    # FQN normalizer from kind in {column, table, join} only; filter and
+    # instruction entries land as precise non-schema postmortem signals
+    # via the seeds_all_filter_kind contract tag.
+    "blame_set_structured": "list[dict] (Trial 14; entries: {kind, ref, description?})",
+    "blame_rationale": "str (Trial 14; one-line plain-English explanation of the blame)",
     "quoted_metadata_text": "str|None (exact text from Genie config that caused the issue)",
     "missing_metadata": "str|None (what should exist but doesn't)",
     "ambiguity_detected": "bool",
