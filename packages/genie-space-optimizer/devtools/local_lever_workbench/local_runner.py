@@ -18,11 +18,14 @@ are production surprises caught early.
 from __future__ import annotations
 
 import io
+import logging
 import os
 import time
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass
 from typing import Any, Iterator
+
+logger = logging.getLogger(__name__)
 
 from local_lever_workbench.models import (
     StageProgress,
@@ -301,20 +304,78 @@ def run_workbench_iteration(
     if rca_evidence_typed:
         metadata_snapshot["_rca_evidence_typed"] = dict(rca_evidence_typed)
 
-    # Trial 13i — populate ``ctx.schema_columns`` from the same fan-in
-    # the production SM lane uses (typed evidence union -> identifier
-    # allowlist). Without this, every Stage 1 LLM call on workbench
-    # bundles received ``"schema_columns": []`` and capture-only QIDs
-    # declined with ``insufficient_blame_set`` regardless of seed
-    # quality. Mirrors ``run_state_machine_iteration_and_persist``.
+    # Trial 13l — call the production injector so the workbench exercises
+    # the same code path the harness does. In ``live-databricks`` mode
+    # this re-fetches ``serialized_space`` from the Genie API and
+    # overwrites ``metadata_snapshot["schema_columns"]`` with the live
+    # FQNs (Priority 1). In ``stage1-only`` / ``tape`` mode the
+    # workspace_client is ``None``, the injector cleanly returns
+    # ``source="api_error"``, and any pre-existing ``schema_columns``
+    # from the bundle loader (Trial 13j v2 capture) is retained.
+    # Marker emission via ``logger.info`` so postmortems and the
+    # tape-mode regression sweep can both grep on it.
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        plan11_schema_columns_injection_marker as _schema_cols_marker,
+    )
     from genie_space_optimizer.optimization.schema_columns import (
         _derive_schema_columns,
+        inject_schema_columns_into_metadata_snapshot as _inject_schema_cols,
     )
+    try:
+        _inj_ok, _inj_src, _inj_cnt, _inj_lat = _inject_schema_cols(
+            metadata_snapshot,
+            genie_space_id=str(bundle.space_id or ""),
+            client=workspace_client,
+        )
+        print(
+            _schema_cols_marker(
+                optimization_run_id=f"workbench-{int(time.time())}",
+                iteration=int(config.iteration),
+                space_id=str(bundle.space_id or ""),
+                injected=bool(_inj_ok),
+                source=str(_inj_src),
+                column_count=int(_inj_cnt),
+                latency_ms=int(_inj_lat),
+            )
+        )
+    except Exception:
+        logger.debug(
+            "Trial 13l: workbench schema_columns injection failed (non-fatal)",
+            exc_info=True,
+        )
+
+    # Trial 13i — populate ``ctx.schema_columns`` from the same fan-in
+    # the production SM lane uses (metadata_snapshot -> typed evidence
+    # union -> identifier allowlist). Without this, every Stage 1 LLM
+    # call on workbench bundles received ``"schema_columns": []`` and
+    # capture-only QIDs declined with ``insufficient_blame_set``
+    # regardless of seed quality. Mirrors
+    # ``run_state_machine_iteration_and_persist``.
     schema_columns_tuple, schema_columns_source = _derive_schema_columns(
         metadata_snapshot=metadata_snapshot,
         rca_evidence_typed=rca_evidence_typed or None,
         uc_columns=metadata_snapshot.get("uc_columns"),
     )
+
+    # Trial 15 — deterministic ``post_apply_eval`` stub for the workbench.
+    # The production SM lane invokes ``stages.evaluation.evaluate_post_patch``
+    # which needs MLflow, a live Genie space, and the full predict_fn
+    # surface — none of which the workbench has. Without a stub the
+    # ``evaluated_gate`` would raise inside ``run_evaluation`` and
+    # workbench replays could never observe deepest_stage=evaluated.
+    #
+    # The stub returns the QID's baseline score (so post == pre) plus
+    # the canonical baseline SQL string already recorded on the state.
+    # That keeps the gate's accept/reject ladder deterministic: zero
+    # delta means the gate will mark the EvaluatedRecord but the
+    # downstream acceptance gate sees no improvement. The point of the
+    # stub is to **prove the plumbing works**, not to fabricate an
+    # accuracy gain.
+    def _workbench_post_apply_eval_stub(*, state, ctx):
+        baseline_score = float(getattr(state.seen, "score", 0.0) or 0.0)
+        baseline_sql = str(getattr(state.seen, "baseline_sql", "") or "")
+        eval_row_id = f"workbench:{state.qid}:iter_{ctx.iteration:03d}"
+        return (baseline_score, baseline_sql, eval_row_id)
 
     ctx_kwargs: dict[str, Any] = {
         "iteration": config.iteration,
@@ -332,6 +393,8 @@ def run_workbench_iteration(
             # (``"synthesize_llm" in extras and ctx.w is None``) does
             # not accidentally fire ahead of our recording stub.
             "synthesize_llm": True,
+            # Trial 15 — workbench escape hatch for evaluated_gate.
+            "post_apply_eval": _workbench_post_apply_eval_stub,
         },
         "baseline_eval_rows": baseline_eval_rows,
         "w": workspace_client,

@@ -4364,6 +4364,12 @@ def apply_patch_set(
             space_id,
             validation_errors,
         )
+        # Trial 15 — surface the typed applier_decisions audit on the
+        # post-strip validation failure path too. Before this fix the
+        # early-return omitted ``applier_decisions``, which fed
+        # ``applier_gate`` an empty list and forced the gate's typed-
+        # reason lookup to fall through to the (now-rarer)
+        # ``apply_no_decision_emitted`` sentinel.
         return {
             "space_id": space_id,
             "pre_snapshot": pre_snapshot,
@@ -4376,6 +4382,7 @@ def apply_patch_set(
             "validation_errors": validation_errors,
             "patch_deployed": False,
             "patch_error": f"Validation failed: {validation_errors}",
+            "applier_decisions": [d.__dict__ for d in applier_decisions],
         }
 
     patch_deployed = False

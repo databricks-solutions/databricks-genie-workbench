@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, PropertyMock, patch
 
@@ -9,6 +10,19 @@ import pandas as pd
 import pytest
 
 from genie_space_optimizer.common.config import MAX_ITERATIONS
+
+# Trial 15 — SM evaluator boundary contract. ``run_state_machine_iteration_and_persist``
+# now requires either ``eval_kwargs`` (production path via harness) or a
+# workbench ``extras['post_apply_eval']`` stub. Existing integration /
+# unit tests under ``tests/`` predate Trial 15 and drive the SM through
+# APPLIED without either; they were the silent baseline for the
+# production defect (``evaluated_gate`` TypeError'd, but the trajectory
+# still reached APPLIED so the assertions passed). The two new test
+# files added in Trial 15 (``test_run_state_machine_requires_eval_contract.py``
+# and ``test_evaluated_gate_no_typeerror_with_stub.py``) toggle this
+# env var off explicitly inside the tests that exercise the strict
+# invariant. The production harness path never reads this var.
+os.environ.setdefault("GSO_SM_TEST_ALLOW_MISSING_EVAL_CONTRACT", "1")
 
 
 @pytest.fixture

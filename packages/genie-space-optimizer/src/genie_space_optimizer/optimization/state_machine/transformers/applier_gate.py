@@ -110,10 +110,52 @@ def _apply_via_genie_api(
 
     if apply_log.get("patch_deployed"):
         return (apply_call_id, True, "")
+
+    # Trial 15 — surface typed ``ApplierDecision`` reasons instead of
+    # the opaque ``apply_failed_no_reason`` sentinel.
+    # ``apply_patch_set`` already emits a per-patch audit trail via
+    # ``build_applier_decision`` (see applier_audit.py) with closed
+    # ``ApplierDecisionStatus`` literals (``applied`` /
+    # ``dropped_validation`` / ``dropped_dedupe`` / ``dropped_no_op`` /
+    # ``dropped_exception``) plus a free-form ``reason`` and
+    # ``error_excerpt``. Up to Trial 14 the gate ignored that audit
+    # trail and defaulted to the sentinel, which is why every applier
+    # rejection in the dc89d1a9 and 98ec8950 postmortems landed with
+    # ``apply_failed_no_reason`` despite the underlying applier knowing
+    # exactly why it dropped the patch.
+    decisions = apply_log.get("applier_decisions") or []
+    matching = None
+    for decision_row in decisions:
+        if not isinstance(decision_row, dict):
+            continue
+        decision_patch_type = str(
+            decision_row.get("patch_type") or ""
+        )
+        if decision_patch_type and decision_patch_type == patch_type_str:
+            matching = decision_row
+            break
+    if matching is not None:
+        decision_label = str(matching.get("decision") or "unknown")
+        reason_label = str(matching.get("reason") or "")
+        composed = f"{decision_label}:{reason_label}" if reason_label else decision_label
+        error_excerpt = str(matching.get("error_excerpt") or "")
+        if error_excerpt:
+            # Keep the surface short — gate_reasoning markers are
+            # grepped from stdout in postmortems, so a 500-char excerpt
+            # blowing up a single log line is more harmful than helpful.
+            composed = f"{composed}:{error_excerpt[:200]}"
+        return (apply_call_id, False, composed)
+
+    # ``apply_patch_set`` returned ``patch_deployed=False`` without
+    # populating ``applier_decisions`` AND without surfacing
+    # ``patch_error`` / ``validation_errors``. After Trial 15 Part B2
+    # audits the applier dispatchers, this branch should be unreachable
+    # — operators grep for ``apply_no_decision_emitted`` to catch the
+    # genuine "applier-side bug" case.
     error = (
         apply_log.get("patch_error")
         or (apply_log.get("validation_errors") or [""])[0]
-        or "apply_failed_no_reason"
+        or "apply_no_decision_emitted"
     )
     return (apply_call_id, False, str(error))
 

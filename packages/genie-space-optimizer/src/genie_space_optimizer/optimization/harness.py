@@ -19937,6 +19937,43 @@ def _run_lever_loop_legacy(
             # ``GSO_PLAN_V4_SM_FAILED`` to find these incidents in the
             # trial run logs.
             _sm_final_states: tuple = ()
+            # Trial 15 — SM evaluator boundary contract. The legacy harness
+            # has already constructed ``StageContext`` + ``RunEvaluationKwargs``
+            # for ``_run_gate_checks`` (see harness.py:16270-16306), but the
+            # SM lane never received them. Without this plumbing every
+            # APPLIED state terminated at ``evaluated_gate`` with
+            # ``post_apply_eval_failed: run_evaluation() argument after **
+            # must be a mapping, not NoneType`` (see runid_analysis
+            # postmortems dc89d1a9 and 98ec8950, attempt 14). Reuse the
+            # ``_build_canary_stage_ctx_and_eval_kwargs`` helper so the
+            # construction is shared with the canary path; do not duplicate
+            # the kwargs dict in two places.
+            from genie_space_optimizer.optimization.optimizer import (
+                _build_canary_stage_ctx_and_eval_kwargs as _build_sm_eval_context,
+            )
+            _sm_stage_ctx, _sm_eval_kwargs = _build_sm_eval_context(
+                run_id=run_id,
+                iteration=int(iteration_counter),
+                space_id=str(space_id or ""),
+                domain=str(domain or ""),
+                catalog=str(catalog or ""),
+                schema=str(schema or ""),
+                phase_h_anchor_run_id=_phase_h_anchor_run_id,
+                w=w,
+                spark=spark,
+                exp_name=str(exp_name or ""),
+                benchmarks=benchmarks or [],
+                predict_fn=predict_fn,
+                scorers=scorers,
+                reference_sqls=reference_sqls or None,
+                uc_schema=str(uc_schema or ""),
+                max_benchmark_count=int(max_benchmark_count or 0),
+            )
+            _sm_eval_qids: tuple[str, ...] = tuple(
+                str(b.get("question_id") or "")
+                for b in (benchmarks or [])
+                if b.get("question_id")
+            )
             try:
                 # Trial 13 typed-evidence cutover — pass metadata_snapshot
                 # through so ``run_state_machine_iteration_and_persist`` can
@@ -19946,6 +19983,10 @@ def _run_lever_loop_legacy(
                 # and hard QIDs whose rows lacked embedded blame/rca
                 # aborted Stage 1 with
                 # ``evidence_card_empty:blame_set_empty,rca_evidence_empty``.
+                #
+                # Trial 15 — also plumb ``stage_ctx`` / ``eval_kwargs`` /
+                # ``eval_qids`` so ``evaluated_gate`` can call
+                # ``run_evaluation`` with a real mapping instead of None.
                 _sm_final_states = run_state_machine_iteration_and_persist(
                     eval_rows=_sm_eval_rows,
                     iteration=int(iteration_counter),
@@ -19955,6 +19996,9 @@ def _run_lever_loop_legacy(
                     forbidden_signatures=tuple(_forbidden_set),
                     space_id=str(space_id or ""),
                     metadata_snapshot=metadata_snapshot,
+                    stage_ctx=_sm_stage_ctx,
+                    eval_kwargs=_sm_eval_kwargs,
+                    eval_qids=_sm_eval_qids,
                 )
             # 2026-05-23 Phase 3 — narrow this except so the boundary
             # contract violation below cannot be silently swallowed by

@@ -68,6 +68,25 @@ def run_state_machine_iteration_and_persist(
     forbidden_signatures: tuple[str, ...] = (),
     space_id: str = "",
     metadata_snapshot=None,
+    # Trial 15 — SM evaluator boundary contract. The legacy harness lane
+    # constructs StageContext + RunEvaluationKwargs at harness.py:16270-
+    # 16306 for ``_run_gate_checks`` but never plumbed them into the SM
+    # lane; ``evaluated_gate._run_post_apply_eval`` then called
+    # ``run_evaluation(**None)`` and every applied patch died with
+    # ``OPTIMIZER_INVARIANT_VIOLATION post_apply_eval_failed:TypeError``.
+    # Threading these four fields closes the boundary. All default-None
+    # so pre-Trial-15 callsites (tests, devtools) stay byte-stable.
+    stage_ctx=None,
+    eval_kwargs=None,
+    eval_qids: tuple[str, ...] = (),
+    baseline_eval=None,
+    # Trial 15 — caller-supplied extras get merged into the SM
+    # ``TransformerContext.extras`` dict. Production callers do not use
+    # this; it exists so the workbench escape hatch
+    # (``extras['post_apply_eval'] = <stub>``) and the structural
+    # invariant test in D1 can exercise the function without needing a
+    # live evaluation backend.
+    extras: dict | None = None,
 ):
     """Plan v3 PR 2.5 — run one iteration of the production state machine
     and persist trajectories.
@@ -111,6 +130,59 @@ def run_state_machine_iteration_and_persist(
     )
 
     run_root = Path(run_root)
+
+    # Trial 15 — fail-fast invariant at the harness/SM seam. Any
+    # iteration that may reach APPLIED needs either a real
+    # ``eval_kwargs`` mapping or a workbench
+    # ``extras['post_apply_eval']`` stub; without one of them
+    # ``evaluated_gate._run_post_apply_eval`` calls
+    # ``run_evaluation(**None)`` and every APPLIED state terminates
+    # with ``OPTIMIZER_INVARIANT_VIOLATION post_apply_eval_failed``.
+    # Catch the wiring drift here at the entry point rather than 8
+    # transformers deep through a TypeError stack. This check runs
+    # before the early-return for empty ``eval_rows`` so the same
+    # ``ValueError`` shape catches misconfigured callers regardless of
+    # whether the SM actually has work to do.
+    _has_eval_kwargs = eval_kwargs is not None
+    _has_post_apply_stub = (
+        extras is not None
+        and isinstance(extras, dict)
+        and "post_apply_eval" in extras
+    )
+    # Pre-Trial-15 tests under ``tests/integration/`` and ``tests/unit/``
+    # drive the SM through APPLIED without supplying ``eval_kwargs`` and
+    # without a ``post_apply_eval`` stub. They were the silent baseline
+    # for the production defect — they passed because ``evaluated_gate``
+    # TypeError'd inside a broad ``except`` and the trajectory still
+    # reached ``APPLIED`` (the assertion most of those tests check). The
+    # env var below lets the test suite opt out of the invariant in one
+    # place (``tests/conftest.py``) without modifying every test
+    # callsite. Production never sets this var, so the harness path
+    # remains strict.
+    import os as _os_for_invariant
+    _suppress_invariant = (
+        _os_for_invariant.environ.get(
+            "GSO_SM_TEST_ALLOW_MISSING_EVAL_CONTRACT", ""
+        ).lower()
+        in ("1", "true", "yes")
+    )
+    if (
+        not _has_eval_kwargs
+        and not _has_post_apply_stub
+        and not _suppress_invariant
+    ):
+        raise ValueError(
+            "SM_EVALUATOR_CONTRACT_MISSING: "
+            "run_state_machine_iteration_and_persist was invoked without "
+            "eval_kwargs and without an extras['post_apply_eval'] stub. "
+            "evaluated_gate will fail with TypeError on any APPLIED state. "
+            "Pass eval_kwargs from the harness (see harness.py "
+            "_run_gate_checks for the canonical construction) or provide "
+            "the workbench stub via extras['post_apply_eval']. Tests that "
+            "intentionally do not reach the evaluated_gate may set "
+            "GSO_SM_TEST_ALLOW_MISSING_EVAL_CONTRACT=1."
+        )
+
     initial_states = _build_state_machine_initial_states(
         eval_rows=eval_rows, iteration=iteration,
     )
@@ -141,6 +213,13 @@ def run_state_machine_iteration_and_persist(
     _baseline_eval_rows = tuple(
         normalize_eval_row(r) for r in (eval_rows or ())
     )
+    # Trial 15 — start with the canonical extras dict and merge caller-
+    # supplied entries (e.g. the workbench's deterministic
+    # ``post_apply_eval`` stub) on top.
+    _extras_seed: dict = {"workspace_client": workspace_client}
+    if extras:
+        for _k, _v in extras.items():
+            _extras_seed[_k] = _v
     _ctx_kwargs: dict = {
         "iteration": iteration,
         "run_id": run_id,
@@ -148,7 +227,7 @@ def run_state_machine_iteration_and_persist(
             iteration, run_id, {"workspace_client": workspace_client},
         ),
         "forbidden_signatures": forbidden_signatures,
-        "extras": {"workspace_client": workspace_client},
+        "extras": _extras_seed,
         "baseline_eval_rows": _baseline_eval_rows,
         "w": workspace_client,
         "space_id": space_id,
@@ -191,6 +270,22 @@ def run_state_machine_iteration_and_persist(
     )
     _ctx_kwargs["schema_columns"] = _schema_columns_tuple
     _ctx_kwargs["schema_columns_source"] = _schema_columns_source
+
+    # Trial 15 — plumb the evaluator boundary into the SM lane. Without
+    # these fields ``evaluated_gate._run_post_apply_eval`` calls
+    # ``run_evaluation(**None)`` and every APPLIED state terminates with
+    # ``OPTIMIZER_INVARIANT_VIOLATION post_apply_eval_failed:TypeError``
+    # (see runid_analysis/dc89d1a9 + 98ec8950 postmortems for the
+    # gate-reasoning evidence).
+    if stage_ctx is not None:
+        _ctx_kwargs["stage_ctx"] = stage_ctx
+    if eval_kwargs is not None:
+        _ctx_kwargs["eval_kwargs"] = eval_kwargs
+    if eval_qids:
+        _ctx_kwargs["eval_qids"] = tuple(eval_qids)
+    if baseline_eval is not None:
+        _ctx_kwargs["baseline_eval"] = baseline_eval
+
     ctx = TransformerContext(**_ctx_kwargs)
 
     sm = build_production_state_machine()

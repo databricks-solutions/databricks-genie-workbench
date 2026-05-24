@@ -37,7 +37,24 @@ def _run_post_apply_eval(
 
     Raises ``_PostApplyEvalError`` when the eval returned no row for
     this QID — the caller maps that to a typed terminal.
+
+    Trial 15 — workbench escape hatch. When ``ctx.extras["post_apply_eval"]``
+    is callable, it is invoked with ``(state=, ctx=)`` and expected to
+    return the same ``(score, generated_sql, eval_row_id)`` tuple. This
+    is symmetric to ``ctx.extras["applier"]`` at
+    ``applier_gate.py:_apply_via_genie_api`` and lets the workbench /
+    structural tests drive the gate to ``EVALUATED`` without spinning
+    up live MLflow + Genie. Production callers never set this key.
     """
+    extras = getattr(ctx, "extras", {}) or {}
+    stub = extras.get("post_apply_eval") if extras else None
+    if callable(stub):
+        try:
+            return stub(state=state, ctx=ctx)
+        except TypeError:
+            # Allow zero-arg stubs in the simplest tests.
+            return stub()
+
     from genie_space_optimizer.optimization.stages.evaluation import (
         EvaluationInput, evaluate_post_patch,
     )
