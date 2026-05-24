@@ -16383,6 +16383,44 @@ def _run_gate_checks(
             exc_info=True,
         )
 
+    # Trial 13l — per-iteration schema_columns refresh from the live
+    # Genie Space. Re-fetches at the top of every iteration so post-
+    # Stage-3-apply schema drift (a patch touching
+    # ``data_sources.tables``) is reflected before the next Stage 1
+    # LLM call. Asymmetric write semantic: overwrite on
+    # ``source=genie_api``; preserve any prior iteration's value on
+    # ``api_error`` / ``empty_extract`` / ``no_space_id``. The injector
+    # itself never raises; the surrounding try/except is defence-in-
+    # depth for the marker emit step only.
+    try:
+        from genie_space_optimizer.optimization.schema_columns import (
+            inject_schema_columns_into_metadata_snapshot as _inject_schema_cols,
+        )
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            plan11_schema_columns_injection_marker as _schema_cols_marker,
+        )
+        _inj_ok, _inj_src, _inj_cnt, _inj_lat = _inject_schema_cols(
+            metadata_snapshot,
+            genie_space_id=str(space_id or ""),
+            client=w,
+        )
+        print(
+            _schema_cols_marker(
+                optimization_run_id=str(run_id),
+                iteration=int(iteration_counter),
+                space_id=str(space_id or ""),
+                injected=bool(_inj_ok),
+                source=str(_inj_src),
+                column_count=int(_inj_cnt),
+                latency_ms=int(_inj_lat),
+            )
+        )
+    except Exception:
+        logger.debug(
+            "Trial 13l: schema_columns injection failed (non-fatal)",
+            exc_info=True,
+        )
+
     # Task 0 → Task 3: forward the ASI extraction audit row that
     # ``run_evaluation`` stamped on the result dict. This makes a
     # zero-trace eval visible in the lever-loop decision audit instead

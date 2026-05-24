@@ -32,8 +32,12 @@ trial-13i-stage1-input-quality_*.plan.md``.
 """
 from __future__ import annotations
 
+import logging
 import re
-from typing import Any, Mapping, Sequence
+import time
+from typing import Any, Mapping, MutableMapping, Sequence
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Source labels (closed vocabulary) ────────────────────────────────
@@ -101,10 +105,14 @@ def _derive_schema_columns(
     Priority order (first non-empty wins):
 
       1. ``metadata_snapshot["schema_columns"]`` -> ``"metadata_snapshot"``.
-         This is the authoritative production-populated channel. No
-         production writer exists today (Trial 13i scope deliberately
-         does not introduce one), but tests and future upstream
-         plumbing can use it.
+         This is the authoritative production-populated channel.
+         Trial 13l introduced the production writer
+         :func:`inject_schema_columns_into_metadata_snapshot`, which
+         the harness calls at the top of every lever-loop iteration so
+         post-Stage-3-apply schema drift is reflected before the next
+         Stage 1 LLM call. The workbench harness
+         (``devtools/local_lever_workbench/local_runner.py``) calls the
+         same injector for symmetry.
       2. Union of ``rca_evidence_typed[*].blame_set`` ->
          ``"typed_evidence_union"``. Mirrors the Plan 11 batch lane
          fallback at ``optimizer.py:_decide_and_run_plan11_dispatch``.
@@ -303,9 +311,210 @@ def _normalize_seeds_to_fqn(
     return out, normalized_count, dropped_count
 
 
+# ─── Trial 13l — Genie Space schema_columns fetch (promoted from devtools) ──
+#
+# Originally introduced by Trial 13j inside the workbench capture path
+# (``devtools/local_lever_workbench/mlflow_eval_capture.py``). Trial 13l
+# promotes both helpers into this module so production becomes the source
+# of truth and the workbench imports through ``mlflow_eval_capture``'s
+# thin re-export. Same behaviour, same signatures, same return tuples.
+
+
+def _extract_fqn_columns(serialized_space: Mapping[str, Any]) -> tuple[str, ...]:
+    """Walk ``serialized_space.data_sources.tables[*]`` and emit 4-part FQNs.
+
+    Each table carries ``identifier`` (3-part ``catalog.schema.table``)
+    and ``column_configs`` (or ``columns`` as a fallback) — both shapes
+    are accepted by the existing batch-lane consumers in
+    :mod:`genie_space_optimizer.optimization.optimizer`. Column entries
+    are dicts with ``column_name`` (preferred) or ``name``.
+
+    Returns a deduplicated tuple preserving input order. Tables whose
+    identifier does not parse as 3-part are silently dropped — the
+    resulting concatenation would not be 4-part either.
+    """
+    ss = (
+        serialized_space.get("_parsed_space")
+        if isinstance(serialized_space, Mapping)
+        else None
+    )
+    if not isinstance(ss, Mapping):
+        ss = serialized_space if isinstance(serialized_space, Mapping) else {}
+    data_sources = ss.get("data_sources") if isinstance(ss, Mapping) else None
+    if not isinstance(data_sources, Mapping):
+        return ()
+    tables = data_sources.get("tables") or []
+    if not isinstance(tables, list):
+        return ()
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for tbl in tables:
+        if not isinstance(tbl, Mapping):
+            continue
+        ident = str(tbl.get("identifier") or tbl.get("name") or "").strip()
+        if not ident or ident.count(".") != 2:
+            continue
+        cols = tbl.get("column_configs")
+        if not isinstance(cols, list) or not cols:
+            cols = tbl.get("columns") or []
+        if not isinstance(cols, list):
+            continue
+        for col in cols:
+            if isinstance(col, Mapping):
+                col_name = str(
+                    col.get("column_name") or col.get("name") or ""
+                ).strip()
+            elif isinstance(col, str):
+                col_name = col.strip()
+            else:
+                col_name = ""
+            if not col_name:
+                continue
+            fqn = f"{ident}.{col_name}"
+            if fqn in seen:
+                continue
+            seen.add(fqn)
+            out.append(fqn)
+    return tuple(out)
+
+
+def _fetch_schema_columns_for_space(
+    w: Any, space_id: str
+) -> tuple[tuple[str, ...], dict, str]:
+    """Fetch ``serialized_space`` and project to 4-part column FQNs.
+
+    Returns ``(schema_columns, serialized_space, source_label)`` where
+    ``source_label`` is one of:
+
+    - ``"genie_api"`` — fetch succeeded and at least one column FQN
+      was extracted. ``serialized_space`` is the raw payload returned
+      by :func:`fetch_space_config` so the caller can persist it
+      alongside the columns.
+    - ``"unavailable"`` — ``space_id`` is empty, the API call raised,
+      or the response was malformed. ``schema_columns`` is empty and
+      ``serialized_space`` is ``{}``.
+
+    Failures are intentionally swallowed so a fetch error never breaks
+    the capture path; the loader's Trial 13i derivation chain still
+    runs on the resulting v1-shaped bundle.
+    """
+    if not space_id:
+        return (), {}, "unavailable"
+    try:
+        from genie_space_optimizer.common.genie_client import fetch_space_config
+
+        config = fetch_space_config(w, space_id)
+    except Exception as exc:  # noqa: BLE001 — capture must not raise
+        logger.warning(
+            "Trial 13j: fetch_space_config(%s) failed: %s; "
+            "capture will write a v1 bundle without schema_columns.",
+            space_id,
+            exc,
+        )
+        return (), {}, "unavailable"
+    if not isinstance(config, Mapping):
+        return (), {}, "unavailable"
+    cols = _extract_fqn_columns(config)
+    if not cols:
+        return (), dict(config), "unavailable"
+    return cols, dict(config), "genie_api"
+
+
+# ─── Trial 13l — production injector ──────────────────────────────────
+#
+# Closed source vocabulary for the per-iteration injection result.
+# Trial 13l deliberately omits an ``already_present`` label: every
+# iteration re-fetches, so the live Genie Space is always the truth.
+# The only mutation path is ``"genie_api"``; every other source is a
+# no-op that preserves whatever a prior iteration successfully wrote.
+
+SCHEMA_COLUMNS_INJECTION_SOURCES: frozenset[str] = frozenset({
+    "genie_api",     # fetch succeeded + non-empty FQNs extracted (only write path)
+    "no_space_id",   # caller passed empty/None space_id; no-op
+    "api_error",     # fetch_space_config raised; no-op (prior value retained)
+    "empty_extract", # fetch ok but no 4-part FQNs derivable; no-op
+})
+
+
+def inject_schema_columns_into_metadata_snapshot(
+    metadata_snapshot: MutableMapping[str, Any],
+    *,
+    genie_space_id: str | None,
+    client: Any | None = None,
+) -> tuple[bool, str, int, int]:
+    """Refresh ``metadata_snapshot["schema_columns"]`` from the live Genie Space.
+
+    Designed to be called at the top of every lever-loop iteration so
+    post-Stage-3-apply schema drift is reflected before the next Stage 1
+    LLM call. ``source`` is always a member of
+    :data:`SCHEMA_COLUMNS_INJECTION_SOURCES`.
+
+    Write semantics (asymmetric, intentional):
+
+    - ``source == "genie_api"`` — overwrite
+      ``metadata_snapshot["schema_columns"]`` with the freshly-fetched
+      FQN tuple. The post-apply Genie Space is the ground truth, so a
+      refreshed read always replaces any prior value.
+    - any other ``source`` — do not mutate ``metadata_snapshot``. If a
+      prior iteration successfully wrote schema_columns, that value
+      sticks around. This gives the SM graceful degradation through
+      transient Genie API failures rather than amnesia.
+
+    The function never raises. Production callers wrap in ``try/except``
+    only for defence in depth (e.g. the marker emit step).
+
+    Parameters
+    ----------
+    metadata_snapshot:
+        The lever-loop's per-run snapshot dict. Mutated in place when
+        and only when ``source == "genie_api"``.
+    genie_space_id:
+        4-part hex Genie Space identifier. Empty / ``None`` short-
+        circuits to ``"no_space_id"`` and no API round-trip.
+    client:
+        ``WorkspaceClient`` (or test double) forwarded to
+        :func:`_fetch_schema_columns_for_space`.
+
+    Returns
+    -------
+    ``(injected, source, column_count, latency_ms)`` where ``injected``
+    is True iff this call mutated ``metadata_snapshot``.
+    """
+    start_ns = time.perf_counter_ns()
+
+    if not genie_space_id:
+        latency_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
+        return False, "no_space_id", 0, int(latency_ms)
+
+    cols, _serialized, fetch_source = _fetch_schema_columns_for_space(
+        client, str(genie_space_id),
+    )
+    latency_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
+
+    if fetch_source == "genie_api" and cols:
+        # Overwrite — live Genie Space wins over any stale prior value.
+        metadata_snapshot["schema_columns"] = tuple(cols)
+        return True, "genie_api", len(cols), int(latency_ms)
+
+    # ``_fetch_schema_columns_for_space`` collapses three sub-cases
+    # into ``"unavailable"``: API call raised, non-Mapping response,
+    # and parseable response with zero 4-part FQNs. We disambiguate
+    # by inspecting whether the fetcher returned the raw config back:
+    # api errors return ``_serialized == {}``; empty-extract returns
+    # the populated config dict.
+    if _serialized:
+        return False, "empty_extract", 0, int(latency_ms)
+    return False, "api_error", 0, int(latency_ms)
+
+
 __all__ = [
+    "SCHEMA_COLUMNS_INJECTION_SOURCES",
     "SCHEMA_COLUMNS_SOURCE_LABELS",
     "_derive_schema_columns",
+    "_extract_fqn_columns",
+    "_fetch_schema_columns_for_space",
     "_identifier_allowlist_to_fqns",
     "_normalize_seeds_to_fqn",
+    "inject_schema_columns_into_metadata_snapshot",
 ]

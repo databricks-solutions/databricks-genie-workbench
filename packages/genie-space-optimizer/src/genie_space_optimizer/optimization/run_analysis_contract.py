@@ -1468,9 +1468,17 @@ def plan11_stage1_input_quality_marker(
         run-level ``ctx.schema_columns`` list originated:
 
         - ``"metadata_snapshot"``: caller populated
-          ``metadata_snapshot["schema_columns"]`` explicitly. Production
-          does not write this key today, so seeing it in the wild
-          implies a future plumbing change has landed.
+          ``metadata_snapshot["schema_columns"]`` explicitly. Trial 13l
+          made this the production-default — the harness calls
+          :func:`genie_space_optimizer.optimization.schema_columns.inject_schema_columns_into_metadata_snapshot`
+          at the top of every lever-loop iteration, so the per-QID
+          Stage 1 input quality marker should record this source on
+          every iteration of every space whose Genie API fetch
+          succeeds. A run where ``schema_columns_source`` is anything
+          else after Trial 13l implies the injector emitted
+          ``api_error`` / ``empty_extract`` / ``no_space_id`` — cross-
+          reference the ``GSO_PLAN11_SCHEMA_COLUMNS_INJECTION_V1``
+          marker for the same iteration to confirm.
         - ``"typed_evidence_union"``: union of
           ``rca_evidence_typed[*].blame_set``. Healthy default for the
           SM lane when Plan 3 typed evidence is present.
@@ -1545,6 +1553,67 @@ def plan11_stage1_input_quality_marker(
             # the upstream judges only emitted legacy free-text.
             "blame_kind_distribution": distribution,
             "contract_violation": str(contract_violation),
+        },
+    )
+
+
+def plan11_schema_columns_injection_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    space_id: str,
+    injected: bool,
+    source: str,
+    column_count: int,
+    latency_ms: int,
+) -> str:
+    """Plan 11 — per-iteration ``schema_columns`` injection marker (Trial 13l).
+
+    Emitted exactly once per lever-loop iteration, immediately after
+    :func:`genie_space_optimizer.optimization.schema_columns.inject_schema_columns_into_metadata_snapshot`
+    returns. Postmortems use this to attribute the run's
+    ``schema_columns`` provenance to a concrete producer (or its
+    absence) and to detect post-apply schema drift between iterations.
+
+    Fields:
+
+      * ``injected`` — True iff this call mutated
+        ``metadata_snapshot["schema_columns"]``. Only ``source ==
+        "genie_api"`` writes; every other source preserves any prior
+        iteration's value.
+      * ``source`` — one of
+        :data:`genie_space_optimizer.optimization.schema_columns.SCHEMA_COLUMNS_INJECTION_SOURCES`:
+
+        - ``"genie_api"`` (healthy default) — fetch succeeded and at
+          least one 4-part FQN was derived from the live Genie Space.
+        - ``"no_space_id"`` — caller bug; the lever-loop bootstrap
+          should always pass a non-empty space id.
+        - ``"api_error"`` — Genie API call raised or returned a
+          non-Mapping. At iter-0 this is severe (Stage 1 will fall
+          through to ``typed_evidence_union`` → ``identifier_allowlist``).
+          At iter-N>0 a prior iteration's value is retained so Stage 1
+          is unaffected; monitor cadence.
+        - ``"empty_extract"`` — Genie Space had a parseable config but
+          no tables with 4-part-resolvable column entries. Indicates a
+          misconfigured space.
+      * ``column_count`` — number of FQNs written when ``injected``
+        is True; 0 otherwise. Drift between consecutive iterations
+        cross-checked against the apply marker is the Trial 13l
+        signal that a Stage 3 patch mutated ``data_sources.tables``.
+      * ``latency_ms`` — wall-clock latency of the injection call
+        (Genie GET round-trip + parse + mutate). Per-iteration budget
+        guard: a millisecond-scale call dwarfed by F1 eval / LLM cost.
+    """
+    return marker_line(
+        "GSO_PLAN11_SCHEMA_COLUMNS_INJECTION_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "space_id": str(space_id),
+            "injected": bool(injected),
+            "source": str(source),
+            "column_count": int(column_count),
+            "latency_ms": int(latency_ms),
         },
     )
 
