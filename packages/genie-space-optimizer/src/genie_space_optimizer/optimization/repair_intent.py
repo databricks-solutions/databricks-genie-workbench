@@ -141,6 +141,40 @@ class PatchType(StrEnum):
     ADD_SQL_SNIPPET_MEASURE = "add_sql_snippet_measure"
 
 
+def coerce_patch_type(raw: object) -> PatchType | None:
+    """Resolve a free-form ``patch_type`` emission to the closed enum.
+
+    Tolerates leading/trailing whitespace and ANY casing (UPPER /
+    lower / mixed). Returns ``None`` for unknown values so callers
+    can decide whether to drop the proposal or fall through.
+
+    Centralised here (one helper per repo) so a future LLM drift
+    back to UPPER_SNAKE does not silently empty Stage 3 again. Every
+    synthesis / repair / narrow-replacement site goes through this
+    one function. The strict ``validate_patch`` dispatcher intentionally
+    does NOT use this helper — it keeps its strict ``patch_type_unknown``
+    contract so genuine vocabulary drift is still loud at the gate.
+
+    Trial 13e — the production synthesis LLM was emitting
+    ``"ADD_INSTRUCTION"`` (UPPER) while ``PatchType("ADD_INSTRUCTION")``
+    raises ``ValueError`` and every proposal got silently dropped.
+    """
+    if isinstance(raw, PatchType):
+        return raw
+    if raw is None:
+        return None
+    try:
+        normalized = str(raw).strip().lower()
+    except (TypeError, ValueError):
+        return None
+    if not normalized:
+        return None
+    try:
+        return PatchType(normalized)
+    except ValueError:
+        return None
+
+
 from dataclasses import dataclass
 from typing import Literal
 

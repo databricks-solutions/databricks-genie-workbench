@@ -139,8 +139,12 @@ def cluster_diagnoses(
     prefix = _namespace_prefix(namespace)
     input_qid_set = {d.qid for d in diagnoses}
     fallback_qids = tuple(d.qid for d in diagnoses)
+    # Trial 13g — index diagnoses by QID so we can backfill an empty
+    # ``primary_blame_set`` from the per-QID Stage 1 evidence.
+    diagnosis_by_qid: dict[str, PerQidDiagnosis] = {d.qid: d for d in diagnoses}
 
     clusters: list[FailureCluster] = []
+    primary_blame_set_backfilled = 0
     for idx, item in enumerate(raw_clusters, start=1):
         cluster_id = f"{prefix}{idx:03d}"
         raw_members = item.get("member_qids") or []
@@ -151,6 +155,31 @@ def cluster_diagnoses(
             # stages still have something to act on; better to over-include
             # than to drop the cluster silently.
             valid_members = fallback_qids
+        llm_blame_set = tuple(
+            str(b) for b in (item.get("primary_blame_set") or [])
+        )
+        if llm_blame_set:
+            primary_blame_set = llm_blame_set
+        else:
+            # Trial 13g — Stage 2 LLM omitted ``primary_blame_set``.
+            # Union the member QIDs' Stage 1 diagnosis blame_sets so
+            # downstream Stage 3 still has a cluster-level blame seed
+            # to ground its proposals in. Preserves arrival order and
+            # deduplicates.
+            seen: set[str] = set()
+            unioned: list[str] = []
+            for qid in valid_members:
+                d = diagnosis_by_qid.get(qid)
+                if d is None:
+                    continue
+                for blame in d.blame_set or ():
+                    s = str(blame)
+                    if s and s not in seen:
+                        seen.add(s)
+                        unioned.append(s)
+            primary_blame_set = tuple(unioned)
+            if primary_blame_set:
+                primary_blame_set_backfilled += 1
         clusters.append(
             FailureCluster(
                 cluster_id=cluster_id,
@@ -158,9 +187,7 @@ def cluster_diagnoses(
                 member_qids=valid_members,
                 unifying_evidence=str(item.get("unifying_evidence", "")),
                 repair_hypothesis=str(item.get("repair_hypothesis", "")),
-                primary_blame_set=tuple(
-                    str(b) for b in (item.get("primary_blame_set") or [])
-                ),
+                primary_blame_set=primary_blame_set,
                 confidence=item.get("confidence", "low"),  # type: ignore[arg-type]
             )
         )
@@ -178,6 +205,7 @@ def cluster_diagnoses(
             duration_ms=duration_ms,
             tokens_input=tokens_in,
             tokens_output=tokens_out,
+            primary_blame_set_backfilled=primary_blame_set_backfilled,
         )
     )
     return clusters

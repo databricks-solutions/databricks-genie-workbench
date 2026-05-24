@@ -45,7 +45,10 @@ class _Stage3ProposalAdapter:
     original_patch_body: dict
 
 
-def _build_failure_cluster_from_state(state: QuestionStateInIteration):
+def _build_failure_cluster_from_state(
+    state: QuestionStateInIteration,
+    ctx: TransformerContext | None = None,
+):
     """Reverse-project ``state.clustered`` + ``state.diagnosed`` into a
     ``FailureCluster`` the Stage 3 entry point consumes.
 
@@ -54,22 +57,84 @@ def _build_failure_cluster_from_state(state: QuestionStateInIteration):
 
       * ``semantic_theme`` / ``repair_hypothesis`` → routing_evidence_kind
       * ``unifying_evidence`` → diagnosed.evidence_summary
-      * ``primary_blame_set`` → () (Stage 1 does not populate this on
-        DiagnosisRecord; the LLM rebuilds it from member context)
+      * ``primary_blame_set`` → derived from ``ctx.rca_evidence_typed``
+        (Trial 13g). The per-QID SM path only carries a single QID,
+        so the primary blame seed is just that QID's typed evidence
+        blame_set. Defaults to ``()`` when no typed evidence was
+        threaded onto the context (legacy harness paths, unit tests).
       * ``confidence`` → diagnosed.confidence
     """
     from genie_space_optimizer.optimization.stages.plan11_types import (
         FailureCluster,
     )
+
+    primary_blame_set: tuple[str, ...] = ()
+    if ctx is not None:
+        typed_ev_map = getattr(ctx, "rca_evidence_typed", None) or {}
+        typed_ev = typed_ev_map.get(state.qid)
+        if typed_ev is not None:
+            primary_blame_set = tuple(
+                str(b) for b in (getattr(typed_ev, "blame_set", ()) or ())
+            )
+
     return FailureCluster(
         cluster_id=state.clustered.cluster_id,
         semantic_theme=state.clustered.routing_evidence_kind,
         member_qids=tuple(state.clustered.co_member_qids),
         unifying_evidence=state.diagnosed.evidence_summary,
         repair_hypothesis=state.clustered.routing_evidence_kind,
-        primary_blame_set=(),
+        primary_blame_set=primary_blame_set,
         confidence=state.diagnosed.confidence,
     )
+
+
+def _build_member_qid_evidence_from_ctx(
+    state: QuestionStateInIteration,
+    ctx: TransformerContext | None,
+) -> list[dict]:
+    """Trial 13g — build the ``member_qid_evidence`` list the Stage 3
+    LLM consumes from the typed RCA evidence on ``ctx``.
+
+    The per-QID SM path drives Stage 3 on a single QID at a time, so
+    this returns a one-element list (or empty when typed evidence is
+    not present). Each entry mirrors the keys the
+    ``plan11_synthesize`` prompt's ``<context_inputs>`` block
+    documents: ``qid``, ``blame_set``, ``observed_failure``,
+    ``expected_sql_shape``, ``confidence``. ``diagnosis`` carries the
+    same fields under a nested key so downstream readers that follow
+    the prompt's ``diagnosis (PerQidDiagnosis)`` convention still
+    work.
+    """
+    if ctx is None:
+        return []
+    typed_ev_map = getattr(ctx, "rca_evidence_typed", None) or {}
+    typed_ev = typed_ev_map.get(state.qid)
+    if typed_ev is None:
+        return []
+    blame_set = tuple(
+        str(b) for b in (getattr(typed_ev, "blame_set", ()) or ())
+    )
+    entry: dict = {
+        "qid": str(state.qid),
+        "blame_set": list(blame_set),
+        "observed_failure": str(getattr(typed_ev, "observed_failure", "")),
+        "expected_sql_shape": str(
+            getattr(typed_ev, "expected_sql_shape", "")
+        ),
+        "confidence": str(getattr(typed_ev, "confidence", "low")),
+        "diagnosis": {
+            "qid": str(state.qid),
+            "blame_set": list(blame_set),
+            "observed_failure": str(
+                getattr(typed_ev, "observed_failure", "")
+            ),
+            "expected_sql_shape": str(
+                getattr(typed_ev, "expected_sql_shape", "")
+            ),
+            "confidence": str(getattr(typed_ev, "confidence", "low")),
+        },
+    }
+    return [entry]
 
 
 def _derive_causal_target(rp) -> str:
@@ -248,12 +313,13 @@ def _invoke_stage3_llm(state: QuestionStateInIteration, ctx: TransformerContext)
         run_plan11_synthesis_for_single_cluster,
     )
 
-    cluster = _build_failure_cluster_from_state(state)
+    cluster = _build_failure_cluster_from_state(state, ctx)
+    member_qid_evidence = _build_member_qid_evidence_from_ctx(state, ctx)
     result = run_plan11_synthesis_for_single_cluster(
         cluster,
         dict(ctx.schema_slice),
         [dict(h) for h in ctx.history],
-        member_qid_evidence=None,
+        member_qid_evidence=member_qid_evidence or None,
         optimization_run_id=ctx.run_id,
         iteration=ctx.iteration,
         ag_id=state.clustered.ag_id,

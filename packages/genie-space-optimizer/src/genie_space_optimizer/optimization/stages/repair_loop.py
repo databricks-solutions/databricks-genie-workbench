@@ -52,16 +52,25 @@ def _max_attempts() -> int:
 
 def _safe_patch_type(raw: Any) -> Any:
     """Coerce a string to :class:`PatchType` if possible; otherwise
-    pass through unchanged. The downstream validate_patch dispatcher
+    pass through unchanged.
+
+    Trial 13e — uses the shared :func:`coerce_patch_type` so that
+    LLM-emitted UPPER_SNAKE values are folded to the closed enum
+    before reaching the validate_patch dispatcher. The legacy
+    pass-through-on-failure contract is preserved: if the value
+    cannot be coerced we return the original ``raw`` unchanged so
+    ``validate_patch`` can still emit its typed
+    ``patch_type_unknown`` error.
+
+    The downstream validate_patch dispatcher
     will reject unknown values with ``patch_type_unknown``, so the
     repair loop's next attempt sees a typed error.
     """
-    if isinstance(raw, PatchType):
-        return raw
-    try:
-        return PatchType(str(raw))
-    except ValueError:
-        return raw
+    from genie_space_optimizer.optimization.repair_intent import (
+        coerce_patch_type,
+    )
+    coerced = coerce_patch_type(raw)
+    return coerced if coerced is not None else raw
 
 
 def _proposal_from_output(

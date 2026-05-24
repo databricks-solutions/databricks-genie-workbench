@@ -35,6 +35,45 @@ _SKILL_ID = "plan11_synthesize"
 _PROMPT_CONST = "PLAN11_SYNTHESIZE_PROMPT"
 
 
+def _classify_synthesis_empty_reason(
+    *,
+    raw_proposals: list,
+    parsed_output: Any,
+) -> str:
+    """Map the parsed Stage 3 response shape to a typed empty-synthesis
+    reason.
+
+    Trial 13 Track 5 — the dc89d1a9 run emitted 6 ``empty_synthesis``
+    markers with no diagnostic signal. The classifier walks the
+    response in fail-loud order:
+
+    * ``"all_candidates_unsafe"`` — every raw proposal carried a
+      patch_type the survival contract rejected. (raw_proposals
+      non-empty, all dropped during ``_safe_patch_type`` filtering.)
+    * ``"no_applicable_archetype"`` — the LLM emitted a
+      ``decline_reason`` of ``no_applicable_archetype``.
+    * ``"prompt_constraint_collision"`` — the LLM emitted a
+      ``decline_reason`` of ``prompt_constraint_collision``.
+    * ``"parse_returned_zero"`` — none of the above; the LLM returned
+      a parseable response whose ``proposals`` list was already empty.
+    """
+    decline_reason = ""
+    if parsed_output is not None:
+        try:
+            decline_reason = str(
+                parsed_output.get("decline_reason") or ""
+            ).strip().lower()
+        except (AttributeError, TypeError):
+            decline_reason = ""
+    if decline_reason == "no_applicable_archetype":
+        return "no_applicable_archetype"
+    if decline_reason == "prompt_constraint_collision":
+        return "prompt_constraint_collision"
+    if raw_proposals:
+        return "all_candidates_unsafe"
+    return "parse_returned_zero"
+
+
 def _build_request(
     *,
     cluster: FailureCluster,
@@ -83,13 +122,24 @@ def _target_objects_from_blame_set(
     entries when the Stage 3 LLM did not emit a target_objects field
     (the current Plan 11 ``Plan11SynthesizeOutput`` schema doesn't).
 
-    Groups ``catalog.schema.table.column`` entries by their
-    ``catalog.schema.table`` prefix and emits one
-    :class:`TargetObject` (asset_kind=TABLE) per table with the
-    union of column suffixes. Three-component entries (no column
-    suffix) become a TABLE TargetObject with empty ``columns``.
-    Entries that don't parse as dotted FQNs are dropped silently —
-    they could not satisfy ``TargetObject.identifier`` invariants.
+    Identifier shapes accepted (Trial 13g — defense-in-depth alongside
+    the Stage 3 prompt's FQN guidance):
+
+      * ``catalog.schema.table.column`` (4+ parts) — fully qualified;
+        grouped by the 3-part table prefix with the column appended.
+      * ``catalog.schema.table`` (3 parts) — TABLE TargetObject with
+        empty ``columns``.
+      * ``table.column`` (2 parts) — TABLE TargetObject using the
+        ``table`` portion as the identifier with the column appended.
+        Tolerated because Stage 1 RCA evidence and Genie Space
+        configs frequently surface 2-part identifiers when the
+        catalog/schema is implicit; ``TargetObject.identifier`` only
+        enforces non-empty.
+      * ``table`` (1 part, no dot) — TABLE TargetObject with empty
+        ``columns``.
+
+    Entries are deduplicated by identifier in arrival order;
+    whitespace-only entries are skipped.
     """
     from genie_space_optimizer.optimization.target_object_typed import (
         AssetKind,
@@ -109,7 +159,20 @@ def _target_objects_from_blame_set(
         elif len(parts) == 3:
             table_id = s
             column = ""
+        elif len(parts) == 2:
+            # Trial 13g — accept 2-part ``table.column``. The LLM (and
+            # the Stage 1 evidence it grounds in) often elides the
+            # catalog/schema prefix; dropping these entries left
+            # ``target_objects`` empty and tripped the Plan 12 survival
+            # contract on otherwise-valid proposals.
+            table_id = parts[0].strip()
+            column = parts[1].strip()
         else:
+            # Single bare identifier — treat as a TABLE with no
+            # explicit column. Non-empty was guaranteed above.
+            table_id = s
+            column = ""
+        if not table_id:
             continue
         if table_id not in by_table:
             by_table[table_id] = []
@@ -129,17 +192,59 @@ def _target_objects_from_blame_set(
     return tuple(out)
 
 
+def _union_member_blame_sets(
+    member_qid_evidence: list[dict[str, Any]] | None,
+) -> list[str]:
+    """Trial 13g — final fallback in the blame derivation chain.
+
+    Iterates ``member_qid_evidence`` (the per-QID Stage 1 diagnoses
+    threaded into Stage 3 by the SM transformer or batch caller) and
+    returns the deduplicated union of every entry's ``blame_set`` in
+    arrival order. An entry may surface ``blame_set`` at the top
+    level (the shape the SM transformer emits) or nested under a
+    ``diagnosis`` key (matching the prompt's
+    ``<context_inputs>`` ``diagnosis (PerQidDiagnosis)`` convention).
+
+    Returns ``[]`` when ``member_qid_evidence`` is empty or no entry
+    carries a blame_set — the caller treats that as the final
+    ``"empty"`` source bucket in :data:`PROPOSALS_BLAME_SET_SOURCES`.
+    """
+    if not member_qid_evidence:
+        return []
+    seen: set[str] = set()
+    unioned: list[str] = []
+    for entry in member_qid_evidence:
+        if not isinstance(entry, dict):
+            continue
+        blame_raw = entry.get("blame_set")
+        if not blame_raw:
+            diagnosis = entry.get("diagnosis") or {}
+            if isinstance(diagnosis, dict):
+                blame_raw = diagnosis.get("blame_set")
+        for blame in (blame_raw or ()):
+            s = str(blame).strip()
+            if s and s not in seen:
+                seen.add(s)
+                unioned.append(s)
+    return unioned
+
+
 def _safe_patch_type(raw: str) -> PatchType | None:
     """Resolve a free-form patch_type string to the closed enum.
 
-    Returns ``None`` if the LLM emitted an unknown value (Step 0 of
+    Returns ``None`` if the LLM emitted a value that does not match
+    any ``PatchType`` member after case-folding (Step 0 of
     ``validate_patch.py`` would reject the proposal anyway; we drop it
     here so the repair loop in Task 9 has a typed surface).
+
+    Trial 13e — delegates to :func:`coerce_patch_type` so an LLM that
+    emits UPPER_SNAKE (``"ADD_INSTRUCTION"``) is tolerated instead of
+    silently dropping every proposal.
     """
-    try:
-        return PatchType(raw)
-    except (ValueError, TypeError):
-        return None
+    from genie_space_optimizer.optimization.repair_intent import (
+        coerce_patch_type,
+    )
+    return coerce_patch_type(raw)
 
 
 def run_plan11_synthesis_for_single_cluster(
@@ -207,21 +312,58 @@ def run_plan11_synthesis_for_single_cluster(
 
     raw_proposals = resp.parsed_output.get("proposals", []) or []
     proposals: list[RepairProposal] = []
+    # Trial 13e — track the *raw* ``patch_type`` string for every
+    # proposal that fails coercion to PatchType so the
+    # ``empty_synthesis`` marker can surface them. Empty / whitespace
+    # raws are tracked under a ``"<empty>"`` sentinel so the
+    # ``all_candidates_unsafe`` guardrail in the marker always sees a
+    # non-empty map (an LLM emitting proposals with missing patch_type
+    # is its own vocabulary defect — visible, not silent).
+    rejected_patch_types_raw: dict[str, int] = {}
+    # Trial 13g — track which source supplied each surviving
+    # proposal's ``blame_set`` so the Stage 3 marker exposes whether
+    # the upstream evidence chain bottomed out. Closed vocabulary:
+    # ``llm`` / ``cluster`` / ``member_union`` / ``empty``.
+    proposals_blame_set_source: dict[str, int] = {}
+    member_union_blame_set = _union_member_blame_sets(member_qid_evidence)
     for idx, item in enumerate(raw_proposals):
-        pt = _safe_patch_type(str(item.get("patch_type", "")))
+        raw_pt = str(item.get("patch_type", ""))
+        pt = _safe_patch_type(raw_pt)
         if pt is None:
             # Unknown patch_type — skip (the repair loop will pick it up
-            # when validate_patch returns patch_type_unknown).
+            # when validate_patch returns patch_type_unknown). Capture
+            # the raw string for the Stage 3 marker.
+            key = raw_pt.strip() or "<empty>"
+            rejected_patch_types_raw[key] = (
+                rejected_patch_types_raw.get(key, 0) + 1
+            )
             continue
         item_blame_set = [str(b) for b in (item.get("blame_set") or [])]
         # Plan 12 — derive target_objects from blame_set so the Plan 11
         # synthesize output passes the survival contract until the
         # ``Plan11SynthesizeOutput`` schema is extended to emit
-        # target_objects directly. Falls back to a primary blame_set
-        # from the cluster if the LLM left blame_set empty.
-        effective_blame_set = (
-            item_blame_set
-            or [str(b) for b in (cluster.primary_blame_set or ())]
+        # target_objects directly. Trial 13g — 3-step fallback chain:
+        # LLM blame_set -> cluster.primary_blame_set -> union of
+        # member_qid_evidence blame_sets. The latter is the Stage 1
+        # per-QID seed which is always populated by the diagnose
+        # contract; reaching it means the Stage 3 LLM AND the Stage 2
+        # clustering both dropped their blame seed. Each branch
+        # records the source for the Stage 3 marker so postmortems
+        # can pinpoint where the chain bottomed out.
+        if item_blame_set:
+            effective_blame_set = item_blame_set
+            source = "llm"
+        elif cluster.primary_blame_set:
+            effective_blame_set = [str(b) for b in cluster.primary_blame_set]
+            source = "cluster"
+        elif member_union_blame_set:
+            effective_blame_set = list(member_union_blame_set)
+            source = "member_union"
+        else:
+            effective_blame_set = []
+            source = "empty"
+        proposals_blame_set_source[source] = (
+            proposals_blame_set_source.get(source, 0) + 1
         )
         proposals.append(
             RepairProposal(
@@ -244,22 +386,53 @@ def run_plan11_synthesis_for_single_cluster(
             )
         )
 
+    # Trial 13 Track 5 — typed ``synthesis_empty_reason`` + populated
+    # ``target_qids_union`` on ``empty_synthesis``. The dc89d1a9 run
+    # emitted 6 markers with no reason and no target QIDs, leaving the
+    # postmortem with no signal. We compute the union from the input
+    # cluster's member QIDs (the bail-out attributes back to the
+    # QIDs whose evidence we tried to repair) regardless of whether
+    # any proposal survived parse.
+    if proposals:
+        outcome_label = "synthesized"
+        target_qids_union = sorted(
+            {q for p in proposals for q in p.target_qids}
+        )
+        synthesis_empty_reason = ""
+    else:
+        outcome_label = "empty_synthesis"
+        target_qids_union = sorted(
+            {str(q) for q in (cluster.member_qids or ())}
+        )
+        synthesis_empty_reason = _classify_synthesis_empty_reason(
+            raw_proposals=raw_proposals,
+            parsed_output=resp.parsed_output,
+        )
     print(
         plan11_stage3_synthesis_marker(
             optimization_run_id=optimization_run_id,
             iteration=iteration,
             ag_id=ag_id,
             cluster_id=cluster.cluster_id,
-            outcome="synthesized" if proposals else "empty_synthesis",
+            outcome=outcome_label,
             proposals_count=len(proposals),
             proposal_ids=[p.intent_id for p in proposals],
             patch_types=[p.patch_type.value for p in proposals],
-            target_qids_union=sorted(
-                {q for p in proposals for q in p.target_qids}
-            ),
+            target_qids_union=target_qids_union,
             duration_ms=duration_ms,
             tokens_input=tokens_in,
             tokens_output=tokens_out,
+            synthesis_empty_reason=synthesis_empty_reason,
+            synthesis_rejected_patch_types=(
+                dict(rejected_patch_types_raw)
+                if outcome_label == "empty_synthesis"
+                else None
+            ),
+            proposals_blame_set_source=(
+                dict(proposals_blame_set_source)
+                if proposals_blame_set_source
+                else None
+            ),
         )
     )
 

@@ -66,9 +66,11 @@ def narrow_replacement_from_drop_record(
             "drop_record must be a BlastRadiusDropRecord; got "
             f"{type(drop_record).__name__}"
         )
-    try:
-        ptype = PatchType(drop_record.original_patch_type)
-    except (ValueError, TypeError):
+    from genie_space_optimizer.optimization.repair_intent import (
+        coerce_patch_type,
+    )
+    ptype = coerce_patch_type(drop_record.original_patch_type)
+    if ptype is None:
         return None
 
     reconstructed = RepairProposal(
@@ -118,12 +120,17 @@ def _max_attempts() -> int:
 
 
 def _safe_patch_type(raw: Any) -> Any:
-    if isinstance(raw, PatchType):
-        return raw
-    try:
-        return PatchType(str(raw))
-    except ValueError:
-        return raw
+    """Trial 13e — delegates to the shared :func:`coerce_patch_type`
+    so UPPER_SNAKE LLM emissions are folded to the closed enum.
+    Falls back to the original ``raw`` on failure so the downstream
+    validate_patch dispatcher can still emit a typed
+    ``patch_type_unknown`` error.
+    """
+    from genie_space_optimizer.optimization.repair_intent import (
+        coerce_patch_type,
+    )
+    coerced = coerce_patch_type(raw)
+    return coerced if coerced is not None else raw
 
 
 def _build_request(

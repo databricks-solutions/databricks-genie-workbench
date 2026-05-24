@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 _MARKER_NAME_RE = re.compile(r"^GSO_[A-Z0-9_]+_V[1-9]\d*$")
@@ -1445,6 +1445,26 @@ def plan11_stage1_diagnosis_marker(
             "exception (client_construction / empty_prompt / "
             "endpoint_decline / timeout / parse / unknown).",
         )
+    # Trial 12 Track 4: typed semantic-success boolean. A mechanically
+    # diagnosed call ("outcome=diagnosed") is NOT actionable when:
+    #   * evidence_summary_chars == 0 (empty narrative — nothing for
+    #     downstream stages to read), OR
+    #   * blame_set_size == 0 (no objects to focus on), OR
+    #   * rca_kind_label is the "insufficient evidence" sentinel
+    #     (Stage 1 explicitly admitted it could not classify).
+    # Non-"diagnosed" outcomes are always non-actionable; postmortems
+    # use this field to distinguish mechanical success from semantic
+    # success without parsing rca_kind_label heuristics.
+    insufficient_evidence_sentinel = (
+        "insufficient evidence to determine root cause"
+    )
+    diagnosis_actionable = bool(
+        outcome == "diagnosed"
+        and int(evidence_summary_chars) > 0
+        and int(blame_set_size) > 0
+        and str(rca_kind_label).strip().lower()
+        != insufficient_evidence_sentinel
+    )
     return marker_line(
         "GSO_PLAN11_STAGE1_DIAGNOSIS_V1",
         {
@@ -1465,6 +1485,172 @@ def plan11_stage1_diagnosis_marker(
             "exception_class": str(exception_class),
             "error_message": str(error_message)[:500],
             "endpoint": str(endpoint),
+            "diagnosis_actionable": diagnosis_actionable,
+        },
+    )
+
+
+_NON_ACTIONABLE_REASONS = frozenset({
+    "zero_blame_set",
+    "zero_evidence",
+    "insufficient_evidence_sentinel",
+})
+
+
+_INSUFFICIENT_EVIDENCE_SENTINEL = (
+    "insufficient evidence to determine root cause"
+)
+
+
+def classify_non_actionable_reason(
+    *,
+    rca_kind_label: str,
+    evidence_summary: str,
+    blame_set: Iterable[str] | None,
+) -> str:
+    """Return the typed non-actionable reason, or ``""`` when the
+    diagnosis is actionable.
+
+    Trial 13 Track 3 hard gate — the dc89d1a9 shadow batch path
+    advanced 21/24 ``diagnosed`` markers carrying
+    ``diagnosis_actionable=false`` into Stage 2, producing
+    ``empty_synthesis`` at Stage 3 and zero applied patches. Trial 12
+    pinned the marker; Trial 13 ships the gate. The classifier mirrors
+    the ``diagnosis_actionable`` boolean inside
+    :func:`plan11_stage1_diagnosis_marker` but returns the per-axis
+    typed reason so the rejection marker can name *why* the diagnosis
+    failed the gate.
+
+    Closed-vocabulary return values:
+
+    * ``"insufficient_evidence_sentinel"`` — Stage 1 admitted it could
+      not classify the failure (``rca_kind_label`` is the sentinel
+      string; the LLM signed off explicitly).
+    * ``"zero_blame_set"`` — no objects to focus downstream stages on.
+    * ``"zero_evidence"`` — empty narrative; downstream cannot reason.
+    * ``""`` — actionable; gate passes.
+
+    The sentinel check fires first because it is the strongest signal:
+    when the LLM admits it cannot classify, downstream blame_set /
+    evidence checks are redundant.
+    """
+    label = str(rca_kind_label or "").strip().lower()
+    if label == _INSUFFICIENT_EVIDENCE_SENTINEL:
+        return "insufficient_evidence_sentinel"
+    blame_seq = tuple(b for b in (blame_set or ()) if str(b).strip())
+    if not blame_seq:
+        return "zero_blame_set"
+    if not str(evidence_summary or "").strip():
+        return "zero_evidence"
+    return ""
+
+
+def plan11_stage1_non_actionable_reject_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    qid: str,
+    reason: str,
+    rca_kind_label: str,
+    blame_set_size: int,
+    evidence_summary_chars: int,
+) -> str:
+    """Plan 11 — Stage 1 hard-gate rejection on non-actionable diagnosis.
+
+    Trial 13 Track 3 — emitted by the SM Stage 1 transformer (and the
+    Plan 11 batch lane pre-flight) when a mechanically-successful
+    Stage 1 diagnosis fails the actionability gate. The marker is the
+    typed observability signal postmortems join on to confirm "QID
+    terminated at Stage 1 because the diagnosis itself was empty",
+    distinguishing it from ``GSO_PLAN11_STAGE1_INPUT_CARD_EMPTY_V1``
+    (input hydration gap) and ``GSO_PLAN11_STAGE1_DIAGNOSIS_V1
+    outcome="abstained"`` (LLM-side decline).
+
+    Closed vocabulary for ``reason`` — see
+    :func:`classify_non_actionable_reason`. Unknown values raise.
+    """
+    if reason not in _NON_ACTIONABLE_REASONS:
+        raise ValueError(
+            f"unknown non-actionable reason: {reason!r} (allowed: "
+            f"{sorted(_NON_ACTIONABLE_REASONS)})"
+        )
+    return marker_line(
+        "GSO_PLAN11_STAGE1_NON_ACTIONABLE_REJECT_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "qid": str(qid),
+            "reason": str(reason),
+            "rca_kind_label": str(rca_kind_label),
+            "blame_set_size": int(blame_set_size),
+            "evidence_summary_chars": int(evidence_summary_chars),
+        },
+    )
+
+
+def plan11_post_parse_field_truncate_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    skill_id: str,
+    field_path: str,
+    original_length: int,
+    truncated_length: int,
+) -> str:
+    """Plan 11 — Stage 1/2/3 post-parse field truncation marker.
+
+    Trial 13 Track 4 — the Plan 11 output schemas now truncate
+    oversize string fields gracefully (trailing ``"..."``) instead of
+    raising ``string_too_long``. This marker fires when truncation
+    actually happens so postmortems can surface the abnormal length
+    without re-running the LLM call.
+    """
+    return marker_line(
+        "GSO_PLAN11_POST_PARSE_FIELD_TRUNCATE_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "skill_id": str(skill_id),
+            "field_path": str(field_path),
+            "original_length": int(original_length),
+            "truncated_length": int(truncated_length),
+        },
+    )
+
+
+def plan11_stage1_input_card_empty_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    qid: str,
+    violations: list[str],
+    field_sources: dict[str, str],
+) -> str:
+    """Plan 11 — Stage 1 input evidence card pre-flight rejection.
+
+    Emitted when :class:`Stage1InputEvidenceContract` rejects the
+    payload :func:`build_stage1_evidence_card` produced for ``qid``,
+    BEFORE the Stage 1 LLM is invoked. The marker carries the typed
+    list of violation tags and a per-field provenance dict so the
+    postmortem skill can attribute the empty card back to a specific
+    upstream hydration gap.
+
+    Trial 11 root cause: every Stage 1 call burned tokens to return
+    the same ``missing_schema_context`` decline because the input
+    payload was empty. With this marker in place, future trials will
+    surface the empty card as a typed, field-tagged event instead of
+    a generic LLM-side decline.
+    """
+    return marker_line(
+        "GSO_PLAN11_STAGE1_INPUT_CARD_EMPTY_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "qid": str(qid),
+            "violations": [str(v) for v in violations or ()],
+            "field_sources": {
+                str(k): str(v) for k, v in (field_sources or {}).items()
+            },
         },
     )
 
@@ -1554,8 +1740,17 @@ def plan11_stage2_clustering_marker(
     duration_ms: int = 0,
     tokens_input: int = 0,
     tokens_output: int = 0,
+    primary_blame_set_backfilled: int = 0,
 ) -> str:
-    """Plan 11 — per-iteration Stage 2 clustering outcome marker."""
+    """Plan 11 — per-iteration Stage 2 clustering outcome marker.
+
+    ``primary_blame_set_backfilled`` (Trial 13g) counts the clusters
+    whose ``primary_blame_set`` the LLM left empty and that the Stage 2
+    handler backfilled from the union of member QIDs' diagnosis
+    blame_sets. A non-zero value is observability, not a failure — it
+    surfaces upstream prompt drift before it cascades into empty Stage
+    3 proposals.
+    """
     return marker_line(
         "GSO_PLAN11_STAGE2_CLUSTERING_V1",
         {
@@ -1571,8 +1766,25 @@ def plan11_stage2_clustering_marker(
             "duration_ms": int(duration_ms),
             "tokens_input": int(tokens_input),
             "tokens_output": int(tokens_output),
+            "primary_blame_set_backfilled": int(primary_blame_set_backfilled),
         },
     )
+
+
+SYNTHESIS_EMPTY_REASONS = frozenset({
+    "no_applicable_archetype",
+    "all_candidates_unsafe",
+    "prompt_constraint_collision",
+    "parse_returned_zero",
+})
+
+
+PROPOSALS_BLAME_SET_SOURCES = frozenset({
+    "llm",
+    "cluster",
+    "member_union",
+    "empty",
+})
 
 
 def plan11_stage3_synthesis_marker(
@@ -1591,8 +1803,83 @@ def plan11_stage3_synthesis_marker(
     duration_ms: int = 0,
     tokens_input: int = 0,
     tokens_output: int = 0,
+    synthesis_empty_reason: str = "",
+    synthesis_rejected_patch_types: Mapping[str, int] | None = None,
+    proposals_blame_set_source: Mapping[str, int] | None = None,
 ) -> str:
-    """Plan 11 — per-cluster Stage 3 synthesis outcome marker."""
+    """Plan 11 — per-cluster Stage 3 synthesis outcome marker.
+
+    Trial 13 Track 5 — when ``outcome="empty_synthesis"`` the marker
+    MUST carry a typed ``synthesis_empty_reason``. The dc89d1a9 trial
+    emitted 6 ``empty_synthesis`` markers with no diagnostic signal;
+    postmortems could not tell "no archetype matched" from "all
+    candidates unsafe" from "prompt constraint collision". Closed
+    vocabulary — see :data:`SYNTHESIS_EMPTY_REASONS`. ``target_qids_union``
+    is also populated from the input cluster even when proposals is
+    empty so the marker still attributes the bail-out to a QID set.
+
+    Trial 13e — when the reason is ``"all_candidates_unsafe"`` the
+    marker MUST also carry ``synthesis_rejected_patch_types``: a
+    ``{raw_patch_type: count}`` map of every ``patch_type`` string
+    the LLM emitted that failed the :class:`PatchType` enum after
+    case-folding. This is the permanent canary for the case-mismatch
+    defect class Trial 13e closed: if the map is non-empty on a clean
+    iteration the postmortem skill must surface the top raw strings
+    as a deploy-blocking alarm. The field is additive (default empty
+    map) so the happy path (``outcome="synthesized"``) and the other
+    three empty reasons are unaffected.
+
+    Trial 13g — ``proposals_blame_set_source`` (also additive)
+    attributes each surviving proposal's ``blame_set`` to one of the
+    closed-vocabulary sources in :data:`PROPOSALS_BLAME_SET_SOURCES`:
+
+      * ``llm`` — the Stage 3 LLM emitted a non-empty blame_set.
+      * ``cluster`` — empty LLM blame_set; backfilled from
+        ``cluster.primary_blame_set``.
+      * ``member_union`` — both LLM and cluster blame sets were
+        empty; backfilled from the union of
+        ``member_qid_evidence[*].blame_set``.
+      * ``empty`` — all three sources were empty (proposal will be
+        rejected by the Plan 12 survival contract; this is a canary
+        for upstream drift).
+
+    The map sums to ``proposals_count`` on the happy path; a non-zero
+    ``empty`` entry on a clean iteration is a deploy-blocking signal
+    that Stage 1 typed evidence stopped flowing to Stage 3.
+    """
+    rejected_map = (
+        {str(k): int(v) for k, v in (synthesis_rejected_patch_types or {}).items()}
+    )
+    source_map: dict[str, int] = {}
+    for k, v in (proposals_blame_set_source or {}).items():
+        key = str(k)
+        if key not in PROPOSALS_BLAME_SET_SOURCES:
+            raise ValueError(
+                f"unknown proposals_blame_set_source key: {key!r} "
+                f"(allowed: {sorted(PROPOSALS_BLAME_SET_SOURCES)})"
+            )
+        source_map[key] = int(v)
+    if outcome == "empty_synthesis":
+        if not synthesis_empty_reason:
+            raise ValueError(
+                "plan11_stage3_synthesis_marker emitted "
+                "outcome='empty_synthesis' without synthesis_empty_reason. "
+                f"Allowed: {sorted(SYNTHESIS_EMPTY_REASONS)}."
+            )
+        if synthesis_empty_reason not in SYNTHESIS_EMPTY_REASONS:
+            raise ValueError(
+                f"unknown synthesis_empty_reason: "
+                f"{synthesis_empty_reason!r} (allowed: "
+                f"{sorted(SYNTHESIS_EMPTY_REASONS)})"
+            )
+        if synthesis_empty_reason == "all_candidates_unsafe" and not rejected_map:
+            raise ValueError(
+                "plan11_stage3_synthesis_marker emitted "
+                "synthesis_empty_reason='all_candidates_unsafe' without a "
+                "non-empty synthesis_rejected_patch_types map. Trial 13e "
+                "requires the rejected raw patch_type strings be captured "
+                "so future drift is visible at marker time."
+            )
     return marker_line(
         "GSO_PLAN11_STAGE3_SYNTHESIS_V1",
         {
@@ -1610,6 +1897,9 @@ def plan11_stage3_synthesis_marker(
             "duration_ms": int(duration_ms),
             "tokens_input": int(tokens_input),
             "tokens_output": int(tokens_output),
+            "synthesis_empty_reason": str(synthesis_empty_reason),
+            "synthesis_rejected_patch_types": rejected_map,
+            "proposals_blame_set_source": source_map,
         },
     )
 
