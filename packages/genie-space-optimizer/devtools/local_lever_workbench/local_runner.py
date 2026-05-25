@@ -78,9 +78,9 @@ def _build_registry(llm_mode: str):
     * ``live-databricks`` and ``sm-tape`` run the full V1.5 pipeline
       (HARD_QID_SEEN → ACCEPTED via Trial 15 plumbing). Registry includes
       ``evaluated_gate`` at APPLIED and ``acceptance_gate`` at EVALUATED
-      for both ``live-databricks`` and ``sm-tape``. Eval surface remains
-      the Trial 15 stub in this task; real eval wiring for
-      ``live-databricks`` lands in Task 3.
+      for both modes. ``live-databricks`` uses real ``eval_kwargs`` /
+      ``stage_ctx``; ``sm-tape`` keeps the Trial 15 ``post_apply_eval``
+      stub in ``extras``.
     """
     from genie_space_optimizer.optimization.state_machine.funnel import (
         FunnelStage,
@@ -253,6 +253,129 @@ def _tape_patch_or_noop(
         yield harness
 
 
+# ── TransformerContext construction ───────────────────────────────────
+
+
+def _make_ctx_kwargs(
+    *,
+    llm_mode: str,
+    bundle,
+    workspace_client,
+    spark,
+    iteration: int = 1,
+    forbidden_signatures: tuple[str, ...] = (),
+    baseline_eval_rows: tuple = (),
+    rca_evidence_typed: dict | None = None,
+    metadata_snapshot: dict | None = None,
+    schema_columns_tuple: tuple[str, ...] = (),
+    schema_columns_source: str = "",
+    applier_stub=None,
+) -> dict:
+    """Build the kwargs that become TransformerContext.
+
+    Mode-aware:
+    * ``live-databricks`` builds real ``stage_ctx`` + ``eval_kwargs`` so
+      evaluated_gate can call the production ``evaluate_post_patch``.
+    * ``sm-tape`` keeps the Trial 15 ``post_apply_eval`` stub in
+      ``extras`` so evaluated_gate operates on canned baselines.
+    * ``stage1-only`` never reaches evaluated_gate; either path works.
+    """
+    from genie_space_optimizer.optimization.state_machine.verdict import (
+        ValidationContext,
+    )
+
+    run_id_local = f"workbench-{int(time.time())}"
+    extras: dict[str, Any] = {
+        "workspace_client": workspace_client,
+        "applier": applier_stub,
+        "synthesize_llm": True,
+    }
+    eval_kwargs = None
+    stage_ctx = None
+    eval_qids: tuple[str, ...] = ()
+
+    if llm_mode == LLM_MODE_LIVE:
+        from genie_space_optimizer.optimization.evaluation import make_predict_fn
+        from genie_space_optimizer.optimization.optimizer import (
+            _build_canary_stage_ctx_and_eval_kwargs,
+        )
+        from genie_space_optimizer.optimization.scorers import make_all_scorers
+
+        catalog = str(getattr(bundle, "catalog", "") or "")
+        schema = str(getattr(bundle, "schema", "") or "")
+
+        predict_fn = make_predict_fn(
+            workspace_client,
+            str(bundle.space_id or ""),
+            spark,
+            catalog,
+            schema,
+        )
+        scorers = make_all_scorers(
+            workspace_client,
+            spark,
+            catalog,
+            schema,
+        )
+        stage_ctx, eval_kwargs = _build_canary_stage_ctx_and_eval_kwargs(
+            run_id=run_id_local,
+            iteration=int(iteration),
+            space_id=str(bundle.space_id or ""),
+            domain=str(getattr(bundle, "domain", "") or ""),
+            catalog=catalog,
+            schema=schema,
+            phase_h_anchor_run_id=None,
+            w=workspace_client,
+            spark=spark,
+            exp_name="",
+            benchmarks=list(getattr(bundle, "benchmarks", []) or []),
+            predict_fn=predict_fn,
+            scorers=scorers,
+            reference_sqls=getattr(bundle, "reference_sqls", None),
+            uc_schema=str(getattr(bundle, "uc_schema", "") or ""),
+            max_benchmark_count=len(list(getattr(bundle, "benchmarks", []) or [])),
+        )
+        eval_qids = tuple(
+            str(b.get("question_id") or "")
+            for b in (getattr(bundle, "benchmarks", []) or [])
+            if b.get("question_id")
+        )
+    else:
+        def _workbench_post_apply_eval_stub(*, state, ctx):
+            baseline_score = float(getattr(state.seen, "score", 0.0) or 0.0)
+            baseline_sql = str(getattr(state.seen, "baseline_sql", "") or "")
+            eval_row_id = f"workbench:{state.qid}:iter_{ctx.iteration:03d}"
+            return (baseline_score, baseline_sql, eval_row_id)
+
+        extras["post_apply_eval"] = _workbench_post_apply_eval_stub
+
+    return {
+        "iteration": int(iteration),
+        "run_id": run_id_local,
+        "validation_context": ValidationContext(
+            int(iteration),
+            run_id_local,
+            {"workspace_client": workspace_client},
+        ),
+        "forbidden_signatures": forbidden_signatures,
+        "extras": extras,
+        "baseline_eval_rows": baseline_eval_rows,
+        "w": workspace_client,
+        "space_id": str(bundle.space_id or ""),
+        "metadata_snapshot": metadata_snapshot or {},
+        "rca_evidence_typed": rca_evidence_typed or {},
+        "schema_columns": schema_columns_tuple,
+        "schema_columns_source": schema_columns_source,
+        "eval_kwargs": eval_kwargs,
+        "stage_ctx": stage_ctx,
+        "eval_qids": eval_qids,
+    }
+
+
+def _make_ctx_kwargs_for_test(**kwargs):
+    return _make_ctx_kwargs(**kwargs)
+
+
 # ── Entry point ───────────────────────────────────────────────────────
 
 
@@ -288,7 +411,6 @@ def run_workbench_iteration(
     )
     from genie_space_optimizer.optimization.state_machine.verdict import (
         TransformerContext,
-        ValidationContext,
     )
 
     # Construct workspace client per mode.
@@ -402,53 +524,25 @@ def run_workbench_iteration(
         uc_columns=metadata_snapshot.get("uc_columns"),
     )
 
-    # Trial 15 — deterministic ``post_apply_eval`` stub for the workbench.
-    # The production SM lane invokes ``stages.evaluation.evaluate_post_patch``
-    # which needs MLflow, a live Genie space, and the full predict_fn
-    # surface — none of which the workbench has. Without a stub the
-    # ``evaluated_gate`` would raise inside ``run_evaluation`` and
-    # workbench replays could never observe deepest_stage=evaluated.
-    #
-    # The stub returns the QID's baseline score (so post == pre) plus
-    # the canonical baseline SQL string already recorded on the state.
-    # That keeps the gate's accept/reject ladder deterministic: zero
-    # delta means the gate will mark the EvaluatedRecord but the
-    # downstream acceptance gate sees no improvement. The point of the
-    # stub is to **prove the plumbing works**, not to fabricate an
-    # accuracy gain.
-    def _workbench_post_apply_eval_stub(*, state, ctx):
-        baseline_score = float(getattr(state.seen, "score", 0.0) or 0.0)
-        baseline_sql = str(getattr(state.seen, "baseline_sql", "") or "")
-        eval_row_id = f"workbench:{state.qid}:iter_{ctx.iteration:03d}"
-        return (baseline_score, baseline_sql, eval_row_id)
+    spark = _build_workbench_spark(
+        profile=getattr(config, "profile", None),
+        profile_required=(config.llm_mode == LLM_MODE_LIVE),
+    )
 
-    ctx_kwargs: dict[str, Any] = {
-        "iteration": config.iteration,
-        "run_id": f"workbench-{int(time.time())}",
-        "validation_context": ValidationContext(
-            config.iteration,
-            f"workbench-{int(time.time())}",
-            {"workspace_client": workspace_client},
-        ),
-        "forbidden_signatures": (),
-        "extras": {
-            "workspace_client": workspace_client,
-            "applier": applier_stub,
-            # Sentinel so the applier_gate's tape-style short-circuit
-            # (``"synthesize_llm" in extras and ctx.w is None``) does
-            # not accidentally fire ahead of our recording stub.
-            "synthesize_llm": True,
-            # Trial 15 — workbench escape hatch for evaluated_gate.
-            "post_apply_eval": _workbench_post_apply_eval_stub,
-        },
-        "baseline_eval_rows": baseline_eval_rows,
-        "w": workspace_client,
-        "space_id": bundle.space_id,
-        "metadata_snapshot": metadata_snapshot,
-        "rca_evidence_typed": rca_evidence_typed,
-        "schema_columns": schema_columns_tuple,
-        "schema_columns_source": schema_columns_source,
-    }
+    ctx_kwargs = _make_ctx_kwargs(
+        llm_mode=config.llm_mode,
+        bundle=bundle,
+        workspace_client=workspace_client,
+        spark=spark,
+        iteration=config.iteration,
+        forbidden_signatures=(),
+        baseline_eval_rows=baseline_eval_rows,
+        rca_evidence_typed=rca_evidence_typed,
+        metadata_snapshot=metadata_snapshot,
+        schema_columns_tuple=schema_columns_tuple,
+        schema_columns_source=schema_columns_source,
+        applier_stub=applier_stub,
+    )
     ctx = TransformerContext(**ctx_kwargs)
 
     sm = StateMachine(transformers=_build_registry(config.llm_mode))
