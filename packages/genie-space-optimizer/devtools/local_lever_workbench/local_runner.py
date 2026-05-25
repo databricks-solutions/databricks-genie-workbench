@@ -168,6 +168,43 @@ def _build_live_workspace_client(profile: str | None):
     return ws
 
 
+def _build_workbench_spark(
+    *,
+    profile: str | None,
+    profile_required: bool = True,
+) -> Any | None:
+    """Construct a Databricks Connect serverless SparkSession.
+
+    Required for ``live-databricks`` mode because ``make_predict_fn``
+    and ``make_all_scorers`` both bind a SparkSession at construction
+    time (see evaluation.py:4732 and scorers/__init__.py:106).
+
+    Modes that do NOT need real Spark (``sm-tape``, ``stage1-only``)
+    pass ``profile_required=False`` and accept the returned ``None``.
+
+    Fail-fast on missing ``databricks-connect`` rather than letting
+    the eventual ``make_predict_fn(spark=None, ...)`` raise an
+    opaque ``AttributeError`` halfway through evaluated_gate.
+    """
+    if not profile_required:
+        return None
+
+    try:
+        from databricks.connect import DatabricksSession  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "live-databricks mode requires the databricks-connect package "
+            "for SparkSession construction. Install via "
+            "uv add databricks-connect==<dbr-matching-version> or "
+            "fall back to --llm-mode sm-tape for offline replay."
+        ) from exc
+
+    builder = DatabricksSession.builder.serverless(True)
+    if profile:
+        builder = builder.profile(profile)
+    return builder.getOrCreate()
+
+
 # ── Tape harness wrapper ─────────────────────────────────────────────
 
 
