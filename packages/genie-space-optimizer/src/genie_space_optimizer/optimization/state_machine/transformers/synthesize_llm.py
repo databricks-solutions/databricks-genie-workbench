@@ -315,6 +315,15 @@ def _invoke_stage3_llm(state: QuestionStateInIteration, ctx: TransformerContext)
 
     cluster = _build_failure_cluster_from_state(state, ctx)
     member_qid_evidence = _build_member_qid_evidence_from_ctx(state, ctx)
+    # Trial 16.3 — forward ``ctx.forbidden_signatures`` (typed strings
+    # harvested from prior-iteration SM ``TerminalRecord.forbidden_signature``)
+    # into the Stage 3 LLM prompt so the lever LLM avoids re-proposing
+    # patch_type / shape combinations whose typed rejection already
+    # appears there. Postmortem 813949510175466 evidence: gs_013
+    # re-proposed ``update_column_description`` for the same
+    # ``missing_table`` root cause that just rejected
+    # ``add_column_description`` — exactly the cross-iteration recycle
+    # this seam closes.
     result = run_plan11_synthesis_for_single_cluster(
         cluster,
         dict(ctx.schema_slice),
@@ -324,6 +333,7 @@ def _invoke_stage3_llm(state: QuestionStateInIteration, ctx: TransformerContext)
         iteration=ctx.iteration,
         ag_id=state.clustered.ag_id,
         w=ctx.w,
+        forbidden_signatures=tuple(ctx.forbidden_signatures),
     )
 
     proposal_dict = getattr(result, "proposal", None)
@@ -390,11 +400,19 @@ def _terminate_invariant(
             reason=failed_attempt.outcome_reason,
             proposal_attempt_index=failed_attempt.attempt_index,
         ),
+        # Trial 16 Chunk 3 — combine the patch_type with the typed
+        # rejection reason so the next iteration's strategist (via
+        # cluster_batch's ``ctx.forbidden_signatures``) avoids
+        # re-proposing the same shape. Up to Trial 15 this signature
+        # was empty, so synthesis invariant violations leaked no
+        # actionable feedback into the strategist's prompt.
         terminal=TerminalRecord(
             kind="OPTIMIZER_INVARIANT_VIOLATION",
             reason=failed_attempt.outcome_reason,
             deepest_stage_reached=state.deepest_stage_reached,
-            forbidden_signature="",
+            forbidden_signature=(
+                f"{failed_attempt.patch_type}:{failed_attempt.outcome_reason}"
+            ),
         ),
     )
 

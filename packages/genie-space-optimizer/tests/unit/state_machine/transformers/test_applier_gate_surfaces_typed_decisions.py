@@ -162,16 +162,20 @@ def test_applier_gate_surfaces_typed_decision_reason():
         result = applier_gate.transform(state, ctx)
     stdout = buf.getvalue()
 
-    # The applier reject transition should leave the state at PROPOSED
-    # (escalation cycle) with the latest ProposalAttempt's
-    # outcome_reason carrying the typed decision string.
-    assert result.current_stage == FunnelStage.PROPOSED
-    latest = result.proposals[-1]
-    assert latest.outcome_reason == "dropped_validation:target_column_not_found", (
-        f"Expected typed decision:reason on the rejected ProposalAttempt, "
-        f"got outcome_reason={latest.outcome_reason!r}. The applier audit "
-        f"trail must propagate through to the gate's ProposalAttempt."
+    # Trial 16 RC3 — was ``current_stage == PROPOSED`` with the typed
+    # decision on ``proposals[-1].outcome_reason``. The contract change
+    # routes applier rejections to TERMINATED so the qid stops cycling;
+    # the typed decision must now ride on ``terminal.reason`` and
+    # ``terminal.forbidden_signature`` so cluster_batch's
+    # ``ctx.forbidden_signatures`` channel can teach the strategist.
+    assert result.current_stage == FunnelStage.TERMINATED
+    assert result.terminal is not None
+    assert "dropped_validation:target_column_not_found" in result.terminal.reason, (
+        f"Expected typed decision:reason on TerminalRecord.reason, got "
+        f"reason={result.terminal.reason!r}. The applier audit trail "
+        f"must propagate through to the terminal record."
     )
+    assert "dropped_validation:target_column_not_found" in result.terminal.forbidden_signature
     assert "apply_failed_no_reason" not in stdout, (
         f"Sentinel apply_failed_no_reason leaked into gate markers — "
         f"Trial 15 Part B1 should have eliminated it. Stdout:\n{stdout}"
@@ -184,6 +188,10 @@ def test_applier_gate_falls_back_to_apply_no_decision_emitted_sentinel():
     ``validation_errors`` are populated, the gate emits the tighter
     ``apply_no_decision_emitted`` sentinel — a genuine applier-side
     bug signal operators can grep for.
+
+    Trial 16 RC3 — sentinel now rides on ``terminal.reason`` /
+    ``terminal.forbidden_signature`` (not ``proposals[-1].outcome_reason``)
+    because applier rejections terminate rather than recycle.
     """
     state = _state_at_applyable()
     ctx = _build_ctx_with_proposal_store()
@@ -202,11 +210,13 @@ def test_applier_gate_falls_back_to_apply_no_decision_emitted_sentinel():
     ), redirect_stdout(buf):
         result = applier_gate.transform(state, ctx)
 
-    latest = result.proposals[-1]
-    assert latest.outcome_reason == "apply_no_decision_emitted", (
+    assert result.current_stage == FunnelStage.TERMINATED
+    assert result.terminal is not None
+    assert "apply_no_decision_emitted" in result.terminal.reason, (
         f"Expected the Trial 15 tighter sentinel "
-        f"'apply_no_decision_emitted'; got {latest.outcome_reason!r}. "
-        f"The post-B1 sentinel must be distinct from the legacy "
-        f"'apply_failed_no_reason' so operators can tell the two "
-        f"failure modes apart in postmortems."
+        f"'apply_no_decision_emitted'; got terminal.reason="
+        f"{result.terminal.reason!r}. The post-B1 sentinel must be "
+        f"distinct from the legacy 'apply_failed_no_reason' so "
+        f"operators can tell the two failure modes apart in postmortems."
     )
+    assert "apply_no_decision_emitted" in result.terminal.forbidden_signature

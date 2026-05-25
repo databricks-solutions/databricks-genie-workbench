@@ -136,6 +136,22 @@ def _classify_eval_rows(
     return already_passing, hard, soft, gt_correction
 
 
+class PostApplyEvalEmptySliceError(RuntimeError):
+    """Raised when ``_run_full_evaluation`` is asked to scope the
+    benchmark slice to a non-empty ``eval_qids`` set but no benchmark
+    row carries any of the requested qids.
+
+    The harness loader (UC ``genie_benchmarks_<domain>`` table) or the
+    upstream eval-row → hard-qid promotion has produced a qid that the
+    benchmark list cannot satisfy. Running ``run_evaluation`` with an
+    empty benchmarks list is wasteful and produces the legacy
+    ``no_post_apply_row_for_qid`` shape downstream — surfacing this as
+    a typed exception lets ``evaluated_gate`` produce a structured
+    terminal whose ``forbidden_signature`` teaches the next iteration's
+    strategist.
+    """
+
+
 def _run_full_evaluation(
     inp: EvaluationInput, eval_kwargs: RunEvaluationKwargs,
 ) -> dict[str, Any]:
@@ -146,7 +162,73 @@ def _run_full_evaluation(
     Phase G-lite typed ``eval_kwargs`` as ``RunEvaluationKwargs``
     (TypedDict, total=False) — required keys are enforced by
     ``run_evaluation``'s own signature at runtime.
+
+    Trial 16 RC1 — when ``inp.eval_qids`` is non-empty, scope the
+    benchmark slice to those qids before splatting. Up to Trial 15 this
+    helper ignored ``eval_qids`` and forwarded the full benchmark list
+    (production postmortems 575892594490176 and 319530250904653
+    timed out at ~120 min because every applied patch triggered a full
+    23-question post-apply evaluation). The downstream EvaluationInput
+    contract already names this parameter, gates already populate it
+    from ``ctx.eval_qids or (state.qid,)`` — we just stopped honouring
+    it at the call boundary.
+
+    Empty / missing ``eval_qids`` is the no-scope path (used by the
+    baseline once-per-run call); the full list goes through unchanged.
     """
+    requested = {str(q) for q in (inp.eval_qids or ()) if q}
+    if requested:
+        # Trial 16.1 — use the canonical extractor instead of the strict
+        # ``b.get("question_id")`` lookup. Production postmortems
+        # 127751814861356 and 813949510175466 both showed the slice
+        # firing with ``benchmarks_count=0`` even when the harness had
+        # loaded 23 benchmark rows — because the rows carried the qid
+        # under nested ``inputs.question_id`` (MLflow ``genai.datasets``
+        # shape), flat-slash ``inputs/question_id``, ``id`` only, or
+        # ``request.kwargs.question_id``. Trial 16 RC2 already taught
+        # the OUTPUT row-match path in ``evaluated_gate`` to use
+        # ``extract_question_id``; the slice INPUT filter must use the
+        # same canonical extractor for the contract to hold end-to-end.
+        from genie_space_optimizer.optimization._qid_extraction import (
+            extract_question_id,
+        )
+
+        original_benchmarks = list(eval_kwargs.get("benchmarks") or [])
+        benchmarks = [
+            b for b in original_benchmarks
+            if extract_question_id(dict(b))[0] in requested
+        ]
+        # Copy to avoid mutating the caller's dict; the harness reuses
+        # the same kwargs across baseline + post-apply calls.
+        eval_kwargs = {**eval_kwargs, "benchmarks": benchmarks}  # type: ignore[assignment]
+        # Postmortem marker — operators grep for this to confirm RC1
+        # is in effect after Trial 16 lands.
+        print(
+            "GSO_POST_APPLY_EVAL_SLICED_V1 "
+            f"requested_qids={sorted(requested)!r} "
+            f"benchmarks_count={len(benchmarks)}",
+            flush=True,
+        )
+        # Trial 16.1 — defense-in-depth invariant. Both postmortems
+        # 127751814861356 and 813949510175466 recommended: "Make
+        # hard-QID benchmark presence a pre-apply invariant. Refuse to
+        # evaluate when the requested hard QID cannot map to exactly
+        # one benchmark row." Raising a typed error here lets
+        # ``evaluated_gate`` surface a structured ``OPTIMIZER_INVARIANT_
+        # VIOLATION`` terminal with a ``forbidden_signature`` that
+        # teaches the next iteration's strategist, rather than silently
+        # running an empty eval that produces the legacy
+        # ``no_post_apply_row_for_qid`` symptom.
+        #
+        # Only fires when the harness DID load benchmarks but the
+        # requested qids are absent (the production failure shape).
+        # If the harness loaded zero benchmarks the invariant is a
+        # different class (loader/budget) and is not this site's job.
+        if original_benchmarks and not benchmarks:
+            raise PostApplyEvalEmptySliceError(
+                "post_apply_eval_empty_slice_for_requested_qid:"
+                f"{sorted(requested)!r}"
+            )
     # type: ignore[arg-type] — RunEvaluationKwargs is total=False; required
     # keys are enforced by run_evaluation's own signature at runtime.
     return _eval_primitives.run_evaluation(**eval_kwargs)

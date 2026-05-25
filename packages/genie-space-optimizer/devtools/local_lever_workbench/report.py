@@ -185,6 +185,33 @@ def _terminal_reason_set(progress: tuple[StageProgress, ...]) -> tuple[str, ...]
 # ── Top-level builder ───────────────────────────────────────────────
 
 
+def _accepted_rolled_back_counts(
+    progress: tuple[StageProgress, ...],
+) -> tuple[int, int]:
+    """Trial 16 v1.6 — surface the acceptance boundary in counts.
+
+    Returns ``(accepted_count, rolled_back_count)`` where:
+      * ``accepted_count`` = states whose deepest stage is ``accepted``.
+      * ``rolled_back_count`` = states terminated with the
+        ``OPTIMIZER_TRIED_NO_GAIN`` shape (the acceptance gate's typed
+        rejection reason starts with ``target_unchanged:`` or
+        ``collateral_regressions=``; either prefix indicates "patch
+        applied + evaluated but acceptance_gate rolled it back").
+    """
+    accepted = 0
+    rolled_back = 0
+    for p in progress:
+        if p.deepest_stage == "accepted":
+            accepted += 1
+            continue
+        reason = p.terminal_reason or ""
+        if reason.startswith("target_unchanged:") or reason.startswith(
+            "collateral_regressions="
+        ):
+            rolled_back += 1
+    return accepted, rolled_back
+
+
 def build_run_result(
     *,
     bundle: WorkbenchInputBundle,
@@ -197,6 +224,14 @@ def build_run_result(
     markers = _aggregate_markers(artifacts.stdout_text)
     marker_counts = {k: len(v) for k, v in markers.items()}
     marker_counts.update(_count_markers(artifacts.stdout_text))
+    accepted_count, rolled_back_count = _accepted_rolled_back_counts(
+        progress,
+    )
+    # Trial 16 v1.6 — expose ACCEPTED / ROLLED_BACK in marker_counts so
+    # the funnel report's "Marker counts" section now headlines the
+    # acceptance boundary, not just the gates' verdict markers.
+    marker_counts["workbench_accepted_count"] = accepted_count
+    marker_counts["workbench_rolled_back_count"] = rolled_back_count
     deepest = _deepest_funnel_value(progress)
     surprises = _detect_surprises(
         stage1=stage1,

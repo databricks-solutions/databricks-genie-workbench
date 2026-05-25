@@ -42,6 +42,7 @@ testpaths = ["tests"]
 markers = [
     "integration: integration tests (SM end-to-end, tape replay)",
     "workbench: developer-only local lever-loop workbench tests",
+    "live_llm: opt-in tests that hit real Databricks model-serving endpoints (skipped by default)",
 ]
 
 [tool.ty.src]

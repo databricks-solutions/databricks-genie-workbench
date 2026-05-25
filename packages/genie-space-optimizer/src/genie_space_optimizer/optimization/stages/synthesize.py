@@ -81,6 +81,7 @@ def _build_request(
     member_qid_evidence: list[dict[str, Any]],
     history: list[dict[str, Any]],
     iteration: int,
+    forbidden_signatures: tuple[str, ...] = (),
 ) -> LlmReasoningRequest:
     rsm = _SKILL_LOADER.load_reasoning_metadata(_SKILL_ID)
     if rsm is None:
@@ -92,6 +93,78 @@ def _build_request(
     system_body = _SKILL_LOADER.load_prompt(
         _SKILL_ID, expected_constant_name=_PROMPT_CONST,
     )
+    # Trial 16.3 — surface prior-iteration typed-rejection strings to
+    # the lever LLM so it can avoid re-proposing patch_type / shape
+    # combinations whose typed rejection already appears here. Without
+    # this, postmortem 813949510175466 shows gs_013 re-proposing
+    # ``update_column_description`` for the same missing_table cause
+    # that just rejected ``add_column_description`` in the prior
+    # iteration. Empty default keeps the prompt schema stable.
+    # Trial 17 step 2 — Lever Selection Contract.
+    # Emit the closed lever menu + plan-then-synthesize instructions
+    # so the Stage 3 LLM reasons explicitly about which of the 6
+    # levers it is operating on. The validator in this module drops
+    # any proposal whose (selected_lever, patch_type) pair is
+    # inconsistent with LEVER_TO_PATCH_TYPES.
+    from genie_space_optimizer.optimization.levers_contract import (
+        archetype_catalog_menu_for_prompt,
+        lever_menu_for_prompt,
+    )
+
+    lever_contract_instructions = (
+        "Trial 17 — Lever Selection Contract. For EACH proposal you "
+        "emit, you MUST also set:\n"
+        "  - selected_lever: one of 'lever-1' .. 'lever-6' (see "
+        "lever_menu).\n"
+        "  - expected_behavioral_change: one or two sentences "
+        "describing what the generated SQL grammar will do "
+        "differently after this patch lands. Be concrete: name the "
+        "shape (ORDER BY, LIMIT, RANK, etc.) and the column.\n"
+        "  - fallback_lever: which lever to try next iteration if "
+        "sliced eval shows target_unchanged. Same closed enum.\n"
+        "  - bundle_id (optional): non-empty string when multiple "
+        "proposals must be applied together.\n"
+        "The 'allowed_patch_types' in each lever_menu entry MUST be "
+        "consistent with this proposal's patch_type. Inconsistent "
+        "pairs (e.g. selected_lever='lever-1' with "
+        "patch_type='add_instruction') will be rejected by the "
+        "deterministic validator and surfaced as a forbidden_signature "
+        "in the next iteration's prompt under "
+        "'lever_plan_violation:plan=<X>,patch=<Y>'.\n"
+        "\n"
+        "Lever selection guidance (read BEFORE picking a lever, including "
+        "on iteration 1 when no forbidden_signatures exist):\n"
+        "  * Each lever_menu entry now carries 'description' and "
+        "'prefer_when'. Match the diagnosis 'rca_kind_label' against "
+        "the 'prefer_when' tokens to pick the right family.\n"
+        "  * Grammar-pivot diagnoses — the rca_kind names a concrete "
+        "SQL shape such as 'RANK() instead of LIMIT N', 'missing "
+        "ORDER BY', 'missing GROUP BY', 'missing WHERE filter', "
+        "'missing window' — are LEAST likely to be fixed by lever-5a "
+        "(add_instruction prose alone). The Genie planner reads "
+        "instructions as soft hints, not grammar constraints, so a "
+        "prose-only patch on a grammar pivot is the highest-risk "
+        "lever-5 choice. Prefer:\n"
+        "      lever-6 (sql_snippet_filter / expression / measure) — "
+        "       the most direct way to install a reusable grammar "
+        "       shape the planner can compose; OR\n"
+        "      lever-5b (add_example_sql) — anchor the shape by "
+        "       demonstration when no compact snippet captures it; OR\n"
+        "      lever-1 (add_column_description) with a worked example "
+        "       in the description IF the underlying ambiguity is "
+        "       column-meaning, not grammar.\n"
+        "  * Reserve lever-5a (add_instruction prose) for "
+        "non-grammar diagnoses: business terminology, soft policy, or "
+        "conventions that don't change SQL shape.\n"
+        "\n"
+        "Consult the prior-iteration forbidden_signatures (below) to "
+        "pivot away from levers that already failed for this QID + "
+        "rca_kind. When an instruction-only patch returned "
+        "target_unchanged, prefer a structural lever (lever-4 / "
+        "lever-6) or a metadata lever (lever-1) — repeating the same "
+        "lever for the same rca_kind is unlikely to change behavior."
+    )
+
     user_prompt = json.dumps(
         {
             "iteration": iteration,
@@ -99,6 +172,17 @@ def _build_request(
             "member_qid_evidence": member_qid_evidence,
             "schema_slice": schema_slice,
             "history": history,
+            "forbidden_signatures": list(forbidden_signatures or ()),
+            # Trial 17 — closed lever menu (machine-readable side of
+            # the contract). The LLM picks ``selected_lever`` from
+            # these IDs.
+            "lever_menu": lever_menu_for_prompt(),
+            "lever_contract_instructions": lever_contract_instructions,
+            # Trial 17 step 7 — archetype catalog is now MENU context
+            # (no longer a control-flow gate). The LLM may reference an
+            # archetype's ``name`` / ``required_constructs`` when
+            # justifying its ``selected_lever`` but is not bound to one.
+            "archetype_catalog_menu": archetype_catalog_menu_for_prompt(),
         },
         default=str,
     )
@@ -257,6 +341,7 @@ def run_plan11_synthesis_for_single_cluster(
     iteration: int,
     ag_id: str,
     w: Any,
+    forbidden_signatures: tuple[str, ...] = (),
 ) -> ClusterSynthesisResult:
     """Plan 11 Stage 3 — synthesize patches for one cluster via LLM.
 
@@ -275,6 +360,7 @@ def run_plan11_synthesis_for_single_cluster(
         member_qid_evidence=member_qid_evidence or [],
         history=history,
         iteration=iteration,
+        forbidden_signatures=forbidden_signatures,
     )
 
     t0 = time.monotonic()
@@ -326,6 +412,12 @@ def run_plan11_synthesis_for_single_cluster(
     # ``llm`` / ``cluster`` / ``member_union`` / ``empty``.
     proposals_blame_set_source: dict[str, int] = {}
     member_union_blame_set = _union_member_blame_sets(member_qid_evidence)
+    # Trial 17 — Lever Selection Contract validator. Imported once
+    # outside the loop so each iteration does not pay the lookup cost.
+    from genie_space_optimizer.optimization.levers_contract import (
+        validate_plan_vs_proposal_consistency,
+    )
+
     for idx, item in enumerate(raw_proposals):
         raw_pt = str(item.get("patch_type", ""))
         pt = _safe_patch_type(raw_pt)
@@ -336,6 +428,46 @@ def run_plan11_synthesis_for_single_cluster(
             key = raw_pt.strip() or "<empty>"
             rejected_patch_types_raw[key] = (
                 rejected_patch_types_raw.get(key, 0) + 1
+            )
+            continue
+        # Trial 17 step 2 — deterministic plan-vs-proposal consistency
+        # validator. When the LLM declared ``selected_lever``, the
+        # (lever, patch_type) pair must satisfy
+        # ``LEVER_TO_PATCH_TYPES``. Inconsistent proposals are dropped
+        # here with a typed bucket so the Stage 3 marker surfaces the
+        # violation, AND a record is logged so the next iteration's
+        # forbidden_signature channel sees the lever_plan_violation.
+        selected_lever_raw = str(item.get("selected_lever", "") or "")
+        violation = validate_plan_vs_proposal_consistency(
+            selected_lever=selected_lever_raw,
+            patch_type=pt,
+        )
+        if violation is not None:
+            key = (
+                f"{selected_lever_raw or '?'}::{raw_pt or '<empty>'}"
+                f"::{violation}"
+            )
+            rejected_patch_types_raw[key] = (
+                rejected_patch_types_raw.get(key, 0) + 1
+            )
+            # Emit a CONTRACT_FAILED marker so postmortem tooling can
+            # see the violation alongside other Stage 3 dropouts. The
+            # idempotent emitter keys on intent_id which we synthesize
+            # from cluster_id + idx (same shape as the surviving
+            # proposals).
+            print(
+                json.dumps(
+                    {
+                        "trial17_lever_plan_violation": violation,
+                        "cluster_id": cluster.cluster_id,
+                        "intent_id_seq": f"{cluster.cluster_id}_{idx:03d}",
+                        "iteration": iteration,
+                        "patch_type": pt.value,
+                        "selected_lever": selected_lever_raw,
+                    },
+                    default=str,
+                ),
+                flush=True,
             )
             continue
         item_blame_set = [str(b) for b in (item.get("blame_set") or [])]
@@ -383,6 +515,17 @@ def run_plan11_synthesis_for_single_cluster(
                 target_qids=tuple(
                     str(q) for q in (item.get("target_qids") or [])
                 ),
+                # Trial 17 — Lever Selection Contract fields. The
+                # validator above already enforced consistency between
+                # ``selected_lever`` and ``patch_type``; here we just
+                # stamp them onto the typed proposal so downstream
+                # gates (acceptance_gate, applier_gate) can read them.
+                selected_lever=selected_lever_raw,
+                expected_behavioral_change=str(
+                    item.get("expected_behavioral_change", "") or ""
+                ),
+                fallback_lever=str(item.get("fallback_lever", "") or ""),
+                bundle_id=str(item.get("bundle_id", "") or ""),
             )
         )
 
@@ -433,6 +576,22 @@ def run_plan11_synthesis_for_single_cluster(
                 if proposals_blame_set_source
                 else None
             ),
+            # Trial 17.1 — index-parallel to proposal_ids / patch_types.
+            # Empty strings for proposals where the LLM omitted the
+            # field (legacy or older models) so the arrays stay aligned.
+            selected_levers=[
+                str(getattr(p, "selected_lever", "") or "") for p in proposals
+            ],
+            expected_behavioral_changes=[
+                str(getattr(p, "expected_behavioral_change", "") or "")
+                for p in proposals
+            ],
+            fallback_levers=[
+                str(getattr(p, "fallback_lever", "") or "") for p in proposals
+            ],
+            bundle_ids=[
+                str(getattr(p, "bundle_id", "") or "") for p in proposals
+            ],
         )
     )
 

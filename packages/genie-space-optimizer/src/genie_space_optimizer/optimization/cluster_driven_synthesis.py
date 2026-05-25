@@ -48,9 +48,20 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
+
+
+# Trial 17 step 7 — flag that deprioritises ``pick_archetype`` as a
+# control-flow gate. Default: ON (see ``trial17_flags`` for the
+# canonical implementation and opt-out semantics). The wrapper below is
+# kept for module-local callers; new code should import from
+# ``trial17_flags`` directly.
+from genie_space_optimizer.optimization.trial17_flags import (
+    trial17_lever_led_synthesis_enabled as _trial17_lever_led_synthesis_enabled,  # noqa: F401
+)
 
 from genie_space_optimizer.common.config import (
     CLUSTER_SYNTHESIS_PER_ITERATION,
@@ -254,11 +265,27 @@ class SkippedReason(str, Enum):
     malformed, or coverage gap)."""
     NO_ARCHETYPE_OR_SLICE = "no_archetype_or_slice"
     """``pick_archetype`` returned None for this cluster's
-    blame_set / root_cause combination."""
+    blame_set / root_cause combination.
+
+    .. deprecated:: Trial 17
+        Trial 17 deprioritises ``pick_archetype`` as a control-flow
+        gate (the archetype catalog now travels as menu context inside
+        the Stage 3 LLM prompt). With
+        ``GSO_TRIAL17_LEVER_LED_SYNTHESIS`` enabled this enum value is
+        unreachable; the surrounding logic falls back to the safety-net
+        archetype and lets the LLM pick the lever. The value is kept
+        for one trial cycle for back-compat; scheduled for removal in
+        Trial 18.
+    """
     NO_TOP_N_ARCHETYPE = "no_top_n_archetype"
     """Phase 8.2 — specialised case of NO_ARCHETYPE_OR_SLICE for
     ``plural_top_n_collapse`` clusters that need a TOP-N archetype
-    which the archetype catalog does not yet expose."""
+    which the archetype catalog does not yet expose.
+
+    .. deprecated:: Trial 17
+        See ``NO_ARCHETYPE_OR_SLICE``. Scheduled for removal in
+        Trial 18.
+    """
     SYNTH_NONE = "synth_none"
     """The LLM synthesis returned no proposal for the chosen
     archetype + cluster combination."""
@@ -634,6 +661,22 @@ def _find_matching_join_spec(
     return None
 
 
+def _fallback_menu_archetype():
+    """Trial 17 step 7 — return the safety-net archetype.
+
+    Used when ``pick_archetype`` returns ``None`` and Trial 17's
+    lever-led synthesis flag is enabled. Picks ``simple_enumerate``
+    (the always-eligible safety net) by default; falls back to the
+    first archetype in the catalog if ``simple_enumerate`` is absent.
+    """
+    from genie_space_optimizer.optimization.archetypes import ARCHETYPES
+
+    for arch in ARCHETYPES:
+        if getattr(arch, "name", "") == "simple_enumerate":
+            return arch
+    return ARCHETYPES[0] if ARCHETYPES else None
+
+
 def _derive_asset_slice_from_afs(
     afs: dict,
     metadata_snapshot: dict,
@@ -654,7 +697,21 @@ def _derive_asset_slice_from_afs(
     """
     archetype = pick_archetype(afs, metadata_snapshot)
     if archetype is None:
-        return None
+        # Trial 17 step 7 — deprioritise pick_archetype as a hard gate.
+        # When ``GSO_TRIAL17_LEVER_LED_SYNTHESIS`` is on, fall back to
+        # the safety-net archetype (``simple_enumerate``) so the LLM
+        # gets a chance to pick a lever from the menu instead of the
+        # cluster declining via ``NO_ARCHETYPE_OR_SLICE``.
+        if _trial17_lever_led_synthesis_enabled():
+            archetype = _fallback_menu_archetype()
+            logger.info(
+                "trial17: pick_archetype returned None for cluster=%s; "
+                "falling back to safety-net archetype=%s",
+                afs.get("cluster_id", "?"),
+                getattr(archetype, "name", "?"),
+            )
+        else:
+            return None
 
     blame = [str(b) for b in (afs.get("blame_set") or []) if b]
     resolved = [
@@ -711,7 +768,19 @@ def _derive_asset_slice_from_afs(
         reduced_afs["blame_set"] = [blame[0]] if blame else []
         archetype_single = pick_archetype(reduced_afs, metadata_snapshot)
         if archetype_single is None:
-            return None
+            # Trial 17 step 7 — same softening as above, applied to the
+            # missing-join-spec single-table fallback path.
+            if _trial17_lever_led_synthesis_enabled():
+                archetype_single = _fallback_menu_archetype()
+                logger.info(
+                    "trial17: pick_archetype (reduced) returned None "
+                    "for cluster=%s; falling back to safety-net "
+                    "archetype=%s",
+                    afs.get("cluster_id", "?"),
+                    getattr(archetype_single, "name", "?"),
+                )
+            else:
+                return None
         columns = _top_k_columns(tables[0], column_k)
         return (
             AssetSlice(

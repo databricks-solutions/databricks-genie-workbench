@@ -40,6 +40,11 @@ def test_field_set_includes_intent_id_plus_eight_llm_fields() -> None:
         "required_constructs",
         "repair_hypothesis",
         "target_qids",
+        # Trial 17 — LLM-led Lever Selection Contract fields.
+        "selected_lever",
+        "expected_behavioral_change",
+        "fallback_lever",
+        "bundle_id",
     }
 
 

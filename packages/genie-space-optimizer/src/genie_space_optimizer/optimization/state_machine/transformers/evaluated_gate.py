@@ -55,13 +55,35 @@ def _run_post_apply_eval(
             # Allow zero-arg stubs in the simplest tests.
             return stub()
 
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
     from genie_space_optimizer.optimization.stages.evaluation import (
         EvaluationInput, evaluate_post_patch,
     )
 
+    # Trial 16.2 — per-applied-patch eval is scoped to ``state.qid``
+    # ONLY, never the wider ``ctx.eval_qids``.
+    #
+    # ``ctx.eval_qids`` carries the iteration's *full* benchmark-qid
+    # context (Trial 16.1 helper fix populates it correctly; pre-fix it
+    # was always empty by accident). The gate runs once per applied
+    # patch, and each patch targets exactly one qid — the qid we just
+    # patched. Forwarding the full ``ctx.eval_qids`` makes
+    # ``_run_full_evaluation`` slice to all 23 benchmarks and run the
+    # full 12-minute eval per applied patch — the exact Trial 16 RC1
+    # timeout pattern (postmortems 575892594490176 +
+    # 319530250904653 timed out at ~120 min from 7 applied patches ×
+    # ~12 min each = ~84 min of repeated full evals).
+    #
+    # The wider ``ctx.eval_qids`` is still used by:
+    # * ``harness.py:_eval_inp_full`` (once-per-iteration baseline
+    #   eval — actually wants all benchmark qids).
+    # * ``gate_reasoning_marker`` below (classification metadata,
+    #   not scope).
     eval_input = EvaluationInput(
         space_state=dict(ctx.metadata_snapshot),
-        eval_qids=tuple(ctx.eval_qids) or (state.qid,),
+        eval_qids=(state.qid,),
         run_role="iteration_eval",
         iteration_label=f"iter_{ctx.iteration:03d}",
         scope="full",
@@ -71,9 +93,18 @@ def _run_post_apply_eval(
         ctx.stage_ctx, eval_input, eval_kwargs=ctx.eval_kwargs,
     )
 
+    # Trial 16 RC2a — use the canonical extractor instead of the
+    # strict ``r.get("question_id")`` lookup. MLflow-flattened rows
+    # carry the canonical qid under ``inputs/question_id`` (slash),
+    # ``inputs.question_id`` (dot), nested ``inputs: {...}``, or
+    # ``metadata.question_id``; the helper handles all of them. Before
+    # this change the gate ignored every shape but top-level
+    # ``question_id`` and produced ``no_post_apply_row_for_qid`` for
+    # every applied patch — the dominant failure mode in production
+    # postmortems 575892594490176 + 319530250904653.
     rows = tuple(getattr(result, "eval_rows", ()) or ())
     matching = next(
-        (r for r in rows if str(r.get("question_id") or "") == state.qid),
+        (r for r in rows if extract_question_id(dict(r))[0] == state.qid),
         None,
     )
     if matching is None:
@@ -111,11 +142,17 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
             ),
             flush=True,
         )
+        # Trial 16 Chunk 3 — surface the typed eval failure shape as
+        # the ``forbidden_signature`` so cluster_batch's
+        # ``ctx.forbidden_signatures`` channel can teach the next
+        # iteration's strategist (the exception type + message often
+        # encode the root cause: ``no_post_apply_row_for_qid``,
+        # ``benchmarks_empty``, ``mlflow_unavailable`` etc.).
         return GateVerdict.reject_terminal(TerminalRecord(
             kind="OPTIMIZER_INVARIANT_VIOLATION",
             reason=f"post_apply_eval_failed:{exc}",
             deepest_stage_reached=state.deepest_stage_reached,
-            forbidden_signature="",
+            forbidden_signature=f"post_apply_eval_failed:{exc}",
         ))
     return GateVerdict.success(record=EvaluatedRecord(
         pre_apply_score=state.seen.score,

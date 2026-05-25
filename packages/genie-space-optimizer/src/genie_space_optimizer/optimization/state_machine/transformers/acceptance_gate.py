@@ -59,14 +59,24 @@ def _assess_collateral(
             target_qids = {str(q) for q in proposal.target_qids}
     target_qids.add(state.qid)  # always exclude the state's own target
 
+    # Trial 16 RC2b — use the canonical extractor instead of the
+    # strict ``r.get("question_id")`` lookup. Symmetric with RC2a in
+    # ``evaluated_gate``: MLflow-flattened rows carry the qid under
+    # ``inputs/question_id`` / ``inputs.question_id`` / nested inputs,
+    # and the strict lookup mapped every such row to key ``""`` —
+    # silently masking real collateral regressions.
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
+
     def _score(row: dict) -> float:
         return float(row.get("feedback/result_correctness/value", 0.0) or 0.0)
 
     pre_by_qid = {
-        str(r.get("question_id") or ""): _score(r) for r in baseline
+        extract_question_id(dict(r))[0]: _score(r) for r in baseline
     }
     post_by_qid = {
-        str(r.get("question_id") or ""): _score(r) for r in post
+        extract_question_id(dict(r))[0]: _score(r) for r in post
     }
     regressed: list[str] = []
     for qid, pre_score in pre_by_qid.items():
@@ -114,11 +124,64 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
         ),
         flush=True,
     )
+    # Trial 16 Chunk 3 + Trial 17 — surface the typed reason as the
+    # ``forbidden_signature`` so cluster_batch's
+    # ``ctx.forbidden_signatures`` channel can teach the next
+    # iteration's strategist that the applied patch shape didn't
+    # close the gap. Trial 17 enriches the format to carry the lever +
+    # patch_type + rca_kind tokens so the LLM can pivot to a different
+    # lever instead of re-proposing the same one.
+    #
+    # Format:
+    #   "<selected_lever>:<patch_type>:target_unchanged:rca=<rca_kind>"
+    # or for the collateral case:
+    #   "<selected_lever>:<patch_type>:collateral_regressions=[...]"
+    #
+    # ``selected_lever`` comes from the proposal_store; when the
+    # proposal landed before Trial 17 wired selected_lever (legacy),
+    # we infer the lever from patch_type via
+    # ``levers_contract.infer_lever_from_patch_type``. ``rca_kind``
+    # comes from ``state.diagnosed.rca_kind_label``.
+    from genie_space_optimizer.optimization.levers_contract import (
+        infer_lever_from_patch_type,
+    )
+
+    selected_lever = ""
+    patch_type_str = ""
+    if state.proposals:
+        latest = state.proposals[-1]
+        patch_type_str = str(latest.patch_type or "")
+        proposal = ctx.proposal_store.lookup(latest.intent_id)
+        if proposal is not None:
+            selected_lever = str(
+                getattr(proposal, "selected_lever", "") or ""
+            )
+        if not selected_lever and patch_type_str:
+            selected_lever = infer_lever_from_patch_type(patch_type_str)
+
+    rca_kind = ""
+    if state.diagnosed is not None:
+        rca_kind = str(
+            getattr(state.diagnosed, "rca_kind_label", "") or ""
+        )
+
+    if not target_fixed:
+        forbidden_signature = (
+            f"{selected_lever or '?'}:{patch_type_str or '?'}"
+            f":target_unchanged:rca={rca_kind or '?'}"
+        )
+    else:
+        forbidden_signature = (
+            f"{selected_lever or '?'}:{patch_type_str or '?'}"
+            f":collateral_regressions={list(collateral)}"
+            f":rca={rca_kind or '?'}"
+        )
+
     return GateVerdict.reject_terminal(TerminalRecord(
         kind="OPTIMIZER_TRIED_NO_GAIN",
         reason=reason,
         deepest_stage_reached=state.deepest_stage_reached,
-        forbidden_signature="",
+        forbidden_signature=forbidden_signature,
     ))
 
 

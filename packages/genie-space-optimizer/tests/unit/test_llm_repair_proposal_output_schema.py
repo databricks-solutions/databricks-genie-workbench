@@ -34,6 +34,11 @@ def test_required_fields_present_and_typed() -> None:
         "patch_body", "blame_set",
         "target_objects",
         "required_constructs",
+        # Trial 17 — LLM-led Lever Selection Contract fields.
+        "selected_lever",
+        "expected_behavioral_change",
+        "fallback_lever",
+        "bundle_id",
     }
     assert set(fields.keys()) == expected, (
         f"field drift: missing={expected - set(fields.keys())}, "

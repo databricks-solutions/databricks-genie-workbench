@@ -214,6 +214,13 @@ def _invoke_stage2_llm(
         cluster_diagnoses,
     )
 
+    # Trial 16.3 — forward ``ctx.forbidden_signatures`` (typed strings
+    # harvested from prior-iteration SM ``TerminalRecord.forbidden_signature``)
+    # into the Stage 2 LLM prompt so the strategist sees which lever /
+    # patch_type shapes have already been tried and rejected. Producer
+    # side is wired (applier_gate / evaluated_gate / acceptance_gate /
+    # synthesize_llm all set typed signatures on terminal records);
+    # this is the consumer-side seam that was dead-ended pre-Trial-16.3.
     clusters = cluster_diagnoses(
         diagnoses=diagnoses,
         schema_columns=list(ctx.schema_columns),
@@ -221,6 +228,7 @@ def _invoke_stage2_llm(
         iteration=ctx.iteration,
         namespace="hard",
         w=ctx.w,
+        forbidden_signatures=tuple(ctx.forbidden_signatures),
     )
     if not clusters:
         return _ClusterResponse(

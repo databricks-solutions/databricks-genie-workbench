@@ -149,7 +149,19 @@ def test_apply_success_advances_to_applied(monkeypatch):
     assert captured["patches"][0]["patch_type"] == "add_column_synonym"
 
 
-def test_apply_failure_rejects_to_proposed(monkeypatch):
+def test_apply_failure_terminates_with_typed_forbidden_signature(monkeypatch):
+    """Trial 16 RC3 — was ``test_apply_failure_rejects_to_proposed``.
+
+    Up to Trial 15 the gate routed applier failures back to PROPOSED so
+    the synthesize lane could retry. Production postmortems
+    575892594490176 + 319530250904653 caught the pathology: a single
+    dead-end no-op patch could re-enter synthesize up to 32× per qid,
+    burning the iteration budget without progress. The fix terminates
+    the qid with a typed forbidden_signature
+    (``<patch_type>:<applier_reason>``) so cluster_batch's
+    ``ctx.forbidden_signatures`` channel teaches the next-iteration
+    strategist to avoid the same shape.
+    """
     monkeypatch.setattr(
         "genie_space_optimizer.optimization.applier.apply_patch_set",
         lambda w, space_id, patches, metadata_snapshot, **kw: {
@@ -167,14 +179,28 @@ def test_apply_failure_rejects_to_proposed(monkeypatch):
     s = _state_at_applyable(intent_id=rp.intent_id)
     out = applier_module.applier_gate.transform(s, _ctx(rp))
 
-    assert out.current_stage == FunnelStage.PROPOSED  # cycle back
-    assert out.proposals[-1].outcome == "applyability_rejected"
-    assert "validation_failed_on_join_spec" in out.proposals[-1].outcome_reason
+    assert out.current_stage == FunnelStage.TERMINATED
+    assert out.terminal is not None
+    assert out.terminal.kind == "OPTIMIZER_STALLED_SAFE_NOOP"
+    assert "validation_failed_on_join_spec" in out.terminal.reason
+    # Trial 17 — forbidden_signature shape is
+    # ``<lever>:<patch_type>:<applier_reason>``. The lever is inferred
+    # from patch_type (``add_column_synonym`` → ``lever-1``) when the
+    # proposal lacks an explicit ``selected_lever``.
+    sig = out.terminal.forbidden_signature
+    assert sig.startswith("lever-1:add_column_synonym:"), (
+        f"unexpected signature shape: {sig!r}"
+    )
+    assert "validation_failed_on_join_spec" in sig
 
 
-def test_apply_raises_treated_as_failure(monkeypatch):
-    """If apply_patch_set raises, the gate should treat it as a
-    rejection rather than crash the whole state machine."""
+def test_apply_raises_terminates_with_typed_forbidden_signature(monkeypatch):
+    """Trial 16 RC3 — was ``test_apply_raises_treated_as_failure``.
+
+    Applier exceptions are still surfaced as rejections (not crashes),
+    but now the rejection terminates the qid with a typed
+    forbidden_signature rather than cycling back to PROPOSED.
+    """
 
     def boom(*a, **kw):
         raise RuntimeError("genie api unavailable")
@@ -188,12 +214,19 @@ def test_apply_raises_treated_as_failure(monkeypatch):
     s = _state_at_applyable(intent_id=rp.intent_id)
     out = applier_module.applier_gate.transform(s, _ctx(rp))
 
-    assert out.current_stage == FunnelStage.PROPOSED
-    assert out.proposals[-1].outcome == "applyability_rejected"
-    assert "genie api unavailable" in out.proposals[-1].outcome_reason
+    assert out.current_stage == FunnelStage.TERMINATED
+    assert out.terminal is not None
+    assert "genie api unavailable" in out.terminal.reason
+    assert "genie api unavailable" in out.terminal.forbidden_signature
 
 
-def test_proposal_store_miss_treated_as_failure():
+def test_proposal_store_miss_terminates_with_typed_forbidden_signature():
+    """Trial 16 RC3 — was ``test_proposal_store_miss_treated_as_failure``.
+
+    A missing typed RepairProposal in ctx.proposal_store is a
+    deterministic dead-end for the same intent_id, so the gate
+    terminates with a typed forbidden_signature instead of recycling.
+    """
     s = _state_at_applyable(intent_id="intent_missing")
     ctx = TransformerContext(
         iteration=1, run_id="r",
@@ -202,5 +235,7 @@ def test_proposal_store_miss_treated_as_failure():
         metadata_snapshot={},
     )
     out = applier_module.applier_gate.transform(s, ctx)
-    assert out.current_stage == FunnelStage.PROPOSED
-    assert "proposal_store_miss" in out.proposals[-1].outcome_reason
+    assert out.current_stage == FunnelStage.TERMINATED
+    assert out.terminal is not None
+    assert "proposal_store_miss" in out.terminal.reason
+    assert "proposal_store_miss" in out.terminal.forbidden_signature

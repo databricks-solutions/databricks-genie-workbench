@@ -1005,6 +1005,23 @@ def apply_dedup_contract(
                 c["dedup_dropped_reason"] = "description_already_present"
                 continue
 
+        elif ctype == "add_column_description":
+            # Trial 16 Chunk 3 — sibling-branch parity with
+            # ``update_column_description`` (line 1002). Production
+            # postmortems 575892594490176 + 319530250904653 showed
+            # ``add_column_description`` proposals surviving Stage 3
+            # because there was no dedup branch for the ``add_*``
+            # variant. They then deployed to the live space and were
+            # rejected by the applier as no-ops (target column already
+            # carried the description), which combined with RC3's
+            # recycle loop burned the iteration budget (27+ rejections
+            # on gs_024 alone). Reuse the existing helper — same
+            # Semantic Consistency Rule 6.4 surface, just on the
+            # ``add_*`` carrier.
+            if _description_already_conveys(c, snap):
+                c["dedup_dropped_reason"] = "description_already_present"
+                continue
+
         kept.append(c)
 
     return kept

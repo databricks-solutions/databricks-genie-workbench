@@ -75,7 +75,7 @@ def test_happy_path_two_members_one_cluster(monkeypatch):
 
     def fake_cluster(
         *, diagnoses, schema_columns, optimization_run_id,
-        iteration, namespace, w,
+        iteration, namespace, w, forbidden_signatures=(),
     ):
         captured["diagnoses_count"] = len(diagnoses)
         captured["namespace"] = namespace

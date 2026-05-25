@@ -43,7 +43,35 @@ from local_lever_workbench.recording_applier import (
 LLM_MODE_LIVE = "live-databricks"
 LLM_MODE_TAPE = "sm-tape"
 LLM_MODE_STAGE1_ONLY = "stage1-only"
-SUPPORTED_LLM_MODES = (LLM_MODE_LIVE, LLM_MODE_TAPE, LLM_MODE_STAGE1_ONLY)
+# Trial 16 v1.8 — live-llm-only: live Stage 1/2/3 LLM endpoints but
+# stubbed post-apply eval / applier. Catches strategist+lever prompt
+# regressions without needing Spark, Genie API access, or live MLflow
+# scorers. The full V1.5 registry runs end-to-end; only the LLM hops
+# and gates execute against real services. Acceptance/evaluated gates
+# operate on ``bundle.post_apply_eval_tape`` exactly like sm-tape mode.
+LLM_MODE_LIVE_LLM_ONLY = "live-llm-only"
+SUPPORTED_LLM_MODES = (
+    LLM_MODE_LIVE,
+    LLM_MODE_LIVE_LLM_ONLY,
+    LLM_MODE_TAPE,
+    LLM_MODE_STAGE1_ONLY,
+)
+
+
+def _is_live_llm(llm_mode: str) -> bool:
+    """True for any mode that issues real LLM-endpoint calls."""
+    return llm_mode in (LLM_MODE_LIVE, LLM_MODE_LIVE_LLM_ONLY)
+
+
+def _needs_canary_stack(llm_mode: str) -> bool:
+    """True for modes that need Spark + predict_fn + scorers + Genie API.
+
+    Only full ``live-databricks`` exercises the post-apply eval against
+    a real warehouse. ``live-llm-only`` deliberately keeps the canary
+    stack stubbed so the operator can iterate on prompt regressions
+    without a serverless cluster.
+    """
+    return llm_mode == LLM_MODE_LIVE
 
 APPLY_MODE_FAKE_RECORD = "fake-record"
 SUPPORTED_APPLY_MODES = (APPLY_MODE_FAKE_RECORD,)
@@ -81,6 +109,11 @@ def _build_registry(llm_mode: str):
       for both modes. ``live-databricks`` uses real ``eval_kwargs`` /
       ``stage_ctx``; ``sm-tape`` keeps the Trial 15 ``post_apply_eval``
       stub in ``extras``.
+    * ``live-llm-only`` (v1.8) runs the same full V1.5 pipeline but
+      sources Stage 1/2/3 outputs from real LLM endpoints while the
+      post-apply eval falls back to the same tape stub used by
+      ``sm-tape``. The mode is the cheapest way to surface strategist
+      / lever prompt regressions before they reach a real job run.
     """
     from genie_space_optimizer.optimization.state_machine.funnel import (
         FunnelStage,
@@ -179,8 +212,10 @@ def _build_workbench_spark(
     and ``make_all_scorers`` both bind a SparkSession at construction
     time (see evaluation.py:4732 and scorers/__init__.py:106).
 
-    Modes that do NOT need real Spark (``sm-tape``, ``stage1-only``)
-    pass ``profile_required=False`` and accept the returned ``None``.
+    Modes that do NOT need real Spark (``live-llm-only``, ``sm-tape``,
+    ``stage1-only``) pass ``profile_required=False`` and accept the
+    returned ``None`` — ``live-llm-only`` still drives Stage 1/2/3
+    against real LLM endpoints, it only skips the canary eval stack.
 
     Fail-fast on missing ``databricks-connect`` rather than letting
     the eventual ``make_predict_fn(spark=None, ...)`` raise an
@@ -265,6 +300,7 @@ def _make_ctx_kwargs(
     iteration: int = 1,
     forbidden_signatures: tuple[str, ...] = (),
     baseline_eval_rows: tuple = (),
+    post_apply_eval_rows: tuple = (),
     rca_evidence_typed: dict | None = None,
     metadata_snapshot: dict | None = None,
     schema_columns_tuple: tuple[str, ...] = (),
@@ -276,6 +312,10 @@ def _make_ctx_kwargs(
     Mode-aware:
     * ``live-databricks`` builds real ``stage_ctx`` + ``eval_kwargs`` so
       evaluated_gate can call the production ``evaluate_post_patch``.
+    * ``live-llm-only`` issues real Stage 1/2/3 LLM calls but keeps the
+      Trial 15 ``post_apply_eval`` stub — same tape-driven path as
+      ``sm-tape``. The strategist/lever prompts execute end-to-end
+      against live endpoints; only the canary eval is stubbed.
     * ``sm-tape`` keeps the Trial 15 ``post_apply_eval`` stub in
       ``extras`` so evaluated_gate operates on canned baselines.
     * ``stage1-only`` never reaches evaluated_gate; either path works.
@@ -294,7 +334,7 @@ def _make_ctx_kwargs(
     stage_ctx = None
     eval_qids: tuple[str, ...] = ()
 
-    if llm_mode == LLM_MODE_LIVE:
+    if _needs_canary_stack(llm_mode):
         from genie_space_optimizer.optimization.evaluation import make_predict_fn
         from genie_space_optimizer.optimization.optimizer import (
             _build_canary_stage_ctx_and_eval_kwargs,
@@ -341,7 +381,35 @@ def _make_ctx_kwargs(
             if b.get("question_id")
         )
     else:
+        # Trial 16 v1.6 — drive the stub from
+        # ``bundle.post_apply_eval_tape`` when present. The tape's
+        # per-qid rows are joined via the canonical
+        # ``extract_question_id`` helper so the workbench mirrors
+        # production's qid carrier shapes (top-level / slash /
+        # dot / nested ``inputs``). Tape miss falls back to the Trial
+        # 15 baseline-score stub — preserves the "applier reaches
+        # APPLIED, gate aborts at no_post_apply_row_for_qid" scenario
+        # for the postmortem-replay tests.
+        tape_rows = tuple(getattr(bundle, "post_apply_eval_tape", ()) or ())
+
         def _workbench_post_apply_eval_stub(*, state, ctx):
+            if tape_rows:
+                from genie_space_optimizer.optimization._qid_extraction import (
+                    extract_question_id,
+                )
+                for r in tape_rows:
+                    if extract_question_id(dict(r))[0] == state.qid:
+                        score = float(
+                            r.get("feedback/result_correctness/value", 0.0)
+                            or 0.0
+                        )
+                        post_sql = str(r.get("generated_sql") or "")
+                        row_id = str(
+                            r.get("eval_row_id")
+                            or r.get("row_id")
+                            or f"workbench:{state.qid}:iter_{ctx.iteration:03d}"
+                        )
+                        return (score, post_sql, row_id)
             baseline_score = float(getattr(state.seen, "score", 0.0) or 0.0)
             baseline_sql = str(getattr(state.seen, "baseline_sql", "") or "")
             eval_row_id = f"workbench:{state.qid}:iter_{ctx.iteration:03d}"
@@ -360,6 +428,12 @@ def _make_ctx_kwargs(
         "forbidden_signatures": forbidden_signatures,
         "extras": extras,
         "baseline_eval_rows": baseline_eval_rows,
+        # Trial 16 v1.6 — populate ``ctx.post_apply_eval_rows`` from
+        # ``bundle.post_apply_eval_tape`` so ``acceptance_gate``'s
+        # ``_assess_collateral`` can join baseline ↔ post rows and
+        # surface collateral regressions. Empty tape = empty post
+        # rows; the gate falls back to its target_fixed-only path.
+        "post_apply_eval_rows": post_apply_eval_rows,
         "w": workspace_client,
         "space_id": str(bundle.space_id or ""),
         "metadata_snapshot": metadata_snapshot or {},
@@ -413,9 +487,11 @@ def run_workbench_iteration(
         TransformerContext,
     )
 
-    # Construct workspace client per mode.
+    # Construct workspace client per mode. Both ``live-databricks`` and
+    # ``live-llm-only`` need a real WorkspaceClient — the latter so the
+    # Stage 1/2/3 transformers can hit the model-serving endpoint.
     workspace_client: Any = None
-    if config.llm_mode == LLM_MODE_LIVE:
+    if _is_live_llm(config.llm_mode):
         # Honour --llm-model by setting env BEFORE the SDK or the LLM
         # client reads it. The optimizer's llm_client picks LLM_MODEL
         # off os.environ.
@@ -526,7 +602,16 @@ def run_workbench_iteration(
 
     spark = _build_workbench_spark(
         profile=getattr(config, "profile", None),
-        profile_required=(config.llm_mode == LLM_MODE_LIVE),
+        profile_required=_needs_canary_stack(config.llm_mode),
+    )
+
+    # Trial 16 v1.6 — pass the tape through to acceptance_gate via
+    # ``ctx.post_apply_eval_rows``. Normalize each row so the canonical
+    # qid extractor + score reader treat them identically to MLflow
+    # rows (the eval_rows path the production gate sees).
+    post_apply_eval_rows_tuple = tuple(
+        normalize_eval_row(dict(r))
+        for r in (getattr(bundle, "post_apply_eval_tape", ()) or ())
     )
 
     ctx_kwargs = _make_ctx_kwargs(
@@ -537,6 +622,7 @@ def run_workbench_iteration(
         iteration=config.iteration,
         forbidden_signatures=(),
         baseline_eval_rows=baseline_eval_rows,
+        post_apply_eval_rows=post_apply_eval_rows_tuple,
         rca_evidence_typed=rca_evidence_typed,
         metadata_snapshot=metadata_snapshot,
         schema_columns_tuple=schema_columns_tuple,
@@ -590,6 +676,7 @@ def summarize_stage_progress(
 __all__ = [
     "APPLY_MODE_FAKE_RECORD",
     "LLM_MODE_LIVE",
+    "LLM_MODE_LIVE_LLM_ONLY",
     "LLM_MODE_STAGE1_ONLY",
     "LLM_MODE_TAPE",
     "LocalRunArtifacts",

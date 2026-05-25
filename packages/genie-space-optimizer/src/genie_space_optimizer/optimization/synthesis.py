@@ -1250,9 +1250,36 @@ def synthesize_example_sqls(
     if archetype is None:
         archetype = pick_archetype(afs, metadata_snapshot)
     if archetype is None:
-        logger.info("No archetype matched for cluster %s; skipping synthesis",
-                    afs.get("cluster_id", "?"))
-        return None
+        # Trial 17 step 7 — deprioritise pick_archetype as a hard gate.
+        # When ``GSO_TRIAL17_LEVER_LED_SYNTHESIS`` is on (default), fall
+        # back to the safety-net archetype so the Stage 3 LLM (which
+        # receives the archetype catalog as menu context) gets a chance
+        # to pick a lever instead of the cluster declining outright.
+        from genie_space_optimizer.optimization.trial17_flags import (
+            trial17_lever_led_synthesis_enabled,
+        )
+        if trial17_lever_led_synthesis_enabled():
+            from genie_space_optimizer.optimization.archetypes import (
+                ARCHETYPES,
+            )
+            for _arch in ARCHETYPES:
+                if getattr(_arch, "name", "") == "simple_enumerate":
+                    archetype = _arch
+                    break
+            if archetype is None and ARCHETYPES:
+                archetype = ARCHETYPES[0]
+            logger.info(
+                "trial17: pick_archetype returned None for cluster=%s; "
+                "falling back to safety-net archetype=%s",
+                afs.get("cluster_id", "?"),
+                getattr(archetype, "name", "?"),
+            )
+        else:
+            logger.info(
+                "No archetype matched for cluster %s; skipping synthesis",
+                afs.get("cluster_id", "?"),
+            )
+            return None
 
     if budget is not None:
         ok, why = budget.may_synthesize(
@@ -1470,7 +1497,25 @@ def synthesize_example_sqls_for_rca(
     if archetype is None:
         archetype = pick_archetype(afs, metadata_snapshot)
     if archetype is None:
-        return None
+        # Trial 17 step 7 — same safety-net softening as the primary
+        # synthesis entry-point. Flag-gated (default ON) for back-compat.
+        from genie_space_optimizer.optimization.trial17_flags import (
+            trial17_lever_led_synthesis_enabled,
+        )
+        if trial17_lever_led_synthesis_enabled():
+            from genie_space_optimizer.optimization.archetypes import (
+                ARCHETYPES,
+            )
+            for _arch in ARCHETYPES:
+                if getattr(_arch, "name", "") == "simple_enumerate":
+                    archetype = _arch
+                    break
+            if archetype is None and ARCHETYPES:
+                archetype = ARCHETYPES[0]
+            if archetype is None:
+                return None
+        else:
+            return None
 
     try:
         from genie_space_optimizer.optimization.optimizer import (

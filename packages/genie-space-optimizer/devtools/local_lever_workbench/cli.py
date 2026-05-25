@@ -368,7 +368,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--llm-mode",
         default="stage1-only",
-        help="One of: live-databricks, sm-tape, stage1-only.",
+        help=(
+            "One of: live-databricks (full canary, needs Spark + Genie API + "
+            "MLflow scorers), live-llm-only (live Stage 1/2/3 LLM endpoints "
+            "but stubbed post-apply eval — fastest way to catch prompt "
+            "regressions), sm-tape (offline tape replay), stage1-only "
+            "(LLM diagnose only)."
+        ),
     )
     p_run.add_argument(
         "--apply-mode",
@@ -383,7 +389,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--profile",
         default=None,
-        help="Databricks CLI profile for --llm-mode live-databricks.",
+        help=(
+            "Databricks CLI profile for --llm-mode live-databricks or "
+            "--llm-mode live-llm-only."
+        ),
     )
     p_run.add_argument(
         "--llm-model",

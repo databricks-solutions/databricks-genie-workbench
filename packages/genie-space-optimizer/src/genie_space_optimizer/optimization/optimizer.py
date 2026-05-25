@@ -17515,6 +17515,15 @@ def _resolve_source_cluster_for_ag(
                 sid, exc_info=True,
             )
             continue
+        # Trial 17 step 7 — when GSO_TRIAL17_LEVER_LED_SYNTHESIS is on
+        # (default), do not condition cluster selection on
+        # archetype-pick success. Every candidate cluster proceeds to
+        # Stage 3, which receives the archetype catalog as menu context.
+        from genie_space_optimizer.optimization.trial17_flags import (
+            trial17_lever_led_synthesis_enabled,
+        )
+        if trial17_lever_led_synthesis_enabled():
+            return cluster
         if pick_archetype(afs, metadata_snapshot) is not None:
             return cluster
     return None

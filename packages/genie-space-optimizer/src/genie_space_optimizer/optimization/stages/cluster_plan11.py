@@ -37,6 +37,7 @@ def _build_request(
     schema_columns: list[str],
     iteration: int,
     namespace: str,
+    forbidden_signatures: tuple[str, ...] = (),
 ) -> LlmReasoningRequest:
     rsm = _SKILL_LOADER.load_reasoning_metadata(_SKILL_ID)
     if rsm is None:
@@ -48,12 +49,25 @@ def _build_request(
     system_body = _SKILL_LOADER.load_prompt(
         _SKILL_ID, expected_constant_name=_PROMPT_CONST,
     )
+    # Trial 16.3 — surface prior-iteration typed-rejection strings as
+    # a top-level prompt field so the strategist LLM can reason about
+    # which patch_type / lever shapes have already been tried and
+    # rejected. Empty default keeps the prompt schema stable across
+    # iterations (LLM always sees the field; "[] = no prior rejections"
+    # is an explicit signal, not a missing key). Producer side is at
+    # ``state_machine/transformers/{applier_gate, evaluated_gate,
+    # acceptance_gate, synthesize_llm}.py`` — they each set
+    # ``TerminalRecord.forbidden_signature`` to a typed string; the
+    # harness harvests + accumulates them across iterations and feeds
+    # the tuple into ``ctx.forbidden_signatures`` at the next-iteration
+    # SM call.
     user_prompt = json.dumps(
         {
             "iteration": iteration,
             "namespace": namespace,
             "per_qid_diagnosis": [d.to_json() for d in diagnoses],
             "schema_columns": schema_columns,
+            "forbidden_signatures": list(forbidden_signatures or ()),
         },
         default=str,
     )
@@ -86,6 +100,7 @@ def cluster_diagnoses(
     iteration: int,
     namespace: str,
     w: Any,
+    forbidden_signatures: tuple[str, ...] = (),
 ) -> list[FailureCluster]:
     """Plan 11 Stage 2 — cluster :class:`PerQidDiagnosis` into
     :class:`FailureCluster` objects.
@@ -103,6 +118,7 @@ def cluster_diagnoses(
         schema_columns=schema_columns,
         iteration=iteration,
         namespace=namespace,
+        forbidden_signatures=forbidden_signatures,
     )
 
     t0 = time.monotonic()

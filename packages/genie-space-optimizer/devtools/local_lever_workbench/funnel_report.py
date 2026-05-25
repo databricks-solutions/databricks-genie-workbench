@@ -3,6 +3,12 @@
 Counts selected ``GSO_GATE_REASONING_V1`` gate/verdict combinations so
 operators see at-a-glance how evaluated_gate and acceptance_gate fired
 without grepping full transcripts.
+
+Trial 16 v1.6 — adds the ``applier_gate`` rejection counter (was
+implicit before RC3, but the new
+``GateVerdict.reject_terminal(TerminalRecord(...))`` path emits the
+``verdict=rejected`` marker on every applier no-op so the workbench
+operator can grep "how many qids did the applier kill".
 """
 from __future__ import annotations
 
@@ -11,6 +17,7 @@ _GATE_VERDICT_PATTERNS: tuple[str, ...] = (
     "GSO_GATE_REASONING_V1 gate=evaluated_gate verdict=rejected",
     "GSO_GATE_REASONING_V1 gate=acceptance_gate verdict=accepted",
     "GSO_GATE_REASONING_V1 gate=acceptance_gate verdict=rejected",
+    "GSO_GATE_REASONING_V1 gate=applier_gate verdict=rejected",
 )
 
 _MARKER_PATTERNS: tuple[str, ...] = _GATE_VERDICT_PATTERNS

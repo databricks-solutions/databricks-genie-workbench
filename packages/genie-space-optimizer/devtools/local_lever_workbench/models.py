@@ -70,12 +70,27 @@ class WorkbenchInputBundle:
     minimal ``metadata_snapshot`` good enough for the applier gate.
     The bundle is serialisable as JSON via :meth:`to_json` so callers
     can hand-edit, archive, or replay it offline.
+
+    Trial 16 v1.6 — ``post_apply_eval_tape`` extends bundles with
+    canned post-apply eval rows that the workbench's
+    ``_workbench_post_apply_eval_stub`` and ``ctx.post_apply_eval_rows``
+    consume. The tape closes the workbench coverage gap from
+    ``HARD_QID_SEEN → APPLIED`` (Trial 15) to
+    ``HARD_QID_SEEN → ACCEPTED`` so the acceptance boundary the
+    production postmortems failed at is now exercisable locally
+    without a real benchmark run.
     """
 
     provenance: WorkbenchProvenance
     space_id: str
     hard_cases: tuple[WorkbenchHardCase, ...]
     metadata_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    # Each row mirrors an MLflow-flattened benchmark row: it MUST carry
+    # ``question_id`` (or ``inputs/question_id`` / nested ``inputs``)
+    # and ``feedback/result_correctness/value`` so the canonical
+    # ``extract_question_id`` helper and ``_score`` reader on
+    # acceptance_gate can join them to the patched qid.
+    post_apply_eval_tape: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def hard_qids(self) -> tuple[str, ...]:
@@ -91,6 +106,7 @@ class WorkbenchInputBundle:
             "space_id": self.space_id,
             "metadata_snapshot": dict(self.metadata_snapshot),
             "hard_cases": [c.to_dict() for c in self.hard_cases],
+            "post_apply_eval_tape": [dict(r) for r in self.post_apply_eval_tape],
         }
 
     def to_json(self, path: Path) -> None:
@@ -124,11 +140,16 @@ class WorkbenchInputBundle:
             )
             for c in payload.get("hard_cases") or ()
         )
+        tape = tuple(
+            dict(r) for r in (payload.get("post_apply_eval_tape") or ())
+            if isinstance(r, Mapping)
+        )
         return cls(
             provenance=provenance,
             space_id=str(payload.get("space_id") or ""),
             hard_cases=cases,
             metadata_snapshot=dict(payload.get("metadata_snapshot") or {}),
+            post_apply_eval_tape=tape,
         )
 
     @classmethod
@@ -218,7 +239,7 @@ class WorkbenchRunConfig:
 
     bundle_path: Path
     output_dir: Path
-    llm_mode: str  # "live-databricks" | "sm-tape" | "stage1-only"
+    llm_mode: str  # "live-databricks" | "live-llm-only" | "sm-tape" | "stage1-only"
     apply_mode: str = "fake-record"  # "fake-record" only in V1
     tape_path: Path | None = None
     profile: str | None = None  # Databricks CLI profile (live mode only)

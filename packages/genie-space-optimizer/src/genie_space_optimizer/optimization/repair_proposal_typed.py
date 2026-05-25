@@ -104,6 +104,22 @@ class RepairProposal(JsonRoundTrip):
     # narrow-replacement loop to compute collateral_qids and by the
     # validator to scope blast-radius checks.
     target_qids: tuple[str, ...] = ()
+    # Trial 17 — Lever Selection Contract. The LLM declares which of
+    # the 6 levers it is operating on, an auditable hypothesis for
+    # what SQL grammar change to expect, and which lever to fall back
+    # to if sliced eval returns ``target_unchanged``. All four fields
+    # default to empty strings for back-compat with pre-Trial-17
+    # serialized proposals; the deterministic validator in
+    # ``levers_contract.validate_plan_vs_proposal_consistency`` runs
+    # only when ``selected_lever`` is non-empty.
+    selected_lever: str = ""
+    expected_behavioral_change: str = ""
+    fallback_lever: str = ""
+    # Trial 17 — Multi-lever bundle ID. Proposals sharing a non-empty
+    # ``bundle_id`` are applied incrementally by the SM orchestration
+    # (one patch + sliced eval at a time). Empty string is the legacy
+    # single-proposal path.
+    bundle_id: str = ""
 
     @classmethod
     def from_llm_output(
@@ -132,6 +148,20 @@ class RepairProposal(JsonRoundTrip):
                 getattr(pydantic_inst, "required_constructs", None) or []
             )
         )
+        # Trial 17 — read Lever Selection Contract fields from the
+        # Pydantic input when present. The Stage 3 prompt may not yet
+        # ask for them on every call, so we accept None / missing
+        # attributes and default to empty string.
+        selected_lever = str(
+            getattr(pydantic_inst, "selected_lever", "") or ""
+        )
+        expected_behavioral_change = str(
+            getattr(pydantic_inst, "expected_behavioral_change", "") or ""
+        )
+        fallback_lever = str(
+            getattr(pydantic_inst, "fallback_lever", "") or ""
+        )
+        bundle_id = str(getattr(pydantic_inst, "bundle_id", "") or "")
         return cls(
             intent_id=str(intent_id),
             intent_name=str(pydantic_inst.intent_name),
@@ -146,6 +176,10 @@ class RepairProposal(JsonRoundTrip):
             ),
             target_objects=target_objects,
             required_constructs=required_constructs,
+            selected_lever=selected_lever,
+            expected_behavioral_change=expected_behavioral_change,
+            fallback_lever=fallback_lever,
+            bundle_id=bundle_id,
         )
 
     def to_proposal_dict(self) -> dict[str, Any]:
@@ -262,6 +296,11 @@ class RepairProposal(JsonRoundTrip):
             "target_objects": [t.to_json() for t in self.target_objects],
             "required_constructs": list(self.required_constructs),
             "target_qids": list(self.target_qids),  # Plan 11
+            # Trial 17 — Lever Selection Contract
+            "selected_lever": self.selected_lever,
+            "expected_behavioral_change": self.expected_behavioral_change,
+            "fallback_lever": self.fallback_lever,
+            "bundle_id": self.bundle_id,
         }
 
     @classmethod
@@ -297,6 +336,14 @@ class RepairProposal(JsonRoundTrip):
             target_qids=tuple(
                 str(q) for q in (payload.get("target_qids") or ())
             ),
+            # Trial 17 — Lever Selection Contract (default empty for
+            # pre-Trial-17 serialized rows).
+            selected_lever=str(payload.get("selected_lever") or ""),
+            expected_behavioral_change=str(
+                payload.get("expected_behavioral_change") or ""
+            ),
+            fallback_lever=str(payload.get("fallback_lever") or ""),
+            bundle_id=str(payload.get("bundle_id") or ""),
         )
 
 

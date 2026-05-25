@@ -1,0 +1,516 @@
+{
+  "purpose": "Strategist-input baseline for Trial 17 Lever Selection Contract. Each entry captures what the LLM saw for a failing QID in the two latest postmortems.",
+  "qids": {
+    "gs_009": {
+      "base_qid": "gs_009",
+      "deepest_stage": "evaluated",
+      "namespaced_qid": "airline_ticketing_and_fare_analysis_gs_009",
+      "patches_attempted": [
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applied",
+          "inferred_lever": "lever-5",
+          "intent_id": "H002_000",
+          "iteration": 1,
+          "outcome": "applied",
+          "outcome_reason": "applied_ok",
+          "patch_type": "add_instruction"
+        },
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applied",
+          "inferred_lever": "lever-5",
+          "intent_id": "H002_000",
+          "iteration": 2,
+          "outcome": "applied",
+          "outcome_reason": "applied_ok",
+          "patch_type": "add_instruction"
+        },
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applied",
+          "inferred_lever": "lever-5",
+          "intent_id": "H002_000",
+          "iteration": 4,
+          "outcome": "applied",
+          "outcome_reason": "applied_ok",
+          "patch_type": "add_instruction"
+        }
+      ],
+      "source_run_id": "e94376a3-d8a6-4570-a605-9fe231e5f99c",
+      "source_task_id": "289767602715184",
+      "stage3_signal": {
+        "clusters": [
+          {
+            "ag_id": "AG_H002",
+            "cluster_id": "H002",
+            "iteration": 1,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H002_000",
+              "H002_001",
+              "H002_002"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_000",
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch_000",
+              "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_009_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_009_measure_swap_000"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse_000"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_000",
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_009_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_009_measure_swap_000"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_009_top_n_cardinality_collapse_000"
+            ]
+          },
+          {
+            "ag_id": "AG_H002",
+            "cluster_id": "H002",
+            "iteration": 2,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H002_000",
+              "H002_001"
+            ]
+          },
+          {
+            "ag_id": "AG_H002",
+            "cluster_id": "H002",
+            "iteration": 4,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H002_000"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_009_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_009_measure_swap_000",
+              "rca_airline_ticketing_and_fare_analysis_gs_009_measure_swap_001"
+            ]
+          }
+        ],
+        "patch_types_proposed": [
+          "add_instruction",
+          "add_column_description",
+          "add_example_sql"
+        ]
+      },
+      "terminal_reason": "target_unchanged: post_score <= pre_score"
+    },
+    "gs_013": {
+      "base_qid": "gs_013",
+      "deepest_stage": "evaluated",
+      "namespaced_qid": "7now_delivery_analytics_space_gs_013",
+      "patches_attempted": [
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applied",
+          "inferred_lever": "lever-5",
+          "intent_id": "H002_000",
+          "iteration": 1,
+          "outcome": "applied",
+          "outcome_reason": "applied_ok",
+          "patch_type": "add_instruction"
+        },
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applied",
+          "inferred_lever": "lever-5",
+          "intent_id": "H001_000",
+          "iteration": 2,
+          "outcome": "applied",
+          "outcome_reason": "applied_ok",
+          "patch_type": "add_example_sql"
+        },
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applyable",
+          "inferred_lever": "lever-1",
+          "intent_id": "H001_000",
+          "iteration": 3,
+          "outcome": "applyability_rejected",
+          "outcome_reason": "dropped_no_op:missing_table",
+          "patch_type": "update_column_description"
+        }
+      ],
+      "source_run_id": "d13938e7-405d-4444-833a-03f5ac9f7523",
+      "source_task_id": "230596834005670",
+      "stage3_signal": {
+        "clusters": [
+          {
+            "ag_id": "AG_H002",
+            "cluster_id": "H002",
+            "iteration": 1,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H002_000",
+              "H002_001"
+            ]
+          },
+          {
+            "ag_id": "AG_H001",
+            "cluster_id": "H001",
+            "iteration": 2,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H001_000",
+              "H001_001"
+            ]
+          },
+          {
+            "ag_id": "AG_H001",
+            "cluster_id": "H001",
+            "iteration": 3,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H001_000",
+              "H001_001",
+              "H001_002"
+            ]
+          }
+        ],
+        "patch_types_proposed": [
+          "add_instruction",
+          "add_example_sql",
+          "update_column_description"
+        ]
+      },
+      "terminal_reason": "abstain: diagnose_returned_empty"
+    },
+    "gs_024": {
+      "base_qid": "gs_024",
+      "deepest_stage": "applyable",
+      "namespaced_qid": "airline_ticketing_and_fare_analysis_gs_024",
+      "patches_attempted": [
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applyable",
+          "inferred_lever": "lever-1",
+          "intent_id": "H001_000",
+          "iteration": 1,
+          "outcome": "applyability_rejected",
+          "outcome_reason": "dropped_no_op:missing_table",
+          "patch_type": "add_column_description"
+        },
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applyable",
+          "inferred_lever": "lever-1",
+          "intent_id": "H001_000",
+          "iteration": 2,
+          "outcome": "applyability_rejected",
+          "outcome_reason": "dropped_no_op:missing_table",
+          "patch_type": "add_column_description"
+        },
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applyable",
+          "inferred_lever": "lever-1",
+          "intent_id": "H001_000",
+          "iteration": 4,
+          "outcome": "applyability_rejected",
+          "outcome_reason": "dropped_no_op:missing_table",
+          "patch_type": "add_column_description"
+        }
+      ],
+      "source_run_id": "e94376a3-d8a6-4570-a605-9fe231e5f99c",
+      "source_task_id": "289767602715184",
+      "stage3_signal": {
+        "clusters": [
+          {
+            "ag_id": "AG_H001",
+            "cluster_id": "H001",
+            "iteration": 1,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H001_000",
+              "H001_001",
+              "H001_002"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_000",
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch_000",
+              "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_000",
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch_000",
+              "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch_001"
+            ]
+          },
+          {
+            "ag_id": "AG_H001",
+            "cluster_id": "H001",
+            "iteration": 2,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H001_000",
+              "H001_001",
+              "H001_002"
+            ]
+          },
+          {
+            "ag_id": "AG_H001",
+            "cluster_id": "H001",
+            "iteration": 4,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H001_000",
+              "H001_001",
+              "H001_002"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_000",
+              "rca_airline_ticketing_and_fare_analysis_gs_024_measure_swap_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_airline_ticketing_and_fare_analysis_gs_024_filter_logic_mismatch_000"
+            ]
+          }
+        ],
+        "patch_types_proposed": [
+          "add_column_description",
+          "add_instruction",
+          "add_example_sql"
+        ]
+      },
+      "terminal_reason": "applyability_rejected:dropped_no_op:missing_table"
+    },
+    "gs_026": {
+      "base_qid": "gs_026",
+      "deepest_stage": "evaluated",
+      "namespaced_qid": "7now_delivery_analytics_space_gs_026",
+      "patches_attempted": [
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applied",
+          "inferred_lever": "lever-5",
+          "intent_id": "H001_000",
+          "iteration": 1,
+          "outcome": "applied",
+          "outcome_reason": "applied_ok",
+          "patch_type": "add_instruction"
+        },
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applied",
+          "inferred_lever": "lever-5",
+          "intent_id": "H001_000",
+          "iteration": 2,
+          "outcome": "applied",
+          "outcome_reason": "applied_ok",
+          "patch_type": "add_instruction"
+        },
+        {
+          "attempt_index": 0,
+          "deepest_stage_in_attempt": "applied",
+          "inferred_lever": "lever-5",
+          "intent_id": "H001_000",
+          "iteration": 3,
+          "outcome": "applied",
+          "outcome_reason": "applied_ok",
+          "patch_type": "add_instruction"
+        }
+      ],
+      "source_run_id": "d13938e7-405d-4444-833a-03f5ac9f7523",
+      "source_task_id": "230596834005670",
+      "stage3_signal": {
+        "clusters": [
+          {
+            "ag_id": "AG_H001",
+            "cluster_id": "H001",
+            "iteration": 1,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H001_000",
+              "H001_001"
+            ]
+          },
+          {
+            "ag_id": "AG_H001",
+            "cluster_id": "H001",
+            "iteration": 2,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H001_000"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_7now_delivery_analytics_space_gs_026_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_7now_delivery_analytics_space_gs_026_measure_swap_000",
+              "rca_7now_delivery_analytics_space_gs_026_measure_swap_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse_000",
+              "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_7now_delivery_analytics_space_gs_026_measure_swap",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_7now_delivery_analytics_space_gs_026_measure_swap_000",
+              "rca_7now_delivery_analytics_space_gs_026_measure_swap_001"
+            ]
+          },
+          {
+            "ag_id": "",
+            "cluster_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+            "iteration": 0,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse_000",
+              "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse_001"
+            ]
+          },
+          {
+            "ag_id": "AG_H001",
+            "cluster_id": "H001",
+            "iteration": 3,
+            "outcome": "synthesized",
+            "proposal_ids": [
+              "H001_000",
+              "H001_001"
+            ]
+          }
+        ],
+        "patch_types_proposed": [
+          "add_instruction",
+          "add_example_sql",
+          "add_column_description"
+        ]
+      },
+      "terminal_reason": "abstain: diagnose_returned_empty"
+    }
+  },
+  "required_qids": [
+    "gs_009",
+    "gs_013",
+    "gs_024",
+    "gs_026"
+  ],
+  "sources": [
+    {
+      "run_id": "e94376a3-d8a6-4570-a605-9fe231e5f99c",
+      "task_id": "289767602715184"
+    },
+    {
+      "run_id": "d13938e7-405d-4444-833a-03f5ac9f7523",
+      "task_id": "230596834005670"
+    }
+  ],
+  "trial": "trial-17"
+}

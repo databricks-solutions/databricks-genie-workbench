@@ -2044,6 +2044,9 @@ PROPOSALS_BLAME_SET_SOURCES = frozenset({
 })
 
 
+_TRIAL17_BEHAVIORAL_CHANGE_MAX_CHARS = 200
+
+
 def plan11_stage3_synthesis_marker(
     *,
     optimization_run_id: str,
@@ -2063,6 +2066,17 @@ def plan11_stage3_synthesis_marker(
     synthesis_empty_reason: str = "",
     synthesis_rejected_patch_types: Mapping[str, int] | None = None,
     proposals_blame_set_source: Mapping[str, int] | None = None,
+    # Trial 17.1 — surface the LLM's lever selection so operators can
+    # see *which lever was picked and why* from structured logs alone.
+    # These four arrays are index-parallel to ``proposal_ids`` /
+    # ``patch_types``: position ``i`` describes the i-th surviving
+    # proposal. They are additive (default empty lists) so legacy
+    # callers and the ``outcome == "empty_synthesis"`` branch are
+    # unaffected.
+    selected_levers: list[str] | None = None,
+    expected_behavioral_changes: list[str] | None = None,
+    fallback_levers: list[str] | None = None,
+    bundle_ids: list[str] | None = None,
 ) -> str:
     """Plan 11 — per-cluster Stage 3 synthesis outcome marker.
 
@@ -2137,6 +2151,32 @@ def plan11_stage3_synthesis_marker(
                 "requires the rejected raw patch_type strings be captured "
                 "so future drift is visible at marker time."
             )
+    selected_levers_list = [str(x) for x in (selected_levers or [])]
+    fallback_levers_list = [str(x) for x in (fallback_levers or [])]
+    bundle_ids_list = [str(x) for x in (bundle_ids or [])]
+    expected_behavioral_changes_list = [
+        # Cap each entry so marker lines stay parseable; full text lives
+        # on the RepairProposal dataclass for debuggers.
+        (str(x)[:_TRIAL17_BEHAVIORAL_CHANGE_MAX_CHARS])
+        for x in (expected_behavioral_changes or [])
+    ]
+    # When the four lever arrays are populated, they must be parallel to
+    # ``proposal_ids``. The check is gated on non-emptiness so the
+    # ``empty_synthesis`` branch (no proposals, no lever arrays) and
+    # legacy callers that pass nothing for the new fields stay valid.
+    proposal_id_list = list(proposal_ids or [])
+    for label, arr in (
+        ("selected_levers", selected_levers_list),
+        ("expected_behavioral_changes", expected_behavioral_changes_list),
+        ("fallback_levers", fallback_levers_list),
+        ("bundle_ids", bundle_ids_list),
+    ):
+        if arr and len(arr) != len(proposal_id_list):
+            raise ValueError(
+                f"plan11_stage3_synthesis_marker: {label} (len={len(arr)}) "
+                f"must be index-parallel to proposal_ids "
+                f"(len={len(proposal_id_list)}) when supplied"
+            )
     return marker_line(
         "GSO_PLAN11_STAGE3_SYNTHESIS_V1",
         {
@@ -2146,7 +2186,7 @@ def plan11_stage3_synthesis_marker(
             "cluster_id": str(cluster_id),
             "outcome": str(outcome),
             "proposals_count": int(proposals_count),
-            "proposal_ids": list(proposal_ids or []),
+            "proposal_ids": proposal_id_list,
             "patch_types": list(patch_types or []),
             "target_qids_union": list(target_qids_union or []),
             "abstain_reason": str(abstain_reason),
@@ -2157,6 +2197,10 @@ def plan11_stage3_synthesis_marker(
             "synthesis_empty_reason": str(synthesis_empty_reason),
             "synthesis_rejected_patch_types": rejected_map,
             "proposals_blame_set_source": source_map,
+            "selected_levers": selected_levers_list,
+            "expected_behavioral_changes": expected_behavioral_changes_list,
+            "fallback_levers": fallback_levers_list,
+            "bundle_ids": bundle_ids_list,
         },
     )
 

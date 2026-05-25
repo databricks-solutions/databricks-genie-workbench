@@ -4258,11 +4258,47 @@ def apply_patch_set(
             if target:
                 patched_objects.add(target)
         else:
+            # Trial 16 Chunk 3 — retroactively run
+            # ``check_patch_applyability`` on the same patch shape to
+            # surface a typed reason (``missing_table`` /
+            # ``invalid_column_target`` / ``render_validation_error`` /
+            # ``apply_action_returned_false``) instead of the opaque
+            # ``apply_action_returned_false`` sentinel. Production
+            # postmortems 575892594490176 + 319530250904653 caught
+            # gs_024 looping with 27+ ``apply_action_returned_false``
+            # rejections — useless to operators trying to learn why
+            # the dispatcher kept saying no. The retroactive call is
+            # defense-in-depth: it never changes the apply outcome
+            # (still ``dropped_no_op``), it only enriches the typed
+            # reason that rides through ``applier_decisions`` →
+            # ``applier_gate`` → ``TerminalRecord.forbidden_signature``
+            # → ``ctx.forbidden_signatures`` (cluster_batch) → next
+            # iteration's strategist lever choice.
+            typed_reason = "apply_action_returned_false"
+            try:
+                from genie_space_optimizer.optimization.patch_applyability import (
+                    check_patch_applyability,
+                )
+                decision = check_patch_applyability(
+                    patch=patch,
+                    metadata_snapshot=config,
+                    space_id=space_id,
+                )
+                # ``check_patch_applyability`` returns a typed
+                # ``PatchApplyabilityDecision``; the ``reason`` field
+                # carries the typed string we want to surface.
+                decision_reason = getattr(decision, "reason", "") or ""
+                if decision_reason and decision_reason != "applyable":
+                    typed_reason = decision_reason
+            except Exception:  # pragma: no cover — retroactive only
+                # The retroactive check must not regress the audit
+                # surface; the original sentinel falls through.
+                pass
             applier_decisions.append(
                 build_applier_decision(
                     patch=patch,
                     decision="dropped_no_op",
-                    reason="apply_action_returned_false",
+                    reason=typed_reason,
                 )
             )
             # Plan 12 PR 3 deferred — apply_action no-op surfaces as

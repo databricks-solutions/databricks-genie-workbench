@@ -16304,13 +16304,20 @@ def _run_gate_checks(
             iteration=iteration_counter, ag_id=ag_id,
         ),
     }
+    # Trial 16.1 — use the canonical helper instead of strict
+    # ``b.get('question_id')``. Production benchmarks loaded from MLflow
+    # ``genai.datasets`` carry the qid under nested ``inputs.*`` or
+    # flat-slash ``inputs/question_id``; strict lookup produced ``()``
+    # and the SM lane fell back to ``(state.qid,)`` for every gate —
+    # the postmortem-visible ``requested_qids=['<namespaced qid>']
+    # benchmarks_count=0`` shape.
+    from genie_space_optimizer.optimization._qid_extraction import (
+        eval_qids_from_benchmarks as _eval_qids_from_benchmarks,
+    )
+
     _eval_inp_full = _eval_stage.EvaluationInput(
         space_state={"id": space_id},
-        eval_qids=tuple(
-            str(b.get("question_id") or "")
-            for b in (benchmarks or [])
-            if b.get("question_id")
-        ),
+        eval_qids=_eval_qids_from_benchmarks(benchmarks),
         run_role="iteration_eval",
         iteration_label=_iteration_label(iteration_counter),
         scope="full",
@@ -18990,6 +18997,21 @@ def _run_lever_loop_legacy(
         TerminalSignature as _TerminalSignature_for_forbidden_set,
     )
     _forbidden_set: set[_TerminalSignature_for_forbidden_set] = set()
+    # Trial 16.3 — cross-iteration accumulator for SM-lane typed
+    # ``TerminalRecord.forbidden_signature`` strings. The producer side
+    # is wired (applier_gate, evaluated_gate, acceptance_gate, and
+    # synthesize_llm all set typed strings on their TerminalRecord
+    # rejections); the consumer side reads ``ctx.forbidden_signatures:
+    # tuple[str, ...]`` and forwards them into the Stage 2 + Stage 3
+    # LLM prompts (see cluster_batch.py + synthesize_llm.py + the
+    # _build_request prompt builders in stages/cluster_plan11.py +
+    # stages/synthesize.py). This is the channel that closes the
+    # cross-iteration learning loop the analyst's review flagged as
+    # Gap A. Intentionally separate from ``_forbidden_set`` above (a
+    # ``set[TerminalSignature]`` of legacy-router NamedTuples) so the
+    # type contract with ``TransformerContext.forbidden_signatures``
+    # holds end-to-end (Gap C of the same review).
+    _sm_forbidden_signatures: set[str] = set()
     # Cycle 9 W4 — per-run, per-AG fingerprint buffer for patches
     # rolled back when ``_control_plane_decision.target_still_hard_qids``
     # is non-empty. The strategist preprocessing prunes any candidate
@@ -19969,10 +19991,18 @@ def _run_lever_loop_legacy(
                 uc_schema=str(uc_schema or ""),
                 max_benchmark_count=int(max_benchmark_count or 0),
             )
-            _sm_eval_qids: tuple[str, ...] = tuple(
-                str(b.get("question_id") or "")
-                for b in (benchmarks or [])
-                if b.get("question_id")
+            # Trial 16.1 — use the canonical helper. See the parallel
+            # full-eval site above for the bug context. The previous
+            # strict ``b.get('question_id')`` accessor silently
+            # produced ``()`` for MLflow nested-shape benchmarks and
+            # caused every evaluated_gate call to fall back to
+            # ``(state.qid,)`` which then sliced to zero benchmarks.
+            from genie_space_optimizer.optimization._qid_extraction import (
+                eval_qids_from_benchmarks as _eval_qids_from_benchmarks,
+            )
+
+            _sm_eval_qids: tuple[str, ...] = _eval_qids_from_benchmarks(
+                benchmarks,
             )
             try:
                 # Trial 13 typed-evidence cutover — pass metadata_snapshot
@@ -19987,13 +20017,23 @@ def _run_lever_loop_legacy(
                 # Trial 15 — also plumb ``stage_ctx`` / ``eval_kwargs`` /
                 # ``eval_qids`` so ``evaluated_gate`` can call
                 # ``run_evaluation`` with a real mapping instead of None.
+                # Trial 16.3 — pass the SM-typed string accumulator
+                # instead of ``tuple(_forbidden_set)`` (which yields
+                # ``TerminalSignature`` NamedTuples that silently
+                # violate the ``tuple[str, ...]`` type contract on
+                # ``TransformerContext.forbidden_signatures``). The
+                # legacy router still owns ``_forbidden_set`` for the
+                # legacy-lane idempotency rule; the SM lane has its
+                # own dedicated str channel.
                 _sm_final_states = run_state_machine_iteration_and_persist(
                     eval_rows=_sm_eval_rows,
                     iteration=int(iteration_counter),
                     run_id=str(run_id),
                     run_root=sm_run_root,
                     workspace_client=w,
-                    forbidden_signatures=tuple(_forbidden_set),
+                    forbidden_signatures=tuple(
+                        sorted(_sm_forbidden_signatures),
+                    ),
                     space_id=str(space_id or ""),
                     metadata_snapshot=metadata_snapshot,
                     stage_ctx=_sm_stage_ctx,
@@ -20113,6 +20153,33 @@ def _run_lever_loop_legacy(
             except Exception:
                 logger.debug(
                     "Plan v4 equivalence marker emission failed; legacy lane unaffected",
+                    exc_info=True,
+                )
+
+            # Trial 16.3 — harvest the SM lane's typed
+            # ``TerminalRecord.forbidden_signature`` strings into the
+            # cross-iteration accumulator so the NEXT iteration's
+            # Stage 2 / Stage 3 LLM prompts see them. Pre-Trial-16.3
+            # this loop only emitted the legacy-equivalence marker;
+            # the typed signatures were dropped on the floor and the
+            # strategist re-proposed the same patch_type / shape that
+            # had just been rejected (postmortem 813949510175466
+            # evidence: gs_013 re-emitted ``dropped_no_op:missing_table``
+            # across iterations 2-4 with both ``add_column_description``
+            # and ``update_column_description``).
+            try:
+                from genie_space_optimizer.optimization.forbidden_signatures import (
+                    extend_sm_forbidden_signatures,
+                    harvest_sm_forbidden_signatures,
+                )
+                extend_sm_forbidden_signatures(
+                    _sm_forbidden_signatures,
+                    harvest_sm_forbidden_signatures(_sm_final_states),
+                )
+            except Exception:
+                logger.debug(
+                    "Trial 16.3 forbidden-signature harvest failed; "
+                    "cross-iteration learning channel skipped this iteration",
                     exc_info=True,
                 )
 

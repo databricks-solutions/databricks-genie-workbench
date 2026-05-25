@@ -24,7 +24,7 @@ on the source without re-implementing the lookup.
 from __future__ import annotations
 
 import json as _json
-from typing import Any, Literal, Tuple
+from typing import Any, Iterable, Literal, Mapping, Tuple
 
 QidSource = Literal["canonical", "trace_fallback", ""]
 
@@ -107,6 +107,40 @@ def _from_trace_id_keys(row: dict) -> str:
         if v:
             return v
     return ""
+
+
+def eval_qids_from_benchmarks(
+    benchmarks: Iterable[Mapping] | None,
+) -> tuple[str, ...]:
+    """Return the canonical qids carried by a benchmark list.
+
+    Used by the harness to populate ``ctx.eval_qids`` for the SM lane
+    and by the full-eval call-site builder. Both used to inline
+    ``b.get("question_id")`` — a strict top-level accessor that
+    silently dropped rows whose qid lived under nested ``inputs.*`` or
+    flat-slash ``inputs/question_id`` (MLflow ``genai.datasets``
+    shapes). Production postmortems 127751814861356 and 813949510175466
+    showed this drop as ``requested_qids=['<namespaced qid>']
+    benchmarks_count=0`` after Trial 16 added the slice path.
+
+    The helper mirrors the contract that
+    ``stages.evaluation._run_full_evaluation`` uses on the slice INPUT
+    filter and ``state_machine/transformers/evaluated_gate`` uses on
+    the eval ROW OUTPUT join — so all three sites agree on what a
+    benchmark's canonical qid is.
+
+    ``trace_fallback`` sources are intentionally accepted here (eval
+    rows that only carry ``client_request_id`` still identify a
+    benchmark, even if not canonically). Callers that need strict
+    canonical qids should use ``extract_question_id`` directly and
+    branch on the source.
+    """
+    out: list[str] = []
+    for b in benchmarks or ():
+        qid, _src = extract_question_id(dict(b))
+        if qid:
+            out.append(qid)
+    return tuple(out)
 
 
 def extract_question_id(row: dict) -> Tuple[str, QidSource]:

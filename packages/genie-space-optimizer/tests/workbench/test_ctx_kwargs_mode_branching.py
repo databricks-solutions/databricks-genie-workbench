@@ -15,8 +15,12 @@ import pytest
 
 from local_lever_workbench.local_runner import (
     LLM_MODE_LIVE,
+    LLM_MODE_LIVE_LLM_ONLY,
     LLM_MODE_TAPE,
+    SUPPORTED_LLM_MODES,
+    _is_live_llm,
     _make_ctx_kwargs_for_test,
+    _needs_canary_stack,
 )
 
 
@@ -61,6 +65,49 @@ def test_live_databricks_mode_populates_real_eval_kwargs(monkeypatch) -> None:
     # extras["post_apply_eval"] must NOT be set in live mode — the real
     # gate path takes over.
     assert "post_apply_eval" not in ctx_kwargs["extras"]
+
+
+@pytest.mark.workbench
+def test_live_llm_only_mode_uses_tape_stub_and_skips_canary_stack() -> None:
+    """live-llm-only must keep the post_apply_eval stub (tape-driven)
+    and NEVER touch make_predict_fn / make_all_scorers — the whole
+    point is to skip the canary stack so the operator doesn't need
+    Spark/Genie API/MLflow scorers configured.
+    """
+    bundle = _minimal_bundle_fixture()
+    # workspace_client is a real-shape mock; spark stays None because
+    # _needs_canary_stack(live-llm-only) is False.
+    workspace_client = MagicMock(name="WorkspaceClient")
+
+    ctx_kwargs = _make_ctx_kwargs_for_test(
+        llm_mode=LLM_MODE_LIVE_LLM_ONLY,
+        bundle=bundle,
+        workspace_client=workspace_client,
+        spark=None,
+    )
+    # Canary stack must remain empty.
+    assert ctx_kwargs["eval_kwargs"] is None
+    assert ctx_kwargs["stage_ctx"] is None
+    # Tape stub must be installed for evaluated_gate / acceptance_gate.
+    assert "post_apply_eval" in ctx_kwargs["extras"]
+    # The workspace_client must still be propagated so Stage 1/2/3 can
+    # make real LLM calls via ctx.w.
+    assert ctx_kwargs["w"] is workspace_client
+
+
+@pytest.mark.workbench
+def test_live_llm_only_is_in_supported_modes() -> None:
+    """Plumbing sanity: the new mode is wired into the supported set
+    and classified correctly by the helper predicates.
+    """
+    assert LLM_MODE_LIVE_LLM_ONLY in SUPPORTED_LLM_MODES
+    assert _is_live_llm(LLM_MODE_LIVE_LLM_ONLY) is True
+    assert _is_live_llm(LLM_MODE_LIVE) is True
+    assert _is_live_llm(LLM_MODE_TAPE) is False
+    # live-llm-only deliberately does NOT need the canary stack
+    # (Spark + predict_fn + scorers) — that's the whole point.
+    assert _needs_canary_stack(LLM_MODE_LIVE_LLM_ONLY) is False
+    assert _needs_canary_stack(LLM_MODE_LIVE) is True
 
 
 def _minimal_bundle_fixture():

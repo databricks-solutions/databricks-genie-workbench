@@ -39,6 +39,19 @@ class ProposalItem(LLMOutputContract):
     patch_body: dict[str, Any]
     blame_set: list[str] = Field(default_factory=list)
     target_qids: list[str] = Field(default_factory=list)
+    # ── Trial 17 — Lever Selection Contract ─────────────────────────
+    # Per-proposal lever declaration. ``selected_lever`` MUST be in
+    # the closed lever_id set (``lever-1`` … ``lever-6``) and MUST be
+    # consistent with ``patch_type`` according to ``LEVER_TO_PATCH_TYPES``
+    # in ``levers_contract.py``. The deterministic validator in
+    # ``synthesize.py`` drops inconsistent proposals and emits a typed
+    # ``forbidden_signature`` the next iteration's LLM sees.
+    # Defaults to empty string for backward compatibility with
+    # pre-Trial-17 prompts.
+    selected_lever: str = ""
+    expected_behavioral_change: str = ""
+    fallback_lever: str = ""
+    bundle_id: str = ""
 
     @field_validator(*_SYNTHESIZE_FIELD_CAPS.keys(), mode="before")
     @classmethod

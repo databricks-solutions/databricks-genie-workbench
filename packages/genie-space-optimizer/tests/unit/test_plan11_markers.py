@@ -75,6 +75,115 @@ def test_stage3_synthesis_marker():
     name, payload = _parse_marker(line)
     assert name == "GSO_PLAN11_STAGE3_SYNTHESIS_V1"
     assert payload["proposals_count"] == 2
+    # Trial 17.1 — the four new lever-selection fields are present on
+    # every emit (default empty when caller omits them).
+    for key in (
+        "selected_levers",
+        "expected_behavioral_changes",
+        "fallback_levers",
+        "bundle_ids",
+    ):
+        assert key in payload, (
+            f"Trial 17.1 telemetry field {key!r} missing from "
+            "GSO_PLAN11_STAGE3_SYNTHESIS_V1 payload"
+        )
+        assert payload[key] == []
+
+
+def test_stage3_synthesis_marker_carries_trial17_lever_selection():
+    """Trial 17.1 — when the LLM emits ``selected_lever`` etc on each
+    proposal, the marker must surface those values index-parallel to
+    ``proposal_ids`` so operators can see *which lever was picked and
+    why* from structured logs alone.
+    """
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        plan11_stage3_synthesis_marker,
+    )
+    line = plan11_stage3_synthesis_marker(
+        optimization_run_id="run_x",
+        iteration=1,
+        ag_id="AG_H001_lever5b",
+        cluster_id="H001",
+        outcome="synthesized",
+        proposals_count=2,
+        proposal_ids=["intent_001", "intent_002"],
+        patch_types=["add_sql_snippet_filter", "add_example_sql"],
+        target_qids_union=["gs_009"],
+        duration_ms=2100,
+        tokens_input=1500,
+        tokens_output=600,
+        selected_levers=["sql_expressions", "instructions_example_sql"],
+        expected_behavioral_changes=[
+            "Use snippet filter to project top-N rows instead of all rows.",
+            "Anchor the LLM to an example SQL with LIMIT 10 / ORDER BY.",
+        ],
+        fallback_levers=["instructions_prose", ""],
+        bundle_ids=["bundle_topN", "bundle_topN"],
+    )
+    name, payload = _parse_marker(line)
+    assert name == "GSO_PLAN11_STAGE3_SYNTHESIS_V1"
+    assert payload["selected_levers"] == [
+        "sql_expressions",
+        "instructions_example_sql",
+    ]
+    assert payload["fallback_levers"] == ["instructions_prose", ""]
+    assert payload["bundle_ids"] == ["bundle_topN", "bundle_topN"]
+    assert payload["expected_behavioral_changes"][0].startswith(
+        "Use snippet filter"
+    )
+
+
+def test_stage3_synthesis_marker_rejects_non_parallel_lever_arrays():
+    """Index-parallel contract: when supplied, each lever array must
+    have the same length as ``proposal_ids`` — silent misalignment
+    would make the marker unusable for postmortems."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        plan11_stage3_synthesis_marker,
+    )
+    import pytest
+    with pytest.raises(ValueError, match="selected_levers"):
+        plan11_stage3_synthesis_marker(
+            optimization_run_id="run_x",
+            iteration=1,
+            ag_id="AG_H001",
+            cluster_id="H001",
+            outcome="synthesized",
+            proposals_count=2,
+            proposal_ids=["a", "b"],
+            patch_types=["add_example_sql", "add_instruction"],
+            target_qids_union=["gs_009"],
+            selected_levers=["only_one_lever"],
+        )
+
+
+def test_stage3_synthesis_marker_truncates_long_behavioral_change():
+    """Behavioral-change strings can run long when the LLM justifies
+    its lever pick verbosely. The marker caps each entry so the line
+    stays parseable; the untruncated text lives on ``RepairProposal``.
+    """
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        _TRIAL17_BEHAVIORAL_CHANGE_MAX_CHARS,
+        plan11_stage3_synthesis_marker,
+    )
+    long_text = "x" * (_TRIAL17_BEHAVIORAL_CHANGE_MAX_CHARS + 50)
+    line = plan11_stage3_synthesis_marker(
+        optimization_run_id="run_x",
+        iteration=1,
+        ag_id="AG_H001",
+        cluster_id="H001",
+        outcome="synthesized",
+        proposals_count=1,
+        proposal_ids=["a"],
+        patch_types=["add_instruction"],
+        target_qids_union=["gs_009"],
+        selected_levers=["instructions_prose"],
+        expected_behavioral_changes=[long_text],
+    )
+    _, payload = _parse_marker(line)
+    assert (
+        len(payload["expected_behavioral_changes"][0])
+        == _TRIAL17_BEHAVIORAL_CHANGE_MAX_CHARS
+    )
 
 
 def test_repair_loop_marker():

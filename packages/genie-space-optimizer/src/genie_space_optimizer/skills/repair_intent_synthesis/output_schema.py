@@ -154,3 +154,52 @@ class LlmRepairProposalOutput(LLMOutputContract):
             "add_instruction, add_column_description), leave as []."
         ),
     )
+    # ── Trial 17 — Lever Selection Contract ─────────────────────────
+    # The LLM declares which of the 6 levers this proposal operates
+    # on, an auditable behavioural-change hypothesis, and a fallback
+    # lever for next-iteration pivot. All fields default to empty
+    # string for backward compatibility with pre-Trial-17 prompts
+    # that do not yet request them; the deterministic validator in
+    # ``levers_contract.validate_plan_vs_proposal_consistency`` runs
+    # only when ``selected_lever`` is non-empty.
+    selected_lever: str = Field(
+        default="",
+        description=(
+            "Trial 17 — Which of the 6 levers this proposal operates "
+            "on: 'lever-1' (table/column descriptions), 'lever-2' "
+            "(metric-view columns), 'lever-3' (TVF routing), "
+            "'lever-4' (joins), 'lever-5' (instructions + example "
+            "SQL), 'lever-6' (SQL snippets). MUST be consistent with "
+            "patch_type; consult LEVER_TO_PATCH_TYPES in "
+            "levers_contract.py for the membership table."
+        ),
+    )
+    expected_behavioral_change: str = Field(
+        default="",
+        description=(
+            "Trial 17 — Auditable hypothesis for what the generated "
+            "SQL grammar will do differently after this patch lands. "
+            "Be concrete: 'queries about top N customers will now "
+            "use ORDER BY revenue DESC LIMIT N instead of "
+            "MAX(revenue)'. Used by the next-iteration prompt when "
+            "the patch failed at acceptance to help the LLM pivot."
+        ),
+    )
+    fallback_lever: str = Field(
+        default="",
+        description=(
+            "Trial 17 — Which lever to try next if sliced eval shows "
+            "this patch did not change behavior (target_unchanged). "
+            "Same closed enum as selected_lever. Optional but "
+            "strongly recommended."
+        ),
+    )
+    bundle_id: str = Field(
+        default="",
+        description=(
+            "Trial 17 — Optional bundle identifier. Proposals sharing "
+            "the same non-empty bundle_id are applied incrementally "
+            "by the SM orchestration (one patch + sliced eval at a "
+            "time). Empty string means single-proposal path."
+        ),
+    )
