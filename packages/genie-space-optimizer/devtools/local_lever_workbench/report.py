@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Mapping
 
+from local_lever_workbench.funnel_report import _count_markers
 from local_lever_workbench.local_runner import LocalRunArtifacts, summarize_stage_progress
 from local_lever_workbench.models import (
     Stage1ProbeResult,
@@ -194,6 +195,8 @@ def build_run_result(
     """Assemble the typed ``WorkbenchRunResult`` from the run artefacts."""
     progress = summarize_stage_progress(artifacts)
     markers = _aggregate_markers(artifacts.stdout_text)
+    marker_counts = {k: len(v) for k, v in markers.items()}
+    marker_counts.update(_count_markers(artifacts.stdout_text))
     deepest = _deepest_funnel_value(progress)
     surprises = _detect_surprises(
         stage1=stage1,
@@ -216,7 +219,7 @@ def build_run_result(
         stage1_probe=stage1,
         stage_progress=progress,
         deepest_stage_reached=deepest,
-        markers={k: len(v) for k, v in markers.items()},
+        markers=marker_counts,
         terminal_reasons=_terminal_reason_set(progress),
         recorded_patches=artifacts.recorder.as_tuple(),
         surprises=surprises,
