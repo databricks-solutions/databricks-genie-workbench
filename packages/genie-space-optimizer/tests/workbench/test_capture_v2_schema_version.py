@@ -1,8 +1,13 @@
-"""Trial 13j — ``write_capture`` v2 / v1 schema version selection.
+"""Trial 13j — ``write_capture`` v2.1 / v1 schema version selection.
 
 The v2 schema is opt-in: only when ``schema_columns`` is non-empty does
 ``write_capture`` upgrade the payload version. Empty/omitted columns
 preserve v1 for backward compat with existing capture bundles.
+
+Trial 14 bumped the v2 token to ``workbench_eval_capture_v2.1`` to
+signal that rows now carry typed ASI ``blame_set_structured`` flat keys.
+The bundle loader (``input_bundle.from_run_analysis_dir``) accepts both
+``v2`` and ``v2.1`` so existing fixtures keep loading.
 """
 from __future__ import annotations
 
@@ -40,11 +45,17 @@ def _output_path(tmp_path: Path) -> Path:
 
 @pytest.mark.workbench
 def test_write_capture_with_columns_emits_v2(tmp_path: Path) -> None:
-    """Non-empty ``schema_columns`` triggers the v2 envelope.
+    """Non-empty ``schema_columns`` triggers the v2.1 envelope.
 
     The bundle carries both ``serialized_space`` (so the loader can
     merge into ``metadata_snapshot``) and ``schema_columns`` (so Trial
     13i ``_derive_schema_columns`` priority step 1 fires).
+
+    Trial 14 bumped the v2 token to ``workbench_eval_capture_v2.1`` to
+    signal that rows now carry typed ASI blame_set_structured flat keys.
+    ``input_bundle.from_run_analysis_dir`` accepts both ``v2`` and
+    ``v2.1`` (see ``input_bundle.py``), so the wire-level evolution is
+    additive — only the writer's emitted token changed.
     """
     spec = _spec()
     ss = {"version": 1, "data_sources": {"tables": [], "metric_views": []}}
@@ -58,7 +69,7 @@ def test_write_capture_with_columns_emits_v2(tmp_path: Path) -> None:
         schema_columns_source="genie_api",
     )
     payload = json.loads(written.read_text())
-    assert payload["_schema_version"] == "workbench_eval_capture_v2"
+    assert payload["_schema_version"] == "workbench_eval_capture_v2.1"
     assert payload["schema_columns"] == list(cols)
     assert payload["serialized_space"] == ss
     assert payload["_provenance"]["genie_space_id"] == spec.genie_space_id

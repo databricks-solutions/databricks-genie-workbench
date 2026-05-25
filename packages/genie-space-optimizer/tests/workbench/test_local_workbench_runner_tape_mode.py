@@ -55,11 +55,48 @@ def _stamp_hard_verdict(row: dict) -> dict:
     always carry the verdict fields the production admission helper
     inspects, so stamp them here. Matches the helper used by
     ``test_sm_stage3_empty_synthesis_terminates.py``.
+
+    Also overwrites ``arbiter/metadata.blame_set`` with bare-identifier
+    column names that match the leaves of :func:`_synthetic_schema_columns`.
+    The shape-ladder fixture ships compound text seeds like
+    ``["table.col_a", "table.col_b"]`` which the Trial 13i FQN
+    normalizer (rule 3) always drops, abstaining Stage 1 with
+    ``seeds_unnormalizable``. Bare identifiers fall under rule 2 of
+    :func:`schema_columns._normalize_seeds_to_fqn` — they leaf-match
+    against the synthetic FQNs and resolve cleanly so the Stage 1 LLM
+    sees a non-empty ``blame_set_seed``.
     """
     new = dict(row)
     new.setdefault("result_correctness/value", "no")
     new.setdefault("arbiter/value", "ground_truth_correct")
+    arbiter_metadata = dict(new.get("arbiter/metadata") or {})
+    arbiter_metadata["blame_set"] = ["col_a", "col_b"]
+    new["arbiter/metadata"] = arbiter_metadata
     return new
+
+
+def _synthetic_schema_columns() -> tuple[str, ...]:
+    """Return synthetic 4-part FQNs to satisfy the Stage 1 pre-flight.
+
+    Trial 13i added a ``schema_columns_min_size >= 1`` pre-flight check
+    in :class:`Stage1InputEvidenceContract` that short-circuits to
+    ``abstain: evidence_card_empty:missing_schema_columns`` when the
+    run-level ``schema_columns`` channel is empty. In tape-mode the
+    workspace_client is ``None`` so the production injector
+    (``inject_schema_columns_into_metadata_snapshot``) returns
+    ``source="api_error"`` and does not populate the channel. To exercise
+    the full pipeline (HARD_QID_SEEN -> APPLIED) without contacting a
+    Databricks API, the synthetic bundle must therefore pre-seed
+    ``metadata_snapshot["schema_columns"]`` with at least one 4-part
+    FQN. The values themselves are irrelevant to the tape-driven
+    transformers — the contract checks only count and shape — but we
+    use airline-themed identifiers to match the production_eval_rows
+    fixture domain so postmortem markers read coherently.
+    """
+    return (
+        "synth.workbench.tbl.col_a",
+        "synth.workbench.tbl.col_b",
+    )
 
 
 def _load_hydration_bundle() -> WorkbenchInputBundle:
@@ -88,11 +125,16 @@ def _load_hydration_bundle() -> WorkbenchInputBundle:
             )
         )
     assert hard_rows, "hydration corpus must declare at least one hard row"
+    metadata_snapshot = dict(minimal_metadata_snapshot())
+    # Pre-seed the run-level ``schema_columns`` channel so the Stage 1
+    # contract's ``schema_columns_min_size >= 1`` pre-flight passes.
+    # See ``_synthetic_schema_columns`` for the rationale.
+    metadata_snapshot["schema_columns"] = list(_synthetic_schema_columns())
     return WorkbenchInputBundle(
         provenance=WorkbenchProvenance(source_kind="synthetic"),
         space_id=DEFAULT_FAKE_SPACE_ID,
         hard_cases=tuple(hard_rows),
-        metadata_snapshot=minimal_metadata_snapshot(),
+        metadata_snapshot=metadata_snapshot,
     )
 
 
