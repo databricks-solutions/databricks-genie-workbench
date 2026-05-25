@@ -168,7 +168,8 @@ def test_full_funnel_survives_single_qid_stage1_abstain(tmp_path: Path) -> None:
     This test reproduces the cascade by stripping ``typed_evidence``
     from a single load-bearing QID (``domain_b_gs_013`` — the row
     whose native fields cannot satisfy the Stage 1 contract without
-    typed evidence) and asserts the other QIDs still reach APPLIED.
+    typed evidence) and asserts the other QIDs still advance through
+    the funnel (``deepest_stage_reached`` at APPLIED or deeper).
     """
     from tests.integration.sm_forward_tapes import (
         cluster_response_tape,
@@ -224,27 +225,29 @@ def test_full_funnel_survives_single_qid_stage1_abstain(tmp_path: Path) -> None:
         terminal_by_qid[target_qid]
     )
 
-    # Every other QID must still reach APPLIED. If this regresses, the
-    # tape harness has dropped QID-keyed routing for production-shaped
-    # call_ids and the cascade is back.
-    expected_applied = [q for q in qids if q != target_qid]
-    not_applied = {
+    # Every other QID must still advance past diagnose/propose (cascade
+    # did not stall). summarize_stage_progress maps deepest_stage_reached
+    # into deepest_stage; V1.5 sm-tape typically reaches evaluated then
+    # terminates at acceptance_gate (target_unchanged when apply is faked).
+    cascade_success_stages = ("applied", "evaluated", "accepted", "terminated")
+    expected_peers = [q for q in qids if q != target_qid]
+    stalled_peers = {
         q: deepest_by_qid[q]
-        for q in expected_applied
-        if deepest_by_qid[q] != "applied"
+        for q in expected_peers
+        if deepest_by_qid[q] not in cascade_success_stages
     }
-    assert not not_applied, (
+    assert not stalled_peers, (
         f"cascade regression: {target_qid!r} legitimately abstained but "
-        f"the following QIDs were collaterally damaged: {not_applied!r}. "
+        f"the following QIDs were collaterally damaged: {stalled_peers!r}. "
         f"terminal_reasons={terminal_by_qid!r}. "
         f"Check TapeReplayHarness._request_mentions_qid handles "
         f"production-shaped call_ids by inspecting user_prompt."
     )
 
     recorded_qids = {rp.qid for rp in artifacts.recorder.as_tuple()}
-    assert recorded_qids == set(expected_applied), (
+    assert recorded_qids == set(expected_peers), (
         f"applier recorded {sorted(recorded_qids)!r}; expected exactly "
-        f"the non-abstaining QIDs {sorted(expected_applied)!r}."
+        f"the non-abstaining QIDs {sorted(expected_peers)!r}."
     )
 
 

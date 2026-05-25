@@ -74,16 +74,19 @@ def _build_registry(llm_mode: str):
 
     * ``stage1-only`` runs Stage 1 alone — the cheapest live signal
       that hydration + request envelope + Stage 1 schema parsing all
-      work end-to-end.
-    * ``live-databricks`` and ``sm-tape`` both run the production
-      Phase 2 pipeline (HARD_QID_SEEN → APPLIED). They intentionally
-      omit ``evaluated_gate`` / ``acceptance_gate`` — V1 of the
-      workbench does not re-evaluate against a live space, so those
-      gates would always reject for missing eval kwargs and add noise
-      to the report.
+      work end-to-end (HARD_QID_SEEN → DIAGNOSED only).
+    * ``live-databricks`` and ``sm-tape`` run the full V1.5 pipeline
+      (HARD_QID_SEEN → ACCEPTED via Trial 15 plumbing). Registry includes
+      ``evaluated_gate`` at APPLIED and ``acceptance_gate`` at EVALUATED
+      for both ``live-databricks`` and ``sm-tape``. Eval surface remains
+      the Trial 15 stub in this task; real eval wiring for
+      ``live-databricks`` lands in Task 3.
     """
     from genie_space_optimizer.optimization.state_machine.funnel import (
         FunnelStage,
+    )
+    from genie_space_optimizer.optimization.state_machine.transformers.acceptance_gate import (
+        acceptance_gate,
     )
     from genie_space_optimizer.optimization.state_machine.transformers.applier_gate import (
         applier_gate,
@@ -96,6 +99,9 @@ def _build_registry(llm_mode: str):
     )
     from genie_space_optimizer.optimization.state_machine.transformers.diagnose_llm import (
         plan11_stage1_diagnosis,
+    )
+    from genie_space_optimizer.optimization.state_machine.transformers.evaluated_gate import (
+        evaluated_gate,
     )
     from genie_space_optimizer.optimization.state_machine.transformers.narrow_replacement_gate import (
         narrow_replacement_gate,
@@ -117,6 +123,8 @@ def _build_registry(llm_mode: str):
         FunnelStage.PROPOSED:      (structural_repair_gate,),
         FunnelStage.NORMALIZED:    (blast_radius_batch, narrow_replacement_gate),
         FunnelStage.APPLYABLE:     (applier_gate,),
+        FunnelStage.APPLIED:       (evaluated_gate,),
+        FunnelStage.EVALUATED:     (acceptance_gate,),
     }
 
 
