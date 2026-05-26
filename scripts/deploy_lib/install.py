@@ -87,6 +87,10 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
             "LAKEBASE_INSTANCE": cfg.lakebase_instance or "",
             "LLM_MODEL": cfg.llm_model,
             "MLFLOW_EXPERIMENT_ID": cfg.mlflow_experiment_id or "",
+            # Notebook install path does not deploy the bundle, so the
+            # GenieWatch Cost dashboard never exists. Empty = hide the embed,
+            # matching deploy.sh's fallback when no dashboard ID resolves.
+            "DASHBOARD_COST_ID": "",
         },
         workspace_client=w,
     )
