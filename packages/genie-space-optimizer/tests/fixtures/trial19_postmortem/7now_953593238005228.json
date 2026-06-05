@@ -1,0 +1,55 @@
+{
+  "fixture_id": "trial19_postmortem_7now_953593238005228",
+  "source_postmortem_run": "d13938e7-405d-4444-833a-03f5ac9f7523",
+  "source_attempt_id": "953593238005228",
+  "baseline_eval_rows": [
+    {
+      "question_id": "7now_store_sales_gs_013",
+      "feedback/arbiter/value": "both_correct",
+      "feedback/result_correctness/value": "no"
+    },
+    {
+      "question_id": "7now_store_sales_gs_017",
+      "feedback/arbiter/value": "ground_truth_correct",
+      "feedback/result_correctness/value": "no"
+    },
+    {
+      "question_id": "7now_store_sales_gs_022",
+      "feedback/arbiter/value": "both_correct",
+      "feedback/result_correctness/value": "no"
+    },
+    {
+      "question_id": "7now_store_sales_gs_002",
+      "feedback/arbiter/value": "both_correct",
+      "feedback/result_correctness/value": "yes"
+    }
+  ],
+  "iterations": [
+    {
+      "iteration": 1,
+      "kept_insufficient_signature": "lever-2:add_instruction:insufficient:rca=measure_swap:behavior=partial",
+      "qid": "7now_store_sales_gs_017",
+      "structural_emissions": [
+        {
+          "qid": "7now_store_sales_gs_017",
+          "intended_patch_shape": "disambiguate_measure_via_contrast",
+          "emitted_patch_shape": "absent"
+        }
+      ]
+    },
+    {
+      "iteration": 5,
+      "ag_terminal_reason": "ag_collision_with_forbidden_set",
+      "qid": "7now_store_sales_gs_017"
+    }
+  ],
+  "rca_cluster": {
+    "qid_to_asi": {
+      "7now_store_sales_gs_017": {
+        "rca_kind_label": "measure_swap",
+        "intended_patch_shape": "disambiguate_measure_via_contrast",
+        "confidence": 0.85
+      }
+    }
+  }
+}

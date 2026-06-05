@@ -45,7 +45,8 @@ def test_warn_status_does_not_raise() -> None:
     enforce_merge_gate(loop_out)  # no raise
 
 
-def test_blocked_status_raises_with_payload() -> None:
+def test_blocked_status_raises_with_payload(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_ENFORCE_MERGE_GATE_BLOCKING", "1")
     loop_out = {
         "contract_health_summary": {
             "merge_gate_status": "merge_gate_blocked",
@@ -68,6 +69,27 @@ def test_blocked_status_raises_with_payload() -> None:
     assert err.merge_gate_status == "merge_gate_blocked"
     assert err.high_tier_violation_count == 2
     assert err.optimization_run_id == "run-blocked"
+
+
+def test_blocked_status_is_observe_only_by_default(monkeypatch) -> None:
+    """Production posture: blocked contract health is observable but
+    does not fail the optimizer task unless strict enforcement is
+    explicitly enabled."""
+    monkeypatch.delenv("GSO_ENFORCE_MERGE_GATE_BLOCKING", raising=False)
+    loop_out = {
+        "contract_health_summary": {
+            "merge_gate_status": "merge_gate_blocked",
+            "high_tier_violations": [],
+            "medium_tier_violations": [],
+            "optimization_run_id": "run-observe-only",
+            "phase_h_listing_status": "failed",
+            "phase_h_validator_status": "skipped",
+            "bundle_status": "complete",
+            "replay_is_valid": True,
+            "replay_violation_count": 0,
+        },
+    }
+    enforce_merge_gate(loop_out)  # no raise by default
 
 
 def test_missing_contract_health_does_not_raise() -> None:

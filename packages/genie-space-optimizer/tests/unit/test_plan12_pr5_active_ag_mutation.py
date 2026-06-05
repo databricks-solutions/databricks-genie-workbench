@@ -165,14 +165,28 @@ def test_emitter_observation_mode_does_not_mutate(capsys, monkeypatch):
 def test_emitter_active_mutation_widens_lever_directives(capsys, monkeypatch):
     """Parent flag ON, mutate=True → marker emits with pivot_applied=True
     AND the AG's lever_directives is widened to include the
-    recommended family's lever_key."""
+    recommended family's lever_key.
+
+    The prior family must pivot ACROSS levers for a widening to occur.
+    The Trial 20 C1 pivot graph (default-on) maps add_example_sql (L5)
+    -> add_sql_snippet_filter (L6), so a lever-5 AG widens to add the
+    lever-6 directive. (A lever-6 AG would pivot add_sql_snippet_filter
+    -> add_sql_snippet_expression, which is L6 -> L6: no widening, so
+    pivot_applied would correctly stay False.)
+    """
     monkeypatch.setenv("GSO_PLAN12_LIVE_AG_RETRY_PIVOT", "1")
 
     from genie_space_optimizer.optimization.harness import (
         _emit_plan12_ag_pivot_decision,
     )
     sig = _survival_failure_signature()
-    ag = _ag_with_lever_6_filter()
+    ag = {
+        "id": "AG_pivot",
+        "source_cluster_ids": ["H001"],
+        "lever_directives": {
+            "5": {"example_sqls": [{"patch_type": "add_example_sql"}]},
+        },
+    }
     fired = _emit_plan12_ag_pivot_decision(
         action_groups=[ag],
         forbidden_signatures=frozenset({sig}),
@@ -187,12 +201,12 @@ def test_emitter_active_mutation_widens_lever_directives(capsys, monkeypatch):
     m = markers[0]
     assert m["pivot_recommended"] is True
     assert m["pivot_applied"] is True
-    # AG mutated — recommended family's lever_key was added.
-    assert "5" in ag["lever_directives"] or "6" in ag["lever_directives"], (
+    # AG widened — the recommended family's lever_key (L6) was added.
+    assert "6" in ag["lever_directives"], (
         f"expected widened lever_directives; got {ag['lever_directives']}"
     )
-    # The original "6" lever directive is still present.
-    assert "6" in ag["lever_directives"]
+    # The original "5" lever directive is still present.
+    assert "5" in ag["lever_directives"]
 
 
 def test_emitter_no_pivot_recommended_does_not_mutate(capsys, monkeypatch):

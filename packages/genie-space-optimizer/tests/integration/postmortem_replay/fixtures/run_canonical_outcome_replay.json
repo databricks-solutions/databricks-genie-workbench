@@ -1,0 +1,105 @@
+{
+  "fixture_id": "canonical_candidateoutcome_postmortem_replay",
+  "source_postmortems": [
+    "docs/runid_analysis/.../postmortem_315989263572380.md (d139 flat kept-insufficient + invalid snippet ID)",
+    "docs/runid_analysis/e94376a3-d8a6-4570-a605-9fe231e5f99c/postmortem_257106447313472.md (e943 clean full-eval success misreported)"
+  ],
+  "scenario": "Canonical CandidateOutcome must make every projection surface (run outcome, candidate ledger row, scoreboard/run_summary delta_pp, deploy eligibility) agree with the authoritative full-eval result.",
+
+  "flat_kept_insufficient": {
+    "provenance": "d139 task 315989263572380 — every per-QID trajectory ended kept_insufficient; no full-eval accept landed.",
+    "trajectory_outcome": "OPTIMIZER_TRIED_INSUFFICIENT_GAIN",
+    "candidate": null,
+    "iteration": 3,
+    "expected": {
+      "run_outcome": "OPTIMIZER_TRIED_INSUFFICIENT_GAIN",
+      "ledger_overrides": {},
+      "scoreboard_delta_pp": 0.0,
+      "deploy_clean_win": false
+    }
+  },
+
+  "invalid_snippet_id": {
+    "provenance": "d139 task 315989263572380 — a 16-char SQL snippet ID (01dc008002e45949) passed validator stamping but failed Genie schema validation downstream.",
+    "intent_id": "d139_snip_intent",
+    "normalized_sql": "SELECT booking_status FROM main.airline.fares WHERE booking_status <> 'cancelled'",
+    "snippet_name": "fare_status_filter",
+    "snippet_type": "expression",
+    "description": "Override the defensive WHERE clause Genie injected.",
+    "malformed_id_16char": "01dc008002e45949",
+    "expected": {
+      "minted_id_len": 32,
+      "minted_id_genie_valid": true,
+      "malformed_id_stamped": false
+    }
+  },
+
+  "target_debt_acceptance": {
+    "provenance": "Aggregate gain that left a named target QID unfixed — accepted as evidence but NOT a clean deployable win.",
+    "trajectory_outcome": "OPTIMIZER_TRIED_INSUFFICIENT_GAIN",
+    "full_eval_payload": {
+      "accepted": true,
+      "iteration": 2,
+      "ag_id": "ag_target_debt_iter2",
+      "delta_pp": 8.3,
+      "baseline_accuracy": 87.5,
+      "candidate_accuracy": 95.8,
+      "target_qids": ["gs_009", "gs_016"],
+      "target_fixed_qids": ["gs_016"],
+      "target_still_hard_qids": ["gs_009"],
+      "regression_debt_qids": [],
+      "reason_code": "net_win_non_deployable"
+    },
+    "selected_proposal_id": "prop_target_debt_001",
+    "acceptance_tier": "net_win_non_deployable",
+    "patches_applied": 1,
+    "levers": [5, 6],
+    "expected": {
+      "run_outcome": "OPTIMIZER_AGGREGATE_GAIN_TARGET_DEBT",
+      "ledger_overrides": {
+        "accuracy_delta_pp": 8.3,
+        "acceptance_tier": "net_win_non_deployable",
+        "patches_applied": 1,
+        "selected_proposal_id": "prop_target_debt_001"
+      },
+      "scoreboard_delta_pp": 8.3,
+      "deploy_clean_win": false
+    }
+  },
+
+  "clean_full_eval_success": {
+    "provenance": "e943 task 257106447313472 — 87.5% -> 100.0% (delta_pp=12.5), target gs_009 fixed, no debt; misreported as OPTIMIZER_TRIED_INSUFFICIENT_GAIN with a post-win unknown abort.",
+    "trajectory_outcome": "OPTIMIZER_TRIED_INSUFFICIENT_GAIN",
+    "full_eval_payload": {
+      "accepted": true,
+      "iteration": 3,
+      "ag_id": "ag_e943_iter3_clean",
+      "delta_pp": 12.5,
+      "baseline_accuracy": 87.5,
+      "candidate_accuracy": 100.0,
+      "target_qids": ["gs_009"],
+      "target_fixed_qids": ["gs_009"],
+      "target_still_hard_qids": [],
+      "regression_debt_qids": [],
+      "reason_code": "accepted"
+    },
+    "selected_proposal_id": "prop_e943_clean_001",
+    "acceptance_tier": "accepted",
+    "patches_applied": 2,
+    "levers": [5, 6],
+    "post_win_iteration": 4,
+    "post_win_terminal_reason_raw": "unknown",
+    "expected": {
+      "run_outcome": "OPTIMIZER_IMPROVED",
+      "ledger_overrides": {
+        "accuracy_delta_pp": 12.5,
+        "acceptance_tier": "accepted",
+        "patches_applied": 2,
+        "selected_proposal_id": "prop_e943_clean_001"
+      },
+      "scoreboard_delta_pp": 12.5,
+      "deploy_clean_win": true,
+      "post_win_terminal_reason": "run_already_won_pending_gt_review"
+    }
+  }
+}

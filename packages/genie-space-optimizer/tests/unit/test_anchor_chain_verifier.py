@@ -1,6 +1,7 @@
 """WU-A — anchor-chain verifier unit tests."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -715,12 +716,36 @@ def test_verifier_fails_canonical_pre_fix_runs(
     ``full_eval_regression``) are intentionally excluded — that
     failure mode is the subject of a separate archetype-tuning
     plan."""
-    if not (runid_dir / "postmortem.json").exists():
+    pm_path = runid_dir / "postmortem.json"
+    if not pm_path.exists():
         pytest.skip(
             f"Canonical postmortem not present at {runid_dir} — "
             f"if the runid_analysis dir was moved/cleaned, update "
             f"the path constants."
         )
+
+    # The verifier consumes the optimizer's MACHINE postmortem
+    # (top-level ``iteration_summary`` list — see
+    # ``parse_iteration_records``). Some runid dirs have since had
+    # their ``postmortem.json`` overwritten by a narrative
+    # ``gso_postmortem_v1`` analysis doc (``iteration_mechanics`` /
+    # ``postmortemVerdict``) which is a different artifact the
+    # verifier intentionally does not parse. When that has happened
+    # the canonical machine artifact is no longer present in usable
+    # form, so this leg is not exercisable — skip it (the other
+    # canonical leg still exercises the load-bearing self-test).
+    with pm_path.open() as _fh:
+        _pm = json.load(_fh)
+    if not (_pm.get("iteration_summary") or []):
+        pytest.skip(
+            f"postmortem.json at {runid_dir} is not the machine "
+            f"schema (no consumable ``iteration_summary``; "
+            f"schema_version={_pm.get('schema_version')!r}). The "
+            f"canonical machine postmortem was replaced by a "
+            f"narrative analysis doc; the other canonical leg "
+            f"retains the load-bearing verifier self-test."
+        )
+
     from genie_space_optimizer.verification import verify_runid_dir
 
     result = verify_runid_dir(runid_dir)

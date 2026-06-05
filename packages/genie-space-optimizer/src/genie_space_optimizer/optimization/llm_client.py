@@ -134,6 +134,11 @@ def call_llm(
     if max_tokens is not None:
         call_kwargs["max_tokens"] = max_tokens
 
+    from genie_space_optimizer.optimization.llm_rate_limit import (
+        compute_rate_limit_backoff_seconds,
+        is_rate_limit_error,
+    )
+
     last_err: Exception | None = None
     for attempt in range(max_retries):
         try:
@@ -147,6 +152,18 @@ def call_llm(
         except Exception as exc:
             last_err = exc
             if attempt < max_retries - 1:
-                time.sleep(2**attempt)
+                # Phase 0 P0.3 — rate-limit-aware backoff. When the
+                # server signals a 429 / REQUEST_LIMIT_EXCEEDED we
+                # sleep ``max(Retry-After, 2**attempt) + jitter``
+                # instead of the plain exponential backoff. Jitter
+                # is essential to keep multiple callers from
+                # un-blocking on the same tick after a 60s window.
+                if is_rate_limit_error(exc):
+                    sleep_for = compute_rate_limit_backoff_seconds(
+                        exc, attempt=attempt,
+                    )
+                else:
+                    sleep_for = float(2 ** attempt)
+                time.sleep(sleep_for)
 
     raise last_err  # type: ignore[misc]

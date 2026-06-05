@@ -63,6 +63,11 @@ def test_partial_harvest_falls_back_to_legacy_when_flag_off(monkeypatch) -> None
     reason code.
     """
     monkeypatch.setenv("GSO_PARTIAL_HARVEST_WITH_DEBT", "0")
+    # The byte-stable legacy-rejection guarantee for this tier is only
+    # observable when the later attribution-drift-with-debt tier (Plan 9
+    # T11.C, default-on) is also off; otherwise the +17.4pp aggregate gain
+    # with bounded soft-to-hard debt is re-accepted by that newer layer.
+    monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "0")
     from genie_space_optimizer.optimization.control_plane import (
         decide_control_plane_acceptance,
     )

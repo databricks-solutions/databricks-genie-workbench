@@ -4,11 +4,24 @@ from __future__ import annotations
 import pytest
 
 
-def test_high_tier_set_is_exactly_i9_through_i13() -> None:
+def test_high_tier_set_pins_the_authoritative_surface() -> None:
+    # Pins the HIGH-tier merge-gate surface so new invariants cannot
+    # silently inflate it. The set grew past the original I9-I13 base:
+    # Plan 10 Phase B added I15-I25 (the silent-leakage family) and the
+    # v3 design-doc section 9 added the SM1-SM10 state-machine
+    # invariants. I14 is intentionally NOT high-tier.
     from genie_space_optimizer.optimization.contract_health import (
         HIGH_TIER_INVARIANT_IDS,
     )
-    assert HIGH_TIER_INVARIANT_IDS == frozenset({"I9", "I10", "I11", "I12", "I13"})
+    assert HIGH_TIER_INVARIANT_IDS == frozenset(
+        {
+            "I9", "I10", "I11", "I12", "I13", "I15", "I16", "I17", "I18",
+            "I19", "I20", "I21", "I22", "I23", "I24", "I25",
+            "SM1", "SM2", "SM3", "SM4", "SM5", "SM6", "SM7", "SM8", "SM9",
+            "SM10",
+        }
+    )
+    assert "I14" not in HIGH_TIER_INVARIANT_IDS
 
 
 @pytest.mark.parametrize("inv_id", ["I9", "I10", "I11", "I12", "I13"])

@@ -15,6 +15,7 @@ from typing import Any
 from genie_space_optimizer.optimization.llm_reasoning_call import LlmReasoningCall
 from genie_space_optimizer.optimization.llm_reasoning_io import LlmReasoningRequest
 from genie_space_optimizer.optimization.run_analysis_contract import (
+    insufficient_signatures_in_context_marker,
     plan11_stage2_clustering_marker,
 )
 from genie_space_optimizer.optimization.stages.plan11_types import (
@@ -38,6 +39,7 @@ def _build_request(
     iteration: int,
     namespace: str,
     forbidden_signatures: tuple[str, ...] = (),
+    insufficient_repair_signatures: tuple[str, ...] = (),
 ) -> LlmReasoningRequest:
     rsm = _SKILL_LOADER.load_reasoning_metadata(_SKILL_ID)
     if rsm is None:
@@ -68,6 +70,16 @@ def _build_request(
             "per_qid_diagnosis": [d.to_json() for d in diagnoses],
             "schema_columns": schema_columns,
             "forbidden_signatures": list(forbidden_signatures or ()),
+            # Trial 18 Step 3 — sibling channel. Empty list when the
+            # ``KEPT_INSUFFICIENT`` lane has not fired yet (e.g. first
+            # iteration). The Stage 2/3 prompt instructions instruct
+            # the LLM that signatures in this channel mean "do not
+            # re-propose this (lever, patch_type, rca_kind, behavior)
+            # alone — reinforce or pivot" — distinct from
+            # ``forbidden_signatures`` (hard rejections).
+            "insufficient_repair_signatures": list(
+                insufficient_repair_signatures or (),
+            ),
         },
         default=str,
     )
@@ -101,6 +113,8 @@ def cluster_diagnoses(
     namespace: str,
     w: Any,
     forbidden_signatures: tuple[str, ...] = (),
+    # Trial 18 Step 3 — sibling channel for ``insufficient_repair_signatures``.
+    insufficient_repair_signatures: tuple[str, ...] = (),
 ) -> list[FailureCluster]:
     """Plan 11 Stage 2 — cluster :class:`PerQidDiagnosis` into
     :class:`FailureCluster` objects.
@@ -119,7 +133,24 @@ def cluster_diagnoses(
         iteration=iteration,
         namespace=namespace,
         forbidden_signatures=forbidden_signatures,
+        insufficient_repair_signatures=insufficient_repair_signatures,
     )
+
+    # Trial 19 A5 — emit the audit marker IFF a non-empty insufficient
+    # signature tuple reached this Stage 2 LLM call. Paired with the
+    # Stage 3 emission in ``synthesize.py`` so postmortem grading can
+    # join harness-side accumulation against per-stage consumption.
+    if insufficient_repair_signatures:
+        _pairs_preview = tuple(insufficient_repair_signatures[:20])
+        print(
+            insufficient_signatures_in_context_marker(
+                optimization_run_id=optimization_run_id,
+                iteration=iteration,
+                stage="plan11_cluster",
+                count=len(insufficient_repair_signatures),
+                qid_rca_pairs=_pairs_preview,
+            )
+        )
 
     t0 = time.monotonic()
     resp = LlmReasoningCall().invoke(w=w, request=request)
@@ -196,6 +227,26 @@ def cluster_diagnoses(
             primary_blame_set = tuple(unioned)
             if primary_blame_set:
                 primary_blame_set_backfilled += 1
+        # Trial 23 W4 — derive the cluster's RCA kind from its members'
+        # Stage 1 diagnoses (the dominant ``rca_kind_label``) so the
+        # KIT_FOR_RCA validator and the W4 RCA-to-mechanism router have a
+        # non-empty ``root_cause`` to route on. Ties break on arrival
+        # order; empty when no member carries a label.
+        _rca_counts: dict[str, int] = {}
+        _rca_order: list[str] = []
+        for qid in valid_members:
+            d = diagnosis_by_qid.get(qid)
+            label = str(getattr(d, "rca_kind_label", "") or "") if d else ""
+            if not label:
+                continue
+            if label not in _rca_counts:
+                _rca_order.append(label)
+            _rca_counts[label] = _rca_counts.get(label, 0) + 1
+        cluster_root_cause = ""
+        if _rca_counts:
+            cluster_root_cause = max(
+                _rca_order, key=lambda lbl: _rca_counts[lbl]
+            )
         clusters.append(
             FailureCluster(
                 cluster_id=cluster_id,
@@ -205,6 +256,7 @@ def cluster_diagnoses(
                 repair_hypothesis=str(item.get("repair_hypothesis", "")),
                 primary_blame_set=primary_blame_set,
                 confidence=item.get("confidence", "low"),  # type: ignore[arg-type]
+                root_cause=cluster_root_cause,
             )
         )
 

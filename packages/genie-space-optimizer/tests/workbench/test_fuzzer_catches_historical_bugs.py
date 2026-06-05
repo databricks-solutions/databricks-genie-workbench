@@ -150,31 +150,51 @@ def _run(bundle: WorkbenchInputBundle, tmp_path: Path):
 def test_fuzzer_flags_acceptance_gate_empty_signature_regression(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Revert Trial 16's acceptance_gate signature wiring → fuzzer must flag.
+    """Revert the acceptance_gate strategist-feedback wiring → fuzzer flags.
 
-    Up to Trial 15 the ``acceptance_gate`` ``OPTIMIZER_TRIED_NO_GAIN``
-    terminal had ``forbidden_signature=""`` so the strategist's
-    ``ctx.forbidden_signatures`` channel for the next iteration's
-    prompt was empty. Trial 16 Chunk 3 populated it. This test
-    reverts the wiring and asserts the fuzzer's B2 + E1 invariants
-    flag the regression.
+    Trial 18 (``GSO_TRIAL18_ACCEPTANCE_OVERHAUL``, default-ON) reshaped
+    the no-behavioural-gain boundary the original RC2 fix protected.
+    The ``post_score == pre_score`` / no-collateral case no longer
+    terminates with an ``OPTIMIZER_TRIED_NO_GAIN`` ``forbidden_signature``
+    terminal — it is kept live in the ``kept_insufficient`` lane (a
+    SUCCESS verdict) and the strategist's cumulative-learning channel is
+    now ``AcceptanceDecisionRecord.insufficient_repair_signature``,
+    guarded by invariant **F1** (``kept_insufficient_emits_signature``).
+
+    This test reverts that wiring — zeroing the
+    ``insufficient_repair_signature`` on the kept_insufficient success —
+    and asserts the fuzzer's F1 invariant flags the regression. (The
+    sibling ``evaluated_gate`` / ``applier_gate`` tests below still
+    cover the B2/E1 forbidden_signature invariants via forced terminals,
+    so the terminal-signature guard remains exercised.)
     """
-    # Verify baseline: with Trial 16 in place, invariants are clean.
+    # Verify baseline: with Trial 18 in place, invariants are clean.
     bundle = _bundle_rolled_back()
     baseline_artifacts = _run(bundle, tmp_path / "baseline")
     baseline_result = check_all_invariants(baseline_artifacts)
     assert baseline_result.ok, (
-        f"baseline (Trial 16 active) should be clean; got: "
+        f"baseline (Trial 18 active) should be clean; got: "
         f"{baseline_result.violations!r}"
     )
 
     # Revert: wrap the acceptance_gate predicate to zero out the
-    # forbidden_signature on reject_terminal verdicts only.
+    # kept_insufficient lane's insufficient_repair_signature (the
+    # Trial-18 successor to the forbidden_signature channel) while
+    # still zeroing forbidden_signature on any genuine terminal.
     real_gate = acceptance_gate_module.acceptance_gate
     real_predicate = real_gate.predicate
 
     def predicate_with_empty_signature(state, ctx):  # type: ignore[no-untyped-def]
         verdict = real_predicate(state, ctx)
+        rec = verdict.success_record
+        if (
+            verdict.passed
+            and rec is not None
+            and getattr(rec, "decision", "") == "kept_insufficient"
+        ):
+            return GateVerdict.success(record=dataclasses.replace(
+                rec, insufficient_repair_signature="",
+            ))
         outcome = verdict.rejection_outcome
         if isinstance(outcome, TerminalRecord):
             return GateVerdict.reject_terminal(dataclasses.replace(
@@ -201,15 +221,10 @@ def test_fuzzer_flags_acceptance_gate_empty_signature_regression(
         "fuzzer should have flagged the acceptance_gate empty-signature "
         "regression but reported clean"
     )
-    b2 = result.by_id("B2")
-    e1 = result.by_id("E1")
-    assert b2, (
-        f"expected B2 violation (validation gate emitted empty "
-        f"forbidden_signature); got violations={result.violations!r}"
-    )
-    assert e1, (
-        f"expected E1 violation (gate terminal carries no signature); "
-        f"got violations={result.violations!r}"
+    f1 = result.by_id("F1")
+    assert f1, (
+        f"expected F1 violation (kept_insufficient lane emitted empty "
+        f"insufficient_repair_signature); got violations={result.violations!r}"
     )
 
 

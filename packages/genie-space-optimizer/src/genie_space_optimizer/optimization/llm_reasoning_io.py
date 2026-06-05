@@ -168,6 +168,16 @@ class LlmReasoningRequest:
     user_prompt: str
     result_cls: type
     max_tokens: int
+    # Phase 0 P0.5 — optional cacheable user-prompt blocks. When
+    # provided, each entry is sent as a separate ``user`` content
+    # block with an Anthropic-style ``cache_control`` marker, allowing
+    # the Databricks endpoint to serve repeated calls from prompt
+    # cache. The order of blocks is part of the cache key — keep
+    # blocks STABLE across iterations (skill_system, lever_menu,
+    # archetype_catalog, schema_columns). The dynamic per-iteration
+    # payload goes in ``user_prompt`` as before. Default empty so
+    # legacy callers keep the plain ``role:user, content:str`` shape.
+    cacheable_user_blocks: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.call_id:

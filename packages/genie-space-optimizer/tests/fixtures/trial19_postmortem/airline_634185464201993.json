@@ -1,0 +1,65 @@
+{
+  "fixture_id": "trial19_postmortem_airline_634185464201993",
+  "source_postmortem_run": "e94376a3-d8a6-4570-a605-9fe231e5f99c",
+  "source_attempt_id": "634185464201993",
+  "baseline_eval_rows": [
+    {
+      "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+      "feedback/arbiter/value": "ground_truth_correct",
+      "feedback/result_correctness/value": "no"
+    },
+    {
+      "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+      "feedback/arbiter/value": "ground_truth_correct",
+      "feedback/result_correctness/value": "no"
+    },
+    {
+      "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+      "feedback/arbiter/value": "both_correct",
+      "feedback/result_correctness/value": "no"
+    },
+    {
+      "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+      "feedback/arbiter/value": "genie_correct",
+      "feedback/result_correctness/value": "no"
+    },
+    {
+      "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+      "feedback/arbiter/value": "both_correct",
+      "feedback/result_correctness/value": "yes"
+    }
+  ],
+  "iterations": [
+    {
+      "iteration": 1,
+      "kept_insufficient_signature": "lever-5:add_example_sql:insufficient:rca=top_n_cardinality_collapse:behavior=unchanged",
+      "qid": "airline_ticketing_and_fare_analysis_gs_009",
+      "structural_emissions": [
+        {
+          "qid": "airline_ticketing_and_fare_analysis_gs_009",
+          "intended_patch_shape": "enforce_explicit_top_n_cardinality",
+          "emitted_patch_shape": "absent"
+        }
+      ]
+    },
+    {
+      "iteration": 4,
+      "ag_terminal_reason": "ag_collision_with_forbidden_set",
+      "qid": "airline_ticketing_and_fare_analysis_gs_009"
+    }
+  ],
+  "rca_cluster": {
+    "qid_to_asi": {
+      "airline_ticketing_and_fare_analysis_gs_009": {
+        "rca_kind_label": "top_n_cardinality_collapse",
+        "intended_patch_shape": "enforce_explicit_top_n_cardinality",
+        "confidence": 0.9
+      },
+      "airline_ticketing_and_fare_analysis_gs_024": {
+        "rca_kind_label": "extra_defensive_filter",
+        "intended_patch_shape": "remove_unrequested_defensive_filter",
+        "confidence": 0.7
+      }
+    }
+  }
+}

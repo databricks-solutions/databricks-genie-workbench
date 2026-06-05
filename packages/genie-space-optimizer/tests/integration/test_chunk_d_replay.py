@@ -95,8 +95,18 @@ def _param_id(anchor: str, stage: str) -> str:
 # ── acceptance_decision replay ────────────────────────────────────────────────
 
 @pytest.mark.parametrize("anchor", [_ANCHOR_AIRLINE, _ANCHOR_7NOW], ids=lambda a: a)
-def test_acceptance_decision_replay(anchor: str) -> None:
+def test_acceptance_decision_replay(anchor: str, monkeypatch) -> None:
     """Replay acceptance_decision: from_json → decide → to_json matches expected."""
+    # These fixtures were recorded pre-Trial-23: the 7now anchor
+    # documents the ``accepted_with_attribution_drift`` keep-the-win path
+    # (see module docstring). Trial 23 W2
+    # (``GSO_TRIAL23_TARGET_HONEST_ACCEPTANCE``, default-ON) demotes an
+    # attribution-drift accept that still carries unresolved target debt
+    # (gs_026 here) to a non-deployable ``rolled_back`` tier — a
+    # deliberate later behavioral change. To replay the documented legacy
+    # anchor byte-stably we isolate that sub-flag off; the airline anchor
+    # (a ``missing_pre_rows`` rollback) is unaffected by W2.
+    monkeypatch.setenv("GSO_TRIAL23_TARGET_HONEST_ACCEPTANCE", "0")
     inp_data = _load_fixture(anchor, "acceptance_decision", "input.json")
     exp_data = _load_fixture(anchor, "acceptance_decision", "expected_output.json")
     if inp_data is None or exp_data is None:

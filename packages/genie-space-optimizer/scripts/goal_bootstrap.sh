@@ -137,10 +137,28 @@ ok "hooks merged"
 info "smoke-testing emit_evidence_for_evaluator.py"
 python3 packages/genie-space-optimizer/scripts/emit_evidence_for_evaluator.py \
   --trial 0 --phase idle \
-  --opt-run-id-dc89d1a9 none --opt-run-id-98ec8950 none \
+  --opt-run-id-airline none --opt-run-id-7now none \
   --next bootstrap_smoke >/dev/null \
   || fail "emit_evidence_for_evaluator.py failed; aborting" 5
 ok "evidence emitter green"
+
+info "tracker-shape self-test (catches '## Trial N — ...' format drift)"
+# --self-test inspects the CANONICAL iteration tracker at
+# docs/architecture/lever-loop-iteration-tracker.md and verifies:
+#   (a) at least one canonical '## Trial N — ' row exists,
+#   (b) no canonical trial id appears more than once,
+#   (c) the latest-row extraction returns non-empty content,
+#   (d) the latest trial row contains a '### Status' sub-section.
+# It also WARNS (non-fatal) if the tracker still references legacy
+# anchor IDs (dc89d1a9 / 98ec8950) instead of the canonical
+# e94376a3 (airline) / d13938e7 (7now). Future tracker drift fails
+# bootstrap loudly here, before /goal can be launched against a
+# malformed tracker.
+if ! python3 packages/genie-space-optimizer/scripts/emit_evidence_for_evaluator.py --self-test 2>&1 \
+       | sed 's/^/    /' >&2; then
+  fail "tracker shape self-test failed; see SELF_TEST_FAIL line above for details" 5
+fi
+ok "tracker shape self-test green"
 
 info "smoke-testing pretrial_gate.sh --hook-mode no-op"
 # In --hook-mode the script reads $CLAUDE_TOOL_INPUT and only runs the

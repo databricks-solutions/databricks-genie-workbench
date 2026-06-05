@@ -30,6 +30,12 @@ from genie_space_optimizer.optimization.prompt_io import LLMOutputContract
 
 _DIAGNOSE_FIELD_CAPS = {
     "rca_kind_label": 200,
+    # Trial 19 B5 — free-text repair-intent label, peer of
+    # ``rca_kind_label``. Stage 3 reads this verbatim to pick a patch
+    # family that realizes the named intent. Default empty string
+    # preserves byte-stable replay for pre-Trial-19 fixtures where the
+    # field is absent.
+    "intended_patch_shape": 200,
     "observed_failure": 1000,
     "generated_sql_issue": 1500,
     "expected_sql_shape": 1500,
@@ -52,6 +58,15 @@ def _truncate_with_ellipsis(text: str, cap: int) -> str:
 class DiagnosisItem(LLMOutputContract):
     qid: str
     rca_kind_label: str = Field(max_length=_DIAGNOSE_FIELD_CAPS["rca_kind_label"])
+    # Trial 19 B5 — repair intent as free-text. Default empty so old
+    # Plan-11 Delta rows (pre-Trial-19) replay byte-stable; new rows
+    # carry the LLM's intended_patch_shape verbatim, consumed by
+    # ``rca_card_builder.intended_patch_shape_for_root_cause`` (B2)
+    # and the Stage 3 prompt (B3).
+    intended_patch_shape: str = Field(
+        default="",
+        max_length=_DIAGNOSE_FIELD_CAPS["intended_patch_shape"],
+    )
     observed_failure: str = Field(max_length=_DIAGNOSE_FIELD_CAPS["observed_failure"])
     generated_sql_issue: str = Field(max_length=_DIAGNOSE_FIELD_CAPS["generated_sql_issue"])
     expected_sql_shape: str = Field(max_length=_DIAGNOSE_FIELD_CAPS["expected_sql_shape"])

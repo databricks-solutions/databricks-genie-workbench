@@ -63,10 +63,10 @@ an anchor tape that triggers proposal acceptance.
 | lever6_invocation_site | 23745 | 23810 | YES | YES |
 | post_lever6_proposal_collect | 23810 | 24450 | YES | YES |
 | proposal_generation_empty_record | 24490 | 24520 | YES | YES |
-| proposal_generation_empty_marker | 24670 | 24695 | YES | YES |
-| proposal_generation_empty_continue | 24690 | 24696 | YES | YES |
-| post_loop_replay_fixture_emit | 32220 | 32270 | YES | YES |
-| post_loop_mlflow_artifact | 32270 | 32300 | YES | YES |
+| proposal_generation_empty_marker | 26214 | 26243 | YES | YES |
+| proposal_generation_empty_continue | 26244 | 26244 | YES | YES |
+| post_loop_replay_fixture_emit | 34196 | 34247 | YES | YES |
+| post_loop_mlflow_artifact | 34249 | 34266 | YES | YES |
 | post_loop_final_summary | 33548 | 33769 | YES | YES |
 <!-- END CANONICAL SITES TABLE -->
 
@@ -286,7 +286,7 @@ produced zero proposals. The record carries the closed-vocabulary
 
 `iteration_no_candidate_marker(terminal_reason=
 "proposal_generation_empty", …)` stdout marker emission block (~lines
-24540-24580). Postmortems grep `GSO_ITERATION_NO_CANDIDATE_V1` to
+26214-26243). Postmortems grep `GSO_ITERATION_NO_CANDIDATE_V1` to
 classify the iteration's terminal state.
 
 * **Bound variables**: `_iter_terminal_emitted`,
@@ -301,11 +301,11 @@ classify the iteration's terminal state.
 
 ### proposal_generation_empty_continue
 
-The `continue` at line 24693 that short-circuits the rest of the iter
+The `continue` at line 26244 that short-circuits the rest of the iter
 body under the airline + 7now anchors. **This is the line that ends
-the reachable iter-body span**; everything downstream (lines
-24694-25600, action_groups stage, admission consume, grounding gate,
-forced synthesis dispatch) is unreachable under both anchor tapes.
+the reachable iter-body span**; everything downstream (the
+action_groups stage, admission consume, grounding gate, forced
+synthesis dispatch) is unreachable under both anchor tapes.
 
 * **Bound variables**: same as `proposal_generation_empty_marker`.
 * **Stages run**: empty-proposal handling complete.
@@ -316,7 +316,7 @@ forced synthesis dispatch) is unreachable under both anchor tapes.
 
 ### post_loop_replay_fixture_emit
 
-Phase A replay-fixture stderr emission block (lines ~32100-32160).
+Phase A replay-fixture stderr emission block (lines ~34196-34247).
 Under `GSO_REPLAY_FIXTURE_DUAL_EMIT` (default-ON from Phase 5 WU-5),
 this calls `emit_dual_fixture` to write both plain-JSON and base64
 marker pairs.
@@ -332,7 +332,7 @@ marker pairs.
 
 ### post_loop_mlflow_artifact
 
-MLflow artifact upload block (lines ~32165-32220). Best-effort log
+MLflow artifact upload block (lines ~34249-34266). Best-effort log
 of the replay fixture as an MLflow artifact when an active run is
 attached; silently no-ops otherwise.
 
@@ -362,7 +362,7 @@ audit refreshed 2026-05-19 against airline + 7now anchor tapes.)
 
 The following sites are syntactically present in `_run_lever_loop`
 but **never execute** under either anchor tape because the
-`proposal_generation_empty_continue` at line 24693 short-circuits
+`proposal_generation_empty_continue` at line 26244 short-circuits
 the iter body. They are listed here so future plans know they exist
 and so plans wanting to target them know they need a fundamentally
 different anchor (one where lever-6 produces an accepted proposal

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import inspect
+from _harness_loop_source import lever_loop_source
 
-from genie_space_optimizer.optimization import harness, control_plane
+from genie_space_optimizer.optimization import control_plane
 
 
 def test_select_control_plane_baseline_rows_exists() -> None:
@@ -12,7 +12,7 @@ def test_select_control_plane_baseline_rows_exists() -> None:
 
 
 def test_harness_uses_select_control_plane_baseline_rows() -> None:
-    src = inspect.getsource(harness._run_lever_loop)
+    src = lever_loop_source()
     assert "select_control_plane_baseline_rows" in src
 
 

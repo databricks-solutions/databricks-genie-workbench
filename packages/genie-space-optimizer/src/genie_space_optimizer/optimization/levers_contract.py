@@ -89,6 +89,9 @@ LEVER_TO_PATCH_TYPES: dict[str, frozenset[PatchType]] = {
         PatchType.ADD_EXAMPLE_SQL,
         PatchType.UPDATE_EXAMPLE_SQL,
         PatchType.REMOVE_EXAMPLE_SQL,
+        # Phase 2 P2.4 — negative example SQL belongs to the same
+        # lever family (5b) because it occupies the same Genie slot.
+        PatchType.ADD_EXAMPLE_SQL_NEGATIVE,
     }),
     "lever-6": frozenset({
         PatchType.ADD_SQL_SNIPPET_EXPRESSION,

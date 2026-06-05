@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import inspect
-
-from genie_space_optimizer.optimization import harness
+from _harness_loop_source import lever_loop_source
 
 
 def test_harness_audits_rca_theme_shape_drops() -> None:
-    src = inspect.getsource(harness._run_lever_loop)
+    src = lever_loop_source()
     shape_idx = src.index("RCA COLUMN SHAPE NORMALIZATION")
     window = src[shape_idx: shape_idx + 1800]
     assert "rca_theme_shape_dropped" in window

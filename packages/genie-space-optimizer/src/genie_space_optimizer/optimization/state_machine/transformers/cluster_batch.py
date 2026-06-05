@@ -34,12 +34,21 @@ class Stage2BatchMember:
 class Stage2BatchInput:
     members: tuple[Stage2BatchMember, ...]
     forbidden_signatures: tuple[str, ...]
+    # Trial 18 Step 3 — sibling channel to ``forbidden_signatures``.
+    # Stage 2 / Stage 3 LLM prompts MUST treat these as "do not
+    # re-propose this (lever, patch_type, rca_kind, behavior) shape
+    # alone — reinforce or pivot" — distinct from
+    # ``forbidden_signatures`` which carries hard-rejection shapes.
+    # Defaults to empty tuple so existing callers / test fixtures
+    # don't need updating.
+    insufficient_repair_signatures: tuple[str, ...] = ()
 
 
 def build_stage2_batch_input(
     states: tuple[QuestionStateInIteration, ...],
     *,
     forbidden_signatures: tuple[str, ...],
+    insufficient_repair_signatures: tuple[str, ...] = (),
 ) -> Stage2BatchInput:
     """Project DIAGNOSED states into Stage 2 LLM batch input."""
     members = tuple(
@@ -52,7 +61,11 @@ def build_stage2_batch_input(
         for s in states
         if s.diagnosed is not None
     )
-    return Stage2BatchInput(members=members, forbidden_signatures=forbidden_signatures)
+    return Stage2BatchInput(
+        members=members,
+        forbidden_signatures=forbidden_signatures,
+        insufficient_repair_signatures=insufficient_repair_signatures,
+    )
 
 
 # ─── BatchTransformer assembly ─────────────────────────────────────────
@@ -102,6 +115,14 @@ def _state_to_per_qid_diagnosis(state: QuestionStateInIteration):
         blame_set=(),
         evidence_summary=d.evidence_summary,
         confidence=d.confidence,
+        # Trial 19 B5 — propagate the LLM-emitted repair intent into
+        # the Stage 2 input so the cluster builder + Stage 3 prompt see
+        # it verbatim. ``getattr`` keeps replays of pre-Trial-19
+        # ``DiagnosisRecord`` rows byte-stable (the default empty
+        # string is preserved).
+        intended_patch_shape=str(
+            getattr(d, "intended_patch_shape", "") or ""
+        ),
     )
 
 
@@ -229,6 +250,12 @@ def _invoke_stage2_llm(
         namespace="hard",
         w=ctx.w,
         forbidden_signatures=tuple(ctx.forbidden_signatures),
+        # Trial 18 Step 3 — propagate the sibling channel down to the
+        # Stage 2 LLM prompt so it can route the typed signal to
+        # Stage 3 alongside the existing forbidden_signatures channel.
+        insufficient_repair_signatures=tuple(
+            getattr(ctx, "insufficient_repair_signatures", ()) or (),
+        ),
     )
     if not clusters:
         return _ClusterResponse(
@@ -269,7 +296,11 @@ class _Plan11Stage2BatchTransformer:
         ctx: TransformerContext,
     ) -> tuple[QuestionStateInIteration, ...]:
         batch_input = build_stage2_batch_input(
-            states, forbidden_signatures=ctx.forbidden_signatures,
+            states,
+            forbidden_signatures=ctx.forbidden_signatures,
+            insufficient_repair_signatures=getattr(
+                ctx, "insufficient_repair_signatures", (),
+            ) or (),
         )
         response = _invoke_stage2_llm(batch_input, ctx, states)
         now_ms = int(time.time() * 1000)

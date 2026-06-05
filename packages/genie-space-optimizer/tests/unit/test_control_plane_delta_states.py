@@ -284,6 +284,11 @@ def test_lookup_failed_routes_to_target_resolution_failed_when_strict_on(
     flag is unchanged — only the reason code is upgraded.
     """
     monkeypatch.setenv("GSO_TARGET_DELTA_STRICT", "1")
+    # Isolate the typed target-resolution-failed rollback from the later
+    # attribution-drift-with-debt tier (Plan 9 T11.C, default-on), which
+    # would re-accept this high-gain candidate as accepted_with_attribution_
+    # drift_and_debt before the rollback reason is observable.
+    monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "0")
     from genie_space_optimizer.optimization.control_plane import (
         decide_control_plane_acceptance,
     )
@@ -306,6 +311,10 @@ def test_lookup_failed_falls_back_to_legacy_reason_when_strict_off(
     byte-stability on pre-T0 fixtures).
     """
     monkeypatch.setenv("GSO_TARGET_DELTA_STRICT", "0")
+    # Pin the legacy missing_pre_rows path in isolation from the later
+    # attribution-drift-with-debt tier (Plan 9 T11.C, default-on), which
+    # would otherwise re-accept this high-gain candidate.
+    monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "0")
     from genie_space_optimizer.optimization.control_plane import (
         decide_control_plane_acceptance,
     )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from _harness_loop_source import lever_loop_source
+
 from genie_space_optimizer.optimization.patch_applyability import (
     PatchApplyabilityDecision,
     check_patch_applyability,
@@ -164,11 +166,7 @@ def test_filter_applyable_patches_splits_kept_and_dropped() -> None:
 
 
 def test_harness_filters_applyable_patches_before_patch_cap() -> None:
-    import inspect
-
-    from genie_space_optimizer.optimization import harness
-
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
     filter_idx = source.index("filter_applyable_patches(")
     cap_idx = source.index("select_target_aware_causal_patch_cap(")
     # Plan v3 wrapped the legacy apply_patch_set callsite in an if/else

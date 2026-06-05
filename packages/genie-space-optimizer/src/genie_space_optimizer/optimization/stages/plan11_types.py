@@ -26,6 +26,12 @@ class PerQidDiagnosis(JsonRoundTrip):
     blame_set: tuple[str, ...]
     evidence_summary: str
     confidence: Literal["high", "medium", "low"]
+    # Trial 19 B5 — free-text repair-intent label emitted by Stage 1.
+    # Default empty string for back-compat with pre-Trial-19 Delta rows
+    # so ``from_json`` is byte-stable on old payloads. Consumed by the
+    # Stage 3 prompt and ``rca_card_builder.intended_patch_shape_for_
+    # root_cause`` (B2) as the authoritative repair-intent label.
+    intended_patch_shape: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -37,6 +43,8 @@ class PerQidDiagnosis(JsonRoundTrip):
             "blame_set": list(self.blame_set),
             "evidence_summary": self.evidence_summary,
             "confidence": self.confidence,
+            # Trial 19 B5 — round-trip the LLM-emitted intent.
+            "intended_patch_shape": self.intended_patch_shape,
         }
 
     @classmethod
@@ -50,6 +58,8 @@ class PerQidDiagnosis(JsonRoundTrip):
             blame_set=tuple(str(b) for b in payload.get("blame_set", [])),
             evidence_summary=str(payload.get("evidence_summary", "")),
             confidence=payload.get("confidence", "low"),  # type: ignore[arg-type]
+            # Trial 19 B5 — empty default keeps pre-Trial-19 rows valid.
+            intended_patch_shape=str(payload.get("intended_patch_shape", "")),
         )
 
 
@@ -62,6 +72,12 @@ class FailureCluster(JsonRoundTrip):
     repair_hypothesis: str
     primary_blame_set: tuple[str, ...]
     confidence: Literal["high", "medium", "low"]
+    # Trial 23 W4 — the closed-enum RCA label Stage 1's diagnosis emitted
+    # (``PerQidDiagnosis.rca_kind_label``). Threaded onto the Stage 3
+    # cluster so the KIT_FOR_RCA validator and the W4 RCA-to-mechanism
+    # router have the RCA kind to route on. Empty default keeps every
+    # pre-Trial-23 caller and replay fixture byte-stable.
+    root_cause: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -72,6 +88,7 @@ class FailureCluster(JsonRoundTrip):
             "repair_hypothesis": self.repair_hypothesis,
             "primary_blame_set": list(self.primary_blame_set),
             "confidence": self.confidence,
+            "root_cause": self.root_cause,
         }
 
     @classmethod
@@ -86,6 +103,7 @@ class FailureCluster(JsonRoundTrip):
                 str(b) for b in payload.get("primary_blame_set", [])
             ),
             confidence=payload.get("confidence", "low"),  # type: ignore[arg-type]
+            root_cause=str(payload.get("root_cause", "")),
         )
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from _harness_loop_source import lever_loop_source
+
 
 def test_snapshot_digest_ignores_runtime_private_keys() -> None:
     from genie_space_optimizer.optimization.snapshot_contract import snapshot_digest
@@ -110,7 +112,7 @@ def test_harness_captures_pre_ag_snapshot_before_apply() -> None:
 
     from genie_space_optimizer.optimization import harness
 
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
 
     capture_idx = source.index("capture_pre_ag_snapshot(")
     apply_idx = source.index("        apply_log = apply_patch_set(")
@@ -140,7 +142,7 @@ def test_harness_warns_when_run_level_config_snapshot_is_missing() -> None:
 
     from genie_space_optimizer.optimization import harness
 
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
     assert "RUN-LEVEL CONFIG SNAPSHOT MISSING" in source
     assert "should have been captured at trigger time" in source
     assert "capture_pre_ag_snapshot(" in source

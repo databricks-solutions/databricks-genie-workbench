@@ -4,9 +4,18 @@ ORIGINAL broad patch, so the retest at
 ``harness.py:25813-25828`` evaluates the narrowed predicate against
 fresh dependency data — not the same stamps that already failed.
 
-Bug anchor: ``cluster_driven_synthesis.py:~1511-1523`` returns
-``{**original_patch, "where_predicate": narrowed, ...}`` which
-carries forward ``high_collateral_risk: True`` and
+The collateral-RISK stamps (``high_collateral_risk``,
+``high_collateral_risk_flagged``, ``passing_dependents_outside_target``)
+are dropped entirely. ``passing_dependents`` is RE-STAMPED to a fresh
+empty list: the narrowed predicate is ``query_id``-scoped to the target
+QID(s), so it has no passing dependents outside target. Under Trial 20
+E2 (``GSO_TRIAL20_BLAST_RADIUS_MANDATORY``, default-on) leaving the
+field absent would trip ``passing_dependents_missing`` and kill the
+recovery path, so the fresh empty stamp is load-bearing.
+
+Bug anchor: ``cluster_driven_synthesis.py:~1511-1523`` previously
+returned ``{**original_patch, "where_predicate": narrowed, ...}`` which
+carried forward ``high_collateral_risk: True`` and
 ``passing_dependents: [...]`` unchanged. Stamps the retest reads:
 ``proposal_grounding.py:556, 562``.
 """
@@ -72,11 +81,15 @@ def test_replacement_drops_passing_dependents_stamp():
         ag_target_qids=("airline_gs_023",),
         root_cause="missing_filter_dimension",
     )
-    assert "passing_dependents" not in replacement, (
-        "Stale 'passing_dependents' stamp leaked through; "
-        "patch_blast_radius_is_safe reads this field directly and "
-        "will reject the narrowed candidate on the same grounds as "
-        "the original."
+    # The STALE broad list must be gone; the builder re-stamps a FRESH
+    # empty ``passing_dependents`` (query_id-scoped ⇒ no outside
+    # dependents) so Trial 20 E2's mandatory-stamp gate evaluates the
+    # narrowed candidate as safe instead of rejecting
+    # ``passing_dependents_missing``. ``patch_blast_radius_is_safe``
+    # reads this field directly.
+    assert replacement.get("passing_dependents", []) == [], (
+        f"Expected a fresh empty 'passing_dependents', not the broad "
+        f"patch's stale list. Got: {replacement.get('passing_dependents')!r}"
     )
 
 
@@ -114,10 +127,16 @@ def test_replacement_keeps_payload_fields():
 def test_replacement_passes_blast_radius_when_only_stale_stamps_failed_it():
     """End-to-end behavioral check: a replacement that previously
     failed BLAST_RADIUS only because of carried-forward stamps must
-    pass when the stamps are stripped.
+    pass when the stamps are stripped and re-evaluated against fresh
+    dependency data.
 
-    ``patch_blast_radius_is_safe`` reads ``passing_dependents``; when
-    the key is absent it returns ``{"safe": True, ...}``."""
+    The builder strips the STALE ``passing_dependents`` and re-stamps a
+    FRESH empty list (the narrowed predicate targets only
+    ``airline_gs_023``, so its footprint has no passing dependents
+    outside target). Under Trial 20 E2 (default-on) a *missing* stamp is
+    treated as a plumbing regression and fails closed; the fresh empty
+    stamp is what makes the gate return safe.
+    """
     from genie_space_optimizer.optimization.proposal_grounding import (
         patch_blast_radius_is_safe,
     )
@@ -126,6 +145,9 @@ def test_replacement_passes_blast_radius_when_only_stale_stamps_failed_it():
         ag_target_qids=("airline_gs_023",),
         root_cause="missing_filter_dimension",
     )
+    # The stale broad list is gone; the builder re-stamped a fresh
+    # empty footprint, so the gate runs directly on the replacement.
+    assert replacement.get("passing_dependents", []) == []
     verdict = patch_blast_radius_is_safe(
         replacement,
         ag_target_qids=("airline_gs_023",),
@@ -134,7 +156,7 @@ def test_replacement_passes_blast_radius_when_only_stale_stamps_failed_it():
     )
     assert verdict["safe"] is True, (
         f"Narrowed replacement must pass blast-radius after the "
-        f"strip. Got verdict={verdict!r}"
+        f"strip + fresh re-stamp. Got verdict={verdict!r}"
     )
 
 

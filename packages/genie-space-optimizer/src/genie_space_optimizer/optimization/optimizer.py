@@ -66,6 +66,12 @@ def run_state_machine_iteration_and_persist(
     run_root,
     workspace_client=None,
     forbidden_signatures: tuple[str, ...] = (),
+    # Trial 18 Step 3 — sibling channel to ``forbidden_signatures`` for
+    # ``insufficient_repair_signature`` strings emitted by the
+    # ``KEPT_INSUFFICIENT`` lane in ``acceptance_gate``. Plumbed into
+    # ``TransformerContext.insufficient_repair_signatures``. Default
+    # empty tuple keeps the long tail of test callsites untouched.
+    insufficient_repair_signatures: tuple[str, ...] = (),
     space_id: str = "",
     metadata_snapshot=None,
     # Trial 15 — SM evaluator boundary contract. The legacy harness lane
@@ -87,6 +93,16 @@ def run_state_machine_iteration_and_persist(
     # invariant test in D1 can exercise the function without needing a
     # live evaluation backend.
     extras: dict | None = None,
+    # Trial 20 Workstream E1 — plumb the legacy harness lane's
+    # counterfactual-scan inputs into the SM lane. The synthesize_llm
+    # transformer uses these to stamp ``passing_dependents`` on each
+    # typed proposal's patch_body at creation time. All default to
+    # empty so pre-Trial-20 callsites (tests, devtools) remain
+    # byte-stable; with empty benchmarks the stamping path is a
+    # no-op and the legacy safe-by-default fallback applies.
+    benchmarks: tuple | None = None,
+    ag_target_qids: tuple[str, ...] = (),
+    prev_failure_qids: tuple[str, ...] = (),
 ):
     """Plan v3 PR 2.5 — run one iteration of the production state machine
     and persist trajectories.
@@ -227,6 +243,7 @@ def run_state_machine_iteration_and_persist(
             iteration, run_id, {"workspace_client": workspace_client},
         ),
         "forbidden_signatures": forbidden_signatures,
+        "insufficient_repair_signatures": insufficient_repair_signatures,
         "extras": _extras_seed,
         "baseline_eval_rows": _baseline_eval_rows,
         "w": workspace_client,
@@ -286,10 +303,35 @@ def run_state_machine_iteration_and_persist(
     if baseline_eval is not None:
         _ctx_kwargs["baseline_eval"] = baseline_eval
 
+    # Trial 20 E1 — counterfactual scanner inputs. Tuple-ify so
+    # ``TransformerContext`` (frozen, slots=True) accepts the values.
+    if benchmarks:
+        _ctx_kwargs["benchmarks"] = tuple(benchmarks)
+    if ag_target_qids:
+        _ctx_kwargs["ag_target_qids"] = tuple(
+            str(q) for q in ag_target_qids
+        )
+    if prev_failure_qids:
+        _ctx_kwargs["prev_failure_qids"] = tuple(
+            str(q) for q in prev_failure_qids
+        )
+
     ctx = TransformerContext(**_ctx_kwargs)
 
     sm = build_production_state_machine()
     final_states = sm.run_iteration(initial_states, ctx)
+
+    # Trial 22 W3 — surface the slate compiler's drop summary (stashed
+    # on ctx.extras by the synthesize_llm transformer) back to the
+    # caller's ``extras`` dict so the harness can persist it onto the
+    # durable iteration_candidate_ledger row for this iteration.
+    try:
+        if isinstance(extras, dict):
+            _t22_summary = _extras_seed.get("_t22_compiler_drop_summary")
+            if _t22_summary:
+                extras["_t22_compiler_drop_summary"] = _t22_summary
+    except Exception:
+        pass
 
     for s in final_states:
         write_qstate(run_root=run_root, state=s)
@@ -649,6 +691,7 @@ def _traced_llm_call(
     response_validator: Callable[[str], Any] | None = None,
     response_format: dict[str, Any] | None = None,
     response_model: type | None = None,
+    cacheable_user_blocks: tuple[str, ...] = (),
 ) -> tuple[str, Any]:
     """Execute an LLM call via the OpenAI SDK with automatic MLflow tracing.
 
@@ -758,10 +801,24 @@ def _traced_llm_call(
 
         for attempt in range(max_retries):
             try:
-                messages: list[dict[str, str]] = []
-                if system_msg and system_msg.strip():
-                    messages.append({"role": "system", "content": system_msg})
-                messages.append({"role": "user", "content": prompt})
+                # Phase 0 P0.5 — when the caller passes
+                # ``cacheable_user_blocks``, build the messages with
+                # Anthropic cache_control markers. Otherwise emit the
+                # legacy single-content-string shape.
+                if cacheable_user_blocks:
+                    from genie_space_optimizer.optimization.llm_prompt_cache import (
+                        build_cached_messages,
+                    )
+                    messages: list[dict[str, Any]] = build_cached_messages(
+                        system_text=system_msg if (system_msg and system_msg.strip()) else "",
+                        cacheable_user_blocks=cacheable_user_blocks,
+                        dynamic_user_text=prompt,
+                    )
+                else:
+                    messages = []
+                    if system_msg and system_msg.strip():
+                        messages.append({"role": "system", "content": system_msg})
+                    messages.append({"role": "user", "content": prompt})
                 call_kwargs: dict[str, Any] = {
                     "model": LLM_ENDPOINT,
                     "messages": messages,
@@ -893,12 +950,32 @@ def _traced_llm_call(
                 break
             except Exception as exc:
                 last_err = exc
+                # Phase 0 P0.3 — rate-limit-aware backoff. ``is_rate_limit_error``
+                # detects RateLimitError / REQUEST_LIMIT_EXCEEDED / HTTP 429
+                # textually so we don't have to import the openai SDK class
+                # here. ``compute_rate_limit_backoff_seconds`` honors
+                # ``Retry-After`` when the server sends one and adds
+                # 0..2s jitter on top of an exponential floor.
+                from genie_space_optimizer.optimization.llm_rate_limit import (
+                    compute_rate_limit_backoff_seconds,
+                    is_rate_limit_error,
+                )
+                _is_429 = is_rate_limit_error(exc)
                 span.add_event(SpanEvent(
                     name=f"retry_attempt_{attempt + 1}",
-                    attributes={"error": str(exc)[:500]},
+                    attributes={
+                        "error": str(exc)[:500],
+                        "rate_limited": _is_429,
+                    },
                 ))
                 if attempt < max_retries - 1:
-                    time.sleep(2**attempt)
+                    if _is_429:
+                        sleep_for = compute_rate_limit_backoff_seconds(
+                            exc, attempt=attempt,
+                        )
+                    else:
+                        sleep_for = float(2 ** attempt)
+                    time.sleep(sleep_for)
 
         span.set_outputs({
             "error": str(last_err)[:500] if last_err else "unknown",

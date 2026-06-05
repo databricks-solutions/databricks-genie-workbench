@@ -10,6 +10,7 @@ from genie_space_optimizer.optimization.state_machine.records import (
     AppliedRecord,
     EvaluatedRecord,
     HardQidSeenRecord,
+    ProposalAttempt,
     StageTransition,
     TerminalRecord,
 )
@@ -108,4 +109,51 @@ def test_invariant_violation_overrides_when_set():
     s = _make_state_at("gs_009", FunnelStage.PROPOSED)
     traj = build_trajectory(qid="gs_009", iterations=(s,))
     # current_stage != ACCEPTED and != TERMINATED → SM1 invariant violation
+    assert classify_run_outcome((traj,)) == "OPTIMIZER_INVARIANT_VIOLATION"
+
+
+def test_blast_radius_rejected_proposed_is_settled_not_invariant_violation():
+    # d139 postmortem: a blast-radius rejection cycles the QID back to
+    # PROPOSED. When no narrower candidate materializes that iteration,
+    # the QID legitimately ends in PROPOSED with a deliberate
+    # blast_radius_rejected attempt. That is a settled no-candidate
+    # outcome, NOT an SM1 invariant breakage.
+    s = _make_state_at(
+        "gs_009",
+        FunnelStage.PROPOSED,
+        proposals=(
+            ProposalAttempt(
+                attempt_index=0,
+                intent_id="i1",
+                patch_type="add_column_description",
+                deepest_stage_in_attempt=FunnelStage.APPLYABLE,
+                outcome="blast_radius_rejected",
+                outcome_reason="reason=high_collateral_risk_flagged",
+            ),
+        ),
+    )
+    traj = build_trajectory(qid="gs_009", iterations=(s,))
+    outcome = classify_run_outcome((traj,))
+    assert outcome != "OPTIMIZER_INVARIANT_VIOLATION"
+    assert outcome == "OPTIMIZER_STALLED_NO_APPLIED_PATCHES"
+
+
+def test_proposed_without_gate_rejection_still_invariant_violation():
+    # A PROPOSED state with NO deliberate gate-rejection attempt is a
+    # genuine stuck state and must still trip SM1.
+    s = _make_state_at(
+        "gs_009",
+        FunnelStage.PROPOSED,
+        proposals=(
+            ProposalAttempt(
+                attempt_index=0,
+                intent_id="i1",
+                patch_type="add_sql_snippet_filter",
+                deepest_stage_in_attempt=FunnelStage.PROPOSED,
+                outcome="proposed",
+                outcome_reason="",
+            ),
+        ),
+    )
+    traj = build_trajectory(qid="gs_009", iterations=(s,))
     assert classify_run_outcome((traj,)) == "OPTIMIZER_INVARIANT_VIOLATION"

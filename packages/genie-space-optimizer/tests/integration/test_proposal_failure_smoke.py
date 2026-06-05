@@ -139,12 +139,27 @@ def test_smoke_coverage_invariant_central_finalize_wiring(
         ],
     }
 
+    # I25 (observability consistency, default-on strict) compares
+    # ``phase_b_end_total_recorded`` (= len(decision_records)) against the
+    # journey-derived ``journey_records_count`` (= len(journey_events)).
+    # This smoke test exercises the proposal-failure coverage invariant,
+    # not phase_b accounting, but the hand-built ``decision_records`` above
+    # populates the recorded side, so the journey ledger must carry a
+    # matching entry or I25 trips ``recorded=1 vs source=0``. Stock one
+    # journey record per decision record so recorded==source (the runtime
+    # derivers are correct; this only mirrors what a real iteration would
+    # have stashed).
+    journey_events: list[dict] = [
+        {"event": "phase_b_end_recorded", "iteration": 7}
+        for _ in iter_inputs["decision_records"]
+    ]
+
     _finalize_iteration_summary(
         iter_traces=iter_traces,
         iter_summaries=iter_summaries,
         iteration=7,
         current_iter_inputs=iter_inputs,
-        journey_events=[],
+        journey_events=journey_events,
         journey_report=None,
         accepted_count=0,
         rolled_back_count=0,
@@ -192,12 +207,21 @@ def test_smoke_coverage_invariant_central_finalize_noop_on_completed(
         ],
     }
 
+    # See the wiring test above: stock one journey record per decision
+    # record so I25's phase_b_end_total check (recorded == journey source)
+    # stays green while this test exercises the coverage invariant's
+    # no-op-on-completed gate.
+    journey_events: list[dict] = [
+        {"event": "phase_b_end_recorded", "iteration": 1}
+        for _ in iter_inputs["decision_records"]
+    ]
+
     _finalize_iteration_summary(
         iter_traces=iter_traces,
         iter_summaries=iter_summaries,
         iteration=1,
         current_iter_inputs=iter_inputs,
-        journey_events=[],
+        journey_events=journey_events,
         journey_report=None,
         accepted_count=0,
         rolled_back_count=0,

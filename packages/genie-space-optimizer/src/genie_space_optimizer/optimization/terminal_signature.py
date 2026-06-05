@@ -25,8 +25,9 @@ reflection_buffer entry, and Task 14's structural-repair gate reads
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Iterable, NamedTuple, Sequence
+from typing import Iterable, Sequence
 
 from genie_space_optimizer.optimization.terminal_reason import TerminalReason
 
@@ -61,8 +62,16 @@ def normalize_signature_str(value: object) -> str:
     return str(value).strip().lower()
 
 
-class TerminalSignature(NamedTuple):
-    """Cluster-level retry key. Field order is LOCKED by spec
+@dataclass(frozen=True, slots=True)
+class TerminalSignature:
+    """Cluster-level retry key.
+
+    Phase 2 P2.5 — promoted from ``NamedTuple`` to a frozen dataclass
+    so we can extend the carrier with optional lever-kit fields
+    (``prior_lever_set`` / ``prior_patch_family``) without invalidating
+    pre-P2.5 callers that pass the original 5 positional fields. The
+    dataclass is still hashable (``frozen=True`` makes it so) and the
+    field positions for the first 5 fields are LOCKED by spec
     Section 4.2 — do not reorder.
 
     Fields (all hashable):
@@ -80,12 +89,30 @@ class TerminalSignature(NamedTuple):
         terminal_reason: The ``TerminalReason.value`` string that
             caused the terminate. Stored as ``str`` (not enum) for
             JSON-roundtrip stability.
+        prior_lever_set: Phase 2 P2.5 — frozen set of lever_id
+            strings (``"lever-1"`` .. ``"lever-6"``) the acceptance
+            gate observed on the proposal that triggered this
+            terminal. Distinct from ``lever_set`` (which carries
+            int indices from the AG-emit stage) — this captures the
+            EXACT kit composition the LLM emitted, including
+            multi-lever bundles. Empty frozenset for pre-P2.5
+            signatures.
+        prior_patch_family: Phase 2 P2.5 — the patch_family string
+            (e.g. ``"add_example_sql"`` / ``"add_sql_snippet_filter"``)
+            of the patch that triggered this terminal. Populated at
+            the acceptance gate so downstream pivot-decision helpers
+            do not have to re-derive it from ``insufficient_repair_signature``.
+            Empty string for pre-P2.5 signatures.
     """
     root_cause: str
     blame_set_norm: tuple[str, ...]
     lever_set: frozenset[int]
     target_qids: frozenset[str]
     terminal_reason: str
+    # Phase 2 P2.5 — kit-aware extensions. Defaults preserve byte-
+    # stable construction at every pre-P2.5 callsite.
+    prior_lever_set: frozenset[str] = field(default_factory=frozenset)
+    prior_patch_family: str = ""
 
 
 def build_terminal_signature(
@@ -95,14 +122,26 @@ def build_terminal_signature(
     lever_set: object,
     target_qids: object,
     terminal_reason: "TerminalReason | str",
+    prior_lever_set: object = None,
+    prior_patch_family: object = "",
 ) -> TerminalSignature:
     """Constructor with normalization. All callers MUST use this
-    instead of the raw NamedTuple constructor (spec Section 4.3).
+    instead of the raw dataclass constructor (spec Section 4.3).
 
     Sorts ``blame_set`` ascending into a tuple, freezes
     ``lever_set`` and ``target_qids``, normalizes ``root_cause`` to
     lowercase-stripped form, and stores ``terminal_reason`` as the
     enum's ``.value`` string.
+
+    Phase 2 P2.5 — accepts the new lever-kit aware extensions:
+      * ``prior_lever_set`` — iterable of lever_id strings the
+        acceptance gate observed on the proposal; normalized to a
+        frozen set of stripped non-empty strings.
+      * ``prior_patch_family`` — patch_family string (e.g.
+        ``"add_example_sql"``); normalized via strip + lowercase
+        with empty default for back-compat.
+    Both default to "empty" — pre-P2.5 callsites continue to work
+    without modification.
     """
     blame_iter: Iterable[object] = blame_set or ()
     blame_sorted = tuple(sorted(
@@ -117,12 +156,19 @@ def build_terminal_signature(
     else:
         # Validate that the string is in the closed vocabulary.
         tr_value = TerminalReason(str(terminal_reason)).value
+    prior_lever_iter: Iterable[object] = prior_lever_set or ()
+    prior_levers = frozenset(
+        str(L).strip() for L in prior_lever_iter if str(L).strip()
+    )
+    prior_family = normalize_signature_str(prior_patch_family)
     return TerminalSignature(
         root_cause=normalize_signature_str(root_cause),
         blame_set_norm=blame_sorted,
         lever_set=levers,
         target_qids=qids,
         terminal_reason=tr_value,
+        prior_lever_set=prior_levers,
+        prior_patch_family=prior_family,
     )
 
 
@@ -216,6 +262,10 @@ def to_jsonable(sig: TerminalSignature) -> dict:
         "lever_set": sorted(sig.lever_set),
         "target_qids": sorted(sig.target_qids),
         "terminal_reason": sig.terminal_reason,
+        # Phase 2 P2.5 — kit-aware extensions roundtrip as sorted
+        # lists / plain strings.
+        "prior_lever_set": sorted(sig.prior_lever_set),
+        "prior_patch_family": sig.prior_patch_family,
     }
 
 
@@ -230,6 +280,11 @@ def from_jsonable(d: dict) -> TerminalSignature:
             str(q) for q in (d.get("target_qids") or ())
         ),
         terminal_reason=str(d.get("terminal_reason") or ""),
+        # Phase 2 P2.5 — defaults to empty for pre-P2.5 ledger rows.
+        prior_lever_set=frozenset(
+            str(L) for L in (d.get("prior_lever_set") or ())
+        ),
+        prior_patch_family=str(d.get("prior_patch_family") or ""),
     )
 
 

@@ -1340,6 +1340,63 @@ def gso_invariant_violation_marker(
     )
 
 
+def lifecycle_contradiction_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    violations: Sequence[Mapping[str, Any]],
+) -> str:
+    """Track A / A2 — single-shape stdout marker emitted when the I26
+    cross-surface reconciler trips on an accepted iteration.
+
+    Carries every I26 violation dict so a postmortem can see exactly
+    which terminate surface disagreed (decision_trace vs scoreboard vs
+    selected_proposal vs patches_applied vs journey terminal_state).
+    Consumers parse the line via the canonical ``GSO_<NAME>_V1 <json>``
+    regex.
+
+    Anchor:
+    docs/runid_analysis/e94376a3-d8a6-4570-a605-9fe231e5f99c/postmortem.md
+    """
+    return marker_line(
+        "GSO_LIFECYCLE_CONTRADICTION_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "violations": [dict(v) for v in (violations or ())],
+        },
+    )
+
+
+def applied_but_inert_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    rca_kind: str,
+    target_qid: str,
+    observed_mechanisms: Sequence[str],
+) -> str:
+    """Track B / B2 — observability marker for an applied-but-inert patch.
+
+    Emitted when the post-apply inertness detector finds an applied lone
+    natural-language instruction left the generated SQL shape unchanged
+    for a SQL-shape RCA (the d139 / e943 phantom accept). Carries the RCA
+    kind, the target QID, and the inert mechanisms so a postmortem can
+    see exactly which patch was behaviorally inert. Consumers parse the
+    line via the canonical ``GSO_<NAME>_V1 <json>`` regex.
+    """
+    return marker_line(
+        "GSO_APPLIED_BUT_INERT_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "rca_kind": str(rca_kind or ""),
+            "target_qid": str(target_qid or ""),
+            "observed_mechanisms": [str(m) for m in (observed_mechanisms or ())],
+        },
+    )
+
+
 def llm_contract_failure_marker(
     *,
     schema_name: str,
@@ -2437,6 +2494,104 @@ def plan12_ag_pivot_decided_marker(
             "recommended_patch_family": str(recommended_patch_family),
             "pivot_recommended": bool(pivot_recommended),
             "pivot_applied": bool(pivot_applied),
+        },
+    )
+
+
+def plan12_pivot_skipped_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    reason: str,
+) -> str:
+    """Trial 18 Step 5 — typed pivot-skipped observability marker.
+
+    Sibling of :func:`plan12_ag_pivot_decided_marker`. Emitted by the
+    harness when a pivoted AG never reached the lever loop (e.g. an
+    earlier AG terminated and ordering forced the buffered pivot to
+    be discarded). The DECIDED marker for the same AG-id remains the
+    planning-time record; the SKIPPED marker tells postmortems "...
+    but the AG never executed". Join by ``(run_id, iteration, ag_id)``.
+
+    Fields:
+
+      * ``ag_id`` — the AG that was pivoted but never consumed.
+      * ``cluster_id`` — the AG's primary source cluster for cross-
+        marker joins with DECIDED rows.
+      * ``reason`` — typed, today only
+        ``pivot_skipped_due_to_abort_ordering``.
+
+    Postmortem rule (see ``ACCEPTANCE_KEPT_INSUFFICIENT_REPEATED`` and
+    the new ``PLAN12_PIVOT_SKIPPED_BY_ABORT_ORDERING`` guardrail in
+    ``gso-postmortem`` skill): a DECIDED row with
+    ``pivot_applied=True`` and a matching SKIPPED row in the same
+    iteration must NOT be counted as tested pivot evidence.
+    """
+    return marker_line(
+        "GSO_PLAN12_PIVOT_SKIPPED_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "cluster_id": str(cluster_id),
+            "reason": str(reason),
+        },
+    )
+
+
+def insufficient_signatures_in_context_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    stage: str,
+    count: int,
+    qid_rca_pairs: tuple[str, ...] = (),
+) -> str:
+    """Trial 19 A5 — audit marker proving the Trial-18 typed sibling
+    channel reaches the Stage 2 / Stage 3 LLM prompts.
+
+    Emitted at the LLM-call boundary by ``cluster_plan11`` (Stage 2)
+    and ``synthesize`` (Stage 3) whenever they hand a non-empty
+    ``insufficient_repair_signatures`` tuple to their reasoning
+    request. Trial 18 plumbing landed the tuple through the harness
+    and into the user prompt, but the postmortem evidence showed the
+    LLM never reacted — the canary 1:1 join below catches that exact
+    plumbing-vs-consumer regression.
+
+    Trial 18 plumbed the signal end-to-end; Trial 19 makes the
+    consumers (the prompts at A4) react. The marker is the lever the
+    postmortem grading script joins on:
+
+      * If the harness's ``_sm_insufficient_repair_signatures`` set is
+        non-empty for a given iteration but this marker's ``count`` is
+        0, the plumbing regressed.
+      * If the marker's ``count`` > 0 but no admission-gate-reject
+        signal landed, the LLM read the signatures and ignored them —
+        a prompt-quality regression.
+
+    Fields:
+
+      * ``stage`` — typed; one of ``"plan11_cluster"`` /
+        ``"plan11_synthesize"``. Stage 2 and Stage 3 use distinct
+        prompts and have independently regressable plumbing.
+      * ``count`` — number of insufficient signatures handed to the
+        LLM in this call.
+      * ``qid_rca_pairs`` — first-N ``"<qid>:<rca>"`` pairs from the
+        signature payload for postmortem-side debugging without
+        leaking the full prompt context. Capped by the caller; this
+        marker performs no truncation of its own so the caller can
+        choose a stable cap.
+    """
+    return marker_line(
+        "GSO_INSUFFICIENT_SIGNATURES_IN_CONTEXT_V1",
+        {
+            "optimization_run_id": str(optimization_run_id),
+            "iteration": int(iteration),
+            "stage": str(stage),
+            "count": int(count),
+            "qid_rca_pairs": list(qid_rca_pairs or ()),
         },
     )
 

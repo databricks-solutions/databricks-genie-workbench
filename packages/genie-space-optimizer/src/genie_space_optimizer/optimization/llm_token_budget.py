@@ -30,7 +30,7 @@ Why a ContextVar:
 """
 from __future__ import annotations
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
 from genie_space_optimizer.optimization.llm_abstain import (
@@ -174,3 +174,45 @@ _NO_OP_BUDGET = IterationTokenBudget(
 _REASONING_TOKEN_BUDGET: ContextVar[IterationTokenBudget] = ContextVar(
     "_REASONING_TOKEN_BUDGET", default=_NO_OP_BUDGET,
 )
+
+
+def set_iteration_budget(
+    *, itpm_limit: int, otpm_limit: int,
+) -> tuple[IterationTokenBudget, Token]:
+    """Install a fresh per-iteration budget on the active context.
+
+    Returns the new budget AND the ContextVar ``Token`` the caller must
+    later pass to :func:`clear_iteration_budget` to restore the prior
+    binding. Pairing set/clear (rather than nesting via ``with``) keeps
+    the harness's enormous iteration-body try/finally compatible with
+    the surrounding for-loop without forcing a 600-line indent shift.
+
+    Production sizing (Phase 0 P0.1): the lever loop installs
+    ``itpm=int(LLM_REASONING_ITPM_LIMIT * 0.6)`` and
+    ``otpm=int(LLM_REASONING_OTPM_LIMIT * 0.6)`` at every iteration
+    boundary so the 40% headroom absorbs traffic from other workloads
+    sharing the workspace's Opus quota.
+    """
+    budget = IterationTokenBudget(
+        itpm_limit=int(itpm_limit),
+        otpm_limit=int(otpm_limit),
+    )
+    token = _REASONING_TOKEN_BUDGET.set(budget)
+    return budget, token
+
+
+def clear_iteration_budget(token: Token) -> None:
+    """Restore the prior ``_REASONING_TOKEN_BUDGET`` binding.
+
+    Always called from the iteration's ``finally:`` so an exception
+    inside the body cannot leak the active budget into the next
+    iteration (or, if the loop breaks, into post-loop code).
+    """
+    _REASONING_TOKEN_BUDGET.reset(token)
+
+
+def get_active_budget() -> IterationTokenBudget:
+    """Read-only accessor for the active budget; useful for postmortem
+    markers that want to log ``actual_input_tokens`` at iteration
+    boundary without poking the ContextVar directly."""
+    return _REASONING_TOKEN_BUDGET.get()

@@ -43,6 +43,31 @@ def _success_env(qid: str, family: str, patch_type: str) -> str:
     })
 
 
+def _batch_entry(qid: str, family: str, patch_type: str) -> dict:
+    """One per-qid evidence entry inside a batched ``evidences`` array."""
+    return {
+        "qid": qid,
+        "observed_failure": f"failure for {qid}",
+        "generated_sql_issue": "specific defect",
+        "expected_sql_shape": "shape",
+        "blame_set": [f"sales.fact_sales.{qid}_col"],
+        "suggested_repair_family": family,
+        "repair_hint_patch_type": patch_type,
+        "confidence": "high",
+        "quoted_evidence": [],
+    }
+
+
+def _batched_success_env(entries: list[dict]) -> str:
+    """Phase 1 P1.2 batched envelope: a single LLM call returns an
+    ``evidences`` array covering every qid in the batch. The batched
+    skill's ``parsed_output`` carries ``{"evidences": [...]}``."""
+    return json.dumps({
+        "result": {"evidences": entries},
+        "declined": None,
+    })
+
+
 def _decline_env(reason: str) -> str:
     return json.dumps({
         "result": None,
@@ -111,9 +136,21 @@ def test_end_to_end_three_qids_two_success_one_decline(monkeypatch) -> None:
         },
     )
 
+    # Phase 1 P1.2 — ``extract_evidence_for_all_qids`` batches when the
+    # qid count reaches BATCH_RCA_MIN_QIDS (=3): ONE batched call for the
+    # whole chunk, then a per-QID fallback for any qid the batch did not
+    # cover. Here the batched envelope diagnoses gs_001 + gs_002; gs_003
+    # is omitted from the batch and falls through to a per-QID call that
+    # declines, exercising the deterministic-fallback typed-stamp path.
     client = _make_cycling_client([
-        _success_env("gs_001", "top_n_with_ordering", "add_example_sql"),
-        _success_env("gs_002", "join_spec_addition_with_disambiguation", "add_join_spec"),
+        _batched_success_env([
+            _batch_entry("gs_001", "top_n_with_ordering", "add_example_sql"),
+            _batch_entry(
+                "gs_002",
+                "join_spec_addition_with_disambiguation",
+                "add_join_spec",
+            ),
+        ]),
         _decline_env("ambiguous_failure"),
     ])
 

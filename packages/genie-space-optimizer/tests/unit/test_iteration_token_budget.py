@@ -75,3 +75,64 @@ def test_context_var_returns_no_op_budget_when_unset() -> None:
     b = _REASONING_TOKEN_BUDGET.get()
     assert b.itpm_limit >= 10**9
     assert b.otpm_limit >= 10**9
+
+
+def test_set_iteration_budget_installs_active_meter() -> None:
+    """Phase 0 P0.1 — ``set_iteration_budget`` installs a real budget
+    on the ContextVar so callers see finite limits."""
+    from genie_space_optimizer.optimization.llm_token_budget import (
+        _REASONING_TOKEN_BUDGET,
+        clear_iteration_budget,
+        set_iteration_budget,
+    )
+    budget, token = set_iteration_budget(itpm_limit=120_000, otpm_limit=12_000)
+    try:
+        active = _REASONING_TOKEN_BUDGET.get()
+        assert active is budget
+        assert active.itpm_limit == 120_000
+        assert active.otpm_limit == 12_000
+    finally:
+        clear_iteration_budget(token)
+    restored = _REASONING_TOKEN_BUDGET.get()
+    assert restored.itpm_limit >= 10**9
+
+
+def test_set_and_clear_round_trip_per_iteration() -> None:
+    """Phase 0 P0.1 — paired set/clear is the iteration-boundary
+    contract; a fresh ``set`` between iterations yields a fresh meter
+    with empty accounting."""
+    from genie_space_optimizer.optimization.llm_token_budget import (
+        _REASONING_TOKEN_BUDGET,
+        clear_iteration_budget,
+        set_iteration_budget,
+    )
+    b1, t1 = set_iteration_budget(itpm_limit=1_000, otpm_limit=500)
+    b1.reserve(input_tokens=300, max_output_tokens=100)
+    assert b1.reserved_input_tokens == 300
+    clear_iteration_budget(t1)
+
+    b2, t2 = set_iteration_budget(itpm_limit=1_000, otpm_limit=500)
+    try:
+        assert _REASONING_TOKEN_BUDGET.get() is b2
+        assert b2.reserved_input_tokens == 0
+        assert b2.actual_input_tokens == 0
+    finally:
+        clear_iteration_budget(t2)
+
+
+def test_get_active_budget_returns_the_active_meter() -> None:
+    """Phase 0 P0.1 — ``get_active_budget`` is the read-only accessor
+    used by postmortem markers; it returns whatever ``ContextVar.get``
+    would, without mutation."""
+    from genie_space_optimizer.optimization.llm_token_budget import (
+        clear_iteration_budget,
+        get_active_budget,
+        set_iteration_budget,
+    )
+    budget, token = set_iteration_budget(itpm_limit=42, otpm_limit=7)
+    try:
+        assert get_active_budget() is budget
+        assert get_active_budget().itpm_limit == 42
+    finally:
+        clear_iteration_budget(token)
+    assert get_active_budget().itpm_limit >= 10**9

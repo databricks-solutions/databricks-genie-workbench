@@ -18,6 +18,7 @@ class PatchSemantic(StrEnum):
 PATCH_TYPE_SEMANTICS: dict[str, PatchSemantic] = {
     # Lever 5 — example SQL teachers.
     "add_example_sql": PatchSemantic.STRUCTURAL,
+    "add_example_sql_negative": PatchSemantic.STRUCTURAL,
     "update_example_sql": PatchSemantic.STRUCTURAL,
     "remove_example_sql": PatchSemantic.STRUCTURAL,
     # Lever 6 — SQL snippet expressions and filters.

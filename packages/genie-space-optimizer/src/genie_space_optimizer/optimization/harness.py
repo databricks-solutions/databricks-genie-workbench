@@ -190,6 +190,238 @@ logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Trial 21 W9 — Deploy eligibility split from optimizer task status.
+#
+# A "blocked merge gate" or "failed bundle assembly" is contract health
+# information for the deploy task; it is not a failure of the optimizer
+# task itself. Before Trial 21 the harness conflated the two and either
+# (a) failed the parent task on a blocked deploy (noisy) or (b) deployed
+# a candidate built from a busted bundle (silent regression). W9 splits
+# them: the optimizer task always reports ``success`` once it reaches
+# the finalize stage, and a separate boolean
+# ``candidate_deploy_eligible`` tells the deploy task whether to
+# actually ship.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class DeployEligibilityVerdict:
+    """Return value of :func:`compute_deploy_eligibility`.
+
+    ``optimizer_task_status``    — ``"success"`` once finalize is
+        reached. Trial 21 W9 contract: this field is independent of
+        deploy-side gating; the parent Databricks Job task stays
+        SUCCESS so the workflow does not page on contract-health
+        failures.
+    ``candidate_deploy_eligible`` — ``True`` iff the candidate
+        produced by the lever loop is safe to deploy. Set to ``False``
+        when the merge gate is blocked OR the Phase H bundle
+        assembly failed.
+    ``deploy_skip_reason``       — short identifier the deploy task
+        emits when ``candidate_deploy_eligible=False``. Closed
+        vocabulary: ``"contract_health_blocked"`` (merge gate or
+        bundle assembly), ``"no_candidate"`` (lever loop produced no
+        applied patches), ``""`` when the candidate ships.
+    """
+
+    optimizer_task_status: str
+    candidate_deploy_eligible: bool
+    deploy_skip_reason: str
+
+
+_CONTRACT_HEALTH_BLOCKED_VOCAB = frozenset(
+    {
+        "merge_gate_blocked",
+        "assembly_failed",
+        "blocked",
+        "failed",
+    }
+)
+
+
+_TRIAL23_PHASE_H_BLOCKED_UPLOAD_VOCAB = frozenset(
+    {
+        "upload_failed",
+        "render_failed",
+    }
+)
+
+
+def compute_deploy_eligibility(
+    *,
+    merge_gate_status: str,
+    bundle_status: str,
+    run_outcome: str = "",
+    phase_h_upload_status: str = "",
+    scoreboard_stale: bool = False,
+) -> DeployEligibilityVerdict:
+    """Trial 21 W9 — gate deploy eligibility without failing the
+    optimizer task.
+
+    Reads the two contract-health signals (merge_gate_status,
+    bundle_status) and the run-level outcome. Returns a triple
+    ``(optimizer_task_status, candidate_deploy_eligible,
+    deploy_skip_reason)``.
+
+    Contract health blocks deploy when:
+      * ``merge_gate_status in {"merge_gate_blocked", "blocked"}``, OR
+      * ``bundle_status in {"assembly_failed", "failed"}``.
+
+    Trial 23 W10 — Phase H is a contract boundary. When
+    :func:`trial23_phase_h_contract_gate_enabled` is on, deploy is also
+    blocked when the Phase H bundle upload/render failed
+    (``phase_h_upload_status in {"upload_failed", "render_failed"}``) or
+    the persisted ``scoreboard.json`` is stale (``scoreboard_stale``).
+    A candidate scored against a board that was never refreshed — or
+    whose bundle never materialised — must not ship even though the
+    optimizer task itself stays effort-successful. When the flag is off
+    these signals are ignored (legacy Trial 21/22 posture). Note that
+    ``upload_failed`` is *also* routed through ``bundle_assembly_failed``
+    today, so this branch is defence-in-depth: it keeps the gate honest
+    if that routing ever changes.
+
+    No-candidate outcomes also block deploy with a distinct reason so
+    the deploy task can emit a non-blocking "skipped: no candidate"
+    log instead of a "skipped: contract health" log.
+    """
+    merge = str(merge_gate_status or "").strip().lower()
+    bundle = str(bundle_status or "").strip().lower()
+    outcome = str(run_outcome or "").strip().upper()
+    upload = str(phase_h_upload_status or "").strip().lower()
+
+    phase_h_blocked = False
+    try:
+        from genie_space_optimizer.optimization.trial23_flags import (
+            trial23_phase_h_contract_gate_enabled,
+        )
+
+        if trial23_phase_h_contract_gate_enabled():
+            phase_h_blocked = (
+                upload in _TRIAL23_PHASE_H_BLOCKED_UPLOAD_VOCAB
+                or bool(scoreboard_stale)
+            )
+    except Exception:
+        phase_h_blocked = False
+
+    contract_blocked = (
+        merge in _CONTRACT_HEALTH_BLOCKED_VOCAB
+        or bundle in _CONTRACT_HEALTH_BLOCKED_VOCAB
+        or phase_h_blocked
+    )
+
+    no_candidate_outcomes = {
+        "OPTIMIZER_NO_CANDIDATES",
+        "OPTIMIZER_STALLED_NO_APPLIED_PATCHES",
+        "OPTIMIZER_STALLED_SAFE_NOOP",
+        "OPTIMIZER_SKIPPED_INPUT_GAP",
+    }
+
+    if contract_blocked:
+        return DeployEligibilityVerdict(
+            optimizer_task_status="success",
+            candidate_deploy_eligible=False,
+            deploy_skip_reason="contract_health_blocked",
+        )
+    if outcome in no_candidate_outcomes:
+        return DeployEligibilityVerdict(
+            optimizer_task_status="success",
+            candidate_deploy_eligible=False,
+            deploy_skip_reason="no_candidate",
+        )
+    return DeployEligibilityVerdict(
+        optimizer_task_status="success",
+        candidate_deploy_eligible=True,
+        deploy_skip_reason="",
+    )
+
+
+def deploy_eligibility_from_loop_out(
+    loop_out: "Mapping[str, Any]",
+) -> DeployEligibilityVerdict:
+    """Trial 22 W8 — project a ``lever_loop`` ``loop_out`` dict onto a
+    :class:`DeployEligibilityVerdict`.
+
+    Reads the canonical contract-health signals from
+    ``loop_out["contract_health_summary"]`` (``merge_gate_status`` +
+    ``bundle_status``) and the run-level ``optimizer_outcome`` the
+    harness now stamps on ``loop_out``. Absent/empty inputs degrade to
+    deploy-eligible (the task-stays-SUCCESS, deploy-decides posture);
+    a missing contract-health summary is treated as ``warn`` (non-
+    blocking), matching ``enforce_merge_gate``'s fail-soft contract.
+    """
+    health = (loop_out or {}).get("contract_health_summary") or {}
+    if not isinstance(health, dict):
+        health = {}
+    # Trial 23 W10 — surface the Phase H upload outcome + scoreboard
+    # freshness so a busted/stale bundle blocks deploy. ``scoreboard_stale``
+    # is read from an explicit loop_out flag when present; otherwise a
+    # failed upload/render implies the persisted scoreboard.json was never
+    # refreshed for this candidate, so we treat that as stale too.
+    upload_status = str((loop_out or {}).get("phase_h_upload_status") or "")
+    scoreboard_stale = bool((loop_out or {}).get("scoreboard_stale", False))
+    if upload_status.strip().lower() in _TRIAL23_PHASE_H_BLOCKED_UPLOAD_VOCAB:
+        scoreboard_stale = True
+    return compute_deploy_eligibility(
+        merge_gate_status=str(health.get("merge_gate_status") or ""),
+        bundle_status=str(health.get("bundle_status") or ""),
+        run_outcome=str((loop_out or {}).get("optimizer_outcome") or ""),
+        phase_h_upload_status=upload_status,
+        scoreboard_stale=scoreboard_stale,
+    )
+
+
+def deploy_skipped_marker(*, skip_reason: str, run_id: str = "") -> str:
+    """Trial 22 W8 — ``GSO_TRIAL22_DEPLOY_SKIPPED_V1`` emitted by the
+    deploy task when ``candidate_deploy_eligible`` is ``False``. The
+    deploy task exits SUCCESS without shipping; the marker records the
+    closed-vocabulary skip reason for postmortems."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        marker_line,
+    )
+
+    return marker_line(
+        "GSO_TRIAL22_DEPLOY_SKIPPED_V1",
+        {
+            "optimization_run_id": str(run_id or ""),
+            "skip_reason": str(skip_reason or ""),
+        },
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Trial 22 W4 — re-export iteration-terminal taxonomy helper from
+# ``iteration_terminal`` so callers (and tests) can ``from harness
+# import compute_iteration_terminal_reason``. The actual definitions
+# live in :mod:`genie_space_optimizer.optimization.iteration_terminal`
+# to keep the helper unit-testable without paying the harness import
+# cost.
+# ──────────────────────────────────────────────────────────────────────
+
+from genie_space_optimizer.optimization.iteration_terminal import (  # noqa: E402
+    IterationTerminalVerdict,
+    compute_iteration_terminal_reason,
+)
+
+
+def _terminal_reason_helper_enabled() -> bool:
+    """Trial 22 sub-flag — :envvar:`GSO_TRIAL22_TERMINAL_REASON_HELPER`.
+
+    Default ON; recognized opt-out values: ``0``, ``false``, ``no``,
+    ``off`` (case-insensitive). When OFF, callers that wrapped a
+    hard-coded ``NO_APPLIED_PATCHES`` emit in the helper fall back to
+    the original behavior.
+    """
+    import os
+
+    raw = (
+        os.environ.get("GSO_TRIAL22_TERMINAL_REASON_HELPER") or ""
+    ).strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Phase 3 (2026-05-17) — Lever Loop Tape Replay binding hook.
 #
 # ``_TAPE_BINDING_HOOK`` lets ``LeverLoopReplayHarness`` advance the
@@ -13021,6 +13253,13 @@ class _ForbiddenSetPair:
     by_root_cause: frozenset
     by_signature: frozenset
     by_terminal_signature: frozenset = frozenset()
+    # Trial 19 A3 — fourth axis: insufficient_repair_signatures
+    # harvested from KEPT_INSUFFICIENT reflection entries (Trial 18).
+    # Default empty for byte-stable replay against pre-Trial-19
+    # fixtures. Consumers that match this axis must compare the raw
+    # signature string against the AG's emitted repair-signature
+    # (selected_lever|patch_type|qid|rca_kind=...).
+    by_insufficient_signature: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -13192,6 +13431,8 @@ def filter_ags_by_forbidden_set_pre_generation(
 
 def _compute_forbidden_ag_set_pair(
     reflection_buffer: list[dict],
+    *,
+    insufficient_repair_signatures: "tuple[str, ...] | None" = None,
 ) -> _ForbiddenSetPair:
     """Defect Plan 1 G2 — broadened forbidden-set producer.
 
@@ -13267,10 +13508,30 @@ def _compute_forbidden_ag_set_pair(
                 (sig.target_qids, sig.lever_set)
             )
 
+    # Trial 19 A3 — fourth axis. Gated by
+    # ``trial19_enforce_insufficient_enabled()``; off (or no
+    # signatures supplied) yields the legacy empty frozenset for
+    # byte-stable replay against pre-Trial-19 fixtures.
+    by_insufficient_signature: frozenset[str] = frozenset()
+    if insufficient_repair_signatures:
+        try:
+            from genie_space_optimizer.optimization.trial19_flags import (
+                trial19_enforce_insufficient_enabled,
+            )
+            if trial19_enforce_insufficient_enabled():
+                by_insufficient_signature = frozenset(
+                    s for s in insufficient_repair_signatures if s
+                )
+        except Exception:
+            # Defensive — flag-resolution must never break the
+            # legacy forbidden-set producer.
+            by_insufficient_signature = frozenset()
+
     return _ForbiddenSetPair(
         by_root_cause=frozenset(by_root_cause),
         by_signature=frozenset(by_signature),
         by_terminal_signature=frozenset(by_terminal_signature),
+        by_insufficient_signature=by_insufficient_signature,
     )
 
 
@@ -14863,6 +15124,11 @@ def _analyze_and_distribute(
     from genie_space_optimizer.optimization.ground_truth_corrections import (
         build_gt_correction_candidate,
         is_gt_correction_candidate,
+        is_trial19_arbiter_correct_gt_disagrees,
+    )
+    from genie_space_optimizer.optimization.trial19_flags import (
+        trial19_already_correct_filter_enabled,
+        trial19_gt_pending_review_enabled,
     )
     from genie_space_optimizer.optimization.optimizer import (
         _map_to_lever,
@@ -14887,6 +15153,11 @@ def _analyze_and_distribute(
     filtered_failure_rows: list[dict] = []
     soft_signal_rows: list[dict] = []
     gt_correction_candidates: list[dict] = []
+    # Trial 19 C1 + C4 — track the new ``already_correct_under_arbiter``
+    # bucket separately so the outcome payload can surface
+    # ``hard_qids_already_correct_count`` distinct from the legacy
+    # ``arbiter=genie_correct`` corpus-review bucket.
+    trial19_already_correct_under_arbiter_qids: list[str] = []
     for row in failure_rows:
         av = _get_arbiter_verdict(row)
         qid = _get_question_id(row)
@@ -14928,6 +15199,43 @@ def _analyze_and_distribute(
                 logger.warning(
                     "Skipping unidentifiable GT correction candidate: %s", exc,
                 )
+            continue
+
+        # Trial 19 C1 + C3 — additional pending-review path. The
+        # arbiter said ``both_correct`` but raw byte-match disagrees
+        # with GT. The legacy branch above only catches
+        # ``arbiter=genie_correct`` (arbiter overrode the GT); this
+        # branch catches the both-correct disagreement (GT is missing
+        # an equivalently-valid alternative form).
+        #
+        # NOTE: ``row_is_hard_failure`` already filters out
+        # ``both_correct`` rows from the hard list — pre-Trial-19 these
+        # rows fell through both gates and went into the silent-skip
+        # bucket. Trial 19 captures them: C1 stamps the QID into
+        # ``trial19_already_correct_under_arbiter_qids`` so the outcome
+        # payload (C4) can count them; C3 writes the row to
+        # ``pending_review`` for human review of the GT corpus.
+        # Both effects gated by the respective Trial 19 sub-flags;
+        # OFF restores the silent-skip behavior byte-stable.
+        if (
+            trial19_already_correct_filter_enabled()
+            and is_trial19_arbiter_correct_gt_disagrees(row)
+        ):
+            if qid:
+                trial19_already_correct_under_arbiter_qids.append(qid)
+            if trial19_gt_pending_review_enabled():
+                try:
+                    gt_correction_candidates.append(
+                        build_gt_correction_candidate(
+                            row, run_id=run_id, iteration=iteration_counter
+                        )
+                    )
+                except ValueError as exc:
+                    logger.warning(
+                        "Skipping unidentifiable Trial 19 "
+                        "already-correct-under-arbiter candidate: %s",
+                        exc,
+                    )
             continue
 
         if row_is_hard_failure(row):
@@ -15383,6 +15691,14 @@ def _analyze_and_distribute(
         # Task 1: corpus-review queue payloads (Delta-shaped). The caller
         # is responsible for persisting via state.write_gt_correction_candidates.
         "gt_correction_candidates": gt_correction_candidates,
+        # Trial 19 C1 + C4 — QIDs filtered out of the hard list because
+        # the arbiter said ``both_correct`` but byte-match disagreed.
+        # The caller surfaces ``len(...)`` as
+        # ``hard_qids_already_correct_count`` in
+        # ``GSO_OPTIMIZER_OUTCOME_V1``.
+        "trial19_already_correct_under_arbiter_qids": list(
+            trial19_already_correct_under_arbiter_qids
+        ),
         # Task 6: typed-evidence telemetry. Carries a DiffKind ->
         # count map plus the total count of confirmed-failure rows
         # that received a feature diff stamp.
@@ -17001,11 +17317,26 @@ def _run_gate_checks(
     _target_fixed_qids_for_guardrail = tuple(
         sorted(set(_control_plane_decision.target_fixed_qids or ()))
     )
+    # Trial 20 Workstream A2 — post-arbiter-gain absorbs pre-arbiter
+    # regression. Pass the post-arbiter delta and out-of-target hard
+    # regression count so the guardrail can fire the symmetric
+    # ``accepted_post_arbiter_gain_absorbs_pre_arbiter_regression``
+    # branch when the rescued QID is outside the declared targets
+    # (A1 ``target_attribution_drift`` shape). Gated inside the
+    # helper by :func:`trial20_pre_arbiter_veto_fix_enabled`.
+    _post_arbiter_delta_pp_for_guardrail = round(
+        float(full_accuracy) - float(best_accuracy), 1
+    )
+    _out_of_target_hard_regressions_for_guardrail = len(
+        _control_plane_decision.out_of_target_regressed_qids or ()
+    )
     _pre_arbiter_decision = decide_pre_arbiter_regression_guardrail(
         baseline_pre_arbiter_accuracy=_baseline_pre_arbiter_pct,
         candidate_pre_arbiter_accuracy=_candidate_pre_arbiter_pct,
         target_fixed_qids=_target_fixed_qids_for_guardrail,
         max_pre_arbiter_regression_pp=5.0,
+        post_arbiter_delta_pp=_post_arbiter_delta_pp_for_guardrail,
+        out_of_target_hard_regressions=_out_of_target_hard_regressions_for_guardrail,
     )
     print(
         format_evaluation_summary_block(
@@ -17018,6 +17349,56 @@ def _run_gate_checks(
             target_fixed_qids=_target_fixed_qids_for_guardrail,
         )
     )
+    # Trial 20 Workstream A3 — shadow-decision marker. Audit every
+    # full-eval pre-arbiter decision (today's vs. shadow-with-fix)
+    # for postmortem joins. Always emitted, regardless of flag, so
+    # postmortems can compare decisions across rollouts.
+    try:
+        import json as _t20_json
+
+        _shadow_delta = round(
+            float(full_accuracy) - float(best_accuracy), 1
+        )
+        _shadow_oot_regressions = len(
+            _control_plane_decision.out_of_target_regressed_qids or ()
+        )
+        _shadow_today_accepted = bool(_pre_arbiter_decision.accepted)
+        # Shadow-with-fix: would the candidate be accepted under
+        # Workstream A2 even if today's two-branch decision rejects?
+        _shadow_with_fix_accepted = bool(
+            _shadow_today_accepted
+            or (
+                _shadow_delta > 0.0
+                and _shadow_oot_regressions == 0
+            )
+        )
+        print(
+            "GSO_TRIAL20_SHADOW_DECISION_V1 "
+            + _t20_json.dumps(
+                {
+                    "ag_id": str(ag_id),
+                    "iteration": int(iteration_counter),
+                    "baseline_pre_arbiter_pct": float(_baseline_pre_arbiter_pct),
+                    "candidate_pre_arbiter_pct": float(_candidate_pre_arbiter_pct),
+                    "baseline_post_arbiter_pct": float(best_accuracy),
+                    "candidate_post_arbiter_pct": float(full_accuracy),
+                    "post_arbiter_delta_pp": _shadow_delta,
+                    "pre_arbiter_delta_pp": float(_pre_arbiter_decision.delta_pp),
+                    "target_fixed_qids": list(_target_fixed_qids_for_guardrail),
+                    "out_of_target_hard_regressions": _shadow_oot_regressions,
+                    "decision_today_accepted": _shadow_today_accepted,
+                    "decision_today_reason": str(_pre_arbiter_decision.reason_code),
+                    "decision_with_fix_accepted": _shadow_with_fix_accepted,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    except Exception:
+        logger.debug(
+            "Trial 20 A3 shadow-decision marker failed (non-fatal)",
+            exc_info=True,
+        )
     if not _pre_arbiter_decision.accepted:
         logger.warning(
             "[%s] pre_arbiter_regression_blocked: baseline=%.1f%% "
@@ -17525,6 +17906,29 @@ def _run_gate_checks(
             },
         )
     _audit_persist()
+    # Canonical CandidateOutcome source — surface the full-eval marker
+    # payload on the PASS return so the lever loop can build the
+    # run-level CandidateOutcome record (single source of truth for the
+    # optimizer outcome, candidate ledger, accuracy deltas, and deploy
+    # eligibility) instead of re-deriving from per-QID trajectories.
+    # See optimization/candidate_outcome.py and the e94376a3 postmortem.
+    _full_eval_payload_for_outcome: dict | None
+    try:
+        from genie_space_optimizer.optimization.control_plane import (
+            format_full_eval_marker_payload as _fmt_full_eval_payload,
+        )
+        _full_eval_payload_for_outcome = _fmt_full_eval_payload(
+            _control_plane_decision,
+            ag_id=str(ag_id),
+            iteration=int(iteration_counter),
+            accepted_label=str(_accept_label),
+        )
+    except Exception:
+        logger.debug(
+            "CandidateOutcome: full-eval payload build failed (non-fatal)",
+            exc_info=True,
+        )
+        _full_eval_payload_for_outcome = None
     return {
         "passed": True,
         "full_scores": full_scores,
@@ -17534,6 +17938,8 @@ def _run_gate_checks(
         "full_result": full_result,
         "_t4_verdict": _t4_verdict,
         "_suppressed_qids": _suppressed_qids,
+        # Canonical CandidateOutcome input (full-eval marker payload).
+        "full_eval_payload": _full_eval_payload_for_outcome,
         # Task 9 — surface acceptance tiering so the loop can carry debt
         # forward without re-running ``decide_control_plane_acceptance``.
         # 2026-05-13 F5 fix: carry the explicit ``accepted`` boolean
@@ -19012,6 +19418,13 @@ def _run_lever_loop_legacy(
     # type contract with ``TransformerContext.forbidden_signatures``
     # holds end-to-end (Gap C of the same review).
     _sm_forbidden_signatures: set[str] = set()
+    # Trial 18 Step 3 — sibling channel for ``insufficient_repair_signature``
+    # strings emitted by the ``KEPT_INSUFFICIENT`` lane in
+    # ``acceptance_gate``. Same shape (``set[str]``) and same lifecycle
+    # (per-run cross-iteration accumulator) as ``_sm_forbidden_signatures``;
+    # plumbed into the next iteration's ``ctx.insufficient_repair_signatures``
+    # alongside the forbidden channel.
+    _sm_insufficient_repair_signatures: set[str] = set()
     # Cycle 9 W4 — per-run, per-AG fingerprint buffer for patches
     # rolled back when ``_control_plane_decision.target_still_hard_qids``
     # is non-empty. The strategist preprocessing prunes any candidate
@@ -19334,6 +19747,22 @@ def _run_lever_loop_legacy(
     _canary_states_by_qid: dict[str, list] = {}
     _canary_any_hard_rows_seen: bool = False
 
+    # Trial 19 C4 — accumulate the Trial 19 already-correct-under-arbiter
+    # bucket and the pending-GT-review count across iterations so the
+    # outcome marker payload reflects total run-level counts.
+    _trial19_already_correct_qids_run: set[str] = set()
+    _trial19_pending_gt_review_count_run: int = 0
+
+    # Canonical CandidateOutcome — the run-level authoritative accepted
+    # candidate (single source of truth for the optimizer outcome, the
+    # candidate ledger row, accuracy deltas, and deploy eligibility).
+    # Populated on the full-eval PASS path; remains None when no full
+    # eval ever accepted. See optimization/candidate_outcome.py.
+    from genie_space_optimizer.optimization.candidate_outcome import (
+        CandidateOutcome as _CandidateOutcome,
+    )
+    _run_best_candidate_outcome: _CandidateOutcome | None = None
+
     for _iter_num in range(1, max_iterations + 1):
         # Phase 3 (2026-05-17) — advance tape-replay binding to the
         # current iteration. ``_tape_binding_set_iteration`` is a
@@ -19388,6 +19817,34 @@ def _run_lever_loop_legacy(
         _iter_proposal_attempts: int = 0
         _iter_best_of_n_size: int = 1
         _iter_retire_signature: str = ""
+        # Trial 22 W3 — slate compiler drop summary for THIS iteration,
+        # captured from the synthesis result and persisted onto the
+        # durable candidate-ledger row at finally-time so the NEXT
+        # iteration's Stage 3 prompt can warn the LLM about the drops.
+        _iter_compiler_drop_summary: dict | None = None
+
+        # Phase 0 P0.1 — wire the dormant per-iteration token budget
+        # against the workspace's Opus quota. The Foundation Model API
+        # rate-limits Claude Opus 4.6 at 200,000 ITPM / 20,000 OTPM on
+        # a sliding 60-second window (FMAPI docs, 2026-05). We reserve
+        # 40% as shared-workspace headroom and run the lever loop
+        # against the remaining 60%. The check fires inside
+        # ``LlmReasoningCall.invoke`` via ``budget.would_exceed`` and
+        # mints a typed ``CONTEXT_TOKEN_BUDGET_EXCEEDED`` abstain
+        # whose ``suggested_next_step`` is ``defer_to_next_iteration``
+        # — the framework treats that exactly like an LLM-side
+        # decline, so no special-case wiring in callers is needed.
+        from genie_space_optimizer.common.config import (
+            LLM_REASONING_ITPM_LIMIT as _T0_ITPM,
+            LLM_REASONING_OTPM_LIMIT as _T0_OTPM,
+        )
+        from genie_space_optimizer.optimization.llm_token_budget import (
+            set_iteration_budget as _set_iter_budget,
+        )
+        _iter_budget_active, _iter_budget_token = _set_iter_budget(
+            itpm_limit=int(_T0_ITPM * 0.6),
+            otpm_limit=int(_T0_OTPM * 0.6),
+        )
         try:
             # Phase 1.6 — reserved recovery iteration budget check.
             # The LAST iteration of the lever loop is reserved for
@@ -19944,11 +20401,19 @@ def _run_lever_loop_legacy(
                     exc_info=True,
                 )
 
-            sm_run_root = (
-                Path(os.environ.get("GSO_PHASE_H_BUNDLE_ROOT"))
-                if os.environ.get("GSO_PHASE_H_BUNDLE_ROOT")
-                else Path(f"/tmp/gso/{run_id}")
+            # Production hardening (2026-05-26) — route through the
+            # centralized :func:`run_root_resolver.resolve_run_root`
+            # which (a) honors GSO_PLAN_V3_RUN_ROOT and GSO_PHASE_H_
+            # BUNDLE_ROOT, (b) uses ``tempfile.gettempdir()`` instead
+            # of the hardcoded ``/tmp``, and (c) falls back to a
+            # per-PID suffix when the default path is not writable
+            # (the ``/tmp/gso/<run_id>`` collision class that killed
+            # the lever loop with ``PermissionError: [Errno 13]`` on
+            # shared Databricks Apps nodes).
+            from genie_space_optimizer.optimization.run_root_resolver import (
+                resolve_run_root as _resolve_run_root,
             )
+            sm_run_root = _resolve_run_root(str(run_id))
             # Plan v4 Task 4.1 safety net — Phase 5 (legacy deletion) is
             # intentionally deferred so the legacy iteration body below
             # can still take over if the SM raises. Without this guard,
@@ -20025,6 +20490,25 @@ def _run_lever_loop_legacy(
                 # legacy router still owns ``_forbidden_set`` for the
                 # legacy-lane idempotency rule; the SM lane has its
                 # own dedicated str channel.
+                # Trial 20 E1 — plumb the legacy counterfactual scan
+                # inputs into the SM lane so synthesize_llm can stamp
+                # ``passing_dependents`` on each typed proposal's
+                # patch_body. ``benchmarks`` is the same list the
+                # harness already passes around; ``prev_failure_qids``
+                # is the lever-loop accumulator (defined upstream in
+                # ``_run_lever_loop``). The SM runs once per iteration
+                # across all action groups so ``ag_target_qids``
+                # defaults to empty; the synthesize_llm stamping path
+                # falls back to ``typed.target_qids`` per proposal.
+                _t20_prev_failure = tuple(
+                    str(q) for q in (prev_failure_qids or ())
+                )
+                # Trial 22 W3 — output carrier for the slate compiler's
+                # drop summary. ``run_state_machine_iteration_and_persist``
+                # copies ctx.extras["_t22_compiler_drop_summary"] back
+                # into this dict after the SM run; we then persist it on
+                # the durable candidate-ledger row at finally-time.
+                _t22_sm_extras: dict = {}
                 _sm_final_states = run_state_machine_iteration_and_persist(
                     eval_rows=_sm_eval_rows,
                     iteration=int(iteration_counter),
@@ -20034,12 +20518,33 @@ def _run_lever_loop_legacy(
                     forbidden_signatures=tuple(
                         sorted(_sm_forbidden_signatures),
                     ),
+                    # Trial 18 Step 3 — pass the
+                    # ``KEPT_INSUFFICIENT`` lane's typed-feedback
+                    # accumulator alongside the hard-rejection channel.
+                    insufficient_repair_signatures=tuple(
+                        sorted(_sm_insufficient_repair_signatures),
+                    ),
                     space_id=str(space_id or ""),
                     metadata_snapshot=metadata_snapshot,
                     stage_ctx=_sm_stage_ctx,
                     eval_kwargs=_sm_eval_kwargs,
                     eval_qids=_sm_eval_qids,
+                    # Trial 20 E1 — counterfactual scan inputs.
+                    benchmarks=tuple(benchmarks or ()),
+                    prev_failure_qids=_t20_prev_failure,
+                    extras=_t22_sm_extras,
                 )
+                # Trial 22 W3 — capture the compiler drop summary for the
+                # durable ledger write (best-effort; absent on the happy
+                # path where nothing was dropped).
+                try:
+                    _t22_captured = _t22_sm_extras.get(
+                        "_t22_compiler_drop_summary"
+                    )
+                    if _t22_captured:
+                        _iter_compiler_drop_summary = _t22_captured
+                except Exception:
+                    pass
             # 2026-05-23 Phase 3 — narrow this except so the boundary
             # contract violation below cannot be silently swallowed by
             # the legacy-lane fallback path. ``InputProjectionContractViolation``
@@ -20180,6 +20685,46 @@ def _run_lever_loop_legacy(
                 logger.debug(
                     "Trial 16.3 forbidden-signature harvest failed; "
                     "cross-iteration learning channel skipped this iteration",
+                    exc_info=True,
+                )
+
+            # Trial 18 Step 3 — symmetric harvest for the
+            # ``KEPT_INSUFFICIENT`` lane. Reads ``insufficient_repair_signature``
+            # from each final state's ``accepted`` record (not from
+            # ``terminal``; the kept-insufficient state is at ACCEPTED
+            # stage, not TERMINATED). The harvested signatures flow
+            # into the next iteration's
+            # ``ctx.insufficient_repair_signatures`` channel and are
+            # consumed by the Stage 3 strategist alongside the
+            # existing ``forbidden_signatures`` channel.
+            #
+            # Phase 1 P1.4 — this harvest is the END-OF-CURRENT-
+            # ITERATION write-through. It runs unconditionally AFTER
+            # the SM dispatch returns (even if the SM raised, in which
+            # case ``_sm_final_states`` is empty and the harvest is a
+            # no-op). It is paired with the
+            # ``_live_insufficient_repair_signatures`` bucket
+            # populated by ``acceptance_gate`` mid-iteration: the
+            # live bucket lets sibling clusters in the SAME iteration
+            # see a kept_insufficient signature, while this harvest
+            # commits the signature into the cross-iteration
+            # accumulator that survives across SM dispatches.
+            try:
+                from genie_space_optimizer.optimization.forbidden_signatures import (
+                    extend_sm_insufficient_repair_signatures,
+                    harvest_sm_insufficient_repair_signatures,
+                )
+                extend_sm_insufficient_repair_signatures(
+                    _sm_insufficient_repair_signatures,
+                    harvest_sm_insufficient_repair_signatures(
+                        _sm_final_states,
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "Trial 18 insufficient_repair_signature harvest "
+                    "failed; cumulative-learning channel skipped this "
+                    "iteration",
                     exc_info=True,
                 )
 
@@ -21050,14 +21595,34 @@ def _run_lever_loop_legacy(
             try:
                 # Task 1: persist GT correction queue payloads. Empty list
                 # is a no-op inside the helper.
+                _gtc_iter = _analysis.get("gt_correction_candidates") or []
                 write_gt_correction_candidates(
                     spark,
-                    _analysis.get("gt_correction_candidates") or [],
+                    _gtc_iter,
                     catalog=catalog,
                     schema=schema,
                 )
+                # Trial 19 C4 — accumulate run-level counts for the
+                # OPTIMIZER_OUTCOME_V1 marker emitted at run end.
+                _trial19_pending_gt_review_count_run += len(_gtc_iter)
             except Exception:
                 logger.debug("Failed to write GT correction candidates", exc_info=True)
+            # Trial 19 C1/C4 — also accumulate the
+            # already-correct-under-arbiter QIDs even when persistence
+            # fails: the outcome count is a separate observability
+            # signal from the Delta-write side effect.
+            try:
+                for _qid_ac in (
+                    _analysis.get("trial19_already_correct_under_arbiter_qids")
+                    or []
+                ):
+                    if _qid_ac:
+                        _trial19_already_correct_qids_run.add(_qid_ac)
+            except Exception:
+                logger.debug(
+                    "Failed to accumulate Trial 19 already-correct QIDs",
+                    exc_info=True,
+                )
 
             # Task 8: detect cluster signatures that have hit the
             # persistent-failure threshold across this run's reflection
@@ -23129,7 +23694,18 @@ def _run_lever_loop_legacy(
             # (source_cluster_signatures × lever_set) closes the
             # 7now-trial defect where iterations 2-5 re-admitted the
             # same AG family after the LLM regenerated root_cause text.
-            _forbidden_pair = _compute_forbidden_ag_set_pair(reflection_buffer)
+            # Trial 19 A3 — pass insufficient_repair_signatures harvested
+            # from Trial 18 KEPT_INSUFFICIENT reflection entries so the
+            # forbidden-set carries a fourth ``by_insufficient_signature``
+            # axis. The harness already maintains the running set on
+            # ``_sm_insufficient_repair_signatures``; off (flag) or
+            # empty set yields legacy behavior.
+            _forbidden_pair = _compute_forbidden_ag_set_pair(
+                reflection_buffer,
+                insufficient_repair_signatures=tuple(
+                    sorted(_sm_insufficient_repair_signatures)
+                ),
+            )
             # Plan 9 Task 9 — drop forbidden AGs BEFORE generation.
             _surviving_ags, _prefiltered_ags = (
                 filter_ags_by_forbidden_set_pre_generation(
@@ -23501,6 +24077,31 @@ def _run_lever_loop_legacy(
                 if _escalation == "flag_for_review" or (
                     _escalation == "remove_tvf" and _esc_tier == "flagged_only"
                 ):
+                    # Trial 22 W4 — route through the iteration-terminal
+                    # helper so the closed-vocab enum is computed in one
+                    # place. Escalation paths don't have Stage 3 /
+                    # compiler / applier counts for this AG, so we pass
+                    # sentinel ``-1`` and the helper returns the
+                    # ``fallback`` (``NO_APPLIED_PATCHES`` — preserved
+                    # for back-compat with downstream consumers of this
+                    # specific terminal). When
+                    # ``GSO_TRIAL22_TERMINAL_REASON_HELPER`` is off the
+                    # caller still emits the same enum literal.
+                    _t22_verdict = (
+                        compute_iteration_terminal_reason(
+                            stage3_proposal_count=-1,
+                            compiler_surviving_count=-1,
+                            applied_outcome_count=-1,
+                            fallback=_TerminalReason.NO_APPLIED_PATCHES,
+                        )
+                        if _terminal_reason_helper_enabled()
+                        else None
+                    )
+                    _t22_terminal = (
+                        _t22_verdict.terminal_reason
+                        if _t22_verdict is not None
+                        else _TerminalReason.NO_APPLIED_PATCHES
+                    )
                     reflection_buffer.append(_build_reflection_entry(
                         iteration=iteration_counter, ag_id=ag_id, accepted=False,
                         levers=[], target_objects=ag.get("affected_questions", []),
@@ -23513,7 +24114,7 @@ def _run_lever_loop_legacy(
                         escalation_handled=True,
                         terminal_signature=_terminal_signature_for_iteration(
                             iter_locals=_ag_context_snapshot,
-                            terminal_reason=_TerminalReason.NO_APPLIED_PATCHES,
+                            terminal_reason=_t22_terminal,
                         ),
                         **_ag_identity_kwargs,
                     ))
@@ -23542,6 +24143,25 @@ def _run_lever_loop_legacy(
                             _esc_result.get("detail", {}).get("quarantined_qids", [])
                         )
                         escalated_gt_repair_qids.update(_unfixed)
+                        # Trial 22 W4 — route through the helper as
+                        # the flag_for_review branch above. Same
+                        # rationale: escalation path, no Stage 3 /
+                        # compiler / applier signal, fallback preserved.
+                        _t22_verdict_gt = (
+                            compute_iteration_terminal_reason(
+                                stage3_proposal_count=-1,
+                                compiler_surviving_count=-1,
+                                applied_outcome_count=-1,
+                                fallback=_TerminalReason.NO_APPLIED_PATCHES,
+                            )
+                            if _terminal_reason_helper_enabled()
+                            else None
+                        )
+                        _t22_terminal_gt = (
+                            _t22_verdict_gt.terminal_reason
+                            if _t22_verdict_gt is not None
+                            else _TerminalReason.NO_APPLIED_PATCHES
+                        )
                         reflection_buffer.append(_build_reflection_entry(
                             iteration=iteration_counter, ag_id=ag_id, accepted=False,
                             levers=[], target_objects=ag.get("affected_questions", []),
@@ -23554,7 +24174,7 @@ def _run_lever_loop_legacy(
                             escalation_handled=True,
                             terminal_signature=_terminal_signature_for_iteration(
                                 iter_locals=_ag_context_snapshot,
-                                terminal_reason=_TerminalReason.NO_APPLIED_PATCHES,
+                                terminal_reason=_t22_terminal_gt,
                             ),
                             **_ag_identity_kwargs,
                         ))
@@ -30729,6 +31349,69 @@ def _run_lever_loop_legacy(
                     exc_info=True,
                 )
 
+            # Canonical CandidateOutcome — on a full-eval PASS, build the
+            # run-level authoritative record from the full-eval payload
+            # plus the iteration-local apply context. Downstream
+            # projections (optimizer outcome, candidate ledger, accuracy
+            # deltas, deploy eligibility) read this instead of
+            # re-deriving from per-QID trajectories. e94376a3 postmortem:
+            # a clean win was previously authoritative for nothing.
+            try:
+                _gr_pass = gate_result or {}
+                if bool(_gr_pass.get("passed")) and _gr_pass.get(
+                    "full_eval_payload"
+                ):
+                    _co_levers: tuple[int, ...] = ()
+                    try:
+                        _co_levers = tuple(
+                            int(_lv)
+                            for _lv in (lever_keys or ())
+                            if str(_lv).strip().lstrip("-").isdigit()
+                        )
+                    except Exception:
+                        _co_levers = ()
+                    _co_selected = ""
+                    try:
+                        for _p in all_proposals or ():
+                            _pid = (
+                                _p.get("proposal_id")
+                                if isinstance(_p, dict)
+                                else getattr(_p, "proposal_id", "")
+                            )
+                            if _pid:
+                                _co_selected = str(_pid)
+                                break
+                    except Exception:
+                        _co_selected = ""
+                    _co_tier = ""
+                    try:
+                        _co_tier = str(
+                            (
+                                (_gr_pass.get("acceptance_decision") or {}).get(
+                                    "reason_code"
+                                )
+                            )
+                            or _gr_pass.get("acceptance_reason_code")
+                            or ""
+                        )
+                    except Exception:
+                        _co_tier = ""
+                    _run_best_candidate_outcome = (
+                        _CandidateOutcome.from_full_eval_payload(
+                            dict(_gr_pass.get("full_eval_payload") or {}),
+                            selected_proposal_id=_co_selected,
+                            acceptance_tier=_co_tier,
+                            patches_applied=len(patches or []),
+                            levers=_co_levers,
+                        )
+                    )
+            except Exception:
+                logger.debug(
+                    "CandidateOutcome: run-level record build failed "
+                    "(non-fatal)",
+                    exc_info=True,
+                )
+
             # Cycle 14B-T2: accumulate accepted regression debt against
             # the policy's cumulative cap. The gate's
             # ``acceptance_decision`` carries the reason and debt qids
@@ -32909,6 +33592,24 @@ def _run_lever_loop_legacy(
             # / normal-end / exception-fallback path traverses.
 
         finally:
+            # Phase 0 P0.1 — release the per-iteration token budget
+            # FIRST so a re-entry via exception or early break does
+            # not strand the active budget on the ContextVar. The
+            # ``_iter_budget_token`` is guaranteed bound because the
+            # ``_set_iter_budget`` call sits above the matching
+            # ``try:`` (no exception can land between them).
+            try:
+                from genie_space_optimizer.optimization.llm_token_budget import (
+                    clear_iteration_budget as _clear_iter_budget,
+                )
+                _clear_iter_budget(_iter_budget_token)
+            except Exception:
+                logger.debug(
+                    "Phase 0 P0.1: clear_iteration_budget skipped "
+                    "(non-fatal)",
+                    exc_info=True,
+                )
+
             # Cycle 11 Task 12 / Bug B fix — exception-cascade
             # safety net. If the iteration body raised before any
             # explicit ``_finalize_iteration_summary`` call set
@@ -33035,6 +33736,101 @@ def _run_lever_loop_legacy(
                     TerminalSignature,
                     to_jsonable as _terminal_signature_to_jsonable,
                 )
+                # Trial 20 Workstream B2 — iteration-terminal selector
+                # reads SM final state and overrides the catch-all
+                # ``NO_APPLIED_PATCHES`` (and unknown) with the typed
+                # ``KEPT_INSUFFICIENT`` reason whenever any QID's
+                # state-machine final state recorded
+                # ``accepted.decision == "kept_insufficient"`` for the
+                # iteration. Gated by
+                # :func:`trial20_kept_insufficient_terminal_enabled`.
+                try:
+                    from genie_space_optimizer.optimization.trial20_flags import (
+                        trial20_kept_insufficient_terminal_enabled,
+                    )
+                    from genie_space_optimizer.optimization.trial23_flags import (
+                        trial23_kept_insufficient_authoritative_enabled,
+                    )
+                    # Trial 23 W1 — kept_insufficient is authoritative.
+                    # Fire under EITHER the Trial 20 B2 flag or the new
+                    # Trial 23 W1 flag so the invariant survives a
+                    # Trial 20 rollback. Both default ON, so steady-state
+                    # behaviour is unchanged.
+                    _ki_authoritative = (
+                        trial20_kept_insufficient_terminal_enabled()
+                        or trial23_kept_insufficient_authoritative_enabled()
+                    )
+                    if (
+                        _ki_authoritative
+                        and str(_iter_terminal_reason or "") != "accepted"
+                    ):
+                        _t20_kept_count = 0
+                        for _t20_fs in (_sm_final_states or ()):
+                            _t20_acc = getattr(_t20_fs, "accepted", None)
+                            if _t20_acc is None:
+                                continue
+                            _t20_dec = getattr(_t20_acc, "decision", None)
+                            if str(_t20_dec or "") == "kept_insufficient":
+                                _t20_kept_count += 1
+                        if _t20_kept_count > 0:
+                            import json as _t20_json2
+                            # Trial 23 W1 anti-success marker: record when
+                            # the prior terminal would have been a false
+                            # no_applied_patches before the override.
+                            _ki_prior = str(_iter_terminal_reason or "")
+                            _iter_terminal_reason = "kept_insufficient"
+                            print(
+                                "GSO_TRIAL20_KEPT_INSUFFICIENT_TERMINAL_V1 "
+                                + _t20_json2.dumps(
+                                    {
+                                        "iteration": int(_iter_num),
+                                        "kept_insufficient_qid_count": _t20_kept_count,
+                                    },
+                                    sort_keys=True,
+                                ),
+                                flush=True,
+                            )
+                            if (
+                                _ki_prior == "no_applied_patches"
+                                and trial23_kept_insufficient_authoritative_enabled()
+                            ):
+                                print(
+                                    "GSO_TRIAL23_KEPT_INSUFFICIENT_AUTHORITATIVE_V1 "
+                                    + _t20_json2.dumps(
+                                        {
+                                            "iteration": int(_iter_num),
+                                            "corrected_from": _ki_prior,
+                                            "corrected_to": "kept_insufficient",
+                                            "kept_insufficient_qid_count": _t20_kept_count,
+                                        },
+                                        sort_keys=True,
+                                    ),
+                                    flush=True,
+                                )
+                except Exception:
+                    logger.debug(
+                        "Trial 20 B2 kept_insufficient selector failed (non-fatal)",
+                        exc_info=True,
+                    )
+                # Canonical CandidateOutcome — terminal honesty for a
+                # no-work POST-WIN iteration. When a clean full-eval win
+                # already landed in an earlier iteration and this
+                # iteration produced no new candidate (terminal_reason
+                # still the default "unknown"), do NOT let the budget-
+                # boundary rule collapse "unknown" into a misleading
+                # GSO_RUN_ABORTED_V1. Relabel honestly and skip the
+                # router/abort so the run closes on the accepted win
+                # (e94376a3 postmortem: iteration-4 "unknown" abort
+                # polluted a 100%-accuracy run). The strict objective-
+                # completion predicate is intentionally left unchanged —
+                # we classify the win independent of loop continuation.
+                from genie_space_optimizer.optimization.candidate_outcome import (  # noqa: E501
+                    relabel_post_win_terminal_reason as _relabel_post_win,
+                )
+                _iter_terminal_reason = _relabel_post_win(
+                    _run_best_candidate_outcome,
+                    str(_iter_terminal_reason or "unknown"),
+                )
                 if iteration_terminal_policy_enabled():
                     try:
                         _tr_enum = TerminalReason(
@@ -33047,7 +33843,12 @@ def _run_lever_loop_legacy(
                     # ``TerminalReason(...)`` lookup above falls through to
                     # UNKNOWN. Skip the router call on that branch — the
                     # router only describes terminal short-circuit paths.
-                    if str(_iter_terminal_reason or "") != "accepted":
+                    # The post-win no-work relabel is likewise not a
+                    # router vocabulary term: skip so no RUN_ABORTED fires.
+                    if str(_iter_terminal_reason or "") not in (
+                        "accepted",
+                        "run_already_won_pending_gt_review",
+                    ):
                         _tsig_for_router = TerminalSignature(
                             root_cause=str(
                                 _iter_root_cause_for_ledger or ""
@@ -33065,6 +33866,26 @@ def _run_lever_loop_legacy(
                             ),
                             terminal_reason=_tr_enum.value,
                         )
+                        # Canonical CandidateOutcome — "trending up" when
+                        # an accepted full-eval win already landed OR the
+                        # best accuracy exceeds the iteration's starting
+                        # baseline. A KEPT_INSUFFICIENT signature is not
+                        # forbidden while the run is improving (e943).
+                        _run_trending_up = False
+                        try:
+                            _run_trending_up = bool(
+                                (
+                                    _run_best_candidate_outcome is not None
+                                    and _run_best_candidate_outcome.accepted
+                                    and _run_best_candidate_outcome.delta_pp > 0.0
+                                )
+                                or (
+                                    float(best_accuracy)
+                                    > float(_baseline_at_start_of_this_iter)
+                                )
+                            )
+                        except Exception:
+                            _run_trending_up = False
                         _router_action = decide_iteration_terminal_action(
                             terminal_reason=_tr_enum,
                             signature=_tsig_for_router,
@@ -33075,6 +33896,7 @@ def _run_lever_loop_legacy(
                             prior_forbidden_set=frozenset(_forbidden_set),
                             iteration_index=int(_iter_num),
                             iteration_budget=int(max_iterations or 0),
+                            run_accuracy_trending_up=_run_trending_up,
                         )
                         # Phase 2 (2026-05-16) Task 8 — grow the
                         # loop-scoped forbidden set so subsequent
@@ -33148,6 +33970,153 @@ def _run_lever_loop_legacy(
                     emit_ledger_marker,
                     write_ledger_entry,
                 )
+                # Canonical CandidateOutcome ledger projection — when the
+                # accepted full-eval landed on THIS iteration, the ledger
+                # row must carry the real delta/tier/patch-count/proposal
+                # from the canonical record rather than the unassigned
+                # defaults (0.0 / reject_loss / 0 / "") that the e94376a3
+                # postmortem flagged as contradicting terminal_reason=
+                # "accepted".
+                _ledger_ov = (
+                    _run_best_candidate_outcome.ledger_overrides_for_iteration(
+                        int(_iter_num),
+                        current_tier=str(_iter_acceptance_tier),
+                        current_patches=int(_iter_patches_applied or 0),
+                    )
+                    if _run_best_candidate_outcome is not None
+                    else {}
+                )
+                if _ledger_ov:
+                    _iter_accuracy_delta_pp = float(
+                        _ledger_ov["accuracy_delta_pp"]
+                    )
+                    _iter_acceptance_tier = str(_ledger_ov["acceptance_tier"])
+                    _iter_patches_applied = int(_ledger_ov["patches_applied"])
+                    if "selected_proposal_id" in _ledger_ov:
+                        _iter_selected_proposal_id = str(
+                            _ledger_ov["selected_proposal_id"]
+                        )
+                # Track A / A1 — patch_survival is the authoritative
+                # applied-patch record. The accept-only CandidateOutcome
+                # above fills the ledger ONLY on a full-eval accept, so a
+                # non-accepted iteration that nonetheless applied a patch
+                # reported patches_applied=0 / selected="" — the e94376a3
+                # iter-3 contradiction. CandidateLifecycle raises the
+                # applied facts to what patch_survival recorded on EVERY
+                # iteration (floor, never lowers an accept's higher count).
+                try:
+                    from genie_space_optimizer.optimization.candidate_outcome import (
+                        CandidateLifecycle as _CandidateLifecycle,
+                    )
+                    _lifecycle = _CandidateLifecycle.from_patch_survival(
+                        iteration=int(_iter_num),
+                        per_ag_snapshots=list(
+                            _iter_patch_survival_snapshots or ()
+                        ),
+                    )
+                    _lc_floor = _lifecycle.ledger_floor_for_iteration(
+                        int(_iter_num),
+                        current_patches=int(_iter_patches_applied or 0),
+                        current_selected=str(_iter_selected_proposal_id or ""),
+                    )
+                    if "patches_applied" in _lc_floor:
+                        _iter_patches_applied = int(_lc_floor["patches_applied"])
+                    if "selected_proposal_id" in _lc_floor:
+                        _iter_selected_proposal_id = str(
+                            _lc_floor["selected_proposal_id"]
+                        )
+                except Exception:
+                    logger.debug(
+                        "Track A lifecycle floor skipped (non-fatal)",
+                        exc_info=True,
+                    )
+
+                # Track B / B2 — post-apply inertness detection. When an
+                # applied patch is a lone natural-language instruction for
+                # a SQL-shape RCA (top_n_cardinality_collapse,
+                # canonical_dimension_missed) and the generated SQL shape
+                # for the target QID is UNCHANGED before vs after apply,
+                # the patch is behaviorally inert — the d139 / e943
+                # phantom accept that live-llm-only's stubbed eval hides.
+                # Observational only here (records the flag + emits a
+                # marker); the I26 reconciler and the live-validation gate
+                # decide what to do with it. Fully guarded: any missing
+                # SQL / mechanism data leaves the flag False (no false
+                # positive can suppress a genuine win).
+                try:
+                    from genie_space_optimizer.optimization.patch_mechanism import (  # noqa: E501
+                        mechanism_for_patch_type as _b2_mech_for,
+                    )
+                    from genie_space_optimizer.optimization.sql_shape_inertness import (  # noqa: E501
+                        detect_applied_but_inert as _b2_detect,
+                    )
+                    _b2_mechs = set()
+                    for _b2_snap in (_iter_patch_survival_snapshots or ()):
+                        for _b2_patch in (
+                            getattr(_b2_snap, "applied", None) or ()
+                        ):
+                            if not isinstance(_b2_patch, dict):
+                                continue
+                            _b2_pt = str(
+                                _b2_patch.get("patch_type")
+                                or _b2_patch.get("type")
+                                or ""
+                            )
+                            _b2_m = _b2_mech_for(_b2_pt)
+                            if _b2_m is not None:
+                                _b2_mechs.add(_b2_m)
+                    _b2_rca = str(_iter_root_cause_for_ledger or "")
+                    _b2_targets = tuple(_iter_target_qids_for_ledger or ())
+                    _b2_qid = _b2_targets[0] if _b2_targets else ""
+                    _b2_pre_map = dict(
+                        (metadata_snapshot or {}).get(
+                            "_generated_sql_by_qid"
+                        )
+                        or {}
+                    )
+                    _b2_post_map: dict = {}
+                    try:
+                        _b2_fe = dict(_gr_pass.get("full_eval_payload") or {})
+                        _b2_post_map = dict(
+                            _b2_fe.get("generated_sql_by_qid") or {}
+                        )
+                    except Exception:
+                        _b2_post_map = {}
+                    _b2_inert = False
+                    if (
+                        _b2_qid
+                        and _b2_mechs
+                        and _b2_qid in _b2_pre_map
+                        and _b2_qid in _b2_post_map
+                    ):
+                        _b2_inert = bool(
+                            _b2_detect(
+                                rca_kind=_b2_rca,
+                                mechanisms=_b2_mechs,
+                                sql_before=_b2_pre_map.get(_b2_qid),
+                                sql_after=_b2_post_map.get(_b2_qid),
+                            )
+                        )
+                    if _b2_inert:
+                        _lifecycle = _lifecycle.with_applied_but_inert(True)
+                        from genie_space_optimizer.optimization.run_analysis_contract import (  # noqa: E501
+                            applied_but_inert_marker as _b2_marker,
+                        )
+                        print(_b2_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=int(_iter_num),
+                            rca_kind=_b2_rca,
+                            target_qid=str(_b2_qid),
+                            observed_mechanisms=sorted(
+                                m.value for m in _b2_mechs
+                            ),
+                        ), flush=True)
+                except Exception:
+                    logger.debug(
+                        "Track B / B2 inertness detection skipped "
+                        "(non-fatal)",
+                        exc_info=True,
+                    )
                 if candidate_ledger_enabled():
                     _ledger_entry = IterationCandidateLedgerEntry(
                         iteration=int(_iter_num),
@@ -33207,6 +34176,12 @@ def _run_lever_loop_legacy(
                             _iter_acceptance_tier or "reject_loss"
                         ),
                         retire_signature=str(_iter_retire_signature or ""),
+                        # Trial 22 W3 — persist the slate compiler's
+                        # drop summary onto the DURABLE ledger row so
+                        # iteration N+1's Stage 3 prompt can read it.
+                        compiler_drop_summary=(
+                            _iter_compiler_drop_summary or None
+                        ),
                     )
                     import os as _os_for_ledger
                     _ledger_path = (
@@ -33808,6 +34783,21 @@ def _run_lever_loop_legacy(
                 exc_info=True,
             )
             _eval_result_for_run_summary = None
+        # Canonical CandidateOutcome delta — when a full-eval accepted,
+        # its authoritative delta_pp overrides the best-minus-prev
+        # computation so run_summary agrees with the optimizer outcome
+        # and scoreboard (e94376a3 postmortem: three disagreeing deltas).
+        _canonical_delta_for_summary: float | None = None
+        try:
+            if (
+                _run_best_candidate_outcome is not None
+                and _run_best_candidate_outcome.accepted
+            ):
+                _canonical_delta_for_summary = float(
+                    _run_best_candidate_outcome.delta_pp
+                )
+        except Exception:
+            _canonical_delta_for_summary = None
         _run_summary = _build_run_summary(
             baseline=_baseline_for_summary,
             terminal_state={
@@ -33819,6 +34809,7 @@ def _run_lever_loop_legacy(
                 _best_acc_for_delta - float(prev_accuracy), 1
             ),
             eval_result=_eval_result_for_run_summary,
+            canonical_delta_pp=_canonical_delta_for_summary,
         )
 
         _run_overview = _render_run_overview(
@@ -34058,6 +35049,76 @@ def _run_lever_loop_legacy(
                     artifact_file=_paths["journey_validation_all"],
                 )
 
+                # Track A / A2 — I26 cross-surface lifecycle reconciler.
+                # Project the five terminate facts from the ONE canonical
+                # CandidateOutcome record (+ the per-iter journey terminal
+                # states surfaced above) and assert they agree. Emits
+                # GSO_LIFECYCLE_CONTRADICTION_V1 when an accepted decision
+                # contradicts a zero-gain scoreboard / no selected
+                # proposal / no applied patch / unresolved target — the
+                # e94376a3 iter-3 phantom where decision_trace,
+                # scoreboard, and journey_validation were assembled from
+                # disjoint pipelines and silently disagreed.
+                try:
+                    from genie_space_optimizer.optimization.invariants import (
+                        check_i26_lifecycle_coherence as _check_i26,
+                    )
+                    from genie_space_optimizer.optimization.run_analysis_contract import (  # noqa: E501
+                        lifecycle_contradiction_marker as _lifecycle_marker,
+                    )
+                    _i26_evidence: dict[str, Any] = {}
+                    if (
+                        _run_best_candidate_outcome is not None
+                        and _run_best_candidate_outcome.accepted
+                    ):
+                        _target_qids = set(
+                            _run_best_candidate_outcome.target_qids or ()
+                        )
+                        _terminal_states_for_targets: list[str] = []
+                        for _rep in (_per_iter_journey_reports or []):
+                            _tsbq = (
+                                (_rep or {}).get("terminal_state_by_qid")
+                                or {}
+                            )
+                            for _qid, _state in _tsbq.items():
+                                if (
+                                    not _target_qids
+                                    or str(_qid) in _target_qids
+                                ):
+                                    _terminal_states_for_targets.append(
+                                        str(_state)
+                                    )
+                        _i26_evidence = {
+                            "lifecycle_accepted": True,
+                            "lifecycle_scoreboard_delta_pp": float(
+                                _run_best_candidate_outcome.delta_pp
+                            ),
+                            "lifecycle_selected_proposal_id": str(
+                                _run_best_candidate_outcome.selected_proposal_id
+                                or ""
+                            ),
+                            "lifecycle_patches_applied": int(
+                                _run_best_candidate_outcome.patches_applied
+                                or 0
+                            ),
+                            "lifecycle_journey_terminal_states": (
+                                _terminal_states_for_targets
+                            ),
+                        }
+                    _i26_violations = _check_i26(_i26_evidence)
+                    if _i26_violations:
+                        print(_lifecycle_marker(
+                            optimization_run_id=str(run_id or ""),
+                            iteration=0,
+                            violations=_i26_violations,
+                        ), flush=True)
+                except Exception:
+                    logger.debug(
+                        "Track A / A2: I26 lifecycle reconciler failed "
+                        "(non-fatal)",
+                        exc_info=True,
+                    )
+
                 # Cycle 14-W hardening (G-4 / D-8) — compare canonical
                 # replay-validator aggregate against the Phase H
                 # journey-validator upload and alarm on disagreement.
@@ -34201,6 +35262,72 @@ def _run_lever_loop_legacy(
                         exc_info=True,
                     )
 
+                # Trial 22 W5 — full-eval ↔ patch/admission lineage
+                # reconciliation, run BEFORE assembling scoreboard.json.
+                # W5.0 audit marker ALWAYS runs (observability on every
+                # run). W5.1 enforcement is gated by
+                # ``GSO_TRIAL22_LINEAGE_INVARIANT`` (default ON; =0 for
+                # emergency disable). When the run accumulated full-eval
+                # lineage rows, an accepted full-eval without a matching
+                # (canonical-key) patch_outcome + admission_decision is
+                # stamped orphan_acceptance and EXCLUDED from
+                # best_accuracy (it stays at baseline) — the e943
+                # ledger-contradiction guard. Absent accumulated rows
+                # the reconciler is a strict no-op, so the live accept
+                # path (which already carries lineage) is never wrongly
+                # orphaned.
+                _t22_lineage_best_accuracy = best_accuracy
+                try:
+                    import os as _t22_lin_os
+
+                    from genie_space_optimizer.optimization.lineage_invariants import (  # noqa: E501
+                        enforce_full_eval_lineage as _t22_enforce_lineage,
+                        lineage_key_audit_marker as _t22_lineage_audit,
+                    )
+
+                    print(_t22_lineage_audit(), flush=True)
+
+                    _t22_lin_flag = (
+                        _t22_lin_os.environ.get(
+                            "GSO_TRIAL22_LINEAGE_INVARIANT"
+                        ) or ""
+                    ).strip().lower()
+                    _t22_lin_on = _t22_lin_flag not in (
+                        "0", "false", "no", "off"
+                    )
+                    _t22_fe_rows = list(
+                        locals().get("_t22_full_eval_lineage_rows") or []
+                    )
+                    _t22_po_rows = list(
+                        locals().get("_t22_patch_outcome_lineage_rows") or []
+                    )
+                    _t22_ad_rows = list(
+                        locals().get(
+                            "_t22_admission_decision_lineage_rows"
+                        ) or []
+                    )
+                    if _t22_lin_on and _t22_fe_rows:
+                        _t22_recon = _t22_enforce_lineage(
+                            full_eval_rows=_t22_fe_rows,
+                            patch_outcome_rows=_t22_po_rows,
+                            admission_decision_rows=_t22_ad_rows,
+                            baseline_accuracy=float(prev_accuracy or 0.0),
+                        )
+                        for _t22_m in _t22_recon.markers:
+                            print(_t22_m, flush=True)
+                        if _t22_recon.orphan_count > 0:
+                            # Orphan acceptances do NOT contribute to
+                            # best_accuracy — keep the reconciled value.
+                            _t22_lineage_best_accuracy = (
+                                _t22_recon.best_accuracy
+                            )
+                except Exception:
+                    logger.debug(
+                        "Trial 22 W5 lineage reconciliation skipped "
+                        "(non-fatal)",
+                        exc_info=True,
+                    )
+
                 _client_phase_h.log_text(
                     run_id=_phase_h_anchor_run_id,
                     text=_json_phase_h_c18.dumps(
@@ -34220,9 +35347,17 @@ def _run_lever_loop_legacy(
                                 int(k): int(levers_rolled_back.count(k))
                                 for k in set(levers_rolled_back or [])
                             },
-                            best_accuracy=best_accuracy,
+                            best_accuracy=_t22_lineage_best_accuracy,
                             baseline_accuracy=prev_accuracy,
                             iteration_count=int(iteration_counter),
+                            canonical_delta_pp=(
+                                float(_run_best_candidate_outcome.delta_pp)
+                                if (
+                                    _run_best_candidate_outcome is not None
+                                    and _run_best_candidate_outcome.accepted
+                                )
+                                else None
+                            ),
                         ),
                         sort_keys=True, indent=2,
                     ),
@@ -34703,6 +35838,26 @@ def _run_lever_loop_legacy(
                 _trajectories,
                 hard_rows_in_eval=_canary_any_hard_rows_seen,
             )
+            # Canonical CandidateOutcome dominance — when a full-eval
+            # acceptance landed, the run outcome MUST be projected from
+            # the canonical record, not re-derived from per-QID
+            # trajectories. The trajectory classifier only sees the
+            # per-QID acceptance lane (often kept_insufficient), so a
+            # cumulative win is misreported as
+            # OPTIMIZER_TRIED_INSUFFICIENT_GAIN (e94376a3 postmortem).
+            # An accepted candidate dominates any trajectory verdict
+            # EXCEPT a genuine invariant violation, which still wins so
+            # SM1 breakage stays visible.
+            _outcome = _CandidateOutcome.project_run_outcome(
+                _outcome, _run_best_candidate_outcome
+            )
+            # Trial 22 W8 — surface the run outcome on loop_out so the
+            # deploy task can compute deploy eligibility (no-candidate
+            # outcomes skip deploy without failing the optimizer task).
+            try:
+                _loop_out_base["optimizer_outcome"] = str(_outcome)
+            except Exception:
+                pass
             _deepest_by_qid = {
                 t.qid: t.deepest_stage_ever.value
                 for t in _trajectories
@@ -34713,6 +35868,12 @@ def _run_lever_loop_legacy(
                     outcome=_outcome,
                     hard_qids_count=len(_trajectories),
                     deepest_stage_by_qid=_deepest_by_qid,
+                    hard_qids_already_correct_count=len(
+                        _trial19_already_correct_qids_run
+                    ),
+                    pending_gt_review_count=(
+                        _trial19_pending_gt_review_count_run
+                    ),
                 ),
                 flush=True,
             )
@@ -36893,6 +38054,43 @@ def _derive_prior_patch_family(action_group: dict) -> str:
     return ""
 
 
+def _infer_prior_family_from_signatures(prior_sigs: "list") -> str:
+    """Trial 23 W3 — recover the pivot from-state from prior terminal
+    signatures when the next AG's directive does not expose a family.
+
+    The acceptance gate stamps ``prior_patch_family`` + ``prior_lever_set``
+    onto each cluster's :class:`TerminalSignature` (P2.5). When the
+    strategist re-proposes an AG whose directive payload has no
+    ``patch_type`` (the d139 case), ``_derive_prior_patch_family`` returns
+    "" and the Plan 12 pivot decider sees an empty from-state, so
+    ``pivot_recommended`` is always False. This helper reads the latest
+    signature carrying a non-empty ``prior_patch_family`` (most recent
+    first); if none carry one, it maps the most recent non-empty
+    ``prior_lever_set`` / ``lever_set`` onto the family vocabulary.
+
+    Returns "" when nothing can be inferred.
+    """
+    for _sig in reversed(list(prior_sigs or ())):
+        fam = str(getattr(_sig, "prior_patch_family", "") or "").strip()
+        if fam:
+            return fam
+    # Fallback: map a lever id/index to its default family.
+    for _sig in reversed(list(prior_sigs or ())):
+        lever_ids = getattr(_sig, "prior_lever_set", None) or ()
+        for lid in lever_ids:
+            # lever ids look like "lever-5"; extract the trailing digit.
+            digits = "".join(ch for ch in str(lid) if ch.isdigit())
+            fam = _LEVER_TO_DEFAULT_FAMILY.get(digits)
+            if fam:
+                return fam
+        int_levers = getattr(_sig, "lever_set", None) or ()
+        for idx in int_levers:
+            fam = _LEVER_TO_DEFAULT_FAMILY.get(str(idx))
+            if fam:
+                return fam
+    return ""
+
+
 # Plan 12 PR 5 deferred — patch_family → lever_key map. The reverse of
 # _LEVER_TO_DEFAULT_FAMILY, used by the active-mutation branch to
 # decide which lever_key to add to a pivoting AG's lever_directives.
@@ -37025,6 +38223,23 @@ def _emit_plan12_ag_pivot_decision(
             else ""
         )
         prior_family = _derive_prior_patch_family(ag)
+        # Trial 23 W3 — reliable pivot from-state. When the next AG's
+        # directive does not expose a family, recover it from the prior
+        # terminal signatures (acceptance-gate-stamped) so the pivot has
+        # a real "from" instead of defaulting to pivot_recommended=False.
+        _w3_recovered = False
+        if not prior_family:
+            try:
+                from genie_space_optimizer.optimization.trial23_flags import (
+                    trial23_pivot_inputs_enabled,
+                )
+                if trial23_pivot_inputs_enabled():
+                    _inferred = _infer_prior_family_from_signatures(prior_sigs)
+                    if _inferred:
+                        prior_family = _inferred
+                        _w3_recovered = True
+            except Exception:
+                pass
         recommended = next_patch_family_for_cluster(
             cluster_id=cluster_id,
             prior_terminal_signatures=prior_sigs,
@@ -37033,6 +38248,27 @@ def _emit_plan12_ag_pivot_decision(
         pivot_recommended = bool(
             prior_family and recommended != prior_family
         )
+        if _w3_recovered:
+            try:
+                import json as _w3_json
+                print(
+                    "GSO_TRIAL23_PIVOT_INPUT_RECOVERED_V1 "
+                    + _w3_json.dumps(
+                        {
+                            "iteration": int(iteration or 0),
+                            "cluster_id": cluster_id,
+                            "recovered_prior_family": prior_family,
+                            "recommended_patch_family": str(
+                                recommended or prior_family
+                            ),
+                            "pivot_recommended": pivot_recommended,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
         # Plan 12 PR 5 deferred promotion — active mutation when the
         # mutate flag at the callsite is on AND the policy recommends
         # a pivot. ``pivot_applied`` reflects whether the AG was

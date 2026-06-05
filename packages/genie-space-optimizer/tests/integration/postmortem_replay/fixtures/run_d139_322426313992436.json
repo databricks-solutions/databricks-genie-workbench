@@ -1,0 +1,178 @@
+{
+  "fixture_id": "trial22_postmortem_replay_run_d139",
+  "source_postmortem_run": "d13938e7-405d-4444-833a-03f5ac9f7523",
+  "source_attempt_id": "322426313992436",
+  "source_marker_digest": "docs/runid_analysis/d13938e7-405d-4444-833a-03f5ac9f7523/postmortem_322426313992436.md",
+  "scenario": "all_bundle_proposals_dropped_as_bundle_invariant_violated_in_trial21",
+  "headline_failure": "Stage 3 emitted production-shape bundles (multiple sibling proposals sharing bundle_id, each with one lever); Trial 21's per-proposal _check_bundle_invariants dropped every single one because len(proposal.effective_selected_levers()) < 2 on each individual proposal.",
+  "h001_bundle_fixture": {
+    "scenario": "production_shape_bundle_two_siblings_distinct_levers",
+    "bundle_id": "H001_payment_dist_bundle",
+    "cluster_id": "H001_payment_distribution_cluster",
+    "iteration": 1,
+    "proposals": [
+      {
+        "intent_id": "h001_bundle_member_lever1_add_col_desc",
+        "patch_type": "add_column_description",
+        "selected_lever": "lever-1",
+        "selected_levers": ["lever-1"],
+        "bundle_id": "H001_payment_dist_bundle",
+        "target_qids": ["d139_payment_dist_q01"],
+        "patch_body": {
+          "table": "main.sales.payments",
+          "column": "payment_method",
+          "description": "Method used to pay the invoice (credit_card | ach | wire | check)."
+        },
+        "rationale": "Add column doc so the LLM knows the payment_method canonical vocabulary."
+      },
+      {
+        "intent_id": "h001_bundle_member_lever5_add_example_sql",
+        "patch_type": "add_example_sql",
+        "selected_lever": "lever-5",
+        "selected_levers": ["lever-5"],
+        "bundle_id": "H001_payment_dist_bundle",
+        "target_qids": ["d139_payment_dist_q01"],
+        "patch_body": {
+          "example_question": "What is the distribution of payment methods last quarter?",
+          "example_sql": "SELECT payment_method, COUNT(*) FROM main.sales.payments WHERE invoice_date >= DATE_SUB(CURRENT_DATE, 90) GROUP BY payment_method"
+        },
+        "rationale": "Pair the column doc with an exemplar SQL so the LLM has a concrete completion target."
+      }
+    ],
+    "expected_after_trial22_w2": {
+      "phase1_outcome": "both_pass",
+      "phase15_outcome": "no_cascade",
+      "phase2_outcome": "both_survive",
+      "union_levers": ["lever-1", "lever-5"],
+      "rationale": "The bundle group carries 2 distinct levers across 2 members. Trial 22's group-aware invariant must admit both."
+    }
+  },
+  "h001_bundle_cohesion_cascade_fixture": {
+    "scenario": "phase1_drops_one_sibling_phase15_cascades_the_other",
+    "bundle_id": "H001_payment_dist_bundle_cohesion_case",
+    "proposals": [
+      {
+        "intent_id": "h001_cohesion_member_lever1_assets_missing",
+        "patch_type": "add_column_description",
+        "selected_lever": "lever-1",
+        "selected_levers": ["lever-1"],
+        "bundle_id": "H001_payment_dist_bundle_cohesion_case",
+        "target_qids": ["d139_payment_dist_q01"],
+        "patch_body": {
+          "table": "main.sales.payments",
+          "column": "payment_method",
+          "description": "Method used to pay."
+        },
+        "implicated_assets_from_diagnosis": [],
+        "phase1_expected_drop": "MISSING_IMPLICATED_ASSETS"
+      },
+      {
+        "intent_id": "h001_cohesion_member_lever5_otherwise_valid",
+        "patch_type": "add_example_sql",
+        "selected_lever": "lever-5",
+        "selected_levers": ["lever-5"],
+        "bundle_id": "H001_payment_dist_bundle_cohesion_case",
+        "target_qids": ["d139_payment_dist_q01"],
+        "patch_body": {
+          "example_question": "Payment methods last quarter?",
+          "example_sql": "SELECT payment_method, COUNT(*) FROM main.sales.payments GROUP BY payment_method"
+        },
+        "phase1_expected_outcome": "survives_phase1"
+      }
+    ],
+    "expected_after_trial22_w2": {
+      "phase1_drops": [
+        {
+          "intent_id": "h001_cohesion_member_lever1_assets_missing",
+          "drop_reason": "missing_implicated_assets"
+        }
+      ],
+      "phase15_cascades": [
+        {
+          "intent_id": "h001_cohesion_member_lever5_otherwise_valid",
+          "drop_reason": "bundle_member_dropped_cascade",
+          "originating_intent_id": "h001_cohesion_member_lever1_assets_missing",
+          "originating_drop_reason": "missing_implicated_assets"
+        }
+      ],
+      "anti_assertion": "Phase 2 must NOT see the lever-5 sibling and therefore MUST NOT emit BUNDLE_INVARIANT_VIOLATED on it."
+    }
+  },
+  "terminal_reason_closed_vocab_fixture": {
+    "scenario": "iteration_emits_only_bundle_invariant_drops_terminal_reason_must_be_closed_vocab",
+    "stage3_proposal_count": 2,
+    "compiler_result_drop_reason_counts": {
+      "bundle_invariant_violated": 2
+    },
+    "compiler_result_top_drop_reason": "bundle_invariant_violated",
+    "applied_outcomes": [],
+    "expected_after_trial22_w4": {
+      "terminal_reason_enum": "slate_compiler_empty",
+      "top_drop_reason": "bundle_invariant_violated",
+      "drop_reason_counts": {"bundle_invariant_violated": 2},
+      "anti_assertions": [
+        "terminal_reason MUST NOT be no_applied_patches",
+        "terminal_reason MUST NOT be stage3_returned_none (stage3 returned 2 proposals)",
+        "terminal_reason MUST NOT be any string containing ':' (no colon suffix)"
+      ]
+    }
+  },
+  "rca_subcluster_oversize_fixture": {
+    "scenario": "rca_subcluster_stage3_request_at_105k_tokens_declines_prompt_too_large",
+    "cluster_id": "rca_d139_payment_dist_subcluster_iter1",
+    "builder": "rca_subcluster",
+    "iteration": 1,
+    "qid_count": 18,
+    "sample_over_cap_breakdown": {
+      "cacheable_block_tokens": 4120,
+      "cap": 40000,
+      "system_msg_tokens": 3104,
+      "total_tokens": 105844,
+      "user_prompt_tokens": 98620,
+      "over_cap": true,
+      "observe_only": true
+    },
+    "expected_after_trial22_w7": {
+      "sub_cluster_split_needed": true,
+      "min_batch_count": 3,
+      "max_tokens_per_batch": 40000,
+      "stage3_outcome_per_batch": "synthesized"
+    }
+  },
+  "compiler_drop_summary_durability_fixture": {
+    "scenario": "iteration1_full_drop_compiler_drop_summary_must_land_on_iteration_terminal_state_ledger",
+    "iteration": 1,
+    "compiler_drop_summary": {
+      "top_drop_reasons": ["bundle_invariant_violated"],
+      "drop_reason_counts": {"bundle_invariant_violated": 2},
+      "specific_violations": [
+        {
+          "bundle_id": "H001_payment_dist_bundle",
+          "member_count": 1,
+          "union_levers": ["lever-5"]
+        }
+      ],
+      "originating_intents": ["h001_bundle_member_lever5_add_example_sql"]
+    },
+    "expected_after_trial22_w3": {
+      "ledger_row_carries_compiler_drop_summary": true,
+      "iteration2_stage3_prompt_contains_drop_string": true,
+      "marker_emitted": "GSO_TRIAL22_RETRY_FEEDBACK_V1"
+    }
+  },
+  "trial23_phase1_replay": {
+    "scenario": "post_trial22_add_example_sql_applies_and_survives_eval_but_does_not_change_behaviour_so_iteration_is_kept_insufficient_not_no_applied_patches",
+    "note": "After Trial 22 fixed bundle delivery, d139's latest run applies an add_example_sql patch that survives every gate and the full eval, but the target QID stays hard (behaviour unchanged). W1 makes kept_insufficient authoritative so the iteration terminal reason reflects what actually happened (a tested-but-insufficient repair) instead of the false NO_APPLIED_PATCHES catch-all.",
+    "stage3_proposal_count": 1,
+    "compiler_surviving_count": 1,
+    "applied_outcome_count": 1,
+    "kept_insufficient_count": 1,
+    "expected_after_trial23_w1": {
+      "terminal_reason_enum": "kept_insufficient",
+      "anti_assertions": [
+        "terminal_reason MUST NOT be no_applied_patches (a patch WAS applied)",
+        "terminal_reason MUST NOT be applier_no_outcomes (the applier produced an outcome)"
+      ]
+    }
+  }
+}

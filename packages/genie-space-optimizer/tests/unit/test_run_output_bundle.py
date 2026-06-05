@@ -21,6 +21,73 @@ def test_build_manifest_carries_run_id_and_iteration_count() -> None:
     assert "schema_version" in manifest
 
 
+def test_run_summary_canonical_delta_overrides_legacy() -> None:
+    # e94376a3: the legacy best-minus-prev delta was 0.0 while the
+    # authoritative full-eval delta was +12.5. The canonical override
+    # must win.
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_run_summary,
+    )
+    summary = build_run_summary(
+        baseline={"overall_accuracy": 87.5},
+        terminal_state={"status": "complete"},
+        iteration_count=4,
+        accuracy_delta_pp=0.0,
+        canonical_delta_pp=12.5,
+    )
+    assert summary["accuracy_delta_pp"] == 12.5
+
+
+def test_run_summary_legacy_delta_when_no_canonical() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_run_summary,
+    )
+    summary = build_run_summary(
+        baseline={"overall_accuracy": 87.5},
+        terminal_state={"status": "complete"},
+        iteration_count=4,
+        accuracy_delta_pp=3.0,
+    )
+    assert summary["accuracy_delta_pp"] == 3.0
+
+
+def test_scoreboard_canonical_delta_overrides_legacy() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_scoreboard,
+    )
+    sb = build_scoreboard(
+        iter_record_counts=[1],
+        iter_violation_counts=[0],
+        no_records_iterations=[],
+        levers_attempted={},
+        levers_accepted={},
+        levers_rolled_back={},
+        best_accuracy=87.5,
+        baseline_accuracy=87.5,
+        iteration_count=4,
+        canonical_delta_pp=12.5,
+    )
+    assert sb["accuracy_delta_pp"] == 12.5
+
+
+def test_scoreboard_legacy_delta_when_no_canonical() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_scoreboard,
+    )
+    sb = build_scoreboard(
+        iter_record_counts=[1],
+        iter_violation_counts=[0],
+        no_records_iterations=[],
+        levers_attempted={},
+        levers_accepted={},
+        levers_rolled_back={},
+        best_accuracy=100.0,
+        baseline_accuracy=87.5,
+        iteration_count=4,
+    )
+    assert sb["accuracy_delta_pp"] == 12.5
+
+
 def test_build_artifact_index_lists_all_iterations_and_stages() -> None:
     from genie_space_optimizer.optimization.run_output_bundle import (
         build_artifact_index,
@@ -176,6 +243,51 @@ def test_build_journey_validation_all_handles_empty_input() -> None:
     assert out["iteration_count"] == 0
     assert out["any_invalid"] is False
     assert out["total_violation_count"] == 0
+
+
+# Trial 23 W10 — list-valued stage captures must not crash the
+# parent-bundle aggregators. The harness's stage_io_capture wrapper
+# occasionally yields a list (multi-decision capture); before W10,
+# build_decision_trace_all / build_journey_validation_all called
+# ``.get`` on it and raised ``'list' object has no attribute 'get'``,
+# aborting Phase H bundle assembly (airline runs 833709971504406 /
+# 1105451933925748 F7).
+def test_w10_build_decision_trace_all_survives_list_valued_entry() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_decision_trace_all,
+    )
+
+    iter_traces = [
+        {"iteration": 1, "records": [{"id": "r1"}]},
+        [{"iteration": 2, "records": [{"id": "r2"}, {"id": "r3"}]}],
+        ["not-a-dict"],
+        [],
+    ]
+
+    out = build_decision_trace_all(iter_traces=iter_traces)
+
+    assert out["iteration_count"] == 4
+    # list-of-dict collapses to its first dict (2 records); list-of-str
+    # and empty list collapse to {} (0 records); plain dict keeps 1.
+    assert out["total_record_count"] == 3
+
+
+def test_w10_build_journey_validation_all_survives_list_valued_entry() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_journey_validation_all,
+    )
+
+    reports = [
+        {"iteration": 1, "is_valid": True, "violations": []},
+        [{"iteration": 2, "is_valid": False, "violations": [{"v": 1}]}],
+        ["junk"],
+    ]
+
+    out = build_journey_validation_all(iter_reports=reports)
+
+    assert out["iteration_count"] == 3
+    assert out["total_violation_count"] == 1
+    assert out["any_invalid"] is True
 
 
 def test_build_scoreboard_minimal_shape() -> None:

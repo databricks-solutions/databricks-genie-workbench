@@ -182,6 +182,35 @@ INVALID — your proposal will be dropped:
   "blame_set": [""]
 </blame_set_requirements>
 
+<patch_family_fit_rules>
+Some patch families systematically MISFIRE on certain root causes —
+they look plausible but make the failure worse or leave it unfixed.
+The cluster's diagnosis carries a free-text ``rca_kind_label`` (Stage 1
+emits it; it may be a label below or a NEW label you have not seen).
+For the labels below, AVOID the listed forbidden families and prefer a
+structural fix that addresses the actual defect:
+
+- ``top_n_cardinality_collapse`` — AVOID ``avoid_unrequested_defensive_filters``
+  and ``filter_logic_guidance``. Adding filters does not fix a collapsed
+  TOP-N; fix the ranking/limit grain instead.
+- ``measure_swap`` — AVOID ``avoid_unrequested_defensive_filters``. The
+  wrong measure is selected; correct the measure, do not add filters.
+- ``extra_defensive_filter`` — AVOID ``filter_logic_guidance``. Adding
+  MORE filter logic is the wrong direction; the fix is to remove the
+  spurious filter.
+- ``missing_required_dimension`` — AVOID ``avoid_unrequested_defensive_filters``.
+  Add the missing dimension; do not add filters.
+- ``grain_or_grouping_mismatch`` — AVOID ``avoid_unrequested_defensive_filters``.
+  Correct the GROUP BY grain; do not add filters.
+- ``time_window_logic_mismatch`` — AVOID ``avoid_unrequested_defensive_filters``.
+  Fix the date/time window logic; do not add filters.
+
+This blocklist is **NOT exhaustive**: Stage 1 may emit a
+``rca_kind_label`` that is not listed here. When the label is unlisted,
+use your judgment — pick the patch family that structurally addresses
+the diagnosed defect rather than masking it with a defensive filter.
+</patch_family_fit_rules>
+
 <output_envelope>
 {
   "result": {
@@ -216,4 +245,6 @@ INVALID — your proposal will be dropped:
 4. Do not repeat a patch that appears in history with a failed validation_outcome
    unless you have a concrete fix for the validator error.
 5. target_qids must be a subset of the cluster's member_qids.
+6. Respect <patch_family_fit_rules>: do not emit a patch family the
+   cluster's ``rca_kind_label`` forbids — pick a structural fix.
 </instructions>

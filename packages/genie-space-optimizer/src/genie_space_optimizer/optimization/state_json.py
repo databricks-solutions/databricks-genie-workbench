@@ -14,6 +14,7 @@ serialization boundary. The encoder is intentionally minimal:
 
 * ``frozenset`` / ``set`` → canonically sorted list (matches
   ``terminal_signature.to_jsonable``'s Section 4.4 contract)
+* ``TerminalSignature`` → its canonical ``to_jsonable`` shape
 * Any ``NamedTuple`` (detected via ``_asdict``) → its ``_asdict()``
   dict (then encoded recursively, so nested frozensets are caught)
 * Anything else → ``super().default(obj)`` (raises TypeError, by
@@ -31,10 +32,25 @@ import json
 from typing import Any
 
 
+def _terminal_signature_jsonable(obj: Any) -> dict[str, Any] | None:
+    """Return Section 4.4 JSON shape for ``TerminalSignature``, else None."""
+    try:
+        from genie_space_optimizer.optimization.terminal_signature import (
+            TerminalSignature,
+            to_jsonable,
+        )
+        if isinstance(obj, TerminalSignature):
+            return to_jsonable(obj)
+    except Exception:
+        # Import-time cycles should not mask the real serialization error.
+        pass
+    return None
+
+
 def _canonicalize(obj: Any) -> Any:
     """Recursively convert frozensets/sets to sorted lists and
-    NamedTuples to dicts so the standard ``json.dumps`` machinery
-    can handle them.
+    typed signature carriers to dicts so the standard ``json.dumps``
+    machinery can handle them.
 
     NamedTuples are subclasses of tuple, so the stock encoder
     serializes them as JSON arrays via its built-in tuple path —
@@ -42,6 +58,12 @@ def _canonicalize(obj: Any) -> Any:
     custom ``default()`` is therefore not enough; we pre-walk the
     tree and replace problem nodes before json sees them.
     """
+    # TerminalSignature moved from NamedTuple to frozen dataclass in
+    # P2.5. Pin its JSON surface to ``to_jsonable`` (Section 4.4).
+    ts_json = _terminal_signature_jsonable(obj)
+    if ts_json is not None:
+        return ts_json
+
     # NamedTuple — check first because it's also an instance of tuple.
     if hasattr(obj, "_asdict") and isinstance(obj, tuple):
         return {k: _canonicalize(v) for k, v in obj._asdict().items()}
@@ -84,6 +106,9 @@ class GsoJsonEncoder(json.JSONEncoder):
         # Safety net for direct ``cls=`` use that didn't go through
         # encode()/iterencode(). Frozenset and NamedTuple cases are
         # normally caught by the pre-pass.
+        ts_json = _terminal_signature_jsonable(obj)
+        if ts_json is not None:
+            return ts_json
         if isinstance(obj, (frozenset, set)):
             try:
                 return sorted(obj)

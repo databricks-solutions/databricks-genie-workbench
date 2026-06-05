@@ -64,6 +64,13 @@ def build_diagnosis_record_from_llm_result(
         expected_sql_shape=str(result.expected_sql_shape),
         confidence=str(result.confidence),  # type: ignore[arg-type]
         rca_card_id=str(result.rca_card_id),
+        # Trial 19 B5 — carry the LLM-emitted repair-intent label
+        # through to the typed SM record. ``getattr`` keeps replays of
+        # pre-Trial-19 fixtures byte-stable (their parsed projection
+        # has no ``intended_patch_shape`` attribute).
+        intended_patch_shape=str(
+            getattr(result, "intended_patch_shape", "") or ""
+        ),
     )
 
 
@@ -84,6 +91,8 @@ class _Stage1Parsed:
     expected_sql_shape: str
     confidence: str
     rca_card_id: str
+    # Trial 19 B5 — free-text repair-intent label emitted by Stage 1.
+    intended_patch_shape: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +196,10 @@ def _stub_response_from_rca_card(state: QuestionStateInIteration, card: dict) ->
         expected_sql_shape=str(card.get("expected_sql_shape") or ""),
         confidence=confidence,
         rca_card_id=rca_card_id,
+        # Trial 19 B5 — carry the LLM-emitted intent through the
+        # legacy-shaped adapter so the downstream
+        # ``build_diagnosis_record_from_llm_result`` reader picks it up.
+        intended_patch_shape=str(card.get("intended_patch_shape") or ""),
     )
     return _Stage1Response(
         succeeded=True,
@@ -461,6 +474,12 @@ def _invoke_stage1_llm(
         expected_sql_shape=matching.expected_sql_shape,
         confidence=matching.confidence,
         rca_card_id=f"rca_card_{state.qid}_{matching.rca_kind_label}",
+        # Trial 19 B5 — pull through the LLM-emitted intent. ``getattr``
+        # keeps replays of pre-Trial-19 PerQidDiagnosis (the dataclass
+        # picks up the default "" on those) working byte-stable.
+        intended_patch_shape=str(
+            getattr(matching, "intended_patch_shape", "") or ""
+        ),
     )
     successful = _Stage1Response(
         succeeded=True,
@@ -504,6 +523,94 @@ class _Plan11Stage1Transformer:
                 )
             parsed = response.parsed_output
             diagnosed = build_diagnosis_record_from_llm_result(state, parsed)
+
+            # P4 C1 — RepairDiagnosis sufficiency gate (observe-first).
+            # Build a typed RepairDiagnosis from the per-QID diagnosis
+            # carrier and emit the gate verdict marker. Today we do
+            # NOT terminate on ``indeterminate`` to preserve the 7/7
+            # ACCEPTED baseline; once the slice expands and the
+            # rate-of-indeterminate is measurable, the abstain path
+            # can be turned on by flipping ``observe_only`` to False.
+            try:
+                from genie_space_optimizer.optimization.repair_diagnosis import (
+                    AssetRef as _C1_AssetRef,
+                    gate_repair_diagnosis_sufficient as _c1_gate,
+                    repair_diagnosis_from_per_qid_diagnosis as _c1_build,
+                )
+                # PerQidDiagnosis stores asset references as free-text
+                # strings; parse "catalog.schema.table[.column]" into
+                # typed ``AssetRef`` instances, dropping unparseable
+                # entries (the gate then marks the diagnosis missing
+                # implicated_assets — exactly the signal we want).
+                _c1_asset_strs = tuple(
+                    str(a)
+                    for a in (
+                        getattr(diagnosed, "implicated_assets", ()) or ()
+                    )
+                )
+                _c1_refs: list[Any] = []
+                for _s in _c1_asset_strs:
+                    parts = [p for p in _s.split(".") if p]
+                    if len(parts) >= 3:
+                        try:
+                            _c1_refs.append(
+                                _C1_AssetRef(
+                                    catalog=parts[0],
+                                    schema=parts[1],
+                                    table=parts[2],
+                                    column=(
+                                        parts[3] if len(parts) > 3 else None
+                                    ),
+                                )
+                            )
+                        except Exception:
+                            pass
+                _c1_cluster_id = ""
+                _clustered = getattr(state, "clustered", None)
+                if _clustered is not None:
+                    _c1_cluster_id = str(
+                        getattr(_clustered, "cluster_id", "") or ""
+                    )
+                _c1_diag = _c1_build(
+                    cluster_id=_c1_cluster_id,
+                    per_qid=diagnosed,
+                    asset_refs=tuple(_c1_refs),
+                )
+                _c1_verdict = _c1_gate(_c1_diag)
+                try:
+                    import json as _c1_json
+                    print(
+                        "GSO_REPAIR_DIAGNOSIS_GATE_V1 "
+                        + _c1_json.dumps(
+                            {
+                                "run_id": str(
+                                    getattr(ctx, "run_id", "") or ""
+                                ),
+                                "iteration": int(
+                                    getattr(ctx, "iteration", 0) or 0
+                                ),
+                                "qid": str(getattr(state, "qid", "") or ""),
+                                "cluster_id": _c1_cluster_id,
+                                "outcome": _c1_verdict.outcome,
+                                "missing_fields": list(
+                                    _c1_verdict.missing_fields
+                                ),
+                                "feedback": _c1_verdict.feedback[:200],
+                                "implicated_assets_count": len(_c1_refs),
+                                "sql_shape_delta_present": bool(
+                                    (_c1_diag.sql_shape_delta or "").strip()
+                                ),
+                                "observe_only": True,
+                            },
+                            sort_keys=True,
+                            default=str,
+                        ),
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
         except _Stage1Abstain as ab:
             transition = StageTransition(
                 from_stage=self.from_stage,

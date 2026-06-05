@@ -26,7 +26,7 @@ from difflib import get_close_matches
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Union
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Union
 
 import mlflow
 import pandas as pd
@@ -3658,6 +3658,123 @@ def _normalize_expected_asset(
 # ── Arbiter-Adjusted Accuracy ──────────────────────────────────────────
 
 _ARBITER_CORRECT_VERDICTS = frozenset({"genie_correct", "both_correct"})
+# Trial 18 — the explicit-incorrect complement set. Mirrors
+# ``_ARBITER_CORRECT_VERDICTS``: ``ground_truth_correct`` means Genie was
+# wrong and the corpus GT was right; ``neither_correct`` means both
+# Genie and the corpus GT were wrong. Either way, the arbiter gives a
+# definite-incorrect verdict and gate logic should not fall through to
+# the byte-match column for that row.
+_ARBITER_INCORRECT_VERDICTS = frozenset({"ground_truth_correct", "neither_correct"})
+
+
+# ── Trial 18 — canonical per-row semantic score ────────────────────────
+#
+# The eval pipeline already stamps multiple correctness signals on each
+# row (``_is_semantic_correct``, ``result_correctness/arbiter_override_value``,
+# ``arbiter/value``, and raw byte-match ``result_correctness/value``).
+# Before Trial 18 the SM-lane gates only read the raw byte-match scalar,
+# missing the arbiter-aware boolean in 74% of arbiter-rescued production
+# rows (postmortems e94376a3 + d13938e7). ``row_semantic_score`` is the
+# single authoritative accessor every gate must use so a patch that
+# moves the eval framework's own PASS signal is accepted instead of
+# rejected as ``target_unchanged: 0.0 -> 0.0``.
+
+_TRIAL18_TRUTHY = frozenset({"1", "1.0", "true", "yes", "y", "pass", "t"})
+_TRIAL18_FALSY = frozenset(
+    {"0", "0.0", "false", "no", "n", "fail", "f", ""},
+)
+
+
+def _trial18_parse_truth(value: Any) -> float | None:
+    """Robust truth parser for mixed-type eval-row fields.
+
+    Returns ``1.0`` / ``0.0`` for recognised truthy / falsy values, or
+    ``None`` if the value is not a recognised truth literal. Callers
+    fall through to the next signal in the precedence chain when
+    ``None`` is returned.
+
+    Guards against two parsing hazards the reviewer flagged on the
+    Trial 18 plan:
+      * ``bool("false") == True`` (Python casts non-empty strings to
+        True regardless of content).
+      * ``float("yes")`` raises ``ValueError``.
+
+    Booleans short-circuit explicitly so ``isinstance(value, bool)``
+    runs BEFORE ``isinstance(value, (int, float))`` (Python booleans are
+    a subclass of int, so the int branch would otherwise capture them
+    silently and return the wrong polarity for ``False``).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return 1.0 if float(value) > 0.0 else 0.0
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in _TRIAL18_TRUTHY:
+            return 1.0
+        if s in _TRIAL18_FALSY:
+            return 0.0
+        try:
+            return 1.0 if float(s) > 0.0 else 0.0
+        except ValueError:
+            return None
+    return None
+
+
+def row_semantic_score(row: Mapping[str, Any]) -> float:
+    """Trial 18 — authoritative per-row correctness for gate decisions.
+
+    Honours the eval pipeline's documented contract: the raw
+    ``result_correctness/value`` is preserved for audit, but
+    ``_is_semantic_correct`` (and arbiter-override value) should be
+    used by gate logic. See the in-line note at the row-stamping site
+    in this module (search for "_is_semantic_correct should be used by
+    gate logic").
+
+    Precedence (first signal that yields a recognised truth value
+    wins):
+
+    1. ``_is_semantic_correct`` — the eval pipeline's own
+       arbiter-aware boolean. Truth-parsed so the string ``"false"``
+       does NOT silently evaluate to True.
+    2. ``feedback/result_correctness/arbiter_override_value`` — the
+       row-level override the arbiter writes when it rescues a
+       byte-match miss.
+    3. ``feedback/arbiter/value`` — the arbiter verdict itself.
+       ``both_correct`` / ``genie_correct`` -> 1.0;
+       ``ground_truth_correct`` / ``neither_correct`` -> 0.0 (definite
+       incorrect — do not fall through to a possibly-misleading
+       byte-match).
+    4. ``feedback/result_correctness/value`` — raw byte-match
+       fallback. Trial 16 / older fixtures that don't run the eval
+       pipeline still produce a sensible answer here.
+
+    Returns 1.0 / 0.0. Never raises.
+    """
+    parsed = _trial18_parse_truth(row.get("_is_semantic_correct"))
+    if parsed is not None:
+        return parsed
+
+    parsed = _trial18_parse_truth(
+        row.get("feedback/result_correctness/arbiter_override_value"),
+    )
+    if parsed is not None:
+        return parsed
+
+    verdict_raw = row.get("feedback/arbiter/value")
+    if isinstance(verdict_raw, str):
+        verdict = verdict_raw.strip().lower()
+        if verdict in _ARBITER_CORRECT_VERDICTS:
+            return 1.0
+        if verdict in _ARBITER_INCORRECT_VERDICTS:
+            return 0.0
+
+    parsed = _trial18_parse_truth(
+        row.get("feedback/result_correctness/value"),
+    )
+    return parsed if parsed is not None else 0.0
 
 
 def _rc_str(row: dict) -> str:

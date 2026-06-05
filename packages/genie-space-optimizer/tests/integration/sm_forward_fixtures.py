@@ -71,6 +71,67 @@ def expected_hard_qids(rows: Iterable[dict] | None = None) -> tuple[str, ...]:
     )
 
 
+def _row_blame_refs(row: dict) -> list[str]:
+    """Return the blame column refs a single hydration row references.
+
+    Reads the ASI ``blame_set`` (and the structured mirror's ``ref``
+    tokens) from the row's ``arbiter/metadata`` block — the exact
+    tokens the Stage 1 seed normalizer
+    (:func:`schema_columns._normalize_seeds_to_fqn`) consumes. Returns
+    them verbatim (no FQN expansion): the normalizer resolves a seed
+    only by rule-1 passthrough (literal membership in ``schema_columns``)
+    or rule-2 bare-identifier suffix match. The synthetic shape-ladder
+    rows emit dotted 2-part refs (``table.col_a``) which are neither
+    bare nor 4-part, so the run-level ``schema_columns`` channel must
+    carry them literally for the seeds to survive normalization.
+    """
+    md = row.get("arbiter/metadata") or {}
+    refs: list[str] = []
+    for b in md.get("blame_set") or ():
+        token = str(b or "").strip()
+        if token:
+            refs.append(token)
+    for entry in md.get("blame_set_structured") or ():
+        if isinstance(entry, dict):
+            token = str(entry.get("ref") or "").strip()
+            if token:
+                refs.append(token)
+    return refs
+
+
+def forward_metadata_snapshot(rows: Iterable[dict] | None = None) -> dict:
+    """Return a ``metadata_snapshot`` carrying the run-level ``schema_columns``.
+
+    The forward/tape SM tests drive
+    ``optimizer.run_state_machine_iteration_and_persist`` directly; that
+    function derives run-level ``schema_columns`` from
+    ``metadata_snapshot["schema_columns"]``
+    (:func:`schema_columns._derive_schema_columns`, priority 1). Without
+    this channel the Trial 13i pre-flight contract
+    (:meth:`Stage1InputEvidenceContract.validate_schema_columns`)
+    short-circuits every QID with
+    ``evidence_card_empty:missing_schema_columns`` before any tape entry
+    is consumed — the input-contract drift behind Bucket A.
+
+    The ``schema_columns`` value is *derived from the rows* (their ASI
+    blame refs) rather than hardcoded, so the same tokens the per-card
+    blame_set_seed normalizer needs are guaranteed present. Returns a
+    bare ``{"schema_columns": [...]}`` dict; callers that also feed the
+    applier merge these keys into their ``serialized_space`` snapshot
+    (``SerializedSpace`` is ``extra="allow"`` so the extra key is inert
+    for validation, exactly as production snapshots carry it).
+    """
+    rows = list(rows) if rows is not None else load_production_hydration_rows()
+    seen: set[str] = set()
+    schema_columns: list[str] = []
+    for row in rows:
+        for ref in _row_blame_refs(row):
+            if ref not in seen:
+                seen.add(ref)
+                schema_columns.append(ref)
+    return {"schema_columns": schema_columns}
+
+
 # ── Marker parsing ────────────────────────────────────────────────────
 
 
@@ -270,6 +331,7 @@ __all__ = [
     "assert_no_terminal_reason",
     "assert_stage_reached",
     "expected_hard_qids",
+    "forward_metadata_snapshot",
     "load_production_hydration_rows",
     "parse_gate_reasoning_markers",
     "parse_markers",

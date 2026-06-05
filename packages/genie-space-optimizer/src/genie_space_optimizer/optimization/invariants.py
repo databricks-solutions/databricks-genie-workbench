@@ -1556,6 +1556,70 @@ def check_i25_observability_consistency(
     return violations
 
 
+def check_i26_lifecycle_coherence(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I26 — Track A. Cross-surface candidate-lifecycle coherence.
+
+    The e94376a3 postmortem showed an "accepted" decision coexisting
+    with a zero-gain scoreboard, no selected proposal, zero applied
+    patches, and a ``hard_failure_unresolved`` journey terminal state —
+    because the decision_trace, scoreboard, and journey_validation
+    surfaces were assembled from disjoint pipelines with no reconciler.
+
+    I26 ties them: when ``lifecycle_accepted`` is True the iteration MUST
+    agree across the five facts —
+
+      * scoreboard ``accuracy_delta_pp`` > 0
+      * a non-empty ``selected_proposal_id``
+      * ``patches_applied`` >= 1
+      * NO target QID left ``hard_failure_unresolved``
+
+    Each diverging fact is named in a single typed violation so the
+    postmortem can see exactly which surface lied.
+
+    Silent when ``lifecycle_accepted`` is absent/False (pre-I26 fixtures
+    and honest non-accept iterations stay green).
+
+    Reads:
+      lifecycle_accepted (bool)
+      lifecycle_scoreboard_delta_pp (float)
+      lifecycle_selected_proposal_id (str)
+      lifecycle_patches_applied (int)
+      lifecycle_journey_terminal_states (sequence[str])
+    """
+    if not bool(evidence.get("lifecycle_accepted", False)):
+        return []
+    delta = float(evidence.get("lifecycle_scoreboard_delta_pp", 0.0) or 0.0)
+    selected = str(evidence.get("lifecycle_selected_proposal_id", "") or "")
+    applied = int(evidence.get("lifecycle_patches_applied", 0) or 0)
+    terminal_states = evidence.get("lifecycle_journey_terminal_states") or ()
+
+    reasons: list[str] = []
+    if delta <= 0.0:
+        reasons.append(f"scoreboard_delta_pp={delta} (expected > 0)")
+    if not selected:
+        reasons.append("selected_proposal_id empty")
+    if applied < 1:
+        reasons.append(f"patches_applied={applied} (expected >= 1)")
+    if any(str(s) == "hard_failure_unresolved" for s in terminal_states):
+        reasons.append("journey terminal_state=hard_failure_unresolved")
+
+    if not reasons:
+        return []
+    return [{
+        "invariant": "I26",
+        "accepted": True,
+        "scoreboard_delta_pp": delta,
+        "selected_proposal_id": selected,
+        "patches_applied": applied,
+        "journey_terminal_states": [str(s) for s in terminal_states],
+        "message": (
+            "I26: accepted decision contradicts " + "; ".join(reasons)
+        ),
+    }]
+
+
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
     violations. Empty list = green pilot."""
@@ -1586,6 +1650,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i23_narrow_attempt_coverage,  # Plan 12
         check_i24_ag_collision_quality_failure,  # Plan 12
         check_i25_observability_consistency,  # Plan 12
+        check_i26_lifecycle_coherence,  # Track A
     ):
         try:
             violations.extend(check(evidence))

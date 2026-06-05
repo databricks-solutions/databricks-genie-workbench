@@ -523,6 +523,11 @@ def instruction_patch_scope_is_safe(
 # the high_collateral_risk_flagged rejection downgrades to a warning.
 _NON_SEMANTIC_PATCH_TYPES: frozenset[str] = frozenset({
     "update_column_description",
+    # add_column_description is a pure metadata write (same shape as
+    # update_column_description) and cannot regress a passing query.
+    # The d139 postmortem's correct metadata fix was rejected with
+    # zero regression evidence because this type was missing here.
+    "add_column_description",
     "add_column_synonym",
     "add_metric_view_instruction",
     "add_table_instruction",
@@ -555,6 +560,44 @@ def patch_blast_radius_is_safe(
     hard_set = {str(q) for q in (live_hard_qids or ()) if str(q)}
     raw_dependents = patch.get("passing_dependents")
     if raw_dependents is None:
+        # Trial 20 Workstream E2 — flip safe-by-default to unsafe-by-
+        # default when ``passing_dependents`` is missing. Trial 19 ran
+        # the gate as a no-op on this branch because the harness-
+        # direct counterfactual scanner was not always plumbed into
+        # the state-machine ``TransformerContext`` (E1 closes that
+        # plumbing gap). With the field reliably stamped, missing
+        # = plumbing regression, NOT "no dependents". Emit the
+        # diagnostic marker so plumbing regressions surface instead
+        # of being absorbed.
+        from genie_space_optimizer.optimization.trial20_flags import (
+            trial20_blast_radius_mandatory_enabled,
+        )
+        if trial20_blast_radius_mandatory_enabled():
+            try:
+                import json as _t20_e2_json
+                print(
+                    "GSO_TRIAL20_BLAST_RADIUS_UNSTAMPED_V1 "
+                    + _t20_e2_json.dumps(
+                        {
+                            "patch_type": str(
+                                patch.get("patch_type")
+                                or patch.get("type")
+                                or ""
+                            ),
+                            "intent_id": str(patch.get("intent_id") or ""),
+                            "target_qid_count": len(target_set),
+                        },
+                        sort_keys=True,
+                        default=str,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
+            return {
+                "safe": False,
+                "reason": "passing_dependents_missing",
+            }
         return {"safe": True, "reason": "no_passing_dependents_field"}
     dependents = [str(q) for q in (raw_dependents or []) if str(q)]
     outside = [q for q in dependents if q not in target_set]
@@ -601,6 +644,117 @@ def patch_blast_radius_is_safe(
     if not outside:
         return {"safe": True, "reason": "no_passing_dependents_outside_target"}
     return {"safe": True, "reason": "within_threshold"}
+
+
+def compute_passing_dependents_for_proposal(
+    patch_body: dict,
+    *,
+    benchmarks: Iterable[dict],
+    ag_target_qids: Iterable[str],
+    prev_failure_qids: Iterable[str],
+    shape_gate_enabled: bool | None = None,
+) -> tuple[list[str], bool]:
+    """Trial 20 Workstream E1 — reusable per-proposal counterfactual scan.
+
+    Mirrors the per-proposal body of harness ``_t24_counterfactual_scan``
+    but operates on a single ``patch_body`` dict so the state-machine
+    ``synthesize_llm`` transformer can stamp ``passing_dependents`` /
+    ``high_collateral_risk`` on the typed ``RepairProposal.patch_body``
+    at creation time. Without this stamping, the SM path reached
+    :func:`patch_blast_radius_is_safe` with ``passing_dependents``
+    missing and Trial 19 silently took the safe-by-default
+    ``no_passing_dependents_field`` fallback (postmortem
+    519131527536322 evidence).
+
+    Returns ``(dependents, high_collateral_risk)``. ``dependents`` is
+    capped at 50 entries to match the harness behavior. The high-
+    collateral-risk flag is true when the dependent count is at least
+    ``2 * max(len(ag_target_qids), 1)``.
+
+    The implementation is intentionally a thin transcription of the
+    harness function so any future divergence is caught by the
+    integration tape replay (the airline fixture asserts both lanes
+    stamp the same value for the same proposal+benchmarks input).
+    """
+    from genie_space_optimizer.common.config import (
+        sql_shape_overlap_gate_enabled,
+    )
+    from genie_space_optimizer.optimization.sql_shape_overlap import (
+        benchmark_has_shape_overlap,
+        extract_snippet_shape_tokens,
+    )
+
+    if shape_gate_enabled is None:
+        shape_gate_enabled = sql_shape_overlap_gate_enabled()
+
+    target_qid_set = {str(q) for q in (ag_target_qids or ()) if str(q)}
+    affected_n = max(len(target_qid_set), 1)
+    prev_failure_set = {str(q) for q in (prev_failure_qids or ()) if str(q)}
+    passing_qids = {
+        str(b.get("id"))
+        for b in benchmarks
+        if b.get("id") and str(b.get("id")) not in prev_failure_set
+    }
+
+    target = str(
+        patch_body.get("target")
+        or patch_body.get("target_object")
+        or patch_body.get("target_table")
+        or patch_body.get("table")
+        or ""
+    ).lower()
+    target_column = str(patch_body.get("column") or "").lower()
+
+    if not target:
+        return ([], False)
+
+    target_tail = target.split(".")[-1] if "." in target else target
+    target_candidates: set[str] = {target, target_tail}
+    if target_column:
+        target_candidates.add(f"{target_tail}.{target_column}")
+
+    shape_tokens = (
+        extract_snippet_shape_tokens(patch_body)
+        if shape_gate_enabled
+        else frozenset()
+    )
+    shape_gate_active = shape_gate_enabled and bool(shape_tokens)
+
+    def _sql_text_for_benchmark(_b: dict) -> str:
+        return " ".join(
+            str(_b.get(k, "")) for k in
+            ("expected_response", "expected_sql", "ground_truth_sql")
+        ).lower()
+
+    dependents: list[str] = []
+    for _b in benchmarks:
+        _bid = str(_b.get("id") or "")
+        if not _bid or _bid not in passing_qids:
+            continue
+        _bench_assets = [
+            str(t).lower() for t in
+            (_b.get("required_tables") or [])
+            + (_b.get("required_columns") or [])
+        ]
+        _matched = any(
+            any(c == _ba or c in _ba or _ba in c for c in target_candidates)
+            for _ba in _bench_assets
+        )
+        if not _matched:
+            _sql_text = _sql_text_for_benchmark(_b)
+            if _sql_text and any(
+                c and c in _sql_text for c in target_candidates
+            ):
+                _matched = True
+        if _matched and shape_gate_active:
+            if not benchmark_has_shape_overlap(_b, shape_tokens):
+                _matched = False
+        if _matched:
+            dependents.append(_bid)
+
+    dependents = dependents[:50]
+    high_risk = bool(dependents and len(dependents) >= 2 * affected_n)
+    return (dependents, high_risk)
 
 
 def select_patch_bundle(

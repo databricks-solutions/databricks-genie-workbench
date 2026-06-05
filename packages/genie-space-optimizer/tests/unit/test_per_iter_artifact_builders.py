@@ -97,6 +97,33 @@ def test_build_iteration_journey_validation_payload_no_report_is_valid() -> None
     assert payload["is_valid"] is True
     assert payload["violation_count"] == 0
     assert payload["violations"] == []
+    # Track A / A2 — the surface must always exist so postmortems can
+    # iterate it without branching on exit_path.
+    assert payload["terminal_state_by_qid"] == {}
+
+
+def test_build_iteration_journey_validation_payload_surfaces_terminal_state() -> None:
+    """Track A / A2 — terminal_state_by_qid was DROPPED from the bundle
+    journey_validation.json, so the e943 postmortem could not see that
+    the accepted QID was hard_failure_unresolved. It must now pass
+    through."""
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_iteration_journey_validation_payload,
+    )
+    report = {
+        "violations": [],
+        "bucket_assignments": {},
+        "terminal_state_by_qid": {
+            "airline_ticketing_and_fare_analysis_gs_009": (
+                "hard_failure_unresolved"
+            ),
+        },
+    }
+    payload = build_iteration_journey_validation_payload(
+        iteration=3,
+        journey_report=report,
+    )
+    assert payload["terminal_state_by_qid"] == report["terminal_state_by_qid"]
     assert payload["bucket_assignments"] == {}
 
 

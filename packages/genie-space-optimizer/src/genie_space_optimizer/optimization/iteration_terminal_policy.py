@@ -95,6 +95,15 @@ _ROUTING_TABLE: dict[TerminalReason, tuple[str, bool]] = {
     TerminalReason.COLLATERAL_RISK_REJECTED: ("skip_productive", True),
     TerminalReason.ALL_SELECTED_PATCHES_DROPPED_BY_APPLIER: ("skip_productive", True),
     TerminalReason.NO_APPLIED_PATCHES: ("skip_productive", True),
+    # Canonical CandidateOutcome (e943 postmortem): KEPT_INSUFFICIENT
+    # was previously ABSENT from this table, so it fell through to the
+    # ``.get(..., ("skip_productive", True))`` default and ALWAYS added
+    # the signature to the forbidden set — even the cumulative-learning
+    # patches that eventually produced the run's win. Made explicit
+    # here; the ``run_accuracy_trending_up`` override in
+    # ``decide_iteration_terminal_action`` suppresses the forbid while
+    # the run-level full-eval accuracy is still climbing.
+    TerminalReason.KEPT_INSUFFICIENT: ("skip_productive", True),
     TerminalReason.TARGET_QIDS_NOT_IMPROVED: ("retry_strategy_switch", True),
     TerminalReason.CONTENT_REGRESSION_ROLLBACK: ("retry_strategy_switch", True),
     TerminalReason.MULTI_PATCH_REGRESSION_NO_ISOLATION: ("retry_strategy_switch", True),
@@ -111,6 +120,7 @@ def decide_iteration_terminal_action(
     prior_forbidden_set: "frozenset[TerminalSignature]",
     iteration_index: int,
     iteration_budget: int,
+    run_accuracy_trending_up: bool = False,
 ) -> TerminalAction:
     """Spec Section 4.5 — pure router. Given a terminal reason +
     signature + state, return the next-step routing.
@@ -120,6 +130,12 @@ def decide_iteration_terminal_action(
       * If signature is already in prior_forbidden_set,
         ``add_to_forbidden_set`` is forced to False (idempotency rule
         — spec Section 12.6)
+      * Canonical CandidateOutcome (e943): a ``KEPT_INSUFFICIENT``
+        terminal in a run whose full-eval accuracy is still climbing
+        (``run_accuracy_trending_up``) does NOT forbid its signature —
+        forbidding the cumulative-learning patches blocks the very
+        sequence that eventually wins. Defaults to ``False`` so callers
+        that do not supply the signal preserve legacy behaviour.
       * If iteration_index >= iteration_budget - 1, any
         retry/skip_productive collapses to ``abort_run`` (budget-
         boundary rule — spec Section 12.6; no further iterations
@@ -131,6 +147,13 @@ def decide_iteration_terminal_action(
     # Forbidden-set idempotency rule (spec Section 12.6): already in
     # the set → do not re-admit.
     if signature in prior_forbidden_set:
+        add_flag = False
+    # Canonical CandidateOutcome override: do not forbid a
+    # kept-insufficient signature while the run is still improving.
+    if (
+        terminal_reason == TerminalReason.KEPT_INSUFFICIENT
+        and run_accuracy_trending_up
+    ):
         add_flag = False
     # Budget-boundary rule (spec Section 12.6): no more iterations
     # available → collapse retry/skip to abort_run.

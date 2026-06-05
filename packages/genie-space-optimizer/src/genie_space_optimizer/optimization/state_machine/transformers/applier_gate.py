@@ -112,6 +112,24 @@ def _apply_via_genie_api(
     if apply_log.get("patch_deployed"):
         return (apply_call_id, True, "")
 
+    # A remote-deploy failure is authoritative over any local
+    # applier_decision. ``apply_patch_set`` records the per-patch
+    # decision as ``applied:render_and_apply_succeeded`` for the LOCAL
+    # render+apply step, which runs BEFORE the remote
+    # ``patch_space_config`` call. When that remote PATCH raises,
+    # ``patch_deployed`` is False and ``patch_error`` carries the real
+    # provider failure. The decision-matching block below would surface
+    # the stale local "applied" decision — contradicting
+    # ``patch_deployed=False`` and dropping the provider error token
+    # postmortems grep for — so prefer the remote error here. Drop-path
+    # rejections (``dropped_validation`` / ``dropped_no_op`` / …) never
+    # reach the remote deploy, so ``patch_error`` is empty for them and
+    # this branch is skipped, preserving the Trial 15 typed-decision
+    # surface below.
+    remote_error = str(apply_log.get("patch_error") or "")
+    if remote_error:
+        return (apply_call_id, False, f"apply_failed:{remote_error[:200]}")
+
     # Trial 15 — surface typed ``ApplierDecision`` reasons instead of
     # the opaque ``apply_failed_no_reason`` sentinel.
     # ``apply_patch_set`` already emits a per-patch audit trail via
@@ -223,54 +241,41 @@ def _preflight_metadata_patch(
     if proposal is None:
         return (True, "", "")
 
-    # Build a patch dict shaped like the applier dispatches on.
-    pb = dict(getattr(proposal, "patch_body", {}) or {})
-    pb.setdefault("patch_type", patch_type_str)
-    pb.setdefault("type", patch_type_str)
-
-    # Trial 17 — only short-circuit when the LLM explicitly named a
-    # table in the patch_body. The legacy ``object_id``-based encoding
-    # (``{"object_id": "t:c", ...}``) is opaque to
-    # ``check_patch_applyability``; for those shapes we fall through
-    # to the live applier where the dispatcher knows how to parse
-    # ``object_id``. This keeps the preflight strictly additive: it
-    # catches the gs_024-style ``patch_body["table"] = <missing>``
-    # pattern from the postmortems without regressing patches that
-    # encode their target differently.
-    target_table = ""
-    raw_table = pb.get("table") or pb.get("target")
-    if isinstance(raw_table, str):
-        target_table = raw_table.strip()
-    if not target_table:
+    # P4 C4 — when the producer (Stage 3) already canonicalized the
+    # target via :func:`metadata_target_resolver.
+    # validate_and_stamp_metadata_patch_target` and stamped
+    # ``target_resolved=True`` on the patch body, the applier-side
+    # preflight is redundant. Skip the round-trip into
+    # ``check_patch_applyability``; the producer already invoked it.
+    body_for_skip = getattr(proposal, "patch_body", None)
+    if isinstance(body_for_skip, dict) and body_for_skip.get(
+        "target_resolved"
+    ):
         return (True, "", "")
 
-    from genie_space_optimizer.optimization.patch_applyability import (
-        check_patch_applyability,
+    # Delegate to the shared resolver so the producer and applier
+    # apply identical canonicalization rules.
+    from genie_space_optimizer.optimization.metadata_target_resolver import (
+        resolve_metadata_patch_target,
     )
 
-    decision = check_patch_applyability(
-        patch=pb,
+    pb_view = dict(getattr(proposal, "patch_body", {}) or {})
+    verdict = resolve_metadata_patch_target(
+        pb_view,
+        patch_type_wire=patch_type_str,
         metadata_snapshot=snapshot,
         space_id=ctx.space_id,
     )
-    if decision.applyable:
+    if verdict.outcome == "resolved":
         return (True, "", "")
-
-    # Translate the typed applyability reason to the Trial 17 preflight
-    # vocabulary. We only short-circuit on target-resolution gaps —
-    # other failures (render_exception, apply_exception) keep flowing
-    # to the live applier where existing error handling already
-    # surfaces them with full context.
-    if decision.reason in {
-        "missing_table",
-        "invalid_column_target",
-        "missing_column",
-    }:
+    if verdict.outcome == "unresolvable":
         return (
             False,
             "preflight_target_missing",
-            decision.table or target_table,
+            verdict.resolved_table,
         )
+    # ``skipped`` cases (no-snapshot / opaque encoding / non-metadata
+    # patch type) mirror the legacy fall-through.
     return (True, "", "")
 
 

@@ -56,13 +56,33 @@ def _build_iteration1_request():
     )
 
 
+def _lever_menu_from_request(req) -> list[dict]:
+    """Phase 0 P0.5 — ``lever_menu`` is now sent as a
+    ``cacheable_user_blocks`` entry instead of inside the dynamic
+    user_prompt payload. Extract it from there for assertions."""
+    menu_block = next(
+        b for b in req.cacheable_user_blocks if "lever_menu" in b
+    )
+    return json.loads(menu_block)["lever_menu"]
+
+
+def _lever_contract_from_request(req) -> str:
+    """Phase 0 P0.5 — ``lever_contract_instructions`` is now sent as a
+    cacheable plaintext block. Strip the leading
+    ``lever_contract_instructions:\\n`` header before returning."""
+    block = next(
+        b for b in req.cacheable_user_blocks
+        if "lever_contract_instructions" in b
+    )
+    return block.split(":", 1)[1].lstrip("\n")
+
+
 def test_lever_menu_entries_carry_description_and_prefer_when_on_iteration1():
     """Every lever entry must surface ``description`` and
     ``prefer_when`` so the iteration-1 LLM has semantic context for
     selection — not just the patch-type allow-list."""
     req = _build_iteration1_request()
-    payload = json.loads(req.user_prompt)
-    lever_menu = payload["lever_menu"]
+    lever_menu = _lever_menu_from_request(req)
     assert isinstance(lever_menu, list)
     assert len(lever_menu) == 6
     for entry in lever_menu:
@@ -83,8 +103,7 @@ def test_lever_6_prefer_when_includes_rank_to_limit_token_on_iteration1():
     must surface the matching closed-vocab token so the LLM can route
     to it without needing a forbidden-signature pivot first."""
     req = _build_iteration1_request()
-    payload = json.loads(req.user_prompt)
-    lever_menu = payload["lever_menu"]
+    lever_menu = _lever_menu_from_request(req)
     by_id = {e["id"]: e for e in lever_menu}
     lever6_prefers = set(by_id["lever-6"]["prefer_when"])
     assert "grammar_pivot:rank_to_limit" in lever6_prefers, (
@@ -99,8 +118,7 @@ def test_lever_contract_instructions_call_out_grammar_pivot_bias():
     lever-5a prose for grammar-shape diagnoses, regardless of whether
     forbidden_signatures already exist."""
     req = _build_iteration1_request()
-    payload = json.loads(req.user_prompt)
-    instructions = payload["lever_contract_instructions"]
+    instructions = _lever_contract_from_request(req)
     assert "Grammar-pivot" in instructions or "grammar-pivot" in instructions, (
         "lever_contract_instructions must mention 'Grammar-pivot' "
         "diagnoses so the LLM can identify gs_009-style failures."
@@ -125,5 +143,5 @@ def test_iteration1_prompt_does_not_require_forbidden_signatures():
         "forbidden_signatures so we exercise the iteration-1 bias."
     )
     # And yet the grammar-pivot bias is still in the prompt.
-    instructions = payload["lever_contract_instructions"]
+    instructions = _lever_contract_from_request(req)
     assert "grammar" in instructions.lower()

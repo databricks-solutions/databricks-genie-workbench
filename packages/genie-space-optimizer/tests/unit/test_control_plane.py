@@ -168,7 +168,10 @@ def test_control_plane_acceptance_requires_target_improvement() -> None:
     assert decision.target_fixed_qids == ("q_target",)
 
 
-def test_control_plane_acceptance_accepts_unrelated_global_gain_as_attribution_drift() -> None:
+def test_control_plane_acceptance_accepts_unrelated_global_gain_as_attribution_drift(monkeypatch) -> None:
+    # Trial 23 W2 demotes attribution-drift accepts to non-deployable by
+    # default; this test pins the legacy (rollback) contract.
+    monkeypatch.setenv("GSO_TRIAL23_LOOP_REPAIR", "0")
     """Track F (Phase A burn-down MVP): when the named target qid does not
     flip but every regression budget stays at zero, the candidate is a real
     net win and must accept under ``accepted_with_attribution_drift``. The

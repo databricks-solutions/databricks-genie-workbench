@@ -112,7 +112,30 @@ def _run_post_apply_eval(
             f"no_post_apply_row_for_qid:{state.qid}",
         )
 
-    score = float(matching.get("feedback/result_correctness/value", 0.0) or 0.0)
+    # Trial 18 Step 2 — route through the canonical
+    # ``row_semantic_score`` accessor so the gate honours the eval
+    # pipeline's arbiter-aware boolean instead of the raw byte-match
+    # scalar. The pre-Trial-18 ``feedback/result_correctness/value``
+    # read missed the arbiter-rescued semantic-correctness signal on
+    # 74% of d13938e7 production rows (postmortem evidence:
+    # ``gs_013`` iter 2 had ``arbiter=both_correct`` /
+    # ``_is_semantic_correct=True`` but the gate read ``0.0`` from the
+    # raw byte-match column and rejected ``target_unchanged``). The
+    # flag check keeps the legacy behaviour available for emergency
+    # rollback via ``GSO_TRIAL18_ACCEPTANCE_OVERHAUL=0``.
+    from genie_space_optimizer.optimization.trial18_flags import (
+        trial18_acceptance_overhaul_enabled,
+    )
+    from genie_space_optimizer.optimization.evaluation import (
+        row_semantic_score,
+    )
+
+    if trial18_acceptance_overhaul_enabled():
+        score = float(row_semantic_score(matching))
+    else:
+        score = float(
+            matching.get("feedback/result_correctness/value", 0.0) or 0.0
+        )
     generated_sql = str(matching.get("generated_sql") or "")
     eval_row_id = str(
         matching.get("eval_row_id") or matching.get("row_id") or "",
@@ -154,12 +177,25 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
             deepest_stage_reached=state.deepest_stage_reached,
             forbidden_signature=f"post_apply_eval_failed:{exc}",
         ))
+    # Trial 18 Step 3 — stamp the behavioral-diff signal so
+    # ``acceptance_gate`` (and the postmortem renderer) can attribute
+    # a ``KEPT_INSUFFICIENT`` outcome to either "Genie ignored the
+    # patch" (``unchanged``) or "Genie consulted the patch but still
+    # got the wrong answer" (``partial``). ``matches_expected`` is
+    # reserved for a future trial that compares ``post_sql`` against
+    # the proposal's ``expected_behavioral_change``.
+    pre_sql = state.seen.baseline_sql or ""
+    if pre_sql.strip() == (post_sql or "").strip():
+        behavioral_diff = "unchanged"
+    else:
+        behavioral_diff = "partial"
     return GateVerdict.success(record=EvaluatedRecord(
         pre_apply_score=state.seen.score,
         post_apply_score=post_score,
         pre_apply_sql=state.seen.baseline_sql,
         post_apply_sql=post_sql,
         eval_row_id_post=eval_row_id_post,
+        behavioral_diff=behavioral_diff,
     ))
 
 

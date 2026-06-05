@@ -73,3 +73,110 @@ jobs:
             tests/integration/test_phase5_phase_h_anchor_matches_task_id.py \
             tests/integration/test_phase5_contract_health_clean.py \
             tests/integration/test_phase5_terminal_signature_never_repeated.py
+
+  trial24_replay_gate:
+    name: Trial 24 replay gate (kit-at-source e943 anchors)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/genie-space-optimizer
+    # ------------------------------------------------------------------------
+    # Enforces the Trial 24 (GSO_TRIAL24_KIT_AT_SOURCE) deterministic replay
+    # proof. The faithful e943 corrective-kit anchor must survive the slate
+    # compiler with the flag ON and roll back byte-stably with the flag OFF;
+    # the non-allowlist general-grounding anchor pins the FB2 solo-instruction
+    # grounding path. These are GREEN today and gate the eventual promotion of
+    # GSO_TRIAL24_KIT_AT_SOURCE to default-on.
+    #
+    # Unlike `phase5_offline_gates`, this job is BLOCKING (no
+    # `continue-on-error`): the kit-at-source proof must not silently regress.
+    #
+    # NOTE: this gate proves slate-compiler survival of the corrective kit. It
+    # does NOT yet pin `behavioral_diff != unchanged` at the applier (the other
+    # half of the trial24_flags.py promotion bar), which requires a live eval
+    # run (live-databricks / full job), not an offline replay.
+    # ------------------------------------------------------------------------
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --frozen
+      - name: Run Trial 24 replay anchors
+        run: |
+          uv run pytest -v --maxfail=1 \
+            tests/integration/postmortem_replay/test_trial24_postmortem_replay.py \
+            tests/integration/postmortem_replay/test_trial24_general_grounding_replay.py
+
+  canonical_outcome_replay_gate:
+    name: Canonical CandidateOutcome replay gate (e943/d139 projection agreement)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/genie-space-optimizer
+    # ------------------------------------------------------------------------
+    # Enforces the canonical CandidateOutcome merge gate. Replays four
+    # production-derived scenarios (flat kept-insufficient, invalid snippet ID,
+    # target-debt acceptance, clean full-eval success) through the live
+    # canonical projection helpers and asserts EVERY projection surface agrees
+    # with the authoritative full-eval result: run outcome, candidate ledger
+    # row, scoreboard/run_summary delta_pp, deploy clean-win, and the post-win
+    # terminal reason. The e943/d139 postmortems showed these surfaces
+    # disagreeing silently while a clean +12.5pp win was reported as
+    # OPTIMIZER_TRIED_INSUFFICIENT_GAIN.
+    #
+    # Also pins the Track A lifecycle-truth fixes: the e943 iter-3
+    # contradiction replay (patch_survival applied>=1 while the ledger
+    # reported patches_applied=0 on a non-accept) and the I26 cross-surface
+    # reconciler (accepted <-> delta>0 <-> selected_proposal <-> applied>=1
+    # <-> journey terminal_state).
+    #
+    # BLOCKING (no `continue-on-error`): a change is not done until all
+    # scenarios show agreeing projections and I26 stays green.
+    # ------------------------------------------------------------------------
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --frozen
+      - name: Run canonical CandidateOutcome replay anchors
+        run: |
+          uv run pytest -v --maxfail=1 \
+            tests/integration/postmortem_replay/test_canonical_outcome_replay.py \
+            tests/integration/postmortem_replay/test_e943_iter3_contradiction.py \
+            tests/unit/test_i26_lifecycle_coherence.py
+
+  mechanism_binding_replay_gate:
+    name: Mechanism-binding replay gate (e943 Phase-2 #10 end-to-end drop)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/genie-space-optimizer
+    # ------------------------------------------------------------------------
+    # Enforces the e943 Phase-2 mechanism-binding drop end-to-end. Replays the
+    # crafted triggering fixture
+    # (tests/integration/postmortem_replay/fixtures/mechanism_binding_trigger/)
+    # through the REAL production state machine via the local lever-loop
+    # workbench in sm-tape mode, with GSO_RCA_MECHANISM_ROUTE_BINDING OFF then
+    # ON. It pins the wiring the pure-selector unit tests cannot reach:
+    #
+    #   * the fixture presents a mixed slate (example_sql + metadata_description
+    #     under an example-SQL-insufficient RCA) so the binding can fire,
+    #   * flag OFF is observe-only (no drop, example_sql applied),
+    #   * flag ON DROPS the behaviorally-inert example_sql proposal with a
+    #     typed rca_mechanism_defaulted_to_example_sql CONTRACT_FAILED, applies
+    #     the surviving metadata_description proposal instead, and never empties
+    #     the slate (slate-safety).
+    #
+    # BLOCKING (no `continue-on-error`): gates the eventual promotion of the
+    # mechanism-binding flags to default-on. No captured production tape
+    # contains a triggering mixed slate, so this crafted fixture is the only
+    # offline proof the binding actually mutates the applied patch.
+    # ------------------------------------------------------------------------
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --frozen
+      - name: Run mechanism-binding trigger replay
+        run: |
+          uv run pytest -v --maxfail=1 \
+            tests/workbench/test_mechanism_binding_trigger_replay.py \
+            tests/unit/optimization/test_trial23_w4_rca_mechanism_routing.py \
+            tests/integration/postmortem_replay/test_top_n_collapse_inert_instruction.py

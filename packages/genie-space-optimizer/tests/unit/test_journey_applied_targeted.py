@@ -6,9 +6,9 @@ specifically targeted by this patch). Phase B's
 """
 from __future__ import annotations
 
-import inspect
+from _harness_loop_source import lever_loop_source
 
-from genie_space_optimizer.optimization import harness, question_journey
+from genie_space_optimizer.optimization import question_journey
 
 
 def test_journey_stage_order_includes_applied_targeted_and_broad_ag_scope() -> None:
@@ -37,7 +37,7 @@ def test_apply_emit_distinguishes_targeted_from_broad_ag_scope() -> None:
     """
     import re
 
-    src = inspect.getsource(harness._run_lever_loop)
+    src = lever_loop_source()
     apply_block_start = src.find("# Task 13 — emit ``applied``")
     assert apply_block_start >= 0, (
         "Task 13 apply-emit anchor missing; harness file must still "

@@ -14,9 +14,24 @@ type — only a real model serving call exercises that path.
 Usage (from the package root)::
 
     PYTHONPATH=devtools:src:tests \\
-        DATABRICKS_AUTH_STORAGE=plaintext \\
         uv run python -m local_lever_workbench.sweeps.live_llm_sweep \\
         --profile fevm-prashanth
+
+Auth: the sweep auto-detects whether the caller's CLI profile is
+backed by the OS keychain or the plaintext token cache (see
+``~/.databricks/token-cache.json``) and sets
+``DATABRICKS_AUTH_STORAGE`` accordingly. If you re-authenticated with
+``databricks auth login --profile <p>`` (which writes to the keychain
+on macOS) and the sweep was previously crashing with
+``refresh token invalid``, that auto-detection is the fix — no
+explicit env var needed. To force plaintext (e.g. inside CI or a
+container without keychain access), run::
+
+    DATABRICKS_AUTH_STORAGE=plaintext \\
+        databricks auth login --profile <p>
+    DATABRICKS_AUTH_STORAGE=plaintext \\
+        PYTHONPATH=devtools:src:tests uv run python \\
+        -m local_lever_workbench.sweeps.live_llm_sweep --profile <p>
 
 Options::
 
@@ -324,9 +339,38 @@ def main(argv: list[str] | None = None) -> int:
         )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Defensive: live mode short-circuits in some integration paths
-    # without a stable plaintext credential store.
-    os.environ.setdefault("DATABRICKS_AUTH_STORAGE", "plaintext")
+    # Bug #3 fix — auth-storage selection. The Databricks CLI / SDK on
+    # macOS writes to the OS keychain by default when
+    # ``databricks auth login`` runs without ``DATABRICKS_AUTH_STORAGE``
+    # set. Forcing ``plaintext`` here (as we used to) makes the SDK
+    # look up a stale or non-existent plaintext token cache and crash
+    # all fixtures with ``refresh token invalid``. Honor whatever
+    # storage the caller's profile uses: if the env var is already set,
+    # leave it; if not, set it ONLY when ``~/.databricks/token-cache``
+    # has a plaintext entry for the profile. Otherwise, leave it unset
+    # so the SDK falls back to the keychain via ``databricks-cli``.
+    if not os.environ.get("DATABRICKS_AUTH_STORAGE"):
+        try:
+            import json as _auth_json
+            _token_cache = Path.home() / ".databricks" / "token-cache.json"
+            if _token_cache.exists():
+                _cache = _auth_json.loads(
+                    _token_cache.read_text() or "{}"
+                ) or {}
+                _profile = str(args.profile or "DEFAULT")
+                _has_plaintext = (
+                    isinstance(_cache.get("tokens"), dict)
+                    and _profile in _cache["tokens"]
+                )
+                if _has_plaintext:
+                    os.environ["DATABRICKS_AUTH_STORAGE"] = "plaintext"
+                # else leave unset → SDK uses keychain via CLI
+            # else leave unset → SDK uses keychain via CLI
+        except Exception:
+            # Defensive default. If we cannot read the token cache,
+            # leave DATABRICKS_AUTH_STORAGE unset so the SDK picks
+            # whichever store the CLI was configured with.
+            pass
     os.environ.setdefault("GSO_WORKBENCH", "1")
 
     started_at = datetime.now(timezone.utc).isoformat()

@@ -39,6 +39,9 @@ def test_required_fields_present_and_typed() -> None:
         "expected_behavioral_change",
         "fallback_lever",
         "bundle_id",
+        # Trial 20 D1 — single-lever justification (required after kept_insufficient,
+        # optional otherwise; presence on schema gates parser preservation).
+        "single_lever_justification",
     }
     assert set(fields.keys()) == expected, (
         f"field drift: missing={expected - set(fields.keys())}, "

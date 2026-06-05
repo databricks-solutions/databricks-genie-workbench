@@ -128,10 +128,16 @@ def test_trial17_gs026_acceptance_gate_forbidden_signature_carries_lever_and_rca
             TransformerContext(2, "r", ValidationContext(2, "r", {})),
         )
 
-    assert s2.current_stage == FunnelStage.TERMINATED
-    sig = s2.terminal.forbidden_signature or ""
+    # Trial 18 (default-ON) keeps the applied config in the
+    # ``kept_insufficient`` lane (ACCEPTED, not a gain) and emits the
+    # pivot tokens on ``insufficient_repair_signature`` instead of
+    # terminating with a ``forbidden_signature``.
+    assert s2.current_stage == FunnelStage.ACCEPTED
+    assert s2.accepted is not None
+    assert s2.accepted.decision == "kept_insufficient"
+    sig = s2.accepted.insufficient_repair_signature or ""
     assert "add_instruction" in sig, f"sig missing patch_type: {sig!r}"
-    assert "target_unchanged" in sig, f"sig missing target_unchanged: {sig!r}"
+    assert "insufficient" in sig, f"sig missing insufficient token: {sig!r}"
     assert "synonym_or_entity_match_missing" in sig, (
         f"sig missing rca_kind: {sig!r}"
     )

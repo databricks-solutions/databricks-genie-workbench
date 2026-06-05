@@ -65,7 +65,10 @@ def _passing(qid: str) -> dict:
     }
 
 
-def test_attribution_drift_branch_populates_reattribution_fields() -> None:
+def test_attribution_drift_branch_populates_reattribution_fields(monkeypatch) -> None:
+    # Trial 23 W2 demotes the drift accept; reattribution accounting
+    # still runs first. Pin the legacy (rollback) contract here.
+    monkeypatch.setenv("GSO_TRIAL23_LOOP_REPAIR", "0")
     """Anchor airline iter 1: target=gs_024 stays hard; gs_007/9/13
     flip from hard to passing; net +12.5pp; thresholds met; zero
     regressions. Branch fires and reattribution is populated."""

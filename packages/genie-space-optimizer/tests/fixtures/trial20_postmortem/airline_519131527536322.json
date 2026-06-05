@@ -1,0 +1,16 @@
+{
+  "fixture_id": "trial20_postmortem_airline_519131527536322",
+  "source_postmortem_run": "e94376a3-d8a6-4570-a605-9fe231e5f99c",
+  "source_attempt_id": "519131527536322",
+  "scenario": "post_arbiter_gain_blocked_by_pre_arbiter_byte_match_drop",
+  "ag_id": "AG_DECOMPOSED_H002",
+  "target_qids": ["airline_ticketing_and_fare_analysis_gs_009"],
+  "baseline_pre_arbiter_accuracy": 87.5,
+  "candidate_pre_arbiter_accuracy": 75.0,
+  "baseline_post_arbiter_accuracy": 87.5,
+  "candidate_post_arbiter_accuracy": 91.7,
+  "post_arbiter_delta_pp": 4.2,
+  "out_of_target_hard_regressions": 0,
+  "expected_decision_today": "pre_arbiter_regression_blocked",
+  "expected_decision_with_trial20": "accepted_post_arbiter_gain_absorbs_pre_arbiter_regression"
+}

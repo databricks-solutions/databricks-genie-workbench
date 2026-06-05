@@ -75,6 +75,7 @@ RULES:
       {
         "qid": "<qid>",
         "rca_kind_label": "<free-text label, ≤200 chars, your own words>",
+        "intended_patch_shape": "<free-text label, ≤200 chars, your own words — the repair intent that would fix this failure shape>",
         "observed_failure": "<≤1000 chars>",
         "generated_sql_issue": "<≤1500 chars, cite specific SQL fragments>",
         "expected_sql_shape": "<≤1500 chars>",
@@ -105,6 +106,7 @@ column (use `blame_set_seed` if all else fails):
 {
   "qid": "airline_tickets_gs_009",
   "rca_kind_label": "RANK() instead of LIMIT plus unrequested defensive NULL filters",
+  "intended_patch_shape": "enforce explicit top-N cardinality and remove unrequested NULL filters",
   "observed_failure": "...",
   "generated_sql_issue": "...",
   "expected_sql_shape": "...",
@@ -114,23 +116,88 @@ column (use `blame_set_seed` if all else fails):
 }
 ```
 
+<suggested_vocabulary>
+Trial 19 B5 — anchored menus. The two free-text fields below are
+LLM-emitted and authoritative downstream (the Stage 3 synthesizer
+reads `intended_patch_shape` verbatim and the cluster builder reads
+`rca_kind_label` verbatim). To keep cross-run signatures stable
+(``insufficient_repair_signature`` and ``forbidden_signature`` both
+key on the rca label), prefer one of the suggested values when the
+evidence cleanly matches. You MAY invent new labels when the
+evidence does not fit any suggested value — but novel labels
+forfeit cross-run signature stability for that QID.
+
+Suggested rca_kind_label values (anchored vocabulary; not closed):
+  - metric_view_routing_confusion
+  - measure_swap
+  - canonical_dimension_missed
+  - missing_required_dimension
+  - extra_defensive_filter
+  - join_spec_missing_or_wrong
+  - filter_logic_mismatch
+  - grain_or_grouping_mismatch
+  - synonym_or_entity_match_missing
+  - sql_expression_missing
+  - example_sql_shape_needed
+  - function_or_tvf_not_invoked
+  - function_routing_mismatch
+  - top_n_cardinality_collapse
+  - time_window_logic_mismatch
+  - asset_type_routing_mismatch
+  - unknown
+
+Suggested intended_patch_shape values (anchored vocabulary; not
+closed). Each entry names a *repair intent*, NOT a closed enum:
+  - route_to_correct_metric_view_with_contrast
+  - disambiguate_measure_with_contrastive_example
+  - guide_canonical_dimension_use
+  - require_missing_dimension_in_grouping
+  - remove_unrequested_defensive_filter
+  - specify_explicit_join_spec
+  - correct_filter_predicate_to_match_question
+  - match_question_grain_in_group_by
+  - register_synonym_for_entity
+  - add_sql_snippet_for_missing_expression
+  - add_example_sql_for_question_shape
+  - route_to_function_or_tvf
+  - enforce_explicit_top_n_cardinality
+  - correct_time_window_logic
+  - route_to_asset_type
+  - generic_judge_clarification
+
+If a SQL-shape intent applies (top-N cardinality, defensive filter
+removal, grain/grouping, time window, SQL snippet expression),
+Stage 3 will prefer SQL-shape patch families. If an instruction or
+metadata intent applies, Stage 3 will prefer those families.
+</suggested_vocabulary>
+
 <instructions>
 1. Diagnose every QID in failing_qids — partial responses are rejected.
 2. rca_kind_label is your free-text classification. Examples:
    "top-N collapsed to single row", "defensive filter dropped wrong rows",
-   "join discovery missed bridge table". Pick whatever phrasing matches
-   the evidence. Downstream stages read this verbatim.
-3. `blame_set` MUST be non-empty AND every entry MUST appear verbatim
+   "join discovery missed bridge table". Prefer one of the suggested
+   values in `<suggested_vocabulary>` when the evidence cleanly matches;
+   invent a new label only when no suggested value fits. Downstream
+   stages read this verbatim.
+3. Trial 19 B5 — intended_patch_shape is your free-text repair
+   intent. Examples: "enforce_explicit_top_n_cardinality", "remove
+   unrequested defensive NULL filters", "register synonym for
+   entity". Prefer a suggested value when one matches; invent a new
+   intent only when no suggested value captures the repair. Stage 3
+   reads this verbatim and uses it to pick a patch family that
+   realizes the intent (e.g. SQL-shape intents → snippet / example
+   SQL families; metadata intents → description / synonym families).
+4. `blame_set` MUST be non-empty AND every entry MUST appear verbatim
    in `schema_columns`. Non-matching entries are silently dropped by
    the framework's validator; if the post-validation `blame_set` is
    empty, the diagnosis is silently dropped at the non-actionable gate
    even when `confidence: "high"`. See `<blame_set_requirements>` for
    the grounding-priority rules and when to use the `declined`
    envelope with `reason: "insufficient_blame_set"` instead.
-4. Decline only if the evidence for ALL qids is too thin to diagnose
+5. Decline only if the evidence for ALL qids is too thin to diagnose
    (rare). Partial diagnosis (some qids high-confidence, others low) is
    the expected case — set confidence: "low" and proceed.
-5. Do not repeat an rca_kind_label + repair path combination that
+6. Do not repeat an rca_kind_label + repair path combination that
    already appears in recent_diagnoses_for_same_qids if it did not
    produce an applied patch in that prior iteration.
 </instructions>

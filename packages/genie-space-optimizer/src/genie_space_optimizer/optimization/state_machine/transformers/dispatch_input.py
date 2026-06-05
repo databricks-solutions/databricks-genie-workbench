@@ -37,6 +37,49 @@ def _row_eval_id(row: Mapping) -> str:
 
 
 def _row_score(row: Mapping) -> float:
+    """Trial 18 Step 2 — pre-apply baseline score for
+    ``HardQidSeenRecord``.
+
+    Routes through ``row_semantic_score`` so the pre-apply baseline
+    used by ``acceptance_gate`` (via ``state.evaluated.pre_apply_score``)
+    and the post-apply score (now also canonical via ``evaluated_gate``)
+    are symmetric. Without this symmetry the gate compares apples and
+    oranges: baseline raw byte-match vs post canonical semantic score.
+
+    Falls back to the legacy ``row["score"]`` shape when
+    ``GSO_TRIAL18_ACCEPTANCE_OVERHAUL=0`` for rollback parity. Also
+    falls back when ``row_semantic_score`` returns 0.0 *and* the row
+    has an explicit ``score`` field — keeps any test fixture that pre-
+    seeds ``score`` working.
+    """
+    try:
+        from genie_space_optimizer.optimization.trial18_flags import (
+            trial18_acceptance_overhaul_enabled,
+        )
+        if trial18_acceptance_overhaul_enabled():
+            from genie_space_optimizer.optimization.evaluation import (
+                row_semantic_score,
+            )
+            canonical = float(row_semantic_score(row))
+            # If the canonical accessor extracted a real signal,
+            # prefer it. Otherwise fall through to the legacy ``score``
+            # shape (test fixtures sometimes pre-seed only this key).
+            has_canonical_signal = any(
+                k in row
+                for k in (
+                    "_is_semantic_correct",
+                    "feedback/result_correctness/arbiter_override_value",
+                    "feedback/arbiter/value",
+                    "feedback/result_correctness/value",
+                )
+            )
+            if has_canonical_signal:
+                return canonical
+    except Exception:
+        # Importer/runtime errors must never crash the dispatch input
+        # builder — fall through to legacy behaviour.
+        pass
+
     try:
         return float(row.get("score", 0.0))
     except (TypeError, ValueError):

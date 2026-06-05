@@ -1,0 +1,85 @@
+{
+  "fixture_id": "trial21_postmortem_replay_run_a",
+  "source_postmortem_run": "e94376a3-d8a6-4570-a605-9fe231e5f99c",
+  "source_attempt_id": "919039845318742",
+  "source_marker_digest": "docs/runid_analysis/e94376a3-d8a6-4570-a605-9fe231e5f99c/evidence/marker_digest_919039845318742.json",
+  "scenario": "attribution_drift_accept_with_target_debt_and_merge_gate_blocked_deploy",
+  "ag_id": "AG_DECOMPOSED_H003",
+  "target_qids": ["airline_ticketing_and_fare_analysis_gs_009"],
+  "outcome_classification": {
+    "current_outcome": "OPTIMIZER_TRIED_INSUFFICIENT_GAIN",
+    "expected_outcome_after_w8": "OPTIMIZER_AGGREGATE_GAIN_TARGET_DEBT",
+    "trajectory_inputs": {
+      "any_iteration_accepted": true,
+      "any_accepted_decision_value": "accepted_with_attribution_drift",
+      "any_iteration_post_gt_pre": true,
+      "target_qids_union": ["airline_ticketing_and_fare_analysis_gs_009"],
+      "target_fixed_qids": [],
+      "target_still_hard_qids": ["airline_ticketing_and_fare_analysis_gs_009"],
+      "unresolved_target_debt_qids": ["airline_ticketing_and_fare_analysis_gs_009"],
+      "baseline_accuracy": 87.5,
+      "candidate_accuracy": 95.8,
+      "delta_pp": 8.3,
+      "reason_code": "accepted_with_attribution_drift"
+    }
+  },
+  "contract_health": {
+    "merge_gate_status": "merge_gate_blocked",
+    "bundle_status": "assembly_failed",
+    "task_outcome_today": "success",
+    "deploy_outcome_today": "deployed",
+    "expected_after_w9": {
+      "optimizer_task_status": "success",
+      "candidate_deploy_eligible": false,
+      "deploy_skip_reason": "contract_health_blocked"
+    }
+  },
+  "phase_h_assembly": {
+    "bundle_assembly_failed": {
+      "error_message": "'list' object has no attribute 'get'",
+      "error_type": "AttributeError"
+    },
+    "run_aborted_terminal_reason_today": "no_applied_patches",
+    "expected_after_w2": "every empty-slate iteration must carry a typed DropReason (no terminal_reason=no_applied_patches)"
+  },
+  "metadata_target_resolver_fixture": {
+    "scenario": "bare_table_name_must_canonicalize_to_fqn",
+    "_note": "Run B postmortem (d13938e7) target_resolver marker shows the LLM emitted the BARE name 'mv_7now_store_sales' while the deployed Genie config stores the FQN 'prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales'. W7 canonicalizes bare names against the snapshot before applyability.",
+    "patch_body": {
+      "patch_type": "add_column_description",
+      "type": "add_column_description",
+      "table": "mv_7now_store_sales",
+      "column": "store_id",
+      "description": "Store identifier (derived from store_sales materialized view)"
+    },
+    "deployed_genie_metadata_snapshot": {
+      "data_sources": {
+        "tables": [
+          {
+            "identifier": "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales",
+            "name": "mv_7now_store_sales",
+            "column_configs": [
+              {"column_name": "store_id"}
+            ]
+          }
+        ],
+        "metric_views": []
+      }
+    },
+    "current_resolver_verdict": {
+      "outcome": "unresolvable",
+      "abstain_reason": "missing_table"
+    },
+    "expected_verdict_after_w7": {
+      "outcome": "resolved",
+      "resolved_table": "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales",
+      "resolved_column": "store_id"
+    }
+  },
+  "deepest_stage_by_qid": {
+    "airline_ticketing_and_fare_analysis_gs_009": "accepted",
+    "airline_ticketing_and_fare_analysis_gs_024": "accepted"
+  },
+  "hard_qids_count": 2,
+  "hard_qids_already_correct_count": 2
+}

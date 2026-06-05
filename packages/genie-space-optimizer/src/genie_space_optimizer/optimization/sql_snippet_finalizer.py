@@ -55,7 +55,11 @@ def _snippet_id_for(proposal: RepairProposal, sql_expression: str) -> str:
     h.update(proposal.intent_id.encode("utf-8"))
     h.update(b"\0")
     h.update(sql_expression.encode("utf-8"))
-    return h.hexdigest()[:16]
+    # 32-char lowercase hex to satisfy Genie's serialized_space ID
+    # validation (genie_schema._validate_id_format). Pinned to
+    # producer_snippet_validator._mint_snippet_id so both producers
+    # mint the same id for the same (intent_id, sql) pair.
+    return h.hexdigest()[:32]
 
 
 def finalize_sql_snippet_proposal_dict(

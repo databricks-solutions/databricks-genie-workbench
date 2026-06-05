@@ -1,0 +1,41 @@
+{
+  "_provenance": "e94376a3-d8a6-4570-a605-9fe231e5f99c iteration 3, QID airline_ticketing_and_fare_analysis_gs_009. patch_survival recorded an applied add_instruction patch, decision_trace showed an accepted decision, yet the candidate ledger reported patches_applied=0 / selected_proposal_id='' and the scoreboard showed accuracy_delta_pp=0 with the QID still hard_failure_unresolved. The four surfaces were derived from disjoint inputs and disagreed.",
+  "iteration": 3,
+  "ag_id": "AG_DECOMPOSED_H003",
+  "qid": "airline_ticketing_and_fare_analysis_gs_009",
+  "patch_survival": {
+    "ag_id": "AG_DECOMPOSED_H003",
+    "proposed": [
+      {"proposal_id": "p_gs009_add_instruction", "intent_id": "intent_gs009_topn", "cluster_id": "h003"}
+    ],
+    "normalized": [
+      {"proposal_id": "p_gs009_add_instruction", "intent_id": "intent_gs009_topn", "cluster_id": "h003"}
+    ],
+    "applyable": [
+      {"proposal_id": "p_gs009_add_instruction", "intent_id": "intent_gs009_topn", "cluster_id": "h003"}
+    ],
+    "capped": [
+      {"proposal_id": "p_gs009_add_instruction", "intent_id": "intent_gs009_topn", "cluster_id": "h003"}
+    ],
+    "applied": [
+      {"proposal_id": "p_gs009_add_instruction", "intent_id": "intent_gs009_topn", "cluster_id": "h003"}
+    ]
+  },
+  "full_eval_payload": {
+    "accepted": false,
+    "iteration": 3,
+    "ag_id": "AG_DECOMPOSED_H003",
+    "delta_pp": 0.0,
+    "baseline_accuracy": 87.5,
+    "candidate_accuracy": 87.5,
+    "target_qids": ["airline_ticketing_and_fare_analysis_gs_009"],
+    "target_fixed_qids": [],
+    "target_still_hard_qids": ["airline_ticketing_and_fare_analysis_gs_009"]
+  },
+  "scoreboard_accuracy_delta_pp": 0.0,
+  "journey_terminal_state": "hard_failure_unresolved",
+  "expected": {
+    "patches_applied": 1,
+    "selected_proposal_id": "p_gs009_add_instruction"
+  }
+}

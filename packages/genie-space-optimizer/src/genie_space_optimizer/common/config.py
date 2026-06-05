@@ -5780,16 +5780,18 @@ def plan12_live_all_enabled() -> bool:
     """Plan 12 umbrella switch — enable EVERY Plan 12 live-wire when
     set. Default OFF.
 
-    When the env var ``GSO_PLAN12_LIVE_ALL`` is truthy, all seven
+    When the env var ``GSO_PLAN12_LIVE_ALL`` is truthy, the remaining
     Plan 12 sub-flags default to ON:
 
       * GSO_PLAN12_LIVE_NARROW_REPLACEMENT
       * GSO_PLAN12_LIVE_AG_RETRY_PIVOT
       * GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE
       * GSO_PLAN12_LIVE_EVIDENCE_ROUTING
-      * GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE
       * GSO_PLAN12_LIVE_RUN_SUMMARY_EVAL_DERIVE
       * GSO_PLAN12_LIVE_L6_APPLIER_EMIT_OUTCOMES
+
+    (``GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE`` was promoted to
+    default-ON by Track A / A1 and retired from the umbrella.)
 
     Override semantics: any sub-flag explicitly set (truthy OR falsy)
     takes precedence over the umbrella. Setting the umbrella ON plus
@@ -5953,26 +5955,25 @@ def plan12_live_ag_retry_pivot_enabled() -> bool:
 
 
 def plan12_live_proposal_attempts_derive_enabled() -> bool:
-    """Plan 12 PR 7 Task 7.4 deferred writer-path swap. Default OFF.
+    """Plan 12 PR 7 Task 7.4 writer-path swap. Default ON (Track A / A1).
 
-    When ON, the candidate-ledger writer at ``harness.py:~32595``
-    computes ``proposal_attempts`` via
-    :func:`derive_proposal_attempts_from_patch_outcomes` over the
+    When ON, the candidate-ledger writer computes ``proposal_attempts``
+    via :func:`derive_proposal_attempts_from_patch_outcomes` over the
     patch-outcome emitter's registry instead of the legacy
-    ``_iter_proposal_attempts`` counter (which is declared at
-    ``harness.py:19243`` but never incremented anywhere, so the
-    legacy write was always 0).
+    ``_iter_proposal_attempts`` counter (which is declared but never
+    incremented anywhere, so the legacy write was always 0).
 
-    Default OFF preserves byte-stable candidate-ledger entries
-    against fixtures with ``proposal_attempts: 0``. Operators flip
-    per-deploy via env var
-    ``GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE=true``. I25 catches
-    the regression if a future change reintroduces drift between
-    the recorded counter and the deriver source-of-truth.
+    Promoted to default-ON by Track A: the candidate ledger must report
+    the funnel head (proposal_attempts) from the same source of truth as
+    the funnel tail (patches_applied), so the d139 "proposal starvation"
+    reading can no longer be an artifact of a permanently-zero counter.
+    The deriver still returns 0 for iterations that emitted no
+    ``GSO_PATCH_OUTCOME_V1`` markers, so genuinely-empty iterations stay
+    byte-stable. Disable per-deploy via env var
+    ``GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE=0``. I25 catches drift
+    between the recorded counter and the deriver source-of-truth.
     """
-    return _plan12_sub_flag_with_umbrella(
-        "GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE"
-    )
+    return _flag_default_on("GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE")
 
 
 def plan12_live_run_summary_eval_derive_enabled() -> bool:

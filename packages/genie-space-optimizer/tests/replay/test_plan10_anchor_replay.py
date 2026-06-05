@@ -406,6 +406,12 @@ def test_plan10_anchor_replay_with_plan11_flag_on(
     }
 
     # ── Stage 3 mock — synthesize one proposal
+    # Plan 12 survival contract requires every proposal exiting Stage 3
+    # to carry non-empty target_objects + blame_set + target_qids (see
+    # repair_proposal_typed.validate_survival_contract). A real LLM
+    # emits these; mirror the populated shape used by
+    # ``_plan9_proposal_envelope`` so the anchor exercises survival
+    # rather than tripping the missing-required-fields contract.
     synth_payload = {
         "proposals": [
             {
@@ -416,7 +422,14 @@ def test_plan10_anchor_replay_with_plan11_flag_on(
                 "rationale": "Addresses the diagnosed root cause",
                 "confidence": "high",
                 "patch_body": _plan11_patch_body(expected_patch_type),
-                "blame_set": [],
+                "blame_set": ["sales.fact_sales.revenue"],
+                "target_objects": [
+                    {
+                        "asset_kind": "table",
+                        "identifier": "sales.fact_sales",
+                        "columns": ["revenue"],
+                    },
+                ],
                 "target_qids": [qid],
             },
         ],

@@ -6,16 +6,21 @@
   * Rung 4 (3+ attempts)                → synthesize_escalation_for_state(NARROWED_EXAMPLE_SQL)
 """
 
+from __future__ import annotations
+
 import pytest
 
 # SM Cutover Phase 3 (2026-05-23): routing_gate and escalation_ladder
 # transformers were quarantined to ``optimization/_legacy/`` because the
 # production state machine no longer mimics the legacy lever-cascade
 # escalation inside the SM. These tests are kept for archival reference
-# but are excluded from default test runs.
-pytestmark = pytest.mark.skip(reason="legacy: routing_gate/escalation_ladder quarantined in SM Cutover Phase 3")
-
-from __future__ import annotations
+# but are excluded from default test runs. The module-level skip must
+# fire BEFORE the (now-removed) escalation_ladder imports below, which
+# would otherwise raise ImportError at collection time.
+pytest.skip(
+    "legacy: routing_gate/escalation_ladder quarantined in SM Cutover Phase 3",
+    allow_module_level=True,
+)
 
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
 from genie_space_optimizer.optimization.state_machine.records import (

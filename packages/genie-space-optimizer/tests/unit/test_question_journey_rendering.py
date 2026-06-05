@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
-
-from genie_space_optimizer.optimization import harness
+from _harness_loop_source import lever_loop_source
 from genie_space_optimizer.optimization.question_journey import (
     QuestionJourneyEvent,
     render_question_journey_once,
@@ -50,7 +48,7 @@ def test_render_question_journey_once_marks_rendered_when_empty(capsys) -> None:
 
 
 def test_run_lever_loop_calls_journey_render_before_rollback_continue() -> None:
-    src = inspect.getsource(harness._run_lever_loop)
+    src = lever_loop_source()
     rollback_idx = src.index('if not gate_result.get("passed")')
     # Window expanded from 900 → 1200 chars to absorb the +4-space
     # iteration body indentation introduced by the Bug B fix's
@@ -64,6 +62,6 @@ def test_run_lever_loop_calls_journey_render_before_rollback_continue() -> None:
 
 
 def test_run_lever_loop_has_idempotent_journey_render_state() -> None:
-    src = inspect.getsource(harness._run_lever_loop)
+    src = lever_loop_source()
     assert "_journey_render_state" in src
     assert "render_question_journey_once" in src

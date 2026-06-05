@@ -20,7 +20,14 @@ from genie_space_optimizer.optimization.terminal_signature import (
 )
 
 
-def test_terminal_signature_is_a_namedtuple_with_5_fields_in_spec_order():
+def test_terminal_signature_field_order_locked():
+    # Phase 2 P2.5 — TerminalSignature was promoted from NamedTuple to
+    # a frozen dataclass, so positional indexing is no longer
+    # supported. The 5 LEGACY fields still occupy positions 0..4 in
+    # ``dataclasses.fields`` (spec Section 4.2 lock); positions 5..
+    # carry the P2.5 kit-aware extensions with defaults.
+    import dataclasses
+
     sig = TerminalSignature(
         root_cause="missing_metric_view",
         blame_set_norm=("catalog.schema.orders",),
@@ -28,18 +35,23 @@ def test_terminal_signature_is_a_namedtuple_with_5_fields_in_spec_order():
         target_qids=frozenset({"gs_001"}),
         terminal_reason=TerminalReason.NO_APPLIED_PATCHES.value,
     )
-    # Field order is locked — accessing by index MUST follow spec order.
-    assert sig[0] == "missing_metric_view"
-    assert sig[1] == ("catalog.schema.orders",)
-    assert sig[2] == frozenset({5, 6})
-    assert sig[3] == frozenset({"gs_001"})
-    assert sig[4] == TerminalReason.NO_APPLIED_PATCHES.value
-    # And by name.
+    names = [f.name for f in dataclasses.fields(TerminalSignature)]
+    assert names[:5] == [
+        "root_cause",
+        "blame_set_norm",
+        "lever_set",
+        "target_qids",
+        "terminal_reason",
+    ]
+    # And by name access still works as before.
     assert sig.root_cause == "missing_metric_view"
     assert sig.blame_set_norm == ("catalog.schema.orders",)
     assert sig.lever_set == frozenset({5, 6})
     assert sig.target_qids == frozenset({"gs_001"})
     assert sig.terminal_reason == "no_applied_patches"
+    # P2.5 extensions default to empty for back-compat constructors.
+    assert sig.prior_lever_set == frozenset()
+    assert sig.prior_patch_family == ""
 
 
 def test_signatures_are_equal_when_fields_equal_and_hashable():
@@ -131,9 +143,14 @@ def test_root_cause_is_normalized_at_build_time():
 
 
 def test_asdict_serializes_sets_as_canonically_sorted_lists():
-    """Spec Section 4.4: ``_asdict()`` produces lever_set as
-    numerically ascending list and target_qids as lexicographically
-    ascending list, blame_set_norm already sorted tuple."""
+    """Spec Section 4.4: serialized form produces ``lever_set`` as a
+    numerically ascending list and ``target_qids`` as a
+    lexicographically ascending list, ``blame_set_norm`` already a
+    sorted tuple. Phase 2 P2.5 — ``TerminalSignature`` is now a
+    frozen dataclass, so we use ``dataclasses.asdict`` instead of the
+    removed ``_asdict`` NamedTuple method."""
+    import dataclasses
+
     sig = build_terminal_signature(
         root_cause="no_metric_view_for_gross_sales",
         blame_set=["catalog.schema.products", "catalog.schema.orders"],
@@ -141,7 +158,7 @@ def test_asdict_serializes_sets_as_canonically_sorted_lists():
         target_qids=["gs_026"],
         terminal_reason=TerminalReason.NO_STRUCTURAL_CANDIDATE,
     )
-    d = sig._asdict()
+    d = dataclasses.asdict(sig)
     # JSON-roundtrippable per spec example.
     serialized = json.dumps({
         "root_cause": d["root_cause"],

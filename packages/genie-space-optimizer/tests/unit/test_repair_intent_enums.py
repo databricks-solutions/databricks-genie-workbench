@@ -70,6 +70,7 @@ def test_patch_type_covers_applier_dispatch_arms() -> None:
         "remove_instruction",
         # Example SQLs
         "add_example_sql",
+        "add_example_sql_negative",
         "update_example_sql",
         "remove_example_sql",
         # Descriptions

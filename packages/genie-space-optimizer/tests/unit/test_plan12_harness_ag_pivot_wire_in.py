@@ -9,7 +9,8 @@ Three branches:
   2. Flag ON, no prior signature for cluster → marker with
      pivot_recommended=False.
   3. Flag ON, survival-failure prior signature → marker with
-     pivot_recommended=True and recommended_patch_family=add_example_sql.
+     pivot_recommended=True and recommended_patch_family per the
+     Trial 20 C1 pivot graph (the prior family's successor).
 """
 import json
 
@@ -129,7 +130,12 @@ def test_flag_on_survival_failure_emits_pivot_marker(capsys, monkeypatch):
     m = markers[0]
     assert m["cluster_id"] == "H001"
     assert m["prior_terminal_reason"] == "no_applied_patches"
-    assert m["recommended_patch_family"] == "add_example_sql"
+    # Trial 20 C1 pivot graph (default-on): the prior family is the L6
+    # filter (add_sql_snippet_filter), so the recommended successor is
+    # add_sql_snippet_expression — not the pre-Trial-20 constant
+    # add_example_sql. (top_n_collapse is not a KIT_FOR_RCA diagnosis,
+    # so the companion picker returns empty and the graph applies.)
+    assert m["recommended_patch_family"] == "add_sql_snippet_expression"
     assert m["pivot_recommended"] is True
     # Pivot is observation-only in this commit — pivot_applied stays
     # False until a future commit wires the AG mutation.

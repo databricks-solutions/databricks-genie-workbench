@@ -94,6 +94,16 @@ class PatchType(StrEnum):
     ADD_EXAMPLE_SQL = "add_example_sql"
     UPDATE_EXAMPLE_SQL = "update_example_sql"
     REMOVE_EXAMPLE_SQL = "remove_example_sql"
+    # Phase 2 P2.4 — negative example SQL. The Genie planner stores
+    # this in the SAME ``example_sql`` slot as positive examples (see
+    # ``applier.py`` dispatch); the optimizer differentiates because
+    # negative examples are SCORED differently in postmortems and
+    # MUST NOT be quoted to the user as gold reference. The applier
+    # forwards the ``example_sql`` body verbatim but tags the audit
+    # record with ``negative=True`` so survivor-selection and
+    # acceptance tiering can deprioritize / penalize the proposal
+    # appropriately.
+    ADD_EXAMPLE_SQL_NEGATIVE = "add_example_sql_negative"
     # Descriptions
     ADD_DESCRIPTION = "add_description"
     UPDATE_DESCRIPTION = "update_description"

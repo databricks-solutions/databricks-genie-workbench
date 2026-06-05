@@ -122,6 +122,177 @@ _PER_QUESTION_PREFERRED_LEVERS: tuple[int, ...] = (3, 5)
 _DEFAULT_RECOMMENDED_LEVERS: tuple[int, ...] = (3, 5, 6)
 
 
+# ── Phase 2 P2.2 — KIT_FOR_RCA mandatory-companion map ────────────────
+#
+# Some RCA kinds are demonstrably under-served by a single lever in
+# isolation — postmortems across Trials 17–20 show that
+# instruction-only or snippet-only repairs for these diagnoses
+# regress to ``target_unchanged`` because the Genie planner needs
+# BOTH the structural lever (a SQL snippet, expression, or example)
+# AND a complementary metadata lever (a column / table description or
+# value-mapping instruction) to compose the right grammar.
+#
+# This map is consulted by the Stage 3 synthesizer validator (see
+# ``stages.synthesize``) AFTER the LLM emits proposals. For every
+# proposal whose source diagnosis ``rca_kind`` matches a key here,
+# the validator HARD-REJECTS the proposal when
+# ``proposal.effective_selected_levers()`` returns a single-element
+# kit. The proposal is dropped and a typed forbidden_signature of the
+# form ``kit_for_rca_violation:rca=<RCA>:lever=<LEVER>:singleton``
+# is appended so the next iteration's LLM sees why it was rejected.
+#
+# Membership rules — a kit is admissible for an RCA in this map when
+# it satisfies BOTH:
+#   1. ``len(selected_levers) >= 2`` (no singletons), AND
+#   2. ``set(selected_levers) & companions`` is non-empty — at least
+#      one declared lever appears in the RCA's companion set.
+#
+# The companion sets below name CANONICAL lever-IDs (``lever-1`` ..
+# ``lever-6``) drawn from the same closed enum as the Stage 3 LLM's
+# ``selected_levers`` output.
+#
+# Coverage rationale (from the postmortem catalog):
+#
+#   * ``value_mapping_missing`` — a value-mapping instruction
+#     (``lever-5a``) alone has been observed to leave the planner
+#     guessing on the SQL shape. A snippet/example (``lever-5b`` or
+#     ``lever-6``) provides the grammar anchor.
+#   * ``join_semantics_wrong`` — join semantics are not reliably
+#     fixable by prose alone; the planner needs an explicit join
+#     pattern via ``lever-6`` (sql_snippet_expression) AND a
+#     description (``lever-1``) explaining the join key.
+#   * ``time_grain_wrong`` — time-grain corrections require an
+#     example showing the correct grain (``lever-5b``) PLUS a
+#     description / instruction reinforcing it (``lever-1`` or
+#     ``lever-5a``).
+#   * ``column_disambiguation`` — when two columns share a label,
+#     the planner picks deterministically; a column description
+#     (``lever-1``) MUST be paired with a snippet filter or
+#     expression (``lever-6``) that exercises the disambiguation.
+#   * ``table_routing_wrong`` — the planner routed to the wrong
+#     fact / dimension table. A table-level description (``lever-2``)
+#     pairs with an example_sql (``lever-5b``) showing the correct
+#     route.
+KIT_FOR_RCA: Mapping[str, frozenset[str]] = {
+    "value_mapping_missing": frozenset({"lever-5b", "lever-6", "lever-5a"}),
+    "join_semantics_wrong": frozenset({"lever-1", "lever-6"}),
+    "time_grain_wrong": frozenset({"lever-1", "lever-5a", "lever-5b"}),
+    "column_disambiguation": frozenset({"lever-1", "lever-6"}),
+    "table_routing_wrong": frozenset({"lever-2", "lever-5b"}),
+}
+
+
+# ── Trial 24 — Kit at Source extension (flag-gated) ───────────────────
+#
+# The e943 / d139 postmortems showed example-SQL-insufficient RCA kinds
+# (``extra_defensive_filter``, ``top_n_cardinality_collapse``) emitting a
+# corrective LONE single lever (e.g. ``add_instruction``) that then died
+# at the slate ``required_assets`` gate as ``unjustified_single_lever``
+# before any Trial 23 repair hook could reach it. These RCAs were absent
+# from ``KIT_FOR_RCA``, so the synthesizer was free to emit the lone
+# lever. Trial 24 makes W4's ``RCA_KIND_TO_FIXING_MECHANISMS`` routing
+# authoritative AS A KIT: the companion sets below are the lever-id
+# projection of those fixing mechanisms (INSTRUCTION_TEXT -> lever-5a,
+# SQL_SNIPPET -> lever-6, METADATA_DESCRIPTION -> lever-1), so the
+# corrective patch is born as a >= 2-lever-family kit. Merged into the
+# active companion lookup ONLY when ``trial24_kit_at_source_enabled()``
+# is true; the base ``KIT_FOR_RCA`` constant is never mutated so flag-off
+# is byte-stable.
+_TRIAL24_KIT_FOR_RCA: Mapping[str, frozenset[str]] = {
+    "extra_defensive_filter": frozenset({"lever-5a", "lever-6"}),
+    "top_n_cardinality_collapse": frozenset({"lever-6", "lever-1"}),
+}
+
+
+def _kit_for_rca_companions(key: str) -> frozenset[str] | None:
+    """Return the companion lever set for a normalized ``key``.
+
+    Consults the base :data:`KIT_FOR_RCA` map, plus the Trial 24
+    extension when :func:`trial24_kit_at_source_enabled` is on. Returns
+    ``None`` when the RCA has no kit contract (caller treats that as
+    "single-lever allowed"). The base map always wins for keys it owns,
+    so the Trial 24 extension can only ADD new RCA contracts, never
+    weaken an existing one.
+    """
+    base = KIT_FOR_RCA.get(key)
+    if base is not None:
+        return base
+    try:
+        from genie_space_optimizer.optimization.trial24_flags import (
+            trial24_filter_removal_solo_enabled,
+            trial24_kit_at_source_enabled,
+        )
+
+        if trial24_kit_at_source_enabled():
+            # Follow-on B — ``extra_defensive_filter`` is a filter-REMOVAL
+            # RCA whose fix is a lone instruction telling the planner not
+            # to inject the predicate; a positive SQL-snippet companion
+            # cannot express removal. When filter-removal-solo is on, drop
+            # it from the forced-kit lookup so the P2.2 kit-violation gate
+            # does not hard-reject the justified solo instruction.
+            # ``top_n_cardinality_collapse`` stays a kit.
+            if (
+                key == "extra_defensive_filter"
+                and trial24_filter_removal_solo_enabled()
+            ):
+                return None
+            return _TRIAL24_KIT_FOR_RCA.get(key)
+    except Exception:
+        return None
+    return None
+
+
+def _normalize_rca_kind(rca_kind: str | None) -> str:
+    """Phase 2 P2.2 — collapse free-text RCA labels to the closed
+    KIT_FOR_RCA key vocabulary.
+
+    The Stage 1 prompt emits ``rca_kind`` from a closed enum, but
+    legacy diagnoses and replay fixtures sometimes carry leading /
+    trailing whitespace or different casing. Normalize to lowercase
+    and strip; unknown values pass through unchanged so the caller
+    can use a simple ``in KIT_FOR_RCA`` membership test.
+    """
+    if not rca_kind:
+        return ""
+    return str(rca_kind).strip().lower()
+
+
+def kit_for_rca_violation_reason(
+    rca_kind: str | None,
+    selected_levers: Sequence[str],
+) -> str:
+    """Phase 2 P2.2 — return the typed forbidden_signature when a
+    proposal violates the KIT_FOR_RCA contract, or ``""`` when the
+    proposal is admissible.
+
+    Returns one of the following deterministic shapes (consumed
+    verbatim by the next iteration's ``forbidden_signatures``
+    serializer):
+
+      * ``""`` (empty) — proposal is admissible.
+      * ``"kit_for_rca_violation:rca=<RCA>:singleton"`` —
+        ``rca_kind`` is in the map and the kit has fewer than 2
+        entries.
+      * ``"kit_for_rca_violation:rca=<RCA>:no_companion"`` —
+        ``rca_kind`` is in the map, the kit has >=2 entries, but
+        none of them appear in the companion set.
+
+    When ``rca_kind`` is NOT in ``KIT_FOR_RCA``, the function
+    returns ``""``  — RCAs outside the map have no KIT contract and
+    may freely emit single-lever proposals.
+    """
+    key = _normalize_rca_kind(rca_kind)
+    companions = _kit_for_rca_companions(key)
+    if companions is None:
+        return ""
+    kit = tuple(s for s in selected_levers if s)
+    if len(kit) < 2:
+        return f"kit_for_rca_violation:rca={key}:singleton"
+    if not (set(kit) & companions):
+        return f"kit_for_rca_violation:rca={key}:no_companion"
+    return ""
+
+
 def recommended_levers_for_cluster(cluster: dict) -> tuple[int, ...]:
     """Cycle 2 Task 4 — return the strategist's preferred lever
     ordering for a cluster.
@@ -633,14 +804,161 @@ _TERMINATIONS_REQUIRING_PIVOT: frozenset[str] = frozenset({
     "structural_gate_dropped_instruction_only",
     "narrow_loop_exhausted",
     "applyability_rejected",
+    # Trial 20 B3 — KEPT_INSUFFICIENT is a survival failure: patches
+    # applied but produced behaviour-unchanged candidates. Plan 12
+    # must treat this as a pivot trigger so the next iteration does
+    # not retry the same lever family. See ``trial20_flags
+    # .trial20_kept_insufficient_terminal_enabled``.
+    "kept_insufficient",
 })
 
 # When a pivot is required, prefer ``add_example_sql`` — the most
 # forgiving patch family (no SQL-validation surface, no structural
 # repair gates, no blast-radius collision risk beyond the question
 # itself). This is the canonical "we tried structural / instruction
-# and it didn't apply; teach by example" fallback.
+# and it didn't apply; teach by example" fallback. Kept for the
+# pre-Trial-20 byte-stable path when
+# ``trial20_family_pivot_graph_enabled`` is OFF.
 _PIVOT_FROM_FAMILY_AFTER_FAILURE: str = "add_example_sql"
+
+
+# Trial 20 C1 — cycle-aware patch-family pivot graph. Replaces the
+# degenerate single-element constant when the cluster's prior family
+# is already ``add_example_sql`` (the postmortem 7now case: Plan 12
+# returned ``add_example_sql`` again because the constant maps to
+# itself, so ``pivot_recommended=false``).
+#
+# The cycle is closed under five families, so any prior family has a
+# distinct next destination. Order is intentional: structural ->
+# example -> filter -> expression -> metadata -> structural. This
+# is illustrative, not the LLM's plan — it's a fallback when the
+# strategist asks "what family should I avoid retrying" after a
+# survival failure.
+_PIVOT_GRAPH: dict[str, str] = {
+    "add_instruction": "add_example_sql",
+    "add_example_sql": "add_sql_snippet_filter",
+    "add_sql_snippet_filter": "add_sql_snippet_expression",
+    "add_sql_snippet_expression": "add_column_description",
+    "add_column_description": "add_instruction",
+}
+
+
+def _infer_prior_family_from_signatures(
+    prior_terminal_signatures: "list",
+) -> str:
+    """Trial 20 C2 — when ``prior_patch_family`` is empty, infer it
+    from the most recent kept-insufficient / applier-record signature
+    on the cluster instead of defaulting to ``add_example_sql``.
+
+    Phase 2 P2.5 — the acceptance gate now stamps the patch family
+    directly onto :class:`TerminalSignature.prior_patch_family`, so
+    we consult that authoritative field FIRST. We fall back to the
+    legacy attribute scan (``patch_family`` / ``patch_type`` /
+    ``insufficient_repair_signature``) only for pre-P2.5 signatures
+    that did not stamp the new field.
+
+    The inference walks signatures in reverse chronological order
+    and returns the first non-empty hit. Returns the empty string
+    when no signature carries the field — caller falls back to the
+    legacy default.
+    """
+    for sig in (prior_terminal_signatures or ())[::-1]:
+        # Phase 2 P2.5 — authoritative field on the new
+        # TerminalSignature dataclass.
+        ppf = getattr(sig, "prior_patch_family", "")
+        if isinstance(ppf, str) and ppf.strip():
+            return ppf.strip()
+        for attr in ("patch_family", "patch_type"):
+            val = getattr(sig, attr, None)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        irs = getattr(sig, "insufficient_repair_signature", None)
+        if irs is not None:
+            for attr in ("patch_family", "patch_type"):
+                val = getattr(irs, attr, None)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+    return ""
+
+
+# ── Phase 2 P2.5 — lever_id → patch_family map ──────────────────────
+#
+# Mirrors the canonical ``LEVER_TO_PATCH_TYPES`` definition in
+# ``levers_contract.py`` but inverts the relationship to pick a
+# REPRESENTATIVE patch_family per lever_id. The pivot helper below
+# uses this to translate a chosen companion lever back to the
+# patch_family vocabulary that ``_PIVOT_GRAPH`` keys on.
+#
+# Choice of representative is deterministic: the family that
+# postmortems most often observe as the "primary" execution shape
+# for the lever. For ``lever-5`` (which spans add_instruction +
+# add_example_sql_*) we choose ``add_example_sql`` because the
+# example-shape is what the planner actually anchors on — the prose
+# instructions alone are a known weak pivot.
+_LEVER_ID_TO_PRIMARY_FAMILY: dict[str, str] = {
+    "lever-1": "add_column_description",
+    "lever-2": "add_description",
+    "lever-3": "add_example_sql",
+    "lever-4": "add_join_spec",
+    "lever-5": "add_example_sql",
+    "lever-5a": "add_instruction",
+    "lever-5b": "add_example_sql",
+    "lever-6": "add_sql_snippet_filter",
+}
+
+
+def next_companion_family_from_kit(
+    rca_kind: str | None,
+    prior_terminal_signatures: "list",
+) -> str:
+    """Phase 2 P2.5 — pick the next patch_family for the cluster by
+    consulting :data:`KIT_FOR_RCA`.
+
+    When ``rca_kind`` is in the KIT_FOR_RCA companion map, we already
+    know the canonical kit for that diagnosis. The prior signatures
+    tell us which lever_ids the LLM has already exhausted (via the
+    new ``prior_lever_set`` field on each :class:`TerminalSignature`).
+    The pivot policy is:
+
+      1. Compute the companion set ``KIT_FOR_RCA[rca_kind]``.
+      2. Compute the already-tried lever_id set as the union of
+         ``prior_lever_set`` over all prior signatures.
+      3. Pick the FIRST companion lever (in deterministic
+         ``sorted()`` order) NOT in the tried set.
+      4. Translate that lever to its representative patch_family
+         via :data:`_LEVER_ID_TO_PRIMARY_FAMILY`.
+
+    Returns the empty string when:
+      * ``rca_kind`` is NOT in KIT_FOR_RCA (no companion contract
+        to consult — caller falls back to the legacy
+        ``_PIVOT_GRAPH`` policy);
+      * every companion lever has already been tried (the cluster
+        has exhausted its KIT_FOR_RCA companions — caller terminates
+        with FALLBACK_NO_NEW_STRATEGY);
+      * the chosen lever has no representative family mapping
+        (defensive — should never fire for the closed lever_id
+        enum, but keeps the helper total).
+
+    This function replaces the cyclic ``_PIVOT_GRAPH`` step for
+    diagnoses that have a typed kit contract; legacy diagnoses
+    outside KIT_FOR_RCA continue to use ``_PIVOT_GRAPH``.
+    """
+    key = _normalize_rca_kind(rca_kind)
+    companions = _kit_for_rca_companions(key)
+    if companions is None:
+        return ""
+    tried: set[str] = set()
+    for sig in (prior_terminal_signatures or ())[::-1]:
+        prior_lever_set = getattr(sig, "prior_lever_set", None)
+        if prior_lever_set:
+            tried.update(str(s) for s in prior_lever_set if s)
+    for lever_id in sorted(companions):
+        if lever_id in tried:
+            continue
+        family = _LEVER_ID_TO_PRIMARY_FAMILY.get(lever_id, "")
+        if family:
+            return family
+    return ""
 
 
 def regenerate_action_groups_with_signatures(
@@ -649,6 +967,7 @@ def regenerate_action_groups_with_signatures(
     prior_terminal_signatures: "list",
     existing_forbidden_set: set,
     inner_regenerate,
+    insufficient_repair_signatures: "list | tuple | None" = None,
     **kwargs,
 ):
     """Plan 12 — wrapper that adds prior :class:`TerminalSignature`
@@ -664,15 +983,87 @@ def regenerate_action_groups_with_signatures(
 
     The wrapper itself does no LLM work — it just makes the
     forbidden_set complete before `inner_regenerate` runs.
+
+    Trial 19 A3 — when ``insufficient_repair_signatures`` is supplied
+    (the Trial 18 sibling channel from ``KEPT_INSUFFICIENT``), each
+    signature is unioned into the forbidden_set so the regenerator
+    cannot re-emit an AG that maps to a previously-insufficient
+    repair shape. The wrapper also passes the raw sequence through
+    to ``inner_regenerate`` as ``insufficient_repair_signatures=`` so
+    the regenerator's Stage 2 prompt can render the typed feedback
+    on the new AG it produces. Optional; pre-Trial-19 callers that
+    omit the kwarg get byte-stable behavior.
     """
     expanded = set(existing_forbidden_set or set())
     for sig in (prior_terminal_signatures or ()):
         expanded.add(sig)
-    return inner_regenerate(
+    insufficient_tuple = tuple(insufficient_repair_signatures or ())
+    for sig in insufficient_tuple:
+        if sig:
+            expanded.add(sig)
+    if insufficient_tuple:
+        kwargs.setdefault(
+            "insufficient_repair_signatures", insufficient_tuple,
+        )
+    regenerated = inner_regenerate(
         prior_clusters=prior_clusters,
         forbidden_set=expanded,
         **kwargs,
     )
+
+    # Trial 19 A6 — fallback_no_new_strategy detection. If the inner
+    # regenerator returned an empty / falsy result AND we had at
+    # least one prior terminal or insufficient signature in the
+    # expanded set, the iteration has exhausted strategies and the
+    # caller should consume the typed terminal reason instead of
+    # treating the empty return as ``no_action_group_emitted`` (which
+    # the strategist path also emits, but for a different cause:
+    # zero AGs from a fresh LLM call vs. zero AGs from the fallback
+    # collision path).
+    try:
+        from genie_space_optimizer.optimization.trial19_flags import (
+            trial19_enforce_insufficient_enabled,
+        )
+        if (
+            trial19_enforce_insufficient_enabled()
+            and not regenerated
+            and (prior_terminal_signatures or insufficient_tuple)
+        ):
+            import json as _json
+            # Phase 3 P3.2 — centralized marker payload helper. The
+            # schema is now pinned by ``fallback_marker_payload`` so
+            # postmortems can grep one symbol rather than reading the
+            # JSON literal here. Downstream callers in the harness
+            # classify the iteration's terminal_reason via
+            # ``classify_zero_ag_terminal_reason`` (same module) — when
+            # this marker fires, the classifier MUST return
+            # ``FALLBACK_NO_NEW_STRATEGY`` rather than the catch-all
+            # ``NO_ACTION_GROUP_EMITTED``.
+            from genie_space_optimizer.optimization.fallback_terminal import (
+                fallback_marker_payload as _fallback_marker_payload,
+            )
+            print(
+                "GSO_FALLBACK_NO_NEW_STRATEGY_V1 "
+                + _json.dumps(
+                    _fallback_marker_payload(
+                        expanded_forbidden_count=len(expanded),
+                        insufficient_repair_signatures_count=len(
+                            insufficient_tuple
+                        ),
+                        prior_terminal_signatures_count=len(
+                            list(prior_terminal_signatures or ())
+                        ),
+                    ),
+                    sort_keys=True,
+                    default=str,
+                ),
+                flush=True,
+            )
+    except Exception:
+        # Defensive — marker emission must not break legacy callers.
+        pass
+
+    return regenerated
 
 
 def next_patch_family_for_cluster(
@@ -684,19 +1075,68 @@ def next_patch_family_for_cluster(
     """Plan 12 — choose the next patch family for a cluster.
 
     If the most recent terminal signature carries a survival-failure
-    ``terminal_reason`` (``no_applied_patches``,
-    ``structural_gate_dropped_instruction_only``,
-    ``narrow_loop_exhausted``, ``applyability_rejected``), pivot to
-    ``add_example_sql`` — the canonical "teach by example" fallback.
+    ``terminal_reason`` in :data:`_TERMINATIONS_REQUIRING_PIVOT`,
+    pivot to the next family per :data:`_PIVOT_GRAPH` (Trial 20 C1).
     Otherwise, retain the prior family.
+
+    Trial 20 C1 — when ``trial20_family_pivot_graph_enabled`` is ON,
+    the pivot target is ``_PIVOT_GRAPH[prior_patch_family]`` so the
+    degenerate "pivot from add_example_sql back to add_example_sql"
+    case (postmortem 7now) becomes "pivot to add_sql_snippet_filter".
+    Trial 20 C2 — when ``prior_patch_family`` is empty/unknown, infer
+    it from the most recent kept-insufficient or applier-record
+    signature instead of defaulting to ``add_example_sql``.
+
+    When the Trial 20 flag is OFF, the function preserves the
+    pre-Trial-20 byte-stable behaviour (constant pivot target).
 
     ``cluster_id`` is accepted for future per-cluster policy
     (currently the policy is global) and to make the signature
     readable at call sites.
     """
     del cluster_id  # Reserved for per-cluster policy refinement.
+    from genie_space_optimizer.optimization.trial20_flags import (
+        trial20_family_pivot_graph_enabled,
+    )
+
+    pivot_required = False
     for sig in (prior_terminal_signatures or ())[::-1]:
         reason = str(getattr(sig, "terminal_reason", "") or "")
         if reason in _TERMINATIONS_REQUIRING_PIVOT:
-            return _PIVOT_FROM_FAMILY_AFTER_FAILURE
-    return str(prior_patch_family or _PIVOT_FROM_FAMILY_AFTER_FAILURE)
+            pivot_required = True
+            break
+
+    if not pivot_required:
+        return str(prior_patch_family or _PIVOT_FROM_FAMILY_AFTER_FAILURE)
+
+    if not trial20_family_pivot_graph_enabled():
+        return _PIVOT_FROM_FAMILY_AFTER_FAILURE
+
+    # Phase 2 P2.5 — prefer the KIT_FOR_RCA companion pivot when the
+    # most recent signature names an RCA in the map. The companion
+    # picker walks the canonical kit and returns the first
+    # un-tried companion lever's representative patch_family. This
+    # replaces the cyclic ``_PIVOT_GRAPH`` next-family heuristic for
+    # diagnoses where the kit contract gives us a typed answer.
+    most_recent_rca = ""
+    for sig in (prior_terminal_signatures or ())[::-1]:
+        rca = getattr(sig, "root_cause", "")
+        if isinstance(rca, str) and rca.strip():
+            most_recent_rca = rca.strip()
+            break
+    companion_family = next_companion_family_from_kit(
+        most_recent_rca, prior_terminal_signatures
+    )
+    if companion_family:
+        return companion_family
+
+    effective_prior_family = str(prior_patch_family or "").strip()
+    if not effective_prior_family:
+        effective_prior_family = _infer_prior_family_from_signatures(
+            prior_terminal_signatures
+        )
+    if not effective_prior_family:
+        return _PIVOT_FROM_FAMILY_AFTER_FAILURE
+    return _PIVOT_GRAPH.get(
+        effective_prior_family, _PIVOT_FROM_FAMILY_AFTER_FAILURE
+    )

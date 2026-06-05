@@ -6,14 +6,15 @@ validation marker payload, bundle-completeness markers, replay
 validity) and produces a typed ``ContractHealthSummary`` whose
 ``merge_gate_status`` is the canonical RCO-2 merge-gate result.
 
-The strict-mode default flip is deferred to RCO-2b (see
-``docs/2026-05-12-rco-2b-deferral.md``). RCO-2a wires the categories;
-the production exit path still defaults to warn-and-degrade.
+RCO-2a wires the categories. The production exit path is effort-based by
+default: summaries are emitted for postmortems, while task-failing
+enforcement is an explicit CI/canary opt-in.
 """
 
 from __future__ import annotations
 
 import enum
+import os
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -63,8 +64,8 @@ class MergeGateStatus(enum.Enum):
     violations + Phase H validation status + bundle completeness +
     replay validity. RCO-2a wires the category into stdout (via
     ``GSO_CONTRACT_HEALTH_V1``) and into the operator transcript, but
-    the production job exit code is NOT yet driven by it. RCO-2b will
-    flip ``MERGE_GATE_BLOCKED`` to a non-zero task exit.
+    the production job exit code is not driven by it unless
+    ``GSO_ENFORCE_MERGE_GATE_BLOCKING=1`` is set.
     """
 
     HEALTHY = "healthy"
@@ -308,15 +309,30 @@ class MergeGateBlockedError(Exception):
         )
 
 
+_TRUTHY = frozenset({"1", "true", "True", "TRUE", "yes", "YES", "on", "ON"})
+
+
+def merge_gate_blocking_enabled() -> bool:
+    """Return True only when contract-health blocking is explicitly enabled.
+
+    Production optimizer runs publish ``contract_health_summary`` for
+    postmortems, but a blocked summary should not fail the task by default:
+    operators asked for an effort-based optimizer posture. CI/canary runs can
+    opt into the old fail-closed behavior with
+    ``GSO_ENFORCE_MERGE_GATE_BLOCKING=1``.
+    """
+    return str(os.environ.get("GSO_ENFORCE_MERGE_GATE_BLOCKING", "")).strip() in _TRUTHY
+
+
 def enforce_merge_gate(loop_out: Mapping[str, Any]) -> None:
-    """RCO-2b — raise ``MergeGateBlockedError`` iff the lever-loop's
-    contract-health summary reports ``merge_gate_blocked``.
+    """Raise ``MergeGateBlockedError`` for blocked summaries only in
+    explicit strict mode.
 
     Called by ``jobs/run_lever_loop.py`` between task-values publishing
-    and ``dbutils.notebook.exit(...)``. Task values are published first
-    so postmortem tooling can read the failing run's debug payload;
-    the raise marks the Databricks task as failed so downstream
-    ``finalize`` / ``deploy`` tasks skip.
+    and ``dbutils.notebook.exit(...)``. Task values are published first so
+    postmortem tooling can read the run's debug payload. By default this
+    helper is observe-only even when the summary is ``merge_gate_blocked``;
+    strict blocking requires ``GSO_ENFORCE_MERGE_GATE_BLOCKING=1``.
 
     Missing / ``None`` / empty ``contract_health_summary`` is a no-op:
     RCO-2a's emit path is fail-soft (swallows all exceptions). RCO-2b
@@ -330,6 +346,8 @@ def enforce_merge_gate(loop_out: Mapping[str, Any]) -> None:
         return
     status = str(payload.get("merge_gate_status") or "")
     if status != MergeGateStatus.MERGE_GATE_BLOCKED.value:
+        return
+    if not merge_gate_blocking_enabled():
         return
     high_tier = payload.get("high_tier_violations") or ()
     raise MergeGateBlockedError(

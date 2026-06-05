@@ -26,14 +26,20 @@ def test_rejects_absent_with_zero_repairability_when_intent_is_empty():
     assert verdict.repairability.value == 1.0
 
 
-def test_rejects_absent_with_zero_repairability_when_intent_is_instruction():
-    """Same bug shape with intent=instruction."""
+def test_intent_instruction_with_absent_emits_typed_retry_under_trial19():
+    """Trial 19 B4 — when the LLM-first RCA flag is ON (default), a
+    non-empty intent + ABSENT emission triggers ``retry_with_typed_feedback``
+    instead of a terminal rejection. The retry feedback string names
+    the intent verbatim so Stage 3 can re-emit a concrete patch.
+    Pre-Trial-19 behavior (reject) is preserved when the flag is OFF.
+    """
     verdict = enforce_structural_repair_shape(
         intended_patch_shape="instruction",
         emitted_patch_shape=EmittedPatchShape.ABSENT,
         narrow_replacement_available=False,
     )
-    assert verdict.outcome == "rejected"
+    assert verdict.outcome == "retry_with_typed_feedback"
+    assert "instruction" in verdict.retry_feedback
 
 
 def test_rejects_absent_with_zero_repairability_when_intent_is_structural():

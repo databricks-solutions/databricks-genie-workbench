@@ -507,6 +507,11 @@ class AcceptedClass(str, _Enum):
 
     STRICT_WIN = "strict_win"
     NET_WIN_WITH_DEBT = "net_win_with_debt"
+    # Trial 23 W2 — a net win on global accuracy whose target QID debt
+    # is unresolved. Records the global delta_pp as evidence but is
+    # NOT deployable: "accepted" must mean the target was fixed, not
+    # that the global scoreboard moved.
+    NET_WIN_NON_DEPLOYABLE = "net_win_non_deployable"
     DIAGNOSTIC_HOLD = "diagnostic_hold"
     LOSS = "loss"
 
@@ -584,6 +589,7 @@ def classify_acceptance_tier(
     *,
     decision,
     policy: TierAcceptancePolicy,
+    demote_on_unresolved_target_debt: bool = False,
 ) -> TierVerdict:
     """Phase 1 Action 1.2 — pure-function four-tier classifier.
 
@@ -663,6 +669,28 @@ def classify_acceptance_tier(
             soft_to_hard=soft_to_hard,
             passing_to_hard=passing_to_hard,
         )
+        _target_not_fixed = not target_fully_fixed and bool(target_still_hard)
+        # Trial 23 W2 — target-honest acceptance. A global net win whose
+        # named target QID is still hard is NOT deployable: it is
+        # attribution drift, not a fix of the stated goal. Demote to a
+        # non-deployable diagnostic class while preserving the delta_pp
+        # evidence. Default OFF (caller passes the flag) so the
+        # pre-Trial-23 NET_WIN_WITH_DEBT accept path is byte-stable.
+        if demote_on_unresolved_target_debt and _target_not_fixed:
+            return TierVerdict(
+                accepted_class=AcceptedClass.NET_WIN_NON_DEPLOYABLE,
+                accept=False,
+                debt_classification=debt,
+                reflection_payload={
+                    "delta_pp": delta_pp,
+                    "fixes_count": fixes_count,
+                    "regressions_count": regressions_count,
+                    "global_improvement_target_not_fixed": True,
+                    "unresolved_target_debt_qids": list(target_still_hard),
+                    "demoted_from": AcceptedClass.NET_WIN_WITH_DEBT.value,
+                    "predicates": net_win_predicates,
+                },
+            )
         return TierVerdict(
             accepted_class=AcceptedClass.NET_WIN_WITH_DEBT,
             accept=True,
@@ -671,9 +699,7 @@ def classify_acceptance_tier(
                 "delta_pp": delta_pp,
                 "fixes_count": fixes_count,
                 "regressions_count": regressions_count,
-                "global_improvement_target_not_fixed": (
-                    not target_fully_fixed and bool(target_still_hard)
-                ),
+                "global_improvement_target_not_fixed": _target_not_fixed,
                 "predicates": net_win_predicates,
             },
         )

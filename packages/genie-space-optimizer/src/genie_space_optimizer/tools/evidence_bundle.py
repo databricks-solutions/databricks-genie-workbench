@@ -81,43 +81,75 @@ def _task_result_state(task: Mapping[str, Any]) -> str:
     return str(rs).upper()
 
 
-def _select_lever_loop_task(
+@dataclass(frozen=True)
+class LeverLoopTaskSelection:
+    """P4 C10 — typed result of lever_loop task selection.
+
+    Carries the explicit signal that the caller-requested
+    ``task_run_id`` was honored, or that the latest-task heuristic
+    fired as a fallback (``stale_anchor_reason`` populated).
+
+    Backwards compatibility: callers that want the legacy
+    ``(task, failed_attempts)`` tuple can use
+    :func:`_select_lever_loop_task` which wraps this dataclass.
+    """
+
+    chosen: Mapping[str, Any] | None
+    failed_attempts: list[Mapping[str, Any]]
+    requested_task_run_id: str = ""
+    honored_requested_id: bool = False
+    stale_anchor_reason: str = ""
+
+
+def _normalize_task_run_id(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def select_lever_loop_task(
     tasks: Sequence[Mapping[str, Any]],
-) -> tuple[Mapping[str, Any] | None, list[Mapping[str, Any]]]:
-    """Pick the lever_loop task to anchor evidence on, and return
-    every failed attempt for separate per-attempt artifacts.
+    *,
+    requested_task_run_id: str | None = None,
+) -> LeverLoopTaskSelection:
+    """P4 C10 — typed selector that honors an explicit
+    ``requested_task_run_id`` when present.
 
     Selection order:
+      0. **P4 C10**: If ``requested_task_run_id`` is provided AND
+         matches one of the ``lever_loop`` task attempts, that exact
+         attempt is returned (``honored_requested_id=True``).
       1. Among ``task_key=='lever_loop'`` tasks, prefer SUCCESS.
       2. Within the preferred-state set, prefer largest ``end_time``
-         (most recent terminal time), then largest ``start_time`` as
-         a tiebreaker.
-      3. If no SUCCESS exists, fall back to the latest FAILED. The
-         chosen task is also recorded in ``failed_attempts`` so the
-         caller emits a per-attempt artifact for it too.
-      4. If no ``lever_loop`` task exists, return ``(None, [])``.
+         then largest ``start_time`` then largest numeric
+         ``task_run_id``.
+      3. If no SUCCESS exists, fall back to the latest FAILED.
+      4. If no ``lever_loop`` task exists, return empty selection.
 
-    Reproducer: run 2423b960 had 4 FAILED + 1 SUCCESS attempts; the
-    old ``next(t for ...)`` anchored to attempt 1 (FAILED). This
-    selector picks attempt 5 (SUCCESS) and records 200..203 as
-    failed_attempts.
+    When ``requested_task_run_id`` is provided but does not match,
+    the selector falls back to the latest-task heuristic AND populates
+    ``stale_anchor_reason`` so the caller can emit a ``stale_anchor``
+    diagnostic instead of silently anchoring on the wrong attempt.
     """
+    requested = _normalize_task_run_id(requested_task_run_id)
     lever_tasks = [
         t for t in (tasks or []) if t.get("task_key") == "lever_loop"
     ]
     if not lever_tasks:
-        return None, []
+        return LeverLoopTaskSelection(
+            chosen=None,
+            failed_attempts=[],
+            requested_task_run_id=requested,
+            honored_requested_id=False,
+            stale_anchor_reason=(
+                f"no lever_loop tasks present; requested "
+                f"task_run_id={requested or '<blank>'} cannot be honored."
+                if requested
+                else ""
+            ),
+        )
 
     def _sort_key(t: Mapping[str, Any]) -> tuple[int, int, int]:
-        """Strictly-ordered key: end_time, then start_time, then numeric
-        task_run_id as a deterministic tiebreaker (Databricks task ids
-        are monotonically allocated, so the larger id is the later
-        attempt). Trial-3 exposed parents where two SUCCESS attempts
-        tied on (end_time, start_time) at second-level resolution;
-        without the third component the API's input order won and the
-        bundler anchored on the older attempt."""
         try:
-            tid = int(str(t.get("task_run_id") or "0") or "0")
+            tid = int(_normalize_task_run_id(t.get("task_run_id")) or "0")
         except (TypeError, ValueError):
             tid = 0
         return (
@@ -125,6 +157,28 @@ def _select_lever_loop_task(
             int(t.get("start_time") or 0),
             tid,
         )
+
+    # P4 C10 — honor explicit task_run_id input over latest heuristic.
+    if requested:
+        for t in lever_tasks:
+            if _normalize_task_run_id(t.get("task_run_id")) == requested:
+                # Failed attempts list excludes the chosen attempt to
+                # preserve legacy semantics (the chosen attempt is
+                # always known to the caller; failed_attempts is
+                # purely for per-attempt artifact emission).
+                failures = [
+                    other for other in lever_tasks
+                    if _normalize_task_run_id(other.get("task_run_id")) != requested
+                    and _task_result_state(other) != "SUCCESS"
+                ]
+                failures.sort(key=_sort_key, reverse=True)
+                return LeverLoopTaskSelection(
+                    chosen=t,
+                    failed_attempts=failures,
+                    requested_task_run_id=requested,
+                    honored_requested_id=True,
+                    stale_anchor_reason="",
+                )
 
     successes = sorted(
         (t for t in lever_tasks if _task_result_state(t) == "SUCCESS"),
@@ -137,9 +191,76 @@ def _select_lever_loop_task(
         reverse=True,
     )
     if successes:
-        return successes[0], list(failures)
-    # All failed: pick the latest, but also include it in failed_attempts.
-    return failures[0], list(failures)
+        chosen = successes[0]
+        fallback_attempts = list(failures)
+    else:
+        chosen = failures[0]
+        fallback_attempts = list(failures)
+
+    stale_reason = ""
+    if requested:
+        observed_ids = sorted(
+            _normalize_task_run_id(t.get("task_run_id"))
+            for t in lever_tasks
+            if _normalize_task_run_id(t.get("task_run_id"))
+        )
+        stale_reason = (
+            f"requested lever_loop task_run_id={requested} not present in "
+            f"lever_loop attempts {observed_ids or '<empty>'}; falling back "
+            "to latest-task heuristic — evidence anchor may be stale."
+        )
+    return LeverLoopTaskSelection(
+        chosen=chosen,
+        failed_attempts=fallback_attempts,
+        requested_task_run_id=requested,
+        honored_requested_id=False,
+        stale_anchor_reason=stale_reason,
+    )
+
+
+def _select_lever_loop_task(
+    tasks: Sequence[Mapping[str, Any]],
+    *,
+    requested_task_run_id: str | None = None,
+) -> tuple[Mapping[str, Any] | None, list[Mapping[str, Any]]]:
+    """Legacy tuple-shaped wrapper around :func:`select_lever_loop_task`.
+
+    Existing call sites consume ``(task, failed_attempts)`` directly.
+    The new typed selector is exposed via :func:`select_lever_loop_task`
+    for callers that need stale-anchor diagnostics.
+
+    Reproducer: run 2423b960 had 4 FAILED + 1 SUCCESS attempts; the
+    old ``next(t for ...)`` anchored to attempt 1 (FAILED). The new
+    selector picks attempt 5 (SUCCESS) and records 200..203 as
+    failed_attempts.
+    """
+    selection = select_lever_loop_task(
+        tasks, requested_task_run_id=requested_task_run_id,
+    )
+    return selection.chosen, selection.failed_attempts
+
+
+def stale_anchor_diagnostic_marker(
+    *,
+    optimization_run_id: str,
+    requested_task_run_id: str,
+    chosen_task_run_id: str,
+    reason: str,
+) -> str:
+    """P4 C10 — emit a one-line ``GSO_STALE_ANCHOR_DIAGNOSTIC_V1``
+    marker so postmortem tooling can detect when the evidence-bundle
+    anchor fell back to the latest-task heuristic despite an explicit
+    ``task_run_id`` input.
+
+    Pure: no I/O. Caller is responsible for ``print()``.
+    """
+    payload = {
+        "optimization_run_id": str(optimization_run_id or ""),
+        "requested_task_run_id": str(requested_task_run_id or ""),
+        "chosen_task_run_id": str(chosen_task_run_id or ""),
+        "reason": str(reason or ""),
+    }
+    return f"GSO_STALE_ANCHOR_DIAGNOSTIC_V1 {json.dumps(payload, sort_keys=True)}"
 
 
 def _failed_attempt_artifact_path(
@@ -642,13 +763,41 @@ def build_bundle(
     auto_backfill: bool = False,
     opt_run_id_override: str = "",
     experiment_id_override: str = "",
+    requested_task_run_id: str = "",
 ) -> BundleResult:
+    """Build an evidence bundle.
+
+    ``requested_task_run_id`` (P4 C10): when provided, the lever_loop
+    task selector honors this exact ``task_run_id`` over the latest-
+    task heuristic. When the requested id is not present in the
+    parent job's lever_loop attempts, the selector falls back to the
+    latest-task heuristic AND emits a
+    ``GSO_STALE_ANCHOR_DIAGNOSTIC_V1`` marker so the postmortem skill
+    can detect the stale anchor.
+    """
     job_run = databricks_runner.get_run(run_id=run_id, profile=profile)
 
-    lever_task, failed_lever_loop_attempts = _select_lever_loop_task(
-        job_run.get("tasks", []) or []
+    selection = select_lever_loop_task(
+        job_run.get("tasks", []) or [],
+        requested_task_run_id=requested_task_run_id or None,
     )
+    lever_task = selection.chosen
+    failed_lever_loop_attempts = selection.failed_attempts
     lever_task_run_id = lever_task["run_id"] if lever_task else ""
+    if selection.stale_anchor_reason:
+        # P4 C10 — fallback fired; emit the diagnostic marker so
+        # postmortem tooling treats the anchor as stale and skips
+        # Phase H consumers.
+        print(
+            stale_anchor_diagnostic_marker(
+                optimization_run_id=opt_run_id_override or "",
+                requested_task_run_id=selection.requested_task_run_id,
+                chosen_task_run_id=str(
+                    (lever_task or {}).get("task_run_id") or ""
+                ),
+                reason=selection.stale_anchor_reason,
+            )
+        )
     stdout_text = ""
     stderr_text = ""
     stdout_source = "absent"
@@ -1117,6 +1266,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "the audit will search every experiment when unset."
         ),
     )
+    parser.add_argument(
+        "--task-run-id",
+        default="",
+        help=(
+            "P4 C10 — anchor evidence on this exact lever_loop task_run_id "
+            "instead of the latest-task heuristic. If the requested id is "
+            "not present among the parent job's lever_loop attempts, the "
+            "bundler falls back to the latest-task selector AND emits a "
+            "GSO_STALE_ANCHOR_DIAGNOSTIC_V1 marker."
+        ),
+    )
     args = parser.parse_args(argv)
 
     result = build_bundle(
@@ -1129,6 +1289,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         auto_backfill=args.auto_backfill,
         opt_run_id_override=args.opt_run_id,
         experiment_id_override=args.experiment_id,
+        requested_task_run_id=args.task_run_id,
     )
     print(json.dumps(manifest_to_dict(result.manifest), indent=2, sort_keys=True))
     return 0 if result.manifest.exit_status == "complete" else 1

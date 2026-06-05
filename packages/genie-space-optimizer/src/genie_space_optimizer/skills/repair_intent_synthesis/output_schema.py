@@ -203,3 +203,16 @@ class LlmRepairProposalOutput(LLMOutputContract):
             "time). Empty string means single-proposal path."
         ),
     )
+    # ── Trial 20 D1 — single-lever justification ────────────────────
+    single_lever_justification: str = Field(
+        default="",
+        description=(
+            "Trial 20 D1 — REQUIRED when emitting a single-lever "
+            "proposal on iteration 1 (no prior insufficient "
+            "signatures). One to three sentences naming the failure "
+            "mode and the lever family, and explaining why a second "
+            "lever would not materially reinforce the repair. "
+            "Surfaced in the postmortem-joinable "
+            "GSO_TRIAL20_SINGLE_LEVER_JUSTIFIED_V1 marker."
+        ),
+    )

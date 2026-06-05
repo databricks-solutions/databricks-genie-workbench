@@ -1779,9 +1779,50 @@ def decide_control_plane_acceptance(
             target_qids=targets,
         )
         unresolved_target_debt_qids = tuple(targets)
+    elif reason == "accepted_with_attribution_drift_and_debt":
+        # Trial 23 W2 — the with-debt drift branch also leaves the named
+        # target hard; surface the unresolved debt so the honesty gate
+        # below (and the next strategist) sees it.
+        accidentally_improved_qids = ()
+        unresolved_target_debt_qids = tuple(target_still)
     else:
         accidentally_improved_qids = ()
         unresolved_target_debt_qids = ()
+
+    # Trial 23 W2 — target-honest acceptance. "Accepted" must mean the
+    # named target was fixed, not that the global scoreboard moved. When
+    # a candidate is accepted but the target QID debt is unresolved
+    # (attribution drift), demote it to a non-deployable diagnostic
+    # verdict: record the global delta_pp as evidence but do NOT deploy.
+    # Gated by ``trial23_target_honest_acceptance_enabled`` (default ON,
+    # master GSO_TRIAL23_LOOP_REPAIR). Flag-off restores the prior
+    # deployable accept.
+    if accepted and unresolved_target_debt_qids:
+        try:
+            from genie_space_optimizer.optimization.trial23_flags import (
+                trial23_target_honest_acceptance_enabled,
+            )
+            if trial23_target_honest_acceptance_enabled():
+                import json as _t23_json
+                _t23_prior_reason = reason
+                accepted = False
+                reason = "net_win_non_deployable"
+                print(
+                    "GSO_TRIAL23_TARGET_HONEST_ACCEPTANCE_V1 "
+                    + _t23_json.dumps(
+                        {
+                            "demoted_from": str(_t23_prior_reason),
+                            "delta_pp": float(delta),
+                            "unresolved_target_debt_qids": list(
+                                unresolved_target_debt_qids
+                            ),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+        except Exception:
+            pass
 
     return ControlPlaneAcceptance(
         accepted=accepted,
@@ -1984,6 +2025,8 @@ def decide_pre_arbiter_regression_guardrail(
     candidate_pre_arbiter_accuracy: float,
     target_fixed_qids: tuple[str, ...],
     max_pre_arbiter_regression_pp: float = 5.0,
+    post_arbiter_delta_pp: float | None = None,
+    out_of_target_hard_regressions: int = 0,
 ) -> PreArbiterRegressionDecision:
     """Reject candidates that drop broad pre-arbiter accuracy without fixing any target.
 
@@ -1991,13 +2034,44 @@ def decide_pre_arbiter_regression_guardrail(
     budget is in service of letting hard targets land). Without one, drops
     larger than ``max_pre_arbiter_regression_pp`` are blocked so a wide
     instruction edit cannot trade healthy questions for nothing.
+
+    Trial 20 Workstream A2 — post-arbiter-gain absorbs pre-arbiter
+    regression. When the post-arbiter accuracy delta is strictly
+    positive and there are zero out-of-target hard regressions, the
+    pre-arbiter drop is absorbed by the post-arbiter gain. This is
+    the symmetric branch to ``accepted_pre_arbiter_improvement`` in
+    :func:`decide_control_plane_acceptance`: pre-arbiter delta carries
+    the candidate when post-arbiter saturates; post-arbiter delta
+    carries the candidate when pre-arbiter regresses but the
+    arbiter-rescued QIDs (often outside the declared ``target_qids``
+    set — see ``trial20_rootcause`` A1 ``target_attribution_drift``
+    classification) net the iteration positive on the product metric.
+
+    Gated by :func:`trial20_pre_arbiter_veto_fix_enabled`. When the
+    flag is OFF, the original byte-stable two-branch decision is
+    preserved.
     """
+    from genie_space_optimizer.optimization.trial20_flags import (
+        trial20_pre_arbiter_veto_fix_enabled,
+    )
+
     delta = round(
         float(candidate_pre_arbiter_accuracy) - float(baseline_pre_arbiter_accuracy),
         1,
     )
     if target_fixed_qids:
         return PreArbiterRegressionDecision(True, "target_fixed", delta)
+    if (
+        trial20_pre_arbiter_veto_fix_enabled()
+        and post_arbiter_delta_pp is not None
+        and float(post_arbiter_delta_pp) > 0.0
+        and int(out_of_target_hard_regressions) == 0
+    ):
+        return PreArbiterRegressionDecision(
+            True,
+            "accepted_post_arbiter_gain_absorbs_pre_arbiter_regression",
+            delta,
+        )
     if delta <= -abs(float(max_pre_arbiter_regression_pp)):
         return PreArbiterRegressionDecision(
             False,

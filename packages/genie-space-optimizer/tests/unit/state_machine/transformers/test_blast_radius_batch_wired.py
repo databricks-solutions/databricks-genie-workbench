@@ -106,11 +106,39 @@ def _ctx(rp) -> TransformerContext:
     return ctx
 
 
-def test_safe_no_passing_dependents_advances_to_applyable():
-    rp = _make_proposal()  # no passing_dependents → safe-by-default
+def test_safe_when_passing_dependents_stamped_empty_advances_to_applyable():
+    """Trial 20 E2 contract — ``passing_dependents`` MUST be stamped on
+    every proposal (empty list = scanner ran and found none). An
+    explicitly-stamped empty list is the safe-by-default signal; a
+    MISSING field means E1 stamping never ran and the proposal is
+    treated as unsafe (``passing_dependents_missing``) so plumbing
+    regressions surface instead of being absorbed as false-safe.
+
+    Pre-Trial-20 this test asserted that a MISSING ``passing_dependents``
+    field was safe-by-default. That contract was the root cause behind
+    postmortem 519131527536322 (the airline rollback) — Trial 20 E2
+    explicitly flipped it to unsafe-by-default.
+    """
+    rp = _make_proposal(passing_dependents=[])  # scanner ran → no dependents
     s = _state_at_normalized(intent_id=rp.intent_id)
     out = blast_module.blast_radius_batch.transform(s, _ctx(rp))
     assert out.current_stage == FunnelStage.APPLYABLE
+
+
+def test_missing_passing_dependents_is_rejected_under_trial20_e2():
+    """Trial 20 E2 — a proposal that reaches blast_radius without
+    ``passing_dependents`` stamped means E1 plumbing dropped the
+    counterfactual scan. The gate emits
+    ``GSO_TRIAL20_BLAST_RADIUS_UNSTAMPED_V1`` and rejects with reason
+    ``passing_dependents_missing`` so the regression is loud, not
+    silent.
+    """
+    rp = _make_proposal()  # no passing_dependents → unsafe under E2
+    s = _state_at_normalized(intent_id=rp.intent_id)
+    out = blast_module.blast_radius_batch.transform(s, _ctx(rp))
+    assert out.current_stage == FunnelStage.PROPOSED
+    assert out.proposals[-1].outcome == "blast_radius_rejected"
+    assert "passing_dependents_missing" in out.proposals[-1].outcome_reason
 
 
 def test_safe_when_outside_target_within_threshold():

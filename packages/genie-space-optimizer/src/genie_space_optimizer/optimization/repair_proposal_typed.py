@@ -47,6 +47,14 @@ class PatchBodyValidationError(ValueError):
 # should emit requires adding an entry here.
 _REQUIRED_PATCH_BODY_FIELDS: dict[PatchType, frozenset[str]] = {
     PatchType.ADD_EXAMPLE_SQL: frozenset({"example_question", "example_sql"}),
+    # Phase 2 P2.4 — negative-example body shares the same required
+    # fields as the positive-example body. The applier dispatches both
+    # to the same Genie ``example_sql`` slot; the only difference is
+    # that the optimizer tracks negative attempts separately (see
+    # ``applier_audit`` and ``acceptance_tier``).
+    PatchType.ADD_EXAMPLE_SQL_NEGATIVE: frozenset(
+        {"example_question", "example_sql"}
+    ),
     PatchType.ADD_SQL_SNIPPET_EXPRESSION: frozenset(
         {"name", "sql_expression"}
     ),
@@ -113,6 +121,16 @@ class RepairProposal(JsonRoundTrip):
     # ``levers_contract.validate_plan_vs_proposal_consistency`` runs
     # only when ``selected_lever`` is non-empty.
     selected_lever: str = ""
+    # Phase 2 P2.1 — primary lever-kit declaration. ``selected_levers``
+    # carries the FULL set of lever_ids this proposal recruits as a
+    # kit; the single-string ``selected_lever`` is a back-compat
+    # fallback that derives ``selected_levers = (selected_lever,)``
+    # when only the old shape is present. The Stage 3 prompt asks the
+    # LLM for ``selected_levers`` directly (P2.1) and the KIT_FOR_RCA
+    # synthesizer guard (P2.2) hard-rejects single-element kits for
+    # RCAs that demand a companion. Tuple shape so the dataclass
+    # stays hashable and immutable.
+    selected_levers: tuple[str, ...] = ()
     expected_behavioral_change: str = ""
     fallback_lever: str = ""
     # Trial 17 — Multi-lever bundle ID. Proposals sharing a non-empty
@@ -120,6 +138,33 @@ class RepairProposal(JsonRoundTrip):
     # (one patch + sliced eval at a time). Empty string is the legacy
     # single-proposal path.
     bundle_id: str = ""
+    # Trial 20 Workstream D — free-text justification the LLM emits
+    # when proposing a single-lever (non-bundle) repair.
+    #
+    # Phase 2 P2.1 marks this field as DEPRECATED: with
+    # ``selected_levers`` carrying the full kit, the kit length itself
+    # (1 vs >1) communicates single- vs multi-lever intent and the
+    # KIT_FOR_RCA validator decides admissibility. The field remains
+    # on the dataclass for serialization-format stability with
+    # pre-P2.1 persisted proposals; new prompts no longer ask the LLM
+    # to populate it.
+    single_lever_justification: str = ""
+
+    def effective_selected_levers(self) -> tuple[str, ...]:
+        """Phase 2 P2.1 — return the authoritative kit:
+
+          * ``selected_levers`` when non-empty (the new primary
+            channel),
+          * ``(selected_lever,)`` when only the legacy single-string
+            shape is populated,
+          * ``()`` when neither is set (the LLM declined to declare a
+            lever — the validator will catch this).
+        """
+        if self.selected_levers:
+            return tuple(s for s in self.selected_levers if s)
+        if self.selected_lever:
+            return (self.selected_lever,)
+        return ()
 
     @classmethod
     def from_llm_output(
@@ -155,6 +200,24 @@ class RepairProposal(JsonRoundTrip):
         selected_lever = str(
             getattr(pydantic_inst, "selected_lever", "") or ""
         )
+        # Phase 2 P2.1 — read the new primary ``selected_levers`` list
+        # alongside the legacy single-string field. When the LLM
+        # emits both, the list is authoritative; the legacy field is
+        # retained for downstream readers that have not migrated.
+        selected_levers_raw = (
+            getattr(pydantic_inst, "selected_levers", None) or []
+        )
+        selected_levers = tuple(str(s) for s in selected_levers_raw if s)
+        # Back-compat: derive the list from the single string when
+        # the LLM emitted only the old shape.
+        if not selected_levers and selected_lever:
+            selected_levers = (selected_lever,)
+        # Symmetric forward-compat: if the LLM emitted only the list,
+        # surface its first entry as ``selected_lever`` so downstream
+        # readers that still consult the single-string field see the
+        # primary lever_id.
+        if not selected_lever and selected_levers:
+            selected_lever = selected_levers[0]
         expected_behavioral_change = str(
             getattr(pydantic_inst, "expected_behavioral_change", "") or ""
         )
@@ -162,6 +225,9 @@ class RepairProposal(JsonRoundTrip):
             getattr(pydantic_inst, "fallback_lever", "") or ""
         )
         bundle_id = str(getattr(pydantic_inst, "bundle_id", "") or "")
+        single_lever_justification = str(
+            getattr(pydantic_inst, "single_lever_justification", "") or ""
+        )
         return cls(
             intent_id=str(intent_id),
             intent_name=str(pydantic_inst.intent_name),
@@ -177,9 +243,11 @@ class RepairProposal(JsonRoundTrip):
             target_objects=target_objects,
             required_constructs=required_constructs,
             selected_lever=selected_lever,
+            selected_levers=selected_levers,
             expected_behavioral_change=expected_behavioral_change,
             fallback_lever=fallback_lever,
             bundle_id=bundle_id,
+            single_lever_justification=single_lever_justification,
         )
 
     def to_proposal_dict(self) -> dict[str, Any]:
@@ -198,8 +266,14 @@ class RepairProposal(JsonRoundTrip):
             )
 
         pb = self.patch_body
-        if self.patch_type == PatchType.ADD_EXAMPLE_SQL:
-            return {
+        if self.patch_type in (
+            PatchType.ADD_EXAMPLE_SQL,
+            # Phase 2 P2.4 — negative-example projects to the same
+            # shape; the applier reads ``patch_type`` separately so
+            # downstream slot routing is unchanged.
+            PatchType.ADD_EXAMPLE_SQL_NEGATIVE,
+        ):
+            projection = {
                 "example_question": str(pb["example_question"]),
                 "example_sql": str(pb["example_sql"]),
                 "parameters": list(pb.get("parameters") or []),
@@ -207,6 +281,13 @@ class RepairProposal(JsonRoundTrip):
                     pb.get("usage_guidance") or self.rationale
                 ),
             }
+            # Phase 2 P2.4 — stamp the polarity flag so the audit
+            # ledger and acceptance tier can differentiate without
+            # re-reading the patch_type. The applier ignores the
+            # field at the Genie slot boundary.
+            if self.patch_type is PatchType.ADD_EXAMPLE_SQL_NEGATIVE:
+                projection["negative"] = True
+            return projection
         if self.patch_type in (
             PatchType.ADD_SQL_SNIPPET_EXPRESSION,
             PatchType.ADD_SQL_SNIPPET_FILTER,
@@ -298,6 +379,10 @@ class RepairProposal(JsonRoundTrip):
             "target_qids": list(self.target_qids),  # Plan 11
             # Trial 17 — Lever Selection Contract
             "selected_lever": self.selected_lever,
+            # Phase 2 P2.1 — primary lever-kit channel mirrors next to
+            # the legacy single-string field so persisted rows survive
+            # round-trip in either direction.
+            "selected_levers": list(self.selected_levers),
             "expected_behavioral_change": self.expected_behavioral_change,
             "fallback_lever": self.fallback_lever,
             "bundle_id": self.bundle_id,
@@ -339,11 +424,17 @@ class RepairProposal(JsonRoundTrip):
             # Trial 17 — Lever Selection Contract (default empty for
             # pre-Trial-17 serialized rows).
             selected_lever=str(payload.get("selected_lever") or ""),
+            selected_levers=tuple(
+                str(s) for s in (payload.get("selected_levers") or ()) if s
+            ),
             expected_behavioral_change=str(
                 payload.get("expected_behavioral_change") or ""
             ),
             fallback_lever=str(payload.get("fallback_lever") or ""),
             bundle_id=str(payload.get("bundle_id") or ""),
+            single_lever_justification=str(
+                payload.get("single_lever_justification") or ""
+            ),
         )
 
 

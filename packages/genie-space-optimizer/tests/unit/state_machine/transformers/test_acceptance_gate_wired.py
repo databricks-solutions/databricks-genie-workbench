@@ -144,8 +144,13 @@ def test_target_fixed_no_collateral_advances_to_accepted():
     assert out.accepted.decision == "accepted"
 
 
-def test_target_not_fixed_terminates_no_gain():
-    """post_score <= pre_score → OPTIMIZER_TRIED_NO_GAIN terminal."""
+def test_target_not_fixed_terminates_no_gain(monkeypatch):
+    """Flag-off (legacy contract): post_score == pre_score with no
+    collateral terminates as OPTIMIZER_TRIED_NO_GAIN. Trial 18's new
+    KEPT_INSUFFICIENT lane is covered by
+    ``test_acceptance_gate_kept_insufficient.py``.
+    """
+    monkeypatch.setenv("GSO_TRIAL18_ACCEPTANCE_OVERHAUL", "0")
     s = _state_at_evaluated(post_score=0.0, pre_score=0.0)
     ctx = _ctx()
     out = accept_module.acceptance_gate.transform(s, ctx)

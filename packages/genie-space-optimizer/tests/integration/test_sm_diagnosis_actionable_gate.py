@@ -39,6 +39,7 @@ import pytest
 
 from tests.integration.sm_forward_fixtures import (
     expected_hard_qids,
+    forward_metadata_snapshot,
     load_production_hydration_rows,
     parse_stage1_diagnosis_markers,
     states_by_qid,
@@ -86,6 +87,7 @@ def _run_stage1_only(
                 run_id="diagnosis-actionable-gate",
                 run_root=run_root,
                 workspace_client=None,
+                metadata_snapshot=forward_metadata_snapshot(rows),
                 forbidden_signatures=(),
             )
         except TapeExhaustedError:
@@ -132,14 +134,21 @@ def test_non_actionable_diagnosis_emits_marker_today(
             f"be False (zero blame_set + empty evidence_summary + "
             f"insufficient-evidence sentinel). Marker: {marker!r}"
         )
-        # ``blame_set_size`` is the load-bearing structural signal —
-        # the gate, once it lands, will key off this rather than the
-        # softer ``diagnosis_actionable`` rollup.
-        blame_size = marker.get("blame_set_size")
-        assert blame_size in (0, None), (
+        # The LLM-emitted blame count is the load-bearing structural
+        # signal — the gate, once it lands, must key off what the model
+        # actually returned, not the softer ``diagnosis_actionable``
+        # rollup. We assert ``blame_set_llm_emitted`` rather than the
+        # final ``blame_set_size`` because Stage 1 now seed-backfills the
+        # blame set from the run-level ``schema_columns`` snapshot when
+        # the LLM emits none (``blame_set_source == "seed_backfill"``):
+        # ``blame_set_size`` then reflects the enrichment, not the
+        # model's zero-blame output. A gate that keyed off the enriched
+        # total would wrongly believe the diagnosis carried blame.
+        llm_blame = marker.get("blame_set_llm_emitted")
+        assert llm_blame in (0, None), (
             f"qid={marker.get('qid')!r}: zero-blame tape should "
-            f"produce blame_set_size=0; got {blame_size!r}. Marker: "
-            f"{marker!r}"
+            f"produce blame_set_llm_emitted=0; got {llm_blame!r}. "
+            f"Marker: {marker!r}"
         )
 
 

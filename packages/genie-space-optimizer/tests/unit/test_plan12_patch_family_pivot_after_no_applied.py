@@ -1,9 +1,16 @@
 """Plan 12 — after a survival-failure terminal, the next AG for the
-same cluster MUST pick a different patch_family. The canonical pivot
-target is ``add_example_sql`` — the most forgiving patch family
-(no SQL-validation surface, no structural repair gates, no
-blast-radius collision risk beyond the question itself).
+same cluster MUST pick a different patch_family.
+
+Pre-Trial-20 the pivot target was a single constant (``add_example_sql``).
+Trial 20 C1 replaces that with a per-family cycle so iterations that
+just kept-insufficient on ``add_example_sql`` do not pivot back to the
+same family. The invariant these tests cover is still:
+``chosen != prior_patch_family`` for any survival-failure terminal,
+plus the specific cycle output per :data:`_PIVOT_GRAPH`.
 """
+from genie_space_optimizer.optimization.stages.action_groups import (
+    _PIVOT_GRAPH,
+)
 from genie_space_optimizer.optimization.terminal_reason import (
     TerminalReason,
 )
@@ -29,7 +36,7 @@ def test_patch_family_pivot_after_no_applied():
         prior_patch_family="add_sql_snippet_expression",
     )
     assert chosen != "add_sql_snippet_expression"
-    assert chosen == "add_example_sql"
+    assert chosen == _PIVOT_GRAPH["add_sql_snippet_expression"]
 
 
 def test_pivot_after_structural_gate_dropped():
@@ -50,7 +57,8 @@ def test_pivot_after_structural_gate_dropped():
         prior_terminal_signatures=[prior_sig],
         prior_patch_family="add_sql_snippet_filter",
     )
-    assert chosen == "add_example_sql"
+    assert chosen != "add_sql_snippet_filter"
+    assert chosen == _PIVOT_GRAPH["add_sql_snippet_filter"]
 
 
 def test_pivot_after_applyability_rejected():
@@ -69,7 +77,8 @@ def test_pivot_after_applyability_rejected():
         prior_terminal_signatures=[prior_sig],
         prior_patch_family="add_sql_snippet_expression",
     )
-    assert chosen == "add_example_sql"
+    assert chosen != "add_sql_snippet_expression"
+    assert chosen == _PIVOT_GRAPH["add_sql_snippet_expression"]
 
 
 def test_no_pivot_when_no_prior_failure():
@@ -132,4 +141,5 @@ def test_pivot_keys_on_most_recent_signature():
         prior_terminal_signatures=[older_sig, recent_sig],
         prior_patch_family="add_sql_snippet_filter",
     )
-    assert chosen == "add_example_sql"
+    assert chosen != "add_sql_snippet_filter"
+    assert chosen == _PIVOT_GRAPH["add_sql_snippet_filter"]

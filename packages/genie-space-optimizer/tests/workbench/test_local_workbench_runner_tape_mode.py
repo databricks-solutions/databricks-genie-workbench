@@ -56,14 +56,21 @@ def _stamp_hard_verdict(row: dict) -> dict:
     inspects, so stamp them here. Matches the helper used by
     ``test_sm_stage3_empty_synthesis_terminates.py``.
 
-    Also overwrites ``arbiter/metadata.blame_set`` with bare-identifier
-    column names that match the leaves of :func:`_synthetic_schema_columns`.
-    The shape-ladder fixture ships compound text seeds like
-    ``["table.col_a", "table.col_b"]`` which the Trial 13i FQN
-    normalizer (rule 3) always drops, abstaining Stage 1 with
-    ``seeds_unnormalizable``. Bare identifiers fall under rule 2 of
-    :func:`schema_columns._normalize_seeds_to_fqn` — they leaf-match
-    against the synthetic FQNs and resolve cleanly so the Stage 1 LLM
+    Also overwrites the blame surfaces with bare-identifier column
+    names that match the leaves of :func:`_synthetic_schema_columns`.
+
+    ``eval_row_access._collect_blame_set_from_asi`` (Trial 14) prefers
+    the typed ``blame_set_structured`` surface and only falls back to
+    the legacy free-text ``blame_set`` field when no structured entries
+    exist. The shape-ladder fixture ships BOTH surfaces with compound
+    2-part refs like ``["table.col_a", "table.col_b"]``. Those are
+    neither exact FQNs (rule 1) nor bare identifiers (rule 2) for
+    :func:`schema_columns._normalize_seeds_to_fqn`, so the resolver
+    drops them (rule 3) and Stage 1 abstains with
+    ``seeds_unnormalizable``. We therefore overwrite ``blame_set_structured``
+    (the surface the collector actually reads) — and the legacy
+    ``blame_set`` for completeness — with bare identifiers that
+    leaf-match the synthetic FQNs and resolve cleanly so the Stage 1 LLM
     sees a non-empty ``blame_set_seed``.
     """
     new = dict(row)
@@ -71,6 +78,10 @@ def _stamp_hard_verdict(row: dict) -> dict:
     new.setdefault("arbiter/value", "ground_truth_correct")
     arbiter_metadata = dict(new.get("arbiter/metadata") or {})
     arbiter_metadata["blame_set"] = ["col_a", "col_b"]
+    arbiter_metadata["blame_set_structured"] = [
+        {"kind": "column", "ref": "col_a"},
+        {"kind": "column", "ref": "col_b"},
+    ]
     new["arbiter/metadata"] = arbiter_metadata
     return new
 

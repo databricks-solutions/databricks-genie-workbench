@@ -146,16 +146,24 @@ def test_narrow_replacement_carries_no_collateral_stamps():
         root_cause=H002_ROOT_CAUSE,
     )
     assert replacement is not None
+    # The three collateral-RISK stamps must be fully stripped.
     forbidden = (
         "high_collateral_risk",
         "high_collateral_risk_flagged",
-        "passing_dependents",
         "passing_dependents_outside_target",
     )
     leaked = [k for k in forbidden if k in replacement]
     assert not leaked, (
         f"Stale stamps leaked through into the replacement: "
         f"{leaked}. Phase 3 Task 1's strip is incomplete."
+    )
+    # ``passing_dependents`` is re-stamped fresh (empty) so Trial 20 E2's
+    # mandatory-stamp gate evaluates the narrowed predicate as safe; it
+    # must never carry the broad patch's stale dependent list.
+    assert replacement.get("passing_dependents", []) == [], (
+        f"Narrow replacement must carry a FRESH empty passing_dependents, "
+        f"not the broad patch's stale list. Got: "
+        f"{replacement.get('passing_dependents')!r}"
     )
 
 
@@ -221,6 +229,8 @@ def test_try_narrow_replacement_orchestrator_reports_attempted():
     )
     assert result.attempted is True
     assert result.replacement_patch is not None
-    # The orchestrator-produced replacement must also be stamp-free.
+    # The orchestrator-produced replacement must be free of the stale
+    # collateral-RISK stamp and must re-stamp a FRESH empty
+    # passing_dependents (never the broad patch's stale list).
     assert "high_collateral_risk" not in result.replacement_patch
-    assert "passing_dependents" not in result.replacement_patch
+    assert result.replacement_patch.get("passing_dependents", []) == []

@@ -118,6 +118,10 @@ _NO_VALIDATION_ARMS: frozenset[PatchType] = frozenset(
 # PatchType arms that carry SQL requiring validate_sql_snippet.
 _SQL_ARMS: dict[PatchType, str] = {
     PatchType.ADD_EXAMPLE_SQL: "example_sql",
+    # Phase 2 P2.4 — negative-example_sql shares the validation path
+    # of the positive variant; the body shape is identical and the
+    # underlying SQL must still parse/type-check the same way.
+    PatchType.ADD_EXAMPLE_SQL_NEGATIVE: "example_sql",
     PatchType.UPDATE_EXAMPLE_SQL: "example_sql",
     PatchType.ADD_SQL_SNIPPET_EXPRESSION: "expressions",
     PatchType.ADD_SQL_SNIPPET_FILTER: "filters",
@@ -151,7 +155,12 @@ _JOIN_ARMS: frozenset[PatchType] = frozenset(
 
 # PatchType arms requiring example SQL schema check.
 _EXAMPLE_SQL_ARMS: frozenset[PatchType] = frozenset(
-    {PatchType.ADD_EXAMPLE_SQL, PatchType.UPDATE_EXAMPLE_SQL}
+    {
+        PatchType.ADD_EXAMPLE_SQL,
+        # Phase 2 P2.4 — negative variant uses the same schema check.
+        PatchType.ADD_EXAMPLE_SQL_NEGATIVE,
+        PatchType.UPDATE_EXAMPLE_SQL,
+    }
 )
 
 # PatchType arms requiring sql_snippet schema check (matches the
@@ -379,6 +388,74 @@ def validate_patch(
                             failing_location=sql_field,
                         )
                     )
+                else:
+                    # Trial 20 Workstream F1 — stamp ``validation_passed=True``
+                    # on the patch body after a successful
+                    # :func:`validate_sql_snippet`. The applier's hard
+                    # assertion (applier.py:3171) refuses to apply
+                    # ``add_sql_snippet_*`` without this stamp; without F1
+                    # the SM/Plan11 lane reached the applier via a code
+                    # path that never set the field, and every snippet
+                    # repair RuntimeError'd at apply-time with
+                    # "Refusing to apply ... without validation_passed=True".
+                    # ``msg`` is the normalized SQL on success — write it
+                    # back so the applier consumes the validated form.
+                    try:
+                        body[sql_field] = msg or sql
+                        body["validation_passed"] = True
+                        # The applier reads ``patch.get("sql_snippet")`` for
+                        # the snippet payload; materialize it from the
+                        # patch body when the LLM did not supply one so the
+                        # snippet pathway sees a fully-shaped artifact.
+                        if pt.value.startswith("add_sql_snippet_") and not body.get(
+                            "sql_snippet"
+                        ):
+                            _snippet_id = (
+                                str(
+                                    body.get("snippet_id")
+                                    or body.get("name")
+                                    or patch.intent_id
+                                )
+                                .lower()
+                                .replace(" ", "_")[:64]
+                            )
+                            body["sql_snippet"] = {
+                                "id": _snippet_id,
+                                "name": str(body.get("name", "")),
+                                "display_name": str(
+                                    body.get("display_name") or body.get("name") or ""
+                                ),
+                                "sql": msg or sql,
+                                "description": str(body.get("description", "")),
+                                "synonyms": list(body.get("synonyms") or []),
+                                "target_table": str(
+                                    body.get("target_table")
+                                    or body.get("table", "")
+                                ),
+                            }
+                        try:
+                            import json as _t20f1_json
+                            print(
+                                "GSO_TRIAL20_SQL_SNIPPET_VALIDATED_V1 "
+                                + _t20f1_json.dumps(
+                                    {
+                                        "intent_id": str(patch.intent_id),
+                                        "patch_type": pt.value,
+                                        "snippet_type": _SQL_ARMS[pt],
+                                    },
+                                    sort_keys=True,
+                                    default=str,
+                                ),
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
+                    except Exception:
+                        # Stamping must never break validation. If the
+                        # patch body is read-only, fall through; the
+                        # applier's assertion will catch the missing
+                        # stamp at apply-time.
+                        pass
             except Exception as exc:
                 errors.append(
                     ValidationError(

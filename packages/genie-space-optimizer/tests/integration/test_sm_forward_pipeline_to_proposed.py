@@ -21,6 +21,7 @@ from tests.integration.sm_forward_fixtures import (
     assert_no_terminal_reason,
     assert_stage_reached,
     expected_hard_qids,
+    forward_metadata_snapshot,
     load_production_hydration_rows,
     parse_qstate_transitions,
     parse_stage1_diagnosis_markers,
@@ -71,6 +72,7 @@ def test_forward_pipeline_advances_production_rows_to_proposed(
             run_id="forward-smoke",
             run_root=tmp_path,
             workspace_client=None,
+            metadata_snapshot=forward_metadata_snapshot(rows),
             forbidden_signatures=(),
         )
     elapsed = time.monotonic() - t0

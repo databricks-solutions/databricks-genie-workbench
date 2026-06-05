@@ -12,7 +12,12 @@ from genie_space_optimizer.optimization.terminal_reason import (
 )
 
 
-def test_enum_has_exactly_seventeen_spec_values():
+def test_enum_has_exactly_spec_values():
+    """Phase 1.2 base vocabulary was 17 values. Trial 19 (fallback),
+    Trial 20 B1 (kept_insufficient), a bundle_partial_apply addition,
+    P4 C7 (aggregate_gain_target_debt) and Trial 22 W4 (actuator-aware
+    iteration terminals) each extended the set. The set must match
+    exactly so postmortems can group on the closed vocabulary."""
     expected = {
         "no_rca_ground",
         "no_action_group_emitted",
@@ -31,6 +36,20 @@ def test_enum_has_exactly_seventeen_spec_values():
         "directive_outcome_violation",
         "invariant_violation",
         "unknown",
+        # Trial 19 — strategist had no untried lever family left.
+        "fallback_no_new_strategy",
+        # Trial 20 B1 — SM final state accepted.decision=='kept_insufficient'.
+        "kept_insufficient",
+        # Phase H — bundle assembly partial-apply terminal reason.
+        "bundle_partial_apply",
+        # P4 C7 — aggregate gain accepted but targets not yet fixed.
+        "aggregate_gain_target_debt",
+        # Trial 22 W4 — actuator-aware iteration terminals (closed-vocab
+        # enum; root-cause DropReason lives in IterationTerminalVerdict
+        # structured fields, NOT in a colon-suffixed enum value).
+        "slate_compiler_empty",
+        "stage3_returned_none",
+        "applier_no_outcomes",
     }
     actual = {r.value for r in TerminalReason}
     assert actual == expected, f"diff: {actual ^ expected}"

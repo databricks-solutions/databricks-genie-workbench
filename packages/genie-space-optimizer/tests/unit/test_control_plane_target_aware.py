@@ -30,7 +30,12 @@ POST_DRIFT = (
 )
 
 
-def test_attribution_drift_accepted_when_thresholds_met():
+def test_attribution_drift_accepted_when_thresholds_met(monkeypatch):
+    # Legacy (pre-Trial-23-W2) contract: attribution-drift accepts are
+    # deployable even when the target stays hard. Trial 23 W2 demotes
+    # this to ``net_win_non_deployable`` by default; that new contract is
+    # verified in test_control_plane_acceptance.py. Pin to rollback here.
+    monkeypatch.setenv("GSO_TRIAL23_LOOP_REPAIR", "0")
     decision = decide_control_plane_acceptance(
         baseline_accuracy=25.0,
         candidate_accuracy=50.0,
@@ -58,7 +63,10 @@ def test_attribution_drift_rejected_when_thresholds_unmet():
     assert decision.target_still_hard_qids == ("gs_009",)
 
 
-def test_default_thresholds_met_preserves_legacy_behavior():
+def test_default_thresholds_met_preserves_legacy_behavior(monkeypatch):
+    # Legacy contract under rollback (see note above). Trial 23 W2's
+    # default-on demotion is covered in test_control_plane_acceptance.py.
+    monkeypatch.setenv("GSO_TRIAL23_LOOP_REPAIR", "0")
     decision = decide_control_plane_acceptance(
         baseline_accuracy=25.0,
         candidate_accuracy=50.0,
@@ -85,6 +93,11 @@ def test_new_anchor_f2_target_resolution_failed_reproduction(monkeypatch) -> Non
     failing assertion in CI is easy to map back to the F2 finding.
     """
     monkeypatch.setenv("GSO_TARGET_DELTA_STRICT", "1")
+    # Isolate the target-delta-strict rollback layer under test from the
+    # later, lower-priority attribution-drift-with-debt acceptance tier
+    # (Plan 9 T11.C, default-on), which would otherwise re-accept this
+    # high-aggregate-gain candidate before the typed rollback is observable.
+    monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "0")
 
     # Reproduce the exact F2 input shape: target gs_026 declared,
     # baseline pre_rows do not contain it (the upstream-row-assembly

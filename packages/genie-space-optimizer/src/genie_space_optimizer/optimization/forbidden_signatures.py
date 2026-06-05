@@ -31,7 +31,7 @@ is reproducible regardless of state arrival order.
 """
 from __future__ import annotations
 
-from typing import Iterable, Protocol
+from typing import Any, Iterable, Protocol
 
 
 class _HasForbiddenSignature(Protocol):
@@ -106,6 +106,59 @@ def extend_sm_forbidden_signatures(
             ``harvest_sm_forbidden_signatures`` for the current
             iteration's final states).
     """
+    for sig in harvested or ():
+        s = str(sig).strip()
+        if s:
+            running.add(s)
+
+
+# ── Trial 18 — insufficient_repair_signature harvest (sibling channel) ──
+
+
+class _HasAccepted(Protocol):
+    """Structural typing for the ``accepted`` attribute the Trial 18
+    harvest helper expects."""
+
+    accepted: Any | None  # AcceptanceDecisionRecord at runtime
+
+
+def harvest_sm_insufficient_repair_signatures(
+    final_states: Iterable[Any] | None,
+) -> tuple[str, ...]:
+    """Trial 18 — return the deduped, sorted, non-empty
+    ``accepted.insufficient_repair_signature`` strings carried by the
+    SM final-state objects.
+
+    Symmetric to :func:`harvest_sm_forbidden_signatures` but reads
+    from ``state.accepted`` (the ``KEPT_INSUFFICIENT`` lane lives on
+    ``AcceptanceDecisionRecord``, not on ``TerminalRecord``).
+
+    States with ``accepted is None`` or with an empty signature are
+    skipped. Output ordering is canonical-sorted so cross-iteration
+    carry-over is reproducible regardless of state arrival order.
+    """
+    if not final_states:
+        return ()
+    out: set[str] = set()
+    for s in final_states:
+        accepted = getattr(s, "accepted", None)
+        if accepted is None:
+            continue
+        sig = getattr(accepted, "insufficient_repair_signature", "") or ""
+        sig = str(sig).strip()
+        if not sig:
+            continue
+        out.add(sig)
+    return tuple(sorted(out))
+
+
+def extend_sm_insufficient_repair_signatures(
+    running: set[str],
+    harvested: tuple[str, ...] | Iterable[str],
+) -> None:
+    """Trial 18 — merge harvested insufficient-repair signatures into
+    the running cross-iteration accumulator. Mirrors
+    :func:`extend_sm_forbidden_signatures` semantics."""
     for sig in harvested or ():
         s = str(sig).strip()
         if s:

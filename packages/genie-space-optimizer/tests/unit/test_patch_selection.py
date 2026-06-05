@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from _harness_loop_source import lever_loop_source
+
 
 def test_causal_patch_cap_keeps_function_routing_over_lower_relevance_instruction_split() -> None:
     from genie_space_optimizer.optimization.patch_selection import select_causal_patch_cap
@@ -369,11 +371,7 @@ def test_non_behavior_failure_keeps_existing_causal_ranking() -> None:
 
 
 def test_harness_patch_cap_log_discloses_dropped_count_and_truncation() -> None:
-    import inspect
-
-    from genie_space_optimizer.optimization import harness
-
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
     cap_idx = source.index("PATCH CAP APPLIED (causal-first)")
     snippet = source[cap_idx - 800 : cap_idx + 1200]
     assert "Dropped count" in snippet

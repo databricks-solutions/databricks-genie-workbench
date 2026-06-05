@@ -76,8 +76,13 @@ def test_phase_1_1_admission_trace_filters():
 
 
 def test_phase_1_2_terminal_reason_vocabulary_closed():
-    # Contract spec Section 3.2 — 17 closed values.
-    assert len({r.value for r in TerminalReason}) == 17
+    # Contract spec Section 3.2 — closed vocabulary. The enum has grown
+    # from the original 17 values to 24 as later trials (Plan 11 Stage 3
+    # batched dispatch, blast-radius / applyability gating, safe-noop
+    # stall accounting) introduced new typed terminals. The assertion
+    # pins the closed cardinality so an *accidental* addition still trips
+    # this gate; intentional growth updates the count here.
+    assert len({r.value for r in TerminalReason}) == 24
 
 
 def _csig(cluster_id: str, qids: list[str]) -> tuple:

@@ -59,6 +59,19 @@ _HARD_QIDS = (
     "gs_026",
 )
 
+# Trial 13i — a non-empty run-level ``schema_columns`` channel so the
+# ``validate_schema_columns`` pre-flight (which fires *before* the
+# per-card ``validate``) does not pre-empt this test's intent. These
+# ``_hard_row`` fixtures carry deliberately empty evidence cards (no
+# question / ground-truth / blame), so the contract layer under test is
+# the *per-card* one — it must surface ``question_text_empty`` &c. in
+# ``field_sources``. Without schema_columns the run-level gate
+# short-circuits first with ``missing_schema_columns`` (whose marker
+# carries only ``schema_columns`` in field_sources), masking the
+# per-card contract this test pins. The value is an inert placeholder —
+# the empty cards yield no resolvable blame seeds regardless.
+_SCHEMA_COLUMNS_SNAPSHOT = {"schema_columns": ["main.schema.tkt.col"]}
+
 
 def _hard_row(qid: str) -> dict:
     """Build a production-shape row that ``row_is_hard_failure`` admits.
@@ -114,6 +127,7 @@ def test_dc89d1a9_replay_blocked_by_stage1_input_contract(
             run_id="dc89d1a9-replay",
             run_root=tmp_path,
             workspace_client=None,
+            metadata_snapshot=_SCHEMA_COLUMNS_SNAPSHOT,
             forbidden_signatures=(),
         )
     elapsed = time.monotonic() - t0
@@ -205,6 +219,7 @@ def test_dc89d1a9_replay_does_not_emit_legacy_pr_a_instrumentation(
             run_id="dc89d1a9-replay",
             run_root=tmp_path,
             workspace_client=None,
+            metadata_snapshot=_SCHEMA_COLUMNS_SNAPSHOT,
             forbidden_signatures=(),
         )
     stdout = buf.getvalue()

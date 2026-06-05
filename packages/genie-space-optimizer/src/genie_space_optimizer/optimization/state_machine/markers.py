@@ -42,13 +42,31 @@ def optimizer_outcome_marker(
     outcome: str,
     hard_qids_count: int,
     deepest_stage_by_qid: dict[str, str],
+    hard_qids_already_correct_count: int = 0,
+    pending_gt_review_count: int = 0,
 ) -> str:
-    """Emit one GSO_OPTIMIZER_OUTCOME_V1 marker per lever-loop run."""
+    """Emit one GSO_OPTIMIZER_OUTCOME_V1 marker per lever-loop run.
+
+    Trial 19 C4 — added two optional counters (default 0 for back-compat
+    with pre-Trial-19 readers and tape fixtures):
+
+    - ``hard_qids_already_correct_count``: number of QIDs filtered out
+      of the hard list at dispatcher entry because the arbiter said
+      ``both_correct`` but raw byte-match disagreed (Trial 19 C1).
+    - ``pending_gt_review_count``: number of rows written to the GT
+      pending-review queue across both legacy (``arbiter=genie_correct``)
+      and Trial 19 (``arbiter=both_correct + byte-mismatch``) branches.
+
+    The legacy postmortem skill keys off ``outcome``; the new counters
+    are additive only.
+    """
     payload = {
         "run_id": run_id,
         "outcome": outcome,
         "hard_qids_count": hard_qids_count,
         "deepest_stage_by_qid": deepest_stage_by_qid,
+        "hard_qids_already_correct_count": hard_qids_already_correct_count,
+        "pending_gt_review_count": pending_gt_review_count,
     }
     return marker_line("GSO_OPTIMIZER_OUTCOME_V1", payload)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from _harness_loop_source import lever_loop_source
+
 from genie_space_optimizer.optimization.applier_audit import (
     ApplierDecision,
     build_applier_decision,
@@ -86,11 +88,7 @@ def test_apply_patch_set_emits_decision_per_patch_in_apply_log() -> None:
 
 
 def test_harness_emits_cap_vs_applied_reconciliation_after_apply() -> None:
-    import inspect
-
-    from genie_space_optimizer.optimization import harness
-
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
 
     apply_idx = source.index("        apply_log = apply_patch_set(")
     recon_idx = source.index("CAP-VS-APPLIED RECONCILIATION", apply_idx)
@@ -129,11 +127,7 @@ def test_harness_prints_applier_decisions_on_skip_eval() -> None:
     indices instead of a fixed character window so the test stays
     valid as the harness grows.
     """
-    import inspect
-
-    from genie_space_optimizer.optimization import harness
-
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
     skip_idx = source.index("_apply_skip = _should_skip_eval_for_patch_bundle(")
 
     # Each substring must appear AFTER the skip-eval branch entry.

@@ -84,6 +84,50 @@ def _assess_blast_radius(
         if hasattr(proposal.patch_type, "value")
         else str(proposal.patch_type),
     )
+    # Trial 20 Workstream E1 — close the ``passing_dependents`` plumbing
+    # gap. When the ctx carries the harness-direct counterfactual
+    # scanner output keyed by ``intent_id``, fold it into the patch
+    # dict so :func:`patch_blast_radius_is_safe` sees it instead of
+    # taking the safe-by-default ``no_passing_dependents_field``
+    # fallback. The mapping is empty by default; pre-Trial-20 SM
+    # tests that construct ``TransformerContext`` without the field
+    # remain byte-stable.
+    if ctx is not None and "passing_dependents" not in patch_dict:
+        _pd = (ctx.passing_dependents_by_intent or {}).get(latest.intent_id)
+        if _pd is not None:
+            patch_dict["passing_dependents"] = list(_pd)
+    if ctx is not None and "high_collateral_risk" not in patch_dict:
+        _hcr = (ctx.high_collateral_risk_by_intent or {}).get(latest.intent_id)
+        if _hcr:
+            patch_dict["high_collateral_risk"] = True
+    patch_dict.setdefault("intent_id", latest.intent_id)
+
+    # Phase 3 P3.4 — production blast-radius unstamped guard. If the
+    # run has a live benchmark catalog AND ``passing_dependents`` is
+    # still absent at this point (the synthesize-llm transformer
+    # forgot to stamp it AND the ctx mapping had no entry), refuse
+    # the patch with a typed ``blast_radius_unstamped_unsafe`` reason
+    # so the next iteration's pivot logic can attribute the failure
+    # correctly. Workbench / tape-replay paths (ctx.benchmarks empty)
+    # continue to take the Trial 20 E1 safe-by-default fallback below.
+    if ctx is not None:
+        from genie_space_optimizer.optimization.blast_radius_guard import (
+            blast_radius_unstamped_rejection_reason,
+            is_blast_radius_unstamped_in_production,
+        )
+        _benchmarks = tuple(getattr(ctx, "benchmarks", ()) or ())
+        if is_blast_radius_unstamped_in_production(
+            patch_body=patch_dict,
+            benchmarks=_benchmarks,
+        ):
+            return ("reject", _BlastRadiusDrop(
+                intent_id=latest.intent_id,
+                collateral_qids=(),
+                reason=blast_radius_unstamped_rejection_reason(
+                    patch_type=str(patch_dict.get("patch_type") or ""),
+                    intent_id=str(latest.intent_id or ""),
+                ),
+            ))
 
     live_hard = (
         tuple(ctx.live_hard_qids) if ctx is not None else ()
@@ -94,6 +138,29 @@ def _assess_blast_radius(
         ag_target_qids=tuple(proposal.target_qids),
         live_hard_qids=live_hard,
     )
+
+    # P4 C6 — OBSERVE-FIRST HCRF diagnostic. Emit
+    # ``GSO_HCRF_DIAGNOSTIC_V1`` whenever the verdict reason is
+    # HCRF-eligible (regardless of safe/unsafe outcome). No behavior
+    # change here — the verdict is still authoritative.
+    try:
+        from genie_space_optimizer.optimization.hcrf_diagnostic import (
+            hcrf_diagnostic_marker_from_verdict,
+        )
+        marker_line = hcrf_diagnostic_marker_from_verdict(
+            verdict=verdict,
+            patch_type=str(patch_dict.get("patch_type") or ""),
+            intent_id=str(latest.intent_id or ""),
+            live_hard_qids=live_hard or (),
+            adjacent_qid_regression_evidence_count=0,
+            hypothetical_branch_c_candidate_count=0,
+            non_semantic_downgrade_eligible=False,
+        )
+        if marker_line:
+            print(marker_line, flush=True)
+    except Exception:
+        # OBSERVE-FIRST contract: never break the optimizer hot path.
+        pass
 
     if verdict.get("safe", False):
         return ("safe", None)

@@ -7,6 +7,8 @@ for every cluster.
 """
 from __future__ import annotations
 
+from _harness_loop_source import lever_loop_source
+
 
 def test_ag_root_cause_families_returns_distinct_families() -> None:
     """An AG spanning H001 (plural_top_n_collapse), H002 (missing_filter),
@@ -249,11 +251,7 @@ def test_harness_calls_decompose_overbroad_ag_before_sort() -> None:
     on the merged action_groups list before sorting them into the
     priority queue.
     """
-    import inspect
-
-    from genie_space_optimizer.optimization import harness
-
-    src = inspect.getsource(harness._run_lever_loop)
+    src = lever_loop_source()
     sort_anchor = "action_groups = sorted(action_groups, key=_ag_sort_key)"
     assert src.count(sort_anchor) >= 1, (
         "harness sort line missing; did the AG-construction site move?"

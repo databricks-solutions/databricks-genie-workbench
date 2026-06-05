@@ -14,9 +14,20 @@ Vocabulary policy:
     new member yet.
   * The reviewer-required set (missing_schema_context,
     ambiguous_failure, unsafe_patch, no_applicable_patch_type) is
-    pinned; we add two framework-internal reasons
-    (insufficient_blame_set, context_token_budget_exceeded) because
-    they recur in every plan and deserve typed identity.
+    pinned; we add four framework-internal reasons
+    (insufficient_blame_set, context_token_budget_exceeded,
+    optimizer_capacity_starved, prompt_too_large) because they
+    recur in every plan and deserve typed identity.
+    ``OPTIMIZER_CAPACITY_STARVED`` is emitted by the rate-limit
+    retry handler in ``llm_client`` / ``optimizer._traced_llm_call``
+    when every retry returned a 429 / ``REQUEST_LIMIT_EXCEEDED``.
+    ``PROMPT_TOO_LARGE`` is emitted by the pre-admission size cap
+    in :class:`LlmReasoningCall` when the assembled prompt exceeds
+    ``MAX_PROMPT_INPUT_TOKENS`` (40k) — the caller's
+    ``_build_request`` is responsible for compacting before retry.
+    Distinct from ``CONTEXT_TOKEN_BUDGET_EXCEEDED`` (the iteration
+    aggregate is full but this individual call would fit) and
+    ``OTHER`` (caller-side parse/validate errors).
 """
 from __future__ import annotations
 
@@ -39,6 +50,34 @@ class AbstainReason(StrEnum):
     NO_APPLICABLE_PATCH_TYPE = "no_applicable_patch_type"
     INSUFFICIENT_BLAME_SET = "insufficient_blame_set"
     CONTEXT_TOKEN_BUDGET_EXCEEDED = "context_token_budget_exceeded"
+    OPTIMIZER_CAPACITY_STARVED = "optimizer_capacity_starved"
+    PROMPT_TOO_LARGE = "prompt_too_large"
+    # P4 C1 — Stage 1 produced a RepairDiagnosis missing required
+    # evidence (implicated_assets empty, sql_shape_delta empty) AND a
+    # one-shot retry with sharpened feedback did not recover. The
+    # structural-repair lane MUST NOT fall through to a generic
+    # ``generic_judge_guidance`` shape; the cluster is routed to this
+    # typed abstain instead. See
+    # :func:`repair_diagnosis.gate_repair_diagnosis_sufficient`.
+    REPAIR_INTENT_INDETERMINATE = "repair_intent_indeterminate"
+    # P4 C3 — Synthesizer ran ``validate_sql_snippet`` on the LLM
+    # snippet output and validation failed. The proposal is NOT
+    # emitted; the cluster is routed to the mechanism-repeat pivot
+    # path so a different mechanism can be tried.
+    SNIPPET_INVALID = "snippet_invalid"
+    # Trial 24 Follow-on B — the snippet SQL is a TAUTOLOGY
+    # (normalized to ``true`` / ``1=1``). This is the LLM's failed
+    # attempt to express a filter-REMOVAL as a positive snippet: the
+    # producer validator declines it with this typed reason (distinct
+    # from ``SNIPPET_INVALID``) so the synthesizer can degrade a
+    # filter-removal kit to an instruction-only solo rather than
+    # cascade the whole bundle. See
+    # :func:`producer_snippet_validator.validate_and_stamp_snippet_patch_body`.
+    SNIPPET_NOOP_SUPPRESSION = "snippet_noop_suppression"
+    # P4 C4 — Synthesizer ran the metadata-target preflight on the
+    # LLM proposal and the canonical ``catalog.schema.table.column``
+    # path could not be resolved. The proposal is NOT emitted.
+    TARGET_UNRESOLVABLE = "target_unresolvable"
     OTHER = "other"
 
 

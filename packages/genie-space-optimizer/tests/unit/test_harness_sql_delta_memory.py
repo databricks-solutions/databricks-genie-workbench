@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from _harness_loop_source import lever_loop_source
+
 import inspect
 
 from genie_space_optimizer.optimization import harness
@@ -13,5 +15,5 @@ def test_imports_compute_sql_shape_delta() -> None:
 
 
 def test_records_sql_shape_deltas_on_rejected_entry() -> None:
-    src = inspect.getsource(harness._run_lever_loop)
+    src = lever_loop_source()
     assert "sql_shape_deltas" in src

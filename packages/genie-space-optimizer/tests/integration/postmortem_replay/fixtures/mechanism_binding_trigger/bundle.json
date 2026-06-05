@@ -1,0 +1,377 @@
+{
+ "provenance": {
+  "source_kind": "crafted_mechanism_binding_trigger",
+  "source_run_id": "98ec8950-d7d4-40b3-b5c0-36dcfb3fb610",
+  "source_artifacts": [
+   "integration/fixtures/production_replay/98ec__gs_009.json",
+   "integration/fixtures/production_replay/98ec__gs_016.json",
+   "integration/fixtures/production_replay/98ec__gs_024.json",
+   "integration/fixtures/production_replay/dc89__gs_001.json",
+   "integration/fixtures/production_replay/dc89__gs_013.json",
+   "integration/fixtures/production_replay/dc89__gs_021.json",
+   "integration/fixtures/production_replay/dc89__gs_026.json"
+  ],
+  "notes": "Cases were loaded from the committed sanitized production replay corpus. Row shapes mirror real production hard-QID rows; literals are sanitized per the corpus SCHEMA.md.",
+  "note": "Single-hard-case fixture that drives an extra_defensive_filter RCA + mixed add_example_sql/add_column_description slate to exercise the e943 Phase-2 mechanism-binding drop (W4 RCA route)."
+ },
+ "space_id": "deadbeefcafebabe1234567890abcdef",
+ "metadata_snapshot": {
+  "version": 1,
+  "data_sources": {
+   "tables": [
+    {
+     "identifier": "main.public.orders",
+     "description": [
+      "PURPOSE:Order facts. GRAIN:One row per order."
+     ],
+     "column_configs": [
+      {
+       "column_name": "order_id",
+       "enable_format_assistance": true
+      },
+      {
+       "column_name": "amount",
+       "description": [
+        "DEFINITION:Order amount in USD."
+       ],
+       "synonyms": [
+        "total",
+        "order amount"
+       ],
+       "enable_format_assistance": true
+      }
+     ]
+    }
+   ],
+   "metric_views": []
+  },
+  "instructions": {
+   "example_question_sqls": [],
+   "text_instructions": []
+  },
+  "config": {
+   "sample_questions": []
+  }
+ },
+ "hard_cases": [
+  {
+   "qid": "domain_a_gs_009",
+   "row": {
+    "_asi_source": "recovered_trace",
+    "_is_semantic_correct": false,
+    "arbiter/metadata": {
+     "actual_objects": "[tkt_coupon]",
+     "actual_value": "None",
+     "affected_question_pattern": "None",
+     "ambiguity_detected": "False",
+     "arbiter_quorum_shadow": "{enabled: True, decision_effect: none_shadow_only, arbiter_verdict: ground_truth_correct, supporting_yes_count: 0, supporting_no_count: 0, suggested_tiebreaker: tie}",
+     "blame_set": "[DEST_AIRPORT_CD, ORIG_AIRPORT_CD]",
+     "confidence": "0.85",
+     "counterfactual_fix": "Both queries use similar logic, but Genie adds IS NOT NULL filters on ORIG_AIRPORT_CD and DEST_AIRPORT_CD which changes the coupon counts, and uses RANK() instead of LIMIT 10, which can return more than 10 rows when there are ties (here 16 rows vs 10). The user asked for top 10 pairs, meaning exactly 10 rows. The GT correctly uses LIMIT 10 to return exactly 10 rows. Additionally, the NULL filtering changes which routes appear in the top 10 and their most common fare basis codes, leading to different results. The GT approach without the NULL filter and with LIMIT 10 more directly answers the question as asked.",
+     "expected_objects": "[tkt_coupon]",
+     "expected_value": "None",
+     "failure_type": "other",
+     "genie_equivalent_eval": "{assessment: BAD, primary_assessment_reason: LLM_JUDGE_MISSING_OR_INCORRECT_FILTER, assessment_reasons: [LLM_JUDGE_MISSING_OR_INCORRECT_FILTER], reason_family: llm_judge, reason_rationales: {LLM_JUDGE_MISSING_OR_INCORRECT_FILTER: \"Genies generated SQL is missing a WHERE clause condition or has incorrect filter logic that excludes or includes wrong data.\"}, mapped_from: {judge: arbiter, failure_type: wrong_filter}, mapping_confidence: 0.85, unmapped: False, mapping_version: gso_genie_eval_taxonomy_v1}",
+     "missing_metadata": "None",
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82",
+     "patch_family": "avoid_unrequested_defensive_filters",
+     "quoted_metadata_text": "None",
+     "rca_kind": "extra_defensive_filter",
+     "recommended_levers": "[1, 5]",
+     "severity": "major",
+     "wrong_clause": "None"
+    },
+    "arbiter/rationale": "### arbiter\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\n\nBoth queries use similar logic, but Genie adds IS NOT NULL filters on ORIG_AIRPORT_CD and DEST_AIRPORT_CD which changes the coupon counts, and uses RANK() instead of LIMIT 10, which can return more than 10 rows when there are ties (here 16 rows vs 10). The user asked for top 10 pairs, meaning exactly 10 rows. The GT correctly uses LIMIT 10 to return exactly 10 rows. Additionally, the NULL filtering changes which routes appear in the top 10 and their most common fare basis codes, leading to different results. The GT approach without the NULL filter and with LIMIT 10 more directly answers the question as asked.\n\n```json\n{\n  \"actual_value\": null,\n  \"affected_question_pattern\": null,\n  \"ambiguity_detected\": false,\n  \"blame_set\": [\n    \"DEST_AIRPORT_CD\",\n    \"ORIG_AIRPORT_CD\"\n  ],\n  \"comparison\": {\n    \"column_type_difference\": false,\n    \"error\": null,\n    \"genie_column_types\": {\n      \"coupon_count\": \"float64\",\n      \"dest_airport_cd\": \"object\",\n      \"most_common_fare_basis\": \"object\",\n      \"orig_airport_cd\": \"object\"\n    },\n    \"genie_columns\": [\n      \"coupon_count\",\n      \"dest_airport_cd\",\n      \"most_common_fare_basis\",\n      \"orig_airport_cd\"\n    ],\n    \"genie_hash\": \"d05c4bd4\",\n    \"genie_hash_sorted\": \"\",\n    \"genie_rows\": 16,\n    \"gt_column_types\": {\n      \"dest_airport_cd\": \"object\",\n      \"most_common_fare_basis_cd\": \"object\",\n      \"orig_airport_cd\": \"object\",\n      \"total_coupons\": \"float64\"\n    },\n    \"gt_columns\": [\n      \"dest_airport_cd\",\n      \"most_common_fare_basis_cd\",\n      \"orig_airport_cd\",\n      \"total_coupons\"\n    ],\n    \"gt_hash\": \"6999634d\",\n    \"gt_hash_sorted\": \"\",\n    \"gt_rows\": 10,\n    \"hash_match_ordered\": false,\n    \"hash_match_sorted\": false,\n    \"match\": false,\n    \"match_type\": \"mismatch\",\n    \"order_sensitive\": false\n  },\n  \"confidence\": 0.85,\n  \"counterfactual_fix\": \"Both queries use similar logic, but Genie adds IS NOT NULL filters on ORIG_AIRPORT_CD and DEST_AIRPORT_CD which changes the coupon counts, and uses RANK() instead of LIMIT 10, which can return more than 10 rows when there are ties (here 16 rows vs 10). The user asked for top 10 pairs, meaning exactly 10 rows. The GT correctly uses LIMIT 10 to return exactly 10 rows. Additionally, the NULL filtering changes which routes appear in the top 10 and their most common fare basis codes, leading to different results. The GT approach without the NULL filter and with LIMIT 10 more directly answers the question as asked.\",\n  \"expected_value\": null,\n  \"failure_type\": \"other\",\n  \"genie_equivalent_eval\": {\n    \"assessment\": \"BAD\",\n    \"assessment_reasons\": [\n      \"LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\"\n    ],\n    \"mapped_from\": {\n      \"failure_type\": \"wrong_filter\",\n      \"judge\": \"arbiter\"\n    },\n    \"mapping_confidence\": 0.85,\n    \"mapping_version\": \"gso_genie_eval_taxonomy_v1\",\n    \"primary_assessment_reason\": \"LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\",\n    \"reason_family\": \"llm_judge\",\n    \"reason_rationales\": {\n      \"LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\": \"Genies generated SQL is missing a WHERE clause condition or has incorrect filter logic that excludes or includes wrong data.\"\n    },\n    \"unmapped\": false\n  },\n  \"judge\": \"arbiter\",\n  \"llm_response\": {\n    \"actual_objects\": [\n      \"tkt_coupon\"\n    ],\n    \"blame_set\": [\n      \"DEST_AIRPORT_CD\",\n      \"ORIG_AIRPORT_CD\"\n    ],\n    \"expected_objects\": [\n      \"tkt_coupon\"\n    ],\n    \"failure_type\": \"wrong_filter\",\n    \"patch_family\": \"avoid_unrequested_defensive_filters\",\n    \"rationale\": \"Both queries use similar logic, but Genie adds IS NOT NULL filters on ORIG_AIRPORT_CD and DEST_AIRPORT_CD which changes the coupon counts, and uses RANK() instead of LIMIT 10, which can return more than 10 rows when there are ties (here 16 rows vs 10). The user asked for top 10 pairs, meaning exactly 10 rows. The GT correctly uses LIMIT 10 to return exactly 10 rows. Additionally, the NULL filtering changes which routes appear in the top 10 and their most common fare basis codes, leading to different results. The GT approach without the NULL filter and with LIMIT 10 more directly answers the question as asked.\",\n    \"rca_kind\": \"extra_defensive_filter\",\n    \"recommended_levers\": [\n      1,\n      5\n    ],\n    \"verdict\": \"ground_truth_correct\"\n  },\n  \"missing_metadata\": null,\n  \"quoted_metadata_text\": null,\n  \"rationale\": \"Genie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\\n\\nBoth queries use similar logic, but Genie adds IS NOT NULL filters on ORIG_AIRPORT_CD and DEST_AIRPORT_CD which changes the coupon counts, and uses RANK() instead of LIMIT 10, which can return more than 10 rows when there are ties (here 16 rows vs 10). The user asked for top 10 pairs, meaning exactly 10 rows. The GT correctly uses LIMIT 10 to return exactly 10 rows. Additionally, the NULL filtering changes which routes appear in the top 10 and their most common fare basis codes, leading to different results. The GT approach without the NULL filter and with LIMIT 10 more directly answers the question as asked.\",\n  \"raw_value\": \"ground_truth_correct\",\n  \"severity\": \"major\",\n  \"verdict\": \"Fail\",\n  \"wrong_clause\": null\n}\n```",
+    "arbiter/value": "ground_truth_correct",
+    "asset_routing/metadata": {
+     "genie_equivalent_eval": "{assessment: GOOD, primary_assessment_reason: None, assessment_reasons: [], reason_family: none, reason_rationales: {}, mapped_from: {judge: asset_routing, failure_type: }, mapping_confidence: 1.0, unmapped: False, mapping_version: gso_genie_eval_taxonomy_v1}",
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82"
+    },
+    "asset_routing/rationale": "### asset_routing\n**Verdict:** Pass\n\nGenie equivalent eval: GOOD\n\nExpected TABLE, got TABLE. SQL: with coupon_counts as (\n  select \n    orig_airport_cd, \n    dest_airport_cd, \n    count(*) as coupon\n\n```json\n{\n  \"actual_asset\": \"TABLE\",\n  \"actual_value\": null,\n  \"blame_set\": [],\n  \"confidence\": null,\n  \"counterfactual_fix\": null,\n  \"expected_asset\": \"TABLE\",\n  \"expected_value\": null,\n  \"failure_type\": null,\n  \"genie_equivalent_eval\": {\n    \"assessment\": \"GOOD\",\n    \"assessment_reasons\": [],\n    \"mapped_from\": {\n      \"failure_type\": \"\",\n      \"judge\": \"asset_routing\"\n    },\n    \"mapping_confidence\": 1.0,\n    \"mapping_version\": \"gso_genie_eval_taxonomy_v1\",\n    \"primary_assessment_reason\": null,\n    \"reason_family\": \"none\",\n    \"reason_rationales\": {},\n    \"unmapped\": false\n  },\n  \"judge\": \"asset_routing\",\n  \"missing_metadata\": null,\n  \"rationale\": \"Genie equivalent eval: GOOD\\n\\nExpected TABLE, got TABLE. SQL: with coupon_counts as (\\n  select \\n    orig_airport_cd, \\n    dest_airport_cd, \\n    count(*) as coupon\",\n  \"raw_value\": \"yes\",\n  \"severity\": null,\n  \"verdict\": \"Pass\",\n  \"wrong_clause\": null\n}\n```",
+    "asset_routing/value": "yes",
+    "client_request_id": "tr-816f9ebfcc80b3c083d6424994792c24",
+    "completeness/metadata": {
+     "actual_value": "None",
+     "affected_question_pattern": "None",
+     "ambiguity_detected": "False",
+     "blame_set": "[LIMIT 10 vs RANK() <= 10]",
+     "confidence": "0.95",
+     "counterfactual_fix": "The Generated SQL uses RANK() which can return more than 10 rows when there are ties, whereas the user asked for top 10 pairs. Using ROW_NUMBER() or LIMIT 10 instead of RANK() <= 10 would ensure exactly 10 results are returned.",
+     "expected_value": "None",
+     "failure_type": "missing_filter",
+     "genie_equivalent_eval": "{assessment: BAD, primary_assessment_reason: LLM_JUDGE_MISSING_OR_INCORRECT_FILTER, assessment_reasons: [LLM_JUDGE_MISSING_OR_INCORRECT_FILTER], reason_family: llm_judge, reason_rationales: {LLM_JUDGE_MISSING_OR_INCORRECT_FILTER: \"Genies generated SQL is missing a WHERE clause condition or has incorrect filter logic that excludes or includes wrong data.\"}, mapped_from: {judge: completeness, failure_type: missing_filter}, mapping_confidence: 0.95, unmapped: False, mapping_version: gso_genie_eval_taxonomy_v1}",
+     "missing_metadata": "None",
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82",
+     "quoted_metadata_text": "None",
+     "severity": "major",
+     "wrong_clause": "None"
+    },
+    "completeness/rationale": "### completeness\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\n\nThe user asked for top 10 origin-destination pairs. The generated SQL uses RANK() which allows ties, resulting in 16 rows instead of exactly 10. This is a semantic difference - the user explicitly asked for 10 pairs, not all pairs tied for the top 10 positions. The result comparison confirms 16 rows vs 10 rows, indicating the RANK approach over-returns results.\n\n```json\n{\n  \"actual_value\": null,\n  \"affected_question_pattern\": null,\n  \"ambiguity_detected\": false,\n  \"blame_set\": [\n    \"LIMIT 10 vs RANK() <= 10\"\n  ],\n  \"confidence\": 0.95,\n  \"counterfactual_fix\": \"The Generated SQL uses RANK() which can return more than 10 rows when there are ties, whereas the user asked for top 10 pairs. Using ROW_NUMBER() or LIMIT 10 instead of RANK() <= 10 would ensure exactly 10 results are returned.\",\n  \"expected_value\": null,\n  \"failure_type\": \"missing_filter\",\n  \"genie_equivalent_eval\": {\n    \"assessment\": \"BAD\",\n    \"assessment_reasons\": [\n      \"LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\"\n    ],\n    \"mapped_from\": {\n      \"failure_type\": \"missing_filter\",\n      \"judge\": \"completeness\"\n    },\n    \"mapping_confidence\": 0.95,\n    \"mapping_version\": \"gso_genie_eval_taxonomy_v1\",\n    \"primary_assessment_reason\": \"LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\",\n    \"reason_family\": \"llm_judge\",\n    \"reason_rationales\": {\n      \"LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\": \"Genies generated SQL is missing a WHERE clause condition or has incorrect filter logic that excludes or includes wrong data.\"\n    },\n    \"unmapped\": false\n  },\n  \"judge\": \"completeness\",\n  \"llm_response\": {\n    \"blame_set\": [\n      \"LIMIT 10 vs RANK() <= 10\"\n    ],\n    \"complete\": false,\n    \"counterfactual_fix\": \"The Generated SQL uses RANK() which can return more than 10 rows when there are ties, whereas the user asked for top 10 pairs. Using ROW_NUMBER() or LIMIT 10 instead of RANK() <= 10 would ensure exactly 10 results are returned.\",\n    \"failure_type\": \"missing_filter\",\n    \"rationale\": \"The user asked for top 10 origin-destination pairs. The generated SQL uses RANK() which allows ties, resulting in 16 rows instead of exactly 10. This is a semantic difference - the user explicitly asked for 10 pairs, not all pairs tied for the top 10 positions. The result comparison confirms 16 rows vs 10 rows, indicating the RANK approach over-returns results.\"\n  },\n  \"missing_metadata\": null,\n  \"quoted_metadata_text\": null,\n  \"rationale\": \"Genie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\\n\\nThe user asked for top 10 origin-destination pairs. The generated SQL uses RANK() which allows ties, resulting in 16 rows instead of exactly 10. This is a semantic difference - the user explicitly asked for 10 pairs, not all pairs tied for the top 10 positions. The result comparison confirms 16 rows vs 10 rows, indicating the RANK approach over-returns results.\",\n  \"raw_value\": \"no\",\n  \"severity\": \"major\",\n  \"verdict\": \"Fail\",\n  \"wrong_clause\": null\n}\n```",
+    "completeness/value": "no",
+    "execution_duration": 73615,
+    "expected_asset/metadata": {
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82"
+    },
+    "expected_asset/value": "TABLE",
+    "expected_response/metadata": {
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82"
+    },
+    "expected_response/value": "WITH route_counts AS (\n  SELECT\n    ORIG_AIRPORT_CD,\n    DEST_AIRPORT_CD,\n    COUNT(*) AS total_coupons\n  FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_evcr_bronze.tkt_coupon\n  GROUP BY ORIG_AIRPORT_CD, DEST_AIRPORT_CD\n  ORDER BY total_coupons DESC\n  LIMIT 10\n),\nfare_basis_counts AS (\n  SELECT\n    ORIG_AIRPORT_CD,\n    DEST_AIRPORT_CD,\n    FARE_BASIS_CD,\n    COUNT(*) AS fb_count,\n    ROW_NUMBER() OVER (PARTITION BY ORIG_AIRPORT_CD, DEST_AIRPORT_CD ORDER BY COUNT(*) DESC) AS rn\n  FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_evcr_bronze.tkt_coupon\n  GROUP BY ORIG_AIRPORT_CD, DEST_AIRPORT_CD, FARE_BASIS_CD\n)\nSELECT\n  rc.ORIG_AIRPORT_CD,\n  rc.DEST_AIRPORT_CD,\n  rc.total_coupons,\n  fbc.FARE_BASIS_CD AS most_common_fare_basis_cd\nFROM route_counts rc\nJOIN fare_basis_counts fbc\n  ON rc.ORIG_AIRPORT_CD = fbc.ORIG_AIRPORT_CD\n  AND rc.DEST_AIRPORT_CD = fbc.DEST_AIRPORT_CD\n  AND fbc.rn = 1\nORDER BY rc.total_coupons DESC",
+    "logical_accuracy/metadata": {
+     "actual_objects": "[RANK() OVER (ORDER BY coupon_count DESC)]",
+     "actual_value": "None",
+     "affected_question_pattern": "None",
+     "ambiguity_detected": "False",
+     "blame_set": "[RANK]",
+     "confidence": "0.95",
+     "counterfactual_fix": "Use ROW_NUMBER() instead of RANK() or use LIMIT 10 on the coupon_counts CTE to ensure exactly 10 rows are returned, since RANK() can produce ties resulting in more than 10 rows.",
+     "expected_objects": "[LIMIT 10]",
+     "expected_value": "None",
+     "failure_type": "other",
+     "genie_equivalent_eval": "{assessment: BAD, primary_assessment_reason: LLM_JUDGE_MISSING_OR_INCORRECT_FILTER, assessment_reasons: [LLM_JUDGE_MISSING_OR_INCORRECT_FILTER], reason_family: llm_judge, reason_rationales: {LLM_JUDGE_MISSING_OR_INCORRECT_FILTER: \"Genies generated SQL is missing a WHERE clause condition or has incorrect filter logic that excludes or includes wrong data.\"}, mapped_from: {judge: logical_accuracy, failure_type: wrong_filter}, mapping_confidence: 0.95, unmapped: False, mapping_version: gso_genie_eval_taxonomy_v1}",
+     "missing_metadata": "None",
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82",
+     "patch_family": "unknown",
+     "quoted_metadata_text": "None",
+     "rca_kind": "unknown",
+     "recommended_levers": "[1, 5]",
+     "severity": "major",
+     "wrong_clause": "WHERE rr.route_rank <= 10"
+    },
+    "logical_accuracy/rationale": "### logical_accuracy\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\n\nThe generated SQL uses RANK() which allows ties, resulting in 16 rows instead of the expected 10. The expected SQL uses LIMIT 10 which guarantees exactly 10 results. This is a logical difference that produces different result sets, as confirmed by the row count mismatch (10 vs 16). Additionally, the IS NOT NULL filters in the generated SQL could exclude rows that the expected SQL would include, potentially changing which routes appear in the top 10.\n\n```json\n{\n  \"actual_value\": null,\n  \"affected_question_pattern\": null,\n  \"ambiguity_detected\": false,\n  \"blame_set\": [\n    \"RANK\"\n  ],\n  \"confidence\": 0.95,\n  \"counterfactual_fix\": \"Use ROW_NUMBER() instead of RANK() or use LIMIT 10 on the coupon_counts CTE to ensure exactly 10 rows are returned, since RANK() can produce ties resulting in more than 10 rows.\",\n  \"expected_value\": null,\n  \"failure_type\": \"other\",\n  \"genie_equivalent_eval\": {\n    \"assessment\": \"BAD\",\n    \"assessment_reasons\": [\n      \"LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\"\n    ],\n    \"mapped_from\": {\n      \"failure_type\": \"wrong_filter\",\n      \"judge\": \"logical_accuracy\"\n    },\n    \"mapping_confidence\": 0.95,\n    \"mapping_version\": \"gso_genie_eval_taxonomy_v1\",\n    \"primary_assessment_reason\": \"LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\",\n    \"reason_family\": \"llm_judge\",\n    \"reason_rationales\": {\n      \"LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\": \"Genies generated SQL is missing a WHERE clause condition or has incorrect filter logic that excludes or includes wrong data.\"\n    },\n    \"unmapped\": false\n  },\n  \"judge\": \"logical_accuracy\",\n  \"llm_response\": {\n    \"actual_objects\": [\n      \"RANK() OVER (ORDER BY coupon_count DESC)\"\n    ],\n    \"blame_set\": [\n      \"RANK\"\n    ],\n    \"correct\": false,\n    \"counterfactual_fix\": \"Use ROW_NUMBER() instead of RANK() or use LIMIT 10 on the coupon_counts CTE to ensure exactly 10 rows are returned, since RANK() can produce ties resulting in more than 10 rows.\",\n    \"expected_objects\": [\n      \"LIMIT 10\"\n    ],\n    \"failure_type\": \"wrong_filter\",\n    \"patch_family\": \"unknown\",\n    \"rationale\": \"The generated SQL uses RANK() which allows ties, resulting in 16 rows instead of the expected 10. The expected SQL uses LIMIT 10 which guarantees exactly 10 results. This is a logical difference that produces different result sets, as confirmed by the row count mismatch (10 vs 16). Additionally, the IS NOT NULL filters in the generated SQL could exclude rows that the expected SQL would include, potentially changing which routes appear in the top 10.\",\n    \"rca_kind\": \"unknown\",\n    \"recommended_levers\": [\n      1,\n      5\n    ],\n    \"wrong_clause\": \"WHERE rr.route_rank <= 10\"\n  },\n  \"missing_metadata\": null,\n  \"quoted_metadata_text\": null,\n  \"rationale\": \"Genie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_FILTER\\n\\nThe generated SQL uses RANK() which allows ties, resulting in 16 rows instead of the expected 10. The expected SQL uses LIMIT 10 which guarantees exactly 10 results. This is a logical difference that produces different result sets, as confirmed by the row count mismatch (10 vs 16). Additionally, the IS NOT NULL filters in the generated SQL could exclude rows that the expected SQL would include, potentially changing which routes appear in the top 10.\",\n  \"raw_value\": \"no\",\n  \"severity\": \"major\",\n  \"verdict\": \"Fail\",\n  \"wrong_clause\": \"WHERE rr.route_rank <= 10\"\n}\n```",
+    "logical_accuracy/value": "no",
+    "metadata/arbiter/blame_set": "[DEST_AIRPORT_CD, ORIG_AIRPORT_CD]",
+    "metadata/arbiter/confidence": "0.85",
+    "metadata/arbiter/counterfactual_fix": "Both queries use similar logic, but Genie adds IS NOT NULL filters on ORIG_AIRPORT_CD and DEST_AIRPORT_CD which changes the coupon counts, and uses RANK() instead of LIMIT 10, which can return more than 10 rows when there are ties (here 16 rows vs 10). The user asked for top 10 pairs, meaning exactly 10 rows. The GT correctly uses LIMIT 10 to return exactly 10 rows. Additionally, the NULL filtering changes which routes appear in the top 10 and their most common fare basis codes, leading to different results. The GT approach without the NULL filter and with LIMIT 10 more directly answers the question as asked.",
+    "metadata/arbiter/failure_type": "other",
+    "metadata/arbiter/severity": "major",
+    "metadata/arbiter/wrong_clause": "None",
+    "metadata/completeness/blame_set": "[LIMIT 10 vs RANK() <= 10]",
+    "metadata/completeness/confidence": "0.95",
+    "metadata/completeness/counterfactual_fix": "The Generated SQL uses RANK() which can return more than 10 rows when there are ties, whereas the user asked for top 10 pairs. Using ROW_NUMBER() or LIMIT 10 instead of RANK() <= 10 would ensure exactly 10 results are returned.",
+    "metadata/completeness/failure_type": "missing_filter",
+    "metadata/completeness/severity": "major",
+    "metadata/completeness/wrong_clause": "None",
+    "metadata/logical_accuracy/blame_set": "[RANK]",
+    "metadata/logical_accuracy/confidence": "0.95",
+    "metadata/logical_accuracy/counterfactual_fix": "Use ROW_NUMBER() instead of RANK() or use LIMIT 10 on the coupon_counts CTE to ensure exactly 10 rows are returned, since RANK() can produce ties resulting in more than 10 rows.",
+    "metadata/logical_accuracy/failure_type": "other",
+    "metadata/logical_accuracy/severity": "major",
+    "metadata/logical_accuracy/wrong_clause": "WHERE rr.route_rank <= 10",
+    "metadata/response_quality/blame_set": "[]",
+    "metadata/response_quality/confidence": "0.7",
+    "metadata/response_quality/counterfactual_fix": "Add instruction to Genie Space: When the users question is clear and answerable with available data, provide a direct answer rather than asking clarifying questions or suggesting alternative analyses.",
+    "metadata/response_quality/failure_type": "other",
+    "metadata/response_quality/severity": "minor",
+    "metadata/response_quality/wrong_clause": "None",
+    "metadata/result_correctness/blame_set": "[]",
+    "metadata/result_correctness/confidence": "0.8",
+    "metadata/result_correctness/counterfactual_fix": "Result mismatch: expected 10 rows (hash=6999634d), got 16 rows (hash=d05c4bd4). Check joins, filters, or aggregation logic in the generated SQL.",
+    "metadata/result_correctness/failure_type": "wrong_aggregation",
+    "metadata/result_correctness/severity": "major",
+    "metadata/result_correctness/wrong_clause": "None",
+    "metadata/schema_accuracy/blame_set": "[RANK]",
+    "metadata/schema_accuracy/confidence": "0.95",
+    "metadata/schema_accuracy/counterfactual_fix": "Use LIMIT 10 or ROW_NUMBER() instead of RANK() to ensure exactly 10 rows are returned, since RANK() can produce ties resulting in more than 10 rows.",
+    "metadata/schema_accuracy/failure_type": "other",
+    "metadata/schema_accuracy/severity": "major",
+    "metadata/schema_accuracy/wrong_clause": "RANK() OVER (ORDER BY coupon_count DESC) AS route_rank",
+    "metadata/semantic_equivalence/blame_set": "[RANK vs LIMIT]",
+    "metadata/semantic_equivalence/confidence": "0.95",
+    "metadata/semantic_equivalence/counterfactual_fix": "Change RANK() to ROW_NUMBER() in the Generated SQLs ranked_routes CTE, or use LIMIT 10 instead of WHERE route_rank <= 10, since RANK() can return more than 10 rows when there are ties in coupon_count.",
+    "metadata/semantic_equivalence/failure_type": "other",
+    "metadata/semantic_equivalence/severity": "major",
+    "metadata/semantic_equivalence/wrong_clause": "None",
+    "request": {
+     "expected_sql": "WITH route_counts AS (\n  SELECT\n    ORIG_AIRPORT_CD,\n    DEST_AIRPORT_CD,\n    COUNT(*) AS total_coupons\n  FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_evcr_bronze.tkt_coupon\n  GROUP BY ORIG_AIRPORT_CD, DEST_AIRPORT_CD\n  ORDER BY total_coupons DESC\n  LIMIT 10\n),\nfare_basis_counts AS (\n  SELECT\n    ORIG_AIRPORT_CD,\n    DEST_AIRPORT_CD,\n    FARE_BASIS_CD,\n    COUNT(*) AS fb_count,\n    ROW_NUMBER() OVER (PARTITION BY ORIG_AIRPORT_CD, DEST_AIRPORT_CD ORDER BY COUNT(*) DESC) AS rn\n  FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_evcr_bronze.tkt_coupon\n  GROUP BY ORIG_AIRPORT_CD, DEST_AIRPORT_CD, FARE_BASIS_CD\n)\nSELECT\n  rc.ORIG_AIRPORT_CD,\n  rc.DEST_AIRPORT_CD,\n  rc.total_coupons,\n  fbc.FARE_BASIS_CD AS most_common_fare_basis_cd\nFROM route_counts rc\nJOIN fare_basis_counts fbc\n  ON rc.ORIG_AIRPORT_CD = fbc.ORIG_AIRPORT_CD\n  AND rc.DEST_AIRPORT_CD = fbc.DEST_AIRPORT_CD\n  AND fbc.rn = 1\nORDER BY rc.total_coupons DESC",
+     "kwargs": {
+      "catalog": "prashanth_subrahmanyam_catalog",
+      "gold_schema": "genie_space_optimizer",
+      "order_sensitive": false,
+      "question_id": "domain_a_gs_009",
+      "space_id": "01f143dfbeec15a3a0e87ced8662f4ed"
+     },
+     "question": "What are the top 10 origin-destination airport pairs by total number of coupons, along with the most common fare basis code for each route?"
+    },
+    "request_time": 1779284173822,
+    "response": {
+     "analysis_text": "Would you like to see the top 10 origin-destination pairs by coupon count along with the highest revenue fare basis code instead?",
+     "comparison": {
+      "column_type_difference": false,
+      "error": null,
+      "genie_column_types": {
+       "coupon_count": "float64",
+       "dest_airport_cd": "object",
+       "most_common_fare_basis": "object",
+       "orig_airport_cd": "object"
+      },
+      "genie_columns": [
+       "coupon_count",
+       "dest_airport_cd",
+       "most_common_fare_basis",
+       "orig_airport_cd"
+      ],
+      "genie_hash": "d05c4bd4",
+      "genie_hash_sorted": "",
+      "genie_rows": 16,
+      "genie_sample": "coupon_count,dest_airport_cd,most_common_fare_basis,orig_airport_cd\n21.0000,JFK,KUAL,HNL\n21.0000,KOA,BUAL,DEN\n21.0000,KOA,QUAL,DFW\n21.0000,OGG,YUAL,KOA\n21.0000,PHX,YCA,SEA\n",
+      "genie_signature": {
+       "numeric_sums": {
+        "coupon_count": 357.0
+       },
+       "row_count": 16,
+       "schema_hash": "7e42e3df"
+      },
+      "gt_column_types": {
+       "dest_airport_cd": "object",
+       "most_common_fare_basis_cd": "object",
+       "orig_airport_cd": "object",
+       "total_coupons": "float64"
+      },
+      "gt_columns": [
+       "dest_airport_cd",
+       "most_common_fare_basis_cd",
+       "orig_airport_cd",
+       "total_coupons"
+      ],
+      "gt_hash": "6999634d",
+      "gt_hash_sorted": "",
+      "gt_rows": 10,
+      "gt_sample": "dest_airport_cd,most_common_fare_basis_cd,orig_airport_cd,total_coupons\nATL,KUAL,ANC,27.0000\nDEN,KUAL,SFO,22.0000\nDEN,QUAL,OGG,22.0000\nKOA,QUAL,DFW,21.0000\nOGG,KUAL,SEA,23.0000\n",
+      "gt_signature": {
+       "numeric_sums": {
+        "total_coupons": 231.0
+       },
+       "row_count": 10,
+       "schema_hash": "2f428149"
+      },
+      "hash_match_ordered": false,
+      "hash_match_sorted": false,
+      "match": false,
+      "match_type": "mismatch",
+      "order_sensitive": false
+     },
+     "conversation_id": "01f15450ea3314fd8c611e9bf0297de6",
+     "provenance": {
+      "genie_conversation_id": "01f15450ea3314fd8c611e9bf0297de6",
+      "mlflow_trace_id": "tr-816f9ebfcc80b3c083d6424994792c24",
+      "source": "primary"
+     },
+     "response": "WITH coupon_counts AS (\n  SELECT \n    ORIG_AIRPORT_CD, \n    DEST_AIRPORT_CD, \n    COUNT(*) AS coupon_count\n  FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_evcr_bronze.tkt_coupon\n  WHERE ORIG_AIRPORT_CD IS NOT NULL AND DEST_AIRPORT_CD IS NOT NULL\n  GROUP BY ORIG_AIRPORT_CD, DEST_AIRPORT_CD\n), fare_basis_rank AS (\n  SELECT \n    ORIG_AIRPORT_CD, \n    DEST_AIRPORT_CD, \n    FARE_BASIS_CD, \n    COUNT(*) AS fare_count,\n    ROW_NUMBER() OVER (PARTITION BY ORIG_AIRPORT_CD, DEST_AIRPORT_CD ORDER BY COUNT(*) DESC) AS fb_rank\n  FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_evcr_bronze.tkt_coupon\n  WHERE ORIG_AIRPORT_CD IS NOT NULL AND DEST_AIRPORT_CD IS NOT NULL AND FARE_BASIS_CD IS NOT NULL\n  GROUP BY ORIG_AIRPORT_CD, DEST_AIRPORT_CD, FARE_BASIS_CD\n), ranked_routes AS (\n  SELECT \n    ORIG_AIRPORT_CD, \n    DEST_AIRPORT_CD, \n    coupon_count,\n    RANK() OVER (ORDER BY coupon_count DESC) AS route_rank\n  FROM coupon_counts\n)\nSELECT \n  rr.ORIG_AIRPORT_CD, \n  rr.DEST_AIRPORT_CD, \n  rr.coupon_count, \n  fbr.FARE_BASIS_CD AS most_common_fare_basis\nFROM ranked_routes rr\nLEFT JOIN fare_basis_rank fbr\n  ON rr.ORIG_AIRPORT_CD = fbr.ORIG_AIRPORT_CD AND rr.DEST_AIRPORT_CD = fbr.DEST_AIRPORT_CD AND fbr.fb_rank = 1\nWHERE rr.route_rank <= 10\nORDER BY rr.coupon_count DESC",
+     "status": "MessageStatus.COMPLETED"
+    },
+    "response_quality/metadata": {
+     "actual_value": "None",
+     "affected_question_pattern": "None",
+     "ambiguity_detected": "False",
+     "blame_set": "[]",
+     "confidence": "0.7",
+     "counterfactual_fix": "Add instruction to Genie Space: When the users question is clear and answerable with available data, provide a direct answer rather than asking clarifying questions or suggesting alternative analyses.",
+     "expected_value": "None",
+     "failure_type": "other",
+     "genie_equivalent_eval": "{assessment: BAD, primary_assessment_reason: LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST, assessment_reasons: [LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST], reason_family: llm_judge, reason_rationales: {LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST: \"Genies generated SQL fundamentally misunderstands what the user is asking for, addressing the wrong question or goal.\"}, mapped_from: {judge: response_quality, failure_type: misinterpreted_request}, mapping_confidence: 0.7, unmapped: False, mapping_version: gso_genie_eval_taxonomy_v1}",
+     "missing_metadata": "None",
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82",
+     "quoted_metadata_text": "None",
+     "severity": "minor",
+     "wrong_clause": "None"
+    },
+    "response_quality/rationale": "### response_quality\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\n\nThe SQL query correctly answers the users question by finding the top 10 origin-destination pairs by coupon count and the most common fare basis code for each. However, the natural language response asks a clarifying question suggesting an alternative (highest revenue fare basis code) instead of directly answering the users original question. The users question was clear and the SQL query answers it correctly, so the response should have described the results rather than proposing a different analysis.\n\n```json\n{\n  \"actual_value\": null,\n  \"affected_question_pattern\": null,\n  \"ambiguity_detected\": false,\n  \"blame_set\": [],\n  \"confidence\": 0.7,\n  \"counterfactual_fix\": \"Add instruction to Genie Space: When the users question is clear and answerable with available data, provide a direct answer rather than asking clarifying questions or suggesting alternative analyses.\",\n  \"expected_value\": null,\n  \"failure_type\": \"other\",\n  \"genie_equivalent_eval\": {\n    \"assessment\": \"BAD\",\n    \"assessment_reasons\": [\n      \"LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\"\n    ],\n    \"mapped_from\": {\n      \"failure_type\": \"misinterpreted_request\",\n      \"judge\": \"response_quality\"\n    },\n    \"mapping_confidence\": 0.7,\n    \"mapping_version\": \"gso_genie_eval_taxonomy_v1\",\n    \"primary_assessment_reason\": \"LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\",\n    \"reason_family\": \"llm_judge\",\n    \"reason_rationales\": {\n      \"LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\": \"Genies generated SQL fundamentally misunderstands what the user is asking for, addressing the wrong question or goal.\"\n    },\n    \"unmapped\": false\n  },\n  \"judge\": \"response_quality\",\n  \"llm_response\": {\n    \"accurate\": false,\n    \"counterfactual_fix\": \"Add instruction to Genie Space: When the users question is clear and answerable with available data, provide a direct answer rather than asking clarifying questions or suggesting alternative analyses.\",\n    \"failure_type\": \"misinterpreted_request\",\n    \"rationale\": \"The SQL query correctly answers the users question by finding the top 10 origin-destination pairs by coupon count and the most common fare basis code for each. However, the natural language response asks a clarifying question suggesting an alternative (highest revenue fare basis code) instead of directly answering the users original question. The users question was clear and the SQL query answers it correctly, so the response should have described the results rather than proposing a different analysis.\"\n  },\n  \"missing_metadata\": null,\n  \"quoted_metadata_text\": null,\n  \"rationale\": \"Genie equivalent eval: BAD / LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\\n\\nThe SQL query correctly answers the users question by finding the top 10 origin-destination pairs by coupon count and the most common fare basis code for each. However, the natural language response asks a clarifying question suggesting an alternative (highest revenue fare basis code) instead of directly answering the users original question. The users question was clear and the SQL query answers it correctly, so the response should have described the results rather than proposing a different analysis.\",\n  \"raw_value\": \"no\",\n  \"severity\": \"minor\",\n  \"verdict\": \"Fail\",\n  \"wrong_clause\": null\n}\n```",
+    "response_quality/value": "no",
+    "result_correctness/metadata": {
+     "actual_value": "rows=16, hash=d05c4bd4",
+     "affected_question_pattern": "None",
+     "ambiguity_detected": "False",
+     "blame_set": "[]",
+     "confidence": "0.8",
+     "counterfactual_fix": "Result mismatch: expected 10 rows (hash=6999634d), got 16 rows (hash=d05c4bd4). Check joins, filters, or aggregation logic in the generated SQL.",
+     "expected_value": "rows=10, hash=6999634d",
+     "failure_type": "wrong_aggregation",
+     "genie_equivalent_eval": "{assessment: BAD, primary_assessment_reason: RESULT_EXTRA_ROWS, assessment_reasons: [RESULT_EXTRA_ROWS], reason_family: deterministic, reason_rationales: {RESULT_EXTRA_ROWS: \"Genies generated SQL response has more rows than the provided ground truth SQL.\"}, mapped_from: {judge: result_correctness, failure_type: wrong_aggregation}, mapping_confidence: 0.8, unmapped: False, mapping_version: gso_genie_eval_taxonomy_v1}",
+     "missing_metadata": "None",
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82",
+     "quoted_metadata_text": "None",
+     "severity": "major",
+     "wrong_clause": "None"
+    },
+    "result_correctness/rationale": "### result_correctness\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / RESULT_EXTRA_ROWS\n\nMismatch. GT rows=10 vs Genie rows=16. Hash GT=6999634d vs Genie=d05c4bd4.\n\n```json\n{\n  \"actual_value\": \"rows=16, hash=d05c4bd4\",\n  \"affected_question_pattern\": null,\n  \"ambiguity_detected\": false,\n  \"blame_set\": [],\n  \"comparison\": {\n    \"column_type_difference\": false,\n    \"error\": null,\n    \"genie_column_types\": {\n      \"coupon_count\": \"float64\",\n      \"dest_airport_cd\": \"object\",\n      \"most_common_fare_basis\": \"object\",\n      \"orig_airport_cd\": \"object\"\n    },\n    \"genie_columns\": [\n      \"coupon_count\",\n      \"dest_airport_cd\",\n      \"most_common_fare_basis\",\n      \"orig_airport_cd\"\n    ],\n    \"genie_hash\": \"d05c4bd4\",\n    \"genie_hash_sorted\": \"\",\n    \"genie_rows\": 16,\n    \"gt_column_types\": {\n      \"dest_airport_cd\": \"object\",\n      \"most_common_fare_basis_cd\": \"object\",\n      \"orig_airport_cd\": \"object\",\n      \"total_coupons\": \"float64\"\n    },\n    \"gt_columns\": [\n      \"dest_airport_cd\",\n      \"most_common_fare_basis_cd\",\n      \"orig_airport_cd\",\n      \"total_coupons\"\n    ],\n    \"gt_hash\": \"6999634d\",\n    \"gt_hash_sorted\": \"\",\n    \"gt_rows\": 10,\n    \"hash_match_ordered\": false,\n    \"hash_match_sorted\": false,\n    \"match\": false,\n    \"match_type\": \"mismatch\",\n    \"order_sensitive\": false\n  },\n  \"confidence\": 0.8,\n  \"counterfactual_fix\": \"Result mismatch: expected 10 rows (hash=6999634d), got 16 rows (hash=d05c4bd4). Check joins, filters, or aggregation logic in the generated SQL.\",\n  \"expected_value\": \"rows=10, hash=6999634d\",\n  \"failure_type\": \"wrong_aggregation\",\n  \"genie_equivalent_eval\": {\n    \"assessment\": \"BAD\",\n    \"assessment_reasons\": [\n      \"RESULT_EXTRA_ROWS\"\n    ],\n    \"mapped_from\": {\n      \"failure_type\": \"wrong_aggregation\",\n      \"judge\": \"result_correctness\"\n    },\n    \"mapping_confidence\": 0.8,\n    \"mapping_version\": \"gso_genie_eval_taxonomy_v1\",\n    \"primary_assessment_reason\": \"RESULT_EXTRA_ROWS\",\n    \"reason_family\": \"deterministic\",\n    \"reason_rationales\": {\n      \"RESULT_EXTRA_ROWS\": \"Genies generated SQL response has more rows than the provided ground truth SQL.\"\n    },\n    \"unmapped\": false\n  },\n  \"judge\": \"result_correctness\",\n  \"missing_metadata\": null,\n  \"quoted_metadata_text\": null,\n  \"rationale\": \"Genie equivalent eval: BAD / RESULT_EXTRA_ROWS\\n\\nMismatch. GT rows=10 vs Genie rows=16. Hash GT=6999634d vs Genie=d05c4bd4.\",\n  \"raw_value\": \"no\",\n  \"severity\": \"major\",\n  \"verdict\": \"Fail\",\n  \"wrong_clause\": null\n}\n```",
+    "result_correctness/value": "no",
+    "schema_accuracy/metadata": {
+     "actual_objects": "[RANK() OVER (ORDER BY coupon_count DESC)]",
+     "actual_value": "None",
+     "affected_question_pattern": "None",
+     "ambiguity_detected": "False",
+     "blame_set": "[RANK]",
+     "confidence": "0.95",
+     "counterfactual_fix": "Use LIMIT 10 or ROW_NUMBER() instead of RANK() to ensure exactly 10 rows are returned, since RANK() can produce ties resulting in more than 10 rows.",
+     "expected_objects": "[LIMIT 10]",
+     "expected_value": "None",
+     "failure_type": "other",
+     "genie_equivalent_eval": "{assessment: BAD, primary_assessment_reason: LLM_JUDGE_INCORRECT_FUNCTION_USAGE, assessment_reasons: [LLM_JUDGE_INCORRECT_FUNCTION_USAGE], reason_family: llm_judge, reason_rationales: {LLM_JUDGE_INCORRECT_FUNCTION_USAGE: \"Genies generated SQL uses SQL functions incorrectly or inappropriately, including wrong parameters or the wrong function for the task.\"}, mapped_from: {judge: schema_accuracy, failure_type: incorrect_function_usage}, mapping_confidence: 0.95, unmapped: False, mapping_version: gso_genie_eval_taxonomy_v1}",
+     "missing_metadata": "None",
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82",
+     "patch_family": "unknown",
+     "quoted_metadata_text": "None",
+     "rca_kind": "unknown",
+     "recommended_levers": "[1, 5]",
+     "severity": "major",
+     "wrong_clause": "RANK() OVER (ORDER BY coupon_count DESC) AS route_rank"
+    },
+    "schema_accuracy/rationale": "### schema_accuracy\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_INCORRECT_FUNCTION_USAGE\n\nThe Generated SQL uses RANK() instead of LIMIT 10 or ROW_NUMBER() to select the top 10 routes. RANK() assigns the same rank to tied values, which results in 16 rows instead of exactly 10. The user asked for top 10 which implies exactly 10 results. This is a functional difference that causes the result mismatch.\n\n```json\n{\n  \"actual_value\": null,\n  \"affected_question_pattern\": null,\n  \"ambiguity_detected\": false,\n  \"blame_set\": [\n    \"RANK\"\n  ],\n  \"confidence\": 0.95,\n  \"counterfactual_fix\": \"Use LIMIT 10 or ROW_NUMBER() instead of RANK() to ensure exactly 10 rows are returned, since RANK() can produce ties resulting in more than 10 rows.\",\n  \"expected_value\": null,\n  \"failure_type\": \"other\",\n  \"genie_equivalent_eval\": {\n    \"assessment\": \"BAD\",\n    \"assessment_reasons\": [\n      \"LLM_JUDGE_INCORRECT_FUNCTION_USAGE\"\n    ],\n    \"mapped_from\": {\n      \"failure_type\": \"incorrect_function_usage\",\n      \"judge\": \"schema_accuracy\"\n    },\n    \"mapping_confidence\": 0.95,\n    \"mapping_version\": \"gso_genie_eval_taxonomy_v1\",\n    \"primary_assessment_reason\": \"LLM_JUDGE_INCORRECT_FUNCTION_USAGE\",\n    \"reason_family\": \"llm_judge\",\n    \"reason_rationales\": {\n      \"LLM_JUDGE_INCORRECT_FUNCTION_USAGE\": \"Genies generated SQL uses SQL functions incorrectly or inappropriately, including wrong parameters or the wrong function for the task.\"\n    },\n    \"unmapped\": false\n  },\n  \"judge\": \"schema_accuracy\",\n  \"llm_response\": {\n    \"actual_objects\": [\n      \"RANK() OVER (ORDER BY coupon_count DESC)\"\n    ],\n    \"blame_set\": [\n      \"RANK\"\n    ],\n    \"correct\": false,\n    \"counterfactual_fix\": \"Use LIMIT 10 or ROW_NUMBER() instead of RANK() to ensure exactly 10 rows are returned, since RANK() can produce ties resulting in more than 10 rows.\",\n    \"expected_objects\": [\n      \"LIMIT 10\"\n    ],\n    \"failure_type\": \"incorrect_function_usage\",\n    \"join_assessment\": null,\n    \"patch_family\": \"unknown\",\n    \"rationale\": \"The Generated SQL uses RANK() instead of LIMIT 10 or ROW_NUMBER() to select the top 10 routes. RANK() assigns the same rank to tied values, which results in 16 rows instead of exactly 10. The user asked for top 10 which implies exactly 10 results. This is a functional difference that causes the result mismatch.\",\n    \"rca_kind\": \"unknown\",\n    \"recommended_levers\": [\n      1,\n      5\n    ],\n    \"wrong_clause\": \"RANK() OVER (ORDER BY coupon_count DESC) AS route_rank\"\n  },\n  \"missing_metadata\": null,\n  \"quoted_metadata_text\": null,\n  \"rationale\": \"Genie equivalent eval: BAD / LLM_JUDGE_INCORRECT_FUNCTION_USAGE\\n\\nThe Generated SQL uses RANK() instead of LIMIT 10 or ROW_NUMBER() to select the top 10 routes. RANK() assigns the same rank to tied values, which results in 16 rows instead of exactly 10. The user asked for top 10 which implies exactly 10 results. This is a functional difference that causes the result mismatch.\",\n  \"raw_value\": \"no\",\n  \"severity\": \"major\",\n  \"verdict\": \"Fail\",\n  \"wrong_clause\": \"RANK() OVER (ORDER BY coupon_count DESC) AS route_rank\"\n}\n```",
+    "schema_accuracy/value": "no",
+    "semantic_equivalence/metadata": {
+     "actual_value": "None",
+     "affected_question_pattern": "None",
+     "ambiguity_detected": "False",
+     "blame_set": "[RANK vs LIMIT]",
+     "confidence": "0.95",
+     "counterfactual_fix": "Change RANK() to ROW_NUMBER() in the Generated SQLs ranked_routes CTE, or use LIMIT 10 instead of WHERE route_rank <= 10, since RANK() can return more than 10 rows when there are ties in coupon_count.",
+     "expected_value": "None",
+     "failure_type": "other",
+     "genie_equivalent_eval": "{assessment: BAD, primary_assessment_reason: LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST, assessment_reasons: [LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST], reason_family: llm_judge, reason_rationales: {LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST: \"Genies generated SQL fundamentally misunderstands what the user is asking for, addressing the wrong question or goal.\"}, mapped_from: {judge: semantic_equivalence, failure_type: different_scope}, mapping_confidence: 0.95, unmapped: False, mapping_version: gso_genie_eval_taxonomy_v1}",
+     "missing_metadata": "None",
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82",
+     "quoted_metadata_text": "None",
+     "severity": "major",
+     "wrong_clause": "None"
+    },
+    "semantic_equivalence/rationale": "### semantic_equivalence\n**Verdict:** Fail\n\nGenie equivalent eval: BAD / LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\n\nThe Generated SQL uses RANK() which allows ties, resulting in 16 rows instead of exactly 10. The Expected SQL uses LIMIT 10 which strictly returns 10 rows. Additionally, the Generated SQL has IS NOT NULL filters that exclude NULL airport codes and fare basis codes, potentially changing the counts. The result mismatch (10 vs 16 rows) confirms these are not equivalent.\n\n```json\n{\n  \"actual_value\": null,\n  \"affected_question_pattern\": null,\n  \"ambiguity_detected\": false,\n  \"blame_set\": [\n    \"RANK vs LIMIT\"\n  ],\n  \"confidence\": 0.95,\n  \"counterfactual_fix\": \"Change RANK() to ROW_NUMBER() in the Generated SQLs ranked_routes CTE, or use LIMIT 10 instead of WHERE route_rank <= 10, since RANK() can return more than 10 rows when there are ties in coupon_count.\",\n  \"expected_value\": null,\n  \"failure_type\": \"other\",\n  \"genie_equivalent_eval\": {\n    \"assessment\": \"BAD\",\n    \"assessment_reasons\": [\n      \"LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\"\n    ],\n    \"mapped_from\": {\n      \"failure_type\": \"different_scope\",\n      \"judge\": \"semantic_equivalence\"\n    },\n    \"mapping_confidence\": 0.95,\n    \"mapping_version\": \"gso_genie_eval_taxonomy_v1\",\n    \"primary_assessment_reason\": \"LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\",\n    \"reason_family\": \"llm_judge\",\n    \"reason_rationales\": {\n      \"LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\": \"Genies generated SQL fundamentally misunderstands what the user is asking for, addressing the wrong question or goal.\"\n    },\n    \"unmapped\": false\n  },\n  \"judge\": \"semantic_equivalence\",\n  \"llm_response\": {\n    \"blame_set\": [\n      \"RANK vs LIMIT\"\n    ],\n    \"counterfactual_fix\": \"Change RANK() to ROW_NUMBER() in the Generated SQLs ranked_routes CTE, or use LIMIT 10 instead of WHERE route_rank <= 10, since RANK() can return more than 10 rows when there are ties in coupon_count.\",\n    \"equivalent\": false,\n    \"failure_type\": \"different_scope\",\n    \"rationale\": \"The Generated SQL uses RANK() which allows ties, resulting in 16 rows instead of exactly 10. The Expected SQL uses LIMIT 10 which strictly returns 10 rows. Additionally, the Generated SQL has IS NOT NULL filters that exclude NULL airport codes and fare basis codes, potentially changing the counts. The result mismatch (10 vs 16 rows) confirms these are not equivalent.\"\n  },\n  \"missing_metadata\": null,\n  \"quoted_metadata_text\": null,\n  \"rationale\": \"Genie equivalent eval: BAD / LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST\\n\\nThe Generated SQL uses RANK() which allows ties, resulting in 16 rows instead of exactly 10. The Expected SQL uses LIMIT 10 which strictly returns 10 rows. Additionally, the Generated SQL has IS NOT NULL filters that exclude NULL airport codes and fare basis codes, potentially changing the counts. The result mismatch (10 vs 16 rows) confirms these are not equivalent.\",\n  \"raw_value\": \"no\",\n  \"severity\": \"major\",\n  \"verdict\": \"Fail\",\n  \"wrong_clause\": null\n}\n```",
+    "semantic_equivalence/value": "no",
+    "state": "OK",
+    "syntax_validity/metadata": {
+     "genie_equivalent_eval": "{assessment: GOOD, primary_assessment_reason: None, assessment_reasons: [], reason_family: none, reason_rationales: {}, mapped_from: {judge: syntax_validity, failure_type: }, mapping_confidence: 1.0, unmapped: False, mapping_version: gso_genie_eval_taxonomy_v1}",
+     "mlflow.assessment.sourceRunId": "bfc01cac605d495d90dab931245f7c82"
+    },
+    "syntax_validity/rationale": "### syntax_validity\n**Verdict:** Pass\n\nGenie equivalent eval: GOOD\n\nSQL parses successfully via EXPLAIN.\n\n```json\n{\n  \"actual_value\": null,\n  \"blame_set\": [],\n  \"confidence\": null,\n  \"counterfactual_fix\": null,\n  \"expected_value\": null,\n  \"failure_type\": null,\n  \"genie_equivalent_eval\": {\n    \"assessment\": \"GOOD\",\n    \"assessment_reasons\": [],\n    \"mapped_from\": {\n      \"failure_type\": \"\",\n      \"judge\": \"syntax_validity\"\n    },\n    \"mapping_confidence\": 1.0,\n    \"mapping_version\": \"gso_genie_eval_taxonomy_v1\",\n    \"primary_assessment_reason\": null,\n    \"reason_family\": \"none\",\n    \"reason_rationales\": {},\n    \"unmapped\": false\n  },\n  \"judge\": \"syntax_validity\",\n  \"missing_metadata\": null,\n  \"rationale\": \"Genie equivalent eval: GOOD\\n\\nSQL parses successfully via EXPLAIN.\",\n  \"raw_value\": \"yes\",\n  \"severity\": null,\n  \"verdict\": \"Pass\",\n  \"wrong_clause\": null\n}\n```",
+    "syntax_validity/value": "yes",
+    "tags": {
+     "mlflow.artifactLocation": "dbfs:/databricks/mlflow-tracking/3044964578604055/tr-816f9ebfcc80b3c083d6424994792c24/artifacts",
+     "mlflow.eval.requestId": "bc8cb027-6fba-4273-8112-123739a6cd07",
+     "mlflow.linkedPrompts": "[{\"name\": \"prashanth_subrahmanyam_catalog.genie_space_optimizer.genie_instructions_01f143dfbeec15a3a0e87ced8662f4ed\", \"version\": \"11\"}]",
+     "mlflow.traceName": "genie_predict_fn",
+     "mlflow.user": "a5049d10-126e-4bbf-a025-80394f9ad4fb",
+     "question_id": "domain_a_gs_009",
+     "space_id": "01f143dfbeec15a3a0e87ced8662f4ed"
+    }
+   },
+   "typed_evidence": {
+    "qid": "domain_a_gs_009",
+    "observed_failure": "Generated SQL ranks customers by total revenue but omits the LIMIT clause; result returns every customer instead of the top 10.",
+    "generated_sql_issue": "Top-N is collapsed: ORDER BY total DESC is present but LIMIT 10 is missing on the outer SELECT.",
+    "expected_sql_shape": "Restrict the ordered result to ten rows via either LIMIT 10 or ROW_NUMBER() OVER (ORDER BY total DESC) <= 10 in a CTE.",
+    "blame_set": [
+     "main.public.orders.revenue",
+     "main.public.orders.customer_id"
+    ],
+    "suggested_repair_family": "add_example_sql",
+    "repair_hint_patch_type": "ADD_EXAMPLE_SQL",
+    "confidence": "high",
+    "quoted_evidence": [
+     "ORDER BY total DESC",
+     "no LIMIT"
+    ]
+   },
+   "expected_card_violations": []
+  }
+ ]
+}

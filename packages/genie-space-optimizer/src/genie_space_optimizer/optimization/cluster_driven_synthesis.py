@@ -352,6 +352,13 @@ class ClusterSynthesisResult:
     proposal: dict | None
     attempted_archetypes: tuple[str, ...] = ()
     skipped_reason: str = ""
+    # Trial 22 W3 — the slate compiler's drop summary for THIS cluster's
+    # synthesis. Surfaced here so the harness can copy it onto the
+    # durable iteration terminal-state ledger row (the cluster result
+    # itself is transient and disappears at the next AG/cluster
+    # transition). Schema: see
+    # ``proposal_slate_compiler.build_compiler_drop_summary``.
+    compiler_drop_summary: dict | None = None
 
     def __post_init__(self) -> None:
         if not self.skipped_reason:
@@ -1886,6 +1893,18 @@ def build_narrow_l6_replacement(
         # retest at harness.py:~25881 evaluates fresh dependency
         # data instead of inheriting the broad patch's verdict.
         **_strip_blast_radius_stamps(original_patch),
+        # Trial 20 Workstream E2 flipped ``patch_blast_radius_is_safe``
+        # from safe-by-default to unsafe-by-default when
+        # ``passing_dependents`` is absent (``passing_dependents_missing``).
+        # The narrowed predicate is ``query_id``-scoped to exactly the
+        # target QID(s), so by construction it has ZERO passing
+        # dependents outside its target. Re-stamp a FRESH empty list —
+        # this is the "fresh dependency data" the Phase 3 strip comment
+        # promised. Stripping the stale broad stamp without re-stamping
+        # left the field missing, which Trial 20 E2 (default-on) then
+        # rejected, killing the recovery path. Empty list ⇒ the gate
+        # returns ``no_passing_dependents_outside_target`` (safe).
+        "passing_dependents": [],
         "proposal_id": (
             f"{original_patch.get('proposal_id') or 'P_L6'}#NARROW"
         ),

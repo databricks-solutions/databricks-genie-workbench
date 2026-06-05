@@ -121,7 +121,14 @@ CONDITION="$(cat "$FILE")"
 case "$MODE" in
   print)
     echo "=== resolved command (not executed) ==="
-    printf 'claude -p %q\n' "/goal $CONDITION"
+    echo "claude -p \"/goal <CONDITION>\""
+    echo ""
+    echo "where <CONDITION> is the contents of:"
+    echo "  $FILE"
+    echo ""
+    echo "--- BEGIN CONDITION ---"
+    cat "$FILE"
+    echo "--- END CONDITION ---"
     ;;
   foreground)
     echo "=== launching /goal interactively ==="

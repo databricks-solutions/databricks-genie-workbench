@@ -7,6 +7,8 @@ now see when that happens, so a regression is loud."""
 
 from __future__ import annotations
 
+from _harness_loop_source import lever_loop_source
+
 
 def test_gate_rejects_when_baseline_rows_match_candidate_rows_exactly() -> None:
     from genie_space_optimizer.optimization.control_plane import (
@@ -107,7 +109,7 @@ def test_accept_path_updates_baseline_from_gate_result_full_rows() -> None:
 
     from genie_space_optimizer.optimization import harness
 
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
 
     assert 'gate_result.get("full_result", {})' in source
     assert 'get("rows")' in source

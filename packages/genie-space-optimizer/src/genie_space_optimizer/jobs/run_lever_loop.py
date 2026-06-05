@@ -348,16 +348,16 @@ if _warehouse_id:
 # canary by setting e.g. GSO_PLAN12_LIVE_AG_RETRY_PIVOT_MUTATE=0.
 _os.environ.setdefault("GSO_PLAN12_LIVE_ALL", "true")
 
-# RCO-2b — production posture flipped 2026-05-13.
+# RCO-2b — contract-health posture.
 #
 # Cycle 11 originally pinned ``GSO_LOOP_INVARIANTS_STRICT=0`` here to
-# default warn-and-degrade. With the contract-health merge gate
-# enforced (see ``enforce_merge_gate`` above), strict mode is now the
-# production posture: an invariant violation raises in-loop and the
-# merge gate blocks at end-of-run.
+# default warn-and-degrade. Invariant strictness is controlled by
+# ``GSO_LOOP_INVARIANTS_STRICT``; contract-health task blocking is
+# separate and remains observe-only unless
+# ``GSO_ENFORCE_MERGE_GATE_BLOCKING=1`` is set.
 #
 # ``loop_invariants_strict()`` already returns ``_flag_default_on(...)``
-# (default True); removing this setdefault is what flips production.
+# (default True); callers can still opt out via the env var.
 # Emergency rollback: set ``GSO_LOOP_INVARIANTS_STRICT=0`` in the job
 # config (the helper still honors a falsy explicit override).
 
@@ -675,12 +675,59 @@ _log(
     debug_info=debug_info,
 )
 
-# RCO-2b — production posture flip. Task values are published above
-# so the failing run's debug payload survives for postmortem tooling;
-# enforce_merge_gate raises MergeGateBlockedError if the contract-
-# health summary reports merge_gate_blocked, which marks the
-# Databricks task failed and causes downstream finalize/deploy to
-# skip. Healthy / warn statuses fall through to the notebook.exit.
+# Trial 22 W8 — publish deploy-eligibility task values BEFORE the
+# merge-gate check so the deploy task (Task 6) can skip on
+# contract-health/no-candidate without failing the optimizer task. The
+# optimizer task always reports SUCCESS once it reaches this point;
+# ``candidate_deploy_eligible`` is the separate boolean the deploy task
+# reads. Gated by GSO_TRIAL22_DEPLOY_GATE (default ON; =0 rolls back to
+# the legacy always-eligible posture).
+_t22_deploy_gate_flag = (
+    _os.environ.get("GSO_TRIAL22_DEPLOY_GATE") or ""
+).strip().lower()
+_t22_deploy_gate_on = _t22_deploy_gate_flag not in (
+    "0", "false", "no", "off"
+)
+if _t22_deploy_gate_on:
+    try:
+        from genie_space_optimizer.optimization.harness import (
+            deploy_eligibility_from_loop_out as _t22_deploy_elig,
+        )
+
+        _t22_verdict = _t22_deploy_elig(loop_out)
+        dbutils.jobs.taskValues.set(
+            key="candidate_deploy_eligible",
+            value=bool(_t22_verdict.candidate_deploy_eligible),
+        )
+        dbutils.jobs.taskValues.set(
+            key="deploy_skip_reason",
+            value=str(_t22_verdict.deploy_skip_reason),
+        )
+        _log(
+            "Trial 22 W8 deploy eligibility published",
+            candidate_deploy_eligible=(
+                _t22_verdict.candidate_deploy_eligible
+            ),
+            deploy_skip_reason=_t22_verdict.deploy_skip_reason,
+        )
+    except Exception as _t22_deploy_exc:  # pragma: no cover - defensive
+        # Fail-soft: never block the optimizer task on a deploy-gate
+        # bookkeeping error. Default to eligible so behavior matches
+        # the pre-W8 posture.
+        dbutils.jobs.taskValues.set(
+            key="candidate_deploy_eligible", value=True,
+        )
+        dbutils.jobs.taskValues.set(key="deploy_skip_reason", value="")
+        _log(
+            "Trial 22 W8 deploy-eligibility publish failed (defaulting "
+            "to eligible)",
+            error=str(_t22_deploy_exc),
+        )
+
+# RCO-2b — task values are published above so the run's debug payload
+# survives for postmortem tooling. ``enforce_merge_gate`` is observe-only
+# by default; strict CI/canary blocking requires
+# GSO_ENFORCE_MERGE_GATE_BLOCKING=1.
 enforce_merge_gate(loop_out)
 
 _banner("Task 4 Completed")

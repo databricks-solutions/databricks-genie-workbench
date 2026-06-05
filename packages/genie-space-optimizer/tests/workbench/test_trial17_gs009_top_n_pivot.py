@@ -127,15 +127,16 @@ def _gs009_state_at_evaluated(*, post_score: float):
 
 
 def test_trial17_gs009_acceptance_gate_forbidden_signature_carries_lever_and_rca():
-    """RED before Trial 17 steps 1+3. GREEN after.
+    """Trial 17 pivot-signal contract, updated for the Trial 18 overhaul.
 
-    Asserts that when acceptance_gate rejects gs_009 with target_unchanged,
-    the TerminalRecord.forbidden_signature carries the full Trial 17
-    contract: ``<lever>:<patch_type>:target_unchanged:rca=<rca_kind>``.
-
-    The current pre-Trial-17 src emits only
-    ``"target_unchanged: post_score <= pre_score"`` (no lever, no rca),
-    so the assertion below fails.
+    Trial 18 (``GSO_TRIAL18_ACCEPTANCE_OVERHAUL``, default-ON) supersedes
+    the terminal-rollback path for the ``post_score == pre_score`` /
+    no-collateral case: instead of TERMINATING with a
+    ``forbidden_signature``, the gate keeps the already-applied config
+    live in the ``kept_insufficient`` lane (funnel outcome ACCEPTED but
+    NOT counted as a gain) and emits an ``insufficient_repair_signature``
+    carrying the same pivot tokens the strategist needs next iteration:
+    ``<lever>:<patch_type>:insufficient:rca=<rca_kind>:behavior=<diff>``.
     """
     s = _gs009_state_at_evaluated(post_score=0.0)
     with mock_patch(
@@ -147,23 +148,23 @@ def test_trial17_gs009_acceptance_gate_forbidden_signature_carries_lever_and_rca
             TransformerContext(1, "r", ValidationContext(1, "r", {})),
         )
 
-    assert s2.current_stage == FunnelStage.TERMINATED
-    assert s2.terminal is not None
-    assert s2.terminal.kind == "OPTIMIZER_TRIED_NO_GAIN"
+    assert s2.current_stage == FunnelStage.ACCEPTED
+    assert s2.accepted is not None
+    assert s2.accepted.decision == "kept_insufficient"
 
-    sig = s2.terminal.forbidden_signature or ""
-    # Trial 17 contract: the signature must carry these three tokens.
+    sig = s2.accepted.insufficient_repair_signature or ""
+    # Trial 18 contract: the signature must carry these tokens.
     assert "add_instruction" in sig, (
-        f"forbidden_signature missing patch_type: {sig!r}"
+        f"insufficient_repair_signature missing patch_type: {sig!r}"
     )
-    assert "target_unchanged" in sig, (
-        f"forbidden_signature missing target_unchanged: {sig!r}"
+    assert "insufficient" in sig, (
+        f"insufficient_repair_signature missing insufficient token: {sig!r}"
     )
     assert "rca=top_n_cardinality_collapse" in sig or "top_n_cardinality_collapse" in sig, (
-        f"forbidden_signature missing rca_kind: {sig!r}"
+        f"insufficient_repair_signature missing rca_kind: {sig!r}"
     )
     # And it must carry a recognisable lever token. lever-5 covers both
     # the prose (5a) and example_sql (5b) variants for add_instruction.
     assert "lever-5" in sig, (
-        f"forbidden_signature missing lever token: {sig!r}"
+        f"insufficient_repair_signature missing lever token: {sig!r}"
     )

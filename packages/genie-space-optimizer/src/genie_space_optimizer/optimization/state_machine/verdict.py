@@ -64,6 +64,14 @@ class TransformerContext:
     run_id: str
     validation_context: ValidationContext
     forbidden_signatures: tuple[str, ...] = ()
+    # Trial 18 Step 3 — sibling channel to ``forbidden_signatures``.
+    # Carries typed ``insufficient_repair_signature`` strings harvested
+    # from prior iterations' ``AcceptanceDecisionRecord`` for the
+    # ``kept_insufficient`` lane. The Stage 3 strategist consumes this
+    # channel to avoid re-proposing the same (lever, patch_type, qid,
+    # rca_kind, behavior) shape as a *sole* primary repair — but may
+    # include it as part of a reinforcement bundle.
+    insufficient_repair_signatures: tuple[str, ...] = ()
     extras: Mapping[str, Any] = field(default_factory=dict)
     # Bridge from ``ProposalAttempt.intent_id`` to the typed
     # ``RepairProposal`` body. Stage 3 writes; gates and the escalation
@@ -94,6 +102,37 @@ class TransformerContext:
 
     # --- gates lane ---------------------------------------------------------
     live_hard_qids: tuple[str, ...] = ()
+    # Trial 20 Workstream E1 — counterfactual scanner output keyed by
+    # ``intent_id``. The harness-direct path stamps ``passing_dependents``
+    # on each proposal dict via ``_t24_counterfactual_scan``; the SM
+    # path was previously a no-op because the proposals reach the SM
+    # via ``RepairProposal.from_llm_output`` and the field never made
+    # it onto ``patch_body``. E1 closes that gap by carrying the scan
+    # output through the ctx itself. ``blast_radius_batch._assess_blast_
+    # radius`` consults this mapping before reading ``patch_body`` so
+    # missing-on-patch-body absences are now diagnosed by the
+    # Trial 20 E2 ``passing_dependents_missing`` reject path instead
+    # of silently absorbed by the safe-by-default fallback.
+    passing_dependents_by_intent: Mapping[str, tuple[str, ...]] = field(
+        default_factory=dict
+    )
+    high_collateral_risk_by_intent: Mapping[str, bool] = field(
+        default_factory=dict
+    )
+    # Benchmarks (with ``required_tables`` / ``required_columns`` and
+    # SQL-text fallback fields) the synthesize_llm transformer needs in
+    # order to stamp ``passing_dependents`` on each typed proposal's
+    # ``patch_body`` at creation time. Mirrors the legacy harness lane's
+    # ``_t24_counterfactual_scan`` inputs (``benchmarks`` + ``ag`` +
+    # ``prev_failure_qids``). Defaulting to an empty tuple keeps every
+    # pre-Trial-20 SM unit test that constructs
+    # ``TransformerContext`` with only the first three positionals
+    # byte-stable; with the field populated, synthesize_llm stamps
+    # ``passing_dependents`` so blast_radius_batch reads it from
+    # ``patch_body`` (no ctx-side fallback required).
+    benchmarks: tuple[Mapping[str, Any], ...] = ()
+    ag_target_qids: tuple[str, ...] = ()
+    prev_failure_qids: tuple[str, ...] = ()
 
     # --- apply lane ---------------------------------------------------------
     space_id: str = ""

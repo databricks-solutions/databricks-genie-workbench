@@ -45,6 +45,7 @@ from tests.integration.fake_workspace_client import (
 )
 from tests.integration.sm_forward_fixtures import (
     expected_hard_qids,
+    forward_metadata_snapshot,
     load_production_hydration_rows,
     parse_gate_reasoning_markers,
     parse_patch_outcome_markers,
@@ -153,6 +154,15 @@ def test_apply_via_fake_workspace_client_records_genie_patch(
 
     ws = FakeWorkspaceClient()
     metadata_snapshot = minimal_valid_metadata_snapshot()
+    # Trial 13i — supply the run-level schema_columns channel (derived
+    # from the rows' ASI blame refs) alongside the serialized_space so
+    # Stage 1 clears the ``missing_schema_columns`` pre-flight. The
+    # ``SerializedSpace`` model is ``extra="allow"`` so this extra key is
+    # inert for applier validation, mirroring how production snapshots
+    # carry it.
+    metadata_snapshot["schema_columns"] = forward_metadata_snapshot(rows)[
+        "schema_columns"
+    ]
 
     from genie_space_optimizer.optimization import optimizer as opt_mod
     from genie_space_optimizer.optimization.state_machine.funnel import (
@@ -336,6 +346,15 @@ def test_apply_failure_cycles_back_with_typed_reason(
 
     ws = FakeWorkspaceClient.with_handler(on_request)
     metadata_snapshot = minimal_valid_metadata_snapshot()
+    # Trial 13i — supply the run-level schema_columns channel (derived
+    # from the rows' ASI blame refs) alongside the serialized_space so
+    # Stage 1 clears the ``missing_schema_columns`` pre-flight. The
+    # ``SerializedSpace`` model is ``extra="allow"`` so this extra key is
+    # inert for applier validation, mirroring how production snapshots
+    # carry it.
+    metadata_snapshot["schema_columns"] = forward_metadata_snapshot(rows)[
+        "schema_columns"
+    ]
 
     from genie_space_optimizer.optimization import optimizer as opt_mod
     from genie_space_optimizer.optimization.state_machine.funnel import (
@@ -403,18 +422,30 @@ def test_apply_failure_cycles_back_with_typed_reason(
         f"applier_rejects={applier_rejects[:2]!r}"
     )
 
-    # Surface 3: typed ProposalAttempt with outcome=applyability_rejected
-    # on at least one QID. The rejection cycles the state back to
-    # PROPOSED, so this proves the typed surface postmortems read.
+    # Surface 3: typed PatchOutcome with outcome=applyability_rejected on
+    # at least one QID. Trial 16 RC3 changed ``applier_gate`` to TERMINATE
+    # the QID with a typed ``forbidden_signature`` instead of cycling back
+    # to PROPOSED (the old escalation loop re-attempted the same dead-end
+    # proposal up to 32× per qid). Because the terminal path runs through
+    # ``state.terminate(...)`` rather than ``state.advance(...,
+    # proposals=...+(rejected,))``, the rejected ``ProposalAttempt`` is no
+    # longer appended to ``state.proposals`` — it is emitted as a
+    # ``GSO_PATCH_OUTCOME_V1`` marker, which ``patch_outcome_marker_from_attempt``
+    # documents as the canonical source-of-truth surface postmortems read
+    # (state machine emits the marker at the same moment it builds the
+    # attempt). Assert on that marker rather than the (now-unpopulated)
+    # state.proposals tuple.
+    patch_outcomes = parse_patch_outcome_markers(stdout)
     rejected_qids = {m["qid"] for m in applier_rejects}
     for qid in rejected_qids:
-        s = by[qid]
-        attempts = [
-            a for a in s.proposals
-            if getattr(a, "outcome", "") == "applyability_rejected"
+        rejected_outcomes = [
+            o for o in patch_outcomes
+            if o.get("qid") == qid
+            and o.get("outcome") == "applyability_rejected"
         ]
-        assert attempts, (
-            f"qid={qid!r} has no ProposalAttempt with "
+        assert rejected_outcomes, (
+            f"qid={qid!r} has no GSO_PATCH_OUTCOME_V1 marker with "
             f"outcome='applyability_rejected' despite the applier-gate "
-            f"marker. state.proposals={s.proposals!r}"
+            f"rejection marker. patch_outcomes for qid="
+            f"{[o for o in patch_outcomes if o.get('qid') == qid]!r}"
         )

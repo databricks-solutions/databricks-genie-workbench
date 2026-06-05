@@ -73,6 +73,15 @@ def test_anchor_iter1_full_discards_when_flag_off(monkeypatch) -> None:
     legacy outcome.
     """
     monkeypatch.setenv("GSO_PARTIAL_HARVEST_WITH_DEBT", "0")
+    # ``decide_control_plane_acceptance`` now has a second debt-tolerant
+    # acceptance tier — the attribution-drift-with-debt branch
+    # (``GSO_ATTRIBUTION_DRIFT_WITH_DEBT``, default-ON) — that runs after
+    # the partial-harvest branch and accepts the same candidate as
+    # ``accepted_with_attribution_drift_and_debt``. To pin the *legacy*
+    # discard behaviour this replay documents, both debt tiers must be
+    # off; otherwise the attribution-drift tier accepts where the legacy
+    # gate rejected.
+    monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "0")
     from genie_space_optimizer.optimization.control_plane import (
         decide_control_plane_acceptance,
     )

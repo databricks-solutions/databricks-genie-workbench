@@ -16,13 +16,32 @@ from unittest.mock import patch
 # ── Flag tests ────────────────────────────────────────────────────────
 
 
-def test_flag_off_by_default():
+def test_flag_on_by_default():
+    """Track A / A1 promoted this flag to default-ON: the candidate
+    ledger must report proposal_attempts from the same source of truth
+    (the patch-outcome emitter) as patches_applied, so the funnel head
+    can no longer be a permanently-zero artifact."""
     from genie_space_optimizer.common.config import (
         plan12_live_proposal_attempts_derive_enabled,
     )
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE", None)
-        assert plan12_live_proposal_attempts_derive_enabled() is False
+        assert plan12_live_proposal_attempts_derive_enabled() is True
+
+
+def test_flag_opt_out_with_falsy_values():
+    """Operators can still disable the deriver per-deploy."""
+    from genie_space_optimizer.common.config import (
+        plan12_live_proposal_attempts_derive_enabled,
+    )
+    for val in ("false", "False", "FALSE", "0", "no", "off"):
+        with patch.dict(
+            os.environ,
+            {"GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE": val},
+        ):
+            assert (
+                plan12_live_proposal_attempts_derive_enabled() is False
+            ), f"Expected False for {val!r}"
 
 
 def test_flag_on_with_truthy_values():

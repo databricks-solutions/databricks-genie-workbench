@@ -35,6 +35,7 @@ import pytest
 
 from tests.integration.sm_forward_fixtures import (
     expected_hard_qids,
+    forward_metadata_snapshot,
     load_production_hydration_rows,
     parse_stage1_diagnosis_markers,
     parse_stage1_input_card_empty_markers,
@@ -76,6 +77,7 @@ def _run_iteration(
             run_id="failure-regression",
             run_root=run_root,
             workspace_client=None,
+            metadata_snapshot=forward_metadata_snapshot(rows),
             forbidden_signatures=(),
         )
     return final, buf.getvalue(), harness
@@ -200,6 +202,7 @@ def test_non_actionable_stage1_diagnosis_marker_flips_actionable_false(
                 run_id="failure-regression",
                 run_root=tmp_path,
                 workspace_client=None,
+                metadata_snapshot=forward_metadata_snapshot(rows),
                 forbidden_signatures=(),
             )
         except TapeExhaustedError:
@@ -294,10 +297,14 @@ def test_stage3_invalid_proposal_terminates_with_stage3_reason(
 
     rows = load_production_hydration_rows()
     qids = expected_hard_qids(rows)
+    # Stage 3 synthesis is a single batched call over the surviving
+    # clusters, so the invalid proposal is stocked as a single entry;
+    # the batched dispatch consumes it once and every clustered member
+    # terminates on the resulting empty synthesis.
     tape = [
         *diagnose_response_tape(qids),
         *cluster_response_tape(qids),
-        *synthesize_invalid_proposal_tape(qids),
+        *synthesize_invalid_proposal_tape(qids)[:1],
     ]
 
     final, stdout, harness = _run_iteration(
@@ -375,6 +382,7 @@ def test_tape_exhaustion_surfaces_actionable_failure(
                 run_id="failure-regression",
                 run_root=tmp_path,
                 workspace_client=None,
+                metadata_snapshot=forward_metadata_snapshot(rows),
                 forbidden_signatures=(),
             )
 

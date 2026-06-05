@@ -83,3 +83,26 @@ class PerQidRcaEvidenceOutput(LLMOutputContract):
             "is acceptable when no snippet adds signal."
         ),
     )
+
+
+class BatchedPerQidRcaEvidenceOutput(LLMOutputContract):
+    """Phase 1 P1.2 — batched output envelope wrapping a list of
+    ``PerQidRcaEvidenceOutput`` entries for a single LLM call that
+    diagnoses multiple QIDs at once.
+
+    Each entry MUST carry the ``qid`` so the caller can route the
+    evidence back to the originating row without positional coupling.
+    The driver
+    ``rca_evidence_extractor.extract_evidence_for_qid_batch`` uses
+    this envelope when the batched-extraction path is active.
+    """
+
+    evidences: list[PerQidRcaEvidenceOutput] = Field(
+        default_factory=list,
+        description=(
+            "One entry per QID the caller asked about. Each entry "
+            "must echo its own ``qid``. Missing QIDs (caller asked "
+            "for X but no entry has qid=X) are routed through the "
+            "deterministic fallback by the caller."
+        ),
+    )

@@ -29,10 +29,14 @@ that changes the target QID surfaces here too.
   stamps; ``patch_blast_radius_is_safe`` re-rejects with
   ``high_collateral_risk_flagged``.
 
-**Pass mode after Phase 3 (current state):**
-  ``_strip_blast_radius_stamps`` drops the four stale stamps; the
-  retest reports ``{"safe": True, "reason":
-  "no_passing_dependents_field"}``.
+**Pass mode after Phase 3 + Trial 20 E2 (current state):**
+  ``_strip_blast_radius_stamps`` drops the collateral-risk stamps and
+  ``build_narrow_l6_replacement`` re-stamps a fresh empty
+  ``passing_dependents=[]`` (the query_id-scoped predicate has no
+  outside dependents). Under Trial 20 E2 (``GSO_TRIAL20_BLAST_RADIUS_
+  MANDATORY``, default-on) the retest reports ``{"safe": True,
+  "reason": "no_passing_dependents_outside_target"}``. Without the
+  re-stamp the missing field would trip ``passing_dependents_missing``.
 """
 from __future__ import annotations
 
@@ -157,16 +161,27 @@ def test_narrow_replacement_drops_stale_stamps():
         "variant."
     )
 
+    # The three collateral-RISK stamps must be fully stripped.
     forbidden = (
         "high_collateral_risk",
         "high_collateral_risk_flagged",
-        "passing_dependents",
         "passing_dependents_outside_target",
     )
     leaked = [k for k in forbidden if k in replacement]
     assert not leaked, (
         f"Phase 3 strip leaked stale stamps: {leaked}. "
         f"Replacement keys: {sorted(replacement.keys())}"
+    )
+    # ``passing_dependents`` is RE-STAMPED fresh (empty) rather than
+    # left absent, so Trial 20 E2's mandatory-stamp gate evaluates the
+    # query_id-scoped predicate as safe instead of rejecting it as
+    # ``passing_dependents_missing``. It must NOT carry the broad
+    # patch's stale dependent list.
+    assert replacement.get("passing_dependents", []) == [], (
+        f"Narrow replacement must carry a FRESH empty passing_dependents "
+        f"(query_id-scoped ⇒ no outside dependents), not the broad "
+        f"patch's stale list. Got: "
+        f"{replacement.get('passing_dependents')!r}"
     )
 
 

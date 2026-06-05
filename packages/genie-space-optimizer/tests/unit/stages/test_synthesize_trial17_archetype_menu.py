@@ -46,12 +46,24 @@ def test_build_request_includes_archetype_catalog_menu():
         iteration=2,
         forbidden_signatures=(),
     )
-    payload = json.loads(req.user_prompt)
-    assert "lever_menu" in payload
-    assert "archetype_catalog_menu" in payload, (
+    # Phase 0 P0.5 — ``lever_menu`` and ``archetype_catalog_menu`` are
+    # now sent as separate ``cacheable_user_blocks`` so the Anthropic
+    # prompt cache can serve them at 0.1x cost after the first call.
+    # The blocks remain visible to the LLM as part of the user message
+    # — we just need to look in the cacheable blocks tuple instead of
+    # in the dynamic user_prompt JSON payload.
+    cacheable_blob = "\n".join(req.cacheable_user_blocks)
+    assert "lever_menu" in cacheable_blob
+    assert "archetype_catalog_menu" in cacheable_blob, (
         "Step 7 requires archetype catalog be passed as menu context"
     )
-    menu = payload["archetype_catalog_menu"]
+    # Extract the archetype menu JSON block and validate its contract.
+    archetype_block_json = next(
+        b for b in req.cacheable_user_blocks
+        if "archetype_catalog_menu" in b
+    )
+    archetype_payload = json.loads(archetype_block_json)
+    menu = archetype_payload["archetype_catalog_menu"]
     assert isinstance(menu, list)
     assert menu, "archetype catalog menu must not be empty"
     names = {e.get("name") for e in menu}

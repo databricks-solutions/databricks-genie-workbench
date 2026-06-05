@@ -40,18 +40,24 @@ from genie_space_optimizer.optimization import harness
 # it replaces.
 _REFLECTION_WRITE_WHITELIST: frozenset[int] = frozenset({
     # (a) Pre-AG-selection — no AG in scope.
-    19218,  # blast_radius_rejected, reserved-recovery early-terminate
-    20700,  # no_structural_candidate, no_actionable_clusters
-    22408,  # no_action_group_emitted, strategy_zero_ags
-    23116,  # WU-3 (2026-05-18) early_preflight_<reason>, slate-level
+    # Canonical CandidateOutcome refactor (e943/d139, 2026-06-02):
+    # Phase 0–2 wiring inserted ~35 lines above these sites, so every
+    # entry shifted by a uniform +35. Verified the 1:1 mapping by
+    # confirming each refreshed index emits the same terminal reason as
+    # the entry it replaces (e.g. 19869→19904 still blast_radius_rejected,
+    # 31301→31336 still the full_eval gate-result branch).
+    19904,  # blast_radius_rejected, reserved-recovery early-terminate
+    21784,  # no_structural_candidate, no_actionable_clusters
+    23557,  # no_action_group_emitted, strategy_zero_ags
+    24424,  # WU-3 (2026-05-18) early_preflight_<reason>, slate-level
             # apply_admission_trace SKIP_AG decision before per-AG
             # processing begins — no AG to retire yet.
     # (b) Per-AG, reflection write precedes the typed marker emit.
-    22721,  # ag_collision_with_forbidden_set
-    24864,  # proposal_generation_empty
-    26472,  # no_rca_ground
-    29399,  # no_applied_patches DOA
-    29699,  # Phase 0.3 Task 10 — applier_failed short-circuit
+    23935,  # ag_collision_with_forbidden_set
+    26267,  # proposal_generation_empty
+    27875,  # no_rca_ground
+    30844,  # no_applied_patches DOA
+    31144,  # Phase 0.3 Task 10 — applier_failed short-circuit
             # (Genie API rejected the PATCH payload as
             # SCHEMA_FAILURE/INFRA_FAILURE). Terminates as
             # ``unknown`` because no closed-vocab structural reason
@@ -59,7 +65,7 @@ _REFLECTION_WRITE_WHITELIST: frozenset[int] = frozenset({
             # reflection write reaches this AG.
     # (b) Full-eval path: gate result handling, reflection write
     # happens later in the rollback or accept paths.
-    29891,  # full_eval / accepted, write in gate-result branch
+    31336,  # full_eval / accepted, write in gate-result branch
 })
 
 

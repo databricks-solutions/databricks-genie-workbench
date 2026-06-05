@@ -1,0 +1,48 @@
+{
+  "trial24_general_grounding_replay": {
+    "scenario": "non_allowlist_rca_grounded_solo_instruction_lands_via_general_grounding",
+    "note": "Replay-readiness generalization of Follow-on B's FB2 grounding. FB2 only grounds a solo corrective add_instruction's justification when the cluster rca_kind is in _TRIAL24_KIT_FOR_RCA (extra_defensive_filter / top_n_cardinality_collapse). A broader multi-RCA replay can hit the SAME e943 death mode (unjustified_single_lever) for any other rca_kind. GSO_TRIAL24_GENERAL_INSTRUCTION_GROUNDING widens the FB2 fallback (single_lever_justification -> expected_behavioral_change -> rationale) to ANY INSTRUCTION_TEXT proposal regardless of rca_kind. This bright-line drives run_plan11_synthesis for a lone add_instruction on a NON-allowlist RCA (ambiguous_terminology -- in neither KIT_FOR_RCA nor _TRIAL24_KIT_FOR_RCA, so no kit is forced) carrying an EMPTY single_lever_justification but a populated expected_behavioral_change: general grounding ON the instruction lands solo; general grounding OFF it dies unjustified_single_lever.",
+    "cluster": {
+      "cluster_id": "H_T24_GENREPLAY",
+      "semantic_theme": "ambiguous_terminology",
+      "member_qids": ["gs_001"],
+      "unifying_evidence": "users mean net revenue but 'revenue' is ambiguous",
+      "repair_hypothesis": "instruct planner to treat revenue as net revenue",
+      "primary_blame_set": ["main.sales.orders.revenue"],
+      "confidence": "high",
+      "root_cause": "ambiguous_terminology"
+    },
+    "member_qid_evidence": [
+      {"qid": "gs_001", "blame_set": ["main.sales.orders.revenue"]}
+    ],
+    "schema_slice": {
+      "data_sources": {
+        "tables": [
+          {
+            "identifier": "main.sales.orders",
+            "column_configs": [{"column_name": "revenue"}]
+          }
+        ],
+        "metric_views": []
+      }
+    },
+    "llm_proposal": {
+      "intent_name": "define revenue as net revenue",
+      "intent_description": "disambiguate 'revenue'",
+      "repair_hypothesis": "treat revenue as net revenue",
+      "patch_type": "add_instruction",
+      "rationale": "judge cited ambiguous revenue terminology",
+      "confidence": "high",
+      "patch_body": {
+        "instruction_text": "When users say 'revenue', use net revenue."
+      },
+      "blame_set": ["main.sales.orders.revenue"],
+      "target_qids": ["gs_001"],
+      "selected_lever": "lever-5",
+      "single_lever_justification": "",
+      "expected_behavioral_change": "Planner resolves 'revenue' to net revenue instead of gross."
+    },
+    "expected_general_on": {"proposal_survives": true},
+    "expected_general_off": {"proposal_survives": false}
+  }
+}

@@ -42,6 +42,7 @@ import pytest
 
 from tests.integration.sm_forward_fixtures import (
     expected_hard_qids,
+    forward_metadata_snapshot,
     load_production_hydration_rows,
     parse_markers,
     states_by_qid,
@@ -67,6 +68,7 @@ def _run_iteration(*, rows, tape, run_root: Path):
             run_id="normalization-boundary",
             run_root=run_root,
             workspace_client=None,
+            metadata_snapshot=forward_metadata_snapshot(rows),
             forbidden_signatures=(),
         )
     return final, buf.getvalue(), harness
@@ -170,10 +172,14 @@ def test_empty_patch_body_terminates_with_typed_invariant_violation(
 
     rows = load_production_hydration_rows()
     qids = expected_hard_qids(rows)
+    # Stage 3 synthesis is a single batched call over the surviving
+    # clusters (not one call per QID), so the empty-body proposal is
+    # stocked as a single entry; the batched dispatch consumes it once
+    # and every clustered member terminates on the same result.
     tape = [
         *diagnose_response_tape(qids),
         *cluster_response_tape(qids),
-        *synthesize_empty_body_proposal_tape(qids),
+        *synthesize_empty_body_proposal_tape(qids)[:1],
     ]
 
     final, _stdout, _harness = _run_iteration(
@@ -183,23 +189,33 @@ def test_empty_patch_body_terminates_with_typed_invariant_violation(
     by_qid = states_by_qid(final)
     for qid in qids:
         s = by_qid[qid]
-        # State must terminate — _terminate_invariant attaches a
-        # TerminalRecord and the orchestrator absorbs the state.
+        # State must terminate with a typed Stage 3 terminal. The
+        # transformer-level ``validate_synthesis_output_for_state_machine``
+        # contract (empty ``original_patch_body`` ⇒ StageThreeContractError
+        # ⇒ OPTIMIZER_INVARIANT_VIOLATION) is still exercised directly by
+        # the unit test
+        # ``test_synthesize_llm_validates_stage_three_contract``. In the
+        # FULL pipeline, however, the Stage 3 *stage*
+        # (``stages.synthesize``) drops proposals with an empty
+        # ``patch_body`` as unusable BEFORE they reach the transformer
+        # contract check — the same no-usable-proposal funnel that an
+        # unknown ``patch_type`` takes — so the surviving typed terminal
+        # at the PROPOSED boundary is ``stage3_returned_none`` /
+        # ``OPTIMIZER_NO_CANDIDATES`` rather than the contract violation.
+        # Either way the empty body never silently advances.
         assert s.terminal is not None, (
-            f"qid={qid!r} did not terminate after Stage 3 contract "
-            f"failure. The empty patch_body should have raised "
-            f"StageThreeContractError."
+            f"qid={qid!r} did not terminate after Stage 3 returned no "
+            f"usable proposal for the empty patch_body."
         )
-        assert s.terminal.kind == "OPTIMIZER_INVARIANT_VIOLATION", (
+        assert s.terminal.kind == "OPTIMIZER_NO_CANDIDATES", (
             f"qid={qid!r} terminal kind={s.terminal.kind!r}; "
-            f"expected OPTIMIZER_INVARIANT_VIOLATION."
+            f"expected OPTIMIZER_NO_CANDIDATES (Stage 3 stage-level "
+            f"filtering drops the empty patch_body as unusable)."
         )
-        # The reason must quote the missing field so postmortems
-        # see which contract failed.
-        assert "original_patch_body" in s.terminal.reason, (
+        assert s.terminal.reason == "stage3_returned_none", (
             f"qid={qid!r} terminal reason={s.terminal.reason!r}; "
-            f"expected to name the 'original_patch_body' missing "
-            f"field so postmortems can RCA without re-running."
+            f"expected the Stage 3-specific 'stage3_returned_none' so "
+            f"postmortems can attribute the empty synthesis."
         )
         # ``_terminate_invariant`` does NOT append the failed attempt
         # to ``state.proposals`` (that array is reserved for proposals

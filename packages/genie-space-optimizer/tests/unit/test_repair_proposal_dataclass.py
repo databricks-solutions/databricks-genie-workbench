@@ -42,9 +42,16 @@ def test_field_set_includes_intent_id_plus_eight_llm_fields() -> None:
         "target_qids",
         # Trial 17 — LLM-led Lever Selection Contract fields.
         "selected_lever",
+        # Phase 2 P2.1 — primary lever-kit list (selected_lever is
+        # the back-compat fallback).
+        "selected_levers",
         "expected_behavioral_change",
         "fallback_lever",
         "bundle_id",
+        # Trial 20 D1 — free-text single-lever justification
+        # (DEPRECATED at P2.1; field retained for serialization
+        # compatibility with pre-P2.1 persisted proposals).
+        "single_lever_justification",
     }
 
 

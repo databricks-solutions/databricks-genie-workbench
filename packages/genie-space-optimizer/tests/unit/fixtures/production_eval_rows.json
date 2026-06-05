@@ -83,6 +83,11 @@
           "table.col_a",
           "table.col_b"
         ],
+        "blame_set_structured": [
+          { "kind": "column", "ref": "table.col_a" },
+          { "kind": "column", "ref": "table.col_b" }
+        ],
+        "blame_rationale": "GROUP BY omits col_b, which the expected query includes.",
         "counterfactual_fix": "switch GROUP BY to include col_b",
         "expected_objects": [
           "table.col_a"
@@ -113,6 +118,11 @@
           "table.col_a",
           "table.col_b"
         ],
+        "blame_set_structured": [
+          { "kind": "column", "ref": "table.col_a" },
+          { "kind": "column", "ref": "table.col_b" }
+        ],
+        "blame_rationale": "GROUP BY omits col_b, which the expected query includes.",
         "counterfactual_fix": "switch GROUP BY to include col_b",
         "expected_objects": [
           "table.col_a"
@@ -143,6 +153,11 @@
           "table.col_a",
           "table.col_b"
         ],
+        "blame_set_structured": [
+          { "kind": "column", "ref": "table.col_a" },
+          { "kind": "column", "ref": "table.col_b" }
+        ],
+        "blame_rationale": "GROUP BY omits col_b, which the expected query includes.",
         "counterfactual_fix": "switch GROUP BY to include col_b",
         "expected_objects": [
           "table.col_a"
@@ -177,6 +192,11 @@
           "table.col_a",
           "table.col_b"
         ],
+        "blame_set_structured": [
+          { "kind": "column", "ref": "table.col_a" },
+          { "kind": "column", "ref": "table.col_b" }
+        ],
+        "blame_rationale": "GROUP BY omits col_b, which the expected query includes.",
         "counterfactual_fix": "switch GROUP BY to include col_b",
         "expected_objects": [
           "table.col_a"
@@ -205,6 +225,11 @@
           "table.col_a",
           "table.col_b"
         ],
+        "blame_set_structured": [
+          { "kind": "column", "ref": "table.col_a" },
+          { "kind": "column", "ref": "table.col_b" }
+        ],
+        "blame_rationale": "GROUP BY omits col_b, which the expected query includes.",
         "counterfactual_fix": "switch GROUP BY to include col_b",
         "expected_objects": [
           "table.col_a"

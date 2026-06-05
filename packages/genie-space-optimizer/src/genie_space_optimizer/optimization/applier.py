@@ -3007,7 +3007,11 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
         )
 
     # ── Example SQL (preferred over text instructions) ────────────
-    if patch_type == "add_example_sql":
+    # Phase 2 P2.4 — ``add_example_sql_negative`` shares the same Genie
+    # ``example_question_sqls`` slot as positive examples. The polarity
+    # is preserved on the audit record (``negative=True``) so survivor-
+    # selection / acceptance tiering can deprioritize the proposal.
+    if patch_type in ("add_example_sql", "add_example_sql_negative"):
         eq = patch.get("example_question", "")
         es = patch.get("example_sql", "")
         cmd_dict: dict = {"op": "add", "section": "example_question_sqls", "question": eq, "sql": es}
@@ -3017,6 +3021,11 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
         guidance = patch.get("usage_guidance", "")
         if guidance:
             cmd_dict["usage_guidance"] = guidance
+        # Phase 2 P2.4 — surface the polarity flag in the apply
+        # command so downstream audit consumers can route the
+        # outcome to the negative-example tracker.
+        if patch_type == "add_example_sql_negative":
+            cmd_dict["negative"] = True
         return action(
             json.dumps(cmd_dict),
             json.dumps({"op": "remove", "section": "example_question_sqls", "question": eq}),

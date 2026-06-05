@@ -84,6 +84,27 @@ def _classify_llm_error(
     # arm fires even if the message format changes.
     if "requestenvelopeinvalid" in cls:
         return "request_envelope_invalid"
+    # Phase 0 P0.3 — workspace-level Foundation Model API rate limit.
+    # Surfaced by the OpenAI SDK as ``RateLimitError`` (and by
+    # Databricks as ``REQUEST_LIMIT_EXCEEDED`` in the body) when the
+    # workspace's ITPM / OTPM / QPH limits trip on the shared sliding
+    # 60s window. Distinct from ``token_limit_exceeded`` (per-call
+    # context cap) and ``endpoint_decline`` (per-call 400 body).
+    # Marker arm must precede the generic ``client``/``connection``
+    # checks below because ``RateLimitError`` would otherwise fall
+    # through to ``client_construction``.
+    if "ratelimit" in cls or "toomanyrequests" in cls:
+        return "rate_limited"
+    if (
+        "request_limit_exceeded" in msg
+        or "rate limit exceeded" in msg
+        or "rate-limit exceeded" in msg
+        or "too many requests" in msg
+        or " 429" in msg
+        or "code: 429" in msg
+        or "input token rate limit" in msg
+    ):
+        return "rate_limited"
     if "timeout" in cls:
         return "timeout"
     # Trial 13 Track 4 — ``string_too_long`` errors raised by Pydantic
@@ -260,12 +281,14 @@ def _persist_llm_error_dump(
     the marker emission).
     """
     try:
-        root_env = (
-            os.environ.get("GSO_PHASE_H_BUNDLE_ROOT")
-            or os.environ.get("GSO_PLAN_V3_RUN_ROOT")
-            or f"/tmp/gso/{optimization_run_id}"
+        # 2026-05-26 hardening — replace hardcoded ``/tmp/gso/<run_id>``
+        # fallback with the central resolver that handles
+        # ``PermissionError`` from shared-tmp collisions on
+        # Databricks Apps nodes (see ``run_root_resolver`` module).
+        from genie_space_optimizer.optimization.run_root_resolver import (
+            resolve_run_root as _resolve_run_root,
         )
-        run_root = Path(root_env)
+        run_root = _resolve_run_root(str(optimization_run_id))
         out_dir = run_root / "llm_errors"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"stage1_{int(iteration)}_{qid}.json"
@@ -304,11 +327,69 @@ def _build_request(
     system_body = _SKILL_LOADER.load_prompt(
         _SKILL_ID, expected_constant_name=_PROMPT_CONST,
     )
+
+    # Phase 0 P0.4 — LRU compaction. Stage 1's recent_diagnoses
+    # accumulates across iterations and was the dominant growth term
+    # in the 22-of-32 rate-limited diagnoses postmortem
+    # (e94376a3...). We compact in place so the most recent
+    # diagnosis is always retained while older ones are shed first.
+    # The ordering is "least valuable last" — recent_diagnoses go
+    # first because schema_columns and failing_qids are load-bearing
+    # for the current iteration's diagnosis.
+    # Phase 1 P1.3 — fixed-window cap of recent_diagnoses to the last
+    # 3 iterations BEFORE the LRU compactor sees the slot. Bounds the
+    # prompt size structurally so the LRU compactor only fires in the
+    # rare case where the 3-iteration window itself overflows.
+    from genie_space_optimizer.optimization.llm_history_window import (
+        cap_iteration_bucketed_history,
+    )
+    from genie_space_optimizer.optimization.llm_prompt_compaction import (
+        compact_history_slots_to_fit,
+    )
+    from genie_space_optimizer.optimization.llm_reasoning_call import (
+        MAX_PROMPT_INPUT_TOKENS,
+    )
+
+    # Work on local copies so we don't mutate caller-owned lists.
+    # Phase 1 P1.3 — cap to last 3 iterations; older entries collapse
+    # to a single digest dict so the LLM still sees that earlier
+    # diagnoses existed but does not pay per-entry tokens for them.
+    recent_diagnoses = cap_iteration_bucketed_history(
+        recent_diagnoses or [], current_iteration=iteration,
+    )
+    static_chars = (
+        len(system_body)
+        + len(json.dumps(
+            {
+                "iteration": iteration,
+                "failing_qids": failing_qids,
+                "schema_columns": schema_columns,
+                "recent_diagnoses_for_same_qids": [],
+            },
+            default=str,
+        ))
+    )
+    compact_history_slots_to_fit(
+        static_chars=static_chars,
+        history_slots=[
+            ("recent_diagnoses_for_same_qids", recent_diagnoses),
+        ],
+        target_token_cap=MAX_PROMPT_INPUT_TOKENS,
+    )
+
+    # Phase 0 P0.5 — split ``schema_columns`` into a cacheable block.
+    # The column list is stable for the lifetime of one optimization
+    # run (no schema changes between iterations) so caching it lets
+    # every subsequent Stage 1 call pay 0.1x on the wire for that
+    # block. The dynamic payload keeps iteration / failing_qids /
+    # recent_diagnoses since they change every call.
+    schema_columns_block = json.dumps(
+        {"schema_columns": list(schema_columns)}, default=str,
+    )
     user_prompt = json.dumps(
         {
             "iteration": iteration,
             "failing_qids": failing_qids,
-            "schema_columns": schema_columns,
             "recent_diagnoses_for_same_qids": recent_diagnoses,
         },
         default=str,
@@ -320,6 +401,7 @@ def _build_request(
         user_prompt=user_prompt,
         result_cls=output_cls,
         max_tokens=rsm.max_tokens,
+        cacheable_user_blocks=(schema_columns_block,),
     )
 
 
@@ -549,6 +631,11 @@ def diagnose_failing_qids(
             blame_set=valid_blame,
             evidence_summary=str(item.get("evidence_summary", "")),
             confidence=item.get("confidence", "low"),  # type: ignore[arg-type]
+            # Trial 19 B5 — carry the LLM-emitted repair intent into the
+            # typed PerQidDiagnosis so Stage 2 / Stage 3 see it
+            # verbatim. Empty default preserves byte-stable replay
+            # against pre-Trial-19 fixtures where the field is absent.
+            intended_patch_shape=str(item.get("intended_patch_shape", "")),
         )
         diagnoses.append(diag)
         print(

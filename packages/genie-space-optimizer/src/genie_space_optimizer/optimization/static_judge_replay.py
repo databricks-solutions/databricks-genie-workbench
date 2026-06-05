@@ -101,6 +101,14 @@ def run_static_judge_replay(
     gate_kept: list[dict[str, Any]] = []
     dropped_patches: list[dict[str, Any]] = []
     for patch in candidate_patches:
+        # Trial 20 E2 — the SM lane stamps ``passing_dependents`` on
+        # every proposal so the unsafe-by-default fallback only fires
+        # on real plumbing regressions. The static-judge-replay lane
+        # operates on pre-Trial-20 dict patches that never carried the
+        # field; stamping an empty list here preserves the legacy
+        # safe-by-default behaviour for offline judging while leaving
+        # E2 enforcement intact for the production SM path.
+        patch.setdefault("passing_dependents", [])
         blast = patch_blast_radius_is_safe(
             patch,
             ag_target_qids=target_qids,

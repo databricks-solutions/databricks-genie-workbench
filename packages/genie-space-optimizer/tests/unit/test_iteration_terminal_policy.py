@@ -53,6 +53,53 @@ def test_post_iter_no_rca_ground_returns_retry_strategy_switch():
     assert isinstance(result.reflection_payload, dict)
 
 
+def test_kept_insufficient_forbids_by_default():
+    """e943: KEPT_INSUFFICIENT is now explicit in the routing table —
+    skip_productive, and (with no trending-up signal) still forbids,
+    preserving legacy behaviour for stuck runs."""
+    sig = _sig(terminal_reason=TerminalReason.KEPT_INSUFFICIENT)
+    result = decide_iteration_terminal_action(
+        terminal_reason=TerminalReason.KEPT_INSUFFICIENT,
+        signature=sig,
+        prior_forbidden_set=frozenset(),
+        iteration_index=0,
+        iteration_budget=5,
+    )
+    assert result.next_step == "skip_productive"
+    assert result.add_to_forbidden_set is True
+
+
+def test_kept_insufficient_does_not_forbid_while_trending_up():
+    """e943: a kept-insufficient signature in a run whose accuracy is
+    still climbing must NOT be forbidden — forbidding the cumulative-
+    learning patches blocks the sequence that eventually wins."""
+    sig = _sig(terminal_reason=TerminalReason.KEPT_INSUFFICIENT)
+    result = decide_iteration_terminal_action(
+        terminal_reason=TerminalReason.KEPT_INSUFFICIENT,
+        signature=sig,
+        prior_forbidden_set=frozenset(),
+        iteration_index=0,
+        iteration_budget=5,
+        run_accuracy_trending_up=True,
+    )
+    assert result.next_step == "skip_productive"
+    assert result.add_to_forbidden_set is False
+
+
+def test_trending_up_does_not_affect_other_reasons():
+    """The trending-up override is scoped to KEPT_INSUFFICIENT only."""
+    sig = _sig(terminal_reason=TerminalReason.NO_RCA_GROUND)
+    result = decide_iteration_terminal_action(
+        terminal_reason=TerminalReason.NO_RCA_GROUND,
+        signature=sig,
+        prior_forbidden_set=frozenset(),
+        iteration_index=0,
+        iteration_budget=5,
+        run_accuracy_trending_up=True,
+    )
+    assert result.add_to_forbidden_set is True
+
+
 def test_post_iter_ag_collision_returns_skip_no_op():
     """Spec routing: AG_COLLISION_WITH_FORBIDDEN_SET →
     skip_no_op (budget NOT consumed)."""

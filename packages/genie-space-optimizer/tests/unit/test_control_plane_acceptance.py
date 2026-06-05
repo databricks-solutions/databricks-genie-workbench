@@ -62,7 +62,10 @@ def test_row_stubs_are_classified_correctly_by_hard_failure_qids() -> None:
     )
 
 
-def test_acceptance_accepts_net_positive_zero_regression_target_unchanged() -> None:
+def test_acceptance_accepts_net_positive_zero_regression_target_unchanged(monkeypatch) -> None:
+    # Trial 23 W2 demotes attribution-drift accepts to non-deployable by
+    # default; this test pins the legacy (rollback) contract.
+    monkeypatch.setenv("GSO_TRIAL23_LOOP_REPAIR", "0")
     """The May-01 7Now iter-2 scenario: target qid did not move but the
     candidate fixed other qids and produced zero regressions on every
     budget axis. Must accept with reason ``accepted_with_attribution_drift``."""
@@ -98,6 +101,45 @@ def test_acceptance_accepts_net_positive_zero_regression_target_unchanged() -> N
     assert decision.reason_code == "accepted_with_attribution_drift"
     assert decision.target_fixed_qids == ()
     assert decision.out_of_target_regressed_qids == ()
+
+
+def test_trial23_w2_attribution_drift_demoted_to_non_deployable_by_default(
+    monkeypatch,
+) -> None:
+    """Trial 23 W2 — with the loop-repair master flag ON (default), an
+    attribution-drift net win whose target stays hard is demoted to a
+    NON-deployable ``net_win_non_deployable`` verdict (accepted=False),
+    while the global delta and unresolved target debt are recorded."""
+    monkeypatch.setenv("GSO_TRIAL23_LOOP_REPAIR", "1")
+    monkeypatch.setenv("GSO_TRIAL23_TARGET_HONEST_ACCEPTANCE", "1")
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    pre_rows = [
+        _row("gs_013", hard=True),  # named target — stays hard
+        _row("gs_019", hard=True),  # other hard — gets fixed
+        _row("gs_001", hard=False),
+        _row("gs_002", hard=False),
+    ]
+    post_rows = [
+        _row("gs_013", hard=True),  # target unchanged
+        _row("gs_019", hard=False),  # fixed
+        _row("gs_001", hard=False),
+        _row("gs_002", hard=False),
+    ]
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=85.0,
+        candidate_accuracy=95.0,
+        target_qids=("gs_013",),
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+    )
+
+    assert decision.accepted is False
+    assert decision.reason_code == "net_win_non_deployable"
+    assert "gs_013" in decision.unresolved_target_debt_qids
 
 
 def test_acceptance_still_rejects_when_passing_to_hard_regression_present() -> None:

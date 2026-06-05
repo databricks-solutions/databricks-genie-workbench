@@ -177,7 +177,15 @@ def test_end_to_end_decline_falls_back_to_prior_clusters(monkeypatch) -> None:
 
 
 def test_end_to_end_flag_off_runs_heuristic_path_only(monkeypatch) -> None:
+    # ``cluster_failures`` now has two independent LLM clustering lanes:
+    # the Plan 4 LLM-clustering short-circuit (GSO_PLAN4_LLM_CLUSTERING)
+    # and the newer Plan 11 LLM-first diagnose+cluster dispatch
+    # (GSO_PLAN11_LLM_FIRST, default-ON), which runs *before* the Plan 4
+    # gate. To exercise the pure heuristic path (no LLM calls) both lanes
+    # must be off; otherwise Plan 11 dispatches per-QID diagnose + a
+    # batched cluster call even with the Plan 4 flag disabled.
     monkeypatch.setenv("GSO_PLAN4_LLM_CLUSTERING", "0")
+    monkeypatch.setenv("GSO_PLAN11_LLM_FIRST", "0")
     rca = {
         "gs_001": _ev("gs_001", "x", ()),
         "gs_002": _ev("gs_002", "x", ()),

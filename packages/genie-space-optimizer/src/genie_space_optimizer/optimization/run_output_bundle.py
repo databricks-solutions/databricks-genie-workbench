@@ -74,6 +74,26 @@ def _normalize_stage_capture(
     return {}
 
 
+def _ensure_dict(
+    value: object,
+    *,
+    stage_key: str = "",
+    iteration: int = 0,
+) -> dict:
+    """P4 C9 — thin wrapper around :func:`_normalize_stage_capture`
+    used at iteration/fixture boundaries inside
+    :func:`assemble_bundle_for_replay`.
+
+    The wrapper exists so a future grep / postmortem can see the
+    explicit "coerce iteration blob to dict" call sites separately
+    from the per-stage normalisation sites. Behavior is identical to
+    :func:`_normalize_stage_capture`.
+    """
+    return _normalize_stage_capture(
+        value, stage_key=stage_key, iteration=iteration
+    )
+
+
 def _normalize_accuracy_pct(value: Any) -> Any:
     """Cycle 6 F-6 — collapse 0-1 fraction inputs and 0-100 percent
     inputs to a single canonical 0-100 representation, rounded to one
@@ -194,6 +214,7 @@ def build_run_summary(
     iteration_count: int,
     accuracy_delta_pp: float,
     eval_result: dict[str, Any] | None = None,
+    canonical_delta_pp: float | None = None,
 ) -> dict[str, Any]:
     """Build run_summary.json — the high-level run outcome.
 
@@ -207,6 +228,12 @@ def build_run_summary(
     actual eval result under retry. When ``eval_result`` is absent
     (legacy callers not yet wired), both counts are 0 — byte-stable
     against existing callers that haven't been threaded through.
+
+    Canonical CandidateOutcome (e94376a3 postmortem): when
+    ``canonical_delta_pp`` is supplied (the run-level authoritative
+    full-eval delta), it OVERRIDES the legacy ``accuracy_delta_pp`` so
+    run_summary/scoreboard/outcome all report the same delta. ``None``
+    preserves legacy behaviour for callers not yet threaded through.
     """
     normalized_baseline = dict(baseline or {})
     if "overall_accuracy" in normalized_baseline:
@@ -228,12 +255,17 @@ def build_run_summary(
         elif score < 1.0:
             soft += 1
 
+    _delta_source = (
+        canonical_delta_pp
+        if canonical_delta_pp is not None
+        else accuracy_delta_pp
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "baseline": normalized_baseline,
         "terminal_state": terminal_state,
         "iteration_count": iteration_count,
-        "accuracy_delta_pp": _normalize_accuracy_pct(accuracy_delta_pp),
+        "accuracy_delta_pp": _normalize_accuracy_pct(_delta_source),
         "hard_failures_count": hard,
         "soft_failures_count": soft,
     }
@@ -246,9 +278,16 @@ def build_decision_trace_all(
 
     Aggregates per-iteration decision-trace dicts into one document so a
     postmortem can read every iteration's typed records from one path.
+
+    Trial 23 W10 — each per-iteration trace is coerced to a dict via
+    :func:`_ensure_dict` BEFORE ``.get`` so a list-valued capture (the
+    ``stage_io_capture`` multi-decision shape) can no longer raise
+    ``AttributeError: 'list' object has no attribute 'get'`` and abort
+    the whole bundle assembly (airline runs 833709971504406 /
+    1105451933925748 F7).
     """
-    safe = list(iter_traces or [])
-    total = sum(len((t or {}).get("records") or []) for t in safe)
+    safe = [_ensure_dict(t) for t in (iter_traces or [])]
+    total = sum(len(t.get("records") or []) for t in safe)
     return {
         "schema_version": SCHEMA_VERSION,
         "iteration_count": len(safe),
@@ -260,10 +299,15 @@ def build_decision_trace_all(
 def build_journey_validation_all(
     *, iter_reports: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Cycle 12-T3 — parent-bundle journey_validation_all.json."""
-    safe = list(iter_reports or [])
-    total_v = sum(len((r or {}).get("violations") or []) for r in safe)
-    any_invalid = any(not bool((r or {}).get("is_valid", True)) for r in safe)
+    """Cycle 12-T3 — parent-bundle journey_validation_all.json.
+
+    Trial 23 W10 — list-safe coercion mirrors
+    :func:`build_decision_trace_all` so a list-valued report cannot
+    crash the aggregator.
+    """
+    safe = [_ensure_dict(r) for r in (iter_reports or [])]
+    total_v = sum(len(r.get("violations") or []) for r in safe)
+    any_invalid = any(not bool(r.get("is_valid", True)) for r in safe)
     return {
         "schema_version": SCHEMA_VERSION,
         "iteration_count": len(safe),
@@ -284,6 +328,7 @@ def build_scoreboard(
     best_accuracy: float | None,
     baseline_accuracy: float | None,
     iteration_count: int,
+    canonical_delta_pp: float | None = None,
 ) -> dict[str, Any]:
     """Cycle 12-T3 — minimal scoreboard.json.
 
@@ -292,8 +337,15 @@ def build_scoreboard(
     accuracy_delta_pp summary. Richer LoopSnapshot-based fields are a
     follow-up; this is enough to materialize the contract-declared path
     with structured content.
+
+    Canonical CandidateOutcome (e94376a3 postmortem): when
+    ``canonical_delta_pp`` is supplied it OVERRIDES the
+    best-minus-baseline delta so scoreboard agrees with run_summary and
+    the optimizer outcome. ``None`` preserves the legacy computation.
     """
-    if best_accuracy is None or baseline_accuracy is None:
+    if canonical_delta_pp is not None:
+        delta = round(_normalize_accuracy_pct(canonical_delta_pp), 1)
+    elif best_accuracy is None or baseline_accuracy is None:
         delta = None
     else:
         delta = round(_normalize_accuracy_pct(best_accuracy)
@@ -376,9 +428,26 @@ def assemble_bundle_for_replay(replay_fixture: dict) -> dict:
     end-to-end fixture replay that proves the production-shape
     failure no longer occurs.
     """
-    iterations = list(replay_fixture.get("iterations") or [])
+    # P4 C9 — defensive: callers occasionally pass a list-shaped
+    # fixture or list-shaped iteration blob (e.g. when the upstream
+    # journey-validation report is serialized as a list of records
+    # rather than a single dict). e943's
+    # ``GSO_BUNDLE_ASSEMBLY_FAILED_V1`` postmortem traced an
+    # ``AttributeError: 'list' object has no attribute 'get'`` to the
+    # iteration loop below. Normalize at the boundary so every
+    # downstream ``.get()`` access is dict-safe.
+    safe_fixture = (
+        replay_fixture
+        if isinstance(replay_fixture, dict)
+        else _normalize_stage_capture(
+            replay_fixture,
+            stage_key="replay_fixture",
+            iteration=0,
+        )
+    )
+    iterations = list(safe_fixture.get("iterations") or [])
     iter_indices = [
-        int(i.get("iteration") or idx + 1)
+        int(_ensure_dict(i).get("iteration") or idx + 1)
         for idx, i in enumerate(iterations)
     ]
 
@@ -395,7 +464,9 @@ def assemble_bundle_for_replay(replay_fixture: dict) -> dict:
     # path at harness.py:25400-25406, where ``buckets`` comes from each
     # iteration's journey-validation report under ``bucket_assignments``.
     iter_assignments: list[dict[str, Any]] = []
-    for idx, blob in enumerate(iterations, start=1):
+    for idx, raw_blob in enumerate(iterations, start=1):
+        # P4 C9 — coerce list-shape iteration blobs at the boundary.
+        blob = _ensure_dict(raw_blob, stage_key="iteration", iteration=idx)
         records = list(blob.get("decision_records") or [])
         iter_traces.append({"iteration": idx, "records": records})
         violations = list(blob.get("journey_violations") or [])
@@ -429,7 +500,7 @@ def assemble_bundle_for_replay(replay_fixture: dict) -> dict:
 
     return {
         "manifest": build_manifest(
-            optimization_run_id=str(replay_fixture.get("fixture_id") or ""),
+            optimization_run_id=str(safe_fixture.get("fixture_id") or ""),
             databricks_job_id="",
             databricks_parent_run_id="",
             lever_loop_task_run_id="",
@@ -438,13 +509,13 @@ def assemble_bundle_for_replay(replay_fixture: dict) -> dict:
         ),
         "run_summary": build_run_summary(
             baseline={
-                "overall_accuracy": replay_fixture.get("baseline_accuracy", 0.0),
+                "overall_accuracy": safe_fixture.get("baseline_accuracy", 0.0),
             },
             terminal_state={
-                "final_accuracy": replay_fixture.get("final_accuracy", 0.0),
+                "final_accuracy": safe_fixture.get("final_accuracy", 0.0),
             },
             iteration_count=len(iter_indices),
-            accuracy_delta_pp=float(replay_fixture.get("delta_pp", 0.0)),
+            accuracy_delta_pp=float(safe_fixture.get("delta_pp", 0.0)),
         ),
         "decision_trace_all": build_decision_trace_all(iter_traces=iter_traces),
         "journey_validation_all": build_journey_validation_all(
@@ -457,8 +528,8 @@ def assemble_bundle_for_replay(replay_fixture: dict) -> dict:
             levers_attempted=levers_attempted,
             levers_accepted=levers_accepted,
             levers_rolled_back=levers_rolled_back,
-            best_accuracy=replay_fixture.get("final_accuracy"),
-            baseline_accuracy=replay_fixture.get("baseline_accuracy"),
+            best_accuracy=safe_fixture.get("final_accuracy"),
+            baseline_accuracy=safe_fixture.get("baseline_accuracy"),
             iteration_count=len(iter_indices),
         ),
         # RCO-1 — failure_buckets parity with harness terminate path
@@ -642,6 +713,13 @@ def build_iteration_journey_validation_payload(
         "violation_count": len(violations),
         "violations": violations,
         "bucket_assignments": dict(safe.get("bucket_assignments") or {}),
+        # Track A / A2 — surface the per-QID terminal state so the
+        # postmortem can reconcile an accepted decision against a QID
+        # left hard_failure_unresolved (the e94376a3 iter-3 phantom).
+        # Previously dropped here, which hid the contradiction.
+        "terminal_state_by_qid": dict(
+            safe.get("terminal_state_by_qid") or {}
+        ),
     }
 
 

@@ -45,6 +45,15 @@ from tests.integration.sm_tape_replay import (
 
 _HARD_QIDS = ("gs_001", "gs_004", "gs_013")
 
+# Trial 13i — run-level schema_columns matching the ``_hard_row`` blame
+# seed (``catalog.schema.orders.amount``). Without this channel the
+# ``validate_schema_columns`` pre-flight short-circuits Stage 1 with
+# ``missing_schema_columns`` *before* the batched diagnose call, so the
+# tape is never consumed (``consumed_count == 0``). The single batched
+# tape entry is already the current contract shape; the missing input
+# was the schema_columns plumbing, not the tape.
+_SCHEMA_COLUMNS_SNAPSHOT = {"schema_columns": ["catalog.schema.orders.amount"]}
+
 
 def _hard_row(qid: str) -> dict:
     """Build a production-shape row that ``row_is_hard_failure`` admits.
@@ -158,6 +167,7 @@ def test_sm_iteration_with_valid_stage1_advances_past_hard_qid_seen(
                 run_id="valid-stage1-replay",
                 run_root=tmp_path,
                 workspace_client=None,
+                metadata_snapshot=_SCHEMA_COLUMNS_SNAPSHOT,
                 forbidden_signatures=(),
             )
         except TapeExhaustedError:
@@ -257,6 +267,7 @@ def test_sm_iteration_with_valid_stage1_does_not_terminate_with_dc89d1a9_signatu
                 run_id="valid-stage1-no-empty-replay",
                 run_root=tmp_path,
                 workspace_client=None,
+                metadata_snapshot=_SCHEMA_COLUMNS_SNAPSHOT,
                 forbidden_signatures=(),
             )
         except TapeExhaustedError:

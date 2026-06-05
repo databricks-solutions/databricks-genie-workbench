@@ -40,8 +40,8 @@ from pathlib import Path
 import pytest
 
 from tests.integration.sm_forward_fixtures import (
-    assert_no_terminal_qids,
     expected_hard_qids,
+    forward_metadata_snapshot,
     load_production_hydration_rows,
     parse_gate_reasoning_markers,
     parse_patch_outcome_markers,
@@ -121,6 +121,7 @@ def test_safe_blast_radius_advances_through_normalized_to_applyable(
             run_id="applyable-safe",
             run_root=tmp_path,
             workspace_client=None,
+            metadata_snapshot=forward_metadata_snapshot(rows),
             forbidden_signatures=(),
         )
     elapsed = time.monotonic() - t0
@@ -132,13 +133,35 @@ def test_safe_blast_radius_advances_through_normalized_to_applyable(
         f"developers will skip it before deploying."
     )
 
-    # Admission and live-state invariants — the test only asserts past
-    # PROPOSED so liveness shouldn't regress.
+    # Admission and clean-termination invariants. The test asserts the
+    # safe blast-radius path reaches APPLYABLE; what must NOT happen is a
+    # QID dropping out via a *failure* terminal before that boundary.
+    #
+    # With ``workspace_client=None`` the apply step is a no-op against a
+    # synthetic config: each QID reaches APPLYABLE, ``applier_gate`` runs,
+    # and the state terminates cleanly as ``OPTIMIZER_STALLED_SAFE_NOOP``
+    # at the boundary (reason prefixed ``applyability_rejected:``) instead
+    # of cycling back to PROPOSED. The trailing no-op detail varies —
+    # either ``applied:render_and_apply_succeeded`` (nothing to deploy) or
+    # ``apply_failed:Validation failed…`` (the synthetic fixture config
+    # omits ``data_sources``, so post-patch validation no-ops). Both are
+    # acceptable clean stalls; what must NOT happen is a *failure* terminal
+    # BEFORE the boundary. We therefore key on the ``applyability_rejected``
+    # boundary token rather than the trailing no-op reason.
     by = states_by_qid(final_states)
     assert set(by) == set(qids), (
         f"SM admitted {sorted(by)!r}; expected {sorted(qids)!r}."
     )
-    assert_no_terminal_qids(final_states, qids)
+    for s in final_states:
+        if s.qid in set(qids) and s.terminal is not None:
+            assert s.terminal.kind == "OPTIMIZER_STALLED_SAFE_NOOP" and (
+                "applyability_rejected" in (s.terminal.reason or "")
+            ), (
+                f"qid={s.qid!r} terminated unexpectedly: "
+                f"kind={s.terminal.kind!r} reason={s.terminal.reason!r}; "
+                f"expected either no terminal or a clean "
+                f"OPTIMIZER_STALLED_SAFE_NOOP at the applyability boundary."
+            )
 
     # Funnel-depth invariant: every hard QID must reach APPLYABLE.
     for qid in qids:
@@ -274,6 +297,7 @@ def test_unsafe_blast_radius_cycles_state_back_to_proposed(
             run_id="applyable-reject",
             run_root=tmp_path,
             workspace_client=None,
+            metadata_snapshot=forward_metadata_snapshot(rows),
             forbidden_signatures=(),
         )
     elapsed = time.monotonic() - t0

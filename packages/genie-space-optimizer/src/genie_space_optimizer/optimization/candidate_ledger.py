@@ -82,6 +82,14 @@ class IterationCandidateLedgerEntry:
     accuracy_delta_pp: float
     acceptance_tier: str
     retire_signature: str
+    # Trial 22 W3 (additive, optional) — the slate compiler's drop
+    # summary for this iteration. Persisting it HERE (the durable
+    # terminal-state ledger) — rather than only on the transient
+    # ClusterSynthesisResult — is what lets iteration N+1's Stage 3
+    # prompt read iteration N's drops after the harness has advanced
+    # past the originating AG/cluster. ``None`` when no drops occurred.
+    # Schema: ``proposal_slate_compiler.build_compiler_drop_summary``.
+    compiler_drop_summary: dict | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Return a JSON-serializable dict. Tuples become lists;
@@ -183,6 +191,9 @@ def read_ledger(path: str) -> tuple[IterationCandidateLedgerEntry, ...]:
             accuracy_delta_pp=float(payload["accuracy_delta_pp"]),
             acceptance_tier=str(payload["acceptance_tier"]),
             retire_signature=str(payload["retire_signature"]),
+            # Trial 22 W3 — additive optional field; tolerate rows
+            # written before this field existed (``.get`` → None).
+            compiler_drop_summary=payload.get("compiler_drop_summary"),
         ))
     return tuple(out)
 

@@ -4,7 +4,8 @@ The encoder is the canonical JSON-serialization boundary for every
 ``json.dumps`` site in ``optimization/state.py``. It must handle:
 
 * ``frozenset`` and ``set`` — convert to canonically sorted list
-* ``NamedTuple`` (e.g. ``TerminalSignature``) — convert via ``_asdict()``
+* ``TerminalSignature`` — convert via its canonical ``to_jsonable`` helper
+* ``NamedTuple`` — convert via ``_asdict()``
 * Plain ``dict`` / ``list`` / scalars — pass through unchanged (byte-stable)
 * Nested combinations of the above
 """
@@ -23,6 +24,7 @@ from genie_space_optimizer.optimization.terminal_reason import (
 )
 from genie_space_optimizer.optimization.terminal_signature import (
     build_terminal_signature,
+    to_jsonable,
 )
 
 
@@ -36,7 +38,7 @@ def test_set_serializes_as_sorted_list():
     assert json.loads(result) == {"qids": ["gs_001", "gs_002"]}
 
 
-def test_namedtuple_serializes_via_asdict():
+def test_terminal_signature_serializes_via_canonical_shape():
     sig = build_terminal_signature(
         root_cause="propagation_lag",
         blame_set=["cat.s.tbl.col"],
@@ -46,15 +48,7 @@ def test_namedtuple_serializes_via_asdict():
     )
     payload = dumps_state_json({"terminal_signature": sig})
     decoded = json.loads(payload)
-    assert decoded == {
-        "terminal_signature": {
-            "root_cause": "propagation_lag",
-            "blame_set_norm": ["cat.s.tbl.col"],
-            "lever_set": [5, 6],
-            "target_qids": ["gs_009"],
-            "terminal_reason": "proposal_generation_empty",
-        }
-    }
+    assert decoded == {"terminal_signature": to_jsonable(sig)}
 
 
 def test_nested_reflection_buffer_entry_with_terminal_signature():
@@ -108,16 +102,12 @@ def test_unsortable_set_falls_back_to_repr():
 
 
 def test_encoder_terminal_signature_matches_canonical_to_jsonable():
-    """The encoder's NamedTuple path MUST produce the same dict shape
+    """The encoder's TerminalSignature path MUST produce the same dict shape
     as ``terminal_signature.to_jsonable`` (spec Section 4.4). This
     pins the contract so any future change to ``to_jsonable`` (or
     the encoder) surfaces as a single failing test instead of
     silent drift between GSO's JSON surfaces.
     """
-    from genie_space_optimizer.optimization.terminal_signature import (
-        to_jsonable,
-    )
-
     sig = build_terminal_signature(
         root_cause="instruction_not_scoped_to_qid",
         blame_set=["cat.sch.tbl_a.col", "cat.sch.tbl_b.col"],

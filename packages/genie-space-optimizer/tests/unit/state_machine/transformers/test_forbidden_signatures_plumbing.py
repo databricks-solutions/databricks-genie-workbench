@@ -89,8 +89,12 @@ def test_cluster_batch_forwards_ctx_forbidden_signatures_to_cluster_diagnoses():
     captured: dict[str, object] = {}
 
     def _spy(*, diagnoses, schema_columns, optimization_run_id, iteration,
-             namespace, w, forbidden_signatures=()):
+             namespace, w, forbidden_signatures=(),
+             insufficient_repair_signatures=()):
         captured["forbidden_signatures"] = tuple(forbidden_signatures)
+        captured["insufficient_repair_signatures"] = tuple(
+            insufficient_repair_signatures
+        )
         return []  # decline → cluster_batch terminates; we only need plumbing.
 
     from genie_space_optimizer.optimization.state_machine.transformers import (
@@ -174,8 +178,15 @@ def test_synthesize_llm_forwards_ctx_forbidden_signatures_to_synthesis_stage():
         ag_id,
         w,
         forbidden_signatures=(),
+        insufficient_repair_signatures=(),
+        # P4 producer-side kwargs (accept-and-ignore so the spy
+        # doesn't break when the SM transformer forwards them).
+        **_p4_kwargs,
     ):
         captured["forbidden_signatures"] = tuple(forbidden_signatures)
+        captured["insufficient_repair_signatures"] = tuple(
+            insufficient_repair_signatures
+        )
         return _StubResult()
 
     ctx = TransformerContext(

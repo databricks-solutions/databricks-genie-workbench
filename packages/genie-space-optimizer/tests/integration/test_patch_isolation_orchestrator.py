@@ -32,7 +32,19 @@ def _patch(patch_id: str, expanded_id: str, cluster_id: str, qids=()) -> dict:
     }
 
 
-def test_pipeline_single_patch_regression_routes_to_subset_accepts_clean() -> None:
+def test_pipeline_single_patch_regression_routes_to_subset_accepts_clean(
+    monkeypatch,
+) -> None:
+    # This orchestration replay pins the *legacy* gate: the full-AG
+    # decision must REJECT (target fixed but gs_018 soft→hard, with
+    # ``max_new_hard_regressions=0``) so the isolation pipeline can route
+    # to ``subset_accepts_clean``. ``decide_control_plane_acceptance`` now
+    # has two debt-tolerant acceptance tiers that are default-ON
+    # (partial-harvest-with-debt and attribution-drift-with-debt); either
+    # would accept this candidate under its debt policy. Disable both so
+    # the legacy reject the test documents holds.
+    monkeypatch.setenv("GSO_PARTIAL_HARVEST_WITH_DEBT", "0")
+    monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "0")
     from genie_space_optimizer.optimization.control_plane import (
         decide_control_plane_acceptance,
     )

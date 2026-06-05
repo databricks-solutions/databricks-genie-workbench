@@ -57,6 +57,18 @@ _ACCEPTANCE_CEILING_SECONDS = 10.0
 _FAKE_SPACE_ID = "deadbeefcafebabe1234567890abcdef"
 _GENIE_PATCH_PATH = f"/api/2.0/genie/spaces/{_FAKE_SPACE_ID}"
 
+# Trial 13i — run-level schema_columns FQNs covering the gs_009 blame
+# columns (``DEST_AIRPORT_CD`` / ``ORIG_AIRPORT_CD`` from the 98ec8950
+# capture's ASI ``blame_set``). The seed normalizer resolves the bare
+# blame identifiers to these 4-part FQNs (rule-2 suffix match), and the
+# run-level ``validate_schema_columns`` pre-flight clears. Without this
+# channel Stage 1 abstains with ``missing_schema_columns`` before the
+# tape diagnosis is consumed.
+_GS_009_SCHEMA_COLUMNS = [
+    "main.airline.flights.DEST_AIRPORT_CD",
+    "main.airline.flights.ORIG_AIRPORT_CD",
+]
+
 
 _MARKER_LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*) (\{.+\})$", re.MULTILINE)
 
@@ -156,6 +168,7 @@ def test_real_production_row_reaches_applied_patch(
 
     ws = FakeWorkspaceClient()
     metadata_snapshot = minimal_valid_metadata_snapshot()
+    metadata_snapshot["schema_columns"] = list(_GS_009_SCHEMA_COLUMNS)
 
     from genie_space_optimizer.optimization import optimizer as opt_mod
     from genie_space_optimizer.optimization.state_machine.funnel import (
@@ -271,6 +284,7 @@ def test_real_production_row_phase4_dispatch_no_drift(
     harness = TapeReplayHarness(tape=tape)
     ws = FakeWorkspaceClient()
     metadata_snapshot = minimal_valid_metadata_snapshot()
+    metadata_snapshot["schema_columns"] = list(_GS_009_SCHEMA_COLUMNS)
 
     from genie_space_optimizer.optimization import optimizer as opt_mod
 

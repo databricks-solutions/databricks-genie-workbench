@@ -236,6 +236,30 @@ def _audit_function(tree: ast.Module, func_name: str) -> list[str]:
     return sorted({n.id for n in walker.loads if n.id not in permitted})
 
 
+# Post SM-cutover, ``_run_lever_loop`` is a thin dispatcher; the lever
+# loop body lives in ``_run_lever_loop_sm_first`` and
+# ``_run_lever_loop_legacy``. Audit the union so the leak lint follows
+# the logic into whichever arm owns it (a name leaking in ANY arm is a
+# real leak; each arm is audited independently against its own
+# params/locals).
+_LEVER_LOOP_FN_NAMES = (
+    "_run_lever_loop",
+    "_run_lever_loop_sm_first",
+    "_run_lever_loop_legacy",
+)
+
+
+def _audit_lever_loop_union(tree: ast.Module) -> list[str]:
+    leaks: set[str] = set()
+    for name in _LEVER_LOOP_FN_NAMES:
+        try:
+            leaks |= set(_audit_function(tree, name))
+        except AssertionError:
+            # Arm not present on this build (e.g. legacy arm removed).
+            continue
+    return sorted(leaks)
+
+
 # Known leaks left in place at the time of the Bug C commit. Each
 # of these is read inside ``_run_lever_loop`` from the inner scope
 # of a sibling helper (``_run_gate_checks`` and friends) BUT is
@@ -301,7 +325,7 @@ def test_run_lever_loop_has_no_inner_helper_variable_leaks() -> None:
     from the prior commits.
     """
     tree = ast.parse(HARNESS_PATH.read_text())
-    leaks = _audit_function(tree, "_run_lever_loop")
+    leaks = _audit_lever_loop_union(tree)
     new_leaks = sorted(set(leaks) - _KNOWN_DEFENDED_DEAD_CODE_LEAKS)
     assert not new_leaks, (
         "NEW inner-helper variable name leaked to _run_lever_loop's "

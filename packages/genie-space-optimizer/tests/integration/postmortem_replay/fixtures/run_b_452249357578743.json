@@ -1,0 +1,147 @@
+{
+  "fixture_id": "trial21_postmortem_replay_run_b",
+  "source_postmortem_run": "d13938e7-405d-4444-833a-03f5ac9f7523",
+  "source_attempt_id": "452249357578743",
+  "source_marker_digest": "docs/runid_analysis/d13938e7-405d-4444-833a-03f5ac9f7523/evidence/marker_digest_452249357578743.json",
+  "scenario": "repeated_top_n_kept_insufficient_with_stage3_prompt_starvation_and_snippet_validator_bypass",
+  "stage3_prompt_sizer_fixture": {
+    "scenario": "16_of_20_calls_over_cap_at_104k_vs_40k_with_user_prompt_bloat",
+    "cluster_id": "rca_7now_delivery_analytics_space_gs_018_measure_swap",
+    "iteration": 0,
+    "over_cap_count": 16,
+    "total_count": 20,
+    "sample_over_cap_breakdown": {
+      "cacheable_block_tokens": 3031,
+      "cap": 40000,
+      "system_msg_tokens": 2886,
+      "total_tokens": 104496,
+      "user_prompt_tokens": 98579,
+      "over_cap": true,
+      "observe_only": true
+    },
+    "expected_after_w3": {
+      "over_cap_after_slice": false,
+      "observe_only": false,
+      "drop_reason_if_unsliceable": "PROMPT_SPLIT_REQUIRED"
+    }
+  },
+  "snippet_validator_fixture": {
+    "scenario": "declined_snippet_still_reached_applier",
+    "snippet_validator_marker_count": 5,
+    "declined_count": 1,
+    "applier_rejection_pattern": "Refusing to apply add_sql_snippet_filter without validation_passed=True",
+    "applier_rejection_count": 2,
+    "patch_body": {
+      "patch_type": "add_sql_snippet_filter",
+      "snippet_id": "snippet_top_n_filter_invalid",
+      "raw_sql": "SELECT * FROM orders WHERE store_id IN (TOP_N_FILTER) LIMIT 10",
+      "preflight_table": "samples.tpch.orders",
+      "target": "?"
+    },
+    "validator_verdict": {
+      "outcome": "declined",
+      "abstain_reason": "validate_sql_snippet_failed",
+      "error_message": "syntax error near 'TOP_N_FILTER'"
+    },
+    "expected_after_w4": {
+      "drop_reason_at_producer": "SNIPPET_INVALID",
+      "patch_must_not_reach_applier": true,
+      "phase3_registry_gate": "gate_validate_sql_snippet"
+    }
+  },
+  "repeated_kept_insufficient_fixture": {
+    "scenario": "gs_026_lever5_add_example_sql_repeats_3x_admission_misses",
+    "qid": "7now_delivery_analytics_space_gs_026",
+    "behavior_delta_fingerprint_inputs": {
+      "rca_kind": "top_n_cardinality_collapse",
+      "behavioral_diff": "unchanged",
+      "patch_type": "add_example_sql",
+      "selected_lever": "lever-5"
+    },
+    "raw_signature_today": "lever-5:add_example_sql:insufficient:rca=top_n_cardinality_collapse:behavior=unchanged",
+    "admission_today": {
+      "matched_signature": "",
+      "reason": "no signature match"
+    },
+    "kept_insufficient_history": [
+      {
+        "iteration": 1,
+        "patch_type": "add_example_sql",
+        "qid": "7now_delivery_analytics_space_gs_026",
+        "rca_kind": "top_n_cardinality_collapse",
+        "selected_lever": "lever-5",
+        "behavioral_diff": "unchanged"
+      },
+      {
+        "iteration": 2,
+        "patch_type": "add_example_sql",
+        "qid": "7now_delivery_analytics_space_gs_026",
+        "rca_kind": "top_n_cardinality_collapse",
+        "selected_lever": "lever-5",
+        "behavioral_diff": "unchanged"
+      },
+      {
+        "iteration": 3,
+        "patch_type": "add_example_sql",
+        "qid": "7now_delivery_analytics_space_gs_026",
+        "rca_kind": "top_n_cardinality_collapse",
+        "selected_lever": "lever-5",
+        "behavioral_diff": "unchanged"
+      }
+    ],
+    "expected_after_w5": {
+      "iter_2_admission": {"matched_fingerprint": true, "drop_reason": "REPEATED_FAILED_MECHANISM"},
+      "iter_3_admission": {"matched_fingerprint": true, "drop_reason": "REPEATED_FAILED_MECHANISM"}
+    }
+  },
+  "mechanism_repeat_guard_fixture": {
+    "scenario": "marker_fires_3x_with_empty_priors_because_harness_never_populates",
+    "marker_fires_today": 3,
+    "prior_mechanism_attempts_today": [],
+    "prior_unproductive_outcome_today": [],
+    "forbidden_mechanism_today": [],
+    "expected_after_w5": {
+      "prior_mechanism_attempts_populated_from_kept_insufficient_ledger": true
+    }
+  },
+  "mechanism_coverage_fixture": {
+    "scenario": "category_bridge_mis_maps_top_n_to_join_grounding",
+    "patch_type": "add_example_sql",
+    "rca_kind_label": "top_n_cardinality_collapse",
+    "inferred_category_today": "join_grounding",
+    "current_verdict": {
+      "outcome": "covered",
+      "adequate_mechanisms": ["add_example_sql", "add_join_clarification"],
+      "observe_only": true
+    },
+    "expected_after_w5": {
+      "inferred_category_must_not_equal": "join_grounding",
+      "verdict_outcome": "uncovered",
+      "drop_reason": "UNCOVERED_MECHANISM"
+    }
+  },
+  "repair_diagnosis_gate_fixture": {
+    "scenario": "8_fires_observe_only_missing_implicated_assets_proposals_continue",
+    "marker_fires_today": 8,
+    "observe_only_today": true,
+    "missing_fields_today": ["implicated_assets"],
+    "expected_after_w6_per_family": {
+      "add_column_description": {"required": "resolved_table_column", "drop_reason_if_missing": "MISSING_IMPLICATED_ASSETS"},
+      "add_table_description": {"required": "resolved_table", "drop_reason_if_missing": "MISSING_IMPLICATED_ASSETS"},
+      "add_sql_snippet_filter": {"required": "shape_plus_targets_plus_stamp", "drop_reason_if_missing": "MISSING_IMPLICATED_ASSETS"},
+      "add_sql_snippet_join": {"required": "join_plus_table_assets", "drop_reason_if_missing": "MISSING_IMPLICATED_ASSETS"},
+      "add_example_sql": {"required": "expected_sql_shape", "drop_reason_if_shape_absent": "MISSING_IMPLICATED_ASSETS"},
+      "add_instruction": {"required": "justification_and_no_repeat", "drop_reason_if_missing": "UNJUSTIFIED_SINGLE_LEVER"}
+    }
+  },
+  "outcome_today": "OPTIMIZER_TRIED_INSUFFICIENT_GAIN",
+  "best_accuracy_today": 86.96,
+  "patch_outcome_summary": {
+    "applied_ok_add_example_sql": 4,
+    "applyability_rejected_add_sql_snippet_filter_without_validation_passed": 2
+  },
+  "deepest_stage_by_qid": {
+    "7now_delivery_analytics_space_gs_013": "accepted",
+    "7now_delivery_analytics_space_gs_026": "accepted"
+  }
+}

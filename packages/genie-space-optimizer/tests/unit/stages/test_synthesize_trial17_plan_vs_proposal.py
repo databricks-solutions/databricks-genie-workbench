@@ -91,6 +91,10 @@ def test_trial17_consistent_proposal_survives_and_carries_lever():
                 "target_qids": ["gs_009"],
                 "selected_lever": "lever-5",
                 "expected_behavioral_change": "ORDER BY DESC LIMIT instead of MAX()",
+                # Trial 22 required-assets gate drops solo levers with no
+                # justification; this test pins lever-consistency wiring,
+                # so supply a justification to survive on its own merit.
+                "single_lever_justification": "empirical from gs_009 top-N grammar",
                 "fallback_lever": "lever-6",
                 "bundle_id": "",
             }
@@ -151,6 +155,11 @@ def test_trial17_legacy_proposal_without_selected_lever_survives():
                 "patch_body": {"instruction_text": "x"},
                 "blame_set": ["main.demo.t.col"],
                 "target_qids": ["gs_009"],
+                # The lever validator returns None for empty levers
+                # (legacy back-compat); the Trial 22 gate is separate and
+                # still requires justification, so supply one to prove the
+                # empty-lever path itself is not what drops the proposal.
+                "single_lever_justification": "legacy back-compat survivor",
             }
         ]
     )

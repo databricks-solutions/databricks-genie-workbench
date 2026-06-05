@@ -39,6 +39,16 @@ class TerminalReason(StrEnum):
     """The selected AG's TerminalSignature is already in the
     forbidden set from a prior iteration."""
 
+    FALLBACK_NO_NEW_STRATEGY = "fallback_no_new_strategy"
+    """Trial 19 A6 — the AG regenerator (or strategist fallback path)
+    exhausted every candidate against the union of forbidden +
+    insufficient_repair_signatures sets. Emitted by
+    ``regenerate_action_groups_with_signatures`` (action_groups.py)
+    when every candidate it produced was filtered out, so the
+    iteration stops with an informative reason rather than burning
+    budget on ``ag_collision_with_forbidden_set`` for a candidate
+    we already know is dead."""
+
     # ── Proposal-stage terminations ────────────────────────────────
     NO_STRUCTURAL_CANDIDATE = "no_structural_candidate"
     """Mirrors ReasonCode.NO_STRUCTURAL_CANDIDATE — strategist asked
@@ -73,6 +83,15 @@ class TerminalReason(StrEnum):
     against the AG's target qid set."""
 
     # ── Apply / eval terminations ──────────────────────────────────
+    BUNDLE_PARTIAL_APPLY = "bundle_partial_apply"
+    """Phase 2 P2.3 — at least one but not all patches in a
+    ``bundle_id`` applied successfully. The atomic-apply transformer
+    rolls back any partial state and terminates the whole bundle so
+    that downstream survivor-selection treats the bundle as a single
+    unit (either all-or-none). Distinct from
+    ``ALL_SELECTED_PATCHES_DROPPED_BY_APPLIER`` which fires when zero
+    patches landed."""
+
     ALL_SELECTED_PATCHES_DROPPED_BY_APPLIER = (
         "all_selected_patches_dropped_by_applier"
     )
@@ -84,6 +103,46 @@ class TerminalReason(StrEnum):
     zero-applied-patches iterations when no more specific reason
     above applies."""
 
+    # ── Trial 22 W4 — actuator-aware iteration terminals ──────────
+    SLATE_COMPILER_EMPTY = "slate_compiler_empty"
+    """Trial 22 W4 — Stage 3 returned >= 1 proposal but the slate
+    compiler dropped every one. Stays closed-vocab; the root-cause
+    DropReason lives in :class:`IterationTerminalVerdict.top_drop_reason`
+    and ``drop_reason_counts``, NOT in a colon-suffixed enum value.
+    Replaces the catch-all ``NO_APPLIED_PATCHES`` whenever Stage 3
+    actually returned proposals — see Trial 21 postmortem (every
+    proposal dropped as ``bundle_invariant_violated``) for the
+    motivation."""
+
+    STAGE3_RETURNED_NONE = "stage3_returned_none"
+    """Trial 22 W4 — Stage 3 returned zero proposals. Distinct from
+    :attr:`PROPOSAL_GENERATION_EMPTY` (which carries the historical
+    semantic of "strategist emitted directives but proposal-gen
+    returned zero") in that this value pins the actuator-aware
+    "Stage 3 declined to emit anything" branch of
+    :func:`compute_iteration_terminal_reason`."""
+
+    APPLIER_NO_OUTCOMES = "applier_no_outcomes"
+    """Trial 22 W4 — proposals survived the compiler but the applier
+    produced zero outcomes (no apply markers). Distinct from
+    :attr:`ALL_SELECTED_PATCHES_DROPPED_BY_APPLIER` (every patch
+    rejected by Databricks API) in that this value pins the case
+    where the applier was never invoked or never returned outcomes
+    at all."""
+
+    KEPT_INSUFFICIENT = "kept_insufficient"
+    """Trial 20 B1 — patches applied AND survived the eval gate as
+    behaviour-unchanged-but-harmless. The state-machine
+    ``acceptance_gate`` transformer records
+    ``AcceptanceDecisionRecord.decision == "kept_insufficient"`` for
+    these candidates (Trial 18 contract). Trial 20 B2 promotes that
+    inner-loop decision to a typed outer-loop iteration terminal:
+    if any QID's SM final state recorded ``kept_insufficient`` for
+    the iteration, the iteration MUST emit ``KEPT_INSUFFICIENT``
+    here instead of the catch-all ``NO_APPLIED_PATCHES``. Trial 20
+    B3 makes Plan 12 treat this terminal as a survival failure
+    requiring a pivot (``_TERMINATIONS_REQUIRING_PIVOT``)."""
+
     # ── Post-eval terminations ─────────────────────────────────────
     TARGET_QIDS_NOT_IMPROVED = "target_qids_not_improved"
     """Patches applied AND aggregate gained, but the named target
@@ -91,6 +150,15 @@ class TerminalReason(StrEnum):
     rollback: this iteration MAY still be accepted under
     AcceptanceTier.ACCEPT_WITH_DEBT or
     AcceptanceTier.ACCEPT_WITH_ATTRIBUTION_DRIFT (Plan B)."""
+
+    AGGREGATE_GAIN_TARGET_DEBT = "aggregate_gain_target_debt"
+    """P4 C7 — aggregate accuracy gained AND some-but-not-all target
+    QIDs were fixed on the accepted iteration. The harness loop-
+    control treats this as a *continue* signal while budget remains:
+    the target set is not yet drained. Mirrors the new
+    ``OPTIMIZER_AGGREGATE_GAIN_TARGET_DEBT`` RunOutcome. e943's
+    canonical case — aggregate +8.2pp accepted, target gs_009 still
+    hard."""
 
     CONTENT_REGRESSION_ROLLBACK = "content_regression_rollback"
     """Iteration accepted then rolled back because an out-of-target

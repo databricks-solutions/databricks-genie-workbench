@@ -3,6 +3,31 @@
 The ledger preserves judge, SQL, and regression evidence as patchable
 RCA findings. It sits between evaluation/clustering and strategist
 proposal generation.
+
+Trial 19 B6 — back-compat boundary
+----------------------------------
+
+Trial 19 ships the LLM-first RCA flip end-to-end (Workstream B):
+
+* Stage 1 emits ``rca_kind_label: str`` (free-text label) and
+  ``intended_patch_shape: str`` (free-text repair intent). These are
+  the authoritative classifications consumed by Stage 2 / Stage 3
+  prompts and by ``rca_card_builder.dominant_root_cause_label`` (B1)
+  /  ``intended_patch_shape_for_root_cause`` (B2).
+* The closed :class:`RcaKind` enum below is **back-compat only** —
+  retained so the ledger can still hydrate pre-Trial-19 Delta rows
+  whose ``rca_kind`` column carries the serialized enum value (e.g.
+  ``"top_n_cardinality_collapse"``). All new writes flow through the
+  free-text label.
+* :func:`parse_rca_kind_or_label` is the canonical shim — read
+  pre-Trial-19 rows through it; ALWAYS pass the resulting string
+  forward (never re-enumerate). When the Trial 19 ``GSO_TRIAL19_LLM_
+  FIRST_RCA`` flag is OFF, callsites still consume :class:`RcaKind`
+  for byte-stable replay of pre-Trial-19 fixtures.
+
+Do NOT add new ``RcaKind`` enum members. Do NOT extend the closed
+dicts in :mod:`rca_card_builder` (``_INTENDED_PATCH_SHAPE``,
+``_FORBIDDEN_FAMILIES``) — those are the same back-compat boundary.
 """
 
 from __future__ import annotations
@@ -25,9 +50,28 @@ from genie_space_optimizer.optimization.feature_mining import (
 
 
 class RcaKind(str, Enum):
-    # DEPRECATED (Plan 11): prefer rca_kind_label: str (free text) emitted
-    # by Stage 1 of the LLM-first dispatch path. Kept for back-compat reads
-    # of pre-Plan-11 Delta rows. Deleted in PR 4.
+    """Back-compat reader for pre-Trial-19 root-cause classifications.
+
+    Trial 19 B6 — superseded by Stage 1's free-text
+    ``rca_kind_label`` (Workstream B5). Reads of pre-Trial-19 Delta
+    rows hydrate through :func:`parse_rca_kind_or_label`, which
+    always returns a ``str``. Do NOT add new members; new failure
+    modes are named by the LLM at Stage 1.
+
+    The enum is consumed by:
+      * ``rca_card_builder._INTENDED_PATCH_SHAPE`` / ``_FORBIDDEN_FAMILIES``
+        — back-compat dicts that B2 / B3 supersede via the LLM-emitted
+        ``intended_patch_shape`` string and the Stage 3 prompt's
+        patch-family-fit rules.
+      * ``rca_card_builder.dominant_root_cause`` — kept as an alias
+        that returns ``RcaKind.UNKNOWN`` only when ``GSO_TRIAL19_LLM_
+        FIRST_RCA=0``; otherwise B1's ``dominant_root_cause_label``
+        returns the free-text string.
+
+    Removed once every pre-Trial-19 Delta row has been re-classified
+    by a Trial-19 Stage 1 run.
+    """
+
     METRIC_VIEW_ROUTING_CONFUSION = "metric_view_routing_confusion"
     MEASURE_SWAP = "measure_swap"
     CANONICAL_DIMENSION_MISSED = "canonical_dimension_missed"

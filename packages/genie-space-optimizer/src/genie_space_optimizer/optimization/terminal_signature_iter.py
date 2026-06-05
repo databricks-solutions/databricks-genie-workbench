@@ -51,4 +51,14 @@ def terminal_signature_for_iteration(
         lever_set=iter_locals.get("levers") or (),
         target_qids=iter_locals.get("target_qids") or (),
         terminal_reason=terminal_reason,
+        # Phase 2 P2.5 — forward the kit-aware fields when the
+        # acceptance gate has stamped them on the iter-locals dict.
+        # ``prior_lever_set`` is the kit composition the LLM
+        # actually emitted (lever_id strings) and ``prior_patch_family``
+        # is the patch_family of the patch that triggered the
+        # terminal. Empty defaults preserve byte-stable behaviour for
+        # pre-P2.5 harness callsites that have not yet stamped these
+        # keys.
+        prior_lever_set=iter_locals.get("prior_lever_set") or (),
+        prior_patch_family=iter_locals.get("prior_patch_family") or "",
     )

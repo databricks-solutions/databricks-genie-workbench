@@ -42,6 +42,20 @@ def _decline_envelope() -> str:
     })
 
 
+def _batched_envelope(qids: tuple[str, ...]) -> str:
+    """A single batched-call response (Phase 1 P1.2) whose ``evidences``
+    array carries one entry per diagnosed qid. Qids omitted here fall
+    through to the caller's per-QID fallback."""
+    return json.dumps({
+        "result": {
+            "evidences": [
+                json.loads(_success_envelope(q))["result"] for q in qids
+            ],
+        },
+        "declined": None,
+    })
+
+
 def _make_client_responding_with(envelope_by_qid_order: list[str]) -> MagicMock:
     """Returns a stub client whose chat.completions.create cycles through
     the provided envelopes in order — one per call."""
@@ -62,10 +76,12 @@ def _make_client_responding_with(envelope_by_qid_order: list[str]) -> MagicMock:
 
 def test_driver_returns_dict_keyed_by_successful_qids() -> None:
     qids = ("gs_001", "gs_002", "gs_003")
+    # Phase 1 P1.2 batch-first driver (qid count >= BATCH_RCA_MIN_QIDS):
+    # one batched call diagnoses gs_001 and gs_003 and omits gs_002; the
+    # only uncovered qid (gs_002) then declines on the per-QID fallback.
     envelopes = [
-        _success_envelope("gs_001"),
+        _batched_envelope(("gs_001", "gs_003")),
         _decline_envelope(),
-        _success_envelope("gs_003"),
     ]
     client = _make_client_responding_with(envelopes)
     with patch.object(optimizer, "_get_openai_client", return_value=client):

@@ -65,6 +65,9 @@ def test_attribution_drift_branch_off_legacy_rejection_preserved(monkeypatch) ->
 
 def test_attribution_drift_branch_on_flips_to_accepted_with_debt(monkeypatch) -> None:
     """Flag on (default after T11.C) → ccf1d60d shape flips to accepted_with_attribution_drift_and_debt."""
+    # Trial 23 W2 demotes drift accepts to non-deployable by default;
+    # pin the legacy (rollback) contract for this drift-branch test.
+    monkeypatch.setenv("GSO_TRIAL23_LOOP_REPAIR", "0")
     monkeypatch.delenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", raising=False)
     monkeypatch.delenv("GSO_PARTIAL_HARVEST_WITH_DEBT", raising=False)
 
@@ -89,6 +92,9 @@ def test_attribution_drift_branch_only_fires_after_partial_harvest_rejects(
     rejects on min_target_clusters_fixed, so the drift branch fires.
     On a target-fixed shape, partial-harvest would fire first and the
     drift branch would not see the rejection."""
+    # Trial 23 W2 demotes drift accepts to non-deployable by default;
+    # pin the legacy (rollback) contract for this drift-branch test.
+    monkeypatch.setenv("GSO_TRIAL23_LOOP_REPAIR", "0")
     monkeypatch.setenv("GSO_ATTRIBUTION_DRIFT_WITH_DEBT", "1")
     monkeypatch.setenv("GSO_PARTIAL_HARVEST_WITH_DEBT", "1")
 

@@ -8,9 +8,11 @@ Override semantics:
   * Sub-flag env var FALSY   → sub-flag OFF regardless of umbrella
   * Sub-flag env var UNSET   → sub-flag defaults to umbrella state
 
-The canary deploy sets ``GSO_PLAN12_LIVE_ALL=true`` once and all
-seven Plan 12 live-wires activate together. If a specific wire
-misbehaves, the operator overrides only that sub-flag.
+The canary deploy sets ``GSO_PLAN12_LIVE_ALL=true`` once and the
+umbrella-gated Plan 12 live-wires activate together. If a specific
+wire misbehaves, the operator overrides only that sub-flag.
+(``GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE`` was promoted to
+default-ON by Track A / A1 and is no longer umbrella-gated.)
 """
 import os
 from unittest.mock import patch
@@ -33,10 +35,12 @@ SUB_FLAGS = (
         "GSO_PLAN12_LIVE_EVIDENCE_ROUTING",
         "plan12_live_evidence_routing_enabled",
     ),
-    (
-        "GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE",
-        "plan12_live_proposal_attempts_derive_enabled",
-    ),
+    # NOTE: GSO_PLAN12_LIVE_PROPOSAL_ATTEMPTS_DERIVE was PROMOTED out of
+    # the umbrella to default-ON by Track A / A1 (the documented
+    # promotion path: "individual sub-flags should be promoted to
+    # _flag_default_on in their own functions and the umbrella
+    # retired"). It is no longer umbrella-gated, so it is intentionally
+    # absent from this list.
     (
         "GSO_PLAN12_LIVE_RUN_SUMMARY_EVAL_DERIVE",
         "plan12_live_run_summary_eval_derive_enabled",

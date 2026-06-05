@@ -1,0 +1,212 @@
+{
+  "fixture_id": "trial22_postmortem_replay_run_e943",
+  "source_postmortem_run": "e94376a3-d8a6-4570-a605-9fe231e5f99c",
+  "source_attempt_id": "231749822620014",
+  "source_marker_digest": "docs/runid_analysis/e94376a3-d8a6-4570-a605-9fe231e5f99c/postmortem_231749822620014.md",
+  "scenario": "accepted_full_eval_conflicts_with_optimizer_no_candidates_ledger_contradiction",
+  "headline_failure": "GSO_FULL_EVAL_V1.accepted=true AND candidate_accuracy=95.8 (+8.3pp) AND len(GSO_PATCH_OUTCOME_V1)==0 AND GSO_OPTIMIZER_OUTCOME_V1=OPTIMIZER_NO_CANDIDATES. Two ledgers disagree silently because no lineage invariant exists.",
+  "h001_positive_control_fixture": {
+    "scenario": "e943_h001_cluster_stage3_prompt_already_works_dont_regress_it",
+    "cluster_id": "H001_e943_cluster",
+    "builder": "h001_cluster",
+    "iteration": 0,
+    "sample_in_budget_breakdown": {
+      "cacheable_block_tokens": 1820,
+      "cap": 40000,
+      "system_msg_tokens": 2790,
+      "total_tokens": 6940,
+      "user_prompt_tokens": 2330,
+      "over_cap": false,
+      "observe_only": false
+    },
+    "expected_after_trial22_w7": {
+      "sub_cluster_split_needed": false,
+      "total_tokens_max": 7000,
+      "split_marker_must_not_fire": "GSO_TRIAL22_STAGE3_SUBCLUSTER_SPLIT_V1",
+      "rationale": "W7 must touch only the RCA-subcluster builder. The H001 cluster builder already produces ~7k token prompts and works correctly; it MUST stay below the cap and MUST NOT emit a split marker."
+    }
+  },
+  "lineage_contradiction_fixture": {
+    "scenario": "full_eval_accepted_without_corresponding_patch_outcome_or_admission_decision",
+    "optimization_run_id": "e94376a3-d8a6-4570-a605-9fe231e5f99c",
+    "iteration": 14,
+    "full_eval_rows": [
+      {
+        "marker": "GSO_FULL_EVAL_V1",
+        "optimization_run_id": "e94376a3-d8a6-4570-a605-9fe231e5f99c",
+        "iteration": 14,
+        "ag_id": "ag_e943_iter14_001",
+        "candidate_id": "cand_e943_iter14_001",
+        "accepted": true,
+        "candidate_accuracy": 95.8,
+        "baseline_accuracy": 87.5,
+        "accuracy_delta_pp": 8.3,
+        "target_qids": ["e943_gs_009"]
+      }
+    ],
+    "patch_outcome_rows": [],
+    "admission_decision_rows": [],
+    "expected_after_trial22_w5": {
+      "lineage_verdict": "orphan_acceptance",
+      "provenance_on_full_eval": "orphan_acceptance",
+      "scoreboard_best_accuracy_stays_at_baseline": 87.5,
+      "marker_emitted": "GSO_TRIAL22_LINEAGE_VIOLATION_V1",
+      "canonical_key_audit_marker": "GSO_TRIAL22_LINEAGE_KEY_AUDIT_V1"
+    }
+  },
+  "lineage_positive_control_fixture": {
+    "scenario": "full_eval_accepted_with_matching_patch_and_admission_rows_must_not_be_orphan",
+    "optimization_run_id": "synthetic_positive_e943",
+    "iteration": 14,
+    "full_eval_rows": [
+      {
+        "marker": "GSO_FULL_EVAL_V1",
+        "optimization_run_id": "synthetic_positive_e943",
+        "iteration": 14,
+        "ag_id": "ag_synth_001",
+        "candidate_id": "cand_synth_001",
+        "accepted": true,
+        "candidate_accuracy": 95.8,
+        "baseline_accuracy": 87.5,
+        "accuracy_delta_pp": 8.3
+      }
+    ],
+    "patch_outcome_rows": [
+      {
+        "marker": "GSO_PATCH_OUTCOME_V1",
+        "optimization_run_id": "synthetic_positive_e943",
+        "iteration": 14,
+        "ag_id": "ag_synth_001",
+        "candidate_id": "cand_synth_001",
+        "applied": true
+      }
+    ],
+    "admission_decision_rows": [
+      {
+        "marker": "GSO_ADMISSION_DECISION_V1",
+        "optimization_run_id": "synthetic_positive_e943",
+        "iteration": 14,
+        "ag_id": "ag_synth_001",
+        "candidate_id": "cand_synth_001",
+        "decision": "admitted"
+      }
+    ],
+    "expected_after_trial22_w5": {
+      "lineage_verdict": "ok",
+      "provenance_on_full_eval": "",
+      "scoreboard_best_accuracy": 95.8
+    }
+  },
+  "trial23_phase1_replay": {
+    "scenario": "global_accuracy_rose_to_95_8_via_attribution_drift_while_the_named_target_e943_gs_009_stayed_hard_so_acceptance_must_be_net_win_non_deployable",
+    "note": "e943 reported candidate_accuracy=95.8 (+8.3pp) but the gain came from an out-of-target QID improving; the named target stayed hard (unresolved target debt). W2 demotes this attribution-drift accept to net_win_non_deployable: the global delta is recorded as evidence but the candidate is NOT deployable because the target was never fixed.",
+    "baseline_accuracy": 87.5,
+    "candidate_accuracy": 95.8,
+    "target_qids": ["e943_gs_009"],
+    "pre_rows": [
+      {"question_id": "e943_gs_009", "result_correctness": "no", "arbiter": "ground_truth_correct"},
+      {"question_id": "e943_gs_016", "result_correctness": "no", "arbiter": "ground_truth_correct"},
+      {"question_id": "e943_gs_001", "result_correctness": "yes", "arbiter": "both_correct"}
+    ],
+    "post_rows": [
+      {"question_id": "e943_gs_009", "result_correctness": "no", "arbiter": "ground_truth_correct"},
+      {"question_id": "e943_gs_016", "result_correctness": "yes", "arbiter": "both_correct"},
+      {"question_id": "e943_gs_001", "result_correctness": "yes", "arbiter": "both_correct"}
+    ],
+    "expected_after_trial23_w2": {
+      "reason_code": "net_win_non_deployable",
+      "accepted": false,
+      "unresolved_target_debt_qids": ["e943_gs_009"],
+      "delta_pp_recorded_as_evidence": 8.3
+    }
+  },
+  "trial23_w10_replay": {
+    "scenario": "phase_h_assembly_failed_plus_upload_failed_plus_stale_scoreboard_yet_task_SUCCESS_and_deploy_ran",
+    "note": "e943 (task 339587654249993) raised GSO_BUNDLE_ASSEMBLY_FAILED_V1 (AttributeError 'list' object has no attribute 'get'), reported bundle_status=assembly_failed + phase_h_upload_status=upload_failed, and scoreboard.json was stale (accuracy_delta_pp=0.0) vs run_summary.json (8.3) — yet the Databricks task returned SUCCESS and deploy ran. W10 keeps the optimizer task SUCCESS (Trial 21 W9 contract) but the deploy gate MUST mark the candidate non-deployable. The source-of-truth harms: (1) the build_decision_trace_all 'list'.get crash aborted clean assembly; (2) the deploy gate shipped a candidate built from a busted/stale bundle.",
+    "loop_out": {
+      "optimizer_outcome": "OPTIMIZER_TRIED_INSUFFICIENT_GAIN",
+      "phase_h_upload_status": "upload_failed",
+      "scoreboard_stale": true,
+      "contract_health_summary": {
+        "merge_gate_status": "merge_gate_blocked",
+        "bundle_status": "assembly_failed"
+      }
+    },
+    "expected_after_trial23_w10": {
+      "optimizer_task_status": "success",
+      "candidate_deploy_eligible": false,
+      "deploy_skip_reason": "contract_health_blocked"
+    },
+    "w10_isolated_upload_failure": {
+      "note": "Isolates the NEW W10 coverage: even when contract-health is otherwise clean (healthy + complete), a failed Phase H upload + stale scoreboard must block deploy when the flag is on, and must NOT block when the flag is off (legacy Trial 21/22 posture). This is the coverage e943 lacked.",
+      "loop_out": {
+        "optimizer_outcome": "OPTIMIZER_IMPROVED",
+        "phase_h_upload_status": "upload_failed",
+        "scoreboard_stale": true,
+        "contract_health_summary": {
+          "merge_gate_status": "healthy",
+          "bundle_status": "complete"
+        }
+      },
+      "expected_flag_on": {
+        "candidate_deploy_eligible": false,
+        "deploy_skip_reason": "contract_health_blocked"
+      },
+      "expected_flag_off": {
+        "candidate_deploy_eligible": true,
+        "deploy_skip_reason": ""
+      }
+    }
+  },
+  "trial24_kit_at_source_replay": {
+    "scenario": "extra_defensive_filter_corrective_instruction_died_as_lone_single_lever_before_any_trial23_repair_hook",
+    "note": "The faithful e943 replay (target airline_ticketing_and_fare_analysis_gs_009, RCA extra_defensive_filter) proposed a corrective add_instruction (not the inert add_example_sql) but emitted it as a LONE lever-5a. _check_required_assets dropped it as UNJUSTIFIED_SINGLE_LEVER (empty justification) and its bundle sibling cascaded out -> survivor_count=0 -> stage3_returned_none. Flag-on/flag-off failed identically; it is NOT a Trial 23 regression. Trial 24 forces the {lever-5a + lever-6} kit at source (KIT_FOR_RCA) and waives the per-proposal justification for kit members, so the corrective instruction + grounded snippet both survive the slate.",
+    "rca_kind": "extra_defensive_filter",
+    "target_qid": "e943_gs_009",
+    "kit": ["lever-5a", "lever-6"],
+    "bundle_id": "e943_kit_bundle",
+    "members": [
+      {
+        "intent_id": "e943_instruction",
+        "patch_type": "add_instruction",
+        "justification": "",
+        "implicated_assets": [],
+        "example_sql": ""
+      },
+      {
+        "intent_id": "e943_snippet",
+        "patch_type": "add_sql_snippet_filter",
+        "justification": "override the defensive WHERE clause Genie injected",
+        "implicated_assets": ["main.airline.fares.status"],
+        "example_sql": "WHERE booking_status <> 'cancelled'"
+      }
+    ],
+    "expected_flag_on": {
+      "surviving_intent_ids": ["e943_instruction", "e943_snippet"],
+      "instruction_drop_reason": ""
+    },
+    "expected_flag_off": {
+      "surviving_intent_ids": [],
+      "instruction_drop_reason": "unjustified_single_lever"
+    }
+  },
+  "trial24_followons_filter_removal_solo_replay": {
+    "scenario": "extra_defensive_filter_degrades_to_grounded_instruction_solo_after_noop_snippet_dropped_at_synthesis",
+    "note": "Follow-on B: extra_defensive_filter is a filter-REMOVAL RCA, so the positive lever-6 snippet companion is a no-op 1=1/TRUE the producer validator declines (snippet_noop_suppression). At synthesis the snippet is dropped and the corrective add_instruction is emitted SOLO (bundle_id cleared) with a grounded justification (FB2: from expected_behavioral_change). This bright-line replays the DEGRADED output through compile_slate: flag-on the grounded solo instruction survives (no cascade); flag-off (no FB2 grounding) the lone instruction drops as unjustified_single_lever.",
+    "rca_kind": "extra_defensive_filter",
+    "target_qid": "e943_gs_009",
+    "intent_id": "e943_instruction_solo",
+    "patch_type": "add_instruction",
+    "selected_lever": "lever-5a",
+    "implicated_assets": ["main.airline.fares.status"],
+    "grounded_justification": "stop emitting the unrequested booking_status <> 'cancelled' defensive filter",
+    "expected_flag_on": {
+      "surviving_intent_ids": ["e943_instruction_solo"],
+      "instruction_drop_reason": ""
+    },
+    "expected_flag_off": {
+      "surviving_intent_ids": [],
+      "instruction_drop_reason": "unjustified_single_lever"
+    }
+  }
+}

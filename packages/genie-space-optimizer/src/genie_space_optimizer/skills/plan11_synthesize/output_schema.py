@@ -49,9 +49,33 @@ class ProposalItem(LLMOutputContract):
     # Defaults to empty string for backward compatibility with
     # pre-Trial-17 prompts.
     selected_lever: str = ""
+    # ── Phase 2 P2.1 — Lever Kit Contract ───────────────────────────
+    # ``selected_levers`` is the PRIMARY lever-selection channel — a
+    # CLOSED list of lever_ids the proposal recruits as a kit. The
+    # legacy single-string ``selected_lever`` remains for backward
+    # compatibility but is treated as a fallback shape:
+    #   * If ``selected_levers`` is non-empty, it is authoritative and
+    #     ``selected_lever`` is ignored.
+    #   * If ``selected_levers`` is empty but ``selected_lever`` is
+    #     populated, the proposal is treated as a 1-element kit (the
+    #     legacy single-lever shape).
+    # The Stage 3 prompt instructs the LLM to emit ``selected_levers``
+    # with EXACTLY ONE entry for genuinely single-lever diagnoses, OR
+    # TWO+ entries for diagnoses whose KIT_FOR_RCA companion map
+    # demands a kit (see ``stages/action_groups.py``, P2.2). Each
+    # entry MUST be drawn from the closed lever_id set.
+    selected_levers: list[str] = Field(default_factory=list)
     expected_behavioral_change: str = ""
     fallback_lever: str = ""
     bundle_id: str = ""
+    # ── Phase 1 P1.1 — Stage 3 batching across clusters ─────────────
+    # When the synthesizer batches multiple failure clusters into a
+    # single LLM call, the LLM tags each proposal with the
+    # ``cluster_id`` it belongs to so the post-processor can split
+    # proposals back into per-cluster ``ClusterSynthesisResult``
+    # envelopes. Default empty string keeps the single-cluster path
+    # backward-compatible (cluster_id is implicit there).
+    cluster_id: str = ""
 
     @field_validator(*_SYNTHESIZE_FIELD_CAPS.keys(), mode="before")
     @classmethod

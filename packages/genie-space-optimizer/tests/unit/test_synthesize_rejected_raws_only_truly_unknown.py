@@ -54,6 +54,10 @@ def _mixed_response() -> LlmReasoningResponse:
                     "patch_body": {"instruction_text": "## Notes\n- doc"},
                     "blame_set": ["catalog.schema.orders.revenue"],
                     "target_qids": ["gs_009"],
+                    # Trial 22 required-assets gate drops solo levers with
+                    # no justification; this test pins the valid-survivor
+                    # "synthesized" path, so the survivor must be grounded.
+                    "single_lever_justification": "judge cited revenue gap",
                 },
                 {
                     "intent_name": "bad_one",

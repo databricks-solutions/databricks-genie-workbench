@@ -50,7 +50,13 @@ def test_safe_when_high_collateral_risk_unset_and_dependents_within_threshold() 
     assert decision["reason"] == "within_threshold"
 
 
-def test_safe_when_no_passing_dependents_field() -> None:
+def test_safe_when_no_passing_dependents_field(monkeypatch) -> None:
+    # Legacy fail-open branch: a MISSING ``passing_dependents`` field is
+    # safe-by-default only when the Trial 20 E2 mandatory gate is off.
+    # With the gate on (the default), a missing stamp is treated as a
+    # plumbing regression and fails closed (covered by the E2 tests);
+    # the empty-list safe path is covered separately below.
+    monkeypatch.setenv("GSO_TRIAL20_BLAST_RADIUS_MANDATORY", "0")
     patch = {"type": "add_instruction"}
     decision = patch_blast_radius_is_safe(
         patch,

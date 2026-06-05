@@ -41,6 +41,7 @@ import pytest
 
 from tests.integration.sm_forward_fixtures import (
     expected_hard_qids,
+    forward_metadata_snapshot,
     load_production_hydration_rows,
     parse_patch_outcome_markers,
     parse_stage3_synthesis_markers,
@@ -114,6 +115,7 @@ def _run_with_actionable_upstream_and_empty_stage3(
                 run_id="stage3-empty-synthesis-gate",
                 run_root=run_root,
                 workspace_client=None,
+                metadata_snapshot=forward_metadata_snapshot(rows),
                 forbidden_signatures=(),
             )
         except TapeExhaustedError:

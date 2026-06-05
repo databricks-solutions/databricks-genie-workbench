@@ -18,13 +18,17 @@ The workbench v1.6 plan added:
     RC3 termination path now emits it for every applier no-op.
 
 This module covers the 4 scenarios the plan lists for the
-``HARD_QID_SEEN → ACCEPTED`` pipeline:
-    1. Tape with target-fixed row → acceptance_gate ACCEPTS.
-    2. Tape with target-unchanged row → acceptance_gate ROLLS BACK.
+``HARD_QID_SEEN → ACCEPTED`` pipeline. Trial 18
+(``GSO_TRIAL18_ACCEPTANCE_OVERHAUL``, default-ON) reshaped the
+no-behavioural-gain boundary: instead of rolling back, the gate keeps
+the already-applied config live in the ``kept_insufficient`` lane
+(funnel stage ACCEPTED, but not counted as a gain) and emits an
+``insufficient_repair_signature``:
+    1. Tape with target-fixed row → acceptance_gate ACCEPTS (true gain).
+    2. Tape with target-unchanged row → kept_insufficient → ACCEPTED.
     3. Tape with a non-matching row ordered before the target row
        (pins canonical-QID join, not index-join).
-    4. Empty tape → acceptance_gate ROLLS BACK with the Trial 15
-       baseline fall-back.
+    4. Empty tape → kept_insufficient → ACCEPTED (post == pre baseline).
 
 Each scenario builds on the committed production-replay corpus so the
 Stage 1/2/3 LLM tapes see real-shaped rows (question text, blame set,
@@ -176,6 +180,19 @@ def _run_workbench(
     return artifacts, progress
 
 
+def _accepted_for(artifacts, qid: str):
+    """Return the ``AcceptanceDecisionRecord`` for ``qid`` from the SM
+    final states, or ``None`` if the qid never reached the gate. The
+    Trial 18 ``kept_insufficient`` decision (and its
+    ``insufficient_repair_signature``) is only carried on this record —
+    ``StageProgress`` exposes deepest_stage/terminal_reason only.
+    """
+    for s in artifacts.final_states:
+        if str(s.qid) == qid:
+            return getattr(s, "accepted", None)
+    return None
+
+
 # ── Scenarios ───────────────────────────────────────────────────────
 
 
@@ -220,13 +237,20 @@ def test_workbench_tape_with_target_unchanged_row_rolls_back(
     tmp_path: Path,
 ) -> None:
     """Scenario 2 — tape returns the same score the baseline had
-    (0.0 → 0.0). ``acceptance_gate`` rolls back with
-    ``target_unchanged: post_score <= pre_score`` and the funnel
-    report's rolled_back counter ticks.
+    (0.0 → 0.0).
 
-    Production analog: applier deployed the patch but the eval did
-    not improve. We want the workbench to surface that distinctly
-    from "no_post_apply_row_for_qid".
+    Up to Trial 17 ``acceptance_gate`` rolled this back with
+    ``target_unchanged: post_score <= pre_score``. Trial 18
+    (``GSO_TRIAL18_ACCEPTANCE_OVERHAUL``, default-ON) supersedes that:
+    a patch that lands cleanly but shows no behavioural gain is kept
+    live in the ``kept_insufficient`` lane (funnel stage ACCEPTED, but
+    NOT counted as a win) and the gate emits an
+    ``insufficient_repair_signature`` carrying the pivot tokens the
+    strategist consumes next iteration.
+
+    Production analog: applier deployed the patch but the eval did not
+    improve — the config stays live and the strategist is told to
+    pivot rather than re-try the same lever.
     """
     bundle = _bundle_from_replay(
         post_apply_eval_tape=(
@@ -238,16 +262,24 @@ def test_workbench_tape_with_target_unchanged_row_rolls_back(
     )
     artifacts, progress = _run_workbench(bundle, tmp_path)
 
-    terminal_reasons = {p.qid: p.terminal_reason for p in progress}
-    assert _REPLAY_QID in terminal_reasons, (
-        f"qid {_REPLAY_QID!r} missing from progress {progress!r}"
+    deepest = {p.qid: p.deepest_stage for p in progress}
+    assert deepest.get(_REPLAY_QID) == "accepted", (
+        f"Trial 18 keeps the applied config live in the kept_insufficient "
+        f"lane (ACCEPTED); got deepest_stage={deepest.get(_REPLAY_QID)!r}, "
+        f"terminal_reason="
+        f"{next((p.terminal_reason for p in progress if p.qid == _REPLAY_QID), '')!r}"
     )
-    assert terminal_reasons[_REPLAY_QID].startswith("target_unchanged:"), (
-        f"acceptance_gate must roll back with target_unchanged; got "
-        f"terminal_reason={terminal_reasons[_REPLAY_QID]!r}"
+    acc = _accepted_for(artifacts, _REPLAY_QID)
+    assert acc is not None and acc.decision == "kept_insufficient", (
+        f"expected kept_insufficient decision, got {acc!r}"
     )
-    _, rolled_back = _accepted_rolled_back_counts(progress)
-    assert rolled_back >= 1
+    sig = acc.insufficient_repair_signature or ""
+    assert "insufficient" in sig, f"sig missing insufficient token: {sig!r}"
+    assert "lever-" in sig, f"sig missing lever token: {sig!r}"
+    # kept_insufficient is ACCEPTED-not-a-gain: the report's accepted
+    # counter ticks; it is no longer surfaced as a rollback.
+    accepted, _ = _accepted_rolled_back_counts(progress)
+    assert accepted >= 1
 
 
 @pytest.mark.workbench
@@ -302,10 +334,14 @@ def test_workbench_with_empty_tape_falls_back_to_target_unchanged(
 ) -> None:
     """Scenario 4 — bundle has no ``post_apply_eval_tape``; the
     workbench stub returns the baseline score and
-    ``ctx.post_apply_eval_rows`` is empty. This is the Trial 15
-    behaviour — acceptance_gate rolls back with
-    ``target_unchanged:``. The test pins it so workbench v1.6 is
-    a strict superset of v1.5 — no scenario regresses.
+    ``ctx.post_apply_eval_rows`` is empty (post == pre).
+
+    Up to Trial 17 this rolled back with ``target_unchanged:``. Under
+    Trial 18 (``GSO_TRIAL18_ACCEPTANCE_OVERHAUL``, default-ON) the
+    empty-tape / no-behavioural-delta case is the canonical
+    ``kept_insufficient`` lane: the already-applied config is kept live
+    (ACCEPTED, not a gain) and the gate emits an
+    ``insufficient_repair_signature`` with ``behavior=unchanged``.
     """
     bundle = _bundle_from_replay(
         post_apply_eval_tape=(),
@@ -313,16 +349,19 @@ def test_workbench_with_empty_tape_falls_back_to_target_unchanged(
     artifacts, progress = _run_workbench(bundle, tmp_path)
 
     deepest = {p.qid: p.deepest_stage for p in progress}
-    terminal_reasons = {p.qid: p.terminal_reason for p in progress}
     assert _REPLAY_QID in deepest
-    # Empty tape means the workbench stub returns the baseline score
-    # and ``ctx.post_apply_eval_rows`` is empty — acceptance_gate
-    # rolls back with target_unchanged. The qid must not reach
-    # ``accepted``.
-    assert deepest.get(_REPLAY_QID) != "accepted", (
-        f"empty-tape qid must not reach ACCEPTED; got "
+    assert deepest.get(_REPLAY_QID) == "accepted", (
+        f"Trial 18 keeps the empty-tape config live in the "
+        f"kept_insufficient lane (ACCEPTED); got "
         f"deepest_stage={deepest.get(_REPLAY_QID)!r}, "
-        f"terminal_reason={terminal_reasons.get(_REPLAY_QID)!r}"
+        f"terminal_reason="
+        f"{next((p.terminal_reason for p in progress if p.qid == _REPLAY_QID), '')!r}"
     )
+    acc = _accepted_for(artifacts, _REPLAY_QID)
+    assert acc is not None and acc.decision == "kept_insufficient", (
+        f"expected kept_insufficient decision, got {acc!r}"
+    )
+    sig = acc.insufficient_repair_signature or ""
+    assert "insufficient" in sig, f"sig missing insufficient token: {sig!r}"
     accepted, _ = _accepted_rolled_back_counts(progress)
-    assert accepted == 0
+    assert accepted >= 1

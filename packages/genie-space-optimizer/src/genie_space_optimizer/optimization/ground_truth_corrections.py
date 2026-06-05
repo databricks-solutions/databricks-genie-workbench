@@ -97,6 +97,41 @@ def is_gt_correction_candidate(row: dict[str, Any]) -> bool:
     )
 
 
+# Trial 19 C3 — additional pending-review trigger: the arbiter said
+# BOTH answers are correct, but raw byte-match was 0. This is a strong
+# signal that GT is missing an alternative valid form (e.g. a permitted
+# rewrite the arbiter recognizes). Distinct from the legacy
+# ``genie_correct`` trigger because the arbiter is NOT overriding the
+# GT — it is just confirming both shapes are valid. We capture these
+# rows for reviewer attention but never auto-mutate the corpus.
+_TRIAL19_BOTH_CORRECT_VERDICT: str = "both_correct"
+
+
+def is_trial19_arbiter_correct_gt_disagrees(row: dict[str, Any]) -> bool:
+    """Return ``True`` when the row is arbiter-correct under
+    ``both_correct`` semantics AND raw byte-match disagrees with GT.
+
+    Trial 19 C1 / C3 — these rows are excluded from the hard QID list
+    at the dispatcher entry (C1) and captured to ``pending_review``
+    via ``write_gt_correction_candidates`` (C3). The byte-match
+    discrepancy with ``both_correct`` indicates the GT corpus is
+    likely missing an equivalently-valid alternative — surfacing it
+    in the review queue lets a human decide whether to add the
+    alternative or keep the existing GT.
+
+    Case-insensitive on both fields.
+
+    Distinct from :func:`is_gt_correction_candidate` which fires on
+    ``arbiter=genie_correct`` (the arbiter overrode the GT). Trial 19
+    fires on ``arbiter=both_correct`` (no override; just disagreement
+    with byte-match), so the two predicates never overlap.
+    """
+    return (
+        _result_correctness(row) in _RC_FALSE_VALUES
+        and _arbiter(row) == _TRIAL19_BOTH_CORRECT_VERDICT
+    )
+
+
 def is_arbiter_rescued(row: dict[str, Any]) -> bool:
     """Return True when the arbiter overrode at least one judge to mark the row correct.
 

@@ -25,6 +25,32 @@ This module is intentionally narrow: it knows about RcaKind,
 RCACard, and ASI metadata shape. Cluster-level orchestration
 (self-grounding, LLM, post-condition assertions) is handled by the
 top-level ``optimization.rca.build_rca_card`` integration.
+
+Trial 19 B6 — back-compat boundary
+----------------------------------
+
+The closed dicts ``_INTENDED_PATCH_SHAPE`` and ``_FORBIDDEN_FAMILIES``
+plus the ``RcaKind`` enum entries in this module are **back-compat
+readers only**. Trial 19 Workstream B promotes Stage 1's free-text
+``rca_kind_label`` and ``intended_patch_shape`` strings to the
+authoritative classifications consumed by Stage 2 / Stage 3 prompts:
+
+* B1 — ``dominant_root_cause_label`` aggregates the free-text labels
+  for the cluster (the legacy ``dominant_root_cause`` is preserved
+  as a back-compat alias that returns ``RcaKind.UNKNOWN`` when the
+  flag is OFF).
+* B2 — ``intended_patch_shape_for_root_cause`` prefers the LLM-
+  emitted card string when present, falling back to
+  ``_INTENDED_PATCH_SHAPE`` only for pre-Trial-19 Delta rows.
+* B3 — The Stage 3 prompt's "patch-family fit rules" section
+  supersedes ``allowed_and_forbidden_patch_families`` for new rows;
+  the dict survives only to gate replays of pre-Trial-19 fixtures.
+
+When the Trial 19 ``GSO_TRIAL19_LLM_FIRST_RCA`` flag is OFF, every
+consumer falls back to the closed dicts + ``RcaKind`` enum here for
+byte-stable replay of pre-Trial-19 fixtures. Do NOT add new entries
+to either dict; new failure modes / repair intents / family
+constraints are LLM-emitted and read verbatim.
 """
 
 from __future__ import annotations
@@ -42,43 +68,135 @@ from genie_space_optimizer.optimization.rca import (
 )
 
 
+_UNKNOWN_LABEL = "unknown"
+
+
+def _extract_rca_label(metadata: Mapping[str, object]) -> str:
+    """Extract an authoritative free-text rca_kind_label string from ASI metadata.
+
+    Trial 19 B1 — preference order:
+
+      1. Stage 1's LLM-emitted ``rca_kind_label`` (Trial 19 B5).
+      2. Pre-Trial-19 ``rca_kind`` field, normalized via
+         ``_safe_rca_kind`` and returned as ``.value`` (so old Delta
+         rows still produce a non-empty label).
+      3. Empty string when neither is present (caller treats as
+         "unknown" but the empty marker lets the aggregator
+         distinguish "the LLM declined" from "no LLM ran yet").
+    """
+    if not isinstance(metadata, dict):
+        return ""
+    label_raw = metadata.get("rca_kind_label")
+    if isinstance(label_raw, str) and label_raw.strip():
+        return label_raw.strip()
+    failure_type = str(metadata.get("failure_type") or "").strip()
+    rca_kind_raw = metadata.get("rca_kind")
+    if failure_type or rca_kind_raw is not None:
+        try:
+            kind = _safe_rca_kind(rca_kind_raw, failure_type, metadata)
+            return kind.value
+        except Exception:
+            return ""
+    return ""
+
+
+def dominant_root_cause_label(asi_by_qid: Mapping[str, dict]) -> str:
+    """Trial 19 B1 — return the cluster-dominant free-text RCA label string.
+
+    Resolution rules (first-match wins):
+
+      1. Empty input or every qid resolves to empty → ``"unknown"``.
+      2. Single qid → that qid's label (or ``"unknown"`` if empty).
+      3. Multiple qids → simple-majority winner over the labels.
+         Crucially, an ``"unknown"`` / empty label never beats a
+         typed label, even if it is the most common — this fixes
+         the Trial 18 postmortem failure where a mixed cluster of
+         four QIDs (one typed ``top_n_cardinality_collapse``, three
+         ``unknown``) collapsed to ``UNKNOWN`` and blocked the
+         structural archetype.
+
+    Ties between two typed labels are broken by:
+
+      * Higher cluster confidence wins, if any qid's metadata carries
+        a numeric ``confidence`` and the average per-label
+        confidence differs.
+      * Otherwise lexical on the label string for determinism.
+
+    The mapper for a single qid reuses ``_extract_rca_label`` so
+    Trial 19's free-text ``rca_kind_label`` wins, with back-compat to
+    the closed ``RcaKind`` enum via ``_safe_rca_kind``.
+    """
+    if not asi_by_qid:
+        return _UNKNOWN_LABEL
+
+    labels: list[str] = []
+    confidence_by_label: dict[str, list[float]] = {}
+    for _qid, metadata in asi_by_qid.items():
+        label = _extract_rca_label(metadata)
+        if not label:
+            continue
+        labels.append(label)
+        if isinstance(metadata, dict):
+            conf_raw = metadata.get("confidence")
+            try:
+                conf_val = float(conf_raw) if conf_raw is not None else None
+            except (TypeError, ValueError):
+                conf_val = None
+            if conf_val is not None:
+                confidence_by_label.setdefault(label, []).append(conf_val)
+
+    if not labels:
+        return _UNKNOWN_LABEL
+
+    counts = Counter(labels)
+
+    typed_counts = {
+        lbl: c for lbl, c in counts.items() if lbl != _UNKNOWN_LABEL
+    }
+    if typed_counts:
+        counts = Counter(typed_counts)
+
+    max_count = max(counts.values())
+    candidates = [lbl for lbl, c in counts.items() if c == max_count]
+
+    if len(candidates) > 1 and confidence_by_label:
+        def _avg_conf(lbl: str) -> float:
+            vals = confidence_by_label.get(lbl, [])
+            return sum(vals) / len(vals) if vals else 0.0
+        candidates.sort(key=lambda lbl: (-_avg_conf(lbl), lbl))
+    else:
+        candidates.sort()
+    return candidates[0]
+
+
 def dominant_root_cause(asi_by_qid: Mapping[str, dict]) -> RcaKind:
     """Return the cluster-dominant RcaKind across per-QID ASI metadata.
 
-    Resolution rules (first-match wins):
-      1. Empty input or all-unmappable signals → ``RcaKind.UNKNOWN``.
-      2. Single qid → that qid's mapped RcaKind (or UNKNOWN).
-      3. Multiple qids → simple-majority winner over the mapped
-         RcaKind values, with lexical tie-breaking on
-         ``RcaKind.value`` for determinism.
+    Trial 19 B1 — **back-compat alias.** The new authoritative
+    aggregator is :func:`dominant_root_cause_label` (returns a
+    free-text string). This function now delegates to it and parses
+    the resulting label back into ``RcaKind`` for pre-Trial-19
+    callers that still expect the enum. New code paths gated by
+    ``GSO_TRIAL19_LLM_FIRST_RCA`` consume the label directly.
 
-    The mapper for a single qid reuses the existing
-    ``optimization.rca._safe_rca_kind`` so the vocabulary is
-    centralised — adding a new ASI failure_type only requires
-    extending that helper.
+    Behavior preserved for pre-Trial-19 inputs (rows carrying only
+    ``failure_type`` / ``rca_kind`` fields, no ``rca_kind_label``):
+    the label aggregator's selection round-trips back to the same
+    enum the legacy implementation would have returned. Inputs that
+    DO carry an ``rca_kind_label`` (Trial 19 Stage 1 output) gain
+    the new "never collapse typed → UNKNOWN" semantics — required
+    for Workstream B to unblock structural repair.
     """
     if not asi_by_qid:
         return RcaKind.UNKNOWN
 
-    kinds: list[RcaKind] = []
-    for _qid, metadata in asi_by_qid.items():
-        if not isinstance(metadata, dict):
-            continue
-        failure_type = str(metadata.get("failure_type") or "").strip()
-        if not failure_type:
-            continue
-        kinds.append(_safe_rca_kind(metadata.get("rca_kind"), failure_type, metadata))
-
-    if not kinds:
+    label = dominant_root_cause_label(asi_by_qid)
+    if not label or label == _UNKNOWN_LABEL:
         return RcaKind.UNKNOWN
-
-    counts = Counter(kinds)
-    max_count = max(counts.values())
-    top = sorted(
-        (k for k, c in counts.items() if c == max_count),
-        key=lambda k: k.value,
-    )
-    return top[0]
+    try:
+        return _safe_rca_kind(label, label, {})
+    except Exception:
+        return RcaKind.UNKNOWN
 
 
 def grounding_terms_from_asi(asi_by_qid: Mapping[str, dict]) -> frozenset[str]:
@@ -168,12 +286,17 @@ def grounding_terms_from_fix_text(
     return frozenset(surviving)
 
 
-# Closed mapping from RcaKind → ``intended_patch_shape``. Each value
-# is a short verb-phrase identifier the strategist consumes to scope
-# proposal generation. Distinct from ``patch_family`` (which names
-# the proposal generator) — the shape is the *intent* expressed in
-# the card so the strategist can refuse a proposal that lands in the
-# right family but the wrong shape.
+# Trial 19 B6 — BACK-COMPAT READER ONLY.
+#
+# Closed mapping from ``RcaKind`` → ``intended_patch_shape`` (a short
+# verb-phrase identifier the strategist consumes to scope proposal
+# generation). Trial 19 Workstream B2 makes the LLM-emitted
+# ``PerQidDiagnosis.intended_patch_shape`` string authoritative; this
+# dict is read ONLY as a fallback when Stage 1 emits an empty intent
+# (pre-Trial-19 Delta rows or rare LLM omissions). Do NOT extend with
+# new entries — new intents are named by Stage 1 verbatim. When the
+# Trial 19 ``GSO_TRIAL19_LLM_FIRST_RCA`` flag is OFF, the dict is the
+# sole source for byte-stable replay of pre-Trial-19 fixtures.
 _INTENDED_PATCH_SHAPE: dict[RcaKind, str] = {
     RcaKind.METRIC_VIEW_ROUTING_CONFUSION: "route_to_correct_metric_view_with_contrast",
     RcaKind.MEASURE_SWAP: "disambiguate_measure_with_contrastive_example",
@@ -195,16 +318,65 @@ _INTENDED_PATCH_SHAPE: dict[RcaKind, str] = {
 }
 
 
-def intended_patch_shape_for_root_cause(kind: RcaKind) -> str:
-    """Map an ``RcaKind`` to its intended patch shape (short identifier)."""
+def _extract_intended_patch_shape(metadata: Mapping[str, object]) -> str:
+    """Trial 19 B2 — pull the LLM-emitted ``intended_patch_shape`` string.
+
+    Returns the trimmed string when present and non-empty; otherwise
+    returns an empty string (caller decides whether to fall back to
+    the closed-dict back-compat map).
+    """
+    if not isinstance(metadata, dict):
+        return ""
+    raw = metadata.get("intended_patch_shape")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return ""
+
+
+def intended_patch_shape_for_root_cause(
+    kind: RcaKind,
+    *,
+    asi_by_qid: Mapping[str, dict] | None = None,
+) -> str:
+    """Map an ``RcaKind`` to its intended patch shape (short identifier).
+
+    Trial 19 B2 — when ``asi_by_qid`` is supplied AND any cluster qid's
+    metadata carries a non-empty ``intended_patch_shape`` string from
+    Stage 1 (Trial 19 B5), that LLM-emitted string is authoritative
+    and returned verbatim. Ties between qids are broken by majority
+    vote; lexical sort breaks vote-ties for determinism.
+
+    When ``asi_by_qid`` is None (legacy callers) OR every qid lacks a
+    non-empty string (pre-Trial-19 Delta rows), the closed
+    ``_INTENDED_PATCH_SHAPE`` dict is consulted as a back-compat
+    fallback so existing fixtures remain byte-stable.
+    """
+    if asi_by_qid:
+        shapes: list[str] = []
+        for metadata in asi_by_qid.values():
+            shape = _extract_intended_patch_shape(metadata)
+            if shape:
+                shapes.append(shape)
+        if shapes:
+            counts = Counter(shapes)
+            max_count = max(counts.values())
+            top = sorted(s for s, c in counts.items() if c == max_count)
+            return top[0]
     return _INTENDED_PATCH_SHAPE.get(kind, "generic_judge_clarification")
 
 
+# Trial 19 B6 — BACK-COMPAT READER ONLY.
+#
 # Forbidden patch-family map. Each entry lists patch families the
-# proposal generator MUST NOT emit for the given root cause. The list
-# is conservative — only families that are known to misfire on the
-# named root cause appear here. Other families are silently allowed;
-# the strategist's own gates filter beyond these.
+# proposal generator MUST NOT emit for the given root cause. Trial 19
+# Workstream B3 moves this enforcement out of code and into the
+# Stage 3 ``plan11_synthesize`` prompt as "patch-family fit rules"
+# the LLM reasons over — the closed dict survives only to gate
+# pre-Trial-19 Delta rows whose ``rca_kind`` enum value still drives
+# proposal generation. Do NOT extend with new entries — new
+# constraints are named in the Stage 3 prompt verbatim. When the
+# Trial 19 ``GSO_TRIAL19_LLM_FIRST_RCA`` flag is OFF, the dict is the
+# sole source for byte-stable replay of pre-Trial-19 fixtures.
 _FORBIDDEN_FAMILIES: dict[RcaKind, frozenset[str]] = {
     RcaKind.TOP_N_CARDINALITY_COLLAPSE: frozenset({
         "avoid_unrequested_defensive_filters",
@@ -424,7 +596,13 @@ def build_card(
             grounding = frozenset(grounding | text_terms)
 
     # Synthesize intended patch shape and family sets from the root.
-    shape = intended_patch_shape_for_root_cause(root_cause)
+    # Trial 19 B2 — pass the per-QID ASI map so any LLM-emitted
+    # ``intended_patch_shape`` string overrides the closed-dict
+    # fallback. Old callers that hand-build a card without metadata
+    # remain byte-stable via the empty-asi fallback path.
+    shape = intended_patch_shape_for_root_cause(
+        root_cause, asi_by_qid=asi_by_qid,
+    )
     allowed, forbidden = allowed_and_forbidden_patch_families(root_cause)
 
     # Phase 1 Addendum — match soft-cluster evidence when supplied.

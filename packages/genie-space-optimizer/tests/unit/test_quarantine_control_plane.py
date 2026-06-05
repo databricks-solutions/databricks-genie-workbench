@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from _harness_loop_source import lever_loop_source
+
 from genie_space_optimizer.optimization.control_plane import (
     decide_quarantine_continuation,
 )
@@ -57,7 +59,7 @@ def test_harness_tracks_unverified_rollback_before_quarantine_mutation() -> None
 
     from genie_space_optimizer.optimization import harness
 
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
 
     assert "_rollback_state_trusted_for_quarantine = True" in source
     assert "_rollback_state_trusted_for_quarantine = False" in source
@@ -84,7 +86,7 @@ def test_soft_skip_does_not_persist_into_correction_state_quarantined_qids() -> 
 
     from genie_space_optimizer.optimization import harness
 
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
 
     assert "_iter_local_skip_qids = _quarantine_qids | _soft_skip_qids" in source
     assert "_correction_state[\"quarantined_qids\"] |= _newly_quarantined" in source
@@ -105,7 +107,7 @@ def test_soft_skip_logs_iteration_local_label() -> None:
 
     from genie_space_optimizer.optimization import harness
 
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
 
     assert "T4.3 CONVERGENCE QUARANTINE" in source
     assert "iteration-local; not persisted" in source
@@ -116,7 +118,7 @@ def test_arbiter_rescue_rate_uses_consistent_scale() -> None:
 
     from genie_space_optimizer.optimization import harness
 
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
 
     diag_idx = source.index("Arbiter rescue rate")
     snippet = source[diag_idx - 1200 : diag_idx + 400]

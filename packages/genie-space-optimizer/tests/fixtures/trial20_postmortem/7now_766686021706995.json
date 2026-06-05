@@ -1,0 +1,12 @@
+{
+  "fixture_id": "trial20_postmortem_7now_766686021706995",
+  "source_postmortem_run": "d13938e7-405d-4444-833a-03f5ac9f7523",
+  "source_attempt_id": "766686021706995",
+  "scenario": "applied_kept_insufficient_mislabeled_as_no_applied_patches",
+  "qid": "7now_demand_forecast_gs_013",
+  "prior_patch_family": "add_example_sql",
+  "kept_insufficient_signature": "lever-5:add_example_sql:insufficient:rca=missing_table:behavior=unchanged",
+  "expected_terminal_today": "no_applied_patches",
+  "expected_terminal_with_trial20": "kept_insufficient",
+  "expected_pivot_next_family": "add_sql_snippet_filter"
+}

@@ -221,6 +221,66 @@ _log("Gate result", **gate)
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Step 5a.2: Trial 22 W8 — Candidate Deploy-Eligibility Gate
+# MAGIC
+# MAGIC The lever_loop task (Task 4) publishes a `candidate_deploy_eligible`
+# MAGIC boolean plus a closed-vocabulary `deploy_skip_reason`
+# MAGIC (`contract_health_blocked` | `no_candidate` | ``). When the
+# MAGIC candidate is NOT eligible, this task logs
+# MAGIC `GSO_TRIAL22_DEPLOY_SKIPPED_V1 {skip_reason}` and exits SUCCESS
+# MAGIC WITHOUT shipping — the optimizer/parent job stays green while the
+# MAGIC unsafe candidate is held back. Gated by `GSO_TRIAL22_DEPLOY_GATE`
+# MAGIC (default ON; =0 restores the legacy always-ship posture).
+
+# COMMAND ----------
+
+_t22_deploy_gate_flag = (
+    _os.environ.get("GSO_TRIAL22_DEPLOY_GATE") or ""
+).strip().lower()
+_t22_deploy_gate_on = _t22_deploy_gate_flag not in ("0", "false", "no", "off")
+
+if _t22_deploy_gate_on and deploy_target:
+    _banner("Trial 22 W8 Deploy-Eligibility Gate")
+    _t22_eligible = dbutils.jobs.taskValues.get(
+        taskKey="lever_loop",
+        key="candidate_deploy_eligible",
+        default=True,
+    )
+    _t22_skip_reason = dbutils.jobs.taskValues.get(
+        taskKey="lever_loop",
+        key="deploy_skip_reason",
+        default="",
+    )
+    _log(
+        "Deploy eligibility",
+        candidate_deploy_eligible=bool(_t22_eligible),
+        deploy_skip_reason=str(_t22_skip_reason),
+    )
+    if not bool(_t22_eligible):
+        from genie_space_optimizer.optimization.harness import (
+            deploy_skipped_marker as _t22_skip_marker,
+        )
+
+        print(
+            _t22_skip_marker(
+                skip_reason=str(_t22_skip_reason),
+                run_id=str(run_id),
+            ),
+            flush=True,
+        )
+        _t22_skip_out = {
+            "status": "SKIPPED",
+            "reason": str(_t22_skip_reason) or "candidate_not_deploy_eligible",
+            "candidate_deploy_eligible": False,
+        }
+        _banner("Task 5 Completed (deploy skipped — candidate ineligible)")
+        # Exit SUCCESS — the parent job must NOT page on a held-back
+        # candidate; the gate is a deliberate, non-error skip.
+        dbutils.notebook.exit(json.dumps(_t22_skip_out, default=str))
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Step 5b: Deploy Execution
 # MAGIC
 # MAGIC Execute the deployment to the configured target, or skip if no target is set.

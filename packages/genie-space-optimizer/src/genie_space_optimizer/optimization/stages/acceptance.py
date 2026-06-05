@@ -361,9 +361,15 @@ def decide(ctx, inp: AcceptanceInput) -> AgOutcome:
                 tier_classification_record,
             )
 
+            from genie_space_optimizer.optimization.trial23_flags import (
+                trial23_target_honest_acceptance_enabled,
+            )
             tier_verdict = classify_acceptance_tier(
                 decision=decision,
                 policy=tier_acceptance_policy_from_config(),
+                demote_on_unresolved_target_debt=(
+                    trial23_target_honest_acceptance_enabled()
+                ),
             )
             # Phase 1 Addendum — observability-only soft-signal pass
             # rate. Computed from candidate (post-apply) eval rows;

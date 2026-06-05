@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from _harness_loop_source import lever_loop_source
+
 from genie_space_optimizer.optimization.rca_terminal import (
     RcaTerminalDecision,
     RcaTerminalStatus,
@@ -49,11 +51,7 @@ def test_resolver_returns_plateau_no_open_failures_when_clean() -> None:
 
 
 def test_harness_plateau_printer_uses_resolve_terminal_on_plateau() -> None:
-    import inspect
-
-    from genie_space_optimizer.optimization import harness
-
-    source = inspect.getsource(harness._run_lever_loop)
+    source = lever_loop_source()
     plateau_idx = source.index("LEVER LOOP — TERMINATION: plateau")
     snippet = source[plateau_idx - 2000 : plateau_idx + 1500]
     assert "resolve_terminal_on_plateau(" in snippet

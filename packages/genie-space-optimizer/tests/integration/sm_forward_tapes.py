@@ -199,6 +199,17 @@ def synthesize_response_tape(
             },
             "blame_set": [blame_object],
             "target_qids": [qid],
+            # Trial 20 D1 — single-lever survivor must declare why one
+            # lever suffices. Tape proposals supply a default so the K5
+            # workbench invariant (single_lever_carries_justification)
+            # holds during synthetic replays. Live LLM emissions
+            # populate this from the model's own reasoning text.
+            "single_lever_justification": (
+                "Tape-replay proposal: worked example illustrates the "
+                "correct aggregation shape; a second lever would not "
+                "materially reinforce the repair on this synthetic "
+                "fixture."
+            ),
         }
         entries.append(
             TapeEntry(
@@ -217,6 +228,87 @@ def synthesize_response_tape(
     return entries
 
 
+def synthesize_batched_response_tape(
+    qids: Iterable[str],
+    *,
+    iteration: int = 1,
+    patch_type: str = "add_example_sql",
+    blame_object: str = "main.public.orders.amount",
+    intent_name: str = "fix_aggregation_via_example",
+    confidence: str = "high",
+) -> list[TapeEntry]:
+    """Build a **single** Stage 3 tape entry covering all QIDs.
+
+    Stage 3 synthesis is dispatched once per iteration as a single
+    batched LLM call over every CLUSTERED state — not once per QID like
+    Stage 1 / Stage 2. (Stage 1 ``plan11_diagnose`` and Stage 2
+    ``plan11_cluster`` are driven per-QID-state by the orchestrator, so
+    those tapes carry ``len(qids)`` entries; Stage 3 ``plan11_synthesize``
+    is driven once over the surviving clusters.) The per-QID
+    :func:`synthesize_response_tape` therefore over-captures by
+    ``len(qids) - 1`` entries whenever the forward pipeline reaches
+    PROPOSED, which trips the ``harness.unconsumed() == []`` contract in
+    the forward smoke test.
+
+    For the canonical production hydration fixture every hard QID shares
+    the same blame object, so Stage 2 collapses the per-QID self-clusters
+    into a single merged cluster; the one batched Stage 3 call returns a
+    single proposal whose ``target_qids`` covers the whole merged
+    cluster. This factory mirrors that wire shape: one ``response`` entry
+    (``qid=""`` so the harness consumes it in arrival order against the
+    single batched call) carrying one ``add_example_sql`` proposal whose
+    ``target_qids`` is the full QID set.
+    """
+    qids = list(qids)
+    proposal = {
+        "intent_name": intent_name,
+        "intent_description": (
+            "Teach Genie the correct example SQL so the failing "
+            "QIDs match the expected aggregation shape."
+        ),
+        "repair_hypothesis": (
+            "Provide a worked example illustrating the correct aggregation."
+        ),
+        "patch_type": patch_type,
+        "rationale": (
+            "Stage 1 diagnosis and Stage 2 clustering converged on a "
+            "single repair shape across the merged cluster; the worked "
+            "example unblocks every member QID."
+        ),
+        "confidence": confidence,
+        "patch_body": {
+            "example_question": "Compute the total amount per order.",
+            "example_sql": (
+                "SELECT order_id, SUM(amount) AS total FROM orders "
+                "GROUP BY order_id;"
+            ),
+        },
+        "blame_set": [blame_object],
+        "target_qids": list(qids),
+        # Trial 20 D1 — single-lever survivor must declare why one lever
+        # suffices (see synthesize_response_tape for the rationale).
+        "single_lever_justification": (
+            "Tape-replay proposal: worked example illustrates the "
+            "correct aggregation shape; a second lever would not "
+            "materially reinforce the repair on this synthetic fixture."
+        ),
+    }
+    return [
+        TapeEntry(
+            kind="response",
+            skill_id="plan11_synthesize",
+            call_id=f"plan11_stage3_synthesize.iter_{iteration}.batched",
+            iteration=iteration,
+            qid="",
+            parsed_output={"proposals": [proposal]},
+            raw_text="",
+            tokens_input=2048,
+            tokens_output=1024,
+            duration_ms=2500,
+        )
+    ]
+
+
 # ── Forward pipeline composite ────────────────────────────────────────
 
 
@@ -225,12 +317,17 @@ def full_forward_tape(
     *,
     iteration: int = 1,
 ) -> list[TapeEntry]:
-    """Concatenate Stage 1, Stage 2, and Stage 3 tapes for the full forward run."""
+    """Concatenate Stage 1, Stage 2, and Stage 3 tapes for the full forward run.
+
+    Stage 1 and Stage 2 are driven per-QID-state; Stage 3 synthesis is a
+    single batched call over the surviving clusters, so the Stage 3
+    segment is one entry (see :func:`synthesize_batched_response_tape`).
+    """
     qids = list(qids)
     return [
         *diagnose_response_tape(qids, iteration=iteration),
         *cluster_response_tape(qids, iteration=iteration),
-        *synthesize_response_tape(qids, iteration=iteration),
+        *synthesize_batched_response_tape(qids, iteration=iteration),
     ]
 
 
@@ -913,6 +1010,7 @@ __all__ = [
     "diagnose_request_envelope_invalid_tape",
     "diagnose_response_tape",
     "full_forward_tape",
+    "synthesize_batched_response_tape",
     "synthesize_blast_radius_unsafe_tape",
     "synthesize_empty_body_proposal_tape",
     "synthesize_empty_synthesis_for_actionable_cluster_tape",
