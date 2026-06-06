@@ -116,7 +116,13 @@ _KEYWORD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\bfilter\b.{0,30}\b(dropp\w+|excludes?|too[\s-]?strict)", re.I),
         "extra_defensive_filter",
     ),
-    # Wrong aggregation
+    # Wrong aggregation — handle both English ("wrong aggregation")
+    # and snake_case ("wrong_aggregation") with arbitrary trailing
+    # context ("wrong_aggregation (quantity vs revenue, ...)").
+    (
+        re.compile(r"\b(wrong|incorrect|bad)[\s_-]+aggreg", re.I),
+        "wrong_aggregation",
+    ),
     (
         re.compile(r"\b(wrong|incorrect|bad)\b.{0,15}\baggreg", re.I),
         "wrong_aggregation",
@@ -152,6 +158,13 @@ _KEYWORD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(r"\b(inner|left|right|outer|cross)\b.{0,5}\bjoin\b.{0,30}\b(wrong|mismatch)", re.I),
+        "join_semantics_wrong",
+    ),
+    (
+        # Production label shape: ``wrong_join_spec`` / ``wrong-join``
+        # — no trailing word-boundary so the snake_case ``_spec`` /
+        # ``_predicate`` suffixes do not block the match.
+        re.compile(r"\bwrong[\s_-]+join", re.I),
         "join_semantics_wrong",
     ),
     # Column disambiguation
