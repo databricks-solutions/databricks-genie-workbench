@@ -186,6 +186,7 @@ os.environ.setdefault("GENIE_SPACE_OPTIMIZER_STRICT_PROMPT_REGISTRATION", "true"
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
 
+from genie_space_optimizer.jobs._handoff import publish_task_outputs
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.benchmarks import assert_benchmark_handoff_visible
@@ -430,12 +431,22 @@ except Exception as exc:
 # COMMAND ----------
 
 _banner("Publishing Task Values")
-dbutils.jobs.taskValues.set(key="scores", value=json.dumps(baseline_out["scores"]))
-dbutils.jobs.taskValues.set(key="overall_accuracy", value=baseline_out["overall_accuracy"])
-dbutils.jobs.taskValues.set(key="thresholds_met", value=baseline_out["thresholds_met"])
-dbutils.jobs.taskValues.set(key="model_id", value=baseline_out["model_id"])
-dbutils.jobs.taskValues.set(key="mlflow_run_id", value=eval_result.get("mlflow_run_id", ""))
-dbutils.jobs.taskValues.set(key="max_benchmark_count", value=max_benchmark_count)
+# Trial 25 W25.3 — compact handoff: 6 taskValues.set fan-out calls
+# collapsed into a single ``baseline_eval_outputs`` JSON blob. Per-key
+# fallback is restored via ``GSO_TRIAL25_HANDOFF_COMPACT=0`` or
+# ``GSO_TRIAL25_BASELINE_EVAL_JSON_BLOB=0``.
+publish_task_outputs(
+    dbutils,
+    task="baseline_eval",
+    outputs={
+        "scores": baseline_out["scores"],
+        "overall_accuracy": baseline_out["overall_accuracy"],
+        "thresholds_met": baseline_out["thresholds_met"],
+        "model_id": baseline_out["model_id"],
+        "mlflow_run_id": eval_result.get("mlflow_run_id", ""),
+        "max_benchmark_count": max_benchmark_count,
+    },
+)
 
 _log(
     "Task values published",

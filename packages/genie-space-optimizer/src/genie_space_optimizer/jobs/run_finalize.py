@@ -111,6 +111,7 @@ from typing import Any, cast
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
 
+from genie_space_optimizer.jobs._handoff import publish_task_outputs
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.evaluation import load_benchmarks_from_dataset
@@ -408,29 +409,38 @@ except Exception as exc:
 # COMMAND ----------
 
 _banner("Publishing Task Values")
-dbutils.jobs.taskValues.set(key="status", value=finalize_out["status"])
-dbutils.jobs.taskValues.set(key="convergence_reason", value=finalize_out["convergence_reason"])
-dbutils.jobs.taskValues.set(key="repeatability_pct", value=finalize_out["repeatability_pct"])
-dbutils.jobs.taskValues.set(key="report_path", value=finalize_out.get("report_path", ""))
-dbutils.jobs.taskValues.set(
-    key="terminal_reason",
-    value=finalize_out.get("terminal_reason", finalize_out["convergence_reason"]),
-)
+# Trial 25 W25.4 — compact handoff: 5-10 taskValues.set fan-out calls
+# (depending on the UC promotion branch) collapsed into a single
+# ``finalize_outputs`` JSON blob. Per-key fallback is restored via
+# ``GSO_TRIAL25_HANDOFF_COMPACT=0`` or ``GSO_TRIAL25_FINALIZE_JSON_BLOB=0``.
+finalize_publish: dict = {
+    "status": finalize_out["status"],
+    "convergence_reason": finalize_out["convergence_reason"],
+    "repeatability_pct": finalize_out["repeatability_pct"],
+    "report_path": finalize_out.get("report_path", ""),
+    "terminal_reason": finalize_out.get(
+        "terminal_reason", finalize_out["convergence_reason"],
+    ),
+}
 
 _uc_reg = finalize_out.get("uc_registration")
 if _uc_reg:
-    dbutils.jobs.taskValues.set(key="uc_model_name", value=_uc_reg.get("uc_model_name", ""))
-    dbutils.jobs.taskValues.set(key="uc_model_version", value=_uc_reg.get("version", ""))
-    dbutils.jobs.taskValues.set(key="uc_champion_promoted", value=_uc_reg.get("promoted_to_champion", False))
+    finalize_publish["uc_model_name"] = _uc_reg.get("uc_model_name", "")
+    finalize_publish["uc_model_version"] = _uc_reg.get("version", "")
+    finalize_publish["uc_champion_promoted"] = _uc_reg.get(
+        "promoted_to_champion", False,
+    )
     if _uc_reg.get("deploy_target"):
-        dbutils.jobs.taskValues.set(key="uc_deploy_target", value=_uc_reg["deploy_target"])
+        finalize_publish["uc_deploy_target"] = _uc_reg["deploy_target"]
 else:
-    dbutils.jobs.taskValues.set(key="uc_model_name", value="")
-    dbutils.jobs.taskValues.set(key="uc_model_version", value="")
-    dbutils.jobs.taskValues.set(key="uc_champion_promoted", value=False)
+    finalize_publish["uc_model_name"] = ""
+    finalize_publish["uc_model_version"] = ""
+    finalize_publish["uc_champion_promoted"] = False
+
+publish_task_outputs(dbutils, task="finalize", outputs=finalize_publish)
 
 _log(
-    "Task values published",
+    "Task values published via compact handoff",
     status=finalize_out["status"],
     convergence_reason=finalize_out["convergence_reason"],
     terminal_reason=finalize_out.get("terminal_reason", finalize_out["convergence_reason"]),

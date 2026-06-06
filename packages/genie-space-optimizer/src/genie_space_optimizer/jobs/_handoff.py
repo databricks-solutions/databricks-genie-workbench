@@ -57,6 +57,7 @@ class HandoffValue:
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Optional
 
 from genie_space_optimizer.optimization.state import load_run
@@ -67,9 +68,232 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Trial 25 — compact task-value handoff
+# ---------------------------------------------------------------------------
+#
+# Root cause for `PARENT_RUN_TASK_VALUE_BUDGET_EXHAUSTED_250`: every
+# task in the 4-task DAG was publishing 6–15 individual
+# `dbutils.jobs.taskValues.set(...)` calls per replay. The Databricks
+# platform caps a parent run's accumulated taskValues at 250, so a
+# long-lived anchor parent ran out of headroom after ~5-6 replays.
+#
+# Trial 25 introduces a single JSON blob per task keyed
+# `<task>_outputs` that carries every value the task wants to publish.
+# Consumers transparently read from the blob first (`_get_compact_blob`
+# + the 3-step lookup in `_tv_get`) and fall back to the legacy per-key
+# path so old parent runs still resume correctly.
+#
+# Master flag `GSO_TRIAL25_HANDOFF_COMPACT` (default ON) is ANDed with
+# a per-task sub-flag `GSO_TRIAL25_<TASK>_JSON_BLOB` for surgical
+# rollback. Setting either to a falsy value (`0`, `false`, `no`, `off`)
+# restores the per-key fan-out for that task only.
+
+_FALSE_TOKENS = frozenset({"0", "false", "no", "off"})
+
+
+def _is_flag_on(env_var: str) -> bool:
+    """True unless ``env_var`` is set to a known false token. Unset →
+    True (Trial 25 defaults to ON)."""
+    return (os.environ.get(env_var) or "").strip().lower() not in _FALSE_TOKENS
+
+
+def _stringify_for_wire(value) -> str:
+    """Match the legacy per-key publish wire format so consumers see
+    the same string regardless of which publish path took effect.
+
+    Rules (matching the inline `dbutils.jobs.taskValues.set` call sites
+    that pre-date Trial 25):
+      - ``str``               → unchanged
+      - ``dict`` / ``list``   → ``json.dumps(value)``
+      - ``bool`` / ``int``    → ``str(value)`` (note: ``bool`` is a
+                                subclass of ``int`` so we check it
+                                explicitly first for readable output)
+      - ``float``             → ``str(value)``
+      - ``None``              → empty string (compatible with the
+                                ``default=""`` of ``taskValues.get``)
+      - anything else         → ``str(value)`` as a safe fallback
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        # ``default=str`` mirrors the legacy publish-site convention
+        # (e.g. ``run_lever_loop.py`` previously wrote ``debug_info``
+        # via ``json.dumps(debug_info, default=str)``) so non-serialisable
+        # objects like datetimes degrade to their ``str()`` form
+        # instead of raising.
+        return json.dumps(value, default=str)
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return str(value)
+    return str(value)
+
+
+# Module-level cache: (id(dbutils), taskKey) → parsed blob dict or None.
+# Cleared between tests via _reset_compact_blob_cache(); in production
+# there is exactly one dbutils per notebook execution so the cache is
+# implicitly scoped to that lifecycle.
+_compact_blob_cache: dict[tuple[int, str], Optional[dict]] = {}
+
+
+def _reset_compact_blob_cache() -> None:
+    """Test helper: drop every cached blob fetch.
+
+    Lives in prod so tests can import it without reaching into private
+    state. In a real notebook there's only one dbutils instance per
+    process and only one trip through this module, so callers never
+    need to reset.
+    """
+    _compact_blob_cache.clear()
+
+
+# In-process set of (id(dbutils), taskKey) pairs that have already
+# emitted the GSO_TRIAL25_HANDOFF_COMPACT_READ_V1 marker. This keeps
+# log noise bounded — one marker per task per consumer pass is enough
+# to prove the compact path activated; we don't need one per key read.
+_read_marker_emitted: set[tuple[int, str]] = set()
+
+
+def _emit_marker(name: str, **payload) -> None:
+    """Emit a structured marker on stdout. The notebook log is what
+    MLflow + postmortem tooling scrapes for `GSO_TRIAL25_*` evidence;
+    keep the format `<NAME><json>` so a single regex can capture both."""
+    print(f"{name}{json.dumps(payload, default=str)}")
+
+
+def _get_compact_blob(dbutils, taskKey: str) -> Optional[dict]:
+    """Fetch and cache the Trial-25 compact-publish blob for ``taskKey``.
+
+    Returns the parsed ``dict[str, str]`` if the blob exists and is a
+    valid JSON object, else ``None`` (which signals the consumer side
+    to fall back to per-key reads). Non-dict JSON values (bare strings,
+    lists, numbers) are treated as ``None`` so consumers cannot trip
+    on a manually-overridden blob slot.
+    """
+    cache_key = (id(dbutils), taskKey)
+    if cache_key in _compact_blob_cache:
+        return _compact_blob_cache[cache_key]
+
+    raw = dbutils.jobs.taskValues.get(
+        taskKey=taskKey, key=f"{taskKey}_outputs", default="",
+    )
+    parsed: Optional[dict]
+    if not raw:
+        parsed = None
+    else:
+        try:
+            decoded = json.loads(raw)
+            parsed = decoded if isinstance(decoded, dict) else None
+        except (ValueError, TypeError):
+            parsed = None
+
+    _compact_blob_cache[cache_key] = parsed
+    if parsed is not None and cache_key not in _read_marker_emitted:
+        _emit_marker(
+            "GSO_TRIAL25_HANDOFF_COMPACT_READ_V1",
+            task=taskKey,
+            blob_keys=sorted(parsed.keys()),
+            reader=os.environ.get("DATABRICKS_TASK_KEY", "unknown"),
+        )
+        _read_marker_emitted.add(cache_key)
+    return parsed
+
+
 def _tv_get(dbutils, taskKey: str, key: str, default: str = "") -> str:
-    """Tiny wrapper so tests can swap in a mock and the prod call site
-    does not duplicate ``dbutils.jobs.taskValues.get`` boilerplate."""
+    """3-step taskValues lookup with Trial-25 compact-blob support.
+
+    Order:
+      1. ``<taskKey>_outputs`` compact JSON blob (Trial 25 publish path).
+      2. Per-key ``dbutils.jobs.taskValues.get(taskKey, key)`` (legacy
+         publish path; still active when a sub-flag is rolled back, or
+         when reading from a pre-Trial-25 parent run).
+      3. ``default``.
+    """
+    blob = _get_compact_blob(dbutils, taskKey)
+    if blob is not None and key in blob:
+        val = blob[key]
+        return val if isinstance(val, str) else _stringify_for_wire(val)
+    return dbutils.jobs.taskValues.get(
+        taskKey=taskKey, key=key, default=default,
+    )
+
+
+def publish_task_outputs(
+    dbutils,
+    *,
+    task: str,
+    outputs: dict,
+    flag_env: Optional[str] = None,
+) -> None:
+    """Publish a task's outputs honoring the Trial 25 compact-handoff
+    contract.
+
+    Compact path (default): one ``taskValues.set(key="<task>_outputs",
+    value=<json blob>)``. The blob is a JSON object whose values are
+    all strings — matching the legacy per-key wire format so consumers
+    that read via :func:`_tv_get` see byte-identical content regardless
+    of which path published.
+
+    Rollback path: replays the per-key fan-out one ``taskValues.set``
+    per (key, value) pair. Triggered when either the master flag
+    ``GSO_TRIAL25_HANDOFF_COMPACT`` or the per-task sub-flag
+    ``GSO_TRIAL25_<TASK>_JSON_BLOB`` is set to a falsy token. Empty
+    ``outputs`` writes nothing in this path.
+
+    Args:
+        dbutils: notebook-scoped dbutils (or a test mock).
+        task: logical task name (e.g. ``"lever_loop"``,
+            ``"preflight"``, ``"baseline_eval"``, ``"finalize"``). This
+            becomes the prefix for the blob key (``<task>_outputs``)
+            and the per-task sub-flag (``GSO_TRIAL25_<TASK>_JSON_BLOB``).
+        outputs: keys + values to publish. Values are stringified via
+            :func:`_stringify_for_wire` to match legacy semantics.
+        flag_env: optional override of the per-task sub-flag env var;
+            useful for unit tests that want to gate one publish without
+            naming-convention coupling. Defaults to
+            ``GSO_TRIAL25_<TASK_UPPER>_JSON_BLOB``.
+    """
+    sub_env = flag_env or f"GSO_TRIAL25_{task.upper()}_JSON_BLOB"
+    compact_on = _is_flag_on("GSO_TRIAL25_HANDOFF_COMPACT") and _is_flag_on(sub_env)
+
+    if compact_on:
+        payload: dict[str, str] = {
+            k: _stringify_for_wire(v) for k, v in outputs.items()
+        }
+        blob = json.dumps(payload)
+        dbutils.jobs.taskValues.set(key=f"{task}_outputs", value=blob)
+        _emit_marker(
+            "GSO_TRIAL25_HANDOFF_COMPACT_PUBLISH_V1",
+            task=task,
+            blob_keys=list(payload.keys()),
+            blob_bytes=len(blob),
+            prior_key_count=len(outputs),
+        )
+        return
+
+    # Rollback: per-key fan-out matching the LEGACY inline-call wire
+    # format. Legacy publishers wrapped dict/list values in `json.dumps`
+    # (with `default=str`) but passed primitives (bool/int/float/str)
+    # as-is — and the consumer's `_resolve` parser handles both forms.
+    # Mirror that exactly so a rollback is byte-identical to
+    # pre-Trial-25 behavior.
+    for k, v in outputs.items():
+        if isinstance(v, (dict, list)):
+            wire_value = json.dumps(v, default=str)
+        else:
+            wire_value = v
+        dbutils.jobs.taskValues.set(key=k, value=wire_value)
+
+
+def _tv_get_raw(dbutils, taskKey: str, key: str, default: str = "") -> str:
+    """Legacy direct per-key lookup, bypassing the Trial-25 blob path.
+
+    Kept for the rare publisher-side read (a notebook that wants to
+    introspect what it just set) and for explicit-test scenarios that
+    want to assert the per-key path independently."""
     return dbutils.jobs.taskValues.get(taskKey=taskKey, key=key, default=default)
 
 

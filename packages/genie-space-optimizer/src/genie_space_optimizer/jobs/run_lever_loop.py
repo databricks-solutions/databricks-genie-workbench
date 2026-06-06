@@ -240,6 +240,7 @@ from typing import Any, cast
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
 
+from genie_space_optimizer.jobs._handoff import publish_task_outputs
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.contract_health import (
@@ -470,11 +471,22 @@ if thresholds_met:
     )
     effective_model_id = enrichment_model_id if not enrichment_skipped else prev_model_id
     _log("Effective model ID", effective_model_id=effective_model_id, enrichment_model_id=enrichment_model_id, baseline_model_id=prev_model_id)
-    dbutils.jobs.taskValues.set(key="scores", value=json.dumps(prev_scores))
-    dbutils.jobs.taskValues.set(key="accuracy", value=prev_accuracy)
-    dbutils.jobs.taskValues.set(key="model_id", value=effective_model_id)
-    dbutils.jobs.taskValues.set(key="iteration_counter", value=0)
-    dbutils.jobs.taskValues.set(key="skipped", value=True)
+    # Trial 25 W25.1 — compact handoff. The SKIP path publishes a
+    # 5-key blob (`lever_loop_outputs`) instead of 5 separate
+    # taskValues.set calls. Downstream consumers (`get_lever_loop_outputs`
+    # in `_handoff.py`) read either the blob or per-key fan-out
+    # transparently.
+    publish_task_outputs(
+        dbutils,
+        task="lever_loop",
+        outputs={
+            "scores": prev_scores,
+            "accuracy": prev_accuracy,
+            "model_id": effective_model_id,
+            "iteration_counter": 0,
+            "skipped": True,
+        },
+    )
     dbutils.notebook.exit(f"SKIPPED: {_skip_reason} (source={_accuracy_source})")
 
 # COMMAND ----------
@@ -602,20 +614,23 @@ else:
 # COMMAND ----------
 
 _banner("Publishing Task Values")
-dbutils.jobs.taskValues.set(key="scores", value=json.dumps(loop_out["scores"]))
-dbutils.jobs.taskValues.set(key="accuracy", value=loop_out["accuracy"])
-dbutils.jobs.taskValues.set(key="model_id", value=loop_out["model_id"])
-dbutils.jobs.taskValues.set(key="iteration_counter", value=loop_out["iteration_counter"])
-dbutils.jobs.taskValues.set(key="best_iteration", value=loop_out["best_iteration"])
-dbutils.jobs.taskValues.set(key="skipped", value=False)
-dbutils.jobs.taskValues.set(
-    key="all_eval_mlflow_run_ids",
-    value=json.dumps(loop_out.get("all_eval_mlflow_run_ids", []), default=str),
-)
-dbutils.jobs.taskValues.set(
-    key="all_failure_question_ids",
-    value=json.dumps(loop_out.get("all_failure_question_ids", []), default=str),
-)
+# Trial 25 W25.1 — compact handoff. Build a single ``lever_loop_publish``
+# dict throughout the publish section AND the downstream Trial 22
+# deploy-gate block (below), then call ``publish_task_outputs`` ONCE
+# right before ``enforce_merge_gate``. Going from ~11 ``taskValues.set``
+# calls per replay to 1 lifts the per-parent budget from ~5-6 replays
+# to 25+. Per-key fan-out is restored via ``GSO_TRIAL25_HANDOFF_COMPACT=0``
+# or ``GSO_TRIAL25_LEVER_LOOP_JSON_BLOB=0``.
+lever_loop_publish: dict = {
+    "scores": loop_out["scores"],
+    "accuracy": loop_out["accuracy"],
+    "model_id": loop_out["model_id"],
+    "iteration_counter": loop_out["iteration_counter"],
+    "best_iteration": loop_out["best_iteration"],
+    "skipped": False,
+    "all_eval_mlflow_run_ids": loop_out.get("all_eval_mlflow_run_ids", []),
+    "all_failure_question_ids": loop_out.get("all_failure_question_ids", []),
+}
 
 debug_info = {
     k: v for k, v in loop_out.items()
@@ -665,10 +680,14 @@ for _phase_h_key in (
     if _phase_h_val is not None:
         debug_info[_phase_h_key] = str(_phase_h_val)
 
-dbutils.jobs.taskValues.set(key="debug_info", value=json.dumps(debug_info, default=str))
+# Trial 25 W25.1 — accumulate into ``lever_loop_publish`` instead of
+# emitting a separate ``taskValues.set``. The single ``publish_task_outputs``
+# call lives after the Trial 22 deploy-gate block below so all 11 keys
+# end up in one ``lever_loop_outputs`` blob.
+lever_loop_publish["debug_info"] = debug_info
 
 _log(
-    "Task values published",
+    "Task values queued for compact publish",
     accuracy=loop_out["accuracy"],
     model_id=loop_out["model_id"],
     iteration_counter=loop_out["iteration_counter"],
@@ -695,16 +714,14 @@ if _t22_deploy_gate_on:
         )
 
         _t22_verdict = _t22_deploy_elig(loop_out)
-        dbutils.jobs.taskValues.set(
-            key="candidate_deploy_eligible",
-            value=bool(_t22_verdict.candidate_deploy_eligible),
+        lever_loop_publish["candidate_deploy_eligible"] = bool(
+            _t22_verdict.candidate_deploy_eligible
         )
-        dbutils.jobs.taskValues.set(
-            key="deploy_skip_reason",
-            value=str(_t22_verdict.deploy_skip_reason),
+        lever_loop_publish["deploy_skip_reason"] = str(
+            _t22_verdict.deploy_skip_reason
         )
         _log(
-            "Trial 22 W8 deploy eligibility published",
+            "Trial 22 W8 deploy eligibility queued for compact publish",
             candidate_deploy_eligible=(
                 _t22_verdict.candidate_deploy_eligible
             ),
@@ -714,15 +731,20 @@ if _t22_deploy_gate_on:
         # Fail-soft: never block the optimizer task on a deploy-gate
         # bookkeeping error. Default to eligible so behavior matches
         # the pre-W8 posture.
-        dbutils.jobs.taskValues.set(
-            key="candidate_deploy_eligible", value=True,
-        )
-        dbutils.jobs.taskValues.set(key="deploy_skip_reason", value="")
+        lever_loop_publish["candidate_deploy_eligible"] = True
+        lever_loop_publish["deploy_skip_reason"] = ""
         _log(
-            "Trial 22 W8 deploy-eligibility publish failed (defaulting "
+            "Trial 22 W8 deploy-eligibility queue failed (defaulting "
             "to eligible)",
             error=str(_t22_deploy_exc),
         )
+
+# Trial 25 W25.1 — emit the single compact publish that covers every
+# key the SKIP path plus the happy path plus the Trial 22 deploy-gate
+# block accumulated above. From this point on, ALL ``lever_loop`` task
+# values are in ONE ``taskValues.set`` instead of the 8-11 fan-out that
+# blew the parent run's 250-entry budget.
+publish_task_outputs(dbutils, task="lever_loop", outputs=lever_loop_publish)
 
 # RCO-2b — task values are published above so the run's debug payload
 # survives for postmortem tooling. ``enforce_merge_gate`` is observe-only

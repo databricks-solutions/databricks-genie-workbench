@@ -132,6 +132,7 @@ from genie_space_optimizer.common.config import (
     MAX_ITERATIONS,
     TARGET_BENCHMARK_COUNT,
 )
+from genie_space_optimizer.jobs._handoff import publish_task_outputs
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.harness import _run_preflight
@@ -616,22 +617,32 @@ _log(
 
 # Pass task values to downstream tasks
 _banner("Publishing Task Values")
-dbutils.jobs.taskValues.set(key="run_id", value=run_id)
-dbutils.jobs.taskValues.set(key="space_id", value=space_id)
-dbutils.jobs.taskValues.set(key="domain", value=domain)
-dbutils.jobs.taskValues.set(key="catalog", value=catalog)
-dbutils.jobs.taskValues.set(key="schema", value=schema)
-dbutils.jobs.taskValues.set(key="experiment_name", value=preflight_out["experiment_name"])
-dbutils.jobs.taskValues.set(key="experiment_id", value=preflight_out.get("experiment_id", ""))
-dbutils.jobs.taskValues.set(key="benchmark_count", value=persisted_benchmark_count)
-dbutils.jobs.taskValues.set(key="max_iterations", value=max_iterations)
-dbutils.jobs.taskValues.set(key="levers", value=json.dumps(levers))
-dbutils.jobs.taskValues.set(key="apply_mode", value=apply_mode)
-dbutils.jobs.taskValues.set(key="deploy_target", value=deploy_target or "")
-dbutils.jobs.taskValues.set(key="warehouse_id", value=warehouse_id)
-dbutils.jobs.taskValues.set(key="triggered_by", value=triggered_by)
-dbutils.jobs.taskValues.set(key="human_corrections", value=json.dumps(preflight_out.get("human_corrections", []), default=str))
-dbutils.jobs.taskValues.set(key="max_benchmark_count", value=effective_max)
+# Trial 25 W25.2 — compact handoff: 15 taskValues.set fan-out calls
+# collapsed into a single ``preflight_outputs`` JSON blob. Per-key
+# fallback is restored via ``GSO_TRIAL25_HANDOFF_COMPACT=0`` or
+# ``GSO_TRIAL25_PREFLIGHT_JSON_BLOB=0``.
+publish_task_outputs(
+    dbutils,
+    task="preflight",
+    outputs={
+        "run_id": run_id,
+        "space_id": space_id,
+        "domain": domain,
+        "catalog": catalog,
+        "schema": schema,
+        "experiment_name": preflight_out["experiment_name"],
+        "experiment_id": preflight_out.get("experiment_id", ""),
+        "benchmark_count": persisted_benchmark_count,
+        "max_iterations": max_iterations,
+        "levers": levers,
+        "apply_mode": apply_mode,
+        "deploy_target": deploy_target or "",
+        "warehouse_id": warehouse_id,
+        "triggered_by": triggered_by,
+        "human_corrections": preflight_out.get("human_corrections", []),
+        "max_benchmark_count": effective_max,
+    },
+)
 
 _log(
     "Task values published",
