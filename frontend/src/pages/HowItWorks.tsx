@@ -291,7 +291,7 @@ function IQScannerContent() {
     { name: "Column descriptions (≥50%)", desc: "50%+ of columns are documented" },
     { name: "Text instructions (>50 chars)", desc: "Business context and terminology explained" },
     { name: "Join specifications", desc: "Join paths defined for multi-source spaces" },
-    { name: "Data source count 1–12", desc: "Optimal number of tables and metric views for accuracy" },
+    { name: "Data source count", desc: "Configurable soft cap (default 12). Over-cap spaces with mostly metric views and no wide raw tables pass with a warning instead of failing." },
     { name: "8+ example SQLs", desc: "Diverse query patterns for the model to learn" },
     { name: "SQL snippets", desc: "Functions, expressions, measures, or filters defined" },
     { name: "Entity/format matching", desc: "Categorical and date/number columns annotated" },

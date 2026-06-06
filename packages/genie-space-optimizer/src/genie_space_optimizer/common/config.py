@@ -687,6 +687,65 @@ def apply_quality_instructions_is_on() -> bool:
     return get_apply_quality_instructions_mode() == "on"
 
 
+# ── 3b. IQ Scanner — Configurable thresholds for check #6 ──────────────
+#
+# Check #6 ("Data source count") was a hard binary fail at >12 sources.
+# These three env vars soften it: spaces over the cap can pass with a
+# warning severity when composition signals are favourable (high
+# metric-view ratio, no wide raw tables). See docs/05-iq-scanner.md.
+#
+# Evaluated on every call so tests can ``monkeypatch.setenv`` without
+# reloading the module — same pattern as ``get_scoring_v2_mode``.
+#
+# Sub-task of Epic #199 (Configurable Maturity Scoring); these env vars
+# will be absorbed into the registry refactor planned by that epic.
+
+
+def get_max_safe_data_sources() -> int:
+    """Soft cap for IQ Scanner check #6. Default 12.
+
+    A space with at-or-below this many sources passes check #6 with
+    ``severity="pass"`` (current behaviour). Above this, see
+    ``get_min_metric_view_ratio`` and ``get_max_wide_table_columns``.
+    """
+    try:
+        return max(1, int(os.environ.get("GSO_MAX_SAFE_DATA_SOURCES", "12")))
+    except ValueError:
+        return 12
+
+
+def get_max_wide_table_columns() -> int:
+    """Column-count threshold above which a raw table is "wide". Default 60.
+
+    Used by IQ Scanner check #6: when ``total_sources`` exceeds the
+    soft cap, any raw table with more columns than this disqualifies
+    the space from the warning band — the over-cap result downgrades
+    to ``severity="fail"``.
+    """
+    try:
+        return max(1, int(os.environ.get("GSO_MAX_WIDE_TABLE_COLUMNS", "60")))
+    except ValueError:
+        return 60
+
+
+def get_min_metric_view_ratio() -> float:
+    """Minimum ``metric_views / total_sources`` ratio that qualifies an
+    over-cap space for the IQ Scanner check #6 warning band. Default 0.5.
+
+    Below this ratio, an over-cap space is treated as fail (current
+    behaviour). At-or-above this ratio AND no wide raw tables, the
+    check downgrades from fail to warning so the space can still reach
+    "Ready to Optimize" / "Trusted" maturity tiers.
+
+    Clamped to ``[0.0, 1.0]``.
+    """
+    try:
+        raw = float(os.environ.get("GSO_MIN_METRIC_VIEW_RATIO", "0.5"))
+    except ValueError:
+        return 0.5
+    return max(0.0, min(1.0, raw))
+
+
 # ── 4. LLM Configuration ──────────────────────────────────────────────
 
 DEFAULT_LLM_ENDPOINT = "databricks-claude-sonnet-4-6"

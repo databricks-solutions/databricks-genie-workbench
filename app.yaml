@@ -97,6 +97,21 @@ env:
   - name: GSO_WAREHOUSE_ID
     valueFrom: sql-warehouse
 
+  # ---------------------------------------------------------------------------
+  # IQ Scanner — check #6 (Data source count) thresholds (issue #212)
+  #
+  # Defaults preserve the original binary-12 behaviour. Override per deploy
+  # when a customer's space-design philosophy needs a different cap, or to
+  # enable the warning band for over-cap spaces with safe composition.
+  # See docs/05-iq-scanner.md for the full behaviour table.
+  # ---------------------------------------------------------------------------
+  # - name: GSO_MAX_SAFE_DATA_SOURCES
+  #   value: "12"              # soft cap; over this becomes warning or fail
+  # - name: GSO_MAX_WIDE_TABLE_COLUMNS
+  #   value: "60"              # raw tables above this column count are "wide"
+  # - name: GSO_MIN_METRIC_VIEW_RATIO
+  #   value: "0.5"             # metric-view ratio that qualifies for warning band
+
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------
