@@ -25,6 +25,16 @@
 #   --print-only       print the resolved `claude -p ...` command without
 #                      running it. Useful for inspection.
 #
+# Permission mode: always launches with `--permission-mode acceptEdits` so
+# that Edit/Write operations on the repo (which the planner needs for
+# tracker rows + source-code fixes) are auto-approved. Without this, a
+# headless `claude -p` run hangs on the first Edit because the default
+# permission allowlist in ~/.claude/settings.json typically excludes the
+# repo path. acceptEdits is the safest auto-approval flag: it auto-accepts
+# only Edit/Write/NotebookEdit; Bash and Skill still respect the global
+# allowlist; bypassPermissions stays blocked (which honours your
+# disableBypassPermissionsMode setting).
+#
 # Exit codes:
 #   0     foreground/background launch succeeded
 #   2     bad usage (unknown goal-key or flag)
@@ -108,23 +118,32 @@ repo root:      $REPO_ROOT
 
 EOF
 
-# Always bootstrap first (idempotent, ~3s).
-echo "=== bootstrap ==="
-if ! bash "$(dirname "$0")/goal_bootstrap.sh"; then
-  echo "ERROR: bootstrap failed; not launching /goal" >&2
-  exit 4
+# Bootstrap is a launch-time prerequisite. --print-only is pure inspection
+# with no side effects, so skip bootstrap there — otherwise an unrelated
+# bootstrap failure (e.g. expired Databricks token) blocks the operator
+# from previewing the rendered goal command.
+if [ "$MODE" != "print" ]; then
+  echo "=== bootstrap ==="
+  if ! bash "$(dirname "$0")/goal_bootstrap.sh"; then
+    echo "ERROR: bootstrap failed; not launching /goal" >&2
+    exit 4
+  fi
+  echo ""
 fi
-echo ""
 
 CONDITION="$(cat "$FILE")"
 
 case "$MODE" in
   print)
     echo "=== resolved command (not executed) ==="
-    echo "claude -p \"/goal <CONDITION>\""
+    echo "claude --permission-mode acceptEdits -p \"/goal <CONDITION>\""
     echo ""
     echo "where <CONDITION> is the contents of:"
     echo "  $FILE"
+    echo ""
+    echo "(--print-only skips goal_bootstrap.sh; run without --print-only"
+    echo " to actually launch — that path requires a working Databricks"
+    echo " auth + Claude CLI + ripgrep + jq.)"
     echo ""
     echo "--- BEGIN CONDITION ---"
     cat "$FILE"
@@ -132,16 +151,19 @@ case "$MODE" in
     ;;
   foreground)
     echo "=== launching /goal interactively ==="
+    echo "  permission mode: acceptEdits (auto-approves repo Edit/Write)"
     echo "  (Ctrl+C to interrupt; the goal will resume on next \`claude --resume\`)"
     echo ""
-    exec claude -p "/goal $CONDITION"
+    exec claude --permission-mode acceptEdits -p "/goal $CONDITION"
     ;;
   background)
     SAFE_KEY="${GOAL_KEY//[\/:]/_}"
     LOG="/tmp/goal-${SAFE_KEY}-$(date +%Y%m%d-%H%M%S).log"
     echo "=== launching /goal in background ==="
+    echo "  permission mode: acceptEdits (auto-approves repo Edit/Write)"
     echo "  log file: $LOG"
-    nohup claude -p "/goal $CONDITION" --output-format json \
+    nohup claude --permission-mode acceptEdits -p "/goal $CONDITION" \
+      --output-format stream-json --include-partial-messages --verbose \
       >"$LOG" 2>&1 &
     PID=$!
     disown "$PID" 2>/dev/null || true

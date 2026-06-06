@@ -97,7 +97,9 @@ if [ -n "$hits" ]; then
     "$hits"
 fi
 
-# Per-QID overfit branches (`if qid == "gs_001": ...`).
+# Per-QID overfit branches (`if qid == "gs_001": ...`) — narrow form for the
+# legacy synthetic-QID scheme. Kept for backward compat with the original
+# regression that motivated this rule.
 hits=$(rg --type py --glob '!**/test_*.py' --glob '!**/_legacy/**' \
         '\bif\s+(state\.)?qid\s*==\s*"gs_[0-9]+"' \
         "$SRC_DIR" 2>/dev/null || true)
@@ -106,6 +108,54 @@ if [ -n "$hits" ]; then
     "Do not branch on a literal QID. Per-QID overfits are explicitly forbidden by /goal Harness Contract Invariant 6 in packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/01-harness-contract.md" \
     "$hits"
 fi
+
+# Architectural Principle #1 (broader form): any literal-eq or literal-list
+# branch on the *identity* fields `qid`, `question_id`, `space_id` against a
+# hardcoded string literal of >=4 chars. This catches the user-extended
+# success bar from the AGENTS.md "### Architectural Principles" section:
+# a fix that adds `if qid == "<uuid-like>"` or `if space_id in ["<UUID>", ...]`
+# is a deterministic shortcut and forbidden in src/ regardless of accuracy.
+hits=$(rg --type py --glob '!**/test_*.py' --glob '!**/*_test.py' --glob '!**/_legacy/**' \
+        '\bif\s+([a-zA-Z_][a-zA-Z0-9_.]*\.)?(qid|question_id|space_id)\s*==\s*"[^"]{4,}"' \
+        "$SRC_DIR" 2>/dev/null || true)
+if [ -n "$hits" ]; then
+  report "DETERMINISTIC_SHORTCUT_ID_LITERAL_EQ" \
+    "Do not branch on a literal qid/question_id/space_id value in src/. Architectural Principle #1 (AGENTS.md '### Architectural Principles') forbids deterministic shortcuts; fixes must come from LLM reasoning over typed schemas, not hardcoded if/elif ladders against identity literals." \
+    "$hits"
+fi
+
+# The membership pattern intentionally requires a STRING LITERAL immediately
+# after the opening bracket: `if qid in ["<literal>", ...]`. It deliberately
+# does NOT match `if qid in (rec.affected_qids or ())` because the next
+# non-whitespace char inside the paren is `r` (a name), not a quote.
+hits=$(rg --type py --glob '!**/test_*.py' --glob '!**/*_test.py' --glob '!**/_legacy/**' \
+        '\bif\s+([a-zA-Z_][a-zA-Z0-9_.]*\.)?(qid|question_id|space_id)\s+in\s+[\[\{(]\s*["'"'"']' \
+        "$SRC_DIR" 2>/dev/null || true)
+if [ -n "$hits" ]; then
+  report "DETERMINISTIC_SHORTCUT_ID_LITERAL_MEMBERSHIP" \
+    "Do not branch on literal qid/question_id/space_id membership in src/ (e.g. 'if qid in [\"<uuid1>\", \"<uuid2>\"]'). Architectural Principle #1 (AGENTS.md '### Architectural Principles') forbids deterministic shortcuts; fixes must come from LLM reasoning over typed schemas." \
+    "$hits"
+fi
+
+# Hardcoded canonical anchor space-ID literals in src/. Anchor IDs live in
+# tests/, docs/, fixtures, and runtime config — NEVER as quoted literals in
+# src/. A hardcoded anchor ID in src/ is the surest indicator of a
+# deterministic per-anchor branch and is blocked outright. AGENTS.md
+# Architectural Principle #1 + Invariant 6.
+CANONICAL_ANCHORS=(
+  "e94376a3-d8a6-4570-a605-9fe231e5f99c"
+  "d13938e7-405d-4444-833a-03f5ac9f7523"
+)
+for anchor in "${CANONICAL_ANCHORS[@]}"; do
+  hits=$(rg --glob '!**/_legacy/**' --glob '!**/test_*.py' --glob '!**/*_test.py' \
+            "[\"']${anchor}[\"']" \
+            "$SRC_DIR" 2>/dev/null || true)
+  if [ -n "$hits" ]; then
+    report "HARDCODED_ANCHOR_SPACE_ID_IN_SRC:${anchor}" \
+      "Canonical anchor space-ID '${anchor}' must not appear as a hardcoded string literal in src/. Anchor IDs belong in tests/, docs/, fixtures, or runtime config — hardcoding one in src/ is a deterministic per-anchor shortcut (Architectural Principle #1)." \
+      "$hits"
+  fi
+done
 
 # Closed-vocab archetype literals in transformer code. Plan 11 uses
 # RepairShape.OTHER + free-text repair_hypothesis.

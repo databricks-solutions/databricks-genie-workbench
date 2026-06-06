@@ -269,16 +269,19 @@ The eight invariants in that file are non-negotiable:
 
 1. **One trial fits in one assistant message** — no mid-trial turn-ends.
    Use `Bash run_in_background: true` + `BashOutput` polling for the
-   ~45-minute lever-loop runs.
+   ~30-minute replay runs.
 2. **The `EVIDENCE FOR EVALUATOR` block is the LAST surface of every
    assistant message** under `/goal` — re-emit it after any
    long-running tool call. Format defined in
    `packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/04-evidence-for-evaluator-protocol.md`.
-3. **Trial number is read from `### Trial N` rows in
-   `packages/genie-space-optimizer/docs/llmdrivenarchitecture/v5/lever-loop-architecture-and-iteration-tracker.md`**,
-   never from any session-local counter — `/goal --resume` resets the
-   goal-internal counter, so all budget bounds must reference the
-   persistent tracker.
+3. **Trial number is read from `## Trial N — ` rows in
+   `packages/genie-space-optimizer/docs/architecture/lever-loop-iteration-tracker.md`**
+   (canonical tracker — H2 heading, append-only, newest row at the
+   BOTTOM). Never use any session-local counter — `/goal --resume`
+   resets the goal-internal counter, so all budget bounds must reference
+   the persistent tracker via `grep -cE '^## Trial [0-9]+ — '`. The
+   deprecated `v5/lever-loop-architecture-and-iteration-tracker.md` is
+   frozen at the Trial 21 era and is no longer authoritative.
 4. **Offline iteration first.** Invoke the
    `gso-offline-funnel-iterate` skill before every real trial; record
    the offline justification (`real_trial_required_reason ∈
@@ -291,14 +294,29 @@ The eight invariants in that file are non-negotiable:
    the start of any trial turn so the failure surfaces in transcript.
 6. **Generalizable fixes only** — no per-QID overfits, no re-imports
    from `_legacy/`, no closed-vocab archetypes, no hand-rolled QID
-   extraction. PostToolUse `Edit|Write` hooks
-   (`forbid_legacy_imports.sh` + `check_invariants.sh`) enforce
-   automatically.
-7. **Real trials always run BOTH anchor spaces** —
-   `dc89d1a9-2020-4f42-994d-1ae05b865398` and
-   `98ec8950-d7d4-40b3-b5c0-36dcfb3fb610` — in parallel via `Task`
-   subagent fan-out. A fix that passes on one but not the other is a
-   bug class to surface, not hide.
+   extraction, no hardcoded anchor space-IDs in `src/`. PostToolUse
+   `Edit|Write` hooks (`forbid_legacy_imports.sh` +
+   `check_invariants.sh`) enforce automatically. See also "###
+   Architectural Principles" below — those are the **success-bar**
+   refinements of this invariant that the `/goal` evaluator enforces
+   via literal-match on the Architectural Self-Assessment block.
+7. **Real trials always run BOTH canonical anchor spaces** —
+   airline `e94376a3-d8a6-4570-a605-9fe231e5f99c` and
+   7now `d13938e7-405d-4444-833a-03f5ac9f7523` — via the
+   `gso-lever-loop-replay` skill. **The active `job_id` and
+   `parent_run_id` for each anchor are NEVER hardcoded here**; read them
+   from the "Current parent job runs" table in
+   [`packages/genie-space-optimizer/docs/architecture/canonical-anchors.md`](packages/genie-space-optimizer/docs/architecture/canonical-anchors.md)
+   on every turn. That file is the single source of truth and rotates
+   when a parent exhausts its 250-task-value budget (verdict
+   `PARENT_RUN_TASK_VALUE_BUDGET_EXHAUSTED_250` — see the gso-postmortem
+   skill). If the table shows `Status = PENDING` for either anchor, the
+   harness MUST trigger fresh parents via `gso-lever-loop-trigger` (or
+   surface the blockage) before attempting any replay. Postmortems for
+   both anchors fan out in parallel via `Task` subagents. A fix that
+   passes on one but not the other is a bug class to surface, not hide.
+   `gso-lever-loop-trigger` is COLD-START ONLY — do not use it for the
+   outer loop except when rotating.
 8. **Whack-a-mole detection** — if the funnel deepest-stage-reached
    has not advanced across three consecutive trials, end the turn
    with `verdict = WHACK_A_MOLE_DETECTED` and hand control back to
@@ -310,5 +328,244 @@ The canonical skill sequence per turn is documented in
 `packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/conditions/`.
 The operator runbook for launching `/goal` safely is in
 `packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/06-operator-runbook.md`.
+
+### Architectural Principles (success bar — non-negotiable)
+
+The goal-achievement gate is NOT just "did accuracy hit 100%" — it is
+also "is the solution that got us there architecturally sound". A fix
+that wins on accuracy by adding `if qid == "<literal>": ...` hardcoded
+branches is a regression even if the postmortem says
+`final_accuracy_pct = 100.0`. The `/goal` evaluator literal-matches
+the **Architectural Self-Assessment** block in every EVIDENCE block
+to enforce these six principles; the aggregate
+`architectural_principles_held = true` line must appear before the
+goal is achieved.
+
+Every assistant turn that edits code MUST pass each CLI arg below to
+`scripts/emit_evidence_for_evaluator.py`. A turn that cannot truthfully
+assert each principle = `true` (or `false` for principle 1) must pass
+`unknown` — that keeps the goal open (not failed) but blocks goal
+achievement until the principle is satisfied on a later turn.
+
+1. **No deterministic shortcuts as fixes** (`--deterministic-shortcuts-added false`) —
+   fixes come from LLM reasoning over typed schemas, validated by
+   deterministic code. Hardcoded `if qid == "<literal>"`, `if space_id == "<UUID>"`,
+   fixture-pinned matchers, anchor-specific branches in `src/` are all
+   forbidden. `check_invariants.sh` PostToolUse hook catches the
+   pattern; the self-assessment is the model's affirmative answer that
+   no such pattern was introduced this turn.
+2. **Generalizable solution** (`--generalizable-solution true`) —
+   every fix works across the entire RCA family the tracker row
+   targets, not just one anchor. Evidence: the bright-line replay
+   suite includes at least one non-anchor fixture proving generality
+   (Trial 24 Leg 2 is the canonical example).
+3. **RCA-rooted** (`--rca-citation "<kind> -> <mechanism> (<marker>)"`) —
+   every fix's tracker row cites the RCA kind, the fixing mechanism,
+   and the watch-marker it lights up. No symptom-patching without RCA
+   citation; if you can't cite, you're not yet ready to fix.
+4. **Typed schemas at module boundaries** (`--typed-schemas-at-boundaries true`) —
+   any data flowing across module boundaries (e.g., between SM stages,
+   between repair phases, between optimizer and applier) uses a
+   Pydantic model or dataclass, not `dict[str, Any]`. New
+   cross-boundary edges added this turn must use typed schemas; if
+   you must touch an existing untyped boundary, do not widen it.
+5. **State-machine-resident fix** (`--sm-resident-fix true`) — edits
+   apply inside the state machine (stages, transitions, repair hooks,
+   slate compiler, applier), not via out-of-band branching. Evidence
+   should cite `file:line` of the SM module the edit lives in.
+6. **LLM as the reasoning engine** (`--llm-reasoning-used true`) —
+   judgmental fixes (RCA categorization, mechanism selection,
+   justification grounding, plan synthesis) go through LLM calls with
+   typed prompt/output schemas. Deterministic code validates LLM
+   output; it does not replace LLM judgment. A fix that turns a
+   judgmental LLM call into a deterministic `if/elif` ladder is a
+   principle 6 failure.
+
+The aggregate line `architectural_principles_held = true` is
+auto-derived in `emit_evidence_for_evaluator.py` and only emits `true`
+when ALL six fields are at their safe value AND `rca_cited` is a
+non-empty non-"unknown" citation. The conditions in
+`packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/conditions/`
+require that literal line for goal achievement.
+
+### Next-Plan Playbook (Turn 1)
+
+The `goal-execute-next-plan.txt` condition is intentionally compact and
+points at this playbook. When a `/goal next-plan` is active, Turn 1
+proceeds in this exact order:
+
+1. **Read the canonical tracker end-to-end** —
+   `packages/genie-space-optimizer/docs/architecture/lever-loop-iteration-tracker.md`.
+   Identify every heading matching `^## Trial (\d+) — ` (H2, integer N,
+   em-dash with literal spaces). Tracker is append-only — the LAST such
+   heading in document order is `starting_trial`.
+2. **Capture budget anchors** — `starting_trial` = N from step 1,
+   `starting_trial_count` = `grep -cE '^## Trial [0-9]+ — ' tracker.md`.
+   These bound the trial-budget stop condition in invariant 8.
+3. **Decide in-progress** — `starting_trial` is IN-PROGRESS iff its
+   `### Status` sub-section contains at least one `- [ ] ` line.
+   Collect all unchecked items into `open_items`.
+   - If `open_items` is empty AND every anchor postmortem shows
+     `final_accuracy_pct = 100.0` → emit the EVIDENCE block with
+     `next=GOAL_ACHIEVED` and stop.
+   - If `open_items` is empty AND any anchor < 100% → AUTHOR a new
+     `## Trial <starting_trial+1> — ...` row via the `gso-plan-next-fix`
+     skill and re-enter step 1. Never bypass the tracker.
+4. **Classify each open item** as LIVE-TRIAL if its body mentions any of
+   these literal substrings (case-sensitive): `live`, `Live`, `deploy`,
+   `Deploy`, `behavioral_diff`, `production lever_loop`,
+   `fevm-prashanth`, `GSO_PATCH_OUTCOME_V1`, or any 15-digit parent-run
+   id. Otherwise OFFLINE.
+5. **Resolve `### Local Verification (mandatory before deploy)`** —
+   extract each backtick-wrapped command into
+   `local_verification_commands` in document order. Missing/empty table
+   → STOP with `/goal clear` (a trial without local verification cannot
+   be safely advanced).
+6. **Run every `local_verification_commands` entry**, in order, each a
+   single `Bash` tool call. Surface command + exit code in transcript.
+   On non-zero:
+   - Test-suite failure (`pytest …`) → branch to OFFLINE remediation via
+     `gso-offline-funnel-iterate` (TDD: minimal red→green), re-run only
+     the failing command. Never skip or weaken the test.
+   - Check-only failure (e.g. `pretrial_gate.sh`) → surface output and
+     STOP with `verdict = LOCAL_VERIFICATION_RED`. The harness will not
+     deploy against a red gate.
+7. **Local verification green → branch on `open_items`:**
+   - **7a. OFFLINE-only:** invoke `gso-offline-funnel-iterate` per item
+     in document order; PostToolUse hooks
+     (`forbid_legacy_imports.sh` + `check_invariants.sh`) MUST exit 0;
+     flip each `- [ ]` to `- [x]` via Edit with an evidence pointer.
+   - **7b. At least one LIVE-TRIAL item:** read the "Current parent job
+     runs" table from
+     `packages/genie-space-optimizer/docs/architecture/canonical-anchors.md`
+     and build `parent_runs` from the ACTIVE rows (one
+     `{job_id, parent_run_id}` per anchor). If the table has any
+     `PENDING` row, STOP with `verdict = ANCHOR_PARENTS_PENDING_ROTATION`
+     and surface the rotation procedure — do NOT silently fall back to
+     retired IDs. Then invoke `gso-lever-loop-replay` ONCE with
+     `profile = fevm-prashanth`, `deploy_before_replay = true`,
+     `parent_runs = <built from canonical-anchors.md>`,
+     `rerun_dependent_tasks = true`, `continue_on_failure = false`.
+     Wall-clock ~75 min total (10 min deploy + 30 min × 2 replays).
+     **Use the FOREGROUND blocking-wait pattern, NOT a backgrounded
+     watcher.** Concretely: emit a `phase=trigger` EVIDENCE block
+     announcing the replay submission, then issue a SINGLE foreground
+     `Bash` tool call (no `run_in_background: true`) that runs the
+     wait-loop script and exits when BOTH parent runs reach a terminal
+     `life_cycle_state` (`TERMINATED|INTERNAL_ERROR|SKIPPED`) or after
+     a 7200-second (120 min) upper-bound timeout. The blocking call
+     captures Claude's turn for the entire ~75 min — when it returns,
+     Claude immediately proceeds to step 8 within the same turn.
+     **Never use the passive `run_in_background: true` + `end_turn`
+     pattern** — it causes the `/goal` evaluator to idle indefinitely
+     because Claude never re-polls `BashOutput` after ending its turn
+     (documented harness failure mode: an overnight `/goal` session
+     can sit idle for 10+ hours after both parents have already
+     terminated). The wait-loop script template:
+
+```bash
+#!/bin/bash
+# Foreground blocking wait for both anchor parent runs.
+# Exit 0 on BOTH_TERMINAL, exit 1 on timeout.
+PROFILE=fevm-prashanth
+AIR=<airline parent_run_id from canonical-anchors.md>
+SEV=<7now parent_run_id from canonical-anchors.md>
+DEADLINE=$(( $(date +%s) + 7200 ))   # 120 min upper bound
+chk() {
+  databricks jobs get-run "$1" --profile $PROFILE -o json 2>/dev/null \
+    | python3 -c "import sys,json
+try:
+    d=json.load(sys.stdin); s=d.get('state',{})
+    print(s.get('life_cycle_state',''))
+except Exception:
+    print('ERR')"
+}
+while true; do
+  A=$(chk $AIR); S=$(chk $SEV)
+  echo \"poll airline=$A 7now=$S @ $(date +%H:%M:%S)\"
+  at=0; st=0
+  case \"$A\" in TERMINATED|INTERNAL_ERROR|SKIPPED) at=1;; esac
+  case \"$S\" in TERMINATED|INTERNAL_ERROR|SKIPPED) st=1;; esac
+  if [ $at -eq 1 ] && [ $st -eq 1 ]; then
+    echo \"BOTH_TERMINAL airline=$A 7now=$S\"
+    exit 0
+  fi
+  if [ $(date +%s) -ge $DEADLINE ]; then
+    echo \"TIMEOUT_2H airline=$A 7now=$S\"
+    exit 1
+  fi
+  sleep 60
+done
+```
+
+     If the script exits 1 (timeout), STOP with
+     `verdict = REPLAY_HANG_TIMEOUT_2H` and quote both anchors' last
+     observed `life_cycle_state`. If the script exits 0 but a parent's
+     final state is `INTERNAL_ERROR` with `error_trace` containing
+     `INVALID_PARAMETER_VALUE: A maximum of 250 task values per job run`,
+     the verdict is `PARENT_RUN_TASK_VALUE_BUDGET_EXHAUSTED_250` — that
+     means the canonical-anchors.md table was stale; rotate before
+     re-attempting. Otherwise proceed to step 8.
+8. **After replay SUCCEEDED → fan-out two `gso-postmortem` invocations
+   via `Task` subagents** (one per anchor) with `job_id` and
+   `parent_run_id` taken from the same ACTIVE row of
+   `canonical-anchors.md` that step 7b used, `profile = <same as above>`,
+   `goal_harness_mode = true`. Each subagent writes its postmortem to
+   `packages/genie-space-optimizer/docs/runid_analysis/<optimization_run_id>/postmortem.md`
+   and returns the three literal `## Verdict` lines
+   (`final_accuracy_pct = <X>`, `architecture_invariants_held = <bool>`,
+   `verdict = <CODE>`).
+9. **Evaluate each LIVE-TRIAL item against actual marker payloads** —
+   if the item's positive criterion is met on BOTH anchors, flip
+   `- [ ]` → `- [x]` with parent-run-id + optimization-run-id + marker
+   citation. If unmet on either anchor, leave unchecked; the gap seeds
+   the next trial's hypothesis.
+10. **If any anchor is still < 100% after step 9 →** invoke
+    `gso-plan-next-fix` to append a `## Trial <starting_trial+1> — ...`
+    row at the BOTTOM of the canonical tracker. The new row must
+    include: Hypothesis (citing the marker payloads from step 9),
+    Workstreams table, Watch Markers, Anti-Success Markers, Local
+    Verification table, Rollback, and Status checklist with at least one
+    `- [ ]` item.
+11. **Architectural Self-Assessment (BEFORE emitting EVIDENCE).**
+    Inspect this turn's edits (use `git diff` if helpful) and assess
+    each of the 6 architectural principles above. Compose the
+    `emit_evidence_for_evaluator.py` invocation with the safe value
+    for each principle if and only if the edits this turn truthfully
+    satisfy it; otherwise pass `unknown` (goal stays open) or `false`
+    (goal explicitly fails the principle and stops). For OFFLINE
+    edits this turn, the rule of thumb is: each pytest you added must
+    pass on a non-anchor fixture before you can claim
+    `generalizable_solution=true`; each new judgmental branch must
+    have a corresponding LLM call before you can claim
+    `llm_reasoning_used=true`; each cross-module data edge must use
+    a typed schema before you can claim
+    `typed_schemas_at_boundaries=true`. For LIVE-TRIAL turns where no
+    code was edited (just replay+postmortem), pass `unknown` for the
+    five boolean fields and `unknown` for `rca-citation` — the
+    aggregate will emit `architectural_principles_held = unknown`
+    which keeps the goal open until a code-edit turn explicitly
+    satisfies all six.
+
+Every assistant message ends with the EVIDENCE FOR EVALUATOR block per
+`packages/genie-space-optimizer/docs/llmdrivenarchitecture/goalMode/04-evidence-for-evaluator-protocol.md`.
+Use the canonical anchor-name CLI args:
+`--opt-run-id-airline`, `--opt-run-id-7now`,
+`--deepest-stage-airline`, `--deepest-stage-7now`,
+plus the six Architectural Self-Assessment args:
+`--deterministic-shortcuts-added`, `--generalizable-solution`,
+`--rca-citation`, `--typed-schemas-at-boundaries`, `--sm-resident-fix`,
+`--llm-reasoning-used`.
+
+**Pass `--phase` truthfully.** The emitter auto-masks all three
+per-anchor verdict lines (and the `GOAL_HARNESS_STATUS_V1
+architecture_invariants_held=` field) to safe placeholders on every
+phase except `postmortem`, so stale on-disk postmortem verdicts
+cannot trip a goal-stop on a `trigger`/`offline`/`plan`/`land`/`idle`
+turn. The intermediate trigger-phase block (deploy in flight, before
+fresh postmortems) MUST use `--phase trigger`; only the turn that
+read fresh postmortems may use `--phase postmortem`. See
+`04-evidence-for-evaluator-protocol.md` §`postmortem excerpts` for
+the full rationale.
 
 When NO `/goal` is active, this contract is dormant — operate normally.

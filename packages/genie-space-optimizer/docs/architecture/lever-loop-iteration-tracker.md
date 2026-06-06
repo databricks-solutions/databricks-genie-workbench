@@ -535,13 +535,22 @@ filter-removal companion that is properly a solo instruction (FB).
 
 ### Local Verification (mandatory before deploy)
 
+These rows are the local pre-flight gates the harness must run (and pass)
+before any deploy. The live-LLM behavioral-diff proof is NOT a local
+verification step — it is the open LIVE-TRIAL item itself (see `### Status`
+below) and runs through `gso-lever-loop-replay` AFTER deploy.
+
 | Check | Command |
 |---|---|
 | Trial 24 replay (merge gate) | `pytest tests/integration/postmortem_replay/test_trial24_postmortem_replay.py tests/integration/postmortem_replay/test_trial24_general_grounding_replay.py -q` |
 | Kit + required-assets + slate + snippet units | `pytest tests/unit/test_kit_for_rca.py tests/unit/test_required_assets_for_patch_family.py tests/unit/test_trial24_kit_survives_slate.py tests/unit/test_trial24_mechanism_aware_kit.py tests/unit/test_trial24_followons_filter_removal_solo.py tests/unit/test_producer_snippet_validator.py -q` |
 | Trial 21/22/23 replay (no regression) | `pytest tests/integration/postmortem_replay/ -q` |
-| Full authoritative suite (replay readiness) | `pytest tests/unit/ tests/integration/postmortem_replay/ --ignore=tests/unit/_legacy -q` → expect 9636 passed / 0 failed |
-| Live LLM behavioral-diff proof (the open item) | Deploy current code, then via `gso-lever-loop-replay` skill repair parent runs `488860692117207/501649560474489` (anchor `e94376a3`, airline) and `488860692117207/807620338215711` (anchor `d13938e7`, 7now); each postmortem must report `GSO_PATCH_OUTCOME_V1` with a mechanism != `add_example_sql` on a target QID AND `behavioral_diff != unchanged` |
+| Full authoritative suite (replay readiness) | `pytest tests/unit/ tests/integration/postmortem_replay/ --ignore=tests/unit/_legacy -q` |
+
+Note: the last row expects ~9636 tests passing with 0 failed at the time
+this trial was authored. The harness should treat any FAILED count > 0 as
+LOCAL_VERIFICATION_RED; a drift in the PASSED count (more tests added)
+is acceptable.
 
 ### Rollback
 
@@ -565,4 +574,335 @@ byte-stable.
 - [x] FB — filter-removal solo (reclassify + ground + decline no-op snippet + Stage 3 SKILL)
 - [x] RR Phase 0–2 — full unit/integration suite green (`9636 passed / 0 failed`)
 - [x] RR Phase 3 — generalized `INSTRUCTION_TEXT` justification grounding flag-gated; Leg 1 e943 re-confirmed; Leg 2 deterministic non-allowlist bright-line pinned
-- [ ] Live `behavioral_diff != unchanged` applier proof on BOTH canonical anchors (`e94376a3` airline parent run `501649560474489`, `d13938e7` 7now parent run `807620338215711`) via `gso-lever-loop-replay` after deploy. This is the long-owed live promotion bar; default-ON was accepted as a monitored ship ahead of this live signal.
+- [ ] Live `behavioral_diff != unchanged` applier proof on BOTH canonical
+  anchors (`e94376a3` airline, `d13938e7` 7now) via `gso-lever-loop-replay`
+  after deploy. This is the long-owed live promotion bar; default-ON was
+  accepted as a monitored ship ahead of this live signal. **Original parent
+  runs `501649560474489` (airline) and `807620338215711` (7now) are RETIRED**
+  — see "Live Verification Status" below. Trial 25 rotates to fresh parents.
+
+### Live Verification Status (2026-06-06)
+
+Two replay attempts were made on the original parent runs (airline
+`501649560474489`, 7now `807620338215711`) during the overnight
+`/goal next-plan` session. Both attempts ran the GSO state machine
+**end-to-end successfully** (28.5 min airline, 25.0 min 7now;
+`loop_out` fully populated) but the final post-loop "Publishing Task
+Values" cell crashed with the Databricks platform error:
+
+```
+INVALID_PARAMETER_VALUE: A maximum of 250 task values per job run is allowed
+```
+
+The verdict is `PARENT_RUN_TASK_VALUE_BUDGET_EXHAUSTED_250` (new code,
+classification `D_PLATFORM_INFRA`) — not a Trial 24 regression. The
+Databricks Jobs platform tracks `dbutils.jobs.taskValues.set` writes
+cumulatively per parent job run; each lever-loop replay publishes ~11-12
+values, layered on ~45 values per full anchor replay (preflight +
+baseline_eval + lever_loop + enrichment + finalize). After ~5-6 anchor
+replays a parent crosses the 250 ceiling and every subsequent retry
+crashes on the first `setJson("scores", …)` call inside the same parent
+run. Both original anchor parents are now **permanently dead**:
+
+| Anchor | Parent run | Replay attempts | Latest failed task_run_id | Status |
+|---|---|---|---|---|
+| airline (`e94376a3`) | `501649560474489` | 22 (last 2 failed identically) | `502350180589777` | RETIRED — task-value budget exhausted |
+| 7now (`d13938e7`)    | `807620338215711` | 21 (last 2 failed identically) | `12690262598700`  | RETIRED — task-value budget exhausted |
+
+**What we know about Trial 24's actual live behaviour** (updated
+2026-06-06 after MLflow marker extraction from driver stdout — see
+`docs/runid_analysis/<task_run_id>/trial24_behavioral_diff_summary.json`
+and `…/trial24_runtime_markers.txt` per anchor): the GSO loop ran
+4 iterations on each anchor before exhausting its iteration budget,
+and the platform-side bookkeeping fault only hit the final publish
+cell — the Stage 1-5 markers and per-iteration acceptance records
+were all written to MLflow during the run. The extracted evidence
+shows Trial 24's live promotion bar is **NOT held** on either anchor:
+
+| Anchor | iters completed | `TRIAL24_KIT_FORCED_V1` count | `KEPT_INSUFFICIENT` records | `behavioral_diff != "unchanged"` | best_accuracy | optimizer_outcome |
+|---|---|---|---|---|---|---|
+| airline | 4 / 5 | **0** | 6 | **0**       | 87.5% | `OPTIMIZER_TRIED_INSUFFICIENT_GAIN` |
+| 7now    | 4 / 5 | **0** | 6 | **0**       | 86.96% | `OPTIMIZER_TRIED_INSUFFICIENT_GAIN` |
+
+**Trial 24's kit-at-source gate never fired on either anchor**
+(`TRIAL24_KIT_FORCED_V1 = 0` on both), so the trial's central
+mechanism was not exercised in production. The reasons differ per
+anchor:
+
+- **Airline**: the live RCA pipeline produced kinds
+  `wrong_aggregation`, `wrong_column`, and `plural_top_n_collapse` —
+  **none of which are in Trial 24's kit map**
+  `{extra_defensive_filter, top_n_cardinality_collapse}`. The map
+  is too narrow to match the actual airline RCA distribution.
+- **7now**: the live RCA pipeline emitted English-label values like
+  `"Top-N cardinality collapse via spurious RANK()=1 filter"` that
+  **never normalised to the canonical key**
+  `top_n_cardinality_collapse`. The cluster *described* exactly the
+  failure mode Trial 24's map targets but the kind-normalisation
+  layer in `repair_diagnosis.py` (or upstream) didn't reduce the
+  English label to the canonical key.
+
+Trial 20 grounded-solo (`GSO_TRIAL20_SINGLE_LEVER_JUSTIFIED_V1`)
+fired twice on 7now during iter 1, but both times on `add_example_sql`
+mechanisms — which the Trial 24 promotion bar explicitly excludes
+("behaviorally-impactful corrective mechanism != `add_example_sql`").
+
+**Additional finding (separate bug — candidate for its own trial):**
+`add_sql_snippet_filter` mechanism patches fail at the applier with
+`outcome=applyability_rejected`, `outcome_reason=apply_failed:Invalid
+serialized_space: Unknown field 'name'`. This blocked iter 4 on
+airline (both targets) and iter 2 on 7now (both targets). That is a
+real applier bug independent of Trial 24's kit gate — when fixed it
+may resurface as a Trial 24 kit-gate dependency (the
+`add_sql_snippet_filter` mechanism is part of the corrective kit for
+`extra_defensive_filter`). File as a Trial-25-or-26-adjacent fix
+candidate.
+
+**Trial 24's `[ ]` live-verification status remains open**, but
+re-running the same Trial-24 code under cold-start would produce the
+**same NOT_PROVEN result** — the kit gate's failure to fire is a
+structural design gap in the kit map + RCA-kind normalisation, not a
+non-determinism that another run would fix. The harness blockers
+(parents dead, AGENTS.md hardcoding the dead IDs, /goal watcher
+wakeup flaw) are addressed by **Trial 25** below; the
+kit-gate-doesn't-fire structural gap is addressed by **Trial 26**
+(authored as a follow-on; see below).
+
+## Trial 25 — Replay-Budget Scalability for the Anchor Parent Runs
+
+**Master flag:** `GSO_TRIAL25_HANDOFF_COMPACT` (default ON). ANDs over
+every sub-flag. `=0` restores the pre-Trial-25 per-key `taskValues.set`
+fan-out so consumers can roll back if a downstream consumer regresses.
+
+**Sub-flags (all default ON when master ON):**
+
+| Flag | Workstream |
+|---|---|
+| `GSO_TRIAL25_LEVER_LOOP_JSON_BLOB` | W25.1 — consolidate `run_lever_loop.py` post-loop publish into a single JSON blob |
+| `GSO_TRIAL25_PREFLIGHT_JSON_BLOB`  | W25.2 — consolidate `run_preflight.py` publish |
+| `GSO_TRIAL25_BASELINE_JSON_BLOB`   | W25.3 — consolidate `run_baseline.py` publish |
+| `GSO_TRIAL25_FINALIZE_JSON_BLOB`   | W25.4 — consolidate `run_finalize.py` publish |
+| `GSO_TRIAL25_REPLAY_BUDGET_GATE`   | W25.5 — pre-replay guardrail in `gso-lever-loop-replay` |
+
+### Hypothesis
+
+`PARENT_RUN_TASK_VALUE_BUDGET_EXHAUSTED_250` is a **harness
+scalability** failure, not a GSO-logic failure. The current
+per-anchor replay budget is ~5-6 attempts on a single parent run, but
+the long-running optimisation funnel pattern requires many more
+replays per anchor (Trials 18-24 have already produced ~20 replays
+each on `501649560474489` and `807620338215711`). Two architectural
+levers compound to a >40× extension of the practical budget without
+changing GSO logic or consumer semantics:
+
+1. **Compact every job-notebook publish into ≤2 `taskValues.set`
+   calls** (one structured JSON blob keyed `<task>_outputs`, plus an
+   optional small `<task>_status` for fast-path consumers). The
+   existing `HandoffSource.TASK_VALUES` / `DELTA_FALLBACK` abstraction
+   in `jobs/_handoff.py` already isolates consumers from the
+   underlying schema, so a typed `LeverLoopOutputs` / `PreflightOutputs`
+   /etc. dataclass at the publish boundary plus a parallel typed read
+   at every consumer site is a generalizable, RCA-rooted, SM-resident
+   refactor with bounded blast radius. Going from ~45 values per
+   anchor replay to ≤10 lifts the per-parent budget from ~5-6 to
+   ~25+ replays. Combined with rotating each anchor to a fresh parent
+   when a new trial campaign opens, the practical headroom is
+   effectively unbounded.
+
+2. **Pre-trigger budget guardrail in `gso-lever-loop-replay`.** Before
+   scheduling a replay, query the parent run's accumulated task-value
+   count via `databricks jobs get-run --include-resolved-values` and
+   refuse to schedule when `count > 200` with an actionable
+   `PARENT_RUN_NEAR_BUDGET_CEILING_<count>` verdict that names the
+   rotation skill (`gso-lever-loop-trigger`). This converts a silent,
+   end-of-replay platform crash into an explicit, pre-replay
+   harness-side rejection that the operator (and `/goal`) can route
+   around.
+
+### Workstreams
+
+| Workstream | Description | Module owner | Status |
+|---|---|---|---|
+| W25.1 | `LeverLoopOutputs` dataclass + single `lever_loop_outputs` JSON publish; consumers in `_handoff.py` switch to typed read; rollback path preserves per-key writes when flag off | `jobs/run_lever_loop.py`, `jobs/_handoff.py`, `tests/unit/test_handoff_lever_loop_*.py` | plan |
+| W25.2 | `PreflightOutputs` dataclass + single `preflight_outputs` JSON publish | `jobs/run_preflight.py`, `jobs/_handoff.py`, tests | plan |
+| W25.3 | `BaselineOutputs` dataclass + single `baseline_outputs` JSON publish | `jobs/run_baseline.py`, `jobs/_handoff.py`, tests | plan |
+| W25.4 | `FinalizeOutputs` dataclass + single `finalize_outputs` JSON publish | `jobs/run_finalize.py`, `jobs/_handoff.py`, tests | plan |
+| W25.5 | Pre-trigger budget gate in `gso-lever-loop-replay` SKILL.md + helper script `scripts/check_parent_task_value_budget.py` | `docs/skills/gso-lever-loop-replay/SKILL.md`, `scripts/` | plan |
+| W25.6 | AGENTS.md harness fixes: (a) parent_run_id rotation policy with named "current anchor parent runs" config, (b) replace `/goal` passive-watcher pattern with active-poll-with-periodic-EVIDENCE (or foreground blocking wait + heartbeat EVIDENCE) | `AGENTS.md`, `docs/llmdrivenarchitecture/goalMode/*.md` | plan |
+| W25.7 | `gso-postmortem` SKILL.md entry for `PARENT_RUN_TASK_VALUE_BUDGET_EXHAUSTED_250` (and helper script to detect it from `jobs get-run-output` JSON) | `docs/skills/gso-postmortem/SKILL.md` | plan |
+| W25.8 | Rotate anchor parent runs to fresh `gso-lever-loop-trigger`-issued runs; update AGENTS.md anchor constants; re-run Trial 24's live behavioral_diff proof on the fresh parents | `gso-lever-loop-trigger` invocation + AGENTS.md | plan |
+
+### Watch Markers (positive — these SHOULD appear after Trial 25)
+
+| Marker | Workstream | Meaning |
+|---|---|---|
+| `GSO_TRIAL25_HANDOFF_COMPACT_PUBLISH_V1{task,blob_keys,blob_bytes,prior_key_count}` | W25.1-4 | Single-blob publish replaced per-key fan-out for this task attempt |
+| `GSO_TRIAL25_HANDOFF_COMPACT_READ_V1{task,blob_keys,reader}` | W25.1-4 | A downstream consumer successfully read the typed blob |
+| `GSO_TRIAL25_BUDGET_GATE_PASSED_V1{parent_run_id,task_value_count,threshold}` | W25.5 | Pre-replay guardrail allowed the replay |
+
+### Anti-Success Markers (negative — these MUST NOT appear post-Trial-25)
+
+| Anti-marker | Where it surfaced | Trial 25 fix |
+|---|---|---|
+| `PARENT_RUN_TASK_VALUE_BUDGET_EXHAUSTED_250` (Py4J `setJson` crash inside `Publishing Task Values` cell) | `run_*.py` post-loop publish on long-lived anchor parents | W25.1-4 compact publish + W25.5 pre-trigger gate + W25.8 fresh parents |
+| Downstream consumer fails because `taskValues.get(key="scores")` returns `None` after flag-on | `_handoff.py`, `run_finalize.py`, etc. | W25.1 typed read path must be wired before W25.1 publish flips |
+| `/goal` session sits idle for >30 min because the watcher script doesn't wake the agent | `/goal` end_turn + backgrounded poll loop never surfaces `BOTH_TERMINAL` | W25.6 active-poll-with-periodic-EVIDENCE pattern |
+
+### Bright-Line Replay Suite (the merge gate)
+
+- All Trial 18-24 replay suites stay green (no GSO-logic regression)
+- New unit tests: `tests/unit/test_trial25_handoff_compact_publish.py`,
+  `tests/unit/test_trial25_handoff_compact_read.py`,
+  `tests/unit/test_trial25_replay_budget_gate.py`
+- New integration test: `tests/integration/test_trial25_lever_loop_handoff_roundtrip.py`
+  (publish → read across the in-process `_handoff.py` abstraction
+  with both flag states)
+
+### Local Verification (mandatory before deploy)
+
+| Check | Command |
+|---|---|
+| Trial 25 handoff units | `pytest tests/unit/test_trial25_handoff_compact_publish.py tests/unit/test_trial25_handoff_compact_read.py tests/unit/test_trial25_replay_budget_gate.py -q` |
+| Trial 25 roundtrip | `pytest tests/integration/test_trial25_lever_loop_handoff_roundtrip.py -q` |
+| Trial 24 deterministic replay (no regression) | `pytest tests/integration/postmortem_replay/test_trial24_postmortem_replay.py tests/integration/postmortem_replay/test_trial24_general_grounding_replay.py -q` |
+| Full authoritative suite | `pytest tests/unit/ tests/integration/postmortem_replay/ --ignore=tests/unit/_legacy -q` |
+
+### Rollback
+
+`export GSO_TRIAL25_HANDOFF_COMPACT=0` then redeploy for a full
+emergency rollback to per-key `taskValues.set` publish. Each sub-flag
+also rolls back surgically per task (e.g.
+`GSO_TRIAL25_LEVER_LOOP_JSON_BLOB=0` only restores `run_lever_loop.py`
+publish, keeping the other three tasks compact). Consumer typed reads
+auto-fall-back to per-key reads when the blob key is absent.
+
+### Status
+
+- [ ] W25.1 — `LeverLoopOutputs` dataclass + single-blob publish + typed read
+- [ ] W25.2 — `PreflightOutputs` compact publish + read
+- [ ] W25.3 — `BaselineOutputs` compact publish + read
+- [ ] W25.4 — `FinalizeOutputs` compact publish + read
+- [ ] W25.5 — pre-trigger budget gate in `gso-lever-loop-replay`
+- [x] W25.6 — AGENTS.md harness fixes (parent rotation policy + foreground-blocking watcher) — landed 2026-06-06; see AGENTS.md invariant 7 + step 7b + new `packages/genie-space-optimizer/docs/architecture/canonical-anchors.md`
+- [x] W25.7 — `gso-postmortem` SKILL.md entry for `PARENT_RUN_TASK_VALUE_BUDGET_EXHAUSTED_250` — landed 2026-06-06
+- [ ] W25.8 — rotate anchor parents (`canonical-anchors.md` Current table) AND deploy with W25.1-5 active before re-running any live verification. **NOTE 2026-06-06:** rotation alone won't surface new Trial 24 evidence because the Trial 24 kit gate doesn't fire on the live RCA population (see Trial 24 Live Verification Status above and Trial 26 below). Defer this workstream until Trial 26's RCA-normalization fix lands.
+
+## Trial 26 — RCA-Kind Normalisation + Kit-Map Coverage So Trial 24 Can Actually Fire
+
+**Master flag:** `GSO_TRIAL26_KIT_GATE_REACHABLE` (default ON). ANDs over
+every sub-flag. `=0` restores pre-Trial-26 normalization + kit-map
+coverage exactly.
+
+**Sub-flags (all default ON when master ON):**
+
+| Flag | Workstream |
+|---|---|
+| `GSO_TRIAL26_RCA_KIND_CANONICAL_NORMALISE` | W26.1 — English label → canonical RCA-kind key via LLM-validated typed normaliser |
+| `GSO_TRIAL26_KIT_MAP_EXPANDED`             | W26.2 — extend `_TRIAL24_KIT_FOR_RCA` to cover the live airline RCA kinds (`wrong_aggregation`, `wrong_column`, `plural_top_n_collapse`) |
+| `GSO_TRIAL26_APPLIER_SNIPPET_NAME_FIX`     | W26.3 — fix `add_sql_snippet_filter` applier emitting `name` field on serialized_space (root cause of `Invalid serialized_space: Unknown field 'name'`) |
+
+### Hypothesis
+
+Trial 24's kit-at-source synthesis is architecturally correct — it
+produces ≥2-lever kits that survive the slate `required_assets`
+gate and the bundle-invariants contract, and the FB grounded-solo
+path handles the filter-removal case. **But the gate that decides
+"is this RCA a Trial 24 candidate?" never fires on the live RCA
+population on either canonical anchor** (`TRIAL24_KIT_FORCED_V1=0`
+in both 502350180589777 and 12690262598700 MLflow marker streams).
+Two structural gaps are responsible:
+
+1. **The kit map is too narrow** —
+   `_TRIAL24_KIT_FOR_RCA = {extra_defensive_filter, top_n_cardinality_collapse}`
+   does not cover the actual RCA distribution observed on airline
+   (`wrong_aggregation`, `wrong_column`, `plural_top_n_collapse`).
+   Even with perfect normalisation, zero airline RCAs would map
+   into the kit. The map needs to span the live distribution; the
+   FA mechanism-aware detection added in Trial 24 is necessary but
+   not sufficient.
+
+2. **RCA-kind normalisation drift** — on 7now, the live RCA pipeline
+   emits English-label values like
+   `"Top-N cardinality collapse via spurious RANK()=1 filter"` that
+   match the *intent* of the canonical key
+   `top_n_cardinality_collapse` but do not normalise to it. The
+   canonical key is the dictionary lookup the kit map uses, so any
+   label that fails to reduce keeps the kit gate shut. The
+   normalisation layer in `repair_diagnosis.py` (and any upstream
+   RCA-kind producer in `stages/diagnose.py`) needs a typed,
+   LLM-validated reduction step: deterministic code maps to a
+   bounded enum where possible, LLM judgment classifies free-form
+   English into the same enum, and an aligned scorer (offline
+   evaluator) gates that the classification is doing what the
+   downstream kit map expects.
+
+3. **`add_sql_snippet_filter` applier bug (separate, blocking)** —
+   2/8 patch attempts across both anchors failed with
+   `outcome=applyability_rejected`,
+   `outcome_reason=apply_failed:Invalid serialized_space: Unknown
+   field 'name'`. This means the applier is emitting a `name` field
+   on a serialized_space object that the Databricks Genie API
+   rejects. Even if the kit gate fires post-Trial-26, the kit's
+   `add_sql_snippet_filter` member will continue to be rejected
+   until this is fixed. Bundled into Trial 26 because it's part of
+   the same "Trial 24 kit can never land in production" failure
+   chain.
+
+### Workstreams
+
+| Workstream | Description | Module owner | Status |
+|---|---|---|---|
+| W26.1 | Typed RCA-kind canonical normaliser: LLM call (`rca_kind_canonicalise`) with typed input (free-form RCA kind string + cluster context) and typed enum output (canonical kit-map key or `unknown_kind`); deterministic post-validation that the output is in the canonical set; aligned offline evaluator (`tests/eval/test_rca_kind_canonical_normaliser_alignment.py`) over the airline + 7now RCA distributions; integration with `repair_diagnosis.py` and `stages/diagnose.py` so every RCA kind that reaches the kit map is canonical. | `stages/diagnose.py`, `repair_diagnosis.py`, new `rca_kind_canonical.py`, alignment test | plan |
+| W26.2 | Extend `_TRIAL24_KIT_FOR_RCA` to include `wrong_aggregation`, `wrong_column`, `plural_top_n_collapse` (each with its corrective mechanism family). The kit composition follows the same shape as the existing Trial 24 entries (≥2-lever kit; matched companion families). Mechanism families derive from the existing `RCA_KIND_TO_FIXING_MECHANISMS` Trial 23 routing — Trial 26 wires those into Trial 24's kit-at-source synthesis path. | `stages/action_groups.py`, `proposal_slate_compiler.py` | plan |
+| W26.3 | Fix `add_sql_snippet_filter` applier emitting `name` on serialized_space. Locate the applier dispatcher in `applier/` (or wherever `add_sql_snippet_filter` is translated to a serialized_space mutation), remove or rename the offending `name` field per the canonical `serialized_space` schema (`backend/references/schema.md`), add a deterministic typed builder + unit test covering both the happy path and the regression on the airline iter-4 / 7now iter-2 patch payloads. | `applier/`, `tests/unit/test_applier_add_sql_snippet_filter.py` | plan |
+| W26.4 | Local verification: extend `tests/integration/postmortem_replay/test_trial24_postmortem_replay.py` with a non-anchor fixture proving the new kit map + normaliser cover at least one English-label cluster (Leg 3); add `test_trial26_rca_kind_canonical_normaliser_alignment.py` (offline LLM alignment) using a tracker-curated dataset of (English label → canonical key) pairs from past runid_analysis bundles. | tests | plan |
+| W26.5 | Re-run Trial 24 live verification on fresh parent runs (Trial 25 W25.8) after Trial 26 lands. Acceptance criterion: at least one `GSO_TRIAL24_KIT_FORCED_V1` marker on each anchor AND at least one accepted patch with `behavioral_diff != "unchanged"` AND mechanism not in `{add_example_sql}`. | live verification (no code) | plan |
+
+### Watch Markers (positive — these SHOULD appear after Trial 26)
+
+| Marker | Workstream | Meaning |
+|---|---|---|
+| `GSO_TRIAL26_RCA_CANONICAL_V1{raw_label,canonical_key,confidence,via}` | W26.1 | RCA-kind normaliser reduced a free-form English label to a canonical kit-map key (`via` ∈ `deterministic|llm|allowlist`) |
+| `GSO_TRIAL24_KIT_FORCED_V1` count `> 0` on a live anchor | W26.1+W26.2 | Trial 24's kit-at-source synthesis fired in production; the long-owed live promotion bar is now reachable |
+| `GSO_TRIAL26_APPLIER_SNIPPET_FIELDS_V1{fields,kept,dropped}` | W26.3 | Applier dispatcher logged the canonical field set it emitted to the genie API (`name` MUST NOT appear in `kept` post-Trial-26) |
+
+### Anti-Success Markers (negative — these MUST NOT appear post-Trial-26)
+
+| Anti-marker | Where it surfaced | Trial 26 fix |
+|---|---|---|
+| `GSO_TRIAL24_KIT_FORCED_V1` count `= 0` on a live anchor whose RCA distribution contains any kit-map key (Trial 24 + 26 combined map) | live trial postmortem | W26.1 normaliser bug |
+| `outcome_reason=apply_failed:Invalid serialized_space: Unknown field 'name'` | applier | W26.3 |
+| `GSO_TRIAL26_RCA_CANONICAL_V1.canonical_key="unknown_kind"` rate `> 30%` across a live anchor's iterations | W26.1 alignment regression | tighten normaliser via additional alignment data or expand map |
+
+### Bright-Line Replay Suite (the merge gate)
+
+- All Trial 18-24 replay suites stay green (no regression on existing fixtures)
+- `tests/eval/test_rca_kind_canonical_normaliser_alignment.py` reports `≥95%` exact match on the curated (English-label, canonical-key) dataset
+- `test_trial26_kit_map_coverage_replay.py` proves the kit gate fires for each newly-added kind on its anchor fixture
+- `test_applier_add_sql_snippet_filter.py` proves the canonical builder produces a serialized_space mutation the Genie API accepts (mocked) and the regression payload from airline iter 4 / 7now iter 2 no longer hits `Unknown field 'name'`
+
+### Local Verification (mandatory before deploy)
+
+| Check | Command |
+|---|---|
+| Trial 26 RCA normaliser alignment | `pytest tests/eval/test_rca_kind_canonical_normaliser_alignment.py -q` |
+| Trial 26 kit-map coverage replay | `pytest tests/integration/postmortem_replay/test_trial26_kit_map_coverage_replay.py -q` |
+| Trial 26 applier fix unit | `pytest tests/unit/test_applier_add_sql_snippet_filter.py -q` |
+| Trial 24 replay (no regression) | `pytest tests/integration/postmortem_replay/test_trial24_postmortem_replay.py tests/integration/postmortem_replay/test_trial24_general_grounding_replay.py -q` |
+| Full authoritative suite | `pytest tests/unit/ tests/integration/postmortem_replay/ --ignore=tests/unit/_legacy -q` |
+
+### Rollback
+
+`export GSO_TRIAL26_KIT_GATE_REACHABLE=0` then redeploy for emergency
+rollback. Each sub-flag also rolls back surgically (e.g.
+`GSO_TRIAL26_KIT_MAP_EXPANDED=0` shrinks the kit map back to Trial-24
+coverage but keeps the normaliser; `GSO_TRIAL26_APPLIER_SNIPPET_NAME_FIX=0`
+restores the broken `name` field if the applier fix regresses).
+
+### Status
+
+- [ ] W26.1 — RCA-kind canonical normaliser + offline alignment test
+- [ ] W26.2 — kit-map expansion to cover live airline RCA distribution
+- [ ] W26.3 — `add_sql_snippet_filter` applier `name`-field fix
+- [ ] W26.4 — bright-line replay suite + offline alignment test
+- [ ] W26.5 — live re-verification on Trial-25-rotated parent runs: ≥1 `GSO_TRIAL24_KIT_FORCED_V1` per anchor AND ≥1 accepted patch with `behavioral_diff != "unchanged"` AND mechanism != `add_example_sql` per anchor
