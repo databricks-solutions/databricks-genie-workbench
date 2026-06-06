@@ -104,7 +104,8 @@ def test_dispatch_uses_to_proposal_dict_when_proposal_validates(monkeypatch):
     assert result is not None
     # Plan 9 T6.1 — direct path finalizes into applier nested shape.
     assert result["sql_snippet"]["sql"] == "amount * quantity"
-    assert result["sql_snippet"]["name"] == "revenue_per_order"
+    # Trial 26 W26.3: canonical Genie schema uses ``display_name``, not ``name``.
+    assert result["sql_snippet"]["display_name"] == "revenue_per_order"
     assert "validation_passed" in result
     # Stamp from to_repair_intent flow.
     assert result.get("intent_id") == "intent_h001_001"

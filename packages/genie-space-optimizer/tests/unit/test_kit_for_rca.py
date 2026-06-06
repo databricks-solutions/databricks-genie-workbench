@@ -72,13 +72,17 @@ def test_kit_with_full_companion_set_is_admissible() -> None:
 
 
 def test_unmandated_rca_passes_regardless_of_kit_size() -> None:
-    # ``plural_top_n_collapse`` is not in KIT_FOR_RCA — single-lever
-    # is admissible.
+    # ``unmandated_demo_rca`` is not in any kit map (base KIT_FOR_RCA,
+    # Trial 24 _TRIAL24_KIT_FOR_RCA, or Trial 26 _TRIAL26_KIT_FOR_RCA)
+    # — single-lever is admissible. Trial 26 W26.2 aliased
+    # ``plural_top_n_collapse`` to ``top_n_cardinality_collapse``
+    # (which DOES have a kit), so it can no longer serve as the
+    # sentinel "unmandated" key here.
     assert kit_for_rca_violation_reason(
-        "plural_top_n_collapse", ["lever-5"]
+        "unmandated_demo_rca", ["lever-5"]
     ) == ""
     assert kit_for_rca_violation_reason(
-        "plural_top_n_collapse", []
+        "unmandated_demo_rca", []
     ) == ""
 
 

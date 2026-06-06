@@ -204,16 +204,79 @@ _TRIAL24_KIT_FOR_RCA: Mapping[str, frozenset[str]] = {
 }
 
 
+# ── Trial 26 W26.2 — kit-map coverage expansion (flag-gated) ──────────
+#
+# Trial 24's kit gate proved correct in synthesis (`KIT_FORCED_V1` on
+# the deterministic replay) but never fired on either canonical anchor
+# in production because the live RCA distribution
+# (``wrong_aggregation``, ``wrong_column``, ``plural_top_n_collapse``)
+# fell outside the kit map. Trial 26 W26.2 widens coverage to the live
+# distribution using the same lever-projection contract as Trial 24:
+#   * ``wrong_aggregation``  → SQL_SNIPPET + METADATA_DESCRIPTION  →
+#                              kit {lever-6, lever-1}
+#   * ``wrong_column``       → METADATA_DESCRIPTION + INSTRUCTION_TEXT
+#                              → kit {lever-1, lever-5a}
+#   * ``plural_top_n_collapse`` → aliased upstream to
+#     ``top_n_cardinality_collapse`` (kit {lever-6, lever-1}) by the
+#     normaliser in ``rca_mechanism_routing``; no separate entry here.
+#
+# Merged into the active lookup ONLY when
+# :func:`trial26_kit_map_expanded_enabled` is true; the Trial 24 map
+# is never mutated so master-off restores Trial-24 behaviour byte-stably.
+_TRIAL26_KIT_FOR_RCA: Mapping[str, frozenset[str]] = {
+    "wrong_aggregation": frozenset({"lever-6", "lever-1"}),
+    "wrong_column": frozenset({"lever-1", "lever-5a"}),
+}
+
+
+# Trial 26 W26.2 aliases applied at the action_groups normaliser layer.
+# Kept in sync with ``rca_mechanism_routing._TRIAL26_RCA_KIND_ALIASES``
+# so both layers reduce ``plural_top_n_collapse`` to the same canonical
+# key when the sub-flag is ON. Sync is enforced by the alignment test
+# (``test_trial26_kit_map_expansion.py``).
+_TRIAL26_RCA_KIND_ALIASES: Mapping[str, str] = {
+    "plural_top_n_collapse": "top_n_cardinality_collapse",
+}
+
+
+def _trial26_kit_map_expanded() -> bool:
+    """Lazy + safe accessor for the Trial 26 W26.2 sub-flag.
+
+    Returns False on any import error so a broken trial26_flags module
+    cannot regress the Trial 24 baseline.
+    """
+    try:
+        from genie_space_optimizer.optimization.trial26_flags import (
+            trial26_kit_map_expanded_enabled,
+        )
+        return bool(trial26_kit_map_expanded_enabled())
+    except Exception:
+        return False
+
+
 def _kit_for_rca_companions(key: str) -> frozenset[str] | None:
-    """Return the companion lever set for a normalized ``key``.
+    """Return the companion lever set for an ``rca_kind`` key.
+
+    The input is re-normalised internally so alias resolution
+    (e.g. Trial 26 W26.2 ``plural_top_n_collapse`` →
+    ``top_n_cardinality_collapse``) takes effect even when callers
+    pass an unnormalised label. Idempotent on already-normalised
+    inputs.
 
     Consults the base :data:`KIT_FOR_RCA` map, plus the Trial 24
-    extension when :func:`trial24_kit_at_source_enabled` is on. Returns
-    ``None`` when the RCA has no kit contract (caller treats that as
+    extension when :func:`trial24_kit_at_source_enabled` is on, and
+    finally the Trial 26 W26.2 extension when
+    :func:`trial26_kit_map_expanded_enabled` is on. Returns ``None``
+    when the RCA has no kit contract (caller treats that as
     "single-lever allowed"). The base map always wins for keys it owns,
-    so the Trial 24 extension can only ADD new RCA contracts, never
-    weaken an existing one.
+    so the Trial 24 / Trial 26 extensions can only ADD new RCA
+    contracts, never weaken an existing one.
+
+    On a Trial-26-expanded hit, emits one
+    ``GSO_TRIAL26_KIT_MAP_EXPANDED_V1`` marker so postmortems can
+    prove the new coverage is reachable. Legacy keys never emit it.
     """
+    key = _normalize_rca_kind(key) if key else key
     base = KIT_FOR_RCA.get(key)
     if base is not None:
         return base
@@ -236,10 +299,63 @@ def _kit_for_rca_companions(key: str) -> frozenset[str] | None:
                 and trial24_filter_removal_solo_enabled()
             ):
                 return None
-            return _TRIAL24_KIT_FOR_RCA.get(key)
+            t24 = _TRIAL24_KIT_FOR_RCA.get(key)
+            if t24 is not None:
+                return t24
     except Exception:
         return None
+    if _trial26_kit_map_expanded():
+        t26 = _TRIAL26_KIT_FOR_RCA.get(key)
+        if t26 is not None:
+            _emit_trial26_kit_map_expanded_marker(
+                rca_kind=key, companion_levers=t26
+            )
+            return t26
     return None
+
+
+def _emit_trial26_kit_map_expanded_marker(
+    *,
+    rca_kind: str,
+    companion_levers: frozenset[str],
+) -> None:
+    """Trial 26 W26.2 marker — record that the expanded kit map fired.
+
+    Never raises — best-effort observability. Postmortems use the marker
+    count to gate "is W26.2 reaching production?".
+    """
+    try:
+        import json as _t26_json
+        print(
+            "GSO_TRIAL26_KIT_MAP_EXPANDED_V1 "
+            + _t26_json.dumps(
+                {
+                    "rca_kind": rca_kind,
+                    "companion_levers": sorted(companion_levers),
+                },
+                sort_keys=True,
+                default=str,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+def _trial26_rca_canonical_normalise() -> bool:
+    """Lazy + safe accessor for the Trial 26 W26.1 sub-flag.
+
+    Returns False on any import error so a broken trial26_flags module
+    cannot regress the (pre-W26.1) baseline.
+    """
+    try:
+        from genie_space_optimizer.optimization.trial26_flags import (
+            trial26_rca_kind_canonical_normalise_enabled,
+        )
+
+        return trial26_rca_kind_canonical_normalise_enabled()
+    except Exception:
+        return False
 
 
 def _normalize_rca_kind(rca_kind: str | None) -> str:
@@ -251,10 +367,43 @@ def _normalize_rca_kind(rca_kind: str | None) -> str:
     trailing whitespace or different casing. Normalize to lowercase
     and strip; unknown values pass through unchanged so the caller
     can use a simple ``in KIT_FOR_RCA`` membership test.
+
+    Trial 26 W26.2 widens the alias table when the sub-flag is ON
+    (``plural_top_n_collapse`` → ``top_n_cardinality_collapse``).
+
+    Trial 26 W26.1 layers the canonical-key normaliser on top: when
+    the sub-flag is ON, a free-form English label
+    (``"Top-N cardinality collapse via spurious RANK()=1 filter"``)
+    is collapsed onto its canonical key (``top_n_cardinality_collapse``)
+    before the kit-map lookup so the Trial 24 / Trial 26 kit-at-source
+    gate can finally fire on the live RCA distribution. Resolution
+    falls back to the legacy normaliser only when the canonicaliser
+    cannot find a canonical match (``unknown_kind``), preserving
+    byte-stable behaviour for non-English keys.
     """
     if not rca_kind:
         return ""
-    return str(rca_kind).strip().lower()
+    key = str(rca_kind).strip().lower()
+    if _trial26_kit_map_expanded():
+        key = _TRIAL26_RCA_KIND_ALIASES.get(key, key)
+    if _trial26_rca_canonical_normalise():
+        try:
+            from genie_space_optimizer.optimization.rca_kind_canonical import (
+                RCA_CANONICAL_KEY_SET,
+                canonicalise_rca_kind,
+            )
+
+            result = canonicalise_rca_kind(rca_kind)
+            if (
+                result.canonical_key != "unknown_kind"
+                and result.canonical_key in RCA_CANONICAL_KEY_SET
+            ):
+                return result.canonical_key
+        except Exception:
+            # Defense in depth — canonicaliser failures must never
+            # regress the kit map. Fall through to the legacy key.
+            pass
+    return key
 
 
 def kit_for_rca_violation_reason(

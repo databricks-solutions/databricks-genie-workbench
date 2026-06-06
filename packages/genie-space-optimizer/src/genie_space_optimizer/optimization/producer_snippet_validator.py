@@ -136,6 +136,14 @@ def stamp_snippet_validation_on_body(
         validator canonicalized it)
 
     Idempotent: re-stamping with the same inputs produces no change.
+
+    Trial 26 W26.3: when
+    :func:`trial26_applier_snippet_name_fix_enabled` is ON (default),
+    the nested ``sql_snippet`` body emits ``display_name`` (canonical
+    Genie schema) instead of the legacy ``name`` field that the Genie
+    API rejects with ``Invalid serialized_space: Unknown field 'name'``.
+    When the flag is OFF the legacy ``name`` is restored for byte-stable
+    rollback.
     """
     snippet_id = _mint_snippet_id(intent_id, normalized_sql)
     patch_body["validation_passed"] = True
@@ -146,13 +154,72 @@ def stamp_snippet_validation_on_body(
         patch_body["sql_expression"] = normalized_sql
     if "example_sql" in patch_body:
         patch_body["example_sql"] = normalized_sql
-    patch_body["sql_snippet"] = {
-        "id": snippet_id,
-        "name": snippet_name,
-        "sql": normalized_sql,
-        "type": snippet_type,
-        "description": description,
-    }
+
+    try:
+        from genie_space_optimizer.optimization.trial26_flags import (
+            trial26_applier_snippet_name_fix_enabled,
+        )
+        _t26_fix_on = trial26_applier_snippet_name_fix_enabled()
+    except Exception:
+        _t26_fix_on = False
+
+    if _t26_fix_on:
+        patch_body["sql_snippet"] = {
+            "id": snippet_id,
+            "display_name": snippet_name,
+            "sql": normalized_sql,
+            "type": snippet_type,
+            "description": description,
+        }
+        _emit_trial26_snippet_fields_marker(
+            site="producer_snippet_validator",
+            intent_id=intent_id,
+            snippet_type=snippet_type,
+            kept=("id", "display_name", "sql", "type", "description"),
+            dropped=("name",),
+        )
+    else:
+        patch_body["sql_snippet"] = {
+            "id": snippet_id,
+            "name": snippet_name,
+            "sql": normalized_sql,
+            "type": snippet_type,
+            "description": description,
+        }
+
+
+def _emit_trial26_snippet_fields_marker(
+    *,
+    site: str,
+    intent_id: str,
+    snippet_type: str,
+    kept: tuple[str, ...],
+    dropped: tuple[str, ...],
+) -> None:
+    """Trial 26 W26.3 marker: record canonical field set per stamp.
+
+    Postmortems grep this marker stream to verify the W26.3 fix is
+    reaching production. Never raises — best-effort observability.
+    """
+    try:
+        import json as _t26_json
+        print(
+            "GSO_TRIAL26_APPLIER_SNIPPET_FIELDS_V1 "
+            + _t26_json.dumps(
+                {
+                    "site": site,
+                    "intent_id": intent_id,
+                    "snippet_type": snippet_type,
+                    "kept": list(kept),
+                    "dropped": list(dropped),
+                },
+                sort_keys=True,
+                default=str,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
 
 
 def _stamped_id_is_genie_valid(patch_body: Mapping[str, Any]) -> tuple[bool, str]:

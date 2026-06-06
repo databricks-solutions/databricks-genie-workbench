@@ -52,7 +52,11 @@ def _ag_with_l5_example_sql() -> dict:
 
 def _survival_failure_signature() -> object:
     return build_terminal_signature(
-        root_cause="top_n_collapse",
+        # Sentinel RCA with no kit-map coverage so the companion picker
+        # returns empty and the Trial 20 C1 pivot graph applies. (Used
+        # to be ``"top_n_collapse"`` before Trial 26 W26.1 canonicalised
+        # that label into the Trial 24 kit map.)
+        root_cause="unmandated_demo_rca",
         blame_set=["catalog.schema.orders"],
         lever_set={6},
         target_qids={"gs_009"},
@@ -133,8 +137,9 @@ def test_flag_on_survival_failure_emits_pivot_marker(capsys, monkeypatch):
     # Trial 20 C1 pivot graph (default-on): the prior family is the L6
     # filter (add_sql_snippet_filter), so the recommended successor is
     # add_sql_snippet_expression — not the pre-Trial-20 constant
-    # add_example_sql. (top_n_collapse is not a KIT_FOR_RCA diagnosis,
-    # so the companion picker returns empty and the graph applies.)
+    # add_example_sql. (The sentinel root_cause is not a KIT_FOR_RCA
+    # diagnosis, so the companion picker returns empty and the graph
+    # applies.)
     assert m["recommended_patch_family"] == "add_sql_snippet_expression"
     assert m["pivot_recommended"] is True
     # Pivot is observation-only in this commit — pivot_applied stays

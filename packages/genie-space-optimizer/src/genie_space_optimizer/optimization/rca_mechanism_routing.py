@@ -68,6 +68,80 @@ _RCA_KIND_ALIASES: Mapping[str, str] = {
 }
 
 
+# Trial 26 W26.2 — extend coverage to the live airline RCA distribution
+# observed across the canonical anchors (TRIAL24_KIT_FORCED_V1=0 on
+# both anchors because zero RCAs landed inside the Trial 24 map).
+#
+# Mechanism families follow the same shape as the Trial 23 entries:
+# each fixing set picks the coarse mechanisms that actually reshape the
+# generated SQL for that RCA. Trial 24's lever-projection
+# (INSTRUCTION_TEXT → lever-5a, SQL_SNIPPET → lever-6,
+# METADATA_DESCRIPTION → lever-1) then produces the matched companion
+# levers in ``_TRIAL26_KIT_FOR_RCA`` (see ``stages/action_groups``).
+_TRIAL26_RCA_KIND_TO_FIXING_MECHANISMS: Mapping[str, frozenset[PatchMechanism]] = {
+    # Aggregation defect → snippet (corrected measure) + metadata
+    # description (clarify column / measure semantics).
+    "wrong_aggregation": frozenset(
+        {PatchMechanism.SQL_SNIPPET, PatchMechanism.METADATA_DESCRIPTION}
+    ),
+    # Wrong column selected → metadata description (disambiguate the
+    # canonical column) + instruction text (route to the correct one).
+    "wrong_column": frozenset(
+        {PatchMechanism.METADATA_DESCRIPTION, PatchMechanism.INSTRUCTION_TEXT}
+    ),
+}
+
+
+# Trial 26 W26.2 alias — ``plural_top_n_collapse`` is the same defect as
+# ``top_n_cardinality_collapse`` (live runs use both labels
+# interchangeably). Aliasing avoids duplicating the routing entry.
+_TRIAL26_RCA_KIND_ALIASES: Mapping[str, str] = {
+    "plural_top_n_collapse": "top_n_cardinality_collapse",
+}
+
+
+def _trial26_kit_map_expanded() -> bool:
+    """Lazy + safe accessor for the Trial 26 W26.2 sub-flag.
+
+    Returns False on any import error so a broken trial26_flags module
+    cannot regress the Trial 24 baseline.
+    """
+    try:
+        from genie_space_optimizer.optimization.trial26_flags import (
+            trial26_kit_map_expanded_enabled,
+        )
+        return bool(trial26_kit_map_expanded_enabled())
+    except Exception:
+        return False
+
+
+def _aliases() -> Mapping[str, str]:
+    """Aliases active for the current flag state. Trial 26 W26.2
+    aliases are merged in only when the sub-flag is ON.
+    """
+    if not _trial26_kit_map_expanded():
+        return _RCA_KIND_ALIASES
+    merged: dict[str, str] = dict(_RCA_KIND_ALIASES)
+    merged.update(_TRIAL26_RCA_KIND_ALIASES)
+    return merged
+
+
+def _fixing_map() -> Mapping[str, frozenset[PatchMechanism]]:
+    """Fixing-mechanism map active for the current flag state.
+
+    Trial 26 W26.2 entries (``wrong_aggregation``, ``wrong_column``)
+    are merged in only when the sub-flag is ON. The canonical Trial 23
+    map is never mutated; this returns a fresh merged view.
+    """
+    if not _trial26_kit_map_expanded():
+        return RCA_KIND_TO_FIXING_MECHANISMS
+    merged: dict[str, frozenset[PatchMechanism]] = dict(
+        RCA_KIND_TO_FIXING_MECHANISMS
+    )
+    merged.update(_TRIAL26_RCA_KIND_TO_FIXING_MECHANISMS)
+    return merged
+
+
 def _normalize_rca_kind(rca_kind: str | None) -> str:
     """Collapse a free-text RCA label to the closed key vocabulary.
 
@@ -75,16 +149,19 @@ def _normalize_rca_kind(rca_kind: str | None) -> str:
     strip, then resolve any plan-shorthand alias to its canonical key;
     unknown values pass through unchanged so the caller can use a simple
     ``in RCA_KIND_TO_FIXING_MECHANISMS`` membership test.
+
+    Trial 26 W26.2 widens the alias table when the sub-flag is ON so
+    ``plural_top_n_collapse`` reduces to ``top_n_cardinality_collapse``.
     """
     if not rca_kind:
         return ""
     key = str(rca_kind).strip().lower()
-    return _RCA_KIND_ALIASES.get(key, key)
+    return _aliases().get(key, key)
 
 
 def example_sql_is_insufficient_for(rca_kind: str | None) -> bool:
     """True when ``add_example_sql`` alone cannot fix this RCA kind."""
-    return _normalize_rca_kind(rca_kind) in RCA_KIND_TO_FIXING_MECHANISMS
+    return _normalize_rca_kind(rca_kind) in _fixing_map()
 
 
 def _structural_fix_mechanisms(rca_kind: str | None) -> frozenset[PatchMechanism]:
@@ -95,7 +172,7 @@ def _structural_fix_mechanisms(rca_kind: str | None) -> frozenset[PatchMechanism
     routing). A lone ``add_instruction`` is admissible for a SQL-shape RCA
     only when paired with one of these. Empty for RCAs outside the map.
     """
-    fixing = RCA_KIND_TO_FIXING_MECHANISMS.get(_normalize_rca_kind(rca_kind))
+    fixing = _fixing_map().get(_normalize_rca_kind(rca_kind))
     if not fixing:
         return frozenset()
     return frozenset(fixing) - {PatchMechanism.INSTRUCTION_TEXT}
@@ -117,7 +194,7 @@ def instruction_text_is_insufficient_for(rca_kind: str | None) -> bool:
 
     ``False`` for RCAs outside the map (no contract).
     """
-    return _normalize_rca_kind(rca_kind) in RCA_KIND_TO_FIXING_MECHANISMS
+    return _normalize_rca_kind(rca_kind) in _fixing_map()
 
 
 def recommended_mechanisms_for_rca(rca_kind: str | None) -> tuple[str, ...]:
@@ -126,7 +203,7 @@ def recommended_mechanisms_for_rca(rca_kind: str | None) -> tuple[str, ...]:
     Returns ``()`` for RCA kinds outside the map (no contract). The
     sorted order makes prompt rendering and marker payloads stable.
     """
-    fixing = RCA_KIND_TO_FIXING_MECHANISMS.get(_normalize_rca_kind(rca_kind))
+    fixing = _fixing_map().get(_normalize_rca_kind(rca_kind))
     if not fixing:
         return ()
     return tuple(sorted(m.value for m in fixing))
@@ -153,7 +230,7 @@ def rca_mechanism_default_reason(
     admissible.
     """
     key = _normalize_rca_kind(rca_kind)
-    fixing = RCA_KIND_TO_FIXING_MECHANISMS.get(key)
+    fixing = _fixing_map().get(key)
     if not fixing:
         return ""
     observed = {m for m in mechanisms if m is not None}
@@ -193,7 +270,7 @@ def rca_instruction_default_reason(
     if not instruction_text_is_insufficient_for(rca_kind):
         return ""
     key = _normalize_rca_kind(rca_kind)
-    fixing = RCA_KIND_TO_FIXING_MECHANISMS.get(key)
+    fixing = _fixing_map().get(key)
     if not fixing:
         return ""
     observed = {m for m in mechanisms if m is not None}

@@ -47,7 +47,11 @@ def _survival_failure_signature():
         build_terminal_signature,
     )
     return build_terminal_signature(
-        root_cause="top_n_collapse",
+        # Sentinel RCA with no kit-map coverage so the companion picker
+        # returns empty and the Trial 20 C1 pivot graph applies. (Used
+        # to be ``"top_n_collapse"`` before Trial 26 W26.1 canonicalised
+        # that label into the Trial 24 kit map.)
+        root_cause="unmandated_demo_rca",
         blame_set=["catalog.schema.orders"],
         lever_set={6},
         target_qids={"gs_009"},

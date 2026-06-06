@@ -97,7 +97,13 @@ def test_l6_dispatch_finalizer_produces_nested_sql_snippet(monkeypatch):
 
     assert out is not None
     assert "sql_snippet" in out
-    assert out["sql_snippet"]["name"] == "total_revenue"
+    # Trial 26 W26.3: the canonical Genie schema requires ``display_name``,
+    # not ``name`` (the API rejects ``name`` with
+    # ``Invalid serialized_space: Unknown field 'name'``). The producer
+    # now emits ``display_name`` by default; with the W26.3 flag OFF the
+    # legacy ``name`` field is restored (regression coverage lives in
+    # tests/unit/test_trial26_applier_snippet_name_fix.py).
+    assert out["sql_snippet"]["display_name"] == "total_revenue"
     assert out["sql_snippet"]["id"]
     assert "validation_passed" in out  # stamped (False here — no backend)
     assert out["provenance"]["plan9_materialization_source"] == "plan9_direct"

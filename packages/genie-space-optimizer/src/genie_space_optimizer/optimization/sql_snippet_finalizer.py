@@ -176,11 +176,71 @@ def finalize_sql_snippet_proposal_dict(
         "questions_fixed": len(cluster.get("question_traces", []) or []),
         "validation_passed": validation_passed,
         # Nested sql_snippet object — applier.py:3162 reads this.
-        "sql_snippet": {
+        "sql_snippet": _build_nested_sql_snippet(
+            snippet_id=snippet_id,
+            name=name,
+            sql_expression=sql_expression,
+            snippet_type=snippet_type,
+            description=usage_guidance or proposal.rationale,
+        ),
+    }
+
+
+def _build_nested_sql_snippet(
+    *,
+    snippet_id: str,
+    name: str,
+    sql_expression: str,
+    snippet_type: str,
+    description: str,
+) -> dict:
+    """Build the nested ``sql_snippet`` object the applier consumes.
+
+    Trial 26 W26.3: when
+    :func:`trial26_applier_snippet_name_fix_enabled` is ON (default),
+    the body emits ``display_name`` (canonical Genie schema) instead
+    of the legacy ``name`` field that the Genie API rejects with
+    ``Invalid serialized_space: Unknown field 'name'``. When the flag
+    is OFF the legacy ``name`` is restored for byte-stable rollback.
+
+    Extracted as a public-ish helper so the W26.3 unit test can
+    exercise the field-set decision without spinning the full
+    finalizer.
+    """
+    try:
+        from genie_space_optimizer.optimization.trial26_flags import (
+            trial26_applier_snippet_name_fix_enabled,
+        )
+        _t26_fix_on = trial26_applier_snippet_name_fix_enabled()
+    except Exception:
+        _t26_fix_on = False
+
+    if _t26_fix_on:
+        nested = {
             "id": snippet_id,
-            "name": name,
+            "display_name": name,
             "sql": sql_expression,
             "type": snippet_type,
-            "description": usage_guidance or proposal.rationale,
-        },
+            "description": description,
+        }
+        try:
+            from genie_space_optimizer.optimization.producer_snippet_validator import (
+                _emit_trial26_snippet_fields_marker,
+            )
+            _emit_trial26_snippet_fields_marker(
+                site="sql_snippet_finalizer",
+                intent_id=str(snippet_id),
+                snippet_type=str(snippet_type),
+                kept=("id", "display_name", "sql", "type", "description"),
+                dropped=("name",),
+            )
+        except Exception:
+            pass
+        return nested
+    return {
+        "id": snippet_id,
+        "name": name,
+        "sql": sql_expression,
+        "type": snippet_type,
+        "description": description,
     }

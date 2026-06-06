@@ -99,7 +99,8 @@ def test_finalizer_returns_nested_sql_snippet_shape():
     # Applier reads patch["sql_snippet"]; nested shape is required.
     assert "sql_snippet" in out
     snippet = out["sql_snippet"]
-    assert snippet["name"] == "total_revenue"
+    # Trial 26 W26.3: canonical Genie schema uses ``display_name``, not ``name``.
+    assert snippet["display_name"] == "total_revenue"
     assert snippet["sql"] == "SUM(orders.revenue)"
     assert snippet["id"]  # non-empty
 

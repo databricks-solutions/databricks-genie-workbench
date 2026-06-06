@@ -410,29 +410,11 @@ def validate_patch(
                         if pt.value.startswith("add_sql_snippet_") and not body.get(
                             "sql_snippet"
                         ):
-                            _snippet_id = (
-                                str(
-                                    body.get("snippet_id")
-                                    or body.get("name")
-                                    or patch.intent_id
-                                )
-                                .lower()
-                                .replace(" ", "_")[:64]
+                            body["sql_snippet"] = _materialize_sql_snippet_body(
+                                body=body,
+                                intent_id=str(patch.intent_id),
+                                normalized_sql=msg or sql,
                             )
-                            body["sql_snippet"] = {
-                                "id": _snippet_id,
-                                "name": str(body.get("name", "")),
-                                "display_name": str(
-                                    body.get("display_name") or body.get("name") or ""
-                                ),
-                                "sql": msg or sql,
-                                "description": str(body.get("description", "")),
-                                "synonyms": list(body.get("synonyms") or []),
-                                "target_table": str(
-                                    body.get("target_table")
-                                    or body.get("table", "")
-                                ),
-                            }
                         try:
                             import json as _t20f1_json
                             print(
@@ -473,3 +455,82 @@ def validate_patch(
         is_valid=not errors,
         errors=tuple(errors),
     )
+
+
+def _materialize_sql_snippet_body(
+    *,
+    body: dict[str, Any],
+    intent_id: str,
+    normalized_sql: str,
+) -> dict[str, Any]:
+    """F1 path — materialize the nested ``sql_snippet`` object from the
+    patch body when the LLM omitted it.
+
+    Trial 26 W26.3: when
+    :func:`trial26_applier_snippet_name_fix_enabled` is ON (default),
+    drops the legacy ``name`` field (Genie API rejects it) and keeps
+    only ``display_name`` (canonical schema). When the flag is OFF,
+    both ``name`` and ``display_name`` are emitted exactly as the
+    legacy code did (byte-stable rollback).
+    """
+    _snippet_id = (
+        str(body.get("snippet_id") or body.get("name") or intent_id)
+        .lower()
+        .replace(" ", "_")[:64]
+    )
+
+    try:
+        from genie_space_optimizer.optimization.trial26_flags import (
+            trial26_applier_snippet_name_fix_enabled,
+        )
+        _t26_fix_on = trial26_applier_snippet_name_fix_enabled()
+    except Exception:
+        _t26_fix_on = False
+
+    if _t26_fix_on:
+        snippet = {
+            "id": _snippet_id,
+            "display_name": str(
+                body.get("display_name") or body.get("name") or ""
+            ),
+            "sql": normalized_sql,
+            "description": str(body.get("description", "")),
+            "synonyms": list(body.get("synonyms") or []),
+            "target_table": str(
+                body.get("target_table") or body.get("table", "")
+            ),
+        }
+        try:
+            from genie_space_optimizer.optimization.producer_snippet_validator import (
+                _emit_trial26_snippet_fields_marker,
+            )
+            _emit_trial26_snippet_fields_marker(
+                site="validate_patch_f1",
+                intent_id=intent_id,
+                snippet_type="filter",
+                kept=(
+                    "id",
+                    "display_name",
+                    "sql",
+                    "description",
+                    "synonyms",
+                    "target_table",
+                ),
+                dropped=("name",),
+            )
+        except Exception:
+            pass
+        return snippet
+    return {
+        "id": _snippet_id,
+        "name": str(body.get("name", "")),
+        "display_name": str(
+            body.get("display_name") or body.get("name") or ""
+        ),
+        "sql": normalized_sql,
+        "description": str(body.get("description", "")),
+        "synonyms": list(body.get("synonyms") or []),
+        "target_table": str(
+            body.get("target_table") or body.get("table", "")
+        ),
+    }

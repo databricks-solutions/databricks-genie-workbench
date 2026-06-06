@@ -143,8 +143,12 @@ def _sig(
 
 
 def test_companion_picker_returns_empty_for_unmandated_rca() -> None:
-    s = _sig(rca="plural_top_n_collapse")
-    assert next_companion_family_from_kit("plural_top_n_collapse", [s]) == ""
+    # ``unmandated_demo_rca`` is not in any kit map (base / Trial 24 /
+    # Trial 26). Trial 26 W26.2 aliased ``plural_top_n_collapse`` to
+    # ``top_n_cardinality_collapse`` (which DOES have a kit), so it
+    # can no longer serve as the sentinel "unmandated" key here.
+    s = _sig(rca="unmandated_demo_rca")
+    assert next_companion_family_from_kit("unmandated_demo_rca", [s]) == ""
 
 
 def test_companion_picker_picks_first_untried_companion() -> None:
@@ -224,8 +228,13 @@ def test_next_patch_family_falls_back_when_rca_outside_kit_map(
     monkeypatch.setattr(
         flags, "trial20_family_pivot_graph_enabled", lambda: True
     )
+    # ``unmandated_demo_rca`` is not in any kit map (base / Trial 24 /
+    # Trial 26). Trial 26 W26.2 aliased ``plural_top_n_collapse`` to
+    # ``top_n_cardinality_collapse`` (which DOES have a kit), so the
+    # sentinel was swapped to keep the "outside-kit-map fallback" test
+    # truly outside every kit map.
     s = build_terminal_signature(
-        root_cause="plural_top_n_collapse",
+        root_cause="unmandated_demo_rca",
         blame_set=(),
         lever_set=(),
         target_qids=(),
