@@ -50,6 +50,10 @@ For subsequent local terminal updates:
 
 Do not run `databricks bundle init`; this project already has its bundle configuration.
 
+## Demo Data
+
+If you do not have a dataset ready, `notebooks/demo-data/` includes standalone Databricks notebooks that generate synthetic Unity Catalog datasets for banking, healthcare, retail, SaaS churn, talent advisory, and wind turbine maintenance demos. See [notebooks/demo-data/README.md](notebooks/demo-data/README.md) for the available schemas, required widgets, permissions, and metric view notes.
+
 ## Prerequisites
 
 Notebook installer:
