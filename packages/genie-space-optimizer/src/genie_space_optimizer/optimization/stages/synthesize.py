@@ -3842,3 +3842,46 @@ def synthesize_escalation_for_state(
         ag_id=ag_id,
         w=w,
     )
+
+
+# ─── Trial 29 W29.1 — inert-mechanism history renderer ────────────────
+
+
+def render_inert_mechanism_history_section(history) -> str:
+    """Trial 29 W29.1 — render the per-QID rejected-mechanism history
+    into the Stage 3 synthesis prompt.
+
+    The LLM is instructed to pick a mechanism for each
+    ``(qid, rca_kind)`` pair from
+    ``_structural_fix_mechanisms(rca_kind) - rejected_mechanisms`` so
+    a previously-inert mechanism is never re-emitted for the same
+    pair.
+
+    Empty input renders the empty string (byte-stable when the
+    feedback channel is empty — every existing call site sees no
+    drift). ``history`` is duck-typed as an iterable of
+    ``InertMechanismHistory``-shaped objects (qid, rca_kind,
+    rejected_mechanisms) so the renderer does not pin the import
+    direction; the typed accumulator lives in
+    :mod:`genie_space_optimizer.optimization.inert_mechanism_history`.
+    """
+    if not history:
+        return ""
+
+    lines: list[str] = [
+        "## Inert-Mechanism History (Trial 29 W29.1)",
+        "",
+        "The following ``(qid, rca_kind)`` pairs had a kit-forced patch",
+        "applied in a prior iteration whose post-eval",
+        "``behavioral_diff`` was ``unchanged``. You MUST AVOID the",
+        "listed mechanisms for each pair and pick a different",
+        "mechanism from the structural-fix lattice for that RCA kind.",
+        "",
+    ]
+    for entry in history:
+        rejected = list(getattr(entry, "rejected_mechanisms", ()) or ())
+        lines.append(
+            f"- qid=`{entry.qid}` rca_kind=`{entry.rca_kind}` "
+            f"rejected_mechanisms={rejected}"
+        )
+    return "\n".join(lines)
