@@ -36,7 +36,10 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 
-from genie_space_optimizer.optimization.patch_mechanism import PatchMechanism
+from genie_space_optimizer.optimization.patch_mechanism import (
+    PatchMechanism,
+    mechanism_for_patch_type,
+)
 
 
 # RCA kinds where the EXAMPLE_SQL mechanism alone is behaviorally inert,
@@ -176,6 +179,46 @@ def _structural_fix_mechanisms(rca_kind: str | None) -> frozenset[PatchMechanism
     if not fixing:
         return frozenset()
     return frozenset(fixing) - {PatchMechanism.INSTRUCTION_TEXT}
+
+
+def mechanisms_for_rejected_levers(
+    rejected: Iterable[str],
+) -> frozenset[PatchMechanism]:
+    """Normalize rejected lever-id / patch_type tokens to PatchMechanism.
+
+    Trial 30 W30.1b. ``AcceptanceDecisionRecord.rejected_mechanism``
+    stores a lever-id (``"lever-5"``) — or, when the lever was inferred
+    from a patch_type, a patch_type wire token (``"add_example_sql"``).
+    The enforcement guard compares on the *behavioral* unit
+    (:class:`PatchMechanism`), not the lever-id, so lever-5 / 5a / 5b
+    aliasing cannot let a re-emit slip through.
+
+    Returns the union of mechanisms reachable from each token. Unknown
+    tokens contribute nothing (empty), so the guard fails open (keeps
+    the proposal) rather than mis-dropping on an unrecognised label.
+    """
+    # Imported lazily: ``levers_contract`` is a heavier module and this
+    # keeps the pure routing brain free of a load-time dependency on it.
+    from genie_space_optimizer.optimization.levers_contract import (
+        LEVER_TO_PATCH_TYPES,
+    )
+
+    out: set[PatchMechanism] = set()
+    for token in rejected:
+        t = str(token or "").strip()
+        if not t:
+            continue
+        # Direct patch_type token form.
+        mech = mechanism_for_patch_type(t)
+        if mech is not None:
+            out.add(mech)
+            continue
+        # Lever-id form: expand to its patch_types, then to mechanisms.
+        for patch_type in LEVER_TO_PATCH_TYPES.get(t, frozenset()):
+            pm = mechanism_for_patch_type(str(getattr(patch_type, "value", patch_type)))
+            if pm is not None:
+                out.add(pm)
+    return frozenset(out)
 
 
 def instruction_text_is_insufficient_for(rca_kind: str | None) -> bool:
