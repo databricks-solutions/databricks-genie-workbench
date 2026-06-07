@@ -142,8 +142,41 @@ def subcluster_real_slice_marker(
     )
 
 
+def trial27_w6_extended_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    cluster_id: str,
+    member_qids_count: int,
+    partition_count: int,
+    partition_sizes: Sequence[int],
+) -> str:
+    """Build the ``GSO_TRIAL27_W6_EXTENDED_V1`` marker line.
+
+    Emitted only when the Trial 23 W6 partitioned re-dispatch fires on
+    a NON-subcluster cluster (i.e., the W27.1 extension engaged). The
+    existing ``GSO_TRIAL23_SUBCLUSTER_REAL_SLICE_V1`` marker still
+    records the dispatch facts on the same call site; this marker
+    isolates the W27.1-attributable population so postmortems can
+    measure the extension's impact and rollback efficacy.
+    """
+    payload = {
+        "optimization_run_id": str(optimization_run_id),
+        "iteration": int(iteration),
+        "cluster_id": str(cluster_id),
+        "member_qids_count": int(member_qids_count),
+        "partition_count": int(partition_count),
+        "partition_sizes": [int(s) for s in partition_sizes],
+    }
+    return (
+        "GSO_TRIAL27_W6_EXTENDED_V1 "
+        + json.dumps(payload, sort_keys=True)
+    )
+
+
 __all__ = [
     "slice_member_evidence",
     "merge_subcluster_responses",
     "subcluster_real_slice_marker",
+    "trial27_w6_extended_marker",
 ]

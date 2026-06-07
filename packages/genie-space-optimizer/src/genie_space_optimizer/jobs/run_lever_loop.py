@@ -296,9 +296,20 @@ spark = SparkSession.builder.getOrCreate()
 dbutils.widgets.text("run_id", "")
 dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("schema", "")
+# Trial 27 W27.3 — verification-only per-run signal set by
+# ``gso-lever-loop-replay`` (or the trigger skill) to force the
+# Starting Point Gate to NOT skip even when thresholds_met=True.
+# Default empty / "false" on every normal replay; the deploy-time
+# capability flag (`GSO_TRIAL27_FORCE_LEVER_LOOP_OVERRIDE`, default
+# ON) gates whether the signal can take effect at all.
+dbutils.widgets.text("force_lever_loop", "false")
 _widget_run_id = dbutils.widgets.get("run_id").strip()
 _widget_catalog = dbutils.widgets.get("catalog").strip()
 _widget_schema = dbutils.widgets.get("schema").strip()
+_widget_force_lever_loop = (
+    dbutils.widgets.get("force_lever_loop").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 
 from genie_space_optimizer.jobs._handoff import (
     HandoffSource,
@@ -452,17 +463,52 @@ _log(
 
 # COMMAND ----------
 
-if thresholds_met:
+from genie_space_optimizer.optimization.starting_point_gate import (
+    should_skip_starting_point_gate,
+    starting_point_gate_force_marker,
+)
+
+_gate_decision = should_skip_starting_point_gate(
+    thresholds_met=bool(thresholds_met),
+    accuracy_source=str(_accuracy_source),
+    force_lever_loop_signal=bool(_widget_force_lever_loop),
+)
+
+# Trial 27 W27.3 — emit the override-engaged marker whenever the
+# verification override flipped a would-be skip into a no-skip,
+# so postmortems can count engagements and observe the gap between
+# would-have-skipped reason and actual outcome. Marker stays silent
+# on every other run (byte-stable).
+if _gate_decision.override_engaged:
+    print(
+        starting_point_gate_force_marker(
+            optimization_run_id=str(run_id),
+            would_have_skipped_reason=str(
+                _gate_decision.would_have_skipped_reason or ""
+            ),
+            accuracy_source=str(_accuracy_source),
+            post_enrichment_accuracy=post_enrichment_accuracy,
+            baseline_accuracy=_baseline_accuracy,
+        ),
+        flush=True,
+    )
+    _banner("Starting Point Gate: OVERRIDE — running lever loop")
+    _log(
+        "Override engaged (W27.3)",
+        force_lever_loop_signal=True,
+        would_have_skipped_reason=_gate_decision.would_have_skipped_reason,
+        accuracy_source=_accuracy_source,
+        post_enrichment_accuracy=post_enrichment_accuracy,
+        baseline_accuracy=_baseline_accuracy,
+    )
+
+if _gate_decision.skip:
     _banner("Starting Point Gate: SKIP Lever Loop")
     # PR 34: ``prev_scores`` is the resolved current state (baseline OR
     # post-enrichment) — publishing the raw baseline ``scores_json`` here
     # would leak stale values whenever Task 3 produced a fresh
     # post-enrichment evaluation.
-    _skip_reason = (
-        "post_enrichment_meets_thresholds"
-        if _accuracy_source == "enrichment.post_enrichment_accuracy"
-        else "baseline_meets_thresholds"
-    )
+    _skip_reason = _gate_decision.reason
     _log(
         "Skip reason",
         reason=_skip_reason,

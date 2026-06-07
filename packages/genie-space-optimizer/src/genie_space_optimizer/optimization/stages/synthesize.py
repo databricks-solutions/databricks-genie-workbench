@@ -459,12 +459,38 @@ def _build_request(
         _t24_enabled = False
         _t24_filter_solo = False
     if _t24_enabled:
+        # Trial 26 W26.2 — derive the kit-mandate enumeration from the
+        # ACTIVE kit map instead of hard-coding RCA kinds. The validator
+        # (action_groups.kit_for_rca_violation_reason) rejects single-
+        # lever proposals for every RCA in the active map; before this
+        # change the prompt only named the two original Trial 24 kinds,
+        # so when W26.2 expanded the map to wrong_aggregation /
+        # wrong_column the producer was never told to emit their kit and
+        # the proposal died as kit_for_rca_violation:...:singleton. Reading
+        # the same map the validator reads keeps producer and gate in
+        # lock-step; a future map expansion needs no edit here. Scope is
+        # the EXTENSION kinds only (we subtract the base KIT_FOR_RCA,
+        # whose kits are covered by the general P2.1 lever-kit mandate
+        # above) so base-kind prompt behaviour is byte-stable.
+        from genie_space_optimizer.optimization.stages.action_groups import (
+            KIT_FOR_RCA as _base_kit_for_rca,
+            active_kit_for_rca_map as _active_kit_for_rca_map,
+        )
+
+        _extension_kit = {
+            _rca: _levers
+            for _rca, _levers in _active_kit_for_rca_map().items()
+            if _rca not in _base_kit_for_rca
+        }
+        _kit_bullets: list[str] = []
         # Follow-on B — when filter-removal-solo is on, extra_defensive_filter
-        # is a single-mechanism INSTRUCTION fix: a filter REMOVAL cannot be
-        # expressed as a positive snippet (the LLM emits a no-op 1=1 / TRUE
-        # that is rejected), so the corrective patch is a lone instruction.
+        # is a single-mechanism INSTRUCTION fix excluded from the kit map
+        # (a filter REMOVAL cannot be expressed as a positive snippet — the
+        # LLM emits a no-op 1=1 / TRUE that is rejected). Surface its
+        # justified-solo instruction explicitly since it is absent from
+        # ``_extension_kit``.
         if _t24_filter_solo:
-            _t24_filter_bullet = (
+            _kit_bullets.append(
                 "  * extra_defensive_filter — this is a filter-REMOVAL "
                 "fix: emit a SINGLE add_instruction (lever-5a) telling the "
                 "planner NOT to inject the defensive predicate. Do NOT "
@@ -473,29 +499,27 @@ def _build_request(
                 "rejected. Ground the instruction with a concrete "
                 "``expected_behavioral_change`` so it lands solo.\n"
             )
-        else:
-            _t24_filter_bullet = (
-                "  * extra_defensive_filter — MUST emit the kit "
-                "{lever-5a (add_instruction: tell the planner NOT to inject "
-                "the predicate) + lever-6 (add_sql_snippet_filter: override "
-                "the WHERE clause)}. The instruction is justified BY the "
-                "snippet companion — neither lands alone.\n"
+        for _rca in sorted(_extension_kit):
+            _companions = sorted(_extension_kit[_rca])
+            _kit_bullets.append(
+                f"  * {_rca} — MUST emit a >= 2-lever-family kit recruiting "
+                f"its companion lever families {_companions} (see "
+                f"lever_menu above for what each lever_id does). Set "
+                f"``selected_levers`` to this kit on EVERY member and share "
+                f"a ``bundle_id``; a single-lever proposal is hard-rejected "
+                f"as kit_for_rca_violation:rca={_rca}:singleton.\n"
             )
         lever_contract_instructions += (
             "\n\n"
             "Trial 24 — Kit at Source (MANDATORY KIT, not a preference). "
-            "The RCA kinds below now carry a KIT_FOR_RCA companion "
+            "The RCA kinds below carry a KIT_FOR_RCA companion "
             "contract: a SINGLE-lever proposal for them is HARD-REJECTED "
             "(kit_for_rca_violation:...:singleton) and wastes the "
             "iteration. Emit a >= 2-lever-family kit on the FIRST try, "
             "with ``selected_levers`` set to the kit on EVERY member and "
             "a shared ``bundle_id``:\n"
-            + _t24_filter_bullet
-            + "  * top_n_cardinality_collapse — MUST emit the kit "
-            "{lever-6 (add_sql_snippet_expression/measure at the correct "
-            "grain) + lever-1 (add_column_description anchoring the "
-            "measure's grain)}.\n"
-            "The instruction/metadata member does NOT need a separate "
+            + "".join(_kit_bullets)
+            + "The instruction/metadata member does NOT need a separate "
             "justification slot when it ships inside this kit — the "
             "companion structural lever IS the justification."
         )
@@ -1114,14 +1138,25 @@ def run_plan11_synthesis_for_single_cluster(
         # oversized call (declined as prompt_too_large). W6 makes N
         # smaller Stage 3 calls (one per QID partition) and merges the
         # proposals so the corrective mechanism family is synthesized
-        # instead of declined. Scoped to the RCA-subcluster builder so
-        # the working H001 cluster path is never split (bright-line #5),
-        # and gated by ``trial23_subcluster_real_slice_enabled`` for
-        # one-flag rollback to the single oversized call.
+        # instead of declined.
+        #
+        # Pre-Trial-27 the dispatch was scoped to the RCA-subcluster
+        # builder so the working H001 cluster path was never split
+        # (bright-line #5). Trial 27 W27.1 relaxes that scope — when
+        # ``trial27_w6_extend_nonsubcluster_enabled`` is True (default
+        # ON when master ``GSO_TRIAL27_STAGE3_DESTARVE`` is ON), the
+        # partition fires on ANY cluster with ``sub_cluster_split_needed
+        # = True``. Bright-line #5 stays preserved structurally: when
+        # the partition cannot actually split further (``len(_w6_parts)
+        # == 1``), the existing guard below falls through to the
+        # single-call branch byte-stably.
         _w6_did_dispatch = False
         try:
             from genie_space_optimizer.optimization.trial23_flags import (
                 trial23_subcluster_real_slice_enabled,
+            )
+            from genie_space_optimizer.optimization.trial27_flags import (
+                trial27_w6_extend_nonsubcluster_enabled,
             )
             _w6_is_subcluster = (
                 "subcluster" in str(cluster.cluster_id or "").lower()
@@ -1131,9 +1166,13 @@ def run_plan11_synthesis_for_single_cluster(
                     "sub_cluster_split_needed"
                 )
             )
+            _w27_extend = trial27_w6_extend_nonsubcluster_enabled()
+            _w6_eligible_builder = (
+                _w6_is_subcluster or _w27_extend
+            )
             if (
                 trial23_subcluster_real_slice_enabled()
-                and _w6_is_subcluster
+                and _w6_eligible_builder
                 and _w6_split_needed
             ):
                 import dataclasses as _w6_dc
@@ -1147,6 +1186,7 @@ def run_plan11_synthesis_for_single_cluster(
                     merge_subcluster_responses as _w6_merge,
                     slice_member_evidence as _w6_slice_ev,
                     subcluster_real_slice_marker as _w6_marker,
+                    trial27_w6_extended_marker as _w27_marker,
                 )
 
                 _w6_user_t = _w6_estimate(
@@ -1220,6 +1260,31 @@ def run_plan11_synthesis_for_single_cluster(
                         ),
                         flush=True,
                     )
+                    # Trial 27 W27.1 — additionally emit the extension
+                    # marker when the dispatch engaged on a non-
+                    # subcluster cluster (i.e., the W27.1 relaxation
+                    # is what allowed this path to fire). Isolates the
+                    # W27.1-attributable population for postmortems and
+                    # rollback measurement; the subcluster-only path
+                    # stays byte-stable (no W27 marker).
+                    if _w27_extend and not _w6_is_subcluster:
+                        print(
+                            _w27_marker(
+                                optimization_run_id=str(
+                                    optimization_run_id
+                                ),
+                                iteration=int(iteration),
+                                cluster_id=str(cluster.cluster_id),
+                                member_qids_count=len(
+                                    cluster.member_qids or ()
+                                ),
+                                partition_count=len(_w6_parts),
+                                partition_sizes=[
+                                    len(p) for p in _w6_parts
+                                ],
+                            ),
+                            flush=True,
+                        )
                     _w6_did_dispatch = True
         except Exception:
             _w6_did_dispatch = False
