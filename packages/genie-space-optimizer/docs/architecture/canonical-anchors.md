@@ -34,8 +34,8 @@ will eventually exhaust** — rotation is not a one-time event.
 
 | Anchor  | job_id              | parent_run_id        | Status  | Triggered (UTC)     | Notes |
 |---------|---------------------|----------------------|---------|---------------------|-------|
-| airline | `488860692117207`   | _TBD_                | PENDING | _TBD_               | To be triggered via `gso-lever-loop-trigger` as part of Trial 25 W25.8 |
-| 7now    | `488860692117207`   | _TBD_                | PENDING | _TBD_               | Same |
+| airline | `488860692117207`   | `450001766723999`    | ACTIVE  | 2026-06-06 22:22    | Cold-start after Trial 26 W26.7 (compact-aware handoff readers) deploy. Absorbed one Trial-26 lever-loop pass — verdict `LEVER_LOOP_SKIPPED_POST_ENRICHMENT_MEETS_THRESHOLDS` (baseline 95.65%, gate skipped before kit gate could fire). After Trial 27 deploy (W27.1 W6 non-subcluster extension + W27.3 `force_lever_loop` override), replay airline with `job_parameters={"force_lever_loop":"true"}` to engage the W27.3 override and expose the kit gate. Prior cold-start `335104024979293` retired (W26.7 baseline_eval regression, fixed by W26.7). |
+| 7now    | `488860692117207`   | `517826776610889`    | ACTIVE  | 2026-06-06 22:22    | Cold-start after Trial 26 W26.7 deploy. Absorbed one Trial-26 lever-loop pass — verdict `PLAN11_STAGE3_PROMPT_TOO_LARGE_RUN_STARVED` (final 91.3%, Stage 3 prompt 73170 tokens vs 40000 cap). After Trial 27 deploy (W27.1 W6 non-subcluster extension), replay 7now WITHOUT `force_lever_loop` (gate is not skipped on 7now) so Stage 3 picks up the W27.1 partitioned re-dispatch. Prior cold-start `631994889494024` retired (W26.7 baseline_eval regression, fixed by W26.7). |
 
 ## Retired parent job runs (do NOT replay against these)
 

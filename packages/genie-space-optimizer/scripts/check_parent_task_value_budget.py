@@ -99,10 +99,14 @@ def _fetch_run_payload(
     # in the verdict payload for operator context but the API call
     # itself only needs the run_id.
     _ = job_id
+    # The current Databricks CLI takes the run id as a POSITIONAL
+    # argument (``jobs get-run RUN_ID``); the older ``--run-id`` flag was
+    # removed and now errors with ``unknown flag: --run-id``, which the
+    # gate would otherwise surface as a spurious ``UNKNOWN`` verdict.
     cmd = [
         databricks_bin, "jobs", "get-run",
         "--include-resolved-values",
-        "--run-id", str(parent_run_id),
+        str(parent_run_id),
     ]
     if profile:
         cmd.extend(["--profile", profile])
