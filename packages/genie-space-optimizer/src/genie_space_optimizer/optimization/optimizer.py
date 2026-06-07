@@ -72,6 +72,13 @@ def run_state_machine_iteration_and_persist(
     # ``TransformerContext.insufficient_repair_signatures``. Default
     # empty tuple keeps the long tail of test callsites untouched.
     insufficient_repair_signatures: tuple[str, ...] = (),
+    # Trial 30 W30.1a — sibling channel to ``insufficient_repair_signatures``
+    # for the ``kit_forced_inert_reroute`` lane. A tuple of
+    # ``InertMechanismHistory`` entries keyed by (qid, rca_kind), plumbed
+    # into ``TransformerContext.inert_mechanism_history`` so Stage 3 can
+    # render the rejected-mechanism feedback and the W30.1b guard can
+    # enforce a switch. Default empty keeps test callsites untouched.
+    inert_mechanism_history: tuple = (),
     space_id: str = "",
     metadata_snapshot=None,
     # Trial 15 — SM evaluator boundary contract. The legacy harness lane
@@ -244,6 +251,7 @@ def run_state_machine_iteration_and_persist(
         ),
         "forbidden_signatures": forbidden_signatures,
         "insufficient_repair_signatures": insufficient_repair_signatures,
+        "inert_mechanism_history": inert_mechanism_history,
         "extras": _extras_seed,
         "baseline_eval_rows": _baseline_eval_rows,
         "w": workspace_client,

@@ -243,6 +243,7 @@ def _build_request(
     iteration: int,
     forbidden_signatures: tuple[str, ...] = (),
     insufficient_repair_signatures: tuple[str, ...] = (),
+    inert_mechanism_history: tuple = (),
     prior_iteration_drops: Mapping[str, Any] | None = None,
     asset_grounding: dict[str, Any] | None = None,
     pivot_directive: str = "",
@@ -679,6 +680,21 @@ def _build_request(
             # ``harvest_sm_insufficient_repair_signatures`` /
             # ``extend_sm_insufficient_repair_signatures``.
             "insufficient_repair_signatures": list(insufficient_list),
+            # Trial 30 W30.1a — inert-mechanism feedback. Distinct from
+            # ``insufficient_repair_signatures``: these name mechanisms the
+            # acceptance gate proved behaviorally INERT on a kit-forced RCA
+            # (behavioral_diff=unchanged) via the kit_forced_inert_reroute
+            # lane. The prompt instructs the LLM to pick from
+            # ``_structural_fix_mechanisms(rca) - rejected``. Threaded from
+            # ``TransformerContext.inert_mechanism_history``; rendered only
+            # when non-empty so the prompt stays byte-stable otherwise.
+            "inert_mechanism_history": (
+                render_inert_mechanism_history_section(
+                    inert_mechanism_history
+                )
+                if inert_mechanism_history
+                else ""
+            ),
             # NOTE Phase 0 P0.5 — lever_menu / lever_contract_instructions /
             # archetype_catalog_menu were moved out of this JSON
             # payload into cacheable_user_blocks below so the
@@ -861,6 +877,7 @@ def run_plan11_synthesis_for_single_cluster(
     w: Any,
     forbidden_signatures: tuple[str, ...] = (),
     insufficient_repair_signatures: tuple[str, ...] = (),
+    inert_mechanism_history: tuple = (),
     llm_response_override: Any = None,
     # P4 producer-side hooks. Defaults keep legacy callers (tests,
     # batched fan-out, replay harnesses) byte-stable; only the live SM
@@ -994,6 +1011,7 @@ def run_plan11_synthesis_for_single_cluster(
             iteration=iteration,
             forbidden_signatures=forbidden_signatures,
             insufficient_repair_signatures=insufficient_repair_signatures,
+            inert_mechanism_history=inert_mechanism_history,
             prior_iteration_drops=prior_iteration_drops,
             asset_grounding=_w5_grounding,
         )

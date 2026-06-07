@@ -541,6 +541,12 @@ def _invoke_stage3_llm(state: QuestionStateInIteration, ctx: TransformerContext)
                 insufficient_repair_signatures=(
                     _live_insufficient_repair_signatures(ctx)
                 ),
+                # Trial 30 W30.1a — inert-mechanism feedback channel. The
+                # cross-iteration history the harness harvested from prior
+                # kit_forced_inert_reroute decisions, threaded onto the ctx.
+                inert_mechanism_history=tuple(
+                    getattr(ctx, "inert_mechanism_history", ()) or ()
+                ),
                 metadata_snapshot=dict(
                     getattr(ctx, "metadata_snapshot", {}) or {}
                 ),

@@ -20572,6 +20572,10 @@ def _run_lever_loop_legacy(
                     insufficient_repair_signatures=tuple(
                         sorted(_sm_insufficient_repair_signatures),
                     ),
+                    # Trial 30 W30.1a — pass the inert-mechanism history
+                    # accumulator alongside the insufficient channel so
+                    # Stage 3 sees the rejected mechanisms next iteration.
+                    inert_mechanism_history=_sm_inert_mechanism_history,
                     space_id=str(space_id or ""),
                     metadata_snapshot=metadata_snapshot,
                     stage_ctx=_sm_stage_ctx,
