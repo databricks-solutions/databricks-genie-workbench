@@ -1163,16 +1163,18 @@ parallel ground-truth-review pass may be required for literal 100%.
 
 | Workstream | Description | Module owner | Status |
 |---|---|---|---|
-| W29.1 | Post-apply behaviour gate + structural-lever routing for kit-forced RCAs: when a kit-forced patch yields `behavioral_diff="unchanged"`, route the next proposal to a structural lever (lever-6 SQL-snippet / sql-shape) rather than re-proposing an inert `add_example_sql`; reject behaviourally-inert patches before they exhaust the iteration budget. LLM selects the structural mechanism over the typed RCA-kind→lever map; deterministic gate validates the behaviour delta. | `optimization/` lever-selection + post-apply gate (TBD by RCA) | plan |
+| W29.1 | Post-apply behaviour gate + structural-lever routing for kit-forced RCAs: when a kit-forced patch yields `behavioral_diff="unchanged"`, the acceptance gate emits a new `kit_forced_inert_reroute` decision (sibling of `kept_insufficient`), records the rejected mechanism on `AcceptanceDecisionRecord.rejected_mechanism`, harvests it into `InertMechanismHistory` (typed accumulator threaded through `TransformerContext` + `Stage2BatchInput`), and Stage 3 synthesis renders a per-(qid, rca_kind) AVOID section into the prompt so the LLM picks from `_structural_fix_mechanisms(rca) - rejected_mechanism` next iteration. Forensic evidence persists as `Trial29InertPatchDiagnostic` JSONL. Kit-forced detection is dynamically derived via `_kit_for_rca_companions(rca_kind) is not None` (no schema change to `AppliedRecord`). Gated by `GSO_TRIAL29_BEHAVIOR_DELTA` (master) + `GSO_TRIAL29_INERT_REROUTE` (sub); both default ON, byte-stable rollback to `kept_insufficient` when OFF. | `optimization/trial29_flags.py`, `optimization/inert_mechanism_history.py`, `optimization/inert_patch_diagnostic.py`, `optimization/state_machine/records.py` (`AcceptanceDecisionRecord`), `optimization/state_machine/verdict.py` (`TransformerContext`), `optimization/state_machine/transformers/acceptance_gate.py` (new lane), `optimization/state_machine/transformers/cluster_batch.py` (`Stage2BatchInput`), `optimization/stages/synthesize.py` (`render_inert_mechanism_history_section`) | implemented (offline) |
 | W29.2 | airline upstream de-starvation: Stage-1 diagnose `context_token_budget_exceeded` on gs_009 (compact the diagnose prompt / raise budget) + Plan-11 dispatch input-projection drift dropping gs_024 (fix the SM→dispatch projection so every clustered QID reaches dispatch). | `optimization/stages/diagnose.py`, Plan-11 dispatch projection | plan |
 | W29.3 | W28.2 carry-over: iteration-0 seed Stage-3 de-starvation (extend W27.1 W6 re-dispatch to the seed pass). | `optimization/stages/synthesize.py` (seed path) | plan |
 | W29.4 | Live re-verification. Acceptance: ≥1 accepted patch `behavioral_diff != "unchanged"` AND a measurable accuracy gain on at least one anchor whose lever loop runs. | live verification | plan |
+| W29.5 | Decomposed architecture invariants: split the monolithic `architecture_invariants_held: bool` into three per-domain sub-invariants (`rca_invariants_held` / `lever_lattice_invariants_held` / `bundle_completeness_invariants_held`) so an orthogonal infra gap (e.g. evidence-bundle persistence) does not mask RCA / lever-lattice progress. `all_held` preserves the legacy single-bool contract for harness reads; `legacy_architecture_invariants_held` is a free-function alias. `render_postmortem_section` emits each sub-invariant + the aggregate so the /goal harness parser keeps working. | `optimization/architecture_invariants.py` (`ArchitectureInvariants` typed model + `render_postmortem_section`) | implemented (offline) |
 
 ### Watch Markers (positive)
 
 | Marker | Workstream | Meaning |
 |---|---|---|
 | accepted patch with `behavioral_diff != "unchanged"` on a live anchor | W29.1 | a kit-forced lever finally shifted Genie's NL→SQL |
+| `GSO_TRIAL29_INERT_PATCH_REROUTE_V1` count > 0 on a live anchor | W29.1 | the new acceptance lane fired (kit-forced patch was inert → routed for re-synthesis with rejected mechanism recorded) |
 | `GSO_TRIAL24_KIT_FORCED_V1` count > 0 on airline | W29.2 | airline's upstream starvation cleared; kit gate reachable |
 | final accuracy strictly > post-enrichment baseline on a live anchor | W29.1+W29.2 | the loop produced a real gain |
 
@@ -1188,6 +1190,9 @@ parallel ground-truth-review pass may be required for literal 100%.
 
 | Check | Command |
 |---|---|
+| Trial 29 W29.1 unit + W29.5 (`trial29_flags` + `inert_mechanism_history` + `inert_patch_reroute` + `inert_patch_diagnostic` + `architecture_invariants` + Stage 3 prompt render) | `pytest tests/unit/optimization/test_trial29_*.py tests/unit/stages/test_trial29_synthesis_inert_history_prompt.py -q` (42 tests) |
+| Trial 29 W29.1 end-to-end replay (gate → harvest → persist → prompt → extend across two iterations) | `pytest tests/integration/postmortem_replay/test_trial29_w29_1_kit_forced_inert_reroute_replay.py -q` |
+| State-machine regression (gate / records / verdict / transformers) — must remain at 291 passing | `pytest tests/unit/state_machine/ tests/integration/postmortem_replay/ -q` |
 | Post-apply behaviour gate + structural routing unit | `pytest tests/unit/optimization/ -q -k behavior_delta` |
 | Stage-1 diagnose budget / Plan-11 projection | `pytest tests/unit/stages/ tests/integration/test_sm_forward_pipeline_to_proposed.py -q` |
 | RCA canonicaliser alignment (≥95%, unchanged) | `pytest tests/eval/test_rca_kind_canonical_normaliser_alignment.py -q` |
@@ -1195,11 +1200,29 @@ parallel ground-truth-review pass may be required for literal 100%.
 
 ### Rollback
 
-`export GSO_TRIAL29_BEHAVIOR_DELTA=0` then redeploy.
+`export GSO_TRIAL29_BEHAVIOR_DELTA=0` then redeploy (master kill-switch; forces every Trial 29 sub-flag OFF). Fine-grained: `export GSO_TRIAL29_INERT_REROUTE=0` to disable just W29.1 (falls back to `kept_insufficient` for byte-stable behaviour). W29.5 is an offline schema decomposition with `all_held` preserving the legacy aggregate — no flag required.
 
 ### Status
 
-- [ ] W29.1 — post-apply behaviour gate + structural-lever routing for kit-forced RCAs (offline: inert patch → structural re-route; behaviour gate rejects unchanged)
+- [x] W29.1 — post-apply behaviour gate + structural-lever routing for kit-forced RCAs (offline: inert patch → structural re-route; behaviour gate rejects unchanged via `kit_forced_inert_reroute` lane; rejected mechanism harvested into `InertMechanismHistory` and surfaced in Stage 3 prompt; `Trial29InertPatchDiagnostic` JSONL persistence) — implemented 2026-06-07, 42 unit + 1 integration replay + 291 SM regression GREEN, byte-stable when flag OFF
 - [ ] W29.2 — airline Stage-1 diagnose budget + Plan-11 dispatch projection (gs_009 grounded RCA card; gs_024 reaches dispatch)
 - [ ] W29.3 — iteration-0 seed Stage-3 de-starvation (carry-over from W28.2)
-- [ ] W29.4 — live re-verification: ≥1 `behavioral_diff != "unchanged"` patch + measurable accuracy gain on an anchor whose lever loop runs
+- [ ] W29.4 — live re-verification: ≥1 `behavioral_diff != "unchanged"` patch + measurable accuracy gain on an anchor whose lever loop runs (BLOCKED on W29.1 deploy + cold-start anchor replay)
+- [x] W29.5 — decomposed `ArchitectureInvariants` typed model (rca / lever-lattice / bundle-completeness sub-invariants + `all_held` backwards-compat aggregate + postmortem render) — implemented 2026-06-07, 6 unit tests GREEN, byte-stable single-bool path preserved
+
+### W29.1 Test Files & Modules (implementation evidence)
+
+| Module | Test file | Tests | Purpose |
+|---|---|---|---|
+| `optimization/trial29_flags.py` | `tests/unit/optimization/test_trial29_flags.py` | 12 | Master + sub-flag with default-ON, opt-out, master kill-switch semantics |
+| `optimization/inert_mechanism_history.py` (`InertMechanismHistory`, `harvest_sm_…`, `extend_sm_…`) | `tests/unit/optimization/test_trial29_inert_mechanism_history.py` | 8 | Typed accumulator round-trip, harvest from `AcceptanceDecisionRecord`, cumulative-extend dedup, `TransformerContext` + `Stage2BatchInput` plumbing |
+| `optimization/inert_patch_diagnostic.py` (`Trial29InertPatchDiagnostic`, `persist_…`, `load_…`) | `tests/unit/optimization/test_trial29_inert_patch_diagnostic.py` | 4 | JSONL persistence round-trip, missing-dir/file handling |
+| `optimization/state_machine/records.py` (`AcceptanceDecisionRecord.decision` literal + `rejected_mechanism` field) + `optimization/state_machine/transformers/acceptance_gate.py` (new `KIT_FORCED_INERT_REROUTE` lane) | `tests/unit/optimization/test_trial29_inert_patch_reroute.py` | 8 | Lane fires positive + 4 negative-rollback paths (non-kit-forced RCA, target_fixed, score-delta non-zero, behavior != "unchanged") + 3 typed-record extension tests |
+| `optimization/stages/synthesize.py` (`render_inert_mechanism_history_section`) | `tests/unit/stages/test_trial29_synthesis_inert_history_prompt.py` | 3 | Per-QID AVOID section rendering, empty-history byte-stability, multi-QID accumulation |
+| **E2E across W29.1 surface** | `tests/integration/postmortem_replay/test_trial29_w29_1_kit_forced_inert_reroute_replay.py` | 1 | Two-iteration 7now-shaped replay: gate → harvest → persist → prompt → extend → reload, asserts cumulative rejected-mechanism dedup |
+
+### W29.5 Test Files & Modules
+
+| Module | Test file | Tests | Purpose |
+|---|---|---|---|
+| `optimization/architecture_invariants.py` (`ArchitectureInvariants`, `all_held`, `legacy_architecture_invariants_held`, `render_postmortem_section`) | `tests/unit/optimization/test_trial29_architecture_invariants.py` | 6 | Per-domain decomposition, `all_held` conjunction, postmortem section format compatibility with /goal harness parser |
