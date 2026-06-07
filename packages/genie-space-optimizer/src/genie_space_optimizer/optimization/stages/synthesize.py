@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from genie_space_optimizer.optimization.cluster_driven_synthesis import (
@@ -232,6 +233,19 @@ def _load_prior_iteration_drops_from_ledger(
             best_iter = row_iter
             best = dict(summary)
     return best
+
+
+@dataclass
+class _Trial30ProposalView:
+    """Trial 30 W30.1b adapter exposing the fields
+    ``enforced_switch_survivors`` reads off a ``RepairProposal`` (which
+    has no top-level ``qid`` / ``rca_kind`` / ``mechanism``). ``mechanism``
+    is derived from ``patch_type`` inside the guard."""
+
+    intent_id: str
+    qid: str
+    rca_kind: str
+    patch_type: Any
 
 
 def _build_request(
@@ -2429,6 +2443,70 @@ def run_plan11_synthesis_for_single_cluster(
                         ),
                     )
                 proposals = [proposals[i] for i in _cov_survivors]
+    except Exception:
+        pass
+
+    # Trial 30 W30.1b — enforced inert-mechanism switch. Drop a proposal
+    # that re-emits a mechanism the acceptance gate already proved
+    # behaviorally inert for its (qid, rca_kind) — but ONLY when a
+    # structural fallback survives in the same QID's slate (never zero out
+    # a QID). Gated by GSO_TRIAL30_ENFORCE_GUARD. The history channel is
+    # wired by W30.1a (harvest -> ctx -> here).
+    try:
+        from genie_space_optimizer.optimization.trial30_flags import (
+            trial30_enforce_guard_enabled,
+        )
+        if (
+            trial30_enforce_guard_enabled()
+            and proposals
+            and inert_mechanism_history
+        ):
+            from genie_space_optimizer.optimization.enforced_mechanism_switch import (  # noqa: E501
+                enforced_switch_survivors,
+            )
+            # Same canonicaliser the harness used to build the history key
+            # (Task 3) so the (qid, rca_kind) lookup hits.
+            from genie_space_optimizer.optimization.stages.action_groups import (  # noqa: E501
+                _normalize_rca_kind as _t30_normalize_rca,
+            )
+            _t30_canonical_rca = _t30_normalize_rca(_cluster_rca_kind)
+            _t30_view = [
+                _Trial30ProposalView(
+                    intent_id=p.intent_id or "",
+                    qid=(p.target_qids[0] if p.target_qids else ""),
+                    rca_kind=_t30_canonical_rca,
+                    patch_type=p.patch_type,
+                )
+                for p in proposals
+            ]
+            _t30_outcome = enforced_switch_survivors(
+                _t30_view, inert_mechanism_history
+            )
+            _t30_dropped_ids = {
+                p.intent_id for p in _t30_outcome.dropped
+            }
+            for _t30_iid, _t30_reason in _t30_outcome.dropped_reasons.items():
+                emit_patch_outcome(
+                    optimization_run_id=optimization_run_id,
+                    iteration=iteration,
+                    ag_id=ag_id,
+                    cluster_id=cluster.cluster_id,
+                    intent_id=_t30_iid or "<empty>",
+                    outcome_kind=PatchOutcomeKind.CONTRACT_FAILED,
+                    terminal_reason="enforced_inert_mechanism_switch",
+                )
+                print(_t30_reason, flush=True)
+            for _t30_qid in _t30_outcome.no_fallback_qids:
+                print(
+                    "GSO_TRIAL30_NO_FALLBACK_AVAILABLE_V1:"
+                    f"qid={_t30_qid}:rca={_t30_canonical_rca}",
+                    flush=True,
+                )
+            if _t30_dropped_ids:
+                proposals = [
+                    p for p in proposals
+                    if (p.intent_id or "") not in _t30_dropped_ids
+                ]
     except Exception:
         pass
 
