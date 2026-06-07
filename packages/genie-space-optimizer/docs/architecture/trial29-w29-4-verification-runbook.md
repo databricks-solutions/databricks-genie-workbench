@@ -222,5 +222,16 @@ Edit `packages/genie-space-optimizer/docs/architecture/lever-loop-iteration-trac
 | `~19:14` | airline subagent surfaced `VERIFICATION_BLOCKED_BY_IP_ACL` after 90+ min of retry attempts |
 | `~19:31` | Main thread independently confirmed the IP block from a fresh shell (`fevm-prashanth` + unrelated `fevm-serverless` both block) |
 | `~19:33` | 7now subagent interrupted by main thread to stop the retry loop |
-| (TBD) | Operator resolves IP ACL (VPN to allowlisted IP, or account ACL update) |
-| (TBD) | Operator runs Steps 1–6 of this runbook |
+| `~20:29` | Operator back online; external IP changed `107.194.218.231` → `165.1.215.171` (allowlisted); Databricks API reachable again |
+| `~20:31` | Both repairs confirmed TERMINATED/SUCCESS: airline `1068216194302846` (task `653857084564329`, 16:41:22→17:13:49Z), 7now `990840611944843` (task `1075987815374793`, 16:40:52→16:59:42Z). The airline "LIKELY_OK_UNVERIFIED" submission DID land — it is the 4th REPAIR entry at the expected 16:41:22Z timestamp. |
+| `~20:33` | Parallel postmortem fan-out (both anchors) |
+| `~20:48` | Both postmortems complete → verdict `TRIAL29_W29_4_PARTIAL_NO_BEHAVIORAL_DELTA` on both anchors → Trial 30 planned (W30.1-W30.5). **RESOLVED.** |
+
+> **Resolution note.** No repair re-submission was needed — both
+> repairs landed during the small healthy window before the IP block
+> and ran to completion while the operator's IP was blocked. The
+> runbook's "resubmit" failure path was therefore not exercised. The
+> only lasting consequence is that each parent now carries 4 REPAIR
+> entries, so the NEXT replay against either parent MUST include the
+> appropriate `latest_repair_id` (airline `1068216194302846`, 7now
+> `990840611944843`) — recorded in `canonical-anchors.md`.

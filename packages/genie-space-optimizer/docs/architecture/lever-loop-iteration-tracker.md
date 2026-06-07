@@ -1207,7 +1207,7 @@ parallel ground-truth-review pass may be required for literal 100%.
 - [x] W29.1 — post-apply behaviour gate + structural-lever routing for kit-forced RCAs (offline: inert patch → structural re-route; behaviour gate rejects unchanged via `kit_forced_inert_reroute` lane; rejected mechanism harvested into `InertMechanismHistory` and surfaced in Stage 3 prompt; `Trial29InertPatchDiagnostic` JSONL persistence) — implemented 2026-06-07, 42 unit + 1 integration replay + 291 SM regression GREEN, byte-stable when flag OFF
 - [ ] W29.2 — airline Stage-1 diagnose budget + Plan-11 dispatch projection (gs_009 grounded RCA card; gs_024 reaches dispatch)
 - [ ] W29.3 — iteration-0 seed Stage-3 de-starvation (carry-over from W28.2)
-- [ ] W29.4 — live re-verification: ≥1 `behavioral_diff != "unchanged"` patch + measurable accuracy gain on an anchor whose lever loop runs (BLOCKED on W29.1 deploy + cold-start anchor replay)
+- [~] W29.4 — live re-verification **PARTIAL** (2026-06-07, both anchors). The W29.1 lane **fired live on both anchors** (airline: 1× `GSO_TRIAL29_INERT_PATCH_REROUTE_V1` on `gs_009`/`top_n_cardinality_collapse`/rejected `lever-5`; 7now: 2× on `gs_013`/`wrong_column` + `gs_026`/`top_n_cardinality_collapse`, both rejected `lever-5`) and accuracy **held** at each post-enrichment baseline (airline 95.65%, 7now 91.3% — criterion 4 PASS, criterion 1 PASS). BUT **no patch ever produced `behavioral_diff != "unchanged"`** (criterion 3 FAIL on both) and the mechanism-switch (criterion 2) was never exercised: on 7now Stage 3 **re-emitted the same rejected `(lever-5, add_example_sql)` mechanism** in iters 2/3/4 (never selected the `lever-6` fallback); on airline `gs_009` was **dropped from the iter-3/4 Stage-3 `target_qids_union`** so the strategist never had to re-pick. Postmortems: `runid_analysis/d13938e7-…/postmortem.md` (7now), `runid_analysis/e94376a3-…/postmortem_653857084564329.md` (airline). **Root cause → W30.1** (below): the W29.1 feedback channel carries the rejected signature but does NOT *force* Stage 3 to choose a different structural mechanism — the LLM is free to re-emit it, and the kept-QID projection drops the rerouted QID before the next synthesis. Repairs: airline `1068216194302846` (task `653857084564329`), 7now `990840611944843` (task `1075987815374793`), both TERMINATED/SUCCESS.
 - [x] W29.5 — decomposed `ArchitectureInvariants` typed model (rca / lever-lattice / bundle-completeness sub-invariants + `all_held` backwards-compat aggregate + postmortem render) — implemented 2026-06-07, 6 unit tests GREEN, byte-stable single-bool path preserved
 
 ### W29.1 Test Files & Modules (implementation evidence)
@@ -1226,3 +1226,67 @@ parallel ground-truth-review pass may be required for literal 100%.
 | Module | Test file | Tests | Purpose |
 |---|---|---|---|
 | `optimization/architecture_invariants.py` (`ArchitectureInvariants`, `all_held`, `legacy_architecture_invariants_held`, `render_postmortem_section`) | `tests/unit/optimization/test_trial29_architecture_invariants.py` | 6 | Per-domain decomposition, `all_held` conjunction, postmortem section format compatibility with /goal harness parser |
+
+## Trial 30 — Force the structural-mechanism switch (close the W29.4 gap) + W29.1 evidence-bundle completeness
+
+> **Why this trial exists.** Trial 29 W29.4 proved the W29.1 detection
+> half works live on both anchors — the `kit_forced_inert_reroute`
+> lane fired (airline 1×, 7now 2×) and rejected the inert mechanism —
+> but the *correction* half did not change behaviour: Stage 3 either
+> re-emitted the same rejected mechanism (7now, all of iters 2-4 stayed
+> on `lever-5`/`add_example_sql`, never selected the `lever-6`
+> fallback) or never had to re-pick because the rerouted QID was
+> dropped from the next iteration's synthesis target set (airline
+> `gs_009` fell out of `target_qids_union` in iters 3-4). The feedback
+> channel **informs** the LLM of the rejected mechanism but does not
+> **constrain** it, and the kept-QID projection can drop the very QID
+> the reroute was about. The result on both anchors:
+> `behavioral_diff="unchanged"` on 100 % of accepted patches —
+> the Trial 29 anti-success marker.
+
+### Cross-anchor root cause (from the two W29.4 postmortems)
+
+| Symptom | airline (`653857084564329`) | 7now (`1075987815374793`) | Shared mechanism |
+|---|---|---|---|
+| reroute fired | 1× (`gs_009`, `top_n_cardinality_collapse`, rejected `lever-5`) | 2× (`gs_013`/`wrong_column`, `gs_026`/`top_n_cardinality_collapse`, both rejected `lever-5`) | W29.1 detection works |
+| next-iter mechanism | n/a — `gs_009` dropped from Stage-3 `target_qids_union` | re-emitted `lever-5`/`add_example_sql` (never picked `lever-6` fallback) | **W29.1 feedback is advisory, not enforced** |
+| behavioural delta | none (`unchanged`×1) | none (`unchanged`×2) | criterion 3 FAIL both |
+| accuracy | held 95.65 % | held 91.3 % | criterion 4 PASS both (no regression — the W29.2 `mechanism_does_not_cover_behavior_delta` re-apply gate blocked the inert re-apply safely) |
+
+### Workstreams
+
+| Workstream | Description | Module owner | Status |
+|---|---|---|---|
+| W30.1 | **Force the structural switch.** Convert the W29.1 feedback channel from advisory to enforced: when Stage 3 synthesises for a `(qid, rca_kind)` that has a non-empty `InertMechanismHistory`, the lever-selection MUST pick from `_structural_fix_mechanisms(rca_kind) - rejected_mechanisms` and the synthesised proposal MUST be **rejected at validation** if it re-emits a rejected mechanism (deterministic post-LLM guard, not just prompt text). The lever lattice must expose a non-`add_example_sql` structural mechanism for `top_n_cardinality_collapse` and `wrong_column` (today the only fallback for those kits appears to be `lever-6`, which the strategist never selected — verify the fallback is actually reachable and structurally distinct). | `optimization/stages/synthesize.py` (post-LLM mechanism guard), `optimization/stages/action_groups.py` (`_structural_fix_mechanisms` coverage for top_n / wrong_column), `optimization/state_machine/transformers/cluster_batch.py` (ensure rerouted QID stays in the next `target_qids_union`) | plan |
+| W30.2 | **Keep the rerouted QID in the next synthesis set.** Airline `gs_009` was dropped from iters 3-4 `target_qids_union` after the reroute, so the strategist never re-picked. The kept-QID projection must treat a `kit_forced_inert_reroute` QID as "still open" (same class as `kept_insufficient`) so it is carried into the next iteration's Stage-3 target set until a behaviour delta is observed or the lattice is exhausted. | Stage-3 target-set projection (kept-QID carry-forward) | plan |
+| W30.3 | **W29.1 evidence-bundle completeness (closes `bundle_completeness_invariants_held`).** Two persistence gaps surfaced live: (a) **no `Trial29InertPatchDiagnostic` JSONL was persisted** on either anchor despite 3 total reroutes — the persistence call is implemented + unit-tested but is not wired into the live acceptance path; (b) **`kit_forced_inert_reroute` decisions did not project to `genie_eval_lever_loop_decisions`** (both postmortems had to fall back to log-grep for the count because the decisions table returned 0 rows). Wire both so the W29.5 `bundle_completeness_invariants_held` sub-invariant can actually go green. | acceptance→persistence wiring for `Trial29InertPatchDiagnostic`; decisions-table projection for the new decision literal | plan |
+| W30.4 | **Airline observability gaps (non-blocking but they force `architecture_invariants_held=false`).** (a) `GSO_TRIAL24_KIT_FORCED_V1` was suppressed because the *cluster-level* RCA was `extra_defensive_filter` even though the per-QID `gs_009` RCA was `top_n_cardinality_collapse` — the kit marker should reflect the per-QID kit decision, not just the cluster headline; (b) `terminal_reason="unknown"` appeared 4× — every terminal path should carry a typed reason; (c) the Trial-16 `POST_APPLY_EVAL_SLICED_ZERO_BENCHMARKS` regression returned on `gs_024` (the W29.2 Plan-11 dispatch projection work is the likely fix). | kit-marker per-QID source; typed `terminal_reason`; `gs_024` zero-benchmark slice (overlaps W29.2) | plan |
+| W30.5 | **Live re-verification.** Same acceptance bar as W29.4 but now expecting it to PASS: ≥1 accepted patch `behavioral_diff != "unchanged"` AND a measurable accuracy gain on at least one anchor whose lever loop runs, AND every reroute persists a `Trial29InertPatchDiagnostic` + projects to the decisions table. | live verification | plan |
+
+### Watch Markers (positive)
+
+| Marker | Workstream | Meaning |
+|---|---|---|
+| Stage-3 proposal rejected at validation for re-emitting a rejected mechanism | W30.1 | the enforced guard fired (advisory → enforced) |
+| a rerouted `(qid, rca_kind)` appears in the NEXT iteration's Stage-3 `target_qids_union` | W30.2 | rerouted QID carried forward, not dropped |
+| `genie_eval_lever_loop_decisions` has ≥1 row with `decision='kit_forced_inert_reroute'` on a live anchor | W30.3 | decisions-table projection wired |
+| ≥1 `Trial29InertPatchDiagnostic` JSONL persisted per reroute on a live anchor | W30.3 | evidence-bundle completeness closed |
+| accepted patch with `behavioral_diff != "unchanged"` on a live anchor | W30.1+W30.2 | the structural switch finally shifted Genie's NL→SQL (the W29.4 anti-success marker cleared) |
+
+### Anti-Success Markers (negative)
+
+| Anti-marker | Meaning |
+|---|---|
+| Stage 3 re-emits a rejected mechanism for a `(qid, rca_kind)` with non-empty inert history | W30.1 incomplete (still advisory) |
+| a rerouted QID is absent from the next iteration's Stage-3 target set | W30.2 incomplete |
+| `behavioral_diff="unchanged"` on 100 % of accepted patches on a live anchor (carried from W29.4) | W30.1+W30.2 incomplete |
+| `genie_eval_lever_loop_decisions` returns 0 `kit_forced_inert_reroute` rows while the log shows ≥1 marker | W30.3 incomplete (projection gap) |
+| any `if rca_kind == …` / per-QID lever hardcode in `src/` | Architectural Principle #1 violation |
+
+### Status
+
+- [ ] W30.1 — force the structural-mechanism switch (advisory → enforced post-LLM guard + structurally-distinct fallback coverage)
+- [ ] W30.2 — keep the rerouted QID in the next Stage-3 target set (kept-QID carry-forward parity with `kept_insufficient`)
+- [ ] W30.3 — W29.1 evidence-bundle completeness (persist `Trial29InertPatchDiagnostic` + project `kit_forced_inert_reroute` to decisions table)
+- [ ] W30.4 — airline observability gaps (per-QID kit marker, typed `terminal_reason`, `gs_024` zero-benchmark slice)
+- [ ] W30.5 — live re-verification: ≥1 `behavioral_diff != "unchanged"` patch + accuracy gain + diagnostic/decision persistence per reroute
