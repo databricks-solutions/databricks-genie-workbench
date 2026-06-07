@@ -2268,9 +2268,17 @@ def run_plan11_synthesis_for_single_cluster(
     # any proposal survived parse.
     if proposals:
         outcome_label = "synthesized"
-        target_qids_union = sorted(
-            {q for p in proposals for q in p.target_qids}
+        # Trial 30 W30.2(a) — union the cluster's member QIDs into the
+        # synthesized union so a rerouted QID the LLM omitted from
+        # target_qids is not dropped from the marker (W29.4 gs_009 drop).
+        # Gated by GSO_TRIAL30_INERT_HARVEST_WIRE for byte-stable rollback.
+        from genie_space_optimizer.optimization.trial30_flags import (
+            trial30_inert_harvest_wire_enabled,
         )
+        _proposal_targets = {q for p in proposals for q in p.target_qids}
+        if trial30_inert_harvest_wire_enabled():
+            _proposal_targets |= {str(q) for q in (cluster.member_qids or ())}
+        target_qids_union = sorted(_proposal_targets)
         synthesis_empty_reason = ""
     else:
         outcome_label = "empty_synthesis"
