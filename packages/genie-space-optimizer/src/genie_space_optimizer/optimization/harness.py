@@ -190,6 +190,48 @@ logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Trial 30 W30.1a — InertMechanismHistory harvest extractors.
+#
+# The harvest helper (``harvest_sm_inert_mechanism_history``) takes a
+# positionally-paired ``records`` stream and ``qid_rca_pairs``. These two
+# pure extractors derive those from the iteration's final SM states,
+# mirroring how ``harvest_sm_insufficient_repair_signatures`` reads
+# ``state.accepted``. They iterate ``states`` in the SAME order so the
+# positional pairing the harvest helper requires holds.
+# ──────────────────────────────────────────────────────────────────────
+def _t30_acceptance_records_from_states(states):
+    """Trial 30 — positional AcceptanceDecisionRecord stream from final
+    SM states (one ``state.accepted`` per state, paired with
+    :func:`_inert_qid_rca_pairs_from_states`). ``None`` for states that
+    never reached the acceptance gate; the harvest helper ignores those.
+    """
+    return [getattr(st, "accepted", None) for st in (states or ())]
+
+
+def _inert_qid_rca_pairs_from_states(states):
+    """Trial 30 — ``(qid, canonical_rca_kind)`` pairs positionally paired
+    with :func:`_t30_acceptance_records_from_states`.
+
+    The RCA label lives on ``state.diagnosed.rca_kind_label`` (raw); it
+    is canonicalized via ``action_groups._normalize_rca_kind`` exactly as
+    the acceptance gate's ``kit_forced_inert_reroute`` lane does, so the
+    harvested ``InertMechanismHistory.rca_kind`` matches the key the
+    Stage 3 guard looks up.
+    """
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        _normalize_rca_kind,
+    )
+
+    pairs = []
+    for st in (states or ()):
+        qid = str(getattr(st, "qid", "") or "")
+        diagnosed = getattr(st, "diagnosed", None)
+        raw_rca = str(getattr(diagnosed, "rca_kind_label", "") or "")
+        pairs.append((qid, _normalize_rca_kind(raw_rca)))
+    return pairs
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Trial 21 W9 — Deploy eligibility split from optimizer task status.
 #
 # A "blocked merge gate" or "failed bundle assembly" is contract health
@@ -19425,6 +19467,12 @@ def _run_lever_loop_legacy(
     # plumbed into the next iteration's ``ctx.insufficient_repair_signatures``
     # alongside the forbidden channel.
     _sm_insufficient_repair_signatures: set[str] = set()
+    # Trial 30 W30.1a — cross-iteration InertMechanismHistory accumulator.
+    # Sibling of ``_sm_insufficient_repair_signatures``. The W29.1 harvest
+    # helper existed but was never called in production; this is the
+    # wire-in. Tuple of ``InertMechanismHistory`` keyed by (qid, rca_kind),
+    # plumbed into the next iteration's ``ctx.inert_mechanism_history``.
+    _sm_inert_mechanism_history: tuple = ()
     # Cycle 9 W4 — per-run, per-AG fingerprint buffer for patches
     # rolled back when ``_control_plane_decision.target_still_hard_qids``
     # is non-empty. The strategist preprocessing prunes any candidate
@@ -20725,6 +20773,42 @@ def _run_lever_loop_legacy(
                     "Trial 18 insufficient_repair_signature harvest "
                     "failed; cumulative-learning channel skipped this "
                     "iteration",
+                    exc_info=True,
+                )
+
+            # Trial 30 W30.1a — harvest the InertMechanismHistory for the
+            # cross-iteration feedback channel. Mirrors the insufficient-
+            # signature harvest above but reads the kit_forced_inert_reroute
+            # decisions off the final states. SEPARATE try/except so an
+            # inert-harvest failure never suppresses the insufficient
+            # harvest. Gated by GSO_TRIAL30_INERT_HARVEST_WIRE; channel-skip
+            # is non-fatal.
+            try:
+                from genie_space_optimizer.optimization.trial30_flags import (
+                    trial30_inert_harvest_wire_enabled,
+                )
+                if trial30_inert_harvest_wire_enabled():
+                    from genie_space_optimizer.optimization.inert_mechanism_history import (  # noqa: E501
+                        extend_sm_inert_mechanism_history,
+                        harvest_sm_inert_mechanism_history,
+                    )
+                    _sm_inert_mechanism_history = (
+                        extend_sm_inert_mechanism_history(
+                            _sm_inert_mechanism_history,
+                            harvest_sm_inert_mechanism_history(
+                                _t30_acceptance_records_from_states(
+                                    _sm_final_states,
+                                ),
+                                qid_rca_pairs=_inert_qid_rca_pairs_from_states(
+                                    _sm_final_states,
+                                ),
+                            ),
+                        )
+                    )
+            except Exception:
+                logger.debug(
+                    "Trial 30 inert_mechanism_history harvest failed; "
+                    "feedback channel skipped this iteration",
                     exc_info=True,
                 )
 
