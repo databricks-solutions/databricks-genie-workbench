@@ -202,6 +202,113 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
             ),
         ))
 
+    # Trial 29 W29.1 — KIT_FORCED_INERT_REROUTE lane.
+    #
+    # Sibling of ``kept_insufficient`` but more specific: the kit
+    # gate fired (``_kit_for_rca_companions(rca_kind) is not None``)
+    # AND the patch landed cleanly (post_score == pre_score AND no
+    # collateral) AND ``behavioral_diff == "unchanged"`` — i.e. the
+    # kit-mandated mechanism produced an inert patch that Genie's
+    # planner ignored. The next iteration MUST pick a DIFFERENT
+    # structural mechanism from
+    # ``_structural_fix_mechanisms(rca) - {rejected}``; recording
+    # the rejected mechanism here is the lever-loop's feedback
+    # channel.
+    #
+    # Fires BEFORE the Trial 18 ``kept_insufficient`` block below so
+    # the kit-forced inert subset routes through the more diagnostic
+    # lane. Sub-flag OFF (``GSO_TRIAL29_INERT_REROUTE=0``) falls
+    # through to ``kept_insufficient`` for byte-stable rollback.
+    try:
+        from genie_space_optimizer.optimization.trial29_flags import (
+            trial29_inert_reroute_enabled,
+        )
+        _trial29_w29_1_on = trial29_inert_reroute_enabled()
+    except Exception:
+        _trial29_w29_1_on = False
+    if (
+        _trial29_w29_1_on
+        and not target_fixed
+        and state.evaluated.post_apply_score == state.evaluated.pre_apply_score
+        and not collateral
+        and state.applied is not None
+    ):
+        _t29_rca_kind = ""
+        if state.diagnosed is not None:
+            _t29_rca_kind = str(
+                getattr(state.diagnosed, "rca_kind_label", "") or ""
+            )
+        _t29_behavior = getattr(
+            state.evaluated, "behavioral_diff", "unchanged",
+        )
+        if _t29_rca_kind and _t29_behavior == "unchanged":
+            from genie_space_optimizer.optimization.stages.action_groups import (  # noqa: E501
+                _kit_for_rca_companions as _t29_kit_companions,
+                _normalize_rca_kind as _t29_normalize_rca,
+            )
+            _t29_canonical_rca = _t29_normalize_rca(_t29_rca_kind)
+            _t29_kit_forced = (
+                _t29_kit_companions(_t29_canonical_rca) is not None
+            )
+            if _t29_kit_forced:
+                from genie_space_optimizer.optimization.levers_contract import (  # noqa: E501
+                    infer_lever_from_patch_type as _t29_infer_lever,
+                )
+                _t29_rejected_lever = ""
+                _t29_patch_type = ""
+                if state.proposals:
+                    _t29_latest = state.proposals[-1]
+                    _t29_patch_type = str(_t29_latest.patch_type or "")
+                    _t29_prop = ctx.proposal_store.lookup(
+                        _t29_latest.intent_id
+                    )
+                    if _t29_prop is not None:
+                        _t29_rejected_lever = str(
+                            getattr(_t29_prop, "selected_lever", "") or ""
+                        )
+                    if not _t29_rejected_lever and _t29_patch_type:
+                        _t29_rejected_lever = _t29_infer_lever(
+                            _t29_patch_type
+                        )
+                _t29_signature = (
+                    f"{_t29_rejected_lever or '?'}:{_t29_patch_type or '?'}"
+                    f":kit_forced_inert:rca={_t29_canonical_rca}"
+                    f":behavior=unchanged"
+                )
+                try:
+                    import json as _json
+                    print(
+                        "GSO_TRIAL29_INERT_PATCH_REROUTE_V1 "
+                        + _json.dumps(
+                            {
+                                "qid": state.qid,
+                                "iteration": ctx.iteration,
+                                "rca_kind": _t29_canonical_rca,
+                                "rejected_mechanism": _t29_rejected_lever,
+                                "patch_type": _t29_patch_type,
+                                "behavioral_diff": "unchanged",
+                                "signature": _t29_signature,
+                            },
+                            sort_keys=True,
+                            default=str,
+                        ),
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+                return GateVerdict.success(record=AcceptanceDecisionRecord(
+                    decision="kit_forced_inert_reroute",
+                    arbiter_reason=(
+                        f"kit_forced_inert_reroute:"
+                        f"rca={_t29_canonical_rca}:behavior=unchanged"
+                    ),
+                    target_fixed=False,
+                    collateral_regressions=(),
+                    insufficient_repair_signature=_t29_signature,
+                    behavioral_diff="unchanged",
+                    rejected_mechanism=_t29_rejected_lever,
+                ))
+
     # Trial 18 Step 3 — KEPT_INSUFFICIENT lane.
     #
     # When the patch landed cleanly (post_score == pre_score AND no
