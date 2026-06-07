@@ -37,7 +37,9 @@ on every call when the sub-flag is ON for observability.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
+import os
 import re
 from typing import Any
 
@@ -256,22 +258,126 @@ def _reset_cache_for_tests() -> None:
 # ─────────────────────────────────────────────────────────────────────
 # Tier 4 — LLM (extracted so tests can monkeypatch).
 # ─────────────────────────────────────────────────────────────────────
-def _invoke_llm_tier(raw_label: str, *, w: Any) -> tuple[str, float]:
-    """Default LLM tier — not yet implemented (Trial 26 W26.4 will
-    wire this up to a typed ``LlmReasoningCall`` once the skill +
-    closed-enum output schema land).
+_LLM_OUTPUT_CLS: Any | None = None
 
-    The Trial 26 W26.1 contract: until the skill is wired in, this
-    function MUST raise so the deterministic-fail path becomes
-    ``via="unknown"`` (not ``via="llm_invalid"``). Tests monkeypatch
-    this hook to exercise the wired-up LLM behaviour without touching
-    a real Foundation Model endpoint.
+
+def _rca_llm_output_cls() -> type:
+    """Lazily build (once) the typed closed output contract for the
+    LLM tier: ``canonical_key`` + ``confidence``.
+
+    Built lazily so importing this module never forces
+    :mod:`prompt_io` at import time (the canonicaliser is imported
+    very early by the kit gate). The closed-set guarantee is enforced
+    deterministically by :func:`canonicalise_rca_kind` clamping the
+    returned ``canonical_key`` against :data:`RCA_CANONICAL_KEY_SET`;
+    the contract here is the typed module-boundary (a Pydantic
+    ``LLMOutputContract`` subclass, never ``dict[str, Any]``).
     """
-    raise NotImplementedError(
-        "Trial 26 W26.1 LLM tier wiring is owed by W26.4; "
-        "production canonicalisation currently terminates at the "
-        "deterministic tiers."
+    global _LLM_OUTPUT_CLS
+    if _LLM_OUTPUT_CLS is None:
+        from genie_space_optimizer.optimization.prompt_io import (
+            LLMOutputContract,
+        )
+
+        class _RcaCanonicalLlmOutput(LLMOutputContract):
+            canonical_key: str
+            confidence: float
+
+        _LLM_OUTPUT_CLS = _RcaCanonicalLlmOutput
+    return _LLM_OUTPUT_CLS
+
+
+def _build_llm_system_prompt() -> str:
+    """Render the system prompt enumerating the closed canonical-key
+    vocabulary. Derived from :data:`RCA_CANONICAL_KEY_SET` so the
+    prompt and the kit-map vocabulary never drift (no per-anchor /
+    per-QID literal — the model generalises over any narrative)."""
+    keys = sorted(k for k in RCA_CANONICAL_KEY_SET if k != "unknown_kind")
+    listed = "\n".join(f"  - {k}" for k in keys)
+    return (
+        "You are a root-cause-analysis (RCA) label normaliser for a "
+        "Genie Space optimizer. You receive a free-text RCA narrative "
+        "describing why a natural-language question produced incorrect "
+        "SQL. Map it to EXACTLY ONE canonical RCA kind from this closed "
+        "set (verbatim), or 'unknown_kind' when none genuinely fits:\n"
+        f"{listed}\n  - unknown_kind\n\n"
+        "The narrative is often routing prose that embeds the real "
+        "defect (e.g. \"SQL shape: example SQL needed for "
+        "ranking/comparison patterns\" describes a "
+        "top_n_cardinality_collapse). Reason about the underlying SQL "
+        "defect, NOT the lever or mechanism the narrative names. Emit "
+        "canonical_key (one listed value, exactly) and a confidence in "
+        "[0,1]. When genuinely ambiguous or out of domain, return "
+        "canonical_key='unknown_kind' with a low confidence."
     )
+
+
+def _invoke_llm_tier(raw_label: str, *, w: Any) -> tuple[str, float]:
+    """Trial 28 W28.1 — tier-4 LLM categorisation of a free-text RCA
+    narrative into the closed canonical-key vocabulary.
+
+    Uses the standard typed-LLM infrastructure
+    (:class:`LlmReasoningCall` + :class:`LlmReasoningRequest` with a
+    :class:`LLMOutputContract` ``result_cls``). Returns
+    ``(canonical_key, confidence)``; the caller
+    (:func:`canonicalise_rca_kind`) deterministically clamps the key
+    to :data:`RCA_CANONICAL_KEY_SET` (off-canonical → ``llm_invalid``).
+
+    Raises on decline / provider error so the caller records
+    ``via="llm_error"`` and falls through to the ``unknown_kind``
+    sentinel. Tests monkeypatch this hook (or
+    :class:`LlmReasoningCall`) to exercise the path without a real
+    Foundation Model endpoint.
+    """
+    from genie_space_optimizer.optimization.llm_reasoning_call import (
+        LlmReasoningCall,
+    )
+    from genie_space_optimizer.optimization.llm_reasoning_io import (
+        LlmReasoningRequest,
+    )
+
+    digest = hashlib.sha1(raw_label.encode("utf-8")).hexdigest()[:12]
+    request = LlmReasoningRequest(
+        call_id=f"rca_canon::{digest}",
+        skill_id="rca_kind_canonicalise",
+        system_msg=_build_llm_system_prompt(),
+        user_prompt=f"RCA narrative:\n{raw_label}",
+        result_cls=_rca_llm_output_cls(),
+        max_tokens=256,
+    )
+    resp = LlmReasoningCall().invoke(w=w, request=request)
+    if not resp.succeeded or not resp.parsed_output:
+        raise RuntimeError(
+            "rca canonicaliser LLM tier did not succeed: "
+            f"declined={resp.declined} error={resp.error}"
+        )
+    key = str(resp.parsed_output.get("canonical_key", "")).strip()
+    confidence = float(resp.parsed_output.get("confidence", 0.0) or 0.0)
+    return key, confidence
+
+
+def _w28_autoacquire_w() -> bool:
+    """W28.1 — may the canonicaliser lazily acquire a workspace client
+    for the LLM tier when the caller passed none?
+
+    True only when the W28.1 sub-flag is ON **and** we are not inside
+    a pytest run. The pytest guard keeps the entire offline suite
+    byte-stable (the kit gate calls the canonicaliser with no ``w``;
+    without this guard a default-ON flag would make every offline
+    forward-pipeline test attempt a real Databricks call). Production
+    (the lever_loop job, no ``PYTEST_CURRENT_TEST``) acquires the
+    client and the LLM tier fires.
+    """
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return False
+    try:
+        from genie_space_optimizer.optimization.trial28_flags import (
+            trial28_rca_llm_tier_enabled,
+        )
+
+        return trial28_rca_llm_tier_enabled()
+    except Exception:
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -348,7 +454,11 @@ def canonicalise_rca_kind(
         return result
 
     raw_str = str(raw_label)
-    cache_key = (raw_str, w is not None)
+    # W28.1: the cache key tracks whether the LLM tier was reachable
+    # (explicit ``w`` OR lazy autoacquire), so a deterministic-only
+    # resolution can never mask an LLM-tier resolution of the same
+    # label (or vice versa) within one process.
+    cache_key = (raw_str, w is not None or _w28_autoacquire_w())
     cached = _CACHE.get(cache_key)
     if cached is not None:
         # The marker has already been emitted for this label; do not
@@ -398,10 +508,24 @@ def canonicalise_rca_kind(
                 _emit_marker(result)
                 return result
 
-    # ── Tier 4: LLM (only when ``w`` is provided) ────────────────────
-    if w is not None:
+    # ── Tier 4: LLM (explicit ``w``, or W28.1 lazily-acquired) ───────
+    # W28.1: when no workspace client was supplied AND the sub-flag is
+    # ON (and we are not under pytest), lazily acquire one so the kit
+    # gate can resolve free-text narratives without threading ``w``
+    # through every ``_normalize_rca_kind`` caller.
+    w_eff = w
+    if w_eff is None and _w28_autoacquire_w():
         try:
-            canonical, confidence = _invoke_llm_tier(raw_str, w=w)
+            from genie_space_optimizer._workspace_client import (
+                make_workspace_client,
+            )
+
+            w_eff = make_workspace_client()
+        except Exception:
+            w_eff = None
+    if w_eff is not None:
+        try:
+            canonical, confidence = _invoke_llm_tier(raw_str, w=w_eff)
         except Exception:
             result = RcaKindCanonical(
                 canonical_key="unknown_kind",
