@@ -38,6 +38,7 @@ from tests.integration.fake_workspace_client import (
     minimal_valid_metadata_snapshot,
 )
 from tests.integration.sm_forward_tapes import (
+    KIT_FREE_RCA_KIND,
     cluster_response_tape,
     diagnose_response_tape,
     synthesize_response_tape,
@@ -106,12 +107,22 @@ def _disable_genie_patch_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gc.time, "sleep", lambda *_a, **_k: None)
 
 
-def _stocked_forward_tape(qids: list[str], *, cycles: int = 6) -> list:
+def _stocked_forward_tape(
+    qids: list[str],
+    *,
+    cycles: int = 6,
+    rca_kind_label: str = "wrong_aggregation",
+) -> list:
     """Stock multiple copies of each stage's tape so escalation cycles
-    don't exhaust the replay early."""
+    don't exhaust the replay early.
+
+    ``rca_kind_label`` defaults to ``wrong_aggregation`` for byte-stability
+    of the phase-4 dispatch test; the applied-patch readiness test passes
+    :data:`KIT_FREE_RCA_KIND` so its single-lever vehicle advances past
+    the Trial 26 W26.2 kit gate (see that constant's docstring)."""
     tape = []
     for _ in range(cycles):
-        tape += diagnose_response_tape(qids)
+        tape += diagnose_response_tape(qids, rca_kind_label=rca_kind_label)
     for _ in range(cycles):
         tape += cluster_response_tape(qids)
     for _ in range(cycles):
@@ -163,7 +174,7 @@ def test_real_production_row_reaches_applied_patch(
     )
 
     qids = [sm_qid]
-    tape = _stocked_forward_tape(qids)
+    tape = _stocked_forward_tape(qids, rca_kind_label=KIT_FREE_RCA_KIND)
     harness = TapeReplayHarness(tape=tape)
 
     ws = FakeWorkspaceClient()

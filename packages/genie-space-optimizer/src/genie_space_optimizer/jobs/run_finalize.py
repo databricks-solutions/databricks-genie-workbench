@@ -172,6 +172,7 @@ _widget_catalog = dbutils.widgets.get("catalog").strip()
 _widget_schema = dbutils.widgets.get("schema").strip()
 
 from genie_space_optimizer.jobs._handoff import (
+    _tv_get,
     get_baseline_eval_state,
     get_lever_loop_outputs,
     get_run_context,
@@ -195,7 +196,7 @@ max_iterations = ctx["max_iterations"].value
 # fall back to the legacy taskValue read until a future plan widens the
 # schema for it.
 deploy_target = (
-    dbutils.jobs.taskValues.get(taskKey="preflight", key="deploy_target", default="")
+    _tv_get(dbutils, "preflight", "deploy_target", "")
     or None
 )
 

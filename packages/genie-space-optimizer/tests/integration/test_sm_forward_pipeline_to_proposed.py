@@ -29,7 +29,10 @@ from tests.integration.sm_forward_fixtures import (
     parse_stage3_synthesis_markers,
     states_by_qid,
 )
-from tests.integration.sm_forward_tapes import full_forward_tape
+from tests.integration.sm_forward_tapes import (
+    KIT_FREE_RCA_KIND,
+    full_forward_tape,
+)
 from tests.integration.sm_tape_replay import TapeReplayHarness
 
 
@@ -55,7 +58,10 @@ def test_forward_pipeline_advances_production_rows_to_proposed(
         "hydration QID; the fixture loader is mis-wired."
     )
 
-    tape = full_forward_tape(qids)
+    # Trial 26 W26.2: diagnose a kit-FREE RCA so the single-lever forward
+    # vehicle advances past the kit gate (this test verifies funnel
+    # mechanics, not kit synthesis — see KIT_FREE_RCA_KIND docstring).
+    tape = full_forward_tape(qids, rca_kind_label=KIT_FREE_RCA_KIND)
     harness = TapeReplayHarness(tape=tape)
 
     from genie_space_optimizer.optimization import optimizer as opt_mod

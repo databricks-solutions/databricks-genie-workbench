@@ -16,6 +16,23 @@ from typing import Iterable
 from tests.integration.sm_tape_replay import TapeEntry
 
 
+# Trial 26 W26.2 added the historical default diagnose RCA kind
+# ``wrong_aggregation`` (and ``wrong_column`` / ``plural_top_n_collapse``)
+# to the KIT_FOR_RCA companion map, so a single-lever proposal for those
+# kinds is now hard-rejected as ``kit_for_rca_violation:...:singleton``.
+# Forward-pipeline MECHANICS tests (advancement through proposed →
+# normalized → applyable → applied) use a single-lever proposal as the
+# vehicle and are orthogonal to kit synthesis; they diagnose this
+# kit-FREE RCA kind so the single-lever vehicle is legitimately
+# admissible. The kit-at-source path for the kit-contract kinds is
+# covered by ``test_trial26_kit_map_coverage_replay`` (gate enforcement)
+# and ``tests/unit/stages/test_trial26_synthesis_kit_prompt`` (producer
+# prompt). Keep the per-factory defaults as ``wrong_aggregation`` for
+# byte-stability of every other caller; tests opt into kit-free
+# explicitly.
+KIT_FREE_RCA_KIND = "soft_policy_violation"
+
+
 # ── Stage 1: plan11_diagnose ──────────────────────────────────────────
 
 
@@ -316,16 +333,24 @@ def full_forward_tape(
     qids: Iterable[str],
     *,
     iteration: int = 1,
+    rca_kind_label: str = "wrong_aggregation",
 ) -> list[TapeEntry]:
     """Concatenate Stage 1, Stage 2, and Stage 3 tapes for the full forward run.
 
     Stage 1 and Stage 2 are driven per-QID-state; Stage 3 synthesis is a
     single batched call over the surviving clusters, so the Stage 3
     segment is one entry (see :func:`synthesize_batched_response_tape`).
+
+    ``rca_kind_label`` forwards to :func:`diagnose_response_tape` and
+    defaults to ``wrong_aggregation`` for byte-stability. Mechanics tests
+    that need the single-lever vehicle to advance past the kit gate pass
+    :data:`KIT_FREE_RCA_KIND` (see the module docstring at that constant).
     """
     qids = list(qids)
     return [
-        *diagnose_response_tape(qids, iteration=iteration),
+        *diagnose_response_tape(
+            qids, iteration=iteration, rca_kind_label=rca_kind_label
+        ),
         *cluster_response_tape(qids, iteration=iteration),
         *synthesize_batched_response_tape(qids, iteration=iteration),
     ]

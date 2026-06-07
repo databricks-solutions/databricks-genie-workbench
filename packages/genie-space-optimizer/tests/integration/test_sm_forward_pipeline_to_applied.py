@@ -53,6 +53,7 @@ from tests.integration.sm_forward_fixtures import (
     states_by_qid,
 )
 from tests.integration.sm_forward_tapes import (
+    KIT_FREE_RCA_KIND,
     cluster_response_tape,
     diagnose_response_tape,
     synthesize_response_tape,
@@ -75,10 +76,16 @@ def _stock_forward_tape(qids, *, cycles: int = 10):
     The applier failure path cycles back to PROPOSED on rejection and
     the state machine may re-enter Stage 3 for a retry; stocking
     multiple copies prevents tape-exhaustion noise during escalation.
+
+    Trial 26 W26.2: diagnoses a kit-FREE RCA so the single-lever
+    ``add_example_sql`` vehicle advances past the kit gate to APPLIED.
+    Both tests in this file verify applier mechanics (fake-client apply
+    success + apply-failure cycle-back), not kit synthesis — see the
+    ``KIT_FREE_RCA_KIND`` docstring in ``sm_forward_tapes``.
     """
     tape = []
     for _ in range(cycles):
-        tape += diagnose_response_tape(qids)
+        tape += diagnose_response_tape(qids, rca_kind_label=KIT_FREE_RCA_KIND)
     for _ in range(cycles):
         tape += cluster_response_tape(qids)
     for _ in range(cycles):

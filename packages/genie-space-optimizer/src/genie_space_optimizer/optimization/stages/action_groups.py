@@ -342,6 +342,62 @@ def _emit_trial26_kit_map_expanded_marker(
         pass
 
 
+def active_kit_for_rca_map() -> Mapping[str, frozenset[str]]:
+    """Return the full set of RCA kinds that currently carry a
+    ``KIT_FOR_RCA`` companion contract, merged across the base map and
+    every flag-gated extension that is ON.
+
+    This is the single source of truth the Stage 3 synthesis prompt
+    consults so its kit-mandate enumeration stays in lock-step with the
+    validator (:func:`kit_for_rca_violation_reason`). Before Trial 26
+    W26.2, the prompt hard-coded the two original Trial 24 kinds, so
+    when the kit map was expanded the validator demanded a kit the
+    producer was never told to emit — the desync that stranded
+    ``wrong_aggregation`` / ``wrong_column`` proposals as
+    ``kit_for_rca_violation:...:singleton``. Deriving the prompt from
+    this accessor closes that gap generically: any future map expansion
+    is reflected in the prompt with no further edit.
+
+    Honours the SAME flag logic as :func:`_kit_for_rca_companions`:
+
+      * the base :data:`KIT_FOR_RCA` always contributes;
+      * :data:`_TRIAL24_KIT_FOR_RCA` is merged when
+        :func:`trial24_kit_at_source_enabled` is on, EXCEPT
+        ``extra_defensive_filter`` when
+        :func:`trial24_filter_removal_solo_enabled` is on (that RCA is
+        a justified solo instruction, not a kit);
+      * :data:`_TRIAL26_KIT_FOR_RCA` is merged when
+        :func:`trial26_kit_map_expanded_enabled` is on.
+
+    The base map wins for keys it owns, so the extensions can only ADD
+    contracts. Returns a plain dict (never mutates the module-level
+    constants). Unlike :func:`_kit_for_rca_companions`, this accessor
+    emits no markers — it is an enumeration helper, not a per-lookup
+    gate.
+    """
+    merged: dict[str, frozenset[str]] = dict(KIT_FOR_RCA)
+    try:
+        from genie_space_optimizer.optimization.trial24_flags import (
+            trial24_filter_removal_solo_enabled,
+            trial24_kit_at_source_enabled,
+        )
+
+        if trial24_kit_at_source_enabled():
+            _filter_solo = trial24_filter_removal_solo_enabled()
+            for rca, companions in _TRIAL24_KIT_FOR_RCA.items():
+                if rca in merged:
+                    continue
+                if rca == "extra_defensive_filter" and _filter_solo:
+                    continue
+                merged[rca] = companions
+    except Exception:
+        return merged
+    if _trial26_kit_map_expanded():
+        for rca, companions in _TRIAL26_KIT_FOR_RCA.items():
+            merged.setdefault(rca, companions)
+    return merged
+
+
 def _trial26_rca_canonical_normalise() -> bool:
     """Lazy + safe accessor for the Trial 26 W26.1 sub-flag.
 

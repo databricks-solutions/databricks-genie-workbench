@@ -67,6 +67,7 @@ from typing import Any, cast
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
 
+from genie_space_optimizer.jobs._handoff import _tv_get
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.evaluation import load_benchmarks_from_dataset
@@ -89,12 +90,16 @@ from genie_space_optimizer._workspace_client import make_workspace_client
 w = make_workspace_client()
 spark = SparkSession.builder.getOrCreate()
 
-run_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="run_id")
-space_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="space_id")
-domain = dbutils.jobs.taskValues.get(taskKey="preflight", key="domain")
-catalog = dbutils.jobs.taskValues.get(taskKey="preflight", key="catalog")
-schema = dbutils.jobs.taskValues.get(taskKey="preflight", key="schema")
-exp_name = dbutils.jobs.taskValues.get(taskKey="preflight", key="experiment_name")
+# Trial 26 W26.7 — read cross-task values via the compact-aware `_tv_get`
+# so the Trial 25 ``<task>_outputs`` JSON-blob publish path resolves on a
+# cold-start (raw per-key reads return nothing once the publisher went
+# compact, dying with ``No task values with key …``).
+run_id = _tv_get(dbutils, "preflight", "run_id")
+space_id = _tv_get(dbutils, "preflight", "space_id")
+domain = _tv_get(dbutils, "preflight", "domain")
+catalog = _tv_get(dbutils, "preflight", "catalog")
+schema = _tv_get(dbutils, "preflight", "schema")
+exp_name = _tv_get(dbutils, "preflight", "experiment_name")
 
 from genie_space_optimizer.common.warehouse import (
     export_warehouse_id,
@@ -102,14 +107,14 @@ from genie_space_optimizer.common.warehouse import (
 )
 
 _warehouse_id = resolve_warehouse_id(
-    dbutils.jobs.taskValues.get(taskKey="preflight", key="warehouse_id", default="")
+    _tv_get(dbutils, "preflight", "warehouse_id", "")
 )
 if _warehouse_id:
     export_warehouse_id(_warehouse_id)
 
-thresholds_met_raw = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="thresholds_met")
+thresholds_met_raw = _tv_get(dbutils, "baseline_eval", "thresholds_met")
 thresholds_met = str(thresholds_met_raw).lower() in ("true", "1")
-baseline_model_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="model_id")
+baseline_model_id = _tv_get(dbutils, "baseline_eval", "model_id")
 
 import mlflow
 mlflow.set_experiment(exp_name)

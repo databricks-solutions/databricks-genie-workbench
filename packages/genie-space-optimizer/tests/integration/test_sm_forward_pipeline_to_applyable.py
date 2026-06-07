@@ -59,6 +59,19 @@ from tests.integration.sm_tape_replay import TapeReplayHarness
 
 _ACCEPTANCE_CEILING_SECONDS = 5.0
 
+# These tests exercise the blast-radius gate (safe/unsafe) and the
+# normalized→applyable boundary — concerns orthogonal to kit synthesis.
+# Trial 26 W26.2 added ``wrong_aggregation`` (the previous default
+# diagnose RCA kind) to the KIT_FOR_RCA companion map, so a single-lever
+# proposal for it is now hard-rejected as ``kit_for_rca_violation:...:
+# singleton`` and never reaches APPLYABLE. To keep these tests focused on
+# blast radius, the forward tape diagnoses a kit-FREE RCA kind, for which
+# a single-lever proposal is legitimately admissible and reaches the
+# applyability boundary. The kit-at-source path for the W26.2 kinds is
+# covered separately by ``test_trial26_kit_map_coverage_replay`` (slate
+# survival) and the synthesis-prompt unit test.
+_KIT_FREE_RCA_KIND = "soft_policy_violation"
+
 
 @pytest.mark.integration
 def test_safe_blast_radius_advances_through_normalized_to_applyable(
@@ -99,7 +112,7 @@ def test_safe_blast_radius_advances_through_normalized_to_applyable(
     cycles = 10
     tape = []
     for _ in range(cycles):
-        tape += diagnose_response_tape(qids)
+        tape += diagnose_response_tape(qids, rca_kind_label=_KIT_FREE_RCA_KIND)
     for _ in range(cycles):
         tape += cluster_response_tape(qids)
     for _ in range(cycles):
@@ -277,7 +290,7 @@ def test_unsafe_blast_radius_cycles_state_back_to_proposed(
     collateral = ("gs_outside_target_001", "gs_outside_target_002")
     tape = []
     for _ in range(cycles):
-        tape += diagnose_response_tape(qids)
+        tape += diagnose_response_tape(qids, rca_kind_label=_KIT_FREE_RCA_KIND)
     for _ in range(cycles):
         tape += cluster_response_tape(qids)
     for _ in range(cycles):

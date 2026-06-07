@@ -48,6 +48,7 @@ from tests.integration.sm_forward_fixtures import (
     states_by_qid,
 )  # noqa: F401 — ``parse_markers`` is used by the pass-branch test
 from tests.integration.sm_forward_tapes import (
+    KIT_FREE_RCA_KIND,
     cluster_response_tape,
     diagnose_response_tape,
     synthesize_empty_body_proposal_tape,
@@ -96,8 +97,11 @@ def test_structural_patch_passes_gate_and_advances_past_normalized(
 
     rows = load_production_hydration_rows()
     qids = expected_hard_qids(rows)
+    # Trial 26 W26.2: kit-FREE RCA so the single structural lever clears
+    # the gate (this test exercises the structural gate / normalized
+    # boundary, not kit synthesis — see KIT_FREE_RCA_KIND docstring).
     tape = [
-        *diagnose_response_tape(qids),
+        *diagnose_response_tape(qids, rca_kind_label=KIT_FREE_RCA_KIND),
         *cluster_response_tape(qids),
         *synthesize_response_tape(qids),
     ]

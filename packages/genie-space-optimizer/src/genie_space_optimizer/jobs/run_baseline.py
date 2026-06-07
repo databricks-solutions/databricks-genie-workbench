@@ -186,7 +186,7 @@ os.environ.setdefault("GENIE_SPACE_OPTIMIZER_STRICT_PROMPT_REGISTRATION", "true"
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
 
-from genie_space_optimizer.jobs._handoff import publish_task_outputs
+from genie_space_optimizer.jobs._handoff import _tv_get, publish_task_outputs
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.benchmarks import assert_benchmark_handoff_visible
@@ -219,27 +219,29 @@ from genie_space_optimizer._workspace_client import make_workspace_client
 w = make_workspace_client()
 spark = SparkSession.builder.getOrCreate()
 
-# Read task values from preflight
-run_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="run_id")
-space_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="space_id")
-domain = dbutils.jobs.taskValues.get(taskKey="preflight", key="domain")
-catalog = dbutils.jobs.taskValues.get(taskKey="preflight", key="catalog")
-schema = dbutils.jobs.taskValues.get(taskKey="preflight", key="schema")
-exp_name = dbutils.jobs.taskValues.get(taskKey="preflight", key="experiment_name")
+# Read task values from preflight via the Trial-25-compact-aware reader
+# (`_tv_get`): preflight publishes a single ``preflight_outputs`` JSON blob
+# (run_preflight.py `publish_task_outputs`), so a raw per-key
+# ``dbutils.jobs.taskValues.get(key="run_id")`` finds nothing on a
+# cold-start and the task dies with ``No task values with key "run_id"``.
+# `_tv_get` resolves from the compact blob first, then per-key (old
+# parents), then default. (Trial 26 W26.7 cold-start handoff fix.)
+run_id = _tv_get(dbutils, "preflight", "run_id")
+space_id = _tv_get(dbutils, "preflight", "space_id")
+domain = _tv_get(dbutils, "preflight", "domain")
+catalog = _tv_get(dbutils, "preflight", "catalog")
+schema = _tv_get(dbutils, "preflight", "schema")
+exp_name = _tv_get(dbutils, "preflight", "experiment_name")
 
 import os as _os
-_warehouse_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="warehouse_id", default="")
+_warehouse_id = _tv_get(dbutils, "preflight", "warehouse_id", "")
 if _warehouse_id:
     _os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] = _warehouse_id
 
 from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
-max_benchmark_count = int(dbutils.jobs.taskValues.get(taskKey="preflight", key="max_benchmark_count", default=str(MAX_BENCHMARK_COUNT)))
+max_benchmark_count = int(_tv_get(dbutils, "preflight", "max_benchmark_count", str(MAX_BENCHMARK_COUNT)))
 expected_benchmark_count = int(
-    dbutils.jobs.taskValues.get(
-        taskKey="preflight",
-        key="benchmark_count",
-        default="0",
-    )
+    _tv_get(dbutils, "preflight", "benchmark_count", "0")
 )
 
 import mlflow

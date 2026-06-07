@@ -191,3 +191,60 @@ def test_legacy_unmandated_label_still_returns_none(capsys):
     # And no W26.2 marker should fire for this miss.
     out = capsys.readouterr().out
     assert "GSO_TRIAL26_KIT_MAP_EXPANDED_V1" not in out
+
+
+# ── W26.2 kit-GATE enforcement (closes this file's "does NOT exercise
+# the synthesizer/gate" gap for the newly-mapped kinds) ───────────────
+#
+# The map-reachability tests above prove ``_kit_for_rca_companions``
+# RETURNS a kit for the W26.2 labels. These tests prove the validator
+# ACTS on that kit: a single-lever proposal for a W26.2 kind is
+# hard-rejected (``:singleton``) and a proper >= 2-lever companion kit
+# is admitted. Together with the synthesis-prompt unit test
+# (``tests/unit/stages/test_trial26_synthesis_kit_prompt.py``), this
+# pins both halves of the producer/validator contract that the original
+# W26.2 landing left desynced — the validator demanded a kit the prompt
+# never told the producer to emit, so every ``wrong_aggregation``
+# proposal died as a singleton.
+
+
+@pytest.mark.parametrize(
+    "rca_kind,companion_kit",
+    [
+        ("wrong_aggregation", ("lever-1", "lever-6")),
+        ("wrong_column", ("lever-1", "lever-5a")),
+        # alias form resolves to the Trial-24 top_n kit
+        ("plural_top_n_collapse", ("lever-6", "lever-1")),
+    ],
+)
+def test_w26_2_kit_gate_rejects_singleton_admits_companion_kit(
+    rca_kind, companion_kit
+):
+    """For every W26.2-mapped RCA kind, the kit-violation gate must
+    reject a lone single lever and admit the >= 2-lever companion kit.
+    This is the enforcement the producer prompt was finally taught to
+    satisfy (map-driven kit mandate).
+    """
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        kit_for_rca_violation_reason,
+    )
+
+    singleton = kit_for_rca_violation_reason(rca_kind, (companion_kit[0],))
+    assert singleton == f"kit_for_rca_violation:rca={_canonical(rca_kind)}:singleton", (
+        f"a lone single lever for {rca_kind!r} must be hard-rejected as "
+        f"a singleton; got {singleton!r}"
+    )
+
+    admitted = kit_for_rca_violation_reason(rca_kind, companion_kit)
+    assert admitted == "", (
+        f"the >= 2-lever companion kit {companion_kit} for {rca_kind!r} "
+        f"must be admissible; got rejection {admitted!r}"
+    )
+
+
+def _canonical(rca_kind: str) -> str:
+    from genie_space_optimizer.optimization.stages.action_groups import (
+        _normalize_rca_kind,
+    )
+
+    return _normalize_rca_kind(rca_kind)

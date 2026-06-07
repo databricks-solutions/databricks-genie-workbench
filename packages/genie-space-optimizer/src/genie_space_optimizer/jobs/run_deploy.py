@@ -141,6 +141,7 @@ _widget_catalog = dbutils.widgets.get("catalog").strip()
 _widget_schema = dbutils.widgets.get("schema").strip()
 
 from genie_space_optimizer.jobs._handoff import (
+    _tv_get,
     get_lever_loop_outputs,
     get_run_context,
 )
@@ -161,7 +162,7 @@ exp_name = ctx["experiment_name"].value
 # deploy_target is preflight-published but not yet in genie_opt_runs; fall
 # back to the legacy taskValue read until a future plan widens the schema.
 deploy_target = (
-    dbutils.jobs.taskValues.get(taskKey="preflight", key="deploy_target", default="")
+    _tv_get(dbutils, "preflight", "deploy_target", "")
     or None
 )
 
@@ -241,15 +242,17 @@ _t22_deploy_gate_on = _t22_deploy_gate_flag not in ("0", "false", "no", "off")
 
 if _t22_deploy_gate_on and deploy_target:
     _banner("Trial 22 W8 Deploy-Eligibility Gate")
-    _t22_eligible = dbutils.jobs.taskValues.get(
-        taskKey="lever_loop",
-        key="candidate_deploy_eligible",
-        default=True,
+    # Trial 26 W26.7 — compact-aware read; the lever_loop publisher emits
+    # a JSON blob, so ``candidate_deploy_eligible`` arrives as the string
+    # "True"/"False" and must be parsed (``bool("False")`` is truthy).
+    _t22_eligible_raw = _tv_get(
+        dbutils, "lever_loop", "candidate_deploy_eligible", "true",
     )
-    _t22_skip_reason = dbutils.jobs.taskValues.get(
-        taskKey="lever_loop",
-        key="deploy_skip_reason",
-        default="",
+    _t22_eligible = str(_t22_eligible_raw).strip().lower() not in (
+        "false", "0", "no", "off", "",
+    )
+    _t22_skip_reason = _tv_get(
+        dbutils, "lever_loop", "deploy_skip_reason", "",
     )
     _log(
         "Deploy eligibility",
