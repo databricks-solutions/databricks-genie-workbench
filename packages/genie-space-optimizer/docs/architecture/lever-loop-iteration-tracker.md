@@ -854,9 +854,10 @@ Two structural gaps are responsible:
 |---|---|---|---|
 | W26.1 | Typed RCA-kind canonical normaliser landed as `optimization/rca_kind_canonical.py` with four-tier ladder: `deterministic` (input already a canonical key) → `alias` (curated shorthand table — `top_n_collapse`, `plural_top_n_collapse`, `defensive_filter`, `col_disambig`) → `keyword` (12 curated regex patterns covering every kit-map key + inflection-tolerant — the production `"Top-N cardinality collapse via spurious RANK()=1 filter"` reaches `top_n_cardinality_collapse` via this tier) → optional `llm` (only when `w` is provided AND the W26.1 sub-flag is ON; clamped to the canonical set; current `_invoke_llm_tier` hook raises `NotImplementedError` and the wiring is owed by W26.4 as a typed `LlmReasoningCall`). The canonical key set is the single-source-of-truth union of `KIT_FOR_RCA ∪ _TRIAL24_KIT_FOR_RCA ∪ _TRIAL26_KIT_FOR_RCA ∪ {"unknown_kind"}`. Results are typed (`RcaKindCanonical(canonical_key, confidence, via, raw_label)`), per-process memoised, and every call emits `GSO_TRIAL26_RCA_CANONICAL_V1{raw_label,canonical_key,confidence,via}`. Integrated into `stages/action_groups._normalize_rca_kind` (the single chokepoint every kit-map lookup funnels through) — so every kit-gate decision now sees the canonical key. Sub-flag OFF falls back to legacy `.strip().lower()` byte-stably; master flag OFF forces sub-flag OFF. Defense in depth: a raising LLM tier → `via="llm_error"` → `canonical_key="unknown_kind"`; an off-canonical LLM return → `via="llm_invalid"` → clamped to `unknown_kind`. | `optimization/rca_kind_canonical.py` (new), `stages/action_groups._normalize_rca_kind` (integration) | completed (33 unit tests; full unit suite 9780/9780 green) |
 | W26.2 | Extend `_TRIAL24_KIT_FOR_RCA` to include `wrong_aggregation`, `wrong_column`, `plural_top_n_collapse` (each with its corrective mechanism family). The kit composition follows the same shape as the existing Trial 24 entries (≥2-lever kit; matched companion families). Mechanism families derive from the existing `RCA_KIND_TO_FIXING_MECHANISMS` Trial 23 routing — Trial 26 wires those into Trial 24's kit-at-source synthesis path. | `stages/action_groups.py`, `proposal_slate_compiler.py` | plan |
-| W26.3 | Fix `add_sql_snippet_filter` applier emitting `name` on serialized_space. Locate the applier dispatcher in `applier/` (or wherever `add_sql_snippet_filter` is translated to a serialized_space mutation), remove or rename the offending `name` field per the canonical `serialized_space` schema (`backend/references/schema.md`), add a deterministic typed builder + unit test covering both the happy path and the regression on the airline iter-4 / 7now iter-2 patch payloads. | `applier/`, `tests/unit/test_applier_add_sql_snippet_filter.py` | plan |
+| W26.3 | Fix `add_sql_snippet_filter` applier emitting `name` on serialized_space. Locate the applier dispatcher in `applier/` (or wherever `add_sql_snippet_filter` is translated to a serialized_space mutation), remove or rename the offending `name` field per the canonical `serialized_space` schema (`backend/references/schema.md`), add a deterministic typed builder + unit test covering both the happy path and the regression on the airline iter-4 / 7now iter-2 patch payloads. | `applier/`, `tests/unit/test_trial26_applier_snippet_name_fix.py` | plan |
 | W26.4 | Bright-line merge gate landed in three pieces: (1) `tests/eval/test_rca_kind_canonical_normaliser_alignment.py` — 26-row curated corpus mined from `tests/replay/anchors/fixtures/`, `tests/integration/postmortem_replay/fixtures/`, `tests/fixtures/trial19_postmortem/`, and the Trial 26 plan; pins both RESOLVE (every label must canonicalise) and UNKNOWN (false-positives banned) at the tracker's ≥95% threshold. (2) `tests/integration/postmortem_replay/test_trial26_kit_map_coverage_replay.py` — 8 tests proving the kit gate fires end-to-end for every Trial 26 label form (canonical key, alias, English keyword) AND that the observability markers (`GSO_TRIAL26_KIT_MAP_EXPANDED_V1` for W26.2, `GSO_TRIAL26_RCA_CANONICAL_V1` for W26.1) carry well-formed payloads. (3) The W26.3 applier test (`tests/unit/test_trial26_applier_snippet_name_fix.py`) includes the typed end-to-end check against `genie_schema.SqlSnippetFilter` proving the regression payload from airline iter-4 / 7now iter-2 no longer hits `Unknown field 'name'`. Trial 18-24 replay suites confirmed green (`tests/integration/postmortem_replay/` 64 tests, 0 regressions; `tests/eval/` 29 tests, 0 regressions; full unit 9865 passed, 0 failures). LLM tier 4 wire-up (typed `LlmReasoningCall`) deferred until W26.5 live evidence shows a false-negative the deterministic ladder cannot catch. | new `tests/eval/__init__.py`, `tests/eval/test_rca_kind_canonical_normaliser_alignment.py`, `tests/integration/postmortem_replay/test_trial26_kit_map_coverage_replay.py` | completed (37 new tests; full unit + replay + eval 9865 / 0) |
 | W26.5 | Re-run Trial 24 live verification on fresh parent runs (Trial 25 W25.8) after Trial 26 lands. Acceptance criterion: at least one `GSO_TRIAL24_KIT_FORCED_V1` marker on each anchor AND at least one accepted patch with `behavioral_diff != "unchanged"` AND mechanism not in `{add_example_sql}`. | live verification (no code) | plan |
+| W26.6 | **Map-driven kit-at-source synthesis prompt (the real W26.5 unblock).** W26.2 expanded the validator's `KIT_FOR_RCA` map but the Stage 3 synthesis prompt (`stages/synthesize.py`) still hard-coded only the two original Trial 24 kinds, so the producer was never told to emit a kit for `wrong_aggregation`/`wrong_column` — every such proposal died as `kit_for_rca_violation:rca=…:singleton` → `empty_synthesis` → `stage3_returned_none`. This desync silently red-lined the **entire** forward-pipeline integration suite (`to_proposed`/`to_normalized`/`to_applyable`/`to_applied`/real-production-row), which was outside the declared local-verification list. Fix: derive the kit-mandate enumeration from a new typed `action_groups.active_kit_for_rca_map()` (the same merged map the validator reads), so any map expansion is mirrored into the producer prompt with no further edit. Forward-pipeline mechanics tests diagnose a kit-FREE RCA (`KIT_FREE_RCA_KIND`) so the single-lever vehicle stays focused on funnel mechanics; kit-at-source coverage moves to `test_trial26_synthesis_kit_prompt` (producer prompt is map-driven) + `test_trial26_kit_map_coverage_replay` (gate enforcement rejects singleton / admits companion kit for every W26.2 kind). | `stages/synthesize.py`, `stages/action_groups.py` (`active_kit_for_rca_map`) | completed (offline; +6 tests; full unit+replay+eval 9842/29 green, all integration 437 green, pretrial gate 66/66) |
 
 ### Watch Markers (positive — these SHOULD appear after Trial 26)
 
@@ -879,7 +880,7 @@ Two structural gaps are responsible:
 - All Trial 18-24 replay suites stay green (no regression on existing fixtures)
 - `tests/eval/test_rca_kind_canonical_normaliser_alignment.py` reports `≥95%` exact match on the curated (English-label, canonical-key) dataset
 - `test_trial26_kit_map_coverage_replay.py` proves the kit gate fires for each newly-added kind on its anchor fixture
-- `test_applier_add_sql_snippet_filter.py` proves the canonical builder produces a serialized_space mutation the Genie API accepts (mocked) and the regression payload from airline iter 4 / 7now iter 2 no longer hits `Unknown field 'name'`
+- `test_trial26_applier_snippet_name_fix.py` proves the canonical builder produces a serialized_space mutation the Genie API accepts (mocked) and the regression payload from airline iter 4 / 7now iter 2 no longer hits `Unknown field 'name'`
 
 ### Local Verification (mandatory before deploy)
 
@@ -887,7 +888,7 @@ Two structural gaps are responsible:
 |---|---|
 | Trial 26 RCA normaliser alignment | `pytest tests/eval/test_rca_kind_canonical_normaliser_alignment.py -q` |
 | Trial 26 kit-map coverage replay | `pytest tests/integration/postmortem_replay/test_trial26_kit_map_coverage_replay.py -q` |
-| Trial 26 applier fix unit | `pytest tests/unit/test_applier_add_sql_snippet_filter.py -q` |
+| Trial 26 applier fix unit | `pytest tests/unit/test_trial26_applier_snippet_name_fix.py -q` |
 | Trial 24 replay (no regression) | `pytest tests/integration/postmortem_replay/test_trial24_postmortem_replay.py tests/integration/postmortem_replay/test_trial24_general_grounding_replay.py -q` |
 | Full authoritative suite | `pytest tests/unit/ tests/integration/postmortem_replay/ --ignore=tests/unit/_legacy -q` |
 
@@ -905,4 +906,300 @@ restores the broken `name` field if the applier fix regresses).
 - [x] W26.2 — kit-map expansion to cover live airline RCA distribution (`wrong_aggregation`, `wrong_column`, `plural_top_n_collapse` alias)
 - [x] W26.3 — `add_sql_snippet_filter` applier `name`-field fix (`display_name` emission in three producer paths)
 - [x] W26.4 — bright-line replay suite + offline alignment test (LLM tier wire-up deferred to post-W26.5 if evidence demands it)
-- [ ] W26.5 — live re-verification on Trial-25-rotated parent runs: ≥1 `GSO_TRIAL24_KIT_FORCED_V1` per anchor AND ≥1 accepted patch with `behavioral_diff != "unchanged"` AND mechanism != `add_example_sql` per anchor
+- [x] W26.6 — map-driven kit-at-source synthesis prompt (`stages/synthesize.py` reads `action_groups.active_kit_for_rca_map()`); closes the W26.2 producer/validator desync that stranded `wrong_aggregation`/`wrong_column` proposals as `kit_for_rca_violation:…:singleton`. Caught a suite-wide forward-pipeline regression (5 integration tests outside the declared local-verification list). +6 tests; full unit+replay+eval 9842/29 green, all integration 437 green, pretrial gate 66/66. This is the offline prerequisite that makes W26.5's live acceptance reachable.
+- [x] W26.7 — **Trial 25 W25.2 cold-start handoff reader-migration regression — FIXED offline (compact-aware readers).** Routed every cross-task read in `run_baseline.py`/`run_enrichment.py`/`run_deploy.py`/`run_finalize.py` through `_handoff._tv_get` (compact `<task>_outputs` blob → per-key fallback → default); `run_deploy` bool parse fixed (`bool("False")` was truthy). Added source-scan guard `tests/unit/test_trial26_w26_7_coldstart_handoff_readers.py` (fails on any raw `dbutils.jobs.taskValues.get(` in `run_*.py`). Verified: all 9 `run_*.py` zero raw cross-task reads; +2 guard tests; existing handoff 33 green; full unit+replay 9844; pretrial gate 66/66. (Original diagnosis below.) After the W26.6 deploy, cold-start parents `335104024979293` (airline) / `631994889494024` (7now) both died `INTERNAL_ERROR` at `baseline_eval` (preflight SUCCESS, lever_loop SKIPPED-upstream-failed — so the W26.6 kit fix never ran). RCA: `run_preflight.py:624` publishes the compact `preflight_outputs` blob via `publish_task_outputs` (Trial 25 W25.2), but `run_baseline.py:223-236`, `run_enrichment.py:92-112`, `run_deploy.py:164/244-249`, `run_finalize.py:198` read cross-task values with RAW `dbutils.jobs.taskValues.get(taskKey=…, key=…)` instead of the compact-aware `_handoff._tv_get`. Latent under replay (baseline_eval is skipped) → only cold-start exposes it. `baseline_eval` error: `ValueError: No task values with key "run_id" were found`. Fix (planned, offline-first): route every cross-task read in the 4 job files through `_tv_get` (compact blob → per-key fallback → default), and add a source-scan guard test (check_invariants-style) so a raw cross-task read can never regress again. Then redeploy + re-trigger fresh parents + re-poll + postmortem. | `jobs/run_baseline.py`, `jobs/run_enrichment.py`, `jobs/run_deploy.py`, `jobs/run_finalize.py` + offline guard test | plan
+- [ ] W26.5 — live re-verification. **RAN end-to-end after W26.7 (both anchors `TERMINATED SUCCESS`, full DAG green) — acceptance UNMET, two NEW blockers found.** Parents: airline `450001766723999` (final 95.65%, `verdict=LEVER_LOOP_SKIPPED_POST_ENRICHMENT_MEETS_THRESHOLDS` — baseline 91.3% already `thresholds_met`, enrichment→95.65%, Starting Point Gate skipped lever_loop so the kit gate never ran), 7now `517826776610889` (final 91.3%, `verdict=PLAN11_STAGE3_PROMPT_TOO_LARGE_RUN_STARVED` — 20/24 `plan11_synthesize` declined `prompt_too_large` 73170>40000, no behavior-changing patch; both hard QIDs reached `accepted` but every applied lever `behavioral_diff=unchanged`/`kept_insufficient`). **Positively verified:** W26.7 compact handoff readers fired (`GSO_TRIAL25_HANDOFF_COMPACT_READ_V1`), W26.6 crash symptom GONE (zero `kit_for_rca_violation:singleton`/`empty_synthesis`/`stage3_returned_none`), no deterministic per-QID shortcut. `GSO_TRIAL24_KIT_FORCED_V1` = 0 on both (kit gate never reached: airline skip-gate, 7now synthesis starvation). New blockers seed Trial 27. Postmortems: `runid_analysis/unresolved_450001766723999/`, `runid_analysis/d13938e7-405d-4444-833a-03f5ac9f7523__parent_517826776610889/`.
+
+## Trial 27 — Stage 3 Synthesis De-Starvation (prompt_too_large) + Kit-Gate Reachability on a Sub-Threshold Anchor
+
+**Master flag:** `GSO_TRIAL27_STAGE3_DESTARVE` (default ON). `=0` restores
+pre-Trial-27 Stage 3 prompt assembly + verification-anchor behaviour.
+
+### Hypothesis
+
+Trial 26 landed W26.6 (map-driven kit-at-source prompt) and W26.7
+(compact cold-start handoff readers); both verified working live (W26.6
+crash symptom gone, W26.7 handoff confirmed). But the W26.5 live run
+showed neither anchor can yet demonstrate the kit gate firing, for two
+distinct, newly-dominant reasons:
+
+1. **7now — Stage 3 synthesis starvation (code-actionable, primary).**
+   `verdict=PLAN11_STAGE3_PROMPT_TOO_LARGE_RUN_STARVED`: 20/24
+   `plan11_synthesize` calls declined with `prompt_too_large`
+   (73170 tokens vs the 40000 cap; `GSO_STAGE3_PROMPT_SIZE_BREAKDOWN_V1`
+   reported `over_cap=true`/`sub_cluster_split_needed`). With synthesis
+   declined, no behavior-changing structural lever was ever produced →
+   every applied lever recorded `behavioral_diff=unchanged` /
+   `kept_insufficient`, the kit gate (`GSO_TRIAL24_KIT_FORCED_V1`) never
+   fired, and the run stayed at baseline 91.3%. The Stage 3 prompt
+   assembly must fit under the cap (sub-cluster split when
+   `sub_cluster_split_needed`, and/or trim the cacheable static blocks —
+   archetype catalog + lever menu — that dominate `cacheable_block_tokens`).
+2. **airline — Starting Point Gate skips lever_loop (anchor/trial-design).**
+   `verdict=LEVER_LOOP_SKIPPED_POST_ENRICHMENT_MEETS_THRESHOLDS`:
+   baseline 91.3% already `thresholds_met=true`, enrichment→95.65%, so
+   the lever loop never runs and the kit gate is unverifiable on airline
+   at its current threshold. This is NOT a `src/` fix — it is a
+   verification-anchor / threshold lever owned by the harness
+   (`gso-lever-loop-replay` threshold params or a verification-only
+   Starting-Point-Gate flag). Document, do not overfit.
+3. **7now — RCA canonicaliser coverage gap (secondary, code-actionable).**
+   5/7 `GSO_TRIAL26_RCA_CANONICAL_V1` labels resolved to `unknown_kind`
+   (Stage 2 free-text routing narratives aren't covered by the
+   deterministic/keyword tiers). Even once synthesis fits, an
+   `unknown_kind` label can't match the kit map, so the kit gate stays
+   shut. Extend the canonicaliser keyword tier (and/or wire the owed
+   W26.1 LLM tier) so live Stage 2 narratives reduce to canonical keys.
+
+### Workstreams
+
+| Workstream | Description | Module owner | Status |
+|---|---|---|---|
+| W27.1 | Stage 3 prompt fits the 40000-token cap on production-shaped clusters by extending Trial 23 W6 partitioned re-dispatch (already shipped for subcluster-id builders) to fire on ANY cluster with `sub_cluster_split_needed=true`. Bright-line #5 (H001 single-call path) preserved by the existing `if len(_w6_parts) > 1:` guard which falls through to single-call when the partition cannot split further. New marker `GSO_TRIAL27_W6_EXTENDED_V1` isolates the W27.1-attributable population for postmortems. Sub-flag `GSO_TRIAL27_W6_EXTEND_NONSUBCLUSTER` (default ON under master `GSO_TRIAL27_STAGE3_DESTARVE`) gives surgical rollback to the pre-Trial-27 subcluster-only gate. | `optimization/stages/synthesize.py` (W6 gate relaxation), `optimization/subcluster_redispatch.py` (`trial27_w6_extended_marker`), `optimization/trial27_flags.py`. Tests: `tests/unit/optimization/test_trial27_w6_extend_nonsubcluster.py` (5 tests: extension fires on non-subcluster, flag-OFF byte-stable, master-OFF byte-stable, partition len==1 falls through preserves bright-line #5, subcluster regression). | done |
+| W27.2 | RCA canonicaliser keyword/LLM-tier coverage for live Stage 2 routing narratives so the `unknown_kind` rate on a live anchor drops below the Trial 26 anti-marker 30% bar; mined corpus from the 7now run's 7 `RCA_CANONICAL_V1` payloads. | `optimization/rca_kind_canonical.py` | plan |
+| W27.3 | Verification-anchor / threshold lever so the kit gate is reachable on anchors whose baseline already meets thresholds (airline today). Pure decision function `should_skip_starting_point_gate` extracted from the `run_lever_loop` notebook so the gate is unit-testable, with per-run boolean signal `force_lever_loop` (set by the harness as a job parameter — `gso-lever-loop-replay` and `gso-lever-loop-trigger` skills both updated) and deploy-time capability flag `GSO_TRIAL27_FORCE_LEVER_LOOP_OVERRIDE` (default ON, kill-switch when OFF). When both signals fire AND `thresholds_met=true`, the gate emits observability marker `GSO_TRIAL27_FORCE_LEVER_LOOP_V1{would_have_skipped_reason, accuracy_source, post_enrichment_accuracy, baseline_accuracy}` and DOES NOT skip. No `src/` per-anchor / per-QID / per-space_id hardcode anywhere. | `optimization/starting_point_gate.py` (new), `jobs/run_lever_loop.py` (gate wiring + widget), `docs/skills/gso-lever-loop-{replay,trigger}/SKILL.md`, `optimization/trial27_flags.py`. Tests: `tests/unit/optimization/test_trial27_starting_point_gate.py` (10 tests covering thresholds-not-met no-skip, baseline/post-enrichment skip parity with the pre-Trial-27 notebook string, override engaged with both signals, capability-OFF kills override, master-OFF kills capability, marker payload shape, baseline-only no-post-enrichment-accuracy variant). | done |
+| W27.4 | Re-run live verification on fresh parents after W27.1-2-3 land. Acceptance: ≥1 `GSO_TRIAL24_KIT_FORCED_V1` AND ≥1 accepted patch `behavioral_diff != "unchanged"` (mechanism != `add_example_sql`) on at least one anchor whose lever loop actually runs. For airline, trigger with `force_lever_loop=true` (the new W27.3 knob) since baseline 91.3% already reports `thresholds_met=true`. | live verification (no code) | plan |
+
+### Watch Markers (positive)
+
+| Marker | Workstream | Meaning |
+|---|---|---|
+| `GSO_STAGE3_PROMPT_SIZE_BREAKDOWN_V1{over_cap:false}` on production clusters | W27.1 | Stage 3 prompt now fits the cap; synthesis no longer declines |
+| `GSO_PLAN11_STAGE3_SYNTHESIS_V1{outcome:"proposed"}` with non-empty `bundle_ids` | W27.1 | synthesis produced a proposal where it previously declined |
+| `GSO_TRIAL26_RCA_CANONICAL_V1{canonical_key != "unknown_kind"}` rate ≥ 70% on a live anchor | W27.2 | canonicaliser now resolves live Stage 2 narratives |
+| `GSO_TRIAL27_W6_EXTENDED_V1` count ≥ 1 per live anchor whose Stage 3 saw `sub_cluster_split_needed=true` on a non-subcluster cluster | W27.1 | the W27.1 extension engaged in production (separates W27.1 dispatch from pre-existing subcluster-only W6 dispatch) |
+| `GSO_TRIAL27_FORCE_LEVER_LOOP_V1` count ≥ 1 on the airline anchor (or any anchor whose `thresholds_met=true` would otherwise block lever_loop) | W27.3 | the verification override engaged and the lever loop ran; airline kit gate now exercisable |
+| `GSO_TRIAL24_KIT_FORCED_V1` count `> 0` on a live anchor whose lever loop ran | W27.1+W27.2+W27.3 | the long-owed kit-gate production proof finally reachable |
+
+### Anti-Success Markers (negative)
+
+| Anti-marker | Meaning |
+|---|---|
+| `prompt_too_large` decline rate `> 10%` of `plan11_synthesize` calls on a live anchor | W27.1 incomplete |
+| `GSO_TRIAL26_RCA_CANONICAL_V1.canonical_key="unknown_kind"` rate `> 30%` on a live anchor | W27.2 incomplete |
+| any `if qid == …` / `if space_id == …` hardcode introduced to force the gate | Architectural Principle #1 violation — forbidden |
+
+### Local Verification (mandatory before deploy)
+
+| Check | Command |
+|---|---|
+| Stage 3 prompt-size de-starvation unit/replay | `pytest tests/unit/stages/ tests/integration/test_sm_forward_pipeline_to_proposed.py -q` |
+| RCA canonicaliser alignment (≥95%) | `pytest tests/eval/test_rca_kind_canonical_normaliser_alignment.py -q` |
+| Cold-start handoff guard (no regression) | `pytest tests/unit/test_trial26_w26_7_coldstart_handoff_readers.py -q` |
+| Full authoritative suite | `pytest tests/unit/ tests/integration/postmortem_replay/ --ignore=tests/unit/_legacy -q` |
+
+### Rollback
+
+`export GSO_TRIAL27_STAGE3_DESTARVE=0` then redeploy.
+
+### Status
+
+- [x] W27.1 — Stage 3 prompt fits the 40000 cap on production clusters via Trial 23 W6 extension to non-subcluster builders; 5 offline tests + zero regressions across 9875-test suite. Sub-flag `GSO_TRIAL27_W6_EXTEND_NONSUBCLUSTER` (default ON), marker `GSO_TRIAL27_W6_EXTENDED_V1`. Bright-line #5 preserved by `len(_w6_parts) > 1` guard.
+- [ ] W27.2 — RCA canonicaliser coverage so live `unknown_kind` rate < 30%
+- [x] W27.3 — verification-anchor / threshold lever: pure decision function `should_skip_starting_point_gate` extracted into `optimization/starting_point_gate.py`; per-run signal `force_lever_loop` (harness job parameter) gated by deploy-time capability `GSO_TRIAL27_FORCE_LEVER_LOOP_OVERRIDE` (default ON); marker `GSO_TRIAL27_FORCE_LEVER_LOOP_V1` on engagement; 10 offline tests + zero regressions. `gso-lever-loop-replay` and `gso-lever-loop-trigger` skills updated to plumb the per-anchor knob. No `src/` per-anchor / per-QID / per-space_id hardcode.
+- [ ] W27.4 — live re-verification: ≥1 `GSO_TRIAL24_KIT_FORCED_V1` + ≥1 accepted behavior-changing patch on an anchor whose lever loop runs (airline triggered with `force_lever_loop=true` via W27.3)
+
+### Live Verification Results (Trial 27 replay — 2026-06-06)
+
+Replayed both anchors after deploying W27.1+W27.3 (parents:
+airline `450001766723999` REPAIR `320352026705603`, 7now
+`517826776610889` REPAIR `132079122490923`; both `TERMINATED/SUCCESS`).
+Postmortems: `docs/runid_analysis/e94376a3-…/postmortem.md` (airline,
+`OPTIMIZER_TRIED_INSUFFICIENT_GAIN`) and `docs/runid_analysis/d13938e7-…/postmortem.md`
+(7now, `STRUCTURAL_LEVER_NOT_REACHED_MECHANISM_DOES_NOT_COVER_BEHAVIOR_DELTA`).
+
+- **W27.3 CONFIRMED live** — `GSO_TRIAL27_FORCE_LEVER_LOOP_V1` count=1 on
+  airline; the lever loop ran 4 iterations despite `thresholds_met=true`
+  (post-enrichment 95.65%), deepest_stage=`accepted`. The override works.
+- **W27.1 PARTIAL** — in-loop Stage-3 synthesis (iters 1–4) all fit the
+  40000 cap (0% `over_cap`, prior `PLAN11_STAGE3_PROMPT_TOO_LARGE_RUN_STARVED`
+  did NOT recur in the loop). BUT the iteration-0 SEED pass still declines
+  `prompt_too_large` (65k–74k tokens; W27.1's non-subcluster gate only
+  fires in-loop). `GSO_TRIAL27_W6_EXTENDED_V1` count=0 on both (in-loop
+  clusters fit WITHOUT needing the split, so the extension path wasn't
+  exercised).
+- **W27.2 STILL OPEN — confirmed dominant blocker.** RCA `unknown_kind`
+  rate = 66.7% (airline) / 71.4% (7now), both > 30% anti-marker →
+  `GSO_TRIAL24_KIT_FORCED_V1` count=0 on BOTH → structural lever never
+  selected → mechanism-binding gate rejected re-proposals as
+  `mechanism_does_not_cover_behavior_delta` → `behavioral_diff=unchanged`
+  every iteration → 0 accuracy gain (airline stayed 95.65%, 7now 91.3%).
+- **W27.4 UNMET** — `GSO_TRIAL24_KIT_FORCED_V1`=0 and
+  behavioral_diff-changed patches=0 on both anchors. Leave unchecked.
+
+Both postmortems report `architecture_invariants_held = false` (driven by
+the open W27.2 unknown_kind rate + bundle-completeness/persistence gaps,
+NOT a regression introduced by W27.1/W27.3). The gap → Trial 28.
+
+## Trial 28 — Wire the owed RCA-canonicaliser LLM tier (the confirmed kit-gate blocker) + iter-0 Stage-3 de-starvation
+
+**Master flag:** `GSO_TRIAL28_KIT_REACHABILITY` (default ON). `=0` restores
+pre-Trial-28 canonicaliser tiers + seed-pass synthesis assembly.
+
+### Hypothesis
+
+Trial 27's live replay proved W27.3 (force_lever_loop) and W27.1 (in-loop
+Stage-3 de-starvation) work, and isolated the dominant remaining blocker
+with live marker payloads: the RCA canonicaliser leaves the majority of
+live Stage-2 routing narratives at `unknown_kind` (66.7% airline / 71.4%
+7now, both > the 30% anti-marker), so `_kit_for_rca_companions` returns
+`None`, `GSO_TRIAL24_KIT_FORCED_V1` never fires (count=0 on both), the
+structural lever is never selected, and the mechanism-binding gate
+rejects every re-proposal as `mechanism_does_not_cover_behavior_delta` →
+`behavioral_diff=unchanged` → 0 gain. The 5 live `unknown_kind` narratives
+(mined from `docs/runid_analysis/unresolved_517826776610889/evidence/lever_loop_clean.txt`)
+are free-text routing PROSE (e.g. "Cluster H001 root cause is 'SQL shape:
+example SQL needed for ranking/comparison patterns' — the routing table
+maps this structural pattern gap to lever-5b-example-sql…"), which a
+keyword regex cannot robustly categorise without overfitting. The owed
+tier-4 LLM call (`rca_kind_canonical._invoke_llm_tier`, currently
+`raise NotImplementedError`) is the principled fix: an LLM categorises the
+narrative against the closed `RCA_CANONICAL_KEY_SET` enum; deterministic
+code clamps the output to the canonical set. Secondary: the iteration-0
+seed Stage-3 pass still starves (`prompt_too_large`), which W27.1 left
+untouched.
+
+### Workstreams
+
+| Workstream | Description | Module owner | Status |
+|---|---|---|---|
+| W28.1 | Wire the owed RCA-canonicaliser tier-4 LLM call so live Stage-2 routing narratives reduce to canonical keys. Reuse the existing `LlmReasoningCall` + `LlmReasoningRequest` + `build_response_format` typed-LLM infra with a closed-enum output schema over `RCA_CANONICAL_KEY_SET ∪ {unknown_kind}`; deterministic code clamps the LLM output to the canonical set (LLM reasons, code validates). New sub-flag `GSO_TRIAL28_RCA_LLM_TIER` (default ON under master). Lazily acquire the workspace client via `make_workspace_client()` inside `_invoke_llm_tier` when `w` is None AND the flag is ON, so the kit-gate call site (`_normalize_rca_kind`) does NOT need `w` threaded through its ~15 call sites. No per-QID / per-anchor / per-space_id literal in `src/` — the LLM generalises over ANY narrative. | `optimization/rca_kind_canonical.py`, `optimization/trial28_flags.py`, new skill `skills/plan11_rca_canonicalise/` (SKILL.md system prompt + closed-enum `output_schema.py`). Tests: monkeypatched LLM tier resolves the 5 mined live `unknown_kind` narratives to canonical keys on a NON-anchor fixture; alignment ≥95% unchanged; flag-OFF byte-stable; off-canonical LLM output clamps to `unknown_kind` (`via=llm_invalid`). | plan |
+| W28.2 | Extend the W27.1 Stage-3 partitioned re-dispatch to the iteration-0 SEED synthesis pass so the pre-loop pass also fits the 40000 cap (currently 65k–74k tokens → 100% `prompt_too_large` at iter 0). Marker `GSO_TRIAL28_SEED_REDISPATCH_V1`. Sub-flag `GSO_TRIAL28_SEED_DESTARVE` (default ON under master). | `optimization/stages/synthesize.py` (seed path), `optimization/trial28_flags.py`. Tests: forward-pipeline seed-pass row with `sub_cluster_split_needed=true` fits the cap; bright-line single-call preserved when partition len==1. | plan |
+| W28.3 | airline `gs_024` `POST_APPLY_EVAL_SLICED_ZERO_BENCHMARKS` — the post-apply eval slice has `benchmarks_count=0`, so applied patches can never be scored and always `reject_loss`. Diagnose the per-QID benchmark-slice resolution; if `gs_024`/`gs_009` are in the `pending_gt_review` / `hard_qids_already_correct` subset they are not genuine failures — document, do not overfit. | `optimization/` eval-slice resolution (TBD by RCA); live verification. | plan |
+| W28.4 | Live re-verification on the same parents after W28.1-2 land. Acceptance: RCA `unknown_kind` rate < 30% AND `GSO_TRIAL24_KIT_FORCED_V1` count ≥ 1 AND ≥1 accepted patch `behavioral_diff != "unchanged"` on at least one anchor whose lever loop runs. | live verification (no code) | plan |
+
+### Watch Markers (positive)
+
+| Marker | Workstream | Meaning |
+|---|---|---|
+| `GSO_TRIAL26_RCA_CANONICAL_V1{via:"llm", canonical_key != "unknown_kind"}` count ≥ 1 on a live anchor | W28.1 | the LLM tier resolved a live routing narrative the deterministic tiers could not |
+| `GSO_TRIAL26_RCA_CANONICAL_V1{canonical_key != "unknown_kind"}` rate ≥ 70% on a live anchor | W28.1 | `unknown_kind` rate now under the 30% anti-marker |
+| `GSO_TRIAL24_KIT_FORCED_V1` count > 0 on a live anchor | W28.1 | kit gate finally fires — the long-owed production proof |
+| `GSO_TRIAL28_SEED_REDISPATCH_V1{over_cap:false}` at iteration 0 | W28.2 | the seed Stage-3 pass now fits the cap |
+
+### Anti-Success Markers (negative)
+
+| Anti-marker | Meaning |
+|---|---|
+| `GSO_TRIAL26_RCA_CANONICAL_V1.canonical_key="unknown_kind"` rate > 30% on a live anchor | W28.1 incomplete |
+| `prompt_too_large` at iteration 0 on a live anchor | W28.2 incomplete |
+| any `if rca_kind == …` / keyword pinned to a specific 7now string in `src/` | Architectural Principle #1 violation — the LLM tier must generalise |
+
+### Local Verification (mandatory before deploy)
+
+| Check | Command |
+|---|---|
+| RCA canonicaliser LLM tier (mocked) resolves mined narratives | `pytest tests/unit/optimization/test_trial28_rca_llm_tier.py -q` |
+| RCA canonicaliser alignment (≥95%, deterministic-tier unchanged) | `pytest tests/eval/test_rca_kind_canonical_normaliser_alignment.py -q` |
+| Stage 3 seed-pass de-starvation | `pytest tests/unit/stages/ tests/integration/test_sm_forward_pipeline_to_proposed.py -q` |
+| Full authoritative suite | `pytest tests/unit/ tests/integration/postmortem_replay/ --ignore=tests/unit/_legacy -q` |
+
+### Rollback
+
+`export GSO_TRIAL28_KIT_REACHABILITY=0` then redeploy.
+
+### Status
+
+- [x] W28.1 — **offline-complete.** RCA-canonicaliser tier-4 LLM wire-up landed: `_invoke_llm_tier` now uses `LlmReasoningCall` + `LlmReasoningRequest` with a typed `LLMOutputContract` `result_cls` (`canonical_key`+`confidence`) over the closed `RCA_CANONICAL_KEY_SET`; deterministic clamp keeps off-canonical answers → `unknown_kind`/`via=llm_invalid`. Lazy `make_workspace_client()` acquisition under sub-flag `GSO_TRIAL28_RCA_LLM_TIER` (default ON, master `GSO_TRIAL28_KIT_REACHABILITY`), pytest-guarded so the 9885-test suite stays byte-stable (no kit-gate network calls offline). 9 new tests in `tests/unit/optimization/test_trial28_rca_llm_tier.py` (generic non-anchor narrative); alignment ≥95% unchanged; full suite 9885 green; pretrial gate exit 0. No new `check_invariants` violations. **Live `unknown_kind` < 30% still to be confirmed by W28.4 replay.**
+- [ ] W28.2 — iteration-0 seed Stage-3 de-starvation (forward-pipeline fits the cap)
+- [ ] W28.3 — diagnose airline `gs_024` zero-benchmark eval slice
+- [ ] W28.4 — live re-verification: **PARTIAL (2 of 3 criteria met).** `unknown_kind` < 30% ✅ (0.0% on BOTH anchors, down from 66.7%/71.4%) + `GSO_TRIAL24_KIT_FORCED_V1` ≥ 1 ✅ (count=2 on 7now — kit gate fired, deepest-ever `accepted`) — but ≥1 behavior-changing patch ❌ (`behavioral_diff_changed_count=0` on both). Leave unchecked: the behaviour criterion is unmet.
+
+### Live Verification Results (Trial 28 W28.1 replay — 2026-06-07)
+
+Replayed both anchors after deploying W28.1 (2nd repairs: airline REPAIR
+`838289694458133` `force_lever_loop=true`, 7now REPAIR `1067408292431508`;
+both `TERMINATED/SUCCESS`; latest lever_loop tasks `992800754335144` /
+`45506293787891`). Postmortems overwrote `docs/runid_analysis/e94376a3-…/`
+and `docs/runid_analysis/d13938e7-…/postmortem.md`.
+
+- **W28.1 CONFIRMED live** — the owed tier-4 LLM canonicaliser fired
+  (`via="llm"`, 1 narrative each) and **`unknown_kind` dropped 66.7%→0.0%
+  (airline) and 71.4%→0.0% (7now)**, both far under the 30% anti-marker.
+- **Kit gate REACHED on 7now** — `GSO_TRIAL24_KIT_FORCED_V1` count=2
+  (`kit_satisfied=true`), patches applied end-to-end, deepest_stage=`accepted`
+  (deepest-ever for 7now). The long-owed kit-gate production proof is met.
+- **NEW DOMINANT BLOCKER — behavioural inertness.** Every kit-forced /
+  accepted patch recorded `behavioral_diff="unchanged"` →
+  `OPTIMIZER_TRIED_INSUFFICIENT_GAIN` (7now stayed 91.3%). The
+  `add_example_sql` / `add_column_description` levers the kit selects for
+  `wrong_column` / `top_n_cardinality_collapse` RCAs do not shift Genie's
+  NL→SQL. → Trial 29 W29.1.
+- **airline kit gate STILL shut — upstream, not canonicaliser.** Stage-1
+  diagnose declined gs_009 8× (`context_token_budget_exceeded`) → no
+  grounded RCA card; Plan-11 dispatch input-projection drift dropped
+  gs_024 in all 4 iters. → Trial 29 W29.2.
+- **W28.2 still owed** — iter-0 seed Stage-3 still over cap (59k–68k tok);
+  in-loop synthesis healthy (0% over cap).
+- Both postmortems `architecture_invariants_held = false` (bundle
+  incomplete: 29 missing artifacts; medium-tier I7/I4) and note the hard
+  QIDs are `pending_gt_review` / `hard_qids_already_correct` — the 100%
+  ceiling is partly **GT-review-bound**, not purely optimizer-addressable.
+
+## Trial 29 — Behaviour-changing structural lever for kit-forced RCAs + airline Stage-1/Plan-11 upstream de-starvation
+
+**Master flag:** `GSO_TRIAL29_BEHAVIOR_DELTA` (default ON). `=0` restores
+pre-Trial-29 lever selection + Stage-1 budget assembly.
+
+### Hypothesis
+
+Trial 28 W28.1 made the kit gate REACHABLE (unknown_kind 0%, kit fired on
+7now) but exposed the next blocker with live payloads: the kit-forced
+levers (`add_example_sql`, `add_column_description`) APPLY but leave
+`behavioral_diff="unchanged"` (0 behaviour-changing patches on either
+anchor), so accuracy never moves. For `wrong_column` /
+`top_n_cardinality_collapse` RCAs the fix must be a STRUCTURAL lever
+(lever-6 SQL-snippet / sql-shape) that demonstrably shifts Genie's
+NL→SQL, gated by a post-apply behaviour check that rejects inert patches
+BEFORE they consume the iteration budget. Separately, airline's kit gate
+is starved upstream (Stage-1 diagnose `context_token_budget_exceeded` on
+gs_009 ×8; Plan-11 dispatch input-projection drift drops gs_024) — the
+canonicaliser never gets a chance because no grounded RCA card is
+produced. NOTE: both anchors' residual gap to 100% is partly
+GT-review-bound (`pending_gt_review`/`hard_qids_already_correct`); a
+parallel ground-truth-review pass may be required for literal 100%.
+
+### Workstreams
+
+| Workstream | Description | Module owner | Status |
+|---|---|---|---|
+| W29.1 | Post-apply behaviour gate + structural-lever routing for kit-forced RCAs: when a kit-forced patch yields `behavioral_diff="unchanged"`, route the next proposal to a structural lever (lever-6 SQL-snippet / sql-shape) rather than re-proposing an inert `add_example_sql`; reject behaviourally-inert patches before they exhaust the iteration budget. LLM selects the structural mechanism over the typed RCA-kind→lever map; deterministic gate validates the behaviour delta. | `optimization/` lever-selection + post-apply gate (TBD by RCA) | plan |
+| W29.2 | airline upstream de-starvation: Stage-1 diagnose `context_token_budget_exceeded` on gs_009 (compact the diagnose prompt / raise budget) + Plan-11 dispatch input-projection drift dropping gs_024 (fix the SM→dispatch projection so every clustered QID reaches dispatch). | `optimization/stages/diagnose.py`, Plan-11 dispatch projection | plan |
+| W29.3 | W28.2 carry-over: iteration-0 seed Stage-3 de-starvation (extend W27.1 W6 re-dispatch to the seed pass). | `optimization/stages/synthesize.py` (seed path) | plan |
+| W29.4 | Live re-verification. Acceptance: ≥1 accepted patch `behavioral_diff != "unchanged"` AND a measurable accuracy gain on at least one anchor whose lever loop runs. | live verification | plan |
+
+### Watch Markers (positive)
+
+| Marker | Workstream | Meaning |
+|---|---|---|
+| accepted patch with `behavioral_diff != "unchanged"` on a live anchor | W29.1 | a kit-forced lever finally shifted Genie's NL→SQL |
+| `GSO_TRIAL24_KIT_FORCED_V1` count > 0 on airline | W29.2 | airline's upstream starvation cleared; kit gate reachable |
+| final accuracy strictly > post-enrichment baseline on a live anchor | W29.1+W29.2 | the loop produced a real gain |
+
+### Anti-Success Markers (negative)
+
+| Anti-marker | Meaning |
+|---|---|
+| `behavioral_diff="unchanged"` on 100% of accepted patches on a live anchor | W29.1 incomplete |
+| Stage-1 `context_token_budget_exceeded` on any airline hard QID | W29.2 incomplete |
+| any `if rca_kind == …` / per-QID lever hardcode in `src/` | Architectural Principle #1 violation |
+
+### Local Verification (mandatory before deploy)
+
+| Check | Command |
+|---|---|
+| Post-apply behaviour gate + structural routing unit | `pytest tests/unit/optimization/ -q -k behavior_delta` |
+| Stage-1 diagnose budget / Plan-11 projection | `pytest tests/unit/stages/ tests/integration/test_sm_forward_pipeline_to_proposed.py -q` |
+| RCA canonicaliser alignment (≥95%, unchanged) | `pytest tests/eval/test_rca_kind_canonical_normaliser_alignment.py -q` |
+| Full authoritative suite | `pytest tests/unit/ tests/integration/postmortem_replay/ --ignore=tests/unit/_legacy -q` |
+
+### Rollback
+
+`export GSO_TRIAL29_BEHAVIOR_DELTA=0` then redeploy.
+
+### Status
+
+- [ ] W29.1 — post-apply behaviour gate + structural-lever routing for kit-forced RCAs (offline: inert patch → structural re-route; behaviour gate rejects unchanged)
+- [ ] W29.2 — airline Stage-1 diagnose budget + Plan-11 dispatch projection (gs_009 grounded RCA card; gs_024 reaches dispatch)
+- [ ] W29.3 — iteration-0 seed Stage-3 de-starvation (carry-over from W28.2)
+- [ ] W29.4 — live re-verification: ≥1 `behavioral_diff != "unchanged"` patch + measurable accuracy gain on an anchor whose lever loop runs
