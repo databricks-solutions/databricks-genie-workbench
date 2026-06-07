@@ -1015,6 +1015,13 @@ _TERMINATIONS_REQUIRING_PIVOT: frozenset[str] = frozenset({
     # not retry the same lever family. See ``trial20_flags
     # .trial20_kept_insufficient_terminal_enabled``.
     "kept_insufficient",
+    # Trial 30 W30.2(b) — ``kit_forced_inert_reroute`` is a behaviour-
+    # unchanged survival failure (sibling of ``kept_insufficient``): the
+    # kit-forced patch applied but was behaviorally inert. Plan 12 must
+    # pivot the next iteration to a different patch family so it does not
+    # retry the rejected mechanism. Pairs with the W30.1b enforcement
+    # guard (``enforced_mechanism_switch``).
+    "kit_forced_inert_reroute",
 })
 
 # When a pivot is required, prefer ``add_example_sql`` — the most
