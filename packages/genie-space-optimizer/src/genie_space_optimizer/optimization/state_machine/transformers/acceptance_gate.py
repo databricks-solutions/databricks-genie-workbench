@@ -256,6 +256,7 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
                 )
                 _t29_rejected_lever = ""
                 _t29_patch_type = ""
+                _t29_prop = None
                 if state.proposals:
                     _t29_latest = state.proposals[-1]
                     _t29_patch_type = str(_t29_latest.patch_type or "")
@@ -294,6 +295,66 @@ def _predicate(state: QuestionStateInIteration, ctx: TransformerContext) -> Gate
                         ),
                         flush=True,
                     )
+                except Exception:
+                    pass
+                # Trial 30 W30.2(c) — same-iteration visibility. Mirror
+                # the kept_insufficient block (below) so sibling clusters
+                # running later in THIS iteration see the rejected
+                # signature immediately, not only after the
+                # end-of-iteration harness harvest. Without this write
+                # the kit_forced lane left a within-iteration lag that
+                # the kept_insufficient lane already closed (Phase 1
+                # P1.4). Gated by GSO_TRIAL30_INERT_HARVEST_WIRE so OFF
+                # is byte-stable with Trial 29. Best-effort: failure to
+                # write must not block the acceptance verdict itself.
+                try:
+                    from genie_space_optimizer.optimization.trial30_flags import (  # noqa: E501
+                        trial30_inert_harvest_wire_enabled,
+                    )
+                    if trial30_inert_harvest_wire_enabled():
+                        _t30_extras = ctx.extras
+                        if isinstance(_t30_extras, dict):
+                            _t30_live_bucket = _t30_extras.setdefault(
+                                "_live_insufficient_repair_signatures", []
+                            )
+                            if (
+                                _t29_signature
+                                and _t29_signature not in _t30_live_bucket
+                            ):
+                                _t30_live_bucket.append(_t29_signature)
+                            # Phase 2 P2.5 — stamp the kit-aware
+                            # extensions onto ctx.extras so the harness
+                            # end-of-iteration harvest can fold them into
+                            # the cluster's TerminalSignature. Mirrors the
+                            # kept_insufficient write verbatim, replaying
+                            # the kit-forced proposal's lever set /
+                            # patch_family.
+                            _t30_kit_bucket = _t30_extras.setdefault(
+                                "_p2_5_terminal_signature_kit_inputs", {}
+                            )
+                            _t30_qid_kit = _t30_kit_bucket.setdefault(
+                                state.qid, []
+                            )
+                            _t30_kit_levers: list[str] = []
+                            if _t29_prop is not None:
+                                _t30_selected_levers = getattr(
+                                    _t29_prop, "selected_levers", ()
+                                )
+                                if _t30_selected_levers:
+                                    _t30_kit_levers = [
+                                        str(s)
+                                        for s in _t30_selected_levers
+                                        if s
+                                    ]
+                            if not _t30_kit_levers and _t29_rejected_lever:
+                                _t30_kit_levers = [_t29_rejected_lever]
+                            _t30_qid_kit.append(
+                                {
+                                    "prior_lever_set": tuple(_t30_kit_levers),
+                                    "prior_patch_family": _t29_patch_type,
+                                    "signature": _t29_signature,
+                                }
+                            )
                 except Exception:
                     pass
                 return GateVerdict.success(record=AcceptanceDecisionRecord(
