@@ -135,6 +135,19 @@ class AcceptanceDecisionRecord(JsonRoundTrip):
         # ``TransformerContext`` and routes the row to the GT
         # pending_review queue (no corpus mutation).
         "already_correct_under_arbiter",
+        # Trial 29 W29.1 — kit-forced patch with applied but
+        # ``behavioral_diff == "unchanged"``. Sibling of
+        # ``kept_insufficient`` but distinct because the lever loop
+        # MUST pick a different mechanism next iteration (the
+        # rejected one is recorded in ``rejected_mechanism``). Routed
+        # via :func:`inert_mechanism_history.harvest_sm_inert_mechanism_history`
+        # into ``TransformerContext.inert_mechanism_history`` and
+        # rendered in the Stage 3 synthesis prompt so the LLM picks
+        # from ``_structural_fix_mechanisms(rca) - rejected_mechanism``.
+        # Gated by ``trial29_inert_reroute_enabled()`` — when OFF the
+        # decision falls back to ``kept_insufficient`` for byte-stable
+        # rollback.
+        "kit_forced_inert_reroute",
     ]
     arbiter_reason: str
     target_fixed: bool
@@ -151,6 +164,15 @@ class AcceptanceDecisionRecord(JsonRoundTrip):
     # tile. Mirrors ``EvaluatedRecord.behavioral_diff`` for ease of
     # access during JSON serialisation.
     behavioral_diff: BehavioralDiff = "unchanged"
+    # Trial 29 W29.1 — the mechanism that produced the inert patch.
+    # Populated only when ``decision == "kit_forced_inert_reroute"``.
+    # Empty string for every other decision. Harvested by
+    # :func:`inert_mechanism_history.harvest_sm_inert_mechanism_history`
+    # at iteration end and surfaced into
+    # ``ctx.inert_mechanism_history`` so the next iteration's Stage 3
+    # synthesis picks from
+    # ``_structural_fix_mechanisms(rca) - rejected_mechanism``.
+    rejected_mechanism: str = ""
 
 
 TerminalKind = Literal[
