@@ -146,3 +146,70 @@ def test_extend_dedupes_same_mechanism_within_qid():
     merged = extend_sm_inert_mechanism_history(prior, fresh)
     assert merged[0].rejected_mechanisms == ("add_sql_snippet_filter",)
     assert merged[0].signatures == ("sig1",)
+
+
+# ── Phase 5: TransformerContext + cluster_batch threading ─────────────
+
+
+def test_transformer_context_carries_inert_mechanism_history():
+    from genie_space_optimizer.optimization.state_machine.verdict import (
+        TransformerContext,
+        ValidationContext,
+    )
+
+    ctx = TransformerContext(
+        1, "r", ValidationContext(1, "r", {}),
+    )
+    assert ctx.inert_mechanism_history == ()
+
+    history = (
+        InertMechanismHistory(
+            qid="gs_009",
+            rca_kind="wrong_aggregation",
+            rejected_mechanisms=("add_sql_snippet_filter",),
+            signatures=("sig1",),
+        ),
+    )
+    ctx2 = TransformerContext(
+        1, "r", ValidationContext(1, "r", {}),
+        inert_mechanism_history=history,
+    )
+    assert ctx2.inert_mechanism_history == history
+
+
+def test_cluster_batch_propagates_inert_mechanism_history():
+    from genie_space_optimizer.optimization.state_machine.transformers.cluster_batch import (  # noqa: E501
+        Stage2BatchInput,
+        build_stage2_batch_input,
+    )
+
+    history = (
+        InertMechanismHistory(
+            qid="gs_009",
+            rca_kind="wrong_aggregation",
+            rejected_mechanisms=("add_sql_snippet_filter",),
+            signatures=("sig1",),
+        ),
+    )
+    batch = build_stage2_batch_input(
+        (),  # no diagnosed states needed for this test
+        forbidden_signatures=(),
+        insufficient_repair_signatures=(),
+        inert_mechanism_history=history,
+    )
+    assert isinstance(batch, Stage2BatchInput)
+    assert batch.inert_mechanism_history == history
+
+
+def test_cluster_batch_default_empty_inert_history():
+    """Default for the new param is empty tuple — back-compat for
+    every existing caller that doesn't pass it."""
+    from genie_space_optimizer.optimization.state_machine.transformers.cluster_batch import (  # noqa: E501
+        build_stage2_batch_input,
+    )
+
+    batch = build_stage2_batch_input(
+        (),
+        forbidden_signatures=(),
+    )
+    assert batch.inert_mechanism_history == ()

@@ -72,6 +72,16 @@ class TransformerContext:
     # rca_kind, behavior) shape as a *sole* primary repair — but may
     # include it as part of a reinforcement bundle.
     insufficient_repair_signatures: tuple[str, ...] = ()
+    # Trial 29 W29.1 — typed lever-loop feedback channel for
+    # kit-forced inert patches. Populated by
+    # :func:`inert_mechanism_history.harvest_sm_inert_mechanism_history`
+    # at iteration end and consumed by Stage 3 synthesis so the LLM
+    # picks from ``_structural_fix_mechanisms(rca) - rejected``.
+    # Typed as ``tuple[Any, ...]`` here to avoid a circular import
+    # (the typed model lives in
+    # ``optimization.inert_mechanism_history``); callers always pass
+    # ``tuple[InertMechanismHistory, ...]``.
+    inert_mechanism_history: tuple[Any, ...] = ()
     extras: Mapping[str, Any] = field(default_factory=dict)
     # Bridge from ``ProposalAttempt.intent_id`` to the typed
     # ``RepairProposal`` body. Stage 3 writes; gates and the escalation

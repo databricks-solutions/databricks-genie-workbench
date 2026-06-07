@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from genie_space_optimizer.optimization.state_machine.funnel import FunnelStage
 from genie_space_optimizer.optimization.state_machine.records import (
@@ -42,6 +43,13 @@ class Stage2BatchInput:
     # Defaults to empty tuple so existing callers / test fixtures
     # don't need updating.
     insufficient_repair_signatures: tuple[str, ...] = ()
+    # Trial 29 W29.1 — kit-forced inert-patch history. Stage 3
+    # synthesis renders the per-(qid, rca_kind) rejected mechanisms
+    # so the LLM picks from
+    # ``_structural_fix_mechanisms(rca) - rejected``. Typed as
+    # ``tuple[Any, ...]`` to avoid a circular import; callers pass
+    # ``tuple[InertMechanismHistory, ...]``.
+    inert_mechanism_history: tuple[Any, ...] = ()
 
 
 def build_stage2_batch_input(
@@ -49,6 +57,7 @@ def build_stage2_batch_input(
     *,
     forbidden_signatures: tuple[str, ...],
     insufficient_repair_signatures: tuple[str, ...] = (),
+    inert_mechanism_history: tuple[Any, ...] = (),
 ) -> Stage2BatchInput:
     """Project DIAGNOSED states into Stage 2 LLM batch input."""
     members = tuple(
@@ -65,6 +74,7 @@ def build_stage2_batch_input(
         members=members,
         forbidden_signatures=forbidden_signatures,
         insufficient_repair_signatures=insufficient_repair_signatures,
+        inert_mechanism_history=inert_mechanism_history,
     )
 
 
