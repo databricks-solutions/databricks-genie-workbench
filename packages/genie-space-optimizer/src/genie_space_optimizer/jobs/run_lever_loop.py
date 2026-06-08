@@ -798,6 +798,34 @@ publish_task_outputs(dbutils, task="lever_loop", outputs=lever_loop_publish)
 # GSO_ENFORCE_MERGE_GATE_BLOCKING=1.
 enforce_merge_gate(loop_out)
 
+# Trial 31 W31.3 — invariant ↔ task-result consistency. An optimizer
+# invariant violation must surface as a FAILED task so the postmortem and
+# the Databricks task agree and no deploy is greenlit on a violation —
+# instead of the legacy silent SUCCESS (guardrail
+# ``OPTIMIZER_INVARIANT_VIOLATION_TASK_SUCCEEDED``). Raised AFTER the
+# ``publish_task_outputs`` above so the evidence bundle survives for
+# postmortem tooling. Gated by GSO_TRIAL31_FAIL_ON_INVARIANT (default ON;
+# =0 restores the legacy always-SUCCESS posture). Contract-health /
+# no-candidate skips are unaffected (they keep the Trial 21 W9 SUCCESS
+# posture; only a genuine invariant violation fails the task).
+from genie_space_optimizer.optimization.harness import (
+    lever_loop_task_should_fail as _t31_should_fail,
+)
+
+_t31_fail_flag = (
+    _os.environ.get("GSO_TRIAL31_FAIL_ON_INVARIANT") or ""
+).strip().lower()
+_t31_fail_on = _t31_fail_flag not in ("0", "false", "no", "off")
+if _t31_should_fail(loop_out, enabled=_t31_fail_on):
+    _t31_outcome = str((loop_out or {}).get("optimizer_outcome") or "")
+    raise RuntimeError(
+        "OPTIMIZER_INVARIANT_VIOLATION_TASK_FAILED: optimizer outcome "
+        f"{_t31_outcome!r} is an invariant violation; failing the "
+        "lever_loop task so it is not reported as SUCCESS and no deploy is "
+        "greenlit. Task values were already published for postmortem. Set "
+        "GSO_TRIAL31_FAIL_ON_INVARIANT=0 to roll back to the legacy posture."
+    )
+
 _banner("Task 4 Completed")
 dbutils.notebook.exit(json.dumps(debug_info, default=str))
 

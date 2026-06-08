@@ -289,6 +289,17 @@ _TRIAL23_PHASE_H_BLOCKED_UPLOAD_VOCAB = frozenset(
 )
 
 
+# Trial 31 W31.3 — optimizer outcomes that represent a genuine SM/contract
+# invariant breach (NOT a normal "ran but nothing to ship" skip). A run with
+# one of these must surface a non-SUCCESS task result so the postmortem and
+# the Databricks task agree and no deploy is greenlit on a violation.
+_INVARIANT_VIOLATION_OUTCOMES = frozenset(
+    {
+        "OPTIMIZER_INVARIANT_VIOLATION",
+    }
+)
+
+
 def compute_deploy_eligibility(
     *,
     merge_gate_status: str,
@@ -358,6 +369,18 @@ def compute_deploy_eligibility(
         "OPTIMIZER_SKIPPED_INPUT_GAP",
     }
 
+    # Trial 31 W31.3 — a genuine optimizer-invariant violation is NOT a
+    # contract-health skip (Trial 21 W9) nor a no-candidate skip: it is an
+    # SM/contract breach the run should never report as SUCCESS. It fails
+    # the task AND blocks deploy, and takes precedence over the milder
+    # contract-health / no-candidate skip reasons below.
+    if outcome in _INVARIANT_VIOLATION_OUTCOMES:
+        return DeployEligibilityVerdict(
+            optimizer_task_status="failed",
+            candidate_deploy_eligible=False,
+            deploy_skip_reason="invariant_violation",
+        )
+
     if contract_blocked:
         return DeployEligibilityVerdict(
             optimizer_task_status="success",
@@ -410,6 +433,37 @@ def deploy_eligibility_from_loop_out(
         phase_h_upload_status=upload_status,
         scoreboard_stale=scoreboard_stale,
     )
+
+
+def lever_loop_task_should_fail(
+    loop_out: "Mapping[str, Any] | None",
+    *,
+    enabled: bool = True,
+) -> bool:
+    """Trial 31 W31.3 — decide whether the ``lever_loop`` task must
+    terminate non-SUCCESS.
+
+    Returns ``True`` iff the run recorded a genuine optimizer-invariant
+    violation (``optimizer_task_status == "failed"`` per
+    :func:`deploy_eligibility_from_loop_out`). The task entrypoint raises
+    on ``True`` AFTER publishing its task values, so a violation surfaces
+    as a failed task (and no deploy is greenlit) while the postmortem
+    evidence bundle still survives.
+
+    ``enabled`` mirrors ``GSO_TRIAL31_FAIL_ON_INVARIANT`` (default ON);
+    when ``False`` this always returns ``False`` — the legacy
+    always-SUCCESS posture. Fail-soft: any projection error returns
+    ``False`` so a bookkeeping bug can never block an otherwise-clean run.
+    """
+    if not enabled:
+        return False
+    try:
+        return (
+            deploy_eligibility_from_loop_out(loop_out or {}).optimizer_task_status
+            == "failed"
+        )
+    except Exception:
+        return False
 
 
 def deploy_skipped_marker(*, skip_reason: str, run_id: str = "") -> str:
