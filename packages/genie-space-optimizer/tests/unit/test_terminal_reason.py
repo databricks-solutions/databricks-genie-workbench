@@ -50,6 +50,11 @@ def test_enum_has_exactly_spec_values():
         "slate_compiler_empty",
         "stage3_returned_none",
         "applier_no_outcomes",
+        # Trial 30 W30.4(b) — typed members for the three harness paths
+        # that previously emitted the raw "unknown" string.
+        "infrastructure_pre_ag_snapshot_failed",
+        "infrastructure_applier_failed",
+        "slice_or_p0_gate_regression_rollback",
     }
     actual = {r.value for r in TerminalReason}
     assert actual == expected, f"diff: {actual ^ expected}"

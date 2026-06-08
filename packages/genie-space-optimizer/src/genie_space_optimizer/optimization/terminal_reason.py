@@ -180,6 +180,36 @@ class TerminalReason(StrEnum):
     """A DecisionRecord invariant (I-series) fired in warn-and-degrade
     or strict mode."""
 
+    # ── Infrastructure / post-apply-rollback terminations ──────────
+    # Trial 30 W30.4(b) — three paths in the harness no-candidate body
+    # previously emitted the raw ``"unknown"`` string because no
+    # structural-funnel reason covered them. They are real, generalizable
+    # failure modes (not per-QID/anchor), so they get typed members; the
+    # gso-postmortem skill flagged the raw "unknown" as a terminal-reason
+    # taxonomy gap that forced ``architecture_invariants_held=false``.
+    INFRASTRUCTURE_PRE_AG_SNAPSHOT_FAILED = (
+        "infrastructure_pre_ag_snapshot_failed"
+    )
+    """Pre-AG metadata snapshot capture failed, so the AG never reached
+    the applier. An infrastructure failure, not a strategy failure —
+    the AG signature should not be treated as a dead strategy."""
+
+    INFRASTRUCTURE_APPLIER_FAILED = "infrastructure_applier_failed"
+    """The applier / Genie API rejected the PATCH payload at apply time
+    (SCHEMA_FAILURE or INFRA_FAILURE). Distinct from
+    :attr:`ALL_SELECTED_PATCHES_DROPPED_BY_APPLIER` (every patch
+    individually rejected by the gate path) in that this pins the
+    deploy-call infrastructure failure."""
+
+    SLICE_OR_P0_GATE_REGRESSION_ROLLBACK = (
+        "slice_or_p0_gate_regression_rollback"
+    )
+    """Patches applied then rolled back by a pre-full-eval gate
+    (slice_gate / p0_gate) because the candidate regressed at that
+    boundary. Distinct from :attr:`CONTENT_REGRESSION_ROLLBACK` (a
+    full-eval out-of-target regression) — this pins the pre-full-eval
+    slice/p0 rejection that no prior closed-vocab value covered."""
+
     # ── Defensive ──────────────────────────────────────────────────
     UNKNOWN = "unknown"
     """Reserved. Producers SHOULD NOT emit this; consumers MAY see

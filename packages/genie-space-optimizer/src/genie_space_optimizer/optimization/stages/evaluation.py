@@ -34,6 +34,58 @@ STAGE_KEY: str = "evaluation_state"
 POST_PATCH_STAGE_KEY: str = "post_patch_evaluation"
 
 
+def _canonical_qid_for_match(qid: str) -> str:
+    """Namespace-insensitive canonical form for slice matching.
+
+    Reuses the shared ``canonical_eval_row._split_namespaced_qid``
+    canonicaliser (NOT a hand-rolled extractor) so the slice agrees with
+    the rest of the codebase on what a benchmark's canonical qid is. A
+    namespaced qid like ``airline_..._gs_024`` collapses to ``gs_024``;
+    a bare canonical qid is returned unchanged.
+    """
+    from genie_space_optimizer.optimization.canonical_eval_row import (
+        _split_namespaced_qid,
+    )
+
+    canonical, _namespaced = _split_namespaced_qid({"question_id": str(qid)})
+    return canonical or str(qid)
+
+
+def slice_benchmarks_to_eval_qids(
+    benchmarks: list[dict] | None,
+    eval_qids: "list[str] | tuple[str, ...] | None",
+) -> list[dict]:
+    """Filter ``benchmarks`` to the rows matching ``eval_qids``.
+
+    Trial 30 W30.4(c) — matches namespace-insensitively. The pre-W30.4(c)
+    slice compared ``extract_question_id(b)[0]`` (which returns the
+    NAMESPACED qid) against the raw requested set, so a
+    namespaced-vs-canonical mismatch produced
+    ``benchmarks_count=0`` even when the benchmark row was present
+    (the ``POST_APPLY_EVAL_SLICED_ZERO_BENCHMARKS`` regression on
+    ``gs_024``). Here both sides are canonicalised via
+    :func:`_canonical_qid_for_match`; an exact-match short-circuit keeps
+    the canonical-only path byte-identical to the prior behaviour.
+
+    Empty / missing ``eval_qids`` is the no-scope path (baseline
+    once-per-run call) — the full list passes through unchanged.
+    """
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
+
+    requested = {str(q) for q in (eval_qids or ()) if q}
+    if not requested:
+        return list(benchmarks or [])
+    requested_canon = {_canonical_qid_for_match(q) for q in requested}
+    out: list[dict] = []
+    for b in benchmarks or []:
+        bqid = extract_question_id(dict(b))[0]
+        if bqid in requested or _canonical_qid_for_match(bqid) in requested_canon:
+            out.append(b)
+    return out
+
+
 @dataclass
 class EvaluationInput(JsonRoundTrip):
     """Input to evaluate_baseline / evaluate_post_patch.
@@ -189,15 +241,18 @@ def _run_full_evaluation(
         # the OUTPUT row-match path in ``evaluated_gate`` to use
         # ``extract_question_id``; the slice INPUT filter must use the
         # same canonical extractor for the contract to hold end-to-end.
-        from genie_space_optimizer.optimization._qid_extraction import (
-            extract_question_id,
-        )
-
+        #
+        # Trial 30 W30.4(c) — the INPUT filter additionally matches
+        # namespace-insensitively (``slice_benchmarks_to_eval_qids``):
+        # ``extract_question_id`` returns the NAMESPACED qid, so when
+        # ``eval_qids`` carried the canonical ``gs_024`` (or vice versa)
+        # the slice went empty (``POST_APPLY_EVAL_SLICED_ZERO_BENCHMARKS``
+        # on ``gs_024``). The helper canonicalises both sides while
+        # keeping an exact-match short-circuit for byte stability.
         original_benchmarks = list(eval_kwargs.get("benchmarks") or [])
-        benchmarks = [
-            b for b in original_benchmarks
-            if extract_question_id(dict(b))[0] in requested
-        ]
+        benchmarks = slice_benchmarks_to_eval_qids(
+            original_benchmarks, inp.eval_qids,
+        )
         # Copy to avoid mutating the caller's dict; the harness reuses
         # the same kwargs across baseline + post-apply calls.
         eval_kwargs = {**eval_kwargs, "benchmarks": benchmarks}  # type: ignore[assignment]

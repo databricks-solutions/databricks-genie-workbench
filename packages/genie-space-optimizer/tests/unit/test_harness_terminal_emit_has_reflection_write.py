@@ -49,26 +49,33 @@ _REFLECTION_WRITE_WHITELIST: frozenset[int] = frozenset({
     # refreshed index emits the same terminal reason as the entry it
     # replaces (e.g. 19904→19952 still blast_radius_rejected,
     # 31336→31424 still the full_eval gate-result branch).
+    # Trial 30 W30.3 (Task, 2026-06-08) inserted the bundle-completeness
+    # projection block (~+74 lines) near the end-of-iteration cleanup and
+    # W30.4(b) expanded the three typed-terminal-reason emits (multi-line),
+    # shifting every entry below the W30.3 block. Verified the 1:1 mapping
+    # by confirming each refreshed index emits the SAME terminal reason as
+    # the entry it replaces (the nearest ``_iter_terminal_reason``
+    # assignment matches the comment).
     19952,  # blast_radius_rejected, reserved-recovery early-terminate
-    21872,  # no_structural_candidate, no_actionable_clusters
-    23645,  # no_action_group_emitted, strategy_zero_ags
-    24512,  # WU-3 (2026-05-18) early_preflight_<reason>, slate-level
+    21946,  # no_structural_candidate, no_actionable_clusters
+    23719,  # no_action_group_emitted, strategy_zero_ags
+    24586,  # WU-3 (2026-05-18) early_preflight_<reason>, slate-level
             # apply_admission_trace SKIP_AG decision before per-AG
             # processing begins — no AG to retire yet.
     # (b) Per-AG, reflection write precedes the typed marker emit.
-    24023,  # ag_collision_with_forbidden_set
-    26355,  # proposal_generation_empty
-    27963,  # no_rca_ground
-    30932,  # no_applied_patches DOA
-    31232,  # Phase 0.3 Task 10 — applier_failed short-circuit
+    24097,  # ag_collision_with_forbidden_set
+    26429,  # proposal_generation_empty
+    28037,  # no_rca_ground
+    31017,  # no_applied_patches DOA
+    31322,  # Phase 0.3 Task 10 — applier_failed short-circuit
             # (Genie API rejected the PATCH payload as
-            # SCHEMA_FAILURE/INFRA_FAILURE). Terminates as
-            # ``unknown`` because no closed-vocab structural reason
-            # applies; the exception path emits before any
-            # reflection write reaches this AG.
+            # SCHEMA_FAILURE/INFRA_FAILURE). Trial 30 W30.4(b) — now
+            # terminates as ``infrastructure_applier_failed``; the
+            # exception path emits before any reflection write reaches
+            # this AG, so it stays whitelisted.
     # (b) Full-eval path: gate result handling, reflection write
     # happens later in the rollback or accept paths.
-    31424,  # full_eval / accepted, write in gate-result branch
+    31517,  # full_eval / accepted, write in gate-result branch
 })
 
 

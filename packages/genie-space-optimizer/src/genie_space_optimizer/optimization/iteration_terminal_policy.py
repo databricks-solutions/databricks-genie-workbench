@@ -109,6 +109,13 @@ _ROUTING_TABLE: dict[TerminalReason, tuple[str, bool]] = {
     TerminalReason.MULTI_PATCH_REGRESSION_NO_ISOLATION: ("retry_strategy_switch", True),
     TerminalReason.DIRECTIVE_OUTCOME_VIOLATION: ("retry_strategy_switch", True),
     TerminalReason.INVARIANT_VIOLATION: ("abort_run", True),
+    # Trial 30 W30.4(b) — typed members for the three harness paths that
+    # previously fell through to the ("skip_productive", True) default via
+    # the raw "unknown" string. Mapped to the SAME routing so the typed
+    # reason is observability-only (no retry/forbid behaviour drift).
+    TerminalReason.INFRASTRUCTURE_PRE_AG_SNAPSHOT_FAILED: ("skip_productive", True),
+    TerminalReason.INFRASTRUCTURE_APPLIER_FAILED: ("skip_productive", True),
+    TerminalReason.SLICE_OR_P0_GATE_REGRESSION_ROLLBACK: ("skip_productive", True),
     TerminalReason.UNKNOWN: ("skip_productive", True),
 }
 

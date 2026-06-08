@@ -20816,6 +20816,80 @@ def _run_lever_loop_legacy(
                     exc_info=True,
                 )
 
+            # Trial 30 W30.3 — evidence-bundle completeness. The W29.4
+            # postmortems found that even though the reroute lane fired
+            # live (3 reroutes across the two anchors) the harness
+            # persisted NO Trial29InertPatchDiagnostic JSONL and projected
+            # NO kit_forced_inert_reroute row to genie_eval_lever_loop_decisions
+            # (both postmortems fell back to log-grep). Wire both off the
+            # same final SM states the W30.1a harvest reads. SEPARATE
+            # try/except so a persistence failure never suppresses the
+            # harvest or the acceptance verdict. Gated by
+            # GSO_TRIAL30_BUNDLE_COMPLETENESS; OFF is byte-stable with W29.
+            try:
+                from genie_space_optimizer.optimization.trial30_flags import (
+                    trial30_bundle_completeness_enabled,
+                )
+                if trial30_bundle_completeness_enabled():
+                    from genie_space_optimizer.optimization.trial30_inert_projection import (  # noqa: E501
+                        build_inert_decision_rows,
+                        build_inert_patch_diagnostics,
+                    )
+                    _t30_diags = build_inert_patch_diagnostics(_sm_final_states)
+                    if _t30_diags:
+                        import os as _os_t30
+                        from pathlib import Path as _Path_t30
+
+                        from genie_space_optimizer.optimization.inert_patch_diagnostic import (  # noqa: E501
+                            persist_inert_patch_diagnostic,
+                        )
+                        from genie_space_optimizer.optimization.state import (
+                            write_lever_loop_decisions as _t30_write_decisions,
+                        )
+                        _t30_bundle_dir = _Path_t30(
+                            _os_t30.environ.get("GSO_RUN_ARTIFACT_ROOT")
+                            or "/tmp"
+                        )
+                        for _t30_d in _t30_diags:
+                            try:
+                                persist_inert_patch_diagnostic(
+                                    _t30_d, bundle_dir=_t30_bundle_dir,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Trial 30 W30.3 diagnostic persist "
+                                    "failed (non-fatal) qid=%s",
+                                    _t30_d.qid, exc_info=True,
+                                )
+                        _t30_rows = build_inert_decision_rows(
+                            _sm_final_states,
+                            run_id=run_id,
+                            iteration=iteration_counter,
+                        )
+                        if _t30_rows:
+                            try:
+                                _t30_write_decisions(
+                                    spark,
+                                    [r.to_decision_row() for r in _t30_rows],
+                                    catalog=catalog,
+                                    schema=schema,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Trial 30 W30.3 decision-row projection "
+                                    "failed (non-fatal)", exc_info=True,
+                                )
+                        logger.info(
+                            "Trial 30 W30.3: persisted %d inert diagnostic(s) "
+                            "+ projected %d decision row(s)",
+                            len(_t30_diags), len(_t30_rows),
+                        )
+            except Exception:
+                logger.debug(
+                    "Trial 30 W30.3 evidence-bundle completeness skipped "
+                    "this iteration (non-fatal)", exc_info=True,
+                )
+
             # Phase H iteration content completeness — pre-stamp the trace /
             # summary entries so any subsequent ``continue`` / ``break``
             # leaves a renderable iteration in the operator transcript. The
@@ -30232,8 +30306,10 @@ def _run_lever_loop_legacy(
                 # Phase 0.3 Task 10 — typed terminal marker for the
                 # pre_ag_snapshot_failed short-circuit. An infrastructure
                 # failure (snapshot capture) prevented the AG from
-                # reaching the applier; no closed-vocab structural
-                # reason applies, so this terminates as ``unknown``.
+                # reaching the applier. Trial 30 W30.4(b) — this carries
+                # the typed ``infrastructure_pre_ag_snapshot_failed``
+                # reason (was the raw ``"unknown"`` string, a postmortem
+                # terminal-reason taxonomy gap).
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
                         _ag_cids_for_ledger = tuple(
@@ -30244,14 +30320,20 @@ def _run_lever_loop_legacy(
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
-                            terminal_reason="unknown",
+                            terminal_reason=(
+                                _TerminalReason
+                                .INFRASTRUCTURE_PRE_AG_SNAPSHOT_FAILED.value
+                            ),
                             cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
                         # Phase 0.4 Task 13 — mirror terminal_reason and
                         # capture ag identifiers for the ledger row.
-                        _iter_terminal_reason = "unknown"
+                        _iter_terminal_reason = (
+                            _TerminalReason
+                            .INFRASTRUCTURE_PRE_AG_SNAPSHOT_FAILED.value
+                        )
                         _iter_ag_id_for_ledger = str(ag_id or "")
                         _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
@@ -30288,7 +30370,10 @@ def _run_lever_loop_legacy(
                         refinement_mode="out_of_plan",
                         terminal_signature=_terminal_signature_for_iteration(
                             iter_locals=_ag_context_snapshot,
-                            terminal_reason=_TerminalReason.UNKNOWN,
+                            terminal_reason=(
+                                _TerminalReason
+                                .INFRASTRUCTURE_PRE_AG_SNAPSHOT_FAILED
+                            ),
                         ),
                         **_ag_identity_kwargs,
                     ))
@@ -31203,7 +31288,9 @@ def _run_lever_loop_legacy(
                     new_failure_qids=prev_failure_qids,
                     terminal_signature=_terminal_signature_for_iteration(
                         iter_locals=_ag_context_snapshot,
-                        terminal_reason=_TerminalReason.UNKNOWN,
+                        terminal_reason=(
+                            _TerminalReason.INFRASTRUCTURE_APPLIER_FAILED
+                        ),
                     ),
                     **_ag_identity_kwargs,
                 ))
@@ -31212,9 +31299,9 @@ def _run_lever_loop_legacy(
                 # SCHEMA_FATAL / INFRA_EXHAUSTED ``break`` paths below
                 # so every exit (break + continue) carries the typed
                 # marker. The Genie API rejected the PATCH payload
-                # (SCHEMA_FAILURE or INFRA_FAILURE); no closed-vocab
-                # structural reason applies, so this terminates as
-                # ``unknown``.
+                # (SCHEMA_FAILURE or INFRA_FAILURE). Trial 30 W30.4(b) —
+                # carries the typed ``infrastructure_applier_failed``
+                # reason (was the raw ``"unknown"`` taxonomy gap).
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
                         _ag_cids_for_ledger = tuple(
@@ -31225,14 +31312,20 @@ def _run_lever_loop_legacy(
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
-                            terminal_reason="unknown",
+                            terminal_reason=(
+                                _TerminalReason
+                                .INFRASTRUCTURE_APPLIER_FAILED.value
+                            ),
                             cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
                         # Phase 0.4 Task 13 — mirror terminal_reason and
                         # capture ag identifiers for the ledger row.
-                        _iter_terminal_reason = "unknown"
+                        _iter_terminal_reason = (
+                            _TerminalReason
+                            .INFRASTRUCTURE_APPLIER_FAILED.value
+                        )
                         _iter_ag_id_for_ledger = str(ag_id or "")
                         _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
@@ -32480,11 +32573,12 @@ def _run_lever_loop_legacy(
                 # remains here is slice_gate / p0_gate rollbacks (the
                 # pre-full-eval gates rejected the candidate after
                 # patches were applied), plus any rollback reason that
-                # didn't start with full_eval. None of the closed-vocab
-                # values fits a "candidate evaluated and regressed at
-                # slice/p0" outcome cleanly, so we route them to the
-                # catch-all ``unknown`` per the plan's Section 8.5
-                # else-branch rule.
+                # didn't start with full_eval. Trial 30 W30.4(b) — these
+                # now carry the typed
+                # ``slice_or_p0_gate_regression_rollback`` reason (was the
+                # raw ``"unknown"`` catch-all, a postmortem terminal-reason
+                # taxonomy gap: a candidate evaluated and regressed at
+                # slice/p0 is not structurally "unknown").
                 if _iter_marker_active and not _iter_terminal_emitted:
                     try:
                         _ag_cids_for_ledger = tuple(
@@ -32495,14 +32589,20 @@ def _run_lever_loop_legacy(
                         print(iteration_no_candidate_marker(
                             optimization_run_id=str(run_id or ""),
                             iteration=int(iteration_counter),
-                            terminal_reason="unknown",
+                            terminal_reason=(
+                                _TerminalReason
+                                .SLICE_OR_P0_GATE_REGRESSION_ROLLBACK.value
+                            ),
                             cluster_ids=_ag_cids_for_ledger,
                             ag_id=str(ag_id or ""),
                         ), flush=True)
                         _iter_terminal_emitted = True
                         # Phase 0.4 Task 13 — mirror terminal_reason and
                         # capture ag identifiers for the ledger row.
-                        _iter_terminal_reason = "unknown"
+                        _iter_terminal_reason = (
+                            _TerminalReason
+                            .SLICE_OR_P0_GATE_REGRESSION_ROLLBACK.value
+                        )
                         _iter_ag_id_for_ledger = str(ag_id or "")
                         _iter_cluster_ids_for_ledger = _ag_cids_for_ledger
                     except Exception:
@@ -32541,7 +32641,10 @@ def _run_lever_loop_legacy(
                         refinement_mode="out_of_plan",
                         terminal_signature=_terminal_signature_for_iteration(
                             iter_locals=_ag_context_snapshot,
-                            terminal_reason=_TerminalReason.UNKNOWN,
+                            terminal_reason=(
+                                _TerminalReason
+                                .SLICE_OR_P0_GATE_REGRESSION_ROLLBACK
+                            ),
                         ),
                         **_ag_identity_kwargs,
                     ))

@@ -64,8 +64,27 @@ def trial30_enforce_guard_enabled() -> bool:
     return _subflag_opt_out("GSO_TRIAL30_ENFORCE_GUARD")
 
 
+def trial30_bundle_completeness_enabled() -> bool:
+    """W30.3 — evidence-bundle completeness for inert reroutes.
+
+    When ON, every ``kit_forced_inert_reroute`` decision (a) persists a
+    typed ``Trial29InertPatchDiagnostic`` JSONL record into the run's
+    evidence bundle and (b) projects a row into
+    ``genie_eval_lever_loop_decisions`` so the postmortem reads the
+    decision from the table rather than falling back to log-grep. This
+    is what lets the W29.5 ``bundle_completeness_invariants_held``
+    sub-invariant go green.
+
+    Default ON when the master is ON. Opt out with
+    ``export GSO_TRIAL30_BUNDLE_COMPLETENESS=0`` to disable persistence
+    and projection independently of the enforcement guard.
+    """
+    return _subflag_opt_out("GSO_TRIAL30_BUNDLE_COMPLETENESS")
+
+
 __all__ = [
     "trial30_enforced_switch_enabled",
     "trial30_inert_harvest_wire_enabled",
     "trial30_enforce_guard_enabled",
+    "trial30_bundle_completeness_enabled",
 ]
