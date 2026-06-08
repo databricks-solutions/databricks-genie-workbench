@@ -211,6 +211,67 @@ def slate_lacks_structural_candidate(
     return not (observed & structural)
 
 
+# Trial 32 W32.2 — structural-strength ranking. SQL-reshaping
+# mechanisms (snippet / routing) strictly outrank a metadata
+# description, which outranks prose. The ranking is mechanism-family
+# driven (no rca/qid literals): a ``METADATA_DESCRIPTION`` patch — which
+# the W31.5 live replay proved can apply ``behavioral_diff=unchanged``
+# for a SQL-shape RCA — must lose slate selection to a co-proposed
+# SQL_SNIPPET / ROUTING patch that actually reshapes the generated SQL.
+_STRUCTURAL_MECHANISM_STRENGTH: Mapping[PatchMechanism, int] = {
+    PatchMechanism.SQL_SNIPPET: 3,
+    PatchMechanism.ROUTING: 3,
+    PatchMechanism.METADATA_JOIN: 3,
+    PatchMechanism.METADATA_DESCRIPTION: 2,
+    PatchMechanism.INSTRUCTION_TEXT: 1,
+    PatchMechanism.EXAMPLE_SQL: 0,
+}
+
+
+def structural_mechanism_strength(mechanism: PatchMechanism | None) -> int:
+    """Trial 32 W32.2 — coarse structural strength of a mechanism.
+
+    Higher = reshapes the generated SQL more directly. Unknown / ``None``
+    sorts below every real mechanism so a missing mechanism never
+    supersedes a real one. The ordering is mechanism-family driven; it
+    carries no RCA / QID knowledge, so it generalises across the whole
+    structural-mandate family.
+    """
+    if mechanism is None:
+        return -1
+    return _STRUCTURAL_MECHANISM_STRENGTH.get(mechanism, -1)
+
+
+def structurally_superseded_by_stronger(
+    rca_kind: str | None,
+    candidate: PatchMechanism | None,
+    observed_mechanisms: Iterable[PatchMechanism | None],
+) -> bool:
+    """Trial 32 W32.2 — True when ``candidate`` is a structural mechanism
+    for a structural-mandate RCA but the slate ALSO carries a strictly
+    *stronger* structural mechanism.
+
+    This is the arbitration complement of W31.1's
+    :func:`slate_lacks_structural_candidate`: that predicate forces a
+    typed no-op when NO structural candidate exists; this one demotes a
+    weaker structural candidate (e.g. an inert ``add_column_description``)
+    when a SQL-reshaping companion (``SQL_SNIPPET`` / ``ROUTING``) is
+    present for the same RCA. Returns ``False`` for RCAs outside the
+    structural-mandate map (no ranking applies) and for a candidate that
+    is not itself a structural mechanism for the RCA.
+    """
+    structural = _structural_fix_mechanisms(rca_kind)
+    if not structural or candidate is None or candidate not in structural:
+        return False
+    candidate_strength = structural_mechanism_strength(candidate)
+    for m in observed_mechanisms:
+        if m is None or m not in structural:
+            continue
+        if structural_mechanism_strength(m) > candidate_strength:
+            return True
+    return False
+
+
 def mechanisms_for_rejected_levers(
     rejected: Iterable[str],
 ) -> frozenset[PatchMechanism]:
@@ -431,6 +492,8 @@ __all__ = [
     "example_sql_is_insufficient_for",
     "instruction_text_is_insufficient_for",
     "_structural_fix_mechanisms",
+    "structural_mechanism_strength",
+    "structurally_superseded_by_stronger",
     "recommended_mechanisms_for_rca",
     "rca_mechanism_default_reason",
     "rca_mechanism_defaulted_marker",

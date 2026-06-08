@@ -106,6 +106,13 @@ class DropReason(StrEnum):
     # postmortems show "bundle X dropped because member Y failed Z",
     # not five disjoint drop reasons.
     BUNDLE_MEMBER_DROPPED_CASCADE = "bundle_member_dropped_cascade"
+    # Trial 32 W32.2 — a structural-mandate RCA's slate carried a
+    # SQL-reshaping mechanism (SQL_SNIPPET / ROUTING) AND a strictly
+    # weaker metadata mechanism for the same QID; the weaker (potentially
+    # behaviorally-inert) metadata proposal is demoted so the structural
+    # one wins the apply. NOT a terminal for the cluster — a stronger
+    # structural survivor remains.
+    INERT_SUPERSEDED_BY_STRUCTURAL = "inert_superseded_by_structural"
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +286,10 @@ _DROP_REASON_PRECEDENCE: tuple[DropReason, ...] = (
     DropReason.UNJUSTIFIED_SINGLE_LEVER,
     DropReason.REPEATED_FAILED_MECHANISM,
     DropReason.UNCOVERED_MECHANISM,
+    # Trial 32 W32.2 — group-level demotion of a weaker structural
+    # mechanism. Ranked low: it is rarely the empty-slate root cause
+    # (a stronger structural survivor remains), but the map must be total.
+    DropReason.INERT_SUPERSEDED_BY_STRUCTURAL,
     DropReason.BUNDLE_INVARIANT_VIOLATED,
     DropReason.ALL_CANDIDATES_INVALID_SQL,
     # Phase 1.5 cascades are *downstream* of a Phase 1 failure; rank
@@ -302,6 +313,11 @@ _DROP_TO_TERMINAL: Mapping[DropReason, TerminalReason] = {
     ),
     DropReason.REPEATED_FAILED_MECHANISM: TerminalReason.KEPT_INSUFFICIENT,
     DropReason.UNCOVERED_MECHANISM: TerminalReason.NO_STRUCTURAL_CANDIDATE,
+    # Trial 32 W32.2 — the demoted patch was the behaviorally-weaker
+    # (inert) one; if it were somehow the sole drop driving an empty
+    # slate, KEPT_INSUFFICIENT is the honest terminal (a structural
+    # candidate existed and was preferred).
+    DropReason.INERT_SUPERSEDED_BY_STRUCTURAL: TerminalReason.KEPT_INSUFFICIENT,
     DropReason.BUNDLE_INVARIANT_VIOLATED: TerminalReason.INVARIANT_VIOLATION,
     DropReason.ALL_CANDIDATES_INVALID_SQL: TerminalReason.APPLYABILITY_REJECTED,
     # Trial 22 W2 — cascades surface as INVARIANT_VIOLATION at the
@@ -999,6 +1015,13 @@ _DEFAULT_FEEDBACK: Mapping[DropReason, str] = {
         "mechanism_coverage_override_justification with concrete "
         "evidence."
     ),
+    DropReason.INERT_SUPERSEDED_BY_STRUCTURAL: (
+        "A SQL-reshaping co-proposal (sql_snippet / routing) targets the "
+        "same QID for this structural-mandate RCA, so this weaker "
+        "metadata-description patch was demoted to let the structural "
+        "patch reshape the generated SQL. Re-propose only if the "
+        "metadata change is independently required."
+    ),
     DropReason.UNJUSTIFIED_SINGLE_LEVER: (
         "Single-lever instruction proposal must carry a non-empty "
         "justification AND must not repeat a prior kept_insufficient "
@@ -1030,6 +1053,82 @@ _DEFAULT_FEEDBACK: Mapping[DropReason, str] = {
 # ---------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------
+
+
+def _inert_loses_to_structural_enabled() -> bool:
+    """Trial 32 W32.2 sub-flag — :envvar:`GSO_TRIAL32_INERT_LOSES_TO_STRUCTURAL`.
+
+    Default ON; recognized opt-out values: ``0``, ``false``, ``no``,
+    ``off`` (case-insensitive). When OFF the Phase-2 demotion no-ops so
+    the slate is byte-stable to the pre-Trial-32 behaviour.
+    """
+    import os
+
+    raw = (os.environ.get("GSO_TRIAL32_INERT_LOSES_TO_STRUCTURAL") or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
+def _check_inert_superseded_by_structural(
+    survivors: Sequence[RepairProposal],
+    ctx: SlateCompilerContext,
+) -> list[tuple[RepairProposal, DropReason]]:
+    """Trial 32 W32.2 — Phase 2 demotion of a behaviorally-weaker
+    structural mechanism when a SQL-reshaping companion survives.
+
+    For each QID, when the RCA is a structural-mandate kind and the
+    surviving slate carries BOTH a SQL-reshaping mechanism
+    (``SQL_SNIPPET`` / ``ROUTING``) and a strictly weaker structural
+    mechanism (``METADATA_DESCRIPTION``) for that same QID, drop the
+    weaker proposal with :attr:`DropReason.INERT_SUPERSEDED_BY_STRUCTURAL`.
+
+    Mechanism-family + RCA-map driven (no QID / anchor literals); a
+    proposal targeting only QIDs whose RCA is outside the
+    structural-mandate map is never demoted. Returns the proposals to
+    drop (the caller records markers + feedback). No-op when the W32.2
+    flag is OFF or the RCA-kind labels are unpopulated.
+    """
+    if not _inert_loses_to_structural_enabled():
+        return []
+    from genie_space_optimizer.optimization.patch_mechanism import (
+        mechanism_for_patch_type,
+    )
+    from genie_space_optimizer.optimization.rca_mechanism_routing import (
+        structurally_superseded_by_stronger,
+    )
+
+    # Observed mechanisms per QID across the surviving slate.
+    mechanisms_by_qid: dict[str, set] = {}
+    for proposal in survivors:
+        mech = mechanism_for_patch_type(str(proposal.patch_type or ""))
+        if mech is None:
+            continue
+        for qid in proposal.target_qids or ():
+            mechanisms_by_qid.setdefault(str(qid), set()).add(mech)
+
+    dropped: list[tuple[RepairProposal, DropReason]] = []
+    for proposal in survivors:
+        mech = mechanism_for_patch_type(str(proposal.patch_type or ""))
+        if mech is None:
+            continue
+        # A proposal is demoted only when EVERY QID it targets agrees the
+        # mechanism is superseded by a stronger structural companion —
+        # never demote a patch that is the strongest option for any QID
+        # it serves.
+        target_qids = [str(q) for q in (proposal.target_qids or ()) if str(q)]
+        if not target_qids:
+            continue
+        superseded_everywhere = True
+        for qid in target_qids:
+            rca_kind = ctx.rca_kind_label_by_qid.get(qid, "") or ""
+            observed = mechanisms_by_qid.get(qid, set())
+            if not structurally_superseded_by_stronger(rca_kind, mech, observed):
+                superseded_everywhere = False
+                break
+        if superseded_everywhere:
+            dropped.append((proposal, DropReason.INERT_SUPERSEDED_BY_STRUCTURAL))
+    return dropped
 
 
 def compile_slate(
@@ -1259,6 +1358,41 @@ def compile_slate(
             }
         )
     feedback.extend(group_feedback)
+
+    # ── Phase 2.5 — Trial 32 W32.2 inert-loses-to-structural ──────
+    # Demote a behaviorally-weaker metadata patch when a SQL-reshaping
+    # companion survives for the same structural-mandate RCA, so the
+    # structural patch — not the inert metadata one — reaches the
+    # applier. Flag-gated; OFF keeps ``final_survivors`` byte-stable.
+    w322_drops = _check_inert_superseded_by_structural(final_survivors, runtime_ctx)
+    if w322_drops:
+        demoted_ids = {p.intent_id for p, _ in w322_drops}
+        final_survivors = [
+            p for p in final_survivors if p.intent_id not in demoted_ids
+        ]
+        for proposal, reason in w322_drops:
+            drops.append((proposal, reason))
+            feedback.append(
+                TypedFeedback(
+                    proposal_id=str(proposal.intent_id or ""),
+                    drop_reason=str(reason.value),
+                    feedback_text=_DEFAULT_FEEDBACK[reason],
+                )
+            )
+            markers.append(
+                {
+                    "marker": "GSO_TRIAL32_INERT_LOSES_TO_STRUCTURAL_V1",
+                    "optimization_run_id": runtime_ctx.optimization_run_id,
+                    "iteration": runtime_ctx.iteration,
+                    "cluster_id": runtime_ctx.cluster_id,
+                    "proposal_id": str(proposal.intent_id or ""),
+                    "qids": list(proposal.target_qids or ()),
+                    "patch_type": str(proposal.patch_type or ""),
+                    "drop_reason": str(reason.value),
+                    "failing_check": "inert_superseded_by_structural",
+                    "phase": "group",
+                }
+            )
 
     # Cluster-scoped summary marker so postmortems can group drops.
     markers.append(
