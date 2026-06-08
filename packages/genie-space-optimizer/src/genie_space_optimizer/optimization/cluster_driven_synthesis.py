@@ -62,6 +62,9 @@ from typing import Any, Callable
 from genie_space_optimizer.optimization.trial17_flags import (
     trial17_lever_led_synthesis_enabled as _trial17_lever_led_synthesis_enabled,  # noqa: F401
 )
+from genie_space_optimizer.optimization.trial32_flags import (
+    trial32_column_fqn_resolution_enabled,
+)
 
 from genie_space_optimizer.common.config import (
     CLUSTER_SYNTHESIS_PER_ITERATION,
@@ -631,15 +634,11 @@ def _strip_output_schema_block(prompt: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _resolve_asset_by_identifier(
-    metadata_snapshot: dict, identifier: str,
-) -> dict | None:
-    """Find a table or metric view snapshot by FQ or short identifier."""
-    if not identifier:
-        return None
-    ident = identifier.strip().lower()
+def _match_asset_in_data_sources(ds: dict, ident: str) -> dict | None:
+    """Match a (lowercased) identifier against table/MV snapshots by full id
+    or short (last-segment) name. Shared by :func:`_resolve_asset_by_identifier`
+    for both the direct lookup and the Trial-32 column-FQN fallback."""
     short = ident.split(".")[-1]
-    ds = metadata_snapshot.get("data_sources", {}) or {}
     for bucket in ("tables", "metric_views"):
         for t in ds.get(bucket, []) or []:
             if not isinstance(t, dict):
@@ -647,6 +646,39 @@ def _resolve_asset_by_identifier(
             tid = (t.get("identifier") or t.get("name") or "").strip().lower()
             if tid == ident or tid.split(".")[-1] == short:
                 return t
+    return None
+
+
+def _resolve_asset_by_identifier(
+    metadata_snapshot: dict, identifier: str,
+) -> dict | None:
+    """Find a table or metric view snapshot by FQ or short identifier.
+
+    Trial 32 W32.1 — when the identifier is a 4-part column FQN
+    (``catalog.schema.table.column``) that does not match any table/MV
+    directly, fall back to resolving the OWNING table by its 3-part prefix.
+    Stage-1 blame_sets routinely name column FQNs (the airline
+    ``extra_defensive_filter`` intent named
+    ``main.airline.fact_tickets.payment_currency_cd``); without this they
+    never resolve to a table, so ``_derive_asset_slice_from_afs`` returns
+    ``None`` and the cluster declines with ``no_top_n_archetype``. Gated by
+    ``GSO_TRIAL32_COLUMN_FQN_RESOLUTION`` (default ON; byte-stable when OFF —
+    the fallback only runs after a direct match has already failed, so a
+    table that legitimately matched is never affected).
+    """
+    if not identifier:
+        return None
+    ds = metadata_snapshot.get("data_sources", {}) or {}
+    ident = identifier.strip().lower()
+    direct = _match_asset_in_data_sources(ds, ident)
+    if direct is not None:
+        return direct
+    # Column-FQN fallback: catalog.schema.table.column -> owning table.
+    if trial32_column_fqn_resolution_enabled():
+        parts = ident.split(".")
+        if len(parts) >= 4:
+            table_prefix = ".".join(parts[:-1])
+            return _match_asset_in_data_sources(ds, table_prefix)
     return None
 
 
