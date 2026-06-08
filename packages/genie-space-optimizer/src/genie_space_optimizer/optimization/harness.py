@@ -2405,6 +2405,23 @@ def _run_phase_h_strict_validation(
         except KeyError:
             self_write_paths = set()
             self_write_count = 0
+        # W32.4 — the 8 per-iteration contract paths are unconditionally
+        # materialized later in the same Phase-H block by
+        # ``_materialize_per_iter_contract_paths`` (same iterations / anchor),
+        # but this validator runs BEFORE that write. Register them as
+        # self-writes so they are not false-flagged ``manifest_path_missing``
+        # by a listing that cannot yet see them. Observability only —
+        # byte-stable to the decision path; forced OFF with the Trial-32
+        # master (Trial-31 behaviour).
+        from genie_space_optimizer.optimization.trial32_flags import (
+            trial32_phase_h_per_iter_selfwrite_enabled,
+        )
+        if trial32_phase_h_per_iter_selfwrite_enabled():
+            for _iter_paths in (decl_paths_dict.get("iterations") or {}).values():
+                for _p in (_iter_paths or {}).values():
+                    if isinstance(_p, str):
+                        self_write_paths.add(_p)
+            self_write_count = len(self_write_paths)
     except Exception as exc:
         listing_status = "failed"
         exc_class = type(exc).__name__
@@ -2750,6 +2767,7 @@ def _materialize_per_iter_contract_paths(
     declared = bundle_artifact_paths(iterations=list(iterations or []))
     written = 0
     failed = 0
+    written_paths: list[str] = []
 
     def _log_one(path: str, text: str) -> None:
         nonlocal written, failed
@@ -2758,6 +2776,11 @@ def _materialize_per_iter_contract_paths(
                 run_id=anchor_run_id, text=text, artifact_file=path,
             )
             written += 1
+            # W32.4 — record the path so the caller can union the
+            # writer's own successfully-written set into the post-upload
+            # completeness check instead of trusting an eventually-
+            # consistent MLflow re-listing.
+            written_paths.append(path)
         except Exception:
             failed += 1
             logger.debug(
@@ -2846,7 +2869,11 @@ def _materialize_per_iter_contract_paths(
             _json.dumps(stage_index, sort_keys=True, indent=2),
         )
 
-    return {"written": written, "failed_writes_count": failed}
+    return {
+        "written": written,
+        "failed_writes_count": failed,
+        "written_paths": written_paths,
+    }
 
 
 # ── Phase D.5 alternatives-capture helpers ────────────────────────────
@@ -35635,11 +35662,12 @@ def _run_lever_loop_legacy(
                 # not block the parent bundle from landing. Invoked AFTER
                 # the parent-bundle uploads so a per-iter writer failure
                 # cannot block the parent bundle.
+                _per_iter_written: list[str] = []
                 try:
                     from genie_space_optimizer.optimization.stage_io_capture import (
                         consume_stage_capture_index as _consume_stage_index,
                     )
-                    _materialize_per_iter_contract_paths(
+                    _per_iter_result = _materialize_per_iter_contract_paths(
                         client=_client_phase_h,
                         anchor_run_id=_phase_h_anchor_run_id,
                         iterations=list(_phase_h_iterations_completed or []),
@@ -35668,6 +35696,9 @@ def _run_lever_loop_legacy(
                         },
                         stage_capture_index=_consume_stage_index(),
                         iter_invariant_violations={},
+                    )
+                    _per_iter_written = list(
+                        (_per_iter_result or {}).get("written_paths") or []
                     )
                 except Exception:
                     logger.debug(
@@ -35718,6 +35749,20 @@ def _run_lever_loop_legacy(
                     logger.debug(
                         "Phase H post-upload listing failed (non-fatal)",
                         exc_info=True,
+                    )
+
+                # W32.4 — MLflow artifact listing is eventually consistent,
+                # so the re-list above can miss the per-iteration artifacts
+                # ``_materialize_per_iter_contract_paths`` just wrote. Union
+                # the materializer's own reported written-path set so the
+                # completeness check reflects what actually landed. Byte-
+                # stable to the decision path; forced OFF with the master.
+                from genie_space_optimizer.optimization.trial32_flags import (
+                    trial32_phase_h_per_iter_selfwrite_enabled as _t32_selfwrite,
+                )
+                if _t32_selfwrite() and _per_iter_written:
+                    _post_upload_paths = list(
+                        dict.fromkeys([*_post_upload_paths, *_per_iter_written])
                     )
 
                 _completeness = _completeness_check(

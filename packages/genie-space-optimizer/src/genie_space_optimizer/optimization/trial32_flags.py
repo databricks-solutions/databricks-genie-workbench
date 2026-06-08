@@ -38,3 +38,29 @@ def trial32_column_fqn_resolution_enabled() -> bool:
     it does not match a table/MV directly. Default ON; forced OFF when the
     master is OFF."""
     return trial32_enabled() and _flag_enabled("GSO_TRIAL32_COLUMN_FQN_RESOLUTION")
+
+
+def trial32_phase_h_per_iter_selfwrite_enabled() -> bool:
+    """W32.4 — teach the Phase-H strict validator that the 8 per-iteration
+    contract artifacts are self-writes.
+
+    ``_run_phase_h_strict_validation`` runs BEFORE
+    ``_materialize_per_iter_contract_paths`` writes the per-iteration
+    artifacts (same ``iterations`` / ``anchor_run_id``), yet pre-W32.4 the
+    validator only registered 4 PARENT-level paths as ``self_write_paths``.
+    Every per-iteration declared path was therefore false-flagged
+    ``manifest_path_missing`` (airline live ``missing_count=29``, 7now
+    ``=37``), and the post-upload completeness check then trusted an
+    eventually-consistent MLflow re-listing that had not yet observed the
+    just-written artifacts — together holding
+    ``architecture_invariants_held=false`` on both anchors.
+
+    When ON the validator treats the per-iteration paths as self-writes and
+    the completeness check unions the materializer's own reported
+    written-path set. Observability only — byte-stable to the decision path.
+    Default ON; forced OFF when the master is OFF (Trial-31 behaviour: the
+    per-iteration paths are excluded from ``self_write_paths`` and the
+    materializer's written-paths are not unioned)."""
+    return trial32_enabled() and _flag_enabled(
+        "GSO_TRIAL32_PHASE_H_PER_ITER_SELFWRITE"
+    )
