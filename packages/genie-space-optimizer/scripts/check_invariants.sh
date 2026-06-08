@@ -81,20 +81,22 @@ for mod in "${LEGACY_QUARANTINED[@]}"; do
 done
 
 # Hand-rolled QID extraction in dispatch / transformer code. Use
-# `_qid_extraction.extract_question_id` instead.
-hits=$(rg --type py \
-        --glob '!**/_legacy/**' \
-        --glob '!**/_qid_extraction.py' \
-        --glob '!**/test_*.py' \
-        --glob '!**/*_test.py' \
-        "row\.get\(\"question_id\"\)|row\[\"question_id\"\]" \
-        "$SRC_DIR/optimization/state_machine/" \
-        "$SRC_DIR/optimization/optimizer.py" \
-        2>/dev/null || true)
-if [ -n "$hits" ]; then
-  report "HAND_ROLLED_QID_EXTRACTION" \
-    "Do not extract question_id with row.get / row[]; use _qid_extraction.extract_question_id instead. See packages/genie-space-optimizer/docs/llmdrivenarchitecture/v5/canonical-row-shape-adapter_f0206be1.plan.md" \
-    "$hits"
+# `_qid_extraction.extract_question_id` instead. The scan is tokenize-based
+# (see scripts/_qid_hardroll_scan.py) so the same `row.get("question_id")`
+# text inside a comment or docstring does NOT trip the rule — only real code
+# does. A flat rg here used to false-positive on prose that documents the
+# forbidden pattern.
+SCAN_PY="$REPO_ROOT/packages/genie-space-optimizer/scripts/_qid_hardroll_scan.py"
+if command -v python3 >/dev/null 2>&1 && [ -f "$SCAN_PY" ]; then
+  hits=$(python3 "$SCAN_PY" \
+          "$SRC_DIR/optimization/state_machine/" \
+          "$SRC_DIR/optimization/optimizer.py" \
+          2>/dev/null || true)
+  if [ -n "$hits" ]; then
+    report "HAND_ROLLED_QID_EXTRACTION" \
+      "Do not extract question_id with row.get / row[]; use _qid_extraction.extract_question_id instead. See packages/genie-space-optimizer/docs/llmdrivenarchitecture/v5/canonical-row-shape-adapter_f0206be1.plan.md" \
+      "$hits"
+  fi
 fi
 
 # Per-QID overfit branches (`if qid == "gs_001": ...`) — narrow form for the

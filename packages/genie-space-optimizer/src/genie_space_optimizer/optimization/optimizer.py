@@ -1061,27 +1061,37 @@ def _get_existing_example_sqls(metadata_snapshot: dict) -> list:
 def _row_qid(row: dict, *, fallback: str = "unknown") -> str:
     """Extract question_id from an eval-results row regardless of column layout.
 
-    MLflow stores inputs in the ``request`` column (not ``inputs/…``), so we
-    parse both layouts to robustly recover the QID.
+    Canonical id resolution is delegated to the single-source
+    ``_qid_extraction.extract_question_id`` (top-level ``question_id``/``id``,
+    flat/nested ``inputs.*``, ``request.kwargs.question_id``,
+    ``request.question_id`` and ``metadata.*``). Only the ``canonical`` source
+    is accepted here — a trace-id-only row keeps the legacy behaviour of
+    falling through to the text fallback rather than clustering on an MLflow
+    trace id. When no canonical id is carried we fall back to the question
+    TEXT (``inputs/question``, ``request.question`` or top-level ``question``)
+    so id-less rows still cluster by content, then to the caller's sentinel.
     """
-    direct = (
-        row.get("inputs/question_id")
-        or row.get("inputs/question")
-        or row.get("question_id")
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
     )
-    if direct:
-        return str(direct)
-    _req = row.get("request") or {}
-    if isinstance(_req, str):
-        try:
-            _req = json.loads(_req)
-        except (json.JSONDecodeError, TypeError):
-            _req = {}
-    if isinstance(_req, dict):
-        _kw = _req.get("kwargs", {})
-        qid = _kw.get("question_id") or _req.get("question_id") or _req.get("question")
-        if qid:
-            return str(qid)
+
+    qid, qid_source = extract_question_id(row)
+    if qid and qid_source == "canonical":
+        return qid
+    # Pre-canonical text fallback (no canonical id on the row): cluster by the
+    # question TEXT so content-based clustering still works.
+    text = row.get("inputs/question")
+    if not text:
+        _req = row.get("request") or {}
+        if isinstance(_req, str):
+            try:
+                _req = json.loads(_req)
+            except (json.JSONDecodeError, TypeError):
+                _req = {}
+        if isinstance(_req, dict):
+            text = _req.get("question")
+    if text:
+        return str(text)
     return row.get("question", fallback) or fallback
 
 
@@ -2769,13 +2779,21 @@ def cluster_failures(
         _qid_rewrites = []
         _qid_pure_duplicates = []
 
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
+
     for row in rows_iter:
         if not isinstance(row, dict):
             continue
 
         # Bug #4 (P4.2) — held-out benchmarks must never enter the LLM-
         # bound clustering path. Drop them before any signal extraction.
-        qid = str(row.get("question_id") or row.get("qid") or "")
+        # Canonical-source qid only (held-out keys are canonical), with the
+        # legacy ``qid`` alias as a secondary — never a hand-rolled
+        # ``question_id`` accessor (HAND_ROLLED_QID_EXTRACTION invariant).
+        _qid, _qid_src = extract_question_id(row)
+        qid = (_qid if _qid_src == "canonical" else "") or str(row.get("qid") or "")
         if qid and qid in _held_out:
             continue
 
