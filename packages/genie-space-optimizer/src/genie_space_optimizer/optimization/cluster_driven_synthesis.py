@@ -314,6 +314,14 @@ class SkippedReason(str, Enum):
     """A more granular sibling of ``no_archetype_or_slice``: the
     pick produced an archetype but downstream viability checks
     rejected it for the cluster's slice."""
+    NO_STRUCTURAL_CANDIDATE = "no_structural_candidate"
+    """Trial 31 W31.1(b) — the cluster's RCA mandates a structural
+    mechanism but every surviving proposal was inert (the forced-L6 /
+    plan11 structural synthesis declined). The SM finalizer emits a
+    clean no-op with this reason rather than letting the inert patch
+    survive to application (which would trip
+    ``rca_mechanism_defaulted_to_instruction_text`` ->
+    ``OPTIMIZER_INVARIANT_VIOLATION``, failed by W31.3)."""
     NORMALIZE_RETURNED_NONE = "normalize_returned_none"
     """Synthesizer normalisation pass returned ``None``, declining
     the candidate."""

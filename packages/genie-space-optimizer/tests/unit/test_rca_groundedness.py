@@ -312,3 +312,95 @@ def test_classify_priority_no_parent_rca_beats_missing_qids():
     assert classify_rca_ungrounded(
         cluster=c, findings=[], evidence_snapshot=_evidence(),
     ) == RcaUngroundedReason.NO_PARENT_RCA
+
+
+# ---- Trial 31 W31.2 — RCA-grounding projection carries causal assets ----
+#
+# 7now's gs_013/gs_026 funnel death (rca_ungrounded -> no_causal_target ->
+# proposal_generation_empty) was caused by the SM->dispatch projection
+# DROPPING the cluster's named causal assets: rca_findings_from_clusters()
+# stored the ASI blame set in RcaFinding.expected_objects, but the gate's
+# _finding_terms() only reads grounding_terms / blame_set / counterfactual_
+# fixes / touched_objects / rationales. So a real production finding whose
+# card NAMED concrete causal assets surfaced ZERO grounding terms to the
+# proposal gate and was wrongly judged RCA_UNGROUNDED. These tests pin the
+# end-to-end projection->gate contract using the REAL functions (no hand-
+# rolled fake finding), and prove generality on a non-anchor synthetic
+# fixture so the fix cannot be a per-QID overfit.
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "root_cause,qid,blame_term,proposal_surface",
+    [
+        # 7now-shaped repro (gs_013 / top_n_cardinality_collapse).
+        (
+            "top_n_cardinality_collapse",
+            "gs_013",
+            "main.gold.orders.customer_id",
+            {"column": "customer_id",
+             "intent": "Add GROUP BY customer_id ORDER BY cnt DESC LIMIT N"},
+        ),
+        # Non-anchor synthetic case proving the fix generalizes across the
+        # whole projection family — different qid, different kind, different
+        # asset. If the fix were a per-QID overfit this row would stay red.
+        (
+            "time_window_pivot",
+            "demo_synthetic_q42",
+            "analytics.silver.events.event_ts",
+            {"column": "event_ts",
+             "intent": "Constrain WHERE event_ts BETWEEN window bounds"},
+        ),
+    ],
+)
+def test_trial31_w312_real_projection_carries_grounding_terms_to_gate(
+    root_cause, qid, blame_term, proposal_surface,
+) -> None:
+    from genie_space_optimizer.optimization.rca import (
+        rca_findings_from_clusters,
+    )
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        is_rca_grounded,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        ReasonCode,
+    )
+
+    cluster = {
+        "cluster_id": "H001",
+        "root_cause": root_cause,
+        "question_ids": [qid],
+        "asi_blame_set": [blame_term],
+        "asi_counterfactual_fixes": [
+            f"reshape SQL to address {blame_term}",
+        ],
+    }
+    findings = rca_findings_from_clusters([cluster])
+    assert findings, "projection produced no findings for a named-asset cluster"
+
+    # The named causal asset MUST be visible on the projected finding's
+    # grounding surface (the field _finding_terms reads), not buried in a
+    # field the gate ignores.
+    from genie_space_optimizer.optimization.rca_groundedness import (
+        _finding_terms,
+    )
+    surfaced = _finding_terms(findings[0])
+    assert any(blame_term.lower() in t or t in blame_term.lower()
+               for t in surfaced), (
+        f"named causal asset {blame_term!r} not surfaced to the gate; "
+        f"finding grounding terms were {surfaced!r}"
+    )
+
+    proposal = {
+        "proposal_id": "P1",
+        "target_qids": [qid],
+        "target": blame_term.rsplit(".", 1)[0],
+        **proposal_surface,
+    }
+    verdict = is_rca_grounded(proposal, findings, target_kind="proposal")
+    assert verdict.accepted is True, (
+        f"proposal touching {blame_term!r} was judged "
+        f"{verdict.reason_code}; the card named the causal asset"
+    )
+    assert verdict.reason_code == ReasonCode.RCA_GROUNDED

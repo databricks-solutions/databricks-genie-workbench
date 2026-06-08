@@ -125,6 +125,16 @@ class RcaFinding:
     recommended_levers: tuple[int, ...] = ()
     patch_family: str = ""
     target_qids: tuple[str, ...] = ()
+    # Trial 31 W31.2 — the named causal assets (ASI blame set +
+    # counterfactual fixes, and when available the RCA card's own
+    # ``grounding_terms``) that the groundedness gate's
+    # ``_finding_terms`` reads to decide a proposal is RCA-grounded.
+    # Before this field existed the projection stored the blame set in
+    # ``expected_objects`` (a field the gate never reads), so findings
+    # built from clusters that NAMED concrete causal assets surfaced
+    # zero grounding terms and were wrongly judged ``RCA_UNGROUNDED``
+    # (the 7now gs_013/gs_026 funnel death).
+    grounding_terms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1019,6 +1029,25 @@ def rca_findings_from_clusters(clusters: Iterable[dict]) -> list[RcaFinding]:
             "; ".join(fixes[:3])
             or str(cluster.get("root_cause") or kind.value)
         )
+        # Trial 31 W31.2 — carry the cluster's named causal assets onto
+        # the finding's grounding surface so the proposal gate can see
+        # them. The blame set and counterfactual fixes are exactly the
+        # surface ``_finding_terms`` overlaps a proposal against; when an
+        # upstream RCA card already published ``grounding_terms`` (a
+        # superset that may include identifiers mined from generated /
+        # reference SQL), prefer it. Dedupe preserves order. Flag-gated
+        # (default ON); when OFF ``grounding_terms`` stays empty —
+        # byte-stable Trial 30 behaviour.
+        from genie_space_optimizer.optimization.trial31_flags import (
+            trial31_rca_grounding_projection_enabled,
+        )
+        if trial31_rca_grounding_projection_enabled():
+            card_terms = _tuple_of_str(cluster.get("rca_card_grounding_terms"))
+            grounding_terms = tuple(
+                dict.fromkeys(t for t in (*card_terms, *blame, *fixes) if t)
+            )
+        else:
+            grounding_terms = ()
         for qid in qids:
             findings.append(RcaFinding(
                 rca_id=_mk_id(qid, kind),
@@ -1037,6 +1066,7 @@ def rca_findings_from_clusters(clusters: Iterable[dict]) -> list[RcaFinding]:
                 recommended_levers=recommended_levers_for_rca_kind(kind),
                 patch_family=patch_family_for_rca_kind(kind),
                 target_qids=(qid,),
+                grounding_terms=grounding_terms,
             ))
     return findings
 

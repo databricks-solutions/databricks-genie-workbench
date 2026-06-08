@@ -3177,6 +3177,87 @@ def run_plan11_synthesis_for_single_cluster(
             _t22_drop_summary = None
         proposals = list(_t21_result.surviving_proposals)
 
+    # Trial 31 W31.1(b) — structural-mandate no-op. When the cluster's RCA
+    # mandates a structural mechanism but EVERY surviving proposal is inert
+    # (the forced-L6 / plan11 structural synthesis declined to emit a
+    # structural patch), emit a typed ``no_structural_candidate`` no-op
+    # rather than letting the inert patch survive to application — which
+    # would trip ``rca_mechanism_defaulted_to_instruction_text`` ->
+    # ``OPTIMIZER_INVARIANT_VIOLATION`` (failed by W31.3). The Track B / W4
+    # binders deliberately keep an inert sole-survivor to avoid flatlining
+    # the slate; post-Trial-31 a clean no-op is preferable. The decision is
+    # made via the pure ``slate_lacks_structural_candidate`` predicate
+    # (generalises across the structural-mandate RCA family; no-op for
+    # unmapped RCAs). Flag-gated (default ON); fail-open on any error.
+    _w311_observed: list = []
+    _w311_no_structural = False
+    if proposals:
+        try:
+            from genie_space_optimizer.optimization.trial31_flags import (
+                trial31_no_structural_candidate_terminal_enabled,
+            )
+            from genie_space_optimizer.optimization.rca_mechanism_routing import (
+                slate_lacks_structural_candidate,
+            )
+            from genie_space_optimizer.optimization.patch_mechanism import (
+                mechanism_for_patch_type,
+            )
+            if (
+                trial31_no_structural_candidate_terminal_enabled()
+                and _cluster_rca_kind
+            ):
+                _w311_observed = [
+                    mechanism_for_patch_type(
+                        str(getattr(p.patch_type, "value", p.patch_type))
+                    )
+                    for p in proposals
+                ]
+                _w311_no_structural = slate_lacks_structural_candidate(
+                    _cluster_rca_kind, _w311_observed
+                )
+        except Exception:
+            _w311_no_structural = False
+    if _w311_no_structural:
+        try:
+            import json as _json_w311
+            print(
+                "GSO_TRIAL31_NO_STRUCTURAL_CANDIDATE_V1 "
+                + _json_w311.dumps(
+                    {
+                        "iteration": iteration,
+                        "cluster_id": cluster.cluster_id,
+                        "rca_kind": _cluster_rca_kind,
+                        "observed_mechanisms": sorted(
+                            m.value for m in _w311_observed if m is not None
+                        ),
+                        "reason": "no_structural_candidate",
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
+                flush=True,
+            )
+            for _w311_p in proposals:
+                emit_patch_outcome(
+                    optimization_run_id=optimization_run_id,
+                    iteration=iteration,
+                    ag_id=ag_id,
+                    cluster_id=cluster.cluster_id,
+                    intent_id=_w311_p.intent_id or "<empty>",
+                    outcome_kind=PatchOutcomeKind.CONTRACT_FAILED,
+                    terminal_reason=(
+                        f"no_structural_candidate:rca={_cluster_rca_kind}"
+                    ),
+                )
+        except Exception:
+            pass
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=(),
+            skipped_reason="no_structural_candidate",
+            compiler_drop_summary=locals().get("_t22_drop_summary"),
+        )
+
     if not proposals:
         return ClusterSynthesisResult(
             proposal=None,

@@ -102,6 +102,14 @@ class EvaluationInput(JsonRoundTrip):
     run_role: str
     iteration_label: str
     scope: str = "full"
+    # Trial 31 W31.4 — whether a missing benchmark row for a requested
+    # qid is a genuine ``OPTIMIZER_INVARIANT_VIOLATION``. Default ``True``
+    # preserves the Trial 16.1 fail-fast for hard QIDs the iteration is
+    # repairing. The SM evaluated-gate sets this ``False`` when the
+    # requested qid is NOT a live-hard repair target (already-correct /
+    # no-benchmark), so an empty slice for it is a benign skip rather
+    # than a violation that W31.3 would fail the whole task on.
+    enforce_benchmark_presence: bool = True
 
 
 @dataclass
@@ -280,6 +288,30 @@ def _run_full_evaluation(
         # If the harness loaded zero benchmarks the invariant is a
         # different class (loader/budget) and is not this site's job.
         if original_benchmarks and not benchmarks:
+            # Trial 31 W31.4 — the empty-slice invariant only fires for a
+            # benchmark-expected (live-hard) requested qid. When the
+            # caller has declared this slice's qids are NOT repair
+            # targets (already-correct / no-benchmark), an empty slice is
+            # benign: skip the eval (returning the empty-rows shape that
+            # ``_evaluate`` handles) instead of raising the violation
+            # that W31.3 would fail the whole lever_loop task on. Flag-
+            # gated (default ON); when OFF or when benchmark presence is
+            # enforced (the default), the legacy fail-fast is preserved
+            # byte-for-byte.
+            from genie_space_optimizer.optimization.trial31_flags import (
+                trial31_empty_slice_excludes_correct_enabled,
+            )
+            if (
+                trial31_empty_slice_excludes_correct_enabled()
+                and not inp.enforce_benchmark_presence
+            ):
+                print(
+                    "GSO_TRIAL31_EMPTY_SLICE_BENIGN_SKIP_V1 "
+                    f"requested_qids={sorted(requested)!r} "
+                    "reason=not_benchmark_expected",
+                    flush=True,
+                )
+                return {"rows": []}
             raise PostApplyEvalEmptySliceError(
                 "post_apply_eval_empty_slice_for_requested_qid:"
                 f"{sorted(requested)!r}"

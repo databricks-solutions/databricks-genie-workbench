@@ -211,6 +211,35 @@ use your judgment — pick the patch family that structurally addresses
 the diagnosed defect rather than masking it with a defensive filter.
 </patch_family_fit_rules>
 
+<structural_mechanism_mandate>
+Some root causes CANNOT be fixed by prose alone. For these RCA kinds a
+lone ``add_instruction`` or a lone ``add_example_sql`` is **behaviorally
+inert** — it does not change the SQL the planner generates, so the
+acceptance gate proves it ``behavioral_diff=unchanged`` and the
+downstream guard DROPS it. For the labels below you MUST emit a
+*structural* patch (one that reshapes the generated SQL), optionally
+paired with an instruction, but never an instruction/example_sql ALONE:
+
+- ``top_n_cardinality_collapse`` — emit a structural patch: an
+  ``add_sql_snippet_*`` that fixes the ranking/limit grain, or an
+  ``add_metadata_description`` that re-grounds the collapsed column.
+- ``wrong_column`` — emit ``add_metadata_description`` that disambiguates
+  the correct column (optionally paired with an instruction).
+- ``wrong_aggregation`` — emit an ``add_sql_snippet_*`` (or
+  ``add_metadata_description``) that fixes the aggregation, not prose.
+- ``canonical_dimension_missed`` — emit ``add_metadata_description`` or a
+  routing patch that surfaces the canonical dimension.
+
+This is a HARD requirement for these labels: do NOT return an empty
+proposal list and do NOT ``decline`` for them — a structural patch is
+always constructible from the cluster's blame_set and schema_slice. If
+you genuinely cannot ground a structural patch in the named causal
+assets, emit your best structural attempt rather than an inert prose
+patch; the deterministic validator will judge it. This list is **NOT
+exhaustive** — for any unlisted SQL-shape RCA, prefer a structural
+mechanism over prose by the same reasoning.
+</structural_mechanism_mandate>
+
 <output_envelope>
 {
   "result": {
@@ -236,9 +265,12 @@ the diagnosed defect rather than masking it with a defensive filter.
 1. Emit 1–3 proposals. A single surgical patch is better than 3 speculative ones.
 2. patch_type MUST match one of the values in <patch_type_vocabulary> EXACTLY
    (lower-case snake_case). UPPER_CASE / UPPER_SNAKE / mixed-case values are
-   rejected and the proposal is silently dropped. If unsure, use
-   `add_example_sql` (most forgiving) or `add_instruction` (broadest repair
-   surface) — note the lower-case.
+   rejected and the proposal is silently dropped. If unsure for a NON-
+   SQL-shape RCA, `add_example_sql` (most forgiving) or `add_instruction`
+   (broadest repair surface) are reasonable — note the lower-case. But for
+   the RCA kinds in <structural_mechanism_mandate>, a lone
+   `add_example_sql` / `add_instruction` is inert and will be dropped:
+   emit a structural patch instead.
 3. ``blame_set`` MUST be non-empty (see <blame_set_requirements>). An empty
    ``blame_set`` causes the proposal to be silently dropped by the Plan 12
    survival contract.
@@ -247,4 +279,8 @@ the diagnosed defect rather than masking it with a defensive filter.
 5. target_qids must be a subset of the cluster's member_qids.
 6. Respect <patch_family_fit_rules>: do not emit a patch family the
    cluster's ``rca_kind_label`` forbids — pick a structural fix.
+7. Respect <structural_mechanism_mandate>: for the SQL-shape RCA kinds
+   listed there, emit a STRUCTURAL patch (snippet / metadata_description /
+   routing), never a lone instruction/example_sql, and never decline — a
+   structural patch is always constructible from the blame_set + schema.
 </instructions>

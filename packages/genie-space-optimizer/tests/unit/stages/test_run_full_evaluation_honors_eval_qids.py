@@ -345,6 +345,94 @@ def test_run_full_evaluation_raises_typed_error_when_slice_empty_for_requested_q
             _run_full_evaluation(inp, eval_kwargs)
 
 
+# ── Trial 31 W31.4 — empty-slice invariant excludes already-correct /
+# no-benchmark QIDs ───────────────────────────────────────────────────
+#
+# W30.4(c) cleared the legacy namespace mismatch, but a distinct
+# ``post_apply_eval_empty_slice_for_requested_qid`` then fired for an
+# already-correct QID (``gs_024``) that legitimately has NO benchmark
+# row. Because W31.3 now FAILS the lever_loop task on an
+# ``OPTIMIZER_INVARIANT_VIOLATION``, that spurious empty-slice would
+# fail the whole run. The fix: the invariant only fires for a
+# *benchmark-expected* (live-hard) requested QID. A requested set that
+# is entirely already-correct / no-benchmark is a benign skip.
+#
+# The discriminator is a typed ``EvaluationInput.enforce_benchmark_
+# presence`` boolean — default ``True`` preserves the Trial 16.1
+# fail-fast for genuine hard QIDs; the SM gate sets it ``False`` when
+# ``state.qid`` is not a live-hard repair target.
+
+
+def test_trial31_w314_benign_skip_when_qid_not_benchmark_expected() -> None:
+    """An already-correct / no-benchmark requested QID must NOT raise
+    the empty-slice invariant — it is a benign skip, not an
+    OPTIMIZER_INVARIANT_VIOLATION."""
+    from genie_space_optimizer.optimization.stages.evaluation import (
+        EvaluationInput,
+        _run_full_evaluation,
+    )
+
+    inp = EvaluationInput(
+        space_state={},
+        eval_qids=("gs_024",),  # already-correct, no benchmark row
+        run_role="iteration_eval",
+        iteration_label="iter_001",
+        scope="full",
+        enforce_benchmark_presence=False,
+    )
+    eval_kwargs: dict = {
+        "benchmarks": [{"question_id": "gs_001"}, {"question_id": "gs_009"}],
+    }
+
+    def _fake_run_evaluation(**kwargs):
+        raise AssertionError(
+            "run_evaluation must NOT be invoked on a benign empty slice; "
+            "the W31.4 skip should return early."
+        )
+
+    with patch(
+        "genie_space_optimizer.optimization.evaluation.run_evaluation",
+        side_effect=_fake_run_evaluation,
+    ):
+        out = _run_full_evaluation(inp, eval_kwargs)
+
+    assert out == {"rows": []}, (
+        "a benign empty slice (no benchmark-expected QID) must return an "
+        f"empty eval result, not {out!r}, and must not raise"
+    )
+
+
+def test_trial31_w314_still_raises_for_benchmark_expected_missing() -> None:
+    """A genuine hard QID (``enforce_benchmark_presence=True``, the
+    default) whose benchmark row is absent MUST still raise the typed
+    invariant — W31.4 narrows the fail-fast, it does not disable it."""
+    from genie_space_optimizer.optimization.stages.evaluation import (
+        EvaluationInput,
+        _run_full_evaluation,
+    )
+
+    inp = EvaluationInput(
+        space_state={},
+        eval_qids=("gs_013_hard_missing_benchmark",),
+        run_role="iteration_eval",
+        iteration_label="iter_001",
+        scope="full",
+        # default enforce_benchmark_presence=True
+    )
+    eval_kwargs: dict = {
+        "benchmarks": [{"question_id": "gs_001"}, {"question_id": "gs_009"}],
+    }
+
+    with patch(
+        "genie_space_optimizer.optimization.evaluation.run_evaluation",
+        side_effect=AssertionError("must not reach run_evaluation"),
+    ):
+        with pytest.raises(
+            Exception, match="post_apply_eval_empty_slice_for_requested_qid"
+        ):
+            _run_full_evaluation(inp, eval_kwargs)
+
+
 def test_run_full_evaluation_passes_through_when_eval_qids_empty() -> None:
     """Backward-compat: empty ``eval_qids`` means "no scoping" — the
     full benchmarks list must reach ``run_evaluation`` unchanged.

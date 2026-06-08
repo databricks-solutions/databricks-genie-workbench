@@ -81,12 +81,29 @@ def _run_post_apply_eval(
     #   eval — actually wants all benchmark qids).
     # * ``gate_reasoning_marker`` below (classification metadata,
     #   not scope).
+    # Trial 31 W31.4 — only treat a missing benchmark row for this qid
+    # as a genuine OPTIMIZER_INVARIANT_VIOLATION when the qid is a
+    # live-hard repair target. An already-correct / no-benchmark qid
+    # (e.g. gs_024 after the W30.4(c) namespace fix) that reaches this
+    # gate must NOT trip the empty-slice invariant — W31.3 now fails the
+    # whole lever_loop task on a violation, so a spurious one would fail
+    # the run. Conservative: we only relax enforcement when we have a
+    # populated, trustworthy ``live_hard_qids`` signal; if it is empty we
+    # keep the legacy fail-fast (enforce=True).
+    from genie_space_optimizer.optimization.trial31_flags import (
+        trial31_empty_slice_excludes_correct_enabled,
+    )
+    _live_hard = {str(q) for q in (getattr(ctx, "live_hard_qids", ()) or ()) if str(q)}
+    _enforce_benchmark_presence = True
+    if trial31_empty_slice_excludes_correct_enabled() and _live_hard:
+        _enforce_benchmark_presence = str(state.qid) in _live_hard
     eval_input = EvaluationInput(
         space_state=dict(ctx.metadata_snapshot),
         eval_qids=(state.qid,),
         run_role="iteration_eval",
         iteration_label=f"iter_{ctx.iteration:03d}",
         scope="full",
+        enforce_benchmark_presence=_enforce_benchmark_presence,
     )
 
     result = evaluate_post_patch(

@@ -181,6 +181,36 @@ def _structural_fix_mechanisms(rca_kind: str | None) -> frozenset[PatchMechanism
     return frozenset(fixing) - {PatchMechanism.INSTRUCTION_TEXT}
 
 
+def slate_lacks_structural_candidate(
+    rca_kind: str | None,
+    observed_mechanisms: Iterable[PatchMechanism | None],
+) -> bool:
+    """Trial 31 W31.1 — True when the RCA mandates a structural mechanism
+    but NONE of the surviving slate's mechanisms is structural.
+
+    This is the apply-stage complement of the Track B / W4 routing
+    binders. Those binders drop an inert proposal *when a structural
+    companion survives*; they deliberately KEEP an inert sole-survivor to
+    avoid flatlining the slate. Post-Trial-31 the calculus flips: for a
+    structural-mandate RCA whose slate is inert-only (the forced-L6 /
+    plan11 synthesis declined to produce a structural patch), a clean
+    ``no_structural_candidate`` no-op is preferable to applying the inert
+    patch and tripping ``rca_mechanism_defaulted_to_instruction_text`` ->
+    ``OPTIMIZER_INVARIANT_VIOLATION`` (which W31.3 now fails the whole
+    task on).
+
+    Generalizes across the entire structural-mandate RCA family via
+    :func:`_structural_fix_mechanisms` (keyed on the fixing map, not any
+    literal qid/kind). Returns ``False`` for RCAs outside the map — those
+    carry no structural mandate and are never forced to a no-op.
+    """
+    structural = _structural_fix_mechanisms(rca_kind)
+    if not structural:
+        return False
+    observed = {m for m in observed_mechanisms if m is not None}
+    return not (observed & structural)
+
+
 def mechanisms_for_rejected_levers(
     rejected: Iterable[str],
 ) -> frozenset[PatchMechanism]:
