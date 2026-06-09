@@ -3644,7 +3644,11 @@ def _build_predict_and_scorers(
         _bl_instr_text = _bl_instr.get("text_instructions", "") if isinstance(_bl_instr, dict) else ""
     except Exception:
         _bl_instr_text = ""
-    scorers = make_all_scorers(w, spark, catalog, schema, instruction_context=_bl_instr_text)
+    scorers = make_all_scorers(
+        w, spark, catalog, schema,
+        instruction_context=_bl_instr_text,
+        warehouse_id=resolve_warehouse_id(""),
+    )
 
     _lines = [_section(banner_title, "-")]
     _lines.append(_kv("Space ID", space_id))
@@ -13313,7 +13317,11 @@ def _run_lever_loop(
     _parsed_space = config.get("_parsed_space", config)
     _instr_section = _parsed_space.get("instructions", {}) if isinstance(_parsed_space, dict) else {}
     _instr_text_for_scorers = _instr_section.get("text_instructions", "") if isinstance(_instr_section, dict) else ""
-    scorers = make_all_scorers(w, spark, catalog, schema, instruction_context=_instr_text_for_scorers)
+    scorers = make_all_scorers(
+        w, spark, catalog, schema,
+        instruction_context=_instr_text_for_scorers,
+        warehouse_id=resolve_warehouse_id(""),
+    )
     uc_schema = f"{catalog}.{schema}"
     metadata_snapshot = _parsed_space
     data_profile = (
@@ -23688,7 +23696,11 @@ def _run_finalize(
                     _ho_instr_text = _ho_instr.get("text_instructions", "") if isinstance(_ho_instr, dict) else ""
                 except Exception:
                     _ho_instr_text = ""
-                ho_scorers = make_all_scorers(w, spark, catalog, schema, instruction_context=_ho_instr_text)
+                ho_scorers = make_all_scorers(
+                    w, spark, catalog, schema,
+                    instruction_context=_ho_instr_text,
+                    warehouse_id=resolve_warehouse_id(""),
+                )
 
                 # Tier 4: v2 name — ``<run_short>/finalize/held_out``.
                 from genie_space_optimizer.common.mlflow_names import (

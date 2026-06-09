@@ -110,11 +110,15 @@ def make_all_scorers(
     schema: str,
     loaded_prompts: dict[str, str] | None = None,
     instruction_context: str = "",
+    warehouse_id: str = "",
 ) -> list:
     """Assemble all 9 scorers with bound runtime context.
 
     Returns an ordered list suitable for passing to
-    ``mlflow.genai.evaluate(scorers=...)``.
+    ``mlflow.genai.evaluate(scorers=...)``. When ``warehouse_id`` is set, the
+    syntax_validity scorer validates SQL via the thread-safe SQL Warehouse
+    Statement Execution API instead of the shared Spark Connect session,
+    avoiding native crashes under the scorer thread pool.
     """
     from .arbiter import _make_arbiter_scorer
     from .completeness import _make_completeness_judge
@@ -125,7 +129,7 @@ def make_all_scorers(
     from .syntax_validity import _make_syntax_validity_scorer
 
     scorers = [
-        _make_syntax_validity_scorer(spark, catalog, schema),
+        _make_syntax_validity_scorer(spark, catalog, schema, w=w, warehouse_id=warehouse_id),
         _make_schema_accuracy_judge(w, catalog, schema),
         _make_logical_accuracy_judge(w, catalog, schema),
         _make_semantic_equivalence_judge(w, catalog, schema),

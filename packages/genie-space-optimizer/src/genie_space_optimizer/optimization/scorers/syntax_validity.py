@@ -19,8 +19,10 @@ from mlflow.genai.scorers import scorer
 
 from genie_space_optimizer.common.genie_client import sanitize_sql
 from genie_space_optimizer.common.logging_utils import quiet_grpc_logs
+from genie_space_optimizer.common.spark_concurrency import spark_serialized
 from genie_space_optimizer.optimization.evaluation import (
     CODE_SOURCE,
+    _execute_sql_via_warehouse,
     _extract_response_text,
     build_asi_metadata,
     format_asi_markdown,
@@ -30,6 +32,7 @@ from genie_space_optimizer.optimization.genie_eval_taxonomy import (
 )
 
 if TYPE_CHECKING:
+    from databricks.sdk import WorkspaceClient
     from pyspark.sql import SparkSession
 
 
@@ -70,8 +73,50 @@ def _parse_error_position(error_msg: str) -> tuple[int, int] | None:
         return None
 
 
-def _make_syntax_validity_scorer(spark: SparkSession, catalog: str, schema: str):
-    """Factory that binds ``spark`` into the scorer closure."""
+def _explain_sql(
+    sql: str,
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    w: WorkspaceClient | None,
+    warehouse_id: str,
+) -> None:
+    """Run ``EXPLAIN sql`` to validate it, raising on any planning error.
+
+    Prefers the SQL Warehouse Statement Execution API (``w`` + ``warehouse_id``),
+    which is thread-safe because each call is an independent HTTP request with
+    no shared session. Falls back to Spark Connect under a process-wide lock so
+    concurrent scorer threads never drive the shared session at once (that
+    concurrency can crash the kernel with a native SIGSEGV).
+    """
+    if w is not None and warehouse_id:
+        explain_df = _execute_sql_via_warehouse(
+            w, warehouse_id, f"EXPLAIN {sql}", catalog=catalog, schema=schema
+        )
+        # The warehouse EXPLAIN returns a ``plan`` column instead of throwing
+        # on planning errors; surface those as a failure (mirrors the
+        # benchmark precheck in evaluation.py).
+        if not explain_df.empty and "plan" in explain_df.columns:
+            plan_text = "\n".join(str(v) for v in explain_df["plan"].tolist())
+            if "Error occurred during query planning" in plan_text:
+                raise RuntimeError(plan_text)
+        return
+
+    # No warehouse available: fall back to Spark Connect, serialized so two
+    # scorer threads can't drive the shared session concurrently.
+    with spark_serialized():
+        _set_sql_context(spark, catalog, schema)
+        spark.sql(f"EXPLAIN {sql}")
+
+
+def _make_syntax_validity_scorer(
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    w: WorkspaceClient | None = None,
+    warehouse_id: str = "",
+):
+    """Factory that binds runtime context into the scorer closure."""
 
     @scorer
     def syntax_validity_scorer(inputs: dict, outputs: dict) -> Feedback:
@@ -145,10 +190,11 @@ def _make_syntax_validity_scorer(spark: SparkSession, catalog: str, schema: str)
         try:
             # Tier 3.7: wrap the EXPLAIN in ``quiet_grpc_logs`` so the
             # gRPC reattach retries don't print three copies of the same
-            # stack trace on every failing Genie SQL.
+            # stack trace on every failing Genie SQL. ``_explain_sql`` routes
+            # through the thread-safe warehouse API when available, falling
+            # back to a serialized Spark Connect call otherwise.
             with quiet_grpc_logs():
-                _set_sql_context(spark, catalog, schema)
-                spark.sql(f"EXPLAIN {sql}")
+                _explain_sql(sql, spark, catalog, schema, w, warehouse_id)
             pass_metadata = with_genie_equivalent_eval(
                 {},
                 judge_name="syntax_validity",
