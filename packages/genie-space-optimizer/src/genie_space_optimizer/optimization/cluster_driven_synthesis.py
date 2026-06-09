@@ -868,6 +868,57 @@ def _derive_asset_slice_from_afs(
     return None
 
 
+def classify_slice_decline_origin(afs: dict, metadata_snapshot: dict) -> dict:
+    """Trial 32 W32.6 (observability-only) — explain WHY structural-slice
+    derivation declined, so the live ``GSO_TRIAL32_DECLINE_ORIGIN_V1`` marker
+    NAMES the binding layer instead of forcing another postmortem guess.
+
+    The same ``no_top_n_archetype`` skipped_reason is emitted whether the
+    binding constraint is blame-resolution (W32.1's area), archetype matching,
+    or a downstream gate — three layers that three trials in a row each
+    mis-attributed. This classifier records the raw decision state at the
+    decline so one live trial disambiguates them deterministically:
+
+    * ``blame_empty`` — the cluster carried no blame_set.
+    * ``blame_unresolved`` — blame present but none resolves to a schema asset
+      (slice-resolution is binding; W32.1 column-FQN territory).
+    * ``archetype_none`` — blame resolves but ``pick_archetype`` returns None
+      (archetype matching is binding).
+    * ``slice_buildable_declined_downstream`` — blame resolves AND an archetype
+      matched, so the decline is NOT slice/archetype — the binding layer is
+      downstream (the forced-L6 generator / structural-repair handoff).
+
+    Pure / side-effect free; the marker payload also carries the raw counts so
+    the postmortem never has to guess again.
+    """
+    blame = [str(b) for b in (afs.get("blame_set") or []) if b]
+    n_resolved = sum(
+        1 for b in blame
+        if _resolve_asset_by_identifier(metadata_snapshot, b) is not None
+    )
+    try:
+        arch = pick_archetype(afs, metadata_snapshot)
+        arch_name = getattr(arch, "name", None) or "none"
+    except Exception:
+        arch_name = "error"
+    n_total = len(blame)
+    if n_total == 0:
+        origin = "blame_empty"
+    elif n_resolved == 0:
+        origin = "blame_unresolved"
+    elif arch_name == "none":
+        origin = "archetype_none"
+    else:
+        origin = "slice_buildable_declined_downstream"
+    return {
+        "origin": origin,
+        "blame_total": n_total,
+        "blame_resolved": n_resolved,
+        "archetype": arch_name,
+        "failure_type": str(afs.get("failure_type") or ""),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Orchestrator — single cluster entry point (the one the Lever 5 intercept uses)
 # ═══════════════════════════════════════════════════════════════════════
@@ -1198,6 +1249,19 @@ def run_cluster_driven_synthesis_for_single_cluster(
     # ── Archetype + slice derivation (Invariant D fallback inside) ─
     derived = _derive_asset_slice_from_afs(afs, metadata_snapshot)
     if derived is None:
+        # Trial 32 W32.6 (observability) — name the binding decline layer so
+        # the next live trial disambiguates blame-resolution vs archetype vs
+        # downstream, instead of a 4th postmortem guess. Pure-data marker; does
+        # not change the decision below.
+        try:
+            import json as _t32_json
+            _t32_origin = classify_slice_decline_origin(afs, metadata_snapshot)
+            print(
+                "GSO_TRIAL32_DECLINE_ORIGIN_V1 "
+                + _t32_json.dumps({"cluster_id": str(cluster_id), **_t32_origin})
+            )
+        except Exception:  # pragma: no cover - observability must never raise
+            pass
         # Phase 8.2 (2026-05-17) — when the missing archetype matches
         # a TOP-N shape cluster, emit the more specific
         # ``NO_TOP_N_ARCHETYPE`` so postmortem tooling can route to
