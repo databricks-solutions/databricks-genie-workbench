@@ -5,6 +5,39 @@ from __future__ import annotations
 from .config import InstallConfig, LakebaseInfo
 
 
+def find_soft_deleted_project(w, project_name: str):
+    """Return the soft-deleted project holding this name, if any.
+
+    Deleted Lakebase projects enter a 7-day soft-deleted state during which
+    their IDs stay reserved, so a same-name create fails with ALREADY_EXISTS
+    while get_project keeps returning NotFound.
+    """
+    resource_name = f"projects/{project_name}"
+    for project in w.postgres.list_projects(show_deleted=True):
+        if project.name == resource_name and project.delete_time:
+            return project
+    return None
+
+
+def purge_soft_deleted_project(w, project_name: str) -> None:
+    resource_name = f"projects/{project_name}"
+    print(
+        f"Lakebase project '{project_name}' is soft-deleted and its name is reserved. "
+        "Permanently deleting it (data is unrecoverable) before recreating..."
+    )
+    try:
+        w.postgres.delete_project(name=resource_name, purge=True).wait()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not purge soft-deleted Lakebase project '{project_name}': {exc}. "
+            "Purge it manually with "
+            f"`databricks postgres delete-project projects/{project_name} --purge`, "
+            "restore it with "
+            f"`databricks postgres undelete-project projects/{project_name}`, "
+            "or set the lakebase_project_name widget to a different name."
+        ) from exc
+
+
 def ensure_project(w, project_name: str) -> str:
     from databricks.sdk.errors import AlreadyExists, NotFound
     from databricks.sdk.service.postgres import Project, ProjectSpec
@@ -16,17 +49,34 @@ def ensure_project(w, project_name: str) -> str:
     except NotFound:
         pass
 
+    if find_soft_deleted_project(w, project_name):
+        purge_soft_deleted_project(w, project_name)
+
     try:
         op = w.postgres.create_project(
             project=Project(spec=ProjectSpec()),
             project_id=project_name,
         )
         op.wait()
-    except AlreadyExists:
-        pass
     except Exception as exc:
-        if "ALREADY_EXISTS" not in str(exc) and "already exists" not in str(exc).lower():
+        is_already_exists = isinstance(exc, AlreadyExists) or (
+            "ALREADY_EXISTS" in str(exc) or "already exists" in str(exc).lower()
+        )
+        if not is_already_exists:
             raise
+        # ALREADY_EXISTS after a NotFound get means the name is reserved by a
+        # project we cannot see (e.g., soft-deleted under another owner).
+        try:
+            w.postgres.get_project(name=resource_name)
+        except NotFound:
+            raise RuntimeError(
+                f"Lakebase project name '{project_name}' is reserved but the project "
+                "is not accessible — most likely a soft-deleted project owned by "
+                "another user (deleted project IDs are reserved for 7 days). "
+                "Ask its owner to purge it with "
+                f"`databricks postgres delete-project projects/{project_name} --purge`, "
+                "or set the lakebase_project_name widget to a different name."
+            ) from exc
     return resource_name
 
 
