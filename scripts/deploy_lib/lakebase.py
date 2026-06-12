@@ -62,8 +62,10 @@ def ensure_project(w, project_name: str) -> str:
         )
         op.wait()
     except Exception as exc:
-        is_already_exists = isinstance(exc, AlreadyExists) or (
-            "ALREADY_EXISTS" in str(exc) or "already exists" in str(exc).lower()
+        is_already_exists = (
+            isinstance(exc, AlreadyExists)
+            or "ALREADY_EXISTS" in str(exc)
+            or "already exists" in str(exc).lower()
         )
         if not is_already_exists:
             raise
