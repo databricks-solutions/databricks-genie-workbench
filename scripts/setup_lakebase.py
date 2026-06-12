@@ -64,13 +64,16 @@ def _ensure_project(w, project_name: str) -> str:
 
     resource_name = f"projects/{project_name}"
     try:
-        w.postgres.get_project(name=resource_name)
-        print(f"  ✓ Lakebase project exists: {project_name}")
-        return resource_name
+        project = w.postgres.get_project(name=resource_name)
+        # get_project returns soft-deleted projects as if live (delete_time
+        # set); only their sub-resources (branches, roles) 404. Treat them as
+        # absent so the name gets purged and recreated.
+        if not project.delete_time:
+            print(f"  ✓ Lakebase project exists: {project_name}")
+            return resource_name
+        _purge_soft_deleted_project(w, project_name)
     except NotFound:
-        pass
-
-    _purge_soft_deleted_project(w, project_name)
+        _purge_soft_deleted_project(w, project_name)
 
     print(f"  Creating Lakebase project '{project_name}' (this may take 1-2 minutes)...")
     try:
