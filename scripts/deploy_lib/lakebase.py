@@ -44,13 +44,16 @@ def ensure_project(w, project_name: str) -> str:
 
     resource_name = f"projects/{project_name}"
     try:
-        w.postgres.get_project(name=resource_name)
-        return resource_name
-    except NotFound:
-        pass
-
-    if find_soft_deleted_project(w, project_name):
+        project = w.postgres.get_project(name=resource_name)
+        # get_project returns soft-deleted projects as if live (delete_time
+        # set); only their sub-resources (branches, roles) 404. Treat them as
+        # absent so the name gets purged and recreated.
+        if not project.delete_time:
+            return resource_name
         purge_soft_deleted_project(w, project_name)
+    except NotFound:
+        if find_soft_deleted_project(w, project_name):
+            purge_soft_deleted_project(w, project_name)
 
     try:
         op = w.postgres.create_project(
@@ -85,13 +88,19 @@ def require_project(w, project_name: str) -> str:
 
     resource_name = f"projects/{project_name}"
     try:
-        w.postgres.get_project(name=resource_name)
+        project = w.postgres.get_project(name=resource_name)
     except NotFound as exc:
         raise RuntimeError(
             f"Lakebase project '{project_name}' does not exist. "
             "Choose lakebase_mode=create to create a new project, or fix the "
             "lakebase_project_name widget to an existing project name."
         ) from exc
+    if project.delete_time:
+        raise RuntimeError(
+            f"Lakebase project '{project_name}' is soft-deleted. Restore it with "
+            f"`databricks postgres undelete-project projects/{project_name}`, or "
+            "choose lakebase_mode=create to purge and recreate it."
+        )
     return resource_name
 
 
