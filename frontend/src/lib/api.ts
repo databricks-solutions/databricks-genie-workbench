@@ -216,6 +216,50 @@ export async function scanSpace(spaceId: string): Promise<ScanResult> {
   )
 }
 
+/**
+ * Export a Genie Space as a parameterized Databricks Asset Bundle (.zip) and
+ * trigger a browser download. Returns lightweight metadata surfaced from the
+ * response headers (table count, detected source prefix, multi-prefix flag).
+ *
+ * Unlike the other helpers, this reads a binary blob rather than JSON, so it
+ * uses fetch directly instead of fetchWithTimeout.
+ */
+export async function exportSpaceBundle(spaceId: string): Promise<{
+  filename: string
+  tables: number
+  sourcePrefix: string
+  multiPrefix: boolean
+}> {
+  const response = await fetch(`${API_BASE}/spaces/${spaceId}/export-bundle`)
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    const message = extractDetailMessage(error.detail, "Failed to export bundle")
+    throw new ApiError(message, response.status)
+  }
+
+  // Derive the filename from Content-Disposition, fall back to a sane default.
+  const disposition = response.headers.get("Content-Disposition") || ""
+  const match = disposition.match(/filename="?([^"]+)"?/)
+  const filename = match ? match[1] : `${spaceId}_bundle.zip`
+
+  const tables = Number(response.headers.get("X-Export-Tables") || "0")
+  const sourcePrefix = response.headers.get("X-Export-Source-Prefix") || ""
+  const multiPrefix = response.headers.get("X-Export-Multi-Prefix") === "true"
+
+  // Trigger the download.
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+
+  return { filename, tables, sourcePrefix, multiPrefix }
+}
+
 export async function getSpaceHistory(spaceId: string, days = 30): Promise<SpaceHistory> {
   return fetchWithTimeout<SpaceHistory>(
     `${API_BASE}/spaces/${spaceId}/history?days=${days}`,

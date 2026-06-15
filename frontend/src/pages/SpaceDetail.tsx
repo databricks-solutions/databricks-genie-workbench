@@ -3,8 +3,8 @@
  * Tabs: Score (default) | Optimize | History
  */
 import { useState, useEffect, useRef } from "react"
-import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
-import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
+import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw, Package } from "lucide-react"
+import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace, exportSpaceBundle } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
 import { IQScoreTab } from "./IQScoreTab"
@@ -37,6 +37,9 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
 
   const [configExpanded, setConfigExpanded] = useState(false)
+
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportMsg, setExportMsg] = useState<string | null>(null)
 
   const { state, actions } = useAnalysis()
 
@@ -105,6 +108,25 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
       await toggleStar(spaceId, newStarred)
     } catch {
       setIsStarred(!newStarred)
+    }
+  }
+
+  const handleExportBundle = async () => {
+    setIsExporting(true)
+    setExportMsg(null)
+    try {
+      const { tables, multiPrefix } = await exportSpaceBundle(spaceId)
+      setExportMsg(
+        multiPrefix
+          ? `Exported (${tables} tables). Note: multiple catalog.schema prefixes detected — only the dominant one was parameterized.`
+          : `Exported bundle (${tables} tables).`
+      )
+    } catch (e) {
+      console.error("Export failed:", e)
+      setExportMsg(e instanceof Error ? `Export failed: ${e.message}` : "Export failed")
+    } finally {
+      setIsExporting(false)
+      setTimeout(() => setExportMsg(null), 8000)
     }
   }
 
@@ -186,7 +208,21 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
             <button onClick={handleToggleStar}>
               <Star className={`w-5 h-5 ${isStarred ? "fill-amber-400 text-amber-400" : "text-muted hover:text-amber-400"} transition-colors`} />
             </button>
+            <button
+              onClick={handleExportBundle}
+              disabled={isExporting}
+              title="Export this space as a parameterized Databricks Asset Bundle (.zip)"
+              className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-default text-sm font-medium text-secondary hover:bg-surface-secondary hover:text-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Package className="w-4 h-4" />
+              {isExporting ? "Exporting…" : "Export as bundle"}
+            </button>
           </div>
+          {exportMsg && (
+            <div className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-surface-secondary text-secondary border border-default">
+              {exportMsg}
+            </div>
+          )}
           <div className="flex items-center gap-3 mt-2">
             {scanResult ? (
               <>
