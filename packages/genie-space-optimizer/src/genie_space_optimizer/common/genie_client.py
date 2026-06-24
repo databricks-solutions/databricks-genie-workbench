@@ -12,6 +12,7 @@ import logging
 import re
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from databricks.sdk import WorkspaceClient
@@ -1108,15 +1109,36 @@ def _extract_example_sql_questions(parsed: dict) -> set[str]:
     return {r for r in result if r}
 
 
-def publish_benchmarks_to_genie_space(
+@dataclass
+class BenchmarkPushReport:
+    """Structured outcome of a merge-only benchmark push to a Genie Space.
+
+    Surfaces enough detail for the v2 provenance ledger (§3.5) to record
+    the added/removed/changed diff without re-deriving it. ``added`` rows
+    are the net-new questions actually written into the space (each
+    ``{id, question, sql}``); ``merged_total`` is the post-merge total.
+    The push is additive/merge-only, so user-authored rows are never
+    removed here.
+    """
+
+    added_count: int = 0
+    dedup_skipped: int = 0
+    mirror_skipped: int = 0
+    truncated: int = 0
+    merged_total: int = 0
+    added: list[dict] = field(default_factory=list)
+    patched: bool = False
+
+
+def publish_benchmarks_to_genie_space_with_report(
     w: WorkspaceClient,
     space_id: str,
     benchmarks: list[dict],
     max_questions: int = GENIE_MAX_BENCHMARK_QUESTIONS,
     *,
     run_id: str | None = None,
-) -> int:
-    """Write optimizer benchmarks into the Genie Space's native benchmarks section.
+) -> BenchmarkPushReport:
+    """Merge optimizer benchmarks into the space's native benchmarks section.
 
     Fetches the current space config, converts benchmarks to Genie-native
     format, MERGES them into existing ``serialized_space.benchmarks.questions``
@@ -1129,7 +1151,9 @@ def publish_benchmarks_to_genie_space(
     are excluded — keeping the same question in both slots would restore the
     exact leak Bug #4 guards against.
 
-    Returns the number of newly-added benchmark questions (not the total).
+    Returns a :class:`BenchmarkPushReport` describing the merge.
+    ``publish_benchmarks_to_genie_space`` is the thin int-returning wrapper
+    kept for backward compatibility.
     """
     config = fetch_space_config(w, space_id)
     parsed = config.get("_parsed_space", {})
@@ -1161,11 +1185,17 @@ def publish_benchmarks_to_genie_space(
         pre_filtered, tag_as_optimizer=False, run_id=run_id,
     )
 
+    existing_count = len(existing_questions)
     merged_questions, added_count, dedup_skipped = _dedupe_and_merge_benchmarks(
         existing_questions, new_genie_questions,
     )
+    # The merge appends net-new rows after the existing ones, so the
+    # tail [existing_count:] is exactly what GSO added this push.
+    added_rows = merged_questions[existing_count:]
 
+    truncated = 0
     if len(merged_questions) > max_questions:
+        truncated = len(merged_questions) - max_questions
         logger.warning(
             "Truncating benchmarks from %d to %d (Genie space limit). "
             "User-authored entries are kept first.",
@@ -1173,6 +1203,7 @@ def publish_benchmarks_to_genie_space(
             max_questions,
         )
         merged_questions = merged_questions[:max_questions]
+        added_rows = [r for r in added_rows if r in merged_questions]
 
     parsed["benchmarks"] = dict(existing_benchmarks_container)
     parsed["benchmarks"]["questions"] = merged_questions
@@ -1182,9 +1213,53 @@ def publish_benchmarks_to_genie_space(
     logger.info(
         "Published %d new benchmark question(s) to Genie space %s "
         "(dedup-skipped: %d, example-sql-mirror-skipped: %d, total after merge: %d)",
-        added_count, space_id, dedup_skipped, skipped_mirror, len(merged_questions),
+        len(added_rows), space_id, dedup_skipped, skipped_mirror, len(merged_questions),
     )
-    return added_count
+
+    def _first(v: Any) -> str:
+        if isinstance(v, list) and v:
+            return str(v[0])
+        return str(v) if v is not None else ""
+
+    added_detail = [
+        {
+            "id": str(r.get("id", "")),
+            "question": _first(r.get("question")),
+            "sql": _first((r.get("answer") or [{}])[0].get("content")),
+        }
+        for r in added_rows
+        if isinstance(r, dict)
+    ]
+
+    return BenchmarkPushReport(
+        added_count=len(added_detail),
+        dedup_skipped=dedup_skipped,
+        mirror_skipped=skipped_mirror,
+        truncated=truncated,
+        merged_total=len(merged_questions),
+        added=added_detail,
+        patched=True,
+    )
+
+
+def publish_benchmarks_to_genie_space(
+    w: WorkspaceClient,
+    space_id: str,
+    benchmarks: list[dict],
+    max_questions: int = GENIE_MAX_BENCHMARK_QUESTIONS,
+    *,
+    run_id: str | None = None,
+) -> int:
+    """Backward-compatible wrapper: returns the net-new benchmark count.
+
+    See :func:`publish_benchmarks_to_genie_space_with_report` for the full
+    merge semantics and the structured report consumed by the v2 preflight
+    push / provenance ledger.
+    """
+    report = publish_benchmarks_to_genie_space_with_report(
+        w, space_id, benchmarks, max_questions, run_id=run_id,
+    )
+    return report.added_count
 
 
 def configure_connection_pool(w: WorkspaceClient, pool_size: int = 20) -> None:
