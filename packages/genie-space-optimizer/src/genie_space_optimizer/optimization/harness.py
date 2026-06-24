@@ -13939,9 +13939,46 @@ def _run_lever_loop(
     # so the next finalize call can read it.
     _last_iter_evidence_holder: dict = {"prev": None}
 
+    # ── GSO v2 Phase 1: eval-run budget guard (§3.4) ──────────────────────
+    # Native eval-runs are sequential server jobs (~15-20 min / 30 Qs) and the
+    # DABs job has a hard 2-hour wall, so cumulative eval wall-clock — not the
+    # iteration count — is the binding constraint. ``max_iterations`` is an
+    # upper bound; the budget stops the loop earlier when the remaining wall
+    # can't fund another subset-first gate cycle (slice→P0→full) plus the
+    # reserved finalize run. The per-iteration eval wall-clock is recorded
+    # around the gate call below.
+    from genie_space_optimizer.optimization.eval_budget import (
+        EvalBudget as _EvalBudget,
+        estimate_three_gate_seconds as _estimate_three_gate_seconds,
+    )
+
+    _eval_budget = _EvalBudget.from_config()
+    _eval_working_set_size = len(benchmarks) if benchmarks else 0
+
     for _iter_num in range(1, max_iterations + 1):
         try:
             # ── Exit checks ──────────────────────────────────────────────
+            # Eval-run budget guard (§3.4): stop before this iteration when the
+            # remaining 2-hour wall can't fund another subset-first gate cycle
+            # plus the reserved finalize run. Eval-runs are sequential, so the
+            # budget is the running sum of recorded gate wall-clocks.
+            _est_next_cycle = _estimate_three_gate_seconds(
+                working_set_size=_eval_working_set_size,
+            )
+            if not _eval_budget.can_afford(_est_next_cycle):
+                logger.info(
+                    "Eval-run budget guard: stopping lever loop before iteration "
+                    "%d — eval wall-clock spent=%.0fs, remaining after finalize "
+                    "reserve=%.0fs, estimated next gate cycle=%.0fs "
+                    "(max_iterations=%d is an upper bound, not a target).",
+                    _iter_num,
+                    _eval_budget.spent(),
+                    _eval_budget.remaining_after_reserve(),
+                    _est_next_cycle,
+                    max_iterations,
+                )
+                break
+
             from genie_space_optimizer.optimization.acceptance_policy import (
                 arbiter_objective_complete_from_counts,
             )
@@ -20876,6 +20913,11 @@ def _run_lever_loop(
             # so the next iteration's drift diagnostic has something to
             # compare against.
             _baseline_at_start_of_this_iter = float(best_accuracy)
+            # Record this iteration's eval wall-clock into the budget guard.
+            # ``_run_gate_checks`` runs the subset-first gates (and their
+            # sequential eval-runs), so the wall around it is the per-iteration
+            # eval cost the 2-hour budget tracks (§3.4).
+            _gate_t0 = time.monotonic()
             gate_result = _run_gate_checks(
                 spark=spark,
                 w=w,
@@ -20910,6 +20952,7 @@ def _run_lever_loop(
                 ),
                 phase_h_anchor_run_id=_phase_h_anchor_run_id,
             )
+            _eval_budget.record(time.monotonic() - _gate_t0)
 
             # Phase A — Lossless contract: refresh the deterministic eval-result
             # carrier IMMEDIATELY after the gate returns, BEFORE the accept/
