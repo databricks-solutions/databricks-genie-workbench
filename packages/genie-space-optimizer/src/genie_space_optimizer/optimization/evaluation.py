@@ -7450,44 +7450,61 @@ def run_evaluation(
     # the native eval runner replaces the in-process ``mlflow.genai.evaluate()``
     # scoring below — so we never double-run (D1). The runner is invoked with the
     # scope's resolved ``benchmark_question_ids`` subset (baseline ⇒ full;
-    # lever-loop gates ⇒ slice/p0/full). Robust benchmark push + space-side ID
-    # resolution is **Phase 2**; until then, when the subset can't be resolved we
-    # fall back to the legacy in-process path so a slice/P0 gate is never silently
-    # widened to the whole benchmark. Any official-path error also falls back.
+    # lever-loop gates ⇒ slice/p0/full).
+    #
+    # FAIL-CLOSED CONTRACT (D1): fallback to the legacy in-process evaluator is
+    # allowed ONLY *before* an eval-run is created — i.e. when there is no real
+    # WorkspaceClient (``maybe_build_official_runner`` returns None) or the qid
+    # subset cannot be fully resolved (Phase 2 gap). Once
+    # ``genie_create_eval_run`` has been called we NEVER start the legacy
+    # evaluator (that would be a double-run); the official result — including a
+    # non-DONE/partial/empty run, which ``build_eval_output_from_official`` maps
+    # to a failed gate — is authoritative.
     _official_runner = _eval_runner.maybe_build_official_runner(
         w,
         progress=lambda event, fields: progress.emit(event, **fields),
     )
+    # Phase A — pre-creation: decide whether the official path can run. Any
+    # failure here (incl. reading the space config for qid resolution) falls
+    # back to legacy because NO eval-run has been created yet.
+    _official_qids: list[str] | None = None
     if _official_runner is not None:
         try:
             _official_qids = _eval_runner.resolve_space_benchmark_qids(
                 w, space_id, scope_filtered
             )
-            if _official_qids:
-                _official_result = _official_runner.run(
-                    space_id,
-                    _official_qids,
-                    eval_scope=eval_scope or "full",
-                )
-                return _eval_runner.build_eval_output_from_official(
-                    _official_result,
-                    iteration=iteration,
-                    eval_scope=eval_scope or "full",
-                    model_id=model_id,
-                )
-            logger.info(
-                "Official eval runner: no resolvable space-side benchmark ids "
-                "for scope=%s (Phase 2 closes the push/ID-resolution gap); "
-                "falling back to in-process eval.",
-                eval_scope,
-            )
         except Exception:
             logger.exception(
-                "Official eval runner failed for space %s (scope=%s); falling "
-                "back to in-process eval for this run.",
+                "Official eval runner: pre-flight qid resolution failed for "
+                "space %s (scope=%s); falling back to in-process eval "
+                "(no eval-run created).",
                 space_id,
                 eval_scope,
             )
+            _official_qids = None
+
+    # Phase B — post-creation: once we commit to the official runner we do NOT
+    # catch-and-fall-back. ``run`` creates the eval-run; errors propagate and a
+    # failed/partial run maps to a failed gate (fail closed) — never legacy.
+    if _official_runner is not None and _official_qids:
+        _official_result = _official_runner.run(
+            space_id,
+            _official_qids,
+            eval_scope=eval_scope or "full",
+        )
+        return _eval_runner.build_eval_output_from_official(
+            _official_result,
+            iteration=iteration,
+            eval_scope=eval_scope or "full",
+            model_id=model_id,
+        )
+    if _official_runner is not None:
+        logger.info(
+            "Official eval runner: incomplete space-side benchmark id resolution "
+            "for scope=%s (Phase 2 closes the push/ID-resolution gap); falling "
+            "back to in-process eval (no eval-run created).",
+            eval_scope,
+        )
 
     with _scorer_feedback_scope(), mlflow.start_run(run_name=run_name) as run:
         _version_tags: dict[str, str] = {

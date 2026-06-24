@@ -11570,11 +11570,54 @@ def _run_gate_checks(
         pass
 
     _run_slice = False
+    slice_benchmarks: list[dict] = []
     # Task 2: slice gate is a legacy approval gate. By default, the new
     # strict full-eval acceptance policy supersedes it. Operators who
     # want the old behaviour set ``GSO_ENABLE_LEGACY_SLICE_P0_GATES=true``.
-    from genie_space_optimizer.common.config import ENABLE_LEGACY_SLICE_P0_GATES
-    if not ENABLE_LEGACY_SLICE_P0_GATES:
+    from genie_space_optimizer.common.config import (
+        ENABLE_LEGACY_SLICE_P0_GATES,
+        P0_GATE_MAX_QUESTIONS,
+        SLICE_GATE_MAX_QUESTIONS,
+    )
+    from genie_space_optimizer.optimization.eval_gates import (
+        select_p0_qids as _select_p0_qids,
+        select_slice_qids as _select_slice_qids,
+    )
+    from genie_space_optimizer.optimization.eval_runner import (
+        maybe_build_official_runner as _maybe_official_runner,
+    )
+
+    # GSO v2 §3.4: when the official Benchmark Eval-Run API is the active eval
+    # path, the subset-first 3-gate (slice → P0 → full) is ON regardless of the
+    # legacy flag — full runs ONLY after slice and P0 pass, so most iterations
+    # never pay for a full benchmark. The gates use the capped §3.4 selectors;
+    # the acceptance thresholds below (detect_regressions / SLICE_GATE_TOLERANCE
+    # / P0 failures / decide_acceptance) are UNCHANGED — only the sequencing is
+    # added here (the threshold rework is Phase 3). Mocked-workspace tests get a
+    # ``None`` runner ⇒ legacy behaviour, so this is production-only.
+    _official_v2_active = _maybe_official_runner(w) is not None
+    if _official_v2_active:
+        _all_qids_v2 = [str(b.get("id")) for b in benchmarks if b.get("id")]
+        _failing_v2 = [str(q) for q in (affected_question_ids or set())] + [
+            str(q) for q in (prev_failure_qids or [])
+        ]
+        _slice_qid_set = set(
+            _select_slice_qids(
+                _failing_v2, _all_qids_v2, max_questions=SLICE_GATE_MAX_QUESTIONS
+            )
+        )
+        slice_benchmarks = [b for b in benchmarks if b.get("id") in _slice_qid_set]
+        _run_slice = bool(slice_benchmarks)
+        print(
+            _section(f"SLICE GATE [{ag_id}]: v2 subset-first", "-") + "\n"
+            + _kv(
+                "Questions",
+                f"{len(slice_benchmarks)} of {len(benchmarks)} "
+                f"(cap {SLICE_GATE_MAX_QUESTIONS})",
+            ) + "\n"
+            + _bar("-")
+        )
+    elif not ENABLE_LEGACY_SLICE_P0_GATES:
         print(
             _section(f"SLICE GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
             + _kv(
@@ -11765,23 +11808,37 @@ def _run_gate_checks(
     except Exception:
         pass
     # Task 2: P0 gate is a legacy approval gate alongside the slice gate.
-    # The new strict full-eval acceptance policy supersedes both. P0
-    # only runs when ENABLE_LEGACY_SLICE_P0_GATES=True.
-    p0_benchmarks = (
-        filter_benchmarks_by_scope(benchmarks, "p0")
-        if ENABLE_LEGACY_SLICE_P0_GATES
-        else []
-    )
-    if not ENABLE_LEGACY_SLICE_P0_GATES:
-        print(
-            _section(f"P0 GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
-            + _kv(
-                "Reason",
-                "ENABLE_LEGACY_SLICE_P0_GATES=False — full-eval acceptance "
-                "is the only gate",
-            ) + "\n"
-            + _bar("-")
+    # GSO v2 §3.4: when the official runner is active the P0 gate runs as the
+    # second subset-first gate (capped priority subset) before the full eval.
+    if _official_v2_active:
+        _all_qids_p0 = [str(b.get("id")) for b in benchmarks if b.get("id")]
+        _p0_priority = [
+            str(b.get("id"))
+            for b in benchmarks
+            if b.get("id") and b.get("priority", "P1") == "P0"
+        ]
+        _p0_qid_set = set(
+            _select_p0_qids(
+                _p0_priority, _all_qids_p0, max_questions=P0_GATE_MAX_QUESTIONS
+            )
         )
+        p0_benchmarks = [b for b in benchmarks if b.get("id") in _p0_qid_set]
+    else:
+        p0_benchmarks = (
+            filter_benchmarks_by_scope(benchmarks, "p0")
+            if ENABLE_LEGACY_SLICE_P0_GATES
+            else []
+        )
+        if not ENABLE_LEGACY_SLICE_P0_GATES:
+            print(
+                _section(f"P0 GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
+                + _kv(
+                    "Reason",
+                    "ENABLE_LEGACY_SLICE_P0_GATES=False — full-eval acceptance "
+                    "is the only gate",
+                ) + "\n"
+                + _bar("-")
+            )
     if p0_benchmarks:
         _ensure_sql_context(spark, catalog, schema)
         # Tier 4: v2 run name — ``<run_short>/iter_NN_p0_eval``.
@@ -20914,9 +20971,13 @@ def _run_lever_loop(
             # compare against.
             _baseline_at_start_of_this_iter = float(best_accuracy)
             # Record this iteration's eval wall-clock into the budget guard.
-            # ``_run_gate_checks`` runs the subset-first gates (and their
-            # sequential eval-runs), so the wall around it is the per-iteration
-            # eval cost the 2-hour budget tracks (§3.4).
+            # §3.4: the budget is the sum of eval-run wall-clocks, so we prefer
+            # the official runner's accumulated per-run wall-clock (reset here,
+            # summed across the slice/P0/full gate evals) over the whole-gate
+            # elapsed (which would also count propagation waits). Falls back to
+            # the whole-gate elapsed on the legacy in-process path.
+            from genie_space_optimizer.optimization import eval_runner as _eval_runner_budget
+            _eval_runner_budget.reset_eval_wall_clock()
             _gate_t0 = time.monotonic()
             gate_result = _run_gate_checks(
                 spark=spark,
@@ -20952,7 +21013,12 @@ def _run_lever_loop(
                 ),
                 phase_h_anchor_run_id=_phase_h_anchor_run_id,
             )
-            _eval_budget.record(time.monotonic() - _gate_t0)
+            _official_eval_secs = _eval_runner_budget.accumulated_eval_wall_clock()
+            _eval_budget.record(
+                _official_eval_secs
+                if _official_eval_secs > 0
+                else (time.monotonic() - _gate_t0)
+            )
 
             # Phase A — Lossless contract: refresh the deterministic eval-result
             # carrier IMMEDIATELY after the gate returns, BEFORE the accept/
