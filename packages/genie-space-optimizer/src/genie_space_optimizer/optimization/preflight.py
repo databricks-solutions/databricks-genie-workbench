@@ -16,8 +16,11 @@ from typing import TYPE_CHECKING, Any
 import mlflow
 
 from genie_space_optimizer.common.config import (
+    BENCHMARK_WINDOW_MAX,
+    BENCHMARK_WINDOW_MIN,
     EXPERIMENT_PATH_TEMPLATE,
     MAX_BENCHMARK_COUNT,
+    PUBLISH_BENCHMARKS_TO_SPACE,
     TARGET_BENCHMARK_COUNT,
     format_mlflow_template,
 )
@@ -55,6 +58,7 @@ from genie_space_optimizer.optimization.state import (
     load_run,
     load_runs_for_space,
     update_run_status as _update_run_status,
+    write_benchmark_mutations,
     write_stage,
 )
 
@@ -2031,6 +2035,12 @@ def preflight_validate_benchmarks(
     filtered_benchmarks: list[dict] = []
     invalid_errors: list[str] = []
     rejected_details: list[str] = []
+    # GSO v2 (§3.5) provenance ledger inputs — questions GSO prunes from
+    # the working set (op="removed") and rows it auto-corrects in place
+    # (op="changed"). Surfaced via the return dict; the push step writes
+    # them to genie_opt_benchmark_mutations.
+    rejected_benchmarks: list[dict] = []
+    changed_benchmarks: list[dict] = []
     for benchmark, validation in zip(benchmarks, validation_results):
         if validation.get("valid"):
             benchmark["validation_status"] = "valid"
@@ -2054,6 +2064,7 @@ def preflight_validate_benchmarks(
                 bid, bq, err[:200],
             )
             rejected_details.append(f"    - {bid}: \"{bq}\" — {err[:120]}")
+            rejected_benchmarks.append(dict(benchmark))
     benchmarks = filtered_benchmarks
     if len(benchmarks) < pre_count:
         logger.warning(
@@ -2144,6 +2155,10 @@ def preflight_validate_benchmarks(
                     _ab["validation_reason_code"] = "semantic_misalignment"
                     _ab["validation_error"] = _issues[:200]
             if _align_rejected > 0:
+                rejected_benchmarks.extend(
+                    dict(b) for b in benchmarks
+                    if b.get("validation_status") == "misaligned"
+                )
                 benchmarks = [b for b in benchmarks if b.get("validation_status") != "misaligned"]
                 _align_lines.append(_pf_kv("Rejected (misaligned)", _align_rejected))
                 _align_lines.append(_pf_kv("Remaining valid", len(benchmarks)))
@@ -2193,6 +2208,13 @@ def preflight_validate_benchmarks(
                                 _pb["correction_source"] = "predicate_value_fix"
                                 _pred_autocorrected += 1
                                 corrected = True
+                                changed_benchmarks.append({
+                                    "id": _pb.get("id", _pb.get("question_id", "")),
+                                    "question": _pb.get("question", ""),
+                                    "before_sql": old_sql,
+                                    "after_sql": new_sql,
+                                    "reason": "predicate_value_autocorrect",
+                                })
                                 _pred_lines.append(
                                     f"  AUTO-CORRECTED: {mm['column']}="
                                     f"'{mm['literal']}' → '{mm['suggestion']}'"
@@ -2214,6 +2236,10 @@ def preflight_validate_benchmarks(
                         )[:200]
 
             if _pred_rejected > 0 or _pred_autocorrected > 0:
+                rejected_benchmarks.extend(
+                    dict(b) for b in benchmarks
+                    if b.get("validation_status") == "predicate_mismatch"
+                )
                 benchmarks = [
                     b for b in benchmarks
                     if b.get("validation_status") != "predicate_mismatch"
@@ -2267,6 +2293,10 @@ def preflight_validate_benchmarks(
                     _eb["validation_error"] = "Ground truth SQL returned 0 rows"
 
             if _exec_empty > 0:
+                rejected_benchmarks.extend(
+                    dict(b) for b in benchmarks
+                    if b.get("validation_status") == "empty_gt_result"
+                )
                 benchmarks = [
                     b for b in benchmarks
                     if b.get("validation_status") != "empty_gt_result"
@@ -2388,7 +2418,285 @@ def preflight_validate_benchmarks(
             "Check that the Genie space's referenced tables actually exist."
         )
 
-    return {"benchmarks": benchmarks, "pre_count": pre_count, "invalid_errors": invalid_errors}
+    return {
+        "benchmarks": benchmarks,
+        "pre_count": pre_count,
+        "invalid_errors": invalid_errors,
+        "rejected_benchmarks": rejected_benchmarks,
+        "changed_benchmarks": changed_benchmarks,
+    }
+
+
+def compute_benchmark_window_recommendation(
+    benchmarks: list[dict],
+    *,
+    window_min: int = BENCHMARK_WINDOW_MIN,
+    window_max: int = BENCHMARK_WINDOW_MAX,
+) -> dict:
+    """Recommend how to bring the validated set into the 30–40 window (D8).
+
+    Pure function — produces a RECOMMENDATION only; it never mutates or
+    drops anything (prune is never a silent auto-delete). Returns a dict:
+
+    * ``status`` — ``within_window`` | ``over_window`` | ``under_window``
+    * ``count`` — current validated count
+    * ``window`` — ``[window_min, window_max]``
+    * ``recommended_prune`` — for ``over_window``, the list of question ids
+      recommended for removal (EXPLAIN-invalid first — none survive
+      validation, so in practice near-duplicates, then lowest priority),
+      trimmed down to ``window_max``.
+    * ``recommended_topup`` — for ``under_window``, how many synthetic
+      questions to generate to reach ``window_min``.
+
+    Near-duplicate detection reuses the same normalized-question n-gram
+    Jaccard (>= 0.90) the publisher uses for merge dedup, so the
+    recommendation is consistent with how rows actually merge.
+    """
+    from genie_space_optimizer.common.genie_client import (
+        _ngram_similarity_for_dedup,
+        _normalize_question_text,
+    )
+
+    count = len(benchmarks)
+    rec: dict[str, Any] = {
+        "count": count,
+        "window": [window_min, window_max],
+        "recommended_prune": [],
+        "recommended_topup": 0,
+    }
+
+    def _qid(b: dict) -> str:
+        return str(b.get("id", b.get("question_id", "")) or "")
+
+    if count < window_min:
+        rec["status"] = "under_window"
+        rec["recommended_topup"] = window_min - count
+        return rec
+
+    if count <= window_max:
+        rec["status"] = "within_window"
+        return rec
+
+    # over_window — recommend trimming to window_max. Order of removal:
+    # near-duplicates first (keep the higher-priority member of each
+    # near-dup pair), then lowest priority. NEVER applied automatically.
+    rec["status"] = "over_window"
+    norms = [(_qid(b), _normalize_question_text(str(b.get("question", "")))) for b in benchmarks]
+    prio = {_qid(b): str(b.get("priority", "")) for b in benchmarks}
+    # P0 ranks highest (kept); blank/other lowest.
+    prio_rank = {"P0": 0, "P1": 1, "P2": 2}
+
+    near_dup_ids: list[str] = []
+    kept: list[tuple[str, str]] = []
+    for qid, norm in norms:
+        if not norm:
+            continue
+        is_dup = any(
+            _ngram_similarity_for_dedup(norm, kept_norm) >= 0.90
+            for _kid, kept_norm in kept
+        )
+        if is_dup:
+            near_dup_ids.append(qid)
+        else:
+            kept.append((qid, norm))
+
+    over_by = count - window_max
+    prune: list[str] = list(near_dup_ids[:over_by])
+    if len(prune) < over_by:
+        # Still over — recommend lowest-priority survivors (stable order).
+        remaining = [
+            qid for qid, _ in norms
+            if qid not in prune
+        ]
+        remaining.sort(key=lambda q: prio_rank.get(prio.get(q, ""), 3))
+        for qid in reversed(remaining):
+            if len(prune) >= over_by:
+                break
+            if qid not in prune:
+                prune.append(qid)
+    rec["recommended_prune"] = prune[:over_by]
+    return rec
+
+
+def preflight_push_benchmarks_to_space(
+    w: "WorkspaceClient",
+    spark: "SparkSession",
+    run_id: str,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    benchmarks: list[dict],
+    *,
+    rejected_benchmarks: list[dict] | None = None,
+    changed_benchmarks: list[dict] | None = None,
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
+) -> dict:
+    """Sub-step 4b (GSO v2): push the validated benchmark set into the LIVE
+    space at preflight — BEFORE baseline eval — and record provenance.
+
+    This is the runner-independent Phase-2 wiring point (it does not depend
+    on the Phase-1 EvalRunner seam):
+
+    * **Push (D8):** the WHOLE validated set is merged (additive/merge-only)
+      into ``serialized_space.benchmarks.questions`` so the official
+      Benchmark API scores against it from baseline onward. There is NO
+      train/held-out split — the benchmark is held out by nature. User-
+      authored rows are never deleted.
+    * **Prune-invalid before publish:** a final defensive guard drops any
+      row that is not EXPLAIN-valid or lacks ground-truth SQL, so a
+      SQL-erroring question can never be published.
+    * **Window (D8):** a 30–40 recommendation is computed and surfaced in
+      the run state (``> max`` ⇒ recommended prune set; ``< min`` ⇒ top-up
+      count). Recommendation only — never a silent auto-delete.
+    * **Provenance ledger (§3.5):** every added / removed / changed row is
+      written to ``genie_opt_benchmark_mutations``. The preflight
+      ``config_snapshot`` remains the discard revert anchor (unchanged).
+
+    Returns a summary dict (also used by the test harness).
+    """
+    rejected_benchmarks = rejected_benchmarks or []
+    changed_benchmarks = changed_benchmarks or []
+
+    # ── Prune-invalid backstop before publish (eval-validity) ────────
+    pushable: list[dict] = []
+    pruned_at_push: list[dict] = []
+    for b in benchmarks:
+        status = b.get("validation_status")
+        has_sql = bool(str(b.get("expected_sql", "")).strip())
+        if status in (None, "valid") and has_sql:
+            pushable.append(b)
+        else:
+            pruned_at_push.append(b)
+
+    # ── 30–40 window recommendation (surfaced, never auto-applied) ───
+    window = compute_benchmark_window_recommendation(pushable)
+    _w_lines = [_pf_section("PREFLIGHT — BENCHMARK WINDOW (30–40)")]
+    _w_lines.append(_pf_kv("Validated count", window["count"]))
+    _w_lines.append(_pf_kv("Window", f"{BENCHMARK_WINDOW_MIN}–{BENCHMARK_WINDOW_MAX}"))
+    _w_lines.append(_pf_kv("Status", window["status"]))
+    if window["status"] == "over_window":
+        _w_lines.append(_pf_kv(
+            "Recommended prune (ids)",
+            ", ".join(window["recommended_prune"][:20]) or "(none)",
+        ))
+        _w_lines.append("  NOTE: recommendation only — no rows auto-deleted.")
+    elif window["status"] == "under_window":
+        _w_lines.append(_pf_kv("Recommended synthesis top-up", window["recommended_topup"]))
+    _w_lines.append(_pf_bar())
+    print("\n".join(_w_lines))
+
+    try:
+        write_stage(
+            spark, run_id, "PREFLIGHT_BENCHMARK_WINDOW", "COMPLETE",
+            task_key="preflight", catalog=catalog, schema=schema,
+            detail=window,
+        )
+    except Exception:
+        logger.debug("Could not write benchmark-window stage", exc_info=True)
+
+    # ── Push (additive/merge-only) into the live space ───────────────
+    push_report = None
+    published_count = 0
+    if not PUBLISH_BENCHMARKS_TO_SPACE:
+        write_stage(
+            spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "SKIPPED",
+            task_key="preflight", catalog=catalog, schema=schema,
+            detail={"reason": "publish_disabled"},
+        )
+    elif not pushable:
+        write_stage(
+            spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "SKIPPED",
+            task_key="preflight", catalog=catalog, schema=schema,
+            detail={"reason": "no_pushable_benchmarks"},
+        )
+    else:
+        from genie_space_optimizer.common.genie_client import (
+            publish_benchmarks_to_genie_space_with_report,
+        )
+        try:
+            push_report = publish_benchmarks_to_genie_space_with_report(
+                w, space_id, pushable, max_benchmark_count, run_id=run_id,
+            )
+            published_count = push_report.added_count
+            write_stage(
+                spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "COMPLETE",
+                task_key="preflight", catalog=catalog, schema=schema,
+                detail={
+                    "added": push_report.added_count,
+                    "dedup_skipped": push_report.dedup_skipped,
+                    "mirror_skipped": push_report.mirror_skipped,
+                    "merged_total": push_report.merged_total,
+                    "pushable": len(pushable),
+                    "window_status": window["status"],
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Preflight benchmark push to space %s failed — optimization "
+                "continues; baseline will score the space's existing set",
+                space_id, exc_info=True,
+            )
+            write_stage(
+                spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "FAILED",
+                task_key="preflight", catalog=catalog, schema=schema,
+                error_message="Preflight benchmark push failed (non-fatal)",
+            )
+
+    # ── Provenance ledger (§3.5) ─────────────────────────────────────
+    ledger_rows: list[dict] = []
+    if push_report is not None:
+        for a in push_report.added:
+            ledger_rows.append({
+                "question_id": a.get("id", ""),
+                "op": "added",
+                "before": None,
+                "after": {"question": a.get("question", ""), "sql": a.get("sql", "")},
+                "reason": "preflight_push",
+            })
+    for r in rejected_benchmarks:
+        ledger_rows.append({
+            "question_id": r.get("id", r.get("question_id", "")),
+            "op": "removed",
+            "before": {
+                "question": r.get("question", ""),
+                "sql": r.get("expected_sql", ""),
+            },
+            "after": None,
+            "reason": r.get("validation_reason_code") or "validation_pruned",
+        })
+    for b in pruned_at_push:
+        ledger_rows.append({
+            "question_id": b.get("id", b.get("question_id", "")),
+            "op": "removed",
+            "before": {
+                "question": b.get("question", ""),
+                "sql": b.get("expected_sql", ""),
+            },
+            "after": None,
+            "reason": "prune_invalid_before_publish",
+        })
+    for c in changed_benchmarks:
+        ledger_rows.append({
+            "question_id": c.get("id", c.get("question_id", "")),
+            "op": "changed",
+            "before": {"question": c.get("question", ""), "sql": c.get("before_sql", "")},
+            "after": {"question": c.get("question", ""), "sql": c.get("after_sql", "")},
+            "reason": c.get("reason") or "auto_corrected",
+        })
+
+    ledger_written = write_benchmark_mutations(
+        spark, run_id, ledger_rows, catalog=catalog, schema=schema,
+    )
+
+    return {
+        "pushable_count": len(pushable),
+        "pruned_at_push": len(pruned_at_push),
+        "published_count": published_count,
+        "window": window,
+        "ledger_rows": len(ledger_rows),
+        "ledger_written": ledger_written,
+        "push_report": push_report,
+    }
 
 
 def preflight_load_human_feedback(
