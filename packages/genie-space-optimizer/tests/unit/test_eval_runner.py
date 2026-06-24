@@ -240,6 +240,57 @@ def test_result_mapping_and_accuracy() -> None:
     assert by_qid["q3"]["expectations"]["expected_response"] == "SELECT e"
 
 
+# ── F5: legacy flat row aliases + downstream-reader compatibility ────────────
+def test_mapped_row_carries_legacy_flat_aliases() -> None:
+    summary = _result_row("rX", "qX", "the question")
+    detail = _detail("rX", "qX", "BAD", ["LLM_JUDGE_WRONG_COLUMNS"], actual="SELECT g", expected="SELECT t")
+    row = map_eval_detail_to_row(summary, detail)
+    # Flat aliases the active harness/state/feature-mining readers consume.
+    assert row["inputs/question"] == "the question"
+    assert row["outputs/response"] == "SELECT g"
+    assert row["inputs/expected_response"] == "SELECT t"
+    assert row["generated_sql"] == "SELECT g"
+    assert row["expected_sql"] == "SELECT t"
+    # Native fields still present alongside the aliases.
+    assert row["assessment"] == "BAD"
+    assert row["assessment_reasons"] == ["LLM_JUDGE_WRONG_COLUMNS"]
+
+
+def test_mapped_row_is_readable_by_harness_helpers() -> None:
+    """Row-schema compatibility: the active harness readers extract every field."""
+    from genie_space_optimizer.optimization.harness import (
+        _get_arbiter_verdict,
+        _get_expected_sql,
+        _get_genie_sql,
+        _get_question_id,
+        _get_question_text,
+    )
+
+    summary = _result_row("r7", "q7", "How many active users?")
+    detail = _detail("r7", "q7", "BAD", ["LLM_JUDGE_MISSING_OR_INCORRECT_FILTER"], actual="SELECT 1", expected="SELECT 2")
+    row = map_eval_detail_to_row(summary, detail)
+
+    assert _get_question_id(row) == "q7"
+    assert _get_question_text(row) == "How many active users?"
+    assert _get_genie_sql(row) == "SELECT 1"
+    assert _get_expected_sql(row) == "SELECT 2"
+    # No arbiter rescue path: neutral verdict that is NOT a correct verdict.
+    assert _get_arbiter_verdict(row) == "skipped"
+
+
+def test_mapped_row_classifies_as_hard_failure_when_bad() -> None:
+    from genie_space_optimizer.optimization.evaluation import row_is_hard_failure
+
+    bad = map_eval_detail_to_row(
+        _result_row("r1", "q1", "Q"), _detail("r1", "q1", "BAD", ["LLM_JUDGE_OTHER"])
+    )
+    good = map_eval_detail_to_row(
+        _result_row("r2", "q2", "Q"), _detail("r2", "q2", "GOOD", [])
+    )
+    assert row_is_hard_failure(bad) is True
+    assert row_is_hard_failure(good) is False
+
+
 def test_pagination_collects_all_results() -> None:
     rows_p1 = [_result_row("r1", "q1", "Q1")]
     rows_p2 = [_result_row("r2", "q2", "Q2")]
@@ -323,6 +374,105 @@ def test_build_eval_output_from_official_contract() -> None:
     assert out["_eval_source"] == EVAL_SOURCE
     assert out["model_id"] == "m-1"
     assert isinstance(out["thresholds_met"], bool)
+    assert out.get("eval_run_failed") is False
+
+
+# ── F4: a failed / partial / empty run must never read as a passing gate ─────
+def _failing_result(status, *, num_done, num_questions, requested):
+    return EvalRunResult(
+        eval_run_id="er-x",
+        status=status,
+        num_correct=num_done,  # even if "correct", incompleteness must fail closed
+        num_done=num_done,
+        num_needs_review=0,
+        num_questions=num_questions,
+        rows=[],
+        wall_clock_seconds=3.0,
+        eval_scope="full",
+        requested_question_ids=tuple(requested),
+    )
+
+
+@pytest.mark.parametrize("status", ["EVALUATION_FAILED", "EVALUATION_CANCELLED", "EVALUATION_TIMEOUT"])
+def test_non_done_terminal_fails_closed(status) -> None:
+    result = _failing_result(status, num_done=0, num_questions=3, requested=["q1", "q2", "q3"])
+    assert result.is_complete_success is False
+    out = build_eval_output_from_official(result, iteration=1, eval_scope="full")
+    assert out["overall_accuracy"] == 0.0
+    assert out["thresholds_met"] is False
+    assert out["eval_run_failed"] is True
+    # Every requested id maps to a failure ⇒ downstream gates reject.
+    assert sorted(out["failures"]) == ["q1", "q2", "q3"]
+    assert sorted(out["failure_question_ids"]) == ["q1", "q2", "q3"]
+
+
+def test_partial_done_fails_closed() -> None:
+    # DONE but only 2 of 3 questions completed — must not read as green.
+    result = _failing_result("DONE", num_done=2, num_questions=3, requested=["q1", "q2", "q3"])
+    assert result.is_complete_success is False
+    out = build_eval_output_from_official(result, iteration=1, eval_scope="p0")
+    assert out["overall_accuracy"] == 0.0
+    assert sorted(out["failures"]) == ["q1", "q2", "q3"]
+    assert out["eval_run_failed"] is True
+
+
+def test_empty_run_fails_closed() -> None:
+    result = _failing_result("DONE", num_done=0, num_questions=0, requested=["q1"])
+    assert result.is_complete_success is False
+    out = build_eval_output_from_official(result, iteration=1, eval_scope="full")
+    assert out["overall_accuracy"] == 0.0
+    assert out["failures"] == ["q1"]
+
+
+def test_complete_done_is_success() -> None:
+    ok = EvalRunResult("er-ok", "DONE", 3, 3, 0, 3, [], 1.0, requested_question_ids=("q1", "q2", "q3"))
+    assert ok.is_complete_success is True
+
+
+# ── F3: complete qid resolution required ─────────────────────────────────────
+def test_resolve_qids_partial_returns_none(monkeypatch) -> None:
+    benchmarks = [
+        {"id": "g1", "question": "Q1"},
+        {"id": "g2", "question": "Q2"},  # this one will NOT resolve
+    ]
+
+    def _partial_map(w, space_id):
+        from genie_space_optimizer.common.genie_client import _normalize_question_text
+
+        return {_normalize_question_text("Q1"): "s1"}  # only Q1 resolves
+
+    monkeypatch.setattr(eval_runner, "_space_question_text_to_id", _partial_map)
+    # Partial resolution (1 of 2) ⇒ None so the caller falls back BEFORE eval creation.
+    assert eval_runner.resolve_space_benchmark_qids(object(), "space-1", benchmarks) is None
+
+
+def test_resolve_qids_mixed_explicit_and_text_complete(monkeypatch) -> None:
+    benchmarks = [
+        {"id": "g1", "question": "Q1", "space_question_id": "s1"},
+        {"id": "g2", "question": "Q2"},
+    ]
+
+    def _map(w, space_id):
+        from genie_space_optimizer.common.genie_client import _normalize_question_text
+
+        return {_normalize_question_text("Q2"): "s2"}
+
+    monkeypatch.setattr(eval_runner, "_space_question_text_to_id", _map)
+    assert eval_runner.resolve_space_benchmark_qids(object(), "space-1", benchmarks) == ["s1", "s2"]
+
+
+# ── budget wall-clock accumulator (non-blocking budget-scope fix) ────────────
+def test_build_output_records_eval_wall_clock() -> None:
+    eval_runner.reset_eval_wall_clock()
+    r1 = EvalRunResult("e1", "DONE", 1, 1, 0, 1, [{"question_id": "q1", "assessment": "GOOD"}], 12.0,
+                       requested_question_ids=("q1",))
+    r2 = EvalRunResult("e2", "DONE", 1, 1, 0, 1, [{"question_id": "q2", "assessment": "GOOD"}], 8.0,
+                       requested_question_ids=("q2",))
+    build_eval_output_from_official(r1, iteration=1, eval_scope="slice")
+    build_eval_output_from_official(r2, iteration=1, eval_scope="full")
+    assert eval_runner.accumulated_eval_wall_clock() == pytest.approx(20.0)
+    eval_runner.reset_eval_wall_clock()
+    assert eval_runner.accumulated_eval_wall_clock() == 0.0
 
 
 # ── feature-switch activation guard ──────────────────────────────────────────

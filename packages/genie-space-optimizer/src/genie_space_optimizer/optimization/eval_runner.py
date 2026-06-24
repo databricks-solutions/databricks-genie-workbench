@@ -64,6 +64,31 @@ _TERMINAL_STATUSES = frozenset(
 )
 
 
+# ── Eval wall-clock accumulator (budget guard, §3.4) ───────────────────────
+# Sequential eval-runs ⇒ the budget is the sum of every run's wall-clock. The
+# lever loop runs slice/P0/full evals inside one gate call across several
+# return paths, so we accumulate the official eval-run wall-clock here (reset
+# per iteration by the loop) rather than timing the whole gate call (which
+# would also count propagation waits). Single-threaded loop ⇒ a module-level
+# accumulator is safe.
+_EVAL_WALL_CLOCK = {"seconds": 0.0}
+
+
+def reset_eval_wall_clock() -> None:
+    """Reset the per-iteration official eval-run wall-clock accumulator."""
+    _EVAL_WALL_CLOCK["seconds"] = 0.0
+
+
+def record_eval_wall_clock(seconds: float) -> None:
+    """Add one official eval-run's wall-clock to the accumulator."""
+    _EVAL_WALL_CLOCK["seconds"] += max(0.0, float(seconds))
+
+
+def accumulated_eval_wall_clock() -> float:
+    """Total official eval-run wall-clock since the last reset."""
+    return _EVAL_WALL_CLOCK["seconds"]
+
+
 def _status_str(status: Any) -> str:
     """Normalise an ``EvaluationStatusType`` (enum or raw string) to upper-case."""
     return str(getattr(status, "value", status) or "").upper()
@@ -128,6 +153,20 @@ class EvalRunResult:
     @property
     def succeeded(self) -> bool:
         return self.status == _SUCCESS_STATUS
+
+    @property
+    def is_complete_success(self) -> bool:
+        """True only for a fully-completed DONE run with at least one question.
+
+        A non-DONE terminal status (EVALUATION_FAILED / CANCELLED / TIMEOUT), a
+        partial run (``num_done < num_questions``), or an empty set must NEVER
+        read as a passing gate — those fail closed in the output mapper.
+        """
+        return (
+            self.status == _SUCCESS_STATUS
+            and self.num_questions > 0
+            and self.num_done >= self.num_questions
+        )
 
     @property
     def failure_question_ids(self) -> list[str]:
@@ -231,6 +270,18 @@ def map_eval_detail_to_row(summary: Any, detail: Any) -> dict[str, Any]:
         # Generated / expected SQL in the existing response/expectations shape.
         "response": {"response": actual_sql, "comparison": {}},
         "expectations": {"expected_response": expected_sql},
+        # ── Legacy flat aliases (row-schema compatibility, no downstream drift) ──
+        # The active harness/state readers consume these flat keys, not the
+        # nested forms: ``_get_question_text`` reads ``inputs/question``,
+        # ``_get_genie_sql`` reads ``outputs/response``, ``_get_expected_sql``
+        # reads ``inputs/expected_response``, and feature-mining reads
+        # ``generated_sql`` / ``expected_sql``. Populate every one so official
+        # rows are a drop-in for in-process rows.
+        "inputs/question": question,
+        "outputs/response": actual_sql,
+        "inputs/expected_response": expected_sql,
+        "generated_sql": actual_sql,
+        "expected_sql": expected_sql,
         # Provenance.
         "_eval_source": EVAL_SOURCE,
         "result_id": str(getattr(detail, "result_id", "") or getattr(summary, "result_id", "") or ""),
@@ -469,44 +520,54 @@ def resolve_space_benchmark_qids(
     2. Else match the benchmark's question text against the live space config's
        ``benchmarks.questions`` (read once via ``fetch_space_config``).
 
-    Returns the resolved ids in benchmark order (de-duplicated), or ``None`` when
-    none resolve — the caller then keeps the legacy in-process path so a slice/P0
-    gate is never silently widened to the whole benchmark.
+    **Resolution must be COMPLETE.** Scoring a subset of the requested set silently
+    drops the rest and makes accuracy meaningless, so if ANY requested benchmark
+    does not resolve we return ``None`` (after de-dup). The caller then falls back
+    to the legacy in-process path — and crucially does so *before* creating any
+    official eval-run, so this never causes a double-run. Robust/guaranteed
+    resolution is Phase 2; a partial run is a Phase-1 correctness bug.
+
+    Returns the complete list of resolved space-side ids in benchmark order
+    (de-duplicated), or ``None`` when the set cannot be fully resolved.
     """
     if not benchmarks:
         return None
 
+    text_map: dict[str, str] | None = None
     resolved: list[str] = []
-    needs_text_match: list[dict] = []
+    unresolved = 0
+    from genie_space_optimizer.common.genie_client import _normalize_question_text
+
     for b in benchmarks:
         sid = ""
         for k in _EXPLICIT_SPACE_ID_KEYS:
             if b.get(k):
                 sid = str(b[k])
                 break
+        if not sid:
+            if text_map is None:
+                try:
+                    text_map = _space_question_text_to_id(w, space_id)
+                except Exception:  # pragma: no cover - network/SDK failure ⇒ fall back
+                    logger.exception("Could not read space benchmarks for %s", space_id)
+                    text_map = {}
+            key = _normalize_question_text(str(b.get("question") or b.get("text") or ""))
+            sid = text_map.get(key, "")
         if sid:
             resolved.append(sid)
         else:
-            needs_text_match.append(b)
+            unresolved += 1
 
-    if needs_text_match:
-        try:
-            text_map = _space_question_text_to_id(w, space_id)
-        except Exception:  # pragma: no cover - network/SDK failure ⇒ fall back
-            logger.exception("Could not read space benchmarks for %s", space_id)
-            text_map = {}
-        if text_map:
-            from genie_space_optimizer.common.genie_client import (
-                _normalize_question_text,
-            )
-
-            for b in needs_text_match:
-                key = _normalize_question_text(
-                    str(b.get("question") or b.get("text") or "")
-                )
-                sid = text_map.get(key, "")
-                if sid:
-                    resolved.append(sid)
+    if unresolved:
+        logger.info(
+            "Official eval runner: %d of %d requested benchmark question(s) could "
+            "not be resolved to space-side ids — incomplete resolution, falling "
+            "back to in-process eval (no eval-run created). Phase 2 closes the "
+            "guaranteed push/ID-resolution gap.",
+            unresolved,
+            len(benchmarks),
+        )
+        return None
 
     seen: set[str] = set()
     out: list[str] = []
@@ -514,6 +575,7 @@ def resolve_space_benchmark_qids(
         if s and s not in seen:
             seen.add(s)
             out.append(s)
+    # De-dup must not shrink the requested set into a partial run.
     return out or None
 
 
@@ -532,11 +594,79 @@ def build_eval_output_from_official(
     authoritative field is ``overall_accuracy``; per-judge thresholds are derived
     only from ``result_correctness`` here. Reworking acceptance / per-judge
     thresholds is **Phase 3** — this mapper deliberately does not touch them.
+
+    **Fail-closed (D1):** a non-DONE / partial / empty run NEVER reads as a
+    passing gate. Such a result maps to accuracy ``0``, every requested question
+    id as a failure, and ``thresholds_met=False`` so the slice / P0 / full gates
+    all reject and the iteration rolls back.
     """
     from genie_space_optimizer.optimization.evaluation import (
         all_thresholds_met,
         normalize_scores,
     )
+
+    # Sequential eval-runs ⇒ accumulate wall-clock for the budget guard (§3.4).
+    record_eval_wall_clock(result.wall_clock_seconds)
+
+    if not result.is_complete_success:
+        # Map ALL requested ids to failures (fall back to row ids, else what the
+        # server reported done) so downstream gates see a failed — not green —
+        # eval. Never silently pass a failed/partial/empty run.
+        failure_ids = list(result.requested_question_ids or [])
+        if not failure_ids:
+            failure_ids = result.failure_question_ids or [
+                str(r.get("question_id") or "") for r in result.rows if r.get("question_id")
+            ]
+        zero_scores = normalize_scores({"result_correctness": 0.0})
+        zero_scores["_pre_arbiter/result_correctness"] = 0.0
+        zero_scores["_pre_arbiter/overall_accuracy"] = 0.0
+        logger.warning(
+            "Official eval-run %s did not complete cleanly (status=%s, "
+            "num_done=%d/%d) — failing the gate closed (accuracy=0, %d failures).",
+            result.eval_run_id,
+            result.status,
+            result.num_done,
+            result.num_questions,
+            len(failure_ids),
+        )
+        return {
+            "run_id": f"official-eval:{result.eval_run_id}",
+            "mlflow_run_id": "",
+            "run_name": f"iter_{iteration:02d}_{eval_scope}_official_failed",
+            "experiment_id": "",
+            "iteration": iteration,
+            "overall_accuracy": 0.0,
+            "pre_arbiter_accuracy": 0.0,
+            "total_questions": result.num_questions or len(failure_ids),
+            "evaluated_count": result.num_questions or len(failure_ids),
+            "correct_count": 0,
+            "both_correct_count": 0,
+            "both_correct_rate": 0.0,
+            "scores": zero_scores,
+            "thresholds_met": False,
+            "thresholds_passed": False,
+            "per_judge": {"result_correctness": 0.0},
+            "failures": failure_ids,
+            "failure_question_ids": failure_ids,
+            "remaining_failures": failure_ids,
+            "arbiter_verdicts": {},
+            "arbiter_actions": [],
+            "model_id": model_id,
+            "rows": result.rows,
+            "trace_map": {},
+            "excluded_count": 0,
+            "row_exclusions": [],
+            "arbiter_overridden_qids": [],
+            "soft_signal_qids": [],
+            "eval_run_id": result.eval_run_id,
+            "eval_run_status": result.status,
+            "eval_run_failed": True,
+            "num_done": result.num_done,
+            "num_needs_review": result.num_needs_review,
+            "_eval_source": EVAL_SOURCE,
+            "_eval_wall_clock_seconds": result.wall_clock_seconds,
+            "eval_scope": eval_scope,
+        }
 
     frac = result.accuracy_fraction
     per_judge = {"result_correctness": frac}
@@ -580,8 +710,10 @@ def build_eval_output_from_official(
         # Native official run-level fields (additive — consumed by Phase 6 UI).
         "eval_run_id": result.eval_run_id,
         "eval_run_status": result.status,
+        "eval_run_failed": False,
         "num_done": result.num_done,
         "num_needs_review": result.num_needs_review,
         "_eval_source": EVAL_SOURCE,
+        "_eval_wall_clock_seconds": result.wall_clock_seconds,
         "eval_scope": eval_scope,
     }
