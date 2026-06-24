@@ -609,6 +609,23 @@ def _question_token_set_jaccard(a: str, b: str) -> float:
     return inter / union if union else 0.0
 
 
+def canonical_question_key(q: str) -> str:
+    """Return a stable, order-preserving canonical form of a question.
+
+    Lower-cases, strips punctuation, and collapses whitespace WITHOUT
+    dropping stopwords or reordering tokens. Two questions that differ
+    only in casing / punctuation / spacing produce the same key; a
+    genuine paraphrase (reordered or reworded) does not. This backs the
+    *deterministic* scored-benchmark exclusion (exact question echo),
+    which is independent of the fuzzy token-set Jaccard policy used by
+    :meth:`LeakageOracle.evaluate_example_sql`.
+    """
+    if not q or not isinstance(q, str):
+        return ""
+    text = _QUESTION_PUNCT_RE.sub(" ", q.lower())
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
 @dataclass(frozen=True)
 class ExampleSqlLeakageDecision:
     """Tiered leakage policy outcome for example-SQL generation.
@@ -709,6 +726,44 @@ class LeakageOracle:
                 if score >= thresh:
                     return True
         return False
+
+    def is_scored_benchmark_qa(
+        self,
+        *,
+        question: str = "",
+        sql: str = "",
+        question_id: str | None = None,
+    ) -> tuple[bool, str]:
+        """Deterministic, always-on scored-benchmark exclusion.
+
+        Returns ``(matched, reason)``. Matches a candidate example-SQL
+        Q/A against the scored benchmark set by THREE exact keys —
+        ``question_id``, normalized-SQL hash (:func:`canonicalize_sql`),
+        and canonical question text (:func:`canonical_question_key`).
+        A match on ANY key means the candidate IS a scored benchmark
+        Q/A and must never be seeded as an example SQL — this is the
+        hard eval-validity guard from the v2 plan (§3.6 / D8) and it is
+        INDEPENDENT of the tunable fuzzy ``evaluate_example_sql`` policy
+        and the ``GSO_EXAMPLE_SQL_FIREWALL_STRICT`` env var.
+
+        Because the corpus is the WHOLE scored set (no train/held-out
+        split), this also excludes examples derived from *passing*
+        benchmark rows — a passing row is in the corpus exactly like a
+        failing one.
+        """
+        qid = str(question_id).strip() if question_id is not None else ""
+        sql_fp = canonicalize_sql(sql) if sql else ""
+        q_key = canonical_question_key(question) if question else ""
+        for corpus in self._corpora:
+            if qid and qid in {str(i) for i in corpus.question_ids if i}:
+                return True, f"scored_benchmark_question_id={qid}"
+            if sql_fp and sql_fp in corpus.sql_fingerprints:
+                return True, "scored_benchmark_sql_hash"
+            if q_key and q_key in {
+                canonical_question_key(bq) for bq in corpus.questions
+            }:
+                return True, "scored_benchmark_question_text"
+        return False, ""
 
     def evaluate_example_sql(
         self,
@@ -833,13 +888,31 @@ def is_example_sql_benchmark_leak(
     Mirrors :meth:`LeakageOracle.evaluate_example_sql` but accepts a raw
     corpus (the applier has it directly) and returns ``(block, reason)``
     so the existing applier flow can keep its tuple-shaped contract.
+
+    A deterministic scored-benchmark match (question-id / normalized-SQL
+    hash / canonical question text) is an UNCONDITIONAL block — it runs
+    before, and independent of, the tunable fuzzy ``evaluate_example_sql``
+    policy so a verbatim benchmark Q/A (including a *passing* row) can
+    never be seeded as an example SQL even when the relaxed firewall mode
+    is enabled (v2 plan §3.6 / D8).
     """
-    oracle = LeakageOracle(benchmark_corpus)
-    decision = oracle.evaluate_example_sql(
-        question=str(
-            proposal.get("example_question") or proposal.get("question") or ""
-        ),
-        sql=str(proposal.get("example_sql") or proposal.get("sql") or ""),
-        w=w,
+    question = str(
+        proposal.get("example_question") or proposal.get("question") or ""
     )
+    sql = str(proposal.get("example_sql") or proposal.get("sql") or "")
+    qid = (
+        proposal.get("benchmark_id")
+        or proposal.get("source_question_id")
+        or proposal.get("question_id")
+    )
+
+    oracle = LeakageOracle(benchmark_corpus)
+
+    exact, exact_reason = oracle.is_scored_benchmark_qa(
+        question=question, sql=sql, question_id=qid,
+    )
+    if exact:
+        return True, exact_reason
+
+    decision = oracle.evaluate_example_sql(question=question, sql=sql, w=w)
     return decision.block, decision.reason
