@@ -156,16 +156,27 @@ class EvalRunResult:
 
     @property
     def is_complete_success(self) -> bool:
-        """True only for a fully-completed DONE run with at least one question.
+        """True only for a fully-completed DONE run whose collected rows cover it.
 
-        A non-DONE terminal status (EVALUATION_FAILED / CANCELLED / TIMEOUT), a
-        partial run (``num_done < num_questions``), or an empty set must NEVER
-        read as a passing gate — those fail closed in the output mapper.
+        Fail-closed guards — any of these must NEVER read as a passing gate:
+          * a non-DONE terminal status (EVALUATION_FAILED / CANCELLED / TIMEOUT);
+          * a partial run (``num_done < num_questions``);
+          * an empty set (``num_questions == 0``);
+          * a short/empty collected row set (``len(rows) < num_questions``), e.g.
+            a pagination/listing quirk that drained no results on a nominally-DONE
+            run — without this the server-reported accuracy would be used with an
+            EMPTY failure set and the gate would pass green.
+
+        The official path collects exactly one row per benchmark question (1:1
+        results→rows; a per-detail mapping failure raises rather than silently
+        shortening), so a genuine success always satisfies
+        ``len(rows) >= num_questions``.
         """
         return (
             self.status == _SUCCESS_STATUS
             and self.num_questions > 0
             and self.num_done >= self.num_questions
+            and len(self.rows) >= self.num_questions
         )
 
     @property

@@ -424,8 +424,59 @@ def test_empty_run_fails_closed() -> None:
     assert out["failures"] == ["q1"]
 
 
+def test_done_with_empty_rows_fails_closed() -> None:
+    # DONE, server reports 3/3 done — but NO rows were collected (pagination /
+    # mapping quirk). The server-reported accuracy must NOT pass green with an
+    # empty failure set: this must fail closed exactly like a non-DONE status.
+    result = EvalRunResult(
+        eval_run_id="er-empty",
+        status="DONE",
+        num_correct=3,
+        num_done=3,
+        num_needs_review=0,
+        num_questions=3,
+        rows=[],
+        wall_clock_seconds=3.0,
+        eval_scope="p0",
+        requested_question_ids=("q1", "q2", "q3"),
+    )
+    assert result.is_complete_success is False
+    out = build_eval_output_from_official(result, iteration=1, eval_scope="p0")
+    assert out["overall_accuracy"] == 0.0
+    assert out["thresholds_met"] is False
+    assert out["eval_run_failed"] is True
+    assert sorted(out["failures"]) == ["q1", "q2", "q3"]
+
+
+def test_done_with_short_rows_fails_closed() -> None:
+    # DONE 3/3 but only 2 of 3 rows collected ⇒ short row set ⇒ fail closed.
+    result = EvalRunResult(
+        eval_run_id="er-short",
+        status="DONE",
+        num_correct=3,
+        num_done=3,
+        num_needs_review=0,
+        num_questions=3,
+        rows=[
+            {"question_id": "q1", "assessment": "GOOD"},
+            {"question_id": "q2", "assessment": "GOOD"},
+        ],
+        wall_clock_seconds=3.0,
+        requested_question_ids=("q1", "q2", "q3"),
+    )
+    assert result.is_complete_success is False
+    out = build_eval_output_from_official(result, iteration=1, eval_scope="full")
+    assert out["overall_accuracy"] == 0.0
+    assert sorted(out["failures"]) == ["q1", "q2", "q3"]
+
+
 def test_complete_done_is_success() -> None:
-    ok = EvalRunResult("er-ok", "DONE", 3, 3, 0, 3, [], 1.0, requested_question_ids=("q1", "q2", "q3"))
+    rows = [
+        {"question_id": "q1", "assessment": "GOOD"},
+        {"question_id": "q2", "assessment": "GOOD"},
+        {"question_id": "q3", "assessment": "BAD"},
+    ]
+    ok = EvalRunResult("er-ok", "DONE", 2, 3, 0, 3, rows, 1.0, requested_question_ids=("q1", "q2", "q3"))
     assert ok.is_complete_success is True
 
 
