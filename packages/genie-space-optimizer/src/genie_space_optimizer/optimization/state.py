@@ -21,6 +21,7 @@ import pandas as pd
 
 from genie_space_optimizer.common.config import (
     TABLE_ASI,
+    TABLE_BENCHMARK_MUTATIONS,
     TABLE_FINALIZE_ATTESTATION,
     TABLE_ITERATIONS,
     TABLE_PATCHES,
@@ -1360,6 +1361,69 @@ def write_gt_correction_candidates(
             written,
             rows[0].get("run_id", "?"),
         )
+
+
+def write_benchmark_mutations(
+    spark: SparkSession,
+    run_id: str,
+    rows: list[dict],
+    *,
+    catalog: str,
+    schema: str,
+) -> int:
+    """Append GSO benchmark-mutation provenance rows (v2 §3.5).
+
+    Each ``row`` describes one mutation GSO made to the user's live Genie
+    Space benchmark set: ``{question_id, op, before, after, reason}`` where
+    ``op`` ∈ {``added``, ``removed``, ``changed``}. ``before`` / ``after``
+    are ``{question, sql}`` dicts (JSON-serialized here) or ``None``.
+    No-op when ``rows`` is empty. Best-effort: a write failure is logged
+    but never aborts preflight (the push itself is the source of truth).
+
+    Returns the number of rows written.
+    """
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    written = 0
+
+    def _opt_json(val: Any) -> str | None:
+        if val is None:
+            return None
+        try:
+            return json.dumps(val, default=str)[:5000]
+        except (TypeError, ValueError):
+            return None
+
+    for r in rows:
+        op = str(r.get("op", "")).strip()
+        if op not in ("added", "removed", "changed"):
+            logger.debug("Skipping benchmark mutation with bad op=%r", op)
+            continue
+        payload: dict[str, Any] = {
+            "run_id": run_id,
+            "question_id": str(r.get("question_id", "") or "")[:200],
+            "op": op,
+            "before": _opt_json(r.get("before")),
+            "after": _opt_json(r.get("after")),
+            "reason": (str(r.get("reason", "")) or "")[:500] or None,
+            "logged_at": now,
+        }
+        try:
+            insert_row(
+                spark, catalog, schema, TABLE_BENCHMARK_MUTATIONS, payload,
+            )
+            written += 1
+        except Exception:
+            logger.warning(
+                "Failed to write benchmark mutation (op=%s qid=%s) for run %s",
+                op, payload["question_id"], run_id, exc_info=True,
+            )
+    if written:
+        logger.info(
+            "Wrote %d benchmark mutation row(s) for run %s", written, run_id,
+        )
+    return written
 
 
 def update_provenance_proposals(
