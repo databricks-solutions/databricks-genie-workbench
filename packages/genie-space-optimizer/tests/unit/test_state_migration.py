@@ -60,13 +60,27 @@ def test_rolled_back_entry_is_present_in_real_migrations():
 
     Guards against future refactors that accidentally drop the entry and
     cause the original UNRESOLVED_COLUMN error to reappear on fresh
-    schemas.
+    schemas. The migration list was extracted from ``_migrate_add_columns``
+    into ``ddl.ADDITIVE_COLUMN_MIGRATIONS`` (the loop now iterates it), so
+    the guard inspects the real list rather than the function source.
     """
-    import inspect
+    from genie_space_optimizer.optimization.ddl import (
+        ADDITIVE_COLUMN_MIGRATIONS,
+        TABLE_ITERATIONS,
+    )
 
-    src = inspect.getsource(state_mod._migrate_add_columns)
-    assert '"rolled_back"' in src, "migration for rolled_back missing"
-    assert "BOOLEAN" in src and "DEFAULT false" in src
+    entry = next(
+        (
+            (table, col, col_def)
+            for table, col, col_def in ADDITIVE_COLUMN_MIGRATIONS
+            if col == "rolled_back"
+        ),
+        None,
+    )
+    assert entry is not None, "migration for rolled_back missing"
+    table, _col, col_def = entry
+    assert table == TABLE_ITERATIONS
+    assert "BOOLEAN" in col_def and "DEFAULT false" in col_def
 
 
 def test_migration_handles_unquoted_default_literal():
