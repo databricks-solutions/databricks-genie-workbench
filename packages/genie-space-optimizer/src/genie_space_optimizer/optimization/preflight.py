@@ -24,7 +24,10 @@ from genie_space_optimizer.common.config import (
     TARGET_BENCHMARK_COUNT,
     format_mlflow_template,
 )
-from genie_space_optimizer.common.genie_client import fetch_space_config
+from genie_space_optimizer.common.genie_client import (
+    compute_benchmark_window_recommendation,
+    fetch_space_config,
+)
 from genie_space_optimizer.common.genie_schema import validate_serialized_space
 from genie_space_optimizer.common.mlflow_names import default_tags, preflight_run_name
 from genie_space_optimizer.common.uc_metadata import (
@@ -2427,95 +2430,14 @@ def preflight_validate_benchmarks(
     }
 
 
-def compute_benchmark_window_recommendation(
-    benchmarks: list[dict],
-    *,
-    window_min: int = BENCHMARK_WINDOW_MIN,
-    window_max: int = BENCHMARK_WINDOW_MAX,
-) -> dict:
-    """Recommend how to bring the validated set into the 30–40 window (D8).
+class BenchmarkPushError(RuntimeError):
+    """Raised when a REQUIRED preflight benchmark push fails.
 
-    Pure function — produces a RECOMMENDATION only; it never mutates or
-    drops anything (prune is never a silent auto-delete). Returns a dict:
-
-    * ``status`` — ``within_window`` | ``over_window`` | ``under_window``
-    * ``count`` — current validated count
-    * ``window`` — ``[window_min, window_max]``
-    * ``recommended_prune`` — for ``over_window``, the list of question ids
-      recommended for removal (EXPLAIN-invalid first — none survive
-      validation, so in practice near-duplicates, then lowest priority),
-      trimmed down to ``window_max``.
-    * ``recommended_topup`` — for ``under_window``, how many synthetic
-      questions to generate to reach ``window_min``.
-
-    Near-duplicate detection reuses the same normalized-question n-gram
-    Jaccard (>= 0.90) the publisher uses for merge dedup, so the
-    recommendation is consistent with how rows actually merge.
+    A failed required push means the live space still holds the stale
+    benchmark set, so baseline eval would score against the wrong corpus
+    (contract 1: benchmarks are pushed BEFORE eval). Raising here aborts
+    preflight so eval never runs on stale benchmarks.
     """
-    from genie_space_optimizer.common.genie_client import (
-        _ngram_similarity_for_dedup,
-        _normalize_question_text,
-    )
-
-    count = len(benchmarks)
-    rec: dict[str, Any] = {
-        "count": count,
-        "window": [window_min, window_max],
-        "recommended_prune": [],
-        "recommended_topup": 0,
-    }
-
-    def _qid(b: dict) -> str:
-        return str(b.get("id", b.get("question_id", "")) or "")
-
-    if count < window_min:
-        rec["status"] = "under_window"
-        rec["recommended_topup"] = window_min - count
-        return rec
-
-    if count <= window_max:
-        rec["status"] = "within_window"
-        return rec
-
-    # over_window — recommend trimming to window_max. Order of removal:
-    # near-duplicates first (keep the higher-priority member of each
-    # near-dup pair), then lowest priority. NEVER applied automatically.
-    rec["status"] = "over_window"
-    norms = [(_qid(b), _normalize_question_text(str(b.get("question", "")))) for b in benchmarks]
-    prio = {_qid(b): str(b.get("priority", "")) for b in benchmarks}
-    # P0 ranks highest (kept); blank/other lowest.
-    prio_rank = {"P0": 0, "P1": 1, "P2": 2}
-
-    near_dup_ids: list[str] = []
-    kept: list[tuple[str, str]] = []
-    for qid, norm in norms:
-        if not norm:
-            continue
-        is_dup = any(
-            _ngram_similarity_for_dedup(norm, kept_norm) >= 0.90
-            for _kid, kept_norm in kept
-        )
-        if is_dup:
-            near_dup_ids.append(qid)
-        else:
-            kept.append((qid, norm))
-
-    over_by = count - window_max
-    prune: list[str] = list(near_dup_ids[:over_by])
-    if len(prune) < over_by:
-        # Still over — recommend lowest-priority survivors (stable order).
-        remaining = [
-            qid for qid, _ in norms
-            if qid not in prune
-        ]
-        remaining.sort(key=lambda q: prio_rank.get(prio.get(q, ""), 3))
-        for qid in reversed(remaining):
-            if len(prune) >= over_by:
-                break
-            if qid not in prune:
-                prune.append(qid)
-    rec["recommended_prune"] = prune[:over_by]
-    return rec
 
 
 def preflight_push_benchmarks_to_space(
@@ -2529,7 +2451,6 @@ def preflight_push_benchmarks_to_space(
     *,
     rejected_benchmarks: list[dict] | None = None,
     changed_benchmarks: list[dict] | None = None,
-    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict:
     """Sub-step 4b (GSO v2): push the validated benchmark set into the LIVE
     space at preflight — BEFORE baseline eval — and record provenance.
@@ -2541,16 +2462,25 @@ def preflight_push_benchmarks_to_space(
       into ``serialized_space.benchmarks.questions`` so the official
       Benchmark API scores against it from baseline onward. There is NO
       train/held-out split — the benchmark is held out by nature. User-
-      authored rows are never deleted.
+      authored rows are never deleted, and the merged set is never sliced
+      or truncated (the publisher fails closed on the Genie API hard cap
+      rather than dropping rows).
     * **Prune-invalid before publish:** a final defensive guard drops any
       row that is not EXPLAIN-valid or lacks ground-truth SQL, so a
       SQL-erroring question can never be published.
-    * **Window (D8):** a 30–40 recommendation is computed and surfaced in
-      the run state (``> max`` ⇒ recommended prune set; ``< min`` ⇒ top-up
-      count). Recommendation only — never a silent auto-delete.
-    * **Provenance ledger (§3.5):** every added / removed / changed row is
-      written to ``genie_opt_benchmark_mutations``. The preflight
-      ``config_snapshot`` remains the discard revert anchor (unchanged).
+    * **Window (D8):** a 30–40 recommendation is computed over the
+      POST-MERGE live set (existing live rows + net-new additions, after
+      dedupe) returned by the publisher, and surfaced in the run state
+      (``> max`` ⇒ recommended prune set; ``< min`` ⇒ top-up count).
+      Recommendation only — never a silent auto-delete.
+    * **Fail closed (contract 1):** when publishing is enabled and there is
+      a non-empty validated set, a push failure (publisher raised, or the
+      merged set exceeds the Genie API hard cap) raises
+      :class:`BenchmarkPushError` so eval never runs against the stale set.
+    * **Provenance ledger (§3.5):** every added / removed / changed row —
+      plus any over-window prune RECOMMENDATION — is written to
+      ``genie_opt_benchmark_mutations``. The preflight ``config_snapshot``
+      remains the discard revert anchor (unchanged).
 
     Returns a summary dict (also used by the test harness).
     """
@@ -2568,35 +2498,15 @@ def preflight_push_benchmarks_to_space(
         else:
             pruned_at_push.append(b)
 
-    # ── 30–40 window recommendation (surfaced, never auto-applied) ───
-    window = compute_benchmark_window_recommendation(pushable)
-    _w_lines = [_pf_section("PREFLIGHT — BENCHMARK WINDOW (30–40)")]
-    _w_lines.append(_pf_kv("Validated count", window["count"]))
-    _w_lines.append(_pf_kv("Window", f"{BENCHMARK_WINDOW_MIN}–{BENCHMARK_WINDOW_MAX}"))
-    _w_lines.append(_pf_kv("Status", window["status"]))
-    if window["status"] == "over_window":
-        _w_lines.append(_pf_kv(
-            "Recommended prune (ids)",
-            ", ".join(window["recommended_prune"][:20]) or "(none)",
-        ))
-        _w_lines.append("  NOTE: recommendation only — no rows auto-deleted.")
-    elif window["status"] == "under_window":
-        _w_lines.append(_pf_kv("Recommended synthesis top-up", window["recommended_topup"]))
-    _w_lines.append(_pf_bar())
-    print("\n".join(_w_lines))
-
-    try:
-        write_stage(
-            spark, run_id, "PREFLIGHT_BENCHMARK_WINDOW", "COMPLETE",
-            task_key="preflight", catalog=catalog, schema=schema,
-            detail=window,
-        )
-    except Exception:
-        logger.debug("Could not write benchmark-window stage", exc_info=True)
-
     # ── Push (additive/merge-only) into the live space ───────────────
+    # The push happens FIRST so the window recommendation below can be
+    # computed over the real POST-MERGE live set returned by the publisher.
     push_report = None
     published_count = 0
+    push_required = bool(PUBLISH_BENCHMARKS_TO_SPACE and pushable)
+    push_failure_reason: str | None = None
+    push_exc: Exception | None = None
+
     if not PUBLISH_BENCHMARKS_TO_SPACE:
         write_stage(
             spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "SKIPPED",
@@ -2614,37 +2524,110 @@ def preflight_push_benchmarks_to_space(
             publish_benchmarks_to_genie_space_with_report,
         )
         try:
+            # NOTE: do NOT pass the train/held-out cap here — the live
+            # publisher caps only on the genuine Genie API hard limit
+            # (its default) and never truncates the merged set.
             push_report = publish_benchmarks_to_genie_space_with_report(
-                w, space_id, pushable, max_benchmark_count, run_id=run_id,
+                w, space_id, pushable, run_id=run_id,
             )
-            published_count = push_report.added_count
-            write_stage(
-                spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "COMPLETE",
-                task_key="preflight", catalog=catalog, schema=schema,
-                detail={
-                    "added": push_report.added_count,
-                    "dedup_skipped": push_report.dedup_skipped,
-                    "mirror_skipped": push_report.mirror_skipped,
-                    "merged_total": push_report.merged_total,
-                    "pushable": len(pushable),
-                    "window_status": window["status"],
-                },
-            )
-        except Exception:
-            logger.warning(
-                "Preflight benchmark push to space %s failed — optimization "
-                "continues; baseline will score the space's existing set",
+        except Exception as exc:
+            push_exc = exc
+            push_failure_reason = f"publish_raised:{type(exc).__name__}: {exc}"
+            logger.error(
+                "Preflight benchmark push to space %s raised — eval must NOT "
+                "run against the stale live benchmark set",
                 space_id, exc_info=True,
             )
             write_stage(
                 spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "FAILED",
                 task_key="preflight", catalog=catalog, schema=schema,
-                error_message="Preflight benchmark push failed (non-fatal)",
+                error_message=push_failure_reason[:500],
             )
+        else:
+            if push_report.over_cap or not push_report.patched:
+                push_failure_reason = (
+                    f"over_cap:merged {push_report.merged_total} > hard cap "
+                    f"{push_report.hard_cap}"
+                    if push_report.over_cap
+                    else "publisher_did_not_patch"
+                )
+                logger.error(
+                    "Preflight benchmark push to space %s not applied (%s) — "
+                    "eval must NOT run against the stale live benchmark set",
+                    space_id, push_failure_reason,
+                )
+                write_stage(
+                    spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "FAILED",
+                    task_key="preflight", catalog=catalog, schema=schema,
+                    error_message=push_failure_reason[:500],
+                    detail={
+                        "over_cap": push_report.over_cap,
+                        "merged_total": push_report.merged_total,
+                        "hard_cap": push_report.hard_cap,
+                        "pushable": len(pushable),
+                    },
+                )
+            else:
+                published_count = push_report.added_count
+                write_stage(
+                    spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "COMPLETE",
+                    task_key="preflight", catalog=catalog, schema=schema,
+                    detail={
+                        "added": push_report.added_count,
+                        "dedup_skipped": push_report.dedup_skipped,
+                        "mirror_skipped": push_report.mirror_skipped,
+                        "merged_total": push_report.merged_total,
+                        "existing_count": push_report.existing_count,
+                        "pushable": len(pushable),
+                        "window_status": (push_report.window or {}).get("status"),
+                    },
+                )
+
+    # ── 30–40 window recommendation over the POST-MERGE set (D8) ─────
+    # Authoritative source is the publisher's post-merge recommendation
+    # (existing live rows + net-new additions, after dedupe). Only when no
+    # merge happened (publishing disabled / nothing pushable / push raised
+    # before merging) do we fall back to the validated set as a rough
+    # indicator — nothing was merged into the live space in that case.
+    if push_report is not None and push_report.window is not None:
+        window = push_report.window
+        window_basis = "post_merge_live_set"
+    else:
+        window = compute_benchmark_window_recommendation(pushable)
+        window_basis = "validated_set"
+
+    _w_lines = [_pf_section("PREFLIGHT — BENCHMARK WINDOW (30–40)")]
+    _w_lines.append(_pf_kv("Post-merge count", window["count"]))
+    _w_lines.append(_pf_kv("Window", f"{BENCHMARK_WINDOW_MIN}–{BENCHMARK_WINDOW_MAX}"))
+    _w_lines.append(_pf_kv("Basis", window_basis))
+    _w_lines.append(_pf_kv("Status", window["status"]))
+    if window["status"] == "over_window":
+        _prune_ids = window.get("recommended_prune", [])
+        # stdout stays truncated to the first 20 ids; the full list lands in
+        # the structured stage detail and the provenance ledger below.
+        _shown = ", ".join(_prune_ids[:20]) or "(none)"
+        if len(_prune_ids) > 20:
+            _shown += f", … (+{len(_prune_ids) - 20} more; full list in ledger)"
+        _w_lines.append(_pf_kv("Recommended prune (ids)", _shown))
+        _w_lines.append("  NOTE: recommendation only — no rows auto-deleted.")
+    elif window["status"] == "under_window":
+        _w_lines.append(_pf_kv("Recommended synthesis top-up", window["recommended_topup"]))
+    _w_lines.append(_pf_bar())
+    print("\n".join(_w_lines))
+
+    try:
+        write_stage(
+            spark, run_id, "PREFLIGHT_BENCHMARK_WINDOW", "COMPLETE",
+            task_key="preflight", catalog=catalog, schema=schema,
+            detail={**window, "basis": window_basis},
+        )
+    except Exception:
+        logger.debug("Could not write benchmark-window stage", exc_info=True)
 
     # ── Provenance ledger (§3.5) ─────────────────────────────────────
     ledger_rows: list[dict] = []
-    if push_report is not None:
+    # Net-new push set — only rows that were actually patched into the space.
+    if push_report is not None and push_report.patched:
         for a in push_report.added:
             ledger_rows.append({
                 "question_id": a.get("id", ""),
@@ -2683,16 +2666,48 @@ def preflight_push_benchmarks_to_space(
             "after": {"question": c.get("question", ""), "sql": c.get("after_sql", "")},
             "reason": c.get("reason") or "auto_corrected",
         })
+    # Over-window prune RECOMMENDATIONS — recorded as non-mutating advisory
+    # rows (op="prune_recommended") now that the publisher never truncates.
+    # The full recommended set is recorded (stdout above is truncated).
+    if window.get("status") == "over_window" and window.get("recommended_prune"):
+        merged_by_id = {
+            m.get("id", ""): m
+            for m in (push_report.merged if push_report is not None else [])
+            if isinstance(m, dict)
+        }
+        for qid in window["recommended_prune"]:
+            row = merged_by_id.get(qid)
+            ledger_rows.append({
+                "question_id": qid,
+                "op": "prune_recommended",
+                "before": (
+                    {"question": row.get("question", ""), "sql": row.get("sql", "")}
+                    if row else None
+                ),
+                "after": None,
+                "reason": "over_window_recommendation",
+            })
 
     ledger_written = write_benchmark_mutations(
         spark, run_id, ledger_rows, catalog=catalog, schema=schema,
     )
+
+    # ── Fail closed: a REQUIRED push must succeed before baseline eval ──
+    if push_required and push_failure_reason is not None:
+        raise BenchmarkPushError(
+            f"Preflight benchmark push to space {space_id} failed "
+            f"({push_failure_reason}). Refusing to continue: baseline eval "
+            f"must not run against the stale live benchmark set "
+            f"(contract 1 — pushed BEFORE eval)."
+        ) from push_exc
 
     return {
         "pushable_count": len(pushable),
         "pruned_at_push": len(pruned_at_push),
         "published_count": published_count,
         "window": window,
+        "window_basis": window_basis,
+        "push_ok": push_failure_reason is None,
         "ledger_rows": len(ledger_rows),
         "ledger_written": ledger_written,
         "push_report": push_report,

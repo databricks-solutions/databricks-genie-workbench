@@ -13,9 +13,12 @@ import json
 import logging
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from databricks.sdk import WorkspaceClient
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
 
 from genie_space_optimizer.common.config import (
     APPLY_MODE,
@@ -3973,6 +3976,7 @@ def apply_patch_set(
     apply_mode: str = APPLY_MODE,
     deploy_target: str | None = None,
     force_apply: bool = False,
+    benchmark_corpus: "BenchmarkCorpus | None" = None,
 ) -> dict:
     """Apply a patch set to a Genie Space (and optionally UC artifacts).
 
@@ -3980,6 +3984,15 @@ def apply_patch_set(
     High-risk patches are queued for manual review unless *force_apply*
     is ``True``, in which case all patches are applied regardless of risk
     (used by the escalation pipeline after confidence-model approval).
+
+    When *benchmark_corpus* is supplied, a last-mile deterministic
+    scored-benchmark Q/A hard-block runs over every ``add_example_sql`` /
+    ``update_example_sql`` patch before anything is applied (v2 §3.6 / D8).
+    This is the final chokepoint on the normal apply path: a patch carrying
+    a verbatim scored-benchmark question/answer is dropped here regardless
+    of which upstream path produced it, so no answer-key Q/A can be
+    persisted as an example SQL even if a caller skipped the proposal-time
+    firewall. No-op when no corpus is supplied (backward compatible).
 
     Returns an ``apply_log`` dict with pre/post snapshots and rollback info.
     """
@@ -3991,6 +4004,44 @@ def apply_patch_set(
     # no longer collapses ASSET ROUTING / AGGREGATION RULES etc. into
     # CONSTRAINTS. Behind ENABLE_REWRITE_SECTION_SPLIT (default True).
     patches = _expand_rewrite_splits(patches)
+
+    # Last-mile deterministic scored-benchmark Q/A hard-block (v2 §3.6 / D8).
+    # Every example-SQL write that reaches the applier is checked against the
+    # scored benchmark corpus, independent of which upstream path produced the
+    # patch. This guarantees the deterministic guard covers the normal apply
+    # path — not only proposal-time validation.
+    leak_dropped_patches: list[dict] = []
+    if benchmark_corpus is not None and len(benchmark_corpus) > 0:
+        from genie_space_optimizer.optimization.leakage import (
+            _EXAMPLE_SQL_PATCH_TYPES,
+            deterministic_scored_benchmark_qa_leak,
+        )
+
+        _kept_patches: list[dict] = []
+        for _p in patches:
+            _pt = str(_p.get("type") or _p.get("patch_type") or "")
+            if _pt in _EXAMPLE_SQL_PATCH_TYPES:
+                _blk, _why = deterministic_scored_benchmark_qa_leak(_p, benchmark_corpus)
+                if _blk:
+                    _dropped = dict(_p)
+                    _dropped["drop_reason"] = f"benchmark_leak:{_why}"
+                    leak_dropped_patches.append(_dropped)
+                    try:
+                        from genie_space_optimizer.optimization.optimizer import (
+                            _incr_bug4_counter,
+                        )
+                        _incr_bug4_counter("firewall_rejections")
+                    except Exception:
+                        logger.debug("bug4 counter increment failed", exc_info=True)
+                    logger.warning(
+                        "Bug #4 last-mile applier firewall: dropped %s example-SQL "
+                        "patch (%s) — a scored benchmark Q/A may not be seeded as "
+                        "an example SQL",
+                        _pt, _why,
+                    )
+                    continue
+            _kept_patches.append(_p)
+        patches = _kept_patches
 
     # T3.2: infer read/write asset sets per patch and log them so
     # operators can audit ordering. The risk-order sort below is kept
@@ -4278,6 +4329,9 @@ def apply_patch_set(
             "validation_errors": validation_errors,
             "patch_deployed": False,
             "patch_error": f"Validation failed: {validation_errors}",
+            # Surface the last-mile Bug #4 drops even on the validation-fail
+            # path so the dropped set is never silently lost.
+            "dropped_patches": early_dropped_patches + leak_dropped_patches,
         }
 
     patch_deployed = False
@@ -4384,7 +4438,7 @@ def apply_patch_set(
         "validation_errors": [],
         "patch_deployed": patch_deployed,
         "patch_error": patch_error,
-        "dropped_patches": dropped_patches + early_dropped_patches,
+        "dropped_patches": dropped_patches + early_dropped_patches + leak_dropped_patches,
         # Task 3 — per-patch applier decision audit so the harness can
         # reconcile cap-selected vs applier-applied identity sets and
         # operators can see why a patch was dropped without grepping

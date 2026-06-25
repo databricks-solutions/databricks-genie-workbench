@@ -1,10 +1,15 @@
 """GSO Optimizer v2 — Phase 2 benchmark-lifecycle preflight wiring.
 
 Covers the runner-independent preflight push:
-* the 30–40 window recommendation (D8) — never a silent auto-delete;
+* the 30–40 window recommendation (D8) — computed over the POST-MERGE live
+  set, never a silent auto-delete;
 * the prune-invalid-before-publish backstop (eval-validity);
-* the merge-only push of the WHOLE validated set into the live space;
-* the genie_opt_benchmark_mutations provenance ledger (§3.5) write path.
+* the strictly additive/merge-only push of the WHOLE validated set into the
+  live space (NEVER truncated; fail-closed only on the Genie API hard cap);
+* the fail-closed behaviour when a required push fails (contract 1 — pushed
+  BEFORE eval);
+* the genie_opt_benchmark_mutations provenance ledger (§3.5) write path,
+  including over-window prune RECOMMENDATIONS.
 """
 
 from __future__ import annotations
@@ -13,9 +18,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from genie_space_optimizer.common.genie_client import BenchmarkPushReport
-from genie_space_optimizer.optimization.preflight import (
+from genie_space_optimizer.common.genie_client import (
+    BenchmarkPushReport,
     compute_benchmark_window_recommendation,
+    publish_benchmarks_to_genie_space_with_report,
+)
+from genie_space_optimizer.optimization.preflight import (
+    BenchmarkPushError,
     preflight_push_benchmarks_to_space,
 )
 
@@ -23,6 +32,8 @@ _PUBLISH_PATH = (
     "genie_space_optimizer.common.genie_client."
     "publish_benchmarks_to_genie_space_with_report"
 )
+_FETCH_PATH = "genie_space_optimizer.common.genie_client.fetch_space_config"
+_PATCH_PATH = "genie_space_optimizer.common.genie_client.patch_space_config"
 
 
 def _bench(qid: str, question: str, sql: str, **kw) -> dict:
@@ -34,6 +45,48 @@ def _bench(qid: str, question: str, sql: str, **kw) -> dict:
     }
     row.update(kw)
     return row
+
+
+def _distinct_benchmarks(n: int, *, prefix: str) -> list[dict]:
+    """N mutually-distinct benchmark rows.
+
+    The publisher's merge dedup drops near-duplicates (n-gram Jaccard >=
+    0.90), so templated "question {i}" strings would collapse. Each row here
+    is built from index-carrying tokens so questions share almost no
+    character trigrams and survive the merge as distinct rows.
+    """
+    rows: list[dict] = []
+    for i in range(n):
+        words = " ".join(
+            f"{prefix}{i}tok{j}{(i * 31 + j * 17) % 9973}" for j in range(5)
+        )
+        rows.append(_bench(f"{prefix}{i}", words, f"SELECT {prefix!r}, {i}"))
+    return rows
+
+
+def _live_question(qid: str, question: str, sql: str) -> dict:
+    """A Genie-native benchmark question already present in the live space."""
+    return {
+        "id": qid,
+        "question": [question],
+        "answer": [{"format": "SQL", "content": [sql]}],
+    }
+
+
+def _live_from_bench(b: dict) -> dict:
+    return _live_question(b["id"], b["question"], b["expected_sql"])
+
+
+def _parsed_space(
+    *,
+    existing: list[dict] | None = None,
+    example_question_sqls: list[dict] | None = None,
+) -> dict:
+    """Build a fake ``_parsed_space`` config for the publisher to read."""
+    parsed: dict = {"benchmarks": {"questions": list(existing or [])}}
+    if example_question_sqls is not None:
+        parsed["example_question_sqls"] = example_question_sqls
+    return parsed
 
 
 # ── Window recommendation (30–40, D8) ──────────────────────────────────
@@ -75,15 +128,187 @@ def test_window_over_prefers_near_duplicates_first():
     assert rec["recommended_prune"] == ["a_dup"]
 
 
+# ── REAL publisher merge logic (no mock of the publisher) ──────────────
+
+
+def test_real_publisher_preserves_existing_live_rows_and_adds_net_new():
+    """(a) existing live rows preserved; net-new added additively."""
+    existing = [
+        _live_question("u1", "user authored one", "SELECT 11"),
+        _live_question("u2", "user authored two", "SELECT 22"),
+    ]
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    with patch(_FETCH_PATH, return_value={"_parsed_space": _parsed_space(existing=existing)}), \
+         patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1",
+            [_bench("n1", "net new alpha", "SELECT 1"),
+             _bench("n2", "net new bravo", "SELECT 2")],
+        )
+
+    assert report.patched is True
+    assert report.over_cap is False
+    assert report.existing_count == 2
+    assert report.added_count == 2
+    assert report.merged_total == 4
+    # The two user-authored rows survive verbatim in the patched config.
+    patched_qs = patched_holder["cfg"]["benchmarks"]["questions"]
+    patched_ids = [q.get("id") for q in patched_qs]
+    assert "u1" in patched_ids and "u2" in patched_ids
+    assert len(patched_qs) == 4
+
+
+def test_real_publisher_pushes_valid_31_to_40_set_without_truncation():
+    """(b) a valid 31–40 set is pushed whole — never truncated to 30."""
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    benchmarks = _distinct_benchmarks(35, prefix="b")
+    with patch(_FETCH_PATH, return_value={"_parsed_space": _parsed_space(existing=[])}), \
+         patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1", benchmarks,
+        )
+
+    assert report.patched is True
+    assert report.over_cap is False
+    assert report.added_count == 35
+    assert report.merged_total == 35
+    # All 35 written — NOT truncated to 30 (the old MAX_BENCHMARK_COUNT bug).
+    assert len(patched_holder["cfg"]["benchmarks"]["questions"]) == 35
+    assert report.window is not None
+    # 35 is inside the 30–40 working window.
+    assert report.window["status"] == "within_window"
+
+
+def test_real_publisher_over_window_is_recommend_only_no_truncation():
+    """(c) >40 rows → patched additively, recommend-only prune, NO truncation."""
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    benchmarks = _distinct_benchmarks(45, prefix="c")
+    with patch(_FETCH_PATH, return_value={"_parsed_space": _parsed_space(existing=[])}), \
+         patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1", benchmarks,
+        )
+
+    assert report.patched is True
+    assert report.over_cap is False
+    # All 45 written — the over-window prune is a recommendation, not applied.
+    assert report.merged_total == 45
+    assert len(patched_holder["cfg"]["benchmarks"]["questions"]) == 45
+    assert report.window is not None
+    assert report.window["status"] == "over_window"
+    # over by 5 → recommend exactly 5 for removal; never auto-deleted.
+    assert len(report.window["recommended_prune"]) == 5
+
+
+def test_real_publisher_post_merge_overflow_no_deletion_of_existing():
+    """(d) existing + new post-merge overflow → recommend-only, no deletion.
+
+    25 existing + 30 net-new = 55 live; the window must report over_window on
+    the POST-MERGE count of 55 (Blocking 2), and NO existing row is deleted.
+    """
+    existing_rows = _distinct_benchmarks(25, prefix="ex")
+    existing = [_live_from_bench(b) for b in existing_rows]
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    benchmarks = _distinct_benchmarks(30, prefix="nw")
+    with patch(_FETCH_PATH, return_value={"_parsed_space": _parsed_space(existing=existing)}), \
+         patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1", benchmarks,
+        )
+
+    assert report.patched is True
+    assert report.over_cap is False
+    assert report.existing_count == 25
+    assert report.added_count == 30
+    assert report.merged_total == 55
+    # Window status reflects the POST-MERGE set (55), not the 30 net-new.
+    assert report.window is not None
+    assert report.window["status"] == "over_window"
+    # Every one of the 25 existing rows is still present — none deleted.
+    patched_ids = {q.get("id") for q in patched_holder["cfg"]["benchmarks"]["questions"]}
+    for b in existing_rows:
+        assert b["id"] in patched_ids
+    assert len(patched_holder["cfg"]["benchmarks"]["questions"]) == 55
+
+
+def test_real_publisher_skips_questions_already_mirrored_in_example_sqls():
+    """(e) mirror-skip — a benchmark already in example_question_sqls is dropped."""
+    eqs = [{"question": ["show revenue by region"], "sql": ["SELECT 1"]}]
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    benchmarks = [
+        _bench("m1", "show revenue by region", "SELECT 1"),     # mirrors an example SQL
+        _bench("n1", "a genuinely different question", "SELECT 2"),
+    ]
+    with patch(
+        _FETCH_PATH,
+        return_value={"_parsed_space": _parsed_space(existing=[], example_question_sqls=eqs)},
+    ), patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1", benchmarks,
+        )
+
+    assert report.mirror_skipped == 1
+    assert report.added_count == 1
+    assert report.merged_total == 1
+    questions = [q["question"][0] for q in patched_holder["cfg"]["benchmarks"]["questions"]]
+    assert "a genuinely different question" in questions
+    assert "show revenue by region" not in questions
+
+
+def test_real_publisher_fails_closed_over_hard_cap_without_patching():
+    """Hard Genie API cap exceeded → over_cap report, NO patch performed."""
+    benchmarks = _distinct_benchmarks(6, prefix="hc")
+    patch_mock = MagicMock()
+    with patch(_FETCH_PATH, return_value={"_parsed_space": _parsed_space(existing=[])}), \
+         patch(_PATCH_PATH, patch_mock):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1", benchmarks, max_questions=5,
+        )
+
+    assert report.over_cap is True
+    assert report.patched is False
+    assert report.added_count == 0
+    assert report.merged_total == 6
+    # Fail-closed: nothing was written to the live space.
+    patch_mock.assert_not_called()
+
+
 # ── Preflight push: prune-invalid, merge, ledger ────────────────────────
 
 
 @pytest.fixture
 def captured_publish():
-    """Patch the space publisher; capture the benchmarks it receives."""
+    """Patch the space publisher; capture the benchmarks it receives and
+    return a realistic post-merge report (window computed over the merged
+    set, so the preflight's post-merge window path is exercised)."""
     captured: dict = {}
 
-    def _fake(w, space_id, benchmarks, max_questions, *, run_id=None):
+    def _fake(w, space_id, benchmarks, max_questions=None, *, run_id=None):
         captured["benchmarks"] = list(benchmarks)
         captured["space_id"] = space_id
         added = [
@@ -94,10 +319,15 @@ def captured_publish():
             }
             for b in benchmarks
         ]
+        window = compute_benchmark_window_recommendation(added)
         return BenchmarkPushReport(
             added_count=len(added),
             merged_total=len(added),
+            existing_count=0,
             added=added,
+            merged=added,
+            window=window,
+            over_cap=False,
             patched=True,
         )
 
@@ -127,6 +357,7 @@ def test_push_excludes_invalid_and_sqlless_rows_before_publish(captured_publish)
     assert pushed_ids == {"v1", "v2"}, "only EXPLAIN-valid rows with SQL may publish"
     assert out["published_count"] == 2
     assert out["pruned_at_push"] == 2
+    assert out["push_ok"] is True
 
 
 def test_push_writes_added_removed_changed_ledger_rows(captured_publish):
@@ -196,6 +427,47 @@ def test_push_writes_added_removed_changed_ledger_rows(captured_publish):
     assert out["ledger_rows"] == len(rows)
 
 
+def test_push_records_over_window_prune_recommendations_in_ledger():
+    """Over-window prune RECOMMENDATIONS are recorded as non-mutating
+    advisory ledger rows (op=prune_recommended), and the net-new push set is
+    recorded as added rows — contract 5 stays satisfied with no truncation."""
+    benchmarks = _distinct_benchmarks(45, prefix="lg")
+
+    recorded: dict = {}
+
+    def _capture(spark, run_id, rows, *, catalog, schema):
+        recorded["rows"] = rows
+        return len(rows)
+
+    # Use the REAL publisher with mocked Genie I/O so the post-merge window
+    # is genuinely over_window.
+    def _capture_patch(w, space_id, cfg, **kw):
+        return {}
+
+    with patch(
+        "genie_space_optimizer.optimization.preflight.write_stage"
+    ), patch(
+        "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
+        side_effect=_capture,
+    ), patch(
+        _FETCH_PATH, return_value={"_parsed_space": _parsed_space(existing=[])},
+    ), patch(_PATCH_PATH, side_effect=_capture_patch):
+        out = preflight_push_benchmarks_to_space(
+            MagicMock(), MagicMock(), "run-1", "space-1", "cat", "sch",
+            benchmarks,
+        )
+
+    by_op: dict[str, list[dict]] = {}
+    for r in recorded["rows"]:
+        by_op.setdefault(r["op"], []).append(r)
+
+    assert out["window"]["status"] == "over_window"
+    assert len(by_op.get("added", [])) == 45            # net-new push set recorded
+    assert len(by_op.get("prune_recommended", [])) == 5  # full recommendation recorded
+    assert all(r["reason"] == "over_window_recommendation"
+               for r in by_op["prune_recommended"])
+
+
 def test_push_skips_when_publishing_disabled(monkeypatch, captured_publish):
     monkeypatch.setattr(
         "genie_space_optimizer.optimization.preflight.PUBLISH_BENCHMARKS_TO_SPACE",
@@ -213,9 +485,12 @@ def test_push_skips_when_publishing_disabled(monkeypatch, captured_publish):
         )
     assert "benchmarks" not in captured_publish  # publisher never called
     assert out["published_count"] == 0
+    assert out["push_ok"] is True  # disabled push is not a failure
 
 
-def test_push_is_nonfatal_when_publish_raises(monkeypatch):
+def test_push_failure_is_fatal_when_publishing_enabled():
+    """Blocking 4: a required push that raises must FAIL the preflight job so
+    baseline eval never runs against the stale live benchmark set."""
     def _boom(*a, **k):
         raise RuntimeError("genie API down")
 
@@ -225,9 +500,28 @@ def test_push_is_nonfatal_when_publish_raises(monkeypatch):
         "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
         return_value=0,
     ):
-        out = preflight_push_benchmarks_to_space(
-            MagicMock(), MagicMock(), "run-1", "space-1", "cat", "sch",
-            [_bench("v1", "valid question one", "SELECT 1")],
-        )
-    # Push failure is swallowed; preflight continues.
-    assert out["published_count"] == 0
+        with pytest.raises(BenchmarkPushError):
+            preflight_push_benchmarks_to_space(
+                MagicMock(), MagicMock(), "run-1", "space-1", "cat", "sch",
+                [_bench("v1", "valid question one", "SELECT 1")],
+            )
+
+
+def test_push_over_cap_is_fatal_when_publishing_enabled():
+    """A required push that the publisher refuses (over hard cap, no mutation)
+    is also fatal — eval must not run against the stale set."""
+    over_cap_report = BenchmarkPushReport(
+        added_count=0, merged_total=999, existing_count=0,
+        added=[], merged=[], window=None, over_cap=True, patched=False,
+    )
+    with patch(_PUBLISH_PATH, return_value=over_cap_report), patch(
+        "genie_space_optimizer.optimization.preflight.write_stage"
+    ), patch(
+        "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
+        return_value=0,
+    ):
+        with pytest.raises(BenchmarkPushError):
+            preflight_push_benchmarks_to_space(
+                MagicMock(), MagicMock(), "run-1", "space-1", "cat", "sch",
+                [_bench("v1", "valid question one", "SELECT 1")],
+            )

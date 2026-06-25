@@ -5953,6 +5953,7 @@ def _apply_proactive_example_sqls(
         apply_patch_set,
     )
 
+    corpus = None
     if benchmarks is None:
         logger.warning(
             "_apply_proactive_example_sqls called without benchmarks — "
@@ -5987,7 +5988,12 @@ def _apply_proactive_example_sqls(
         mined_proposals = filtered
 
     patches = proposals_to_patches(mined_proposals)
-    apply_log = apply_patch_set(w, space_id, patches, metadata_snapshot, apply_mode="api")
+    # Defense-in-depth: pass the corpus so the applier's last-mile
+    # deterministic guard re-checks every example-SQL patch (v2 §3.6 / D8).
+    apply_log = apply_patch_set(
+        w, space_id, patches, metadata_snapshot, apply_mode="api",
+        benchmark_corpus=corpus,
+    )
 
     applied = apply_log.get("applied", [])
     _lines = [_section("PROACTIVE BENCHMARK EXAMPLE SQLs", "-")]
@@ -20132,8 +20138,17 @@ def _run_lever_loop(
                 _pre_ag_snapshot_capture.get("digest", ""),
             )
 
+            # Last-mile Bug #4 guard: hand the applier the scored benchmark
+            # corpus so its deterministic example-SQL hard-block re-checks
+            # every patch on the normal apply path, regardless of which
+            # upstream path produced it (v2 §3.6 / D8).
+            from genie_space_optimizer.optimization.leakage import (
+                BenchmarkCorpus as _BenchmarkCorpus,
+            )
+            _lever_loop_corpus = _BenchmarkCorpus.from_benchmarks(benchmarks)
             apply_log = apply_patch_set(
                 w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
+                benchmark_corpus=_lever_loop_corpus,
             )
 
             # Cycle 5 T1 — productive-iteration accounting. Accumulate the

@@ -486,11 +486,13 @@ except Exception as exc:
 
 try:
     _banner("Step 1d.2 — Push Benchmarks to Live Space")
+    # The live publisher is strictly additive/merge-only and caps only on
+    # the genuine Genie API hard limit — it does NOT take the train/held-out
+    # `effective_max`, which would wrongly truncate a valid 31–40 set.
     ctx_push = preflight_push_benchmarks_to_space(
         w, spark, run_id, space_id, catalog, schema, _benchmarks,
         rejected_benchmarks=ctx_valid.get("rejected_benchmarks"),
         changed_benchmarks=ctx_valid.get("changed_benchmarks"),
-        max_benchmark_count=effective_max,
     )
     _log(
         "Benchmark push complete",
@@ -500,10 +502,14 @@ try:
         ledger_rows=ctx_push["ledger_rows"],
     )
 except Exception as exc:
-    # Non-fatal: the push is best-effort. Baseline can still score the
-    # space's existing benchmark set if the push fails.
-    _banner("Benchmark Push WARNING (non-fatal)")
+    # FATAL when publishing is enabled (contract 1): a failed required push
+    # means the live space still holds the stale benchmark set, so baseline
+    # eval would score against the wrong corpus. preflight_push_benchmarks_to_space
+    # raises BenchmarkPushError in that case — abort the preflight job rather
+    # than silently falling through to eval on stale benchmarks.
+    _banner("Benchmark Push FAILED")
     _log("Push failure details", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
+    raise
 
 # COMMAND ----------
 

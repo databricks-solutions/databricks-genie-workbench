@@ -1373,12 +1373,16 @@ def write_benchmark_mutations(
 ) -> int:
     """Append GSO benchmark-mutation provenance rows (v2 §3.5).
 
-    Each ``row`` describes one mutation GSO made to the user's live Genie
-    Space benchmark set: ``{question_id, op, before, after, reason}`` where
-    ``op`` ∈ {``added``, ``removed``, ``changed``}. ``before`` / ``after``
-    are ``{question, sql}`` dicts (JSON-serialized here) or ``None``.
-    No-op when ``rows`` is empty. Best-effort: a write failure is logged
-    but never aborts preflight (the push itself is the source of truth).
+    Each ``row`` describes one mutation (or advisory) GSO recorded against
+    the user's live Genie Space benchmark set:
+    ``{question_id, op, before, after, reason}`` where ``op`` ∈
+    {``added``, ``removed``, ``changed``, ``prune_recommended``}.
+    ``prune_recommended`` is a NON-mutating advisory row: the over-window
+    (30–40) prune recommendation, recorded for transparency because the
+    publisher never auto-prunes. ``before`` / ``after`` are
+    ``{question, sql}`` dicts (JSON-serialized here) or ``None``. No-op when
+    ``rows`` is empty. Best-effort: a write failure is logged but never
+    aborts preflight (the push itself is the source of truth).
 
     Returns the number of rows written.
     """
@@ -1397,7 +1401,7 @@ def write_benchmark_mutations(
 
     for r in rows:
         op = str(r.get("op", "")).strip()
-        if op not in ("added", "removed", "changed"):
+        if op not in ("added", "removed", "changed", "prune_recommended"):
             logger.debug("Skipping benchmark mutation with bad op=%r", op)
             continue
         payload: dict[str, Any] = {
