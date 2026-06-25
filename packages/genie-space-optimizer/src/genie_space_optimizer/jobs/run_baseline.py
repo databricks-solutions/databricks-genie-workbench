@@ -415,6 +415,8 @@ try:
     _banner("Persisting Baseline State")
     baseline_out = baseline_persist_state(
         w, spark, run_id, model_id, catalog, schema, eval_result, scorecard,
+        # GSO v2 Phase 4 (D3): record the baseline config as iter-0 config_json.
+        config_snapshot=_baseline_config,
     )
     _log(
         "Baseline finished",
