@@ -282,8 +282,6 @@ def create_run(
     levers: list[int] | None = None,
     apply_mode: str = "genie_config",
     deploy_target: str | None = None,
-    experiment_name: str | None = None,
-    experiment_id: str | None = None,
     config_snapshot: dict | None = None,
     triggered_by: str | None = None,
     llm_model: str | None = None,
@@ -307,10 +305,6 @@ def create_run(
     }
     if deploy_target is not None:
         row["deploy_target"] = deploy_target
-    if experiment_name is not None:
-        row["experiment_name"] = experiment_name
-    if experiment_id is not None:
-        row["experiment_id"] = experiment_id
     if config_snapshot is not None:
         row["config_snapshot"] = json.dumps(config_snapshot)
     if triggered_by is not None:
@@ -384,15 +378,9 @@ def update_run_status(
     best_iteration: int | None = None,
     best_accuracy: float | None = None,
     best_repeatability: float | None = None,
-    best_model_id: str | None = None,
     convergence_reason: str | None = None,
     job_run_id: str | None = None,
     job_id: str | None = None,
-    experiment_name: str | None = None,
-    experiment_id: str | None = None,
-    labeling_session_name: str | None = None,
-    labeling_session_run_id: str | None = None,
-    labeling_session_url: str | None = None,
     config_snapshot: dict | None = None,
     warehouse_id: str | None = None,
     human_corrections: list[dict] | None = None,
@@ -416,24 +404,12 @@ def update_run_status(
         updates["best_accuracy"] = best_accuracy
     if best_repeatability is not None:
         updates["best_repeatability"] = best_repeatability
-    if best_model_id is not None:
-        updates["best_model_id"] = best_model_id
     if convergence_reason is not None:
         updates["convergence_reason"] = convergence_reason
     if job_run_id is not None:
         updates["job_run_id"] = job_run_id
     if job_id is not None:
         updates["job_id"] = job_id
-    if experiment_name is not None:
-        updates["experiment_name"] = experiment_name
-    if experiment_id is not None:
-        updates["experiment_id"] = experiment_id
-    if labeling_session_name is not None:
-        updates["labeling_session_name"] = labeling_session_name
-    if labeling_session_run_id is not None:
-        updates["labeling_session_run_id"] = labeling_session_run_id
-    if labeling_session_url is not None:
-        updates["labeling_session_url"] = labeling_session_url
     if config_snapshot is not None:
         updates["config_snapshot"] = json.dumps(config_snapshot)
     if warehouse_id is not None:
@@ -680,7 +656,6 @@ def write_iteration(
     schema: str,
     lever: int | None = None,
     eval_scope: str = "full",
-    model_id: str | None = None,
     reflection_json: dict | None = None,
     config_snapshot: dict | None = None,
 ) -> None:
@@ -710,8 +685,6 @@ def write_iteration(
         if val is None:
             return "NULL"
         return f"'{_esc(json.dumps(val))}'"
-
-    mlflow_run_id = eval_result.get("mlflow_run_id")
 
     # Bug #2 denominator contract fields.
     # Read from eval_result but fall back sensibly:
@@ -777,7 +750,7 @@ def write_iteration(
     )
 
     col_names = (
-        "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
+        "run_id, iteration, lever, eval_scope, timestamp, "
         "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
         "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
         "thresholds_met, rows_json, reflection_json, "
@@ -795,8 +768,6 @@ def write_iteration(
             str(lever) if lever is not None else "NULL",
             f"'{eval_scope}'",
             f"TIMESTAMP '{now}'",
-            f"'{mlflow_run_id}'" if mlflow_run_id else "NULL",
-            f"'{model_id}'" if model_id else "NULL",
             str(eval_result.get("overall_accuracy", 0.0)),
             str(_total_questions),
             str(eval_result.get("correct_count", 0)),

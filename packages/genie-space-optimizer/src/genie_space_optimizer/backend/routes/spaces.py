@@ -825,17 +825,9 @@ def do_start_optimization(
                 detail=f"An optimization is already in progress for this space (run {active_id})",
             )
 
-    prev_experiment: str | None = None
-    if not runs_df.empty:
-        terminal = runs_df[~runs_df["status"].isin(list(_ACTIVE_RUN_STATUSES))]
-        if not terminal.empty:
-            exp_val = terminal.iloc[0].get("experiment_name")
-            if exp_val and str(exp_val) not in ("", "None", "nan"):
-                prev_experiment = str(exp_val)
-
-    if prev_experiment and not prev_experiment.startswith("/Shared/"):
-        logger.warning("Ignoring legacy experiment path %s, using /Shared/ template", prev_experiment)
-        prev_experiment = None
+    # GSO v2 Phase 5 (D3): the ``experiment_name`` pointer column was scrubbed.
+    # The optimization job self-resolves a deterministic MLflow experiment path
+    # from (space_id, domain) in ``preflight_setup_experiment``.
 
     run_id = str(uuid.uuid4())
 
@@ -953,11 +945,6 @@ def do_start_optimization(
             ),
         )
 
-    from genie_space_optimizer.common.config import EXPERIMENT_PATH_TEMPLATE, format_mlflow_template
-    experiment_name = prev_experiment or format_mlflow_template(
-        EXPERIMENT_PATH_TEMPLATE, space_id=space_id, domain=domain,
-    )
-
     resolved_levers = levers if levers else list(DEFAULT_LEVER_ORDER)
 
     if use_warehouse_fallback:
@@ -967,7 +954,6 @@ def do_start_optimization(
             catalog=config.catalog, schema=config.schema_name,
             apply_mode=requested_apply_mode, levers=resolved_levers,
             triggered_by=current_user,
-            experiment_name=experiment_name,
             config_snapshot=space_snapshot if space_snapshot else None,
             llm_model=config.llm_model or None,
         )
@@ -982,7 +968,6 @@ def do_start_optimization(
             apply_mode=requested_apply_mode,
             levers=resolved_levers,
             triggered_by=current_user,
-            experiment_name=experiment_name,
             config_snapshot=space_snapshot if space_snapshot else None,
             llm_model=config.llm_model or None,
         )
@@ -999,7 +984,6 @@ def do_start_optimization(
             apply_mode=requested_apply_mode,
             levers=levers_str,
             triggered_by=current_user,
-            experiment_name=experiment_name or "",
             deploy_target=deploy_target or "",
             warehouse_id=config.warehouse_id or "",
             target_benchmark_count=str(target_benchmark_count) if target_benchmark_count else "",

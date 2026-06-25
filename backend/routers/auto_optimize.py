@@ -48,12 +48,12 @@ _ITER_COLS = _ITER_COLS_V2 = (
     "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
     "evaluated_count, excluded_count, quarantined_benchmarks_json, "
     "scores_json, failures_json, thresholds_met, lever, repeatability_pct, "
-    "reflection_json, mlflow_run_id, rolled_back"
+    "reflection_json, rolled_back"
 )
 _ITER_COLS_LEGACY = (
     "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
     "scores_json, failures_json, thresholds_met, lever, repeatability_pct, "
-    "reflection_json, mlflow_run_id"
+    "reflection_json"
 )
 
 # Lever names — matches GSO common/config.py
@@ -1315,29 +1315,9 @@ async def get_run(run_id: RunId):
     elif host and job_id:
         links.append({"label": "Optimization Job", "url": f"{host}/jobs/{job_id}", "category": "job"})
 
-    # MLflow Experiment — deep link with experiment_id, fallback to searchFilter
-    experiment_id = run.get("experiment_id")
-    experiment_name = run.get("experiment_name")
-    if host and experiment_id:
-        mlflow_url = f"{host}/ml/experiments/{experiment_id}"
-        if workspace_id:
-            mlflow_url += f"?o={workspace_id}"
-        links.append({"label": "MLflow Experiment", "url": mlflow_url, "category": "mlflow"})
-    elif host and experiment_name:
-        from urllib.parse import quote
-        links.append({"label": "MLflow Experiment", "url": f"{host}/ml/experiments?searchFilter={quote(experiment_name)}", "category": "mlflow"})
-
-    # Per-iteration MLflow eval run links
-    if host and experiment_id:
-        for it in iterations:
-            mlflow_run_id = it.get("mlflow_run_id")
-            if not mlflow_run_id:
-                continue
-            it_num = _safe_int(it.get("iteration"))
-            if it_num is None:
-                continue
-            label = "Baseline Evaluation" if it_num == 0 else f"Iteration {it_num} Evaluation"
-            links.append({"label": label, "url": f"{host}/ml/experiments/{experiment_id}/runs/{mlflow_run_id}", "category": "mlflow"})
+    # GSO v2 Phase 5 (D3/D7): MLflow experiment / per-iteration eval-run resource
+    # links were removed (tracking is Delta-only; the experiment_* and
+    # genie_opt_iterations.mlflow_run_id pointer columns were scrubbed).
 
     if host and config.catalog and config.schema_name:
         links.append({"label": "Runs Table", "url": f"{host}/explore/data/{config.catalog}/{config.schema_name}/genie_opt_runs", "category": "data"})
@@ -1361,8 +1341,6 @@ async def get_run(run_id: RunId):
         "links": links,
         "convergenceReason": run.get("convergence_reason"),
         "deploymentStatus": run.get("deploy_status"),
-        "labelingSessionUrl": run.get("labeling_session_url") or None,
-        "labelingSessionName": run.get("labeling_session_name") or None,
     }
 
 

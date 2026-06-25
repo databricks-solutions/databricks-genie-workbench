@@ -16,7 +16,6 @@ from genie_space_optimizer.common.mlflow_names import (
     finalize_run_name,
     full_eval_run_name,
     iteration_outcome_run_name,
-    labeling_run_name,
     p0_eval_run_name,
     preflight_run_name,
     slice_eval_run_name,
@@ -90,10 +89,6 @@ def test_preflight_run_name_default():
         preflight_run_name(_RUN_ID)
         == f"iter_00 / preflight / benchmark_generation / {_RUN}"
     )
-
-
-def test_labeling_run_name():
-    assert labeling_run_name(_RUN_ID) == f"iter_00 / labeling_session / {_RUN}"
 
 
 def test_retry_suffix_appended_idempotently():

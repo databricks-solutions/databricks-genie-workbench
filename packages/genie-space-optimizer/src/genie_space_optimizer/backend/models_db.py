@@ -33,13 +33,8 @@ class GSORunRecord(SQLModel, table=True):
     best_accuracy: Optional[float] = None
     best_repeatability: Optional[float] = None
     convergence_reason: Optional[str] = None
-    experiment_name: Optional[str] = None
-    experiment_id: Optional[str] = None
     config_snapshot: Optional[str] = None  # JSON
     triggered_by: Optional[str] = None
-    labeling_session_name: Optional[str] = None
-    labeling_session_run_id: Optional[str] = None
-    labeling_session_url: Optional[str] = None
     updated_at: datetime = Field(default_factory=lambda: datetime.utcnow())
 
 
@@ -74,8 +69,6 @@ class GSOIterationRecord(SQLModel, table=True):
     lever: Optional[int] = None
     eval_scope: str = Field(max_length=32)
     timestamp: datetime
-    mlflow_run_id: Optional[str] = Field(default=None, max_length=128)
-    model_id: Optional[str] = Field(default=None, max_length=128)
     overall_accuracy: float
     total_questions: int
     correct_count: int

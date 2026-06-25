@@ -60,7 +60,6 @@ class RunEvaluationKwargs(TypedDict, total=False):
     metric_view_measures: dict[str, set[str]] | None
     optimization_run_id: str
     lever: int | None
-    model_creation_kwargs: dict[str, Any] | None
     max_benchmark_count: int
     run_name: str | None
     extra_tags: dict[str, str] | None
