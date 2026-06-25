@@ -7,6 +7,7 @@ pulling in pandas or other heavy runtime dependencies.
 
 from genie_space_optimizer.common.config import (
     TABLE_ASI,
+    TABLE_BENCHMARK_MUTATIONS,
     TABLE_FINALIZE_ATTESTATION,
     TABLE_ITERATIONS,
     TABLE_PATCHES,
@@ -500,6 +501,34 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
+# GSO v2 (§3.5): benchmark-mutation provenance ledger. One row per GSO
+# mutation to the user's LIVE Genie Space benchmark set — added at the
+# preflight push, removed at the EXPLAIN-invalid / validation prune,
+# changed at auto-correction. ``before`` / ``after`` carry the question
+# text + SQL so the Workbench UI can render the added/removed/changed diff
+# (the backend endpoint + view are Phase 6 — out of scope for the engine
+# write path defined here). The preflight ``config_snapshot`` on
+# genie_opt_runs remains the discard revert anchor; this ledger is a
+# transparency record, not a rollback mechanism.
+_GENIE_OPT_BENCHMARK_MUTATIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_benchmark_mutations (
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
+    question_id         STRING        NOT NULL COMMENT 'Benchmark question id the mutation applies to',
+    op                  STRING        NOT NULL COMMENT 'added | removed | changed | prune_recommended (advisory, non-mutating)',
+    before              STRING                 COMMENT 'JSON {question, sql} prior state (NULL for added)',
+    after               STRING                 COMMENT 'JSON {question, sql} new state (NULL for removed / prune_recommended)',
+    reason              STRING                 COMMENT 'Why GSO made this mutation (preflight_push | explain_invalid | over_window_recommendation | ...)',
+    logged_at           TIMESTAMP     NOT NULL COMMENT 'When this mutation was recorded'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'GSO v2 provenance ledger — every benchmark question GSO added/removed/changed in the live Genie Space'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
 # ── Combined DDL dict ────────────────────────────────────────────────────
 
 _ALL_DDL: dict[str, str] = {
@@ -518,6 +547,7 @@ _ALL_DDL: dict[str, str] = {
     TABLE_HUMAN_REQUIRED: _GENIE_EVAL_HUMAN_REQUIRED_DDL,
     TABLE_PROACTIVE_CORPUS_PROFILE: _GENIE_EVAL_PROACTIVE_CORPUS_PROFILE_DDL,
     TABLE_PROACTIVE_PATCHES: _GENIE_EVAL_PROACTIVE_PATCHES_DDL,
+    TABLE_BENCHMARK_MUTATIONS: _GENIE_OPT_BENCHMARK_MUTATIONS_DDL,
 }
 
 
