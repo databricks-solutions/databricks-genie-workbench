@@ -811,6 +811,17 @@ With the Phase 4 default the corpus is exactly 30 questions (~25 train + ~5
 held out via HELD_OUT_RATIO=0.15). Flip GSO_NEW_SIZING=0 to restore the
 legacy 24/29 values."""
 
+BENCHMARK_WINDOW_MIN = int(os.environ.get("GSO_BENCHMARK_WINDOW_MIN", "30") or "30")
+"""GSO v2 (D8) — lower bound of the working benchmark window. At preflight,
+a validated set BELOW this count triggers a synthesis top-up recommendation
+(the whole set is scored each eval; there is no train/held-out split)."""
+
+BENCHMARK_WINDOW_MAX = int(os.environ.get("GSO_BENCHMARK_WINDOW_MAX", "40") or "40")
+"""GSO v2 (D8) — upper bound of the working benchmark window. At preflight,
+a validated set ABOVE this count produces a RECOMMENDED prune set
+(EXPLAIN-invalid first, then near-duplicates) surfaced for the UI. The prune
+is a recommendation only — GSO never silently auto-deletes benchmark rows."""
+
 MIN_TRAIN_BENCHMARK_COUNT = 20
 """Minimum desired train benchmark count after split assignment."""
 
@@ -3802,6 +3813,13 @@ TABLE_SCAN_SNAPSHOTS = "genie_opt_scan_snapshots"
 """IQ Scan snapshots captured at preflight and postflight phases of an
 optimization run. One row per (run_id, phase). See
 ``genie_space_optimizer.optimization.scan_snapshots``."""
+TABLE_BENCHMARK_MUTATIONS = "genie_opt_benchmark_mutations"
+"""GSO v2 (§3.5) — provenance ledger of every benchmark mutation GSO makes
+to the user's live Genie Space: questions added (preflight push), removed
+(EXPLAIN-invalid / validation prune), or changed (auto-correction). One row
+per (run_id, question_id, op). Backed by ``ddl._GENIE_OPT_BENCHMARK_MUTATIONS_DDL``
+and written via ``state.write_benchmark_mutations``. The backend endpoint +
+UI 'Benchmark changes' view that consume it are Phase 6."""
 
 # ── 13. MLflow Conventions ─────────────────────────────────────────────
 

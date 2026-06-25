@@ -140,6 +140,7 @@ from genie_space_optimizer.optimization.preflight import (
     preflight_fetch_config,
     preflight_generate_benchmarks,
     preflight_load_human_feedback,
+    preflight_push_benchmarks_to_space,
     preflight_setup_experiment,
     preflight_validate_benchmarks,
 )
@@ -465,6 +466,49 @@ try:
 except Exception as exc:
     _banner("Benchmark Validation FAILED")
     _log("Failure details", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
+    raise
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 1d.2: Push Benchmarks to Live Space (GSO v2 / D8)
+# MAGIC
+# MAGIC Push the WHOLE EXPLAIN-validated benchmark set (additive/merge-only) into
+# MAGIC `serialized_space.benchmarks.questions` BEFORE baseline eval so the official
+# MAGIC Benchmark API scores against GSO's working set from iteration 0 onward. No
+# MAGIC train/held-out split (the benchmark is held out by nature). User-authored rows
+# MAGIC are never deleted. Enforces the 30–40 window as a *recommendation* (prune >40 /
+# MAGIC top-up <30, never silent auto-delete) and records every added/removed/changed
+# MAGIC question to the `genie_opt_benchmark_mutations` provenance ledger. The preflight
+# MAGIC `config_snapshot` taken at run start remains the discard revert anchor.
+
+# COMMAND ----------
+
+try:
+    _banner("Step 1d.2 — Push Benchmarks to Live Space")
+    # The live publisher is strictly additive/merge-only and caps only on
+    # the genuine Genie API hard limit — it does NOT take the train/held-out
+    # `effective_max`, which would wrongly truncate a valid 31–40 set.
+    ctx_push = preflight_push_benchmarks_to_space(
+        w, spark, run_id, space_id, catalog, schema, _benchmarks,
+        rejected_benchmarks=ctx_valid.get("rejected_benchmarks"),
+        changed_benchmarks=ctx_valid.get("changed_benchmarks"),
+    )
+    _log(
+        "Benchmark push complete",
+        published=ctx_push["published_count"],
+        pushable=ctx_push["pushable_count"],
+        window_status=ctx_push["window"]["status"],
+        ledger_rows=ctx_push["ledger_rows"],
+    )
+except Exception as exc:
+    # FATAL when publishing is enabled (contract 1): a failed required push
+    # means the live space still holds the stale benchmark set, so baseline
+    # eval would score against the wrong corpus. preflight_push_benchmarks_to_space
+    # raises BenchmarkPushError in that case — abort the preflight job rather
+    # than silently falling through to eval on stale benchmarks.
+    _banner("Benchmark Push FAILED")
+    _log("Push failure details", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
     raise
 
 # COMMAND ----------
