@@ -567,15 +567,32 @@ def write_eval_heartbeat(
     )
 
 
-# GSO v2 Phase 4 (D3): whitelist of Genie-domain keys that are safe to
-# persist in ``genie_opt_iterations.config_json``. Mirrors
-# ``models._SAFE_SPACE_CONFIG_KEYS`` (the MLflow artifact projection) but is
-# kept self-contained here so the Delta-only write path carries no MLflow
-# dependency (D3: Delta is the sole tracking/versioning store). Everything
-# else — notably the optimizer-internal ``_*`` keys mutated by the lever
-# loop (``_failure_clusters``, ``_data_profile``, ``_parsed_space``,
+# GSO v2 Phase 4 (D3): whitelist of Genie-domain keys persisted into
+# ``genie_opt_iterations.config_json``.
+#
+# This is INTENTIONALLY DIFFERENT from ``models._SAFE_SPACE_CONFIG_KEYS``
+# (the MLflow artifact projection) — it is not a mirror:
+#   * it EXTENDS that set with ``benchmarks`` and ``config`` because the
+#     per-iteration record must track the FULL effective serialized space
+#     (incl. the benchmark questions/SQL and the config block) that the
+#     iteration was evaluated against, not just the MLflow snapshot subset;
+#   * ``_project_config_for_iteration`` also prefers ``_parsed_space`` so a
+#     raw fetched config and an already-parsed ``metadata_snapshot`` yield
+#     the same shape;
+#   * it deliberately OMITS ``permissions`` / ``owner`` (ACL / user-identity
+#     fields) — there is no consumer of those in Delta and they are exactly
+#     the PII we must not copy into the optimization tables (reviewer
+#     suggestion #2). The omission is also the guard for a future caller
+#     that passes a raw config WITHOUT ``_parsed_space``: ACL/owner data
+#     still never reaches ``config_json``.
+# Kept self-contained here (not imported from ``models``) so the Delta-only
+# write path carries no MLflow dependency (D3: Delta is the sole store).
+# Everything else — notably the optimizer-internal ``_*`` keys mutated by
+# the lever loop (``_failure_clusters``, ``_data_profile``, ``_parsed_space``,
 # ``_uc_columns``, ``_strategy`` …) — is dropped before serialization, which
-# also removes the only source of circular references.
+# also removes the only source of circular references. The projection carries
+# no credentials/tokens/secrets: those are not Genie-domain config keys and
+# are never present on the parsed space.
 _SAFE_ITERATION_CONFIG_KEYS: frozenset[str] = frozenset({
     "data_sources",
     "instructions",
@@ -585,8 +602,6 @@ _SAFE_ITERATION_CONFIG_KEYS: frozenset[str] = frozenset({
     "id",
     "space_id",
     "warehouse_id",
-    "permissions",
-    "owner",
     "created_at",
     "updated_at",
     "tags",
@@ -1013,33 +1028,33 @@ def mark_champion_iteration(
     registration** here (Phase 5 decommissions the MLflow champion alias;
     this Delta marker is the durable signal that survives it).
 
-    First clears any prior champion flag for the run (idempotent re-marking),
-    then sets it on the row matching ``(run_id, iteration[, eval_scope])``.
-    ``eval_scope`` should be supplied (e.g. ``"full"`` or ``"enrichment"``)
-    so the marker lands on the selected row rather than a same-iteration
-    slice/p0 gate row. Best-effort: a write failure is logged, not raised —
-    champion marking is a transparency signal, never a gating mechanism.
+    Implemented as a SINGLE run-scoped conditional UPDATE that recomputes
+    ``is_champion`` for every row of the run as the boolean predicate
+    ``(iteration = <best> [AND eval_scope = <scope>])``. This is atomic: a
+    row can never be cleared without the new champion being set in the same
+    statement (there is no clear-then-set window where a mid-write failure
+    could leave the run with NO champion). ``eval_scope`` should be supplied
+    (e.g. ``"full"`` or ``"enrichment"``) so the marker lands on the selected
+    row rather than a same-iteration slice/p0 gate row. Best-effort: a write
+    failure is logged, not raised — champion marking is a transparency
+    signal, never a gating mechanism, and on failure the prior champion
+    state is left intact.
     """
     fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
     safe_run = run_id.replace("'", "''")
+    if eval_scope:
+        safe_scope = eval_scope.replace("'", "''")
+        champion_pred = (
+            f"(iteration = {int(iteration)} AND eval_scope = '{safe_scope}')"
+        )
+    else:
+        champion_pred = f"(iteration = {int(iteration)})"
     try:
         execute_delta_write_with_retry(
             spark,
-            f"UPDATE {fqn} SET is_champion = false "
-            f"WHERE run_id = '{safe_run}' AND is_champion = true",
-            operation_name="mark_champion_iteration.clear",
-            table_name=fqn,
-        )
-        scope_pred = (
-            f" AND eval_scope = '{eval_scope.replace(chr(39), chr(39) + chr(39))}'"
-            if eval_scope
-            else ""
-        )
-        execute_delta_write_with_retry(
-            spark,
-            f"UPDATE {fqn} SET is_champion = true "
-            f"WHERE run_id = '{safe_run}' AND iteration = {int(iteration)}{scope_pred}",
-            operation_name="mark_champion_iteration.set",
+            f"UPDATE {fqn} SET is_champion = {champion_pred} "
+            f"WHERE run_id = '{safe_run}'",
+            operation_name="mark_champion_iteration",
             table_name=fqn,
         )
         logger.info(

@@ -129,6 +129,36 @@ def test_projection_handles_non_dicts(bad):
     assert _project_config_for_iteration(bad) == {}
 
 
+def test_projection_omits_acl_and_owner_pii():
+    """ACL / user-identity fields must never be copied into config_json —
+    even for a raw config WITHOUT _parsed_space (the worst-case caller)."""
+    raw_without_parsed = {
+        "instructions": {"text_instructions": []},
+        "data_sources": {"tables": []},
+        # ACL / PII that the old whitelist would have kept:
+        "permissions": [{"user_name": "alice@example.com", "level": "CAN_MANAGE"}],
+        "owner": "bob@example.com",
+    }
+    out = _project_config_for_iteration(raw_without_parsed)
+    assert "permissions" not in out
+    assert "owner" not in out
+    # The benign Genie-domain config still survives.
+    assert set(out) == {"instructions", "data_sources"}
+    # And the serialized form leaks no user identity.
+    serialized = json.dumps(out)
+    assert "alice@example.com" not in serialized
+    assert "bob@example.com" not in serialized
+
+
+def test_safe_keys_exclude_acl_and_include_full_serialized_space():
+    """Pin the intentional whitelist drift: ACL fields out, benchmarks/config
+    in (full effective serialized space, not the MLflow artifact subset)."""
+    assert "permissions" not in state_mod._SAFE_ITERATION_CONFIG_KEYS
+    assert "owner" not in state_mod._SAFE_ITERATION_CONFIG_KEYS
+    assert "benchmarks" in state_mod._SAFE_ITERATION_CONFIG_KEYS
+    assert "config" in state_mod._SAFE_ITERATION_CONFIG_KEYS
+
+
 # ── 1. write_iteration config_json write path ────────────────────────────
 
 
@@ -226,36 +256,40 @@ def test_write_iteration_escapes_quotes_in_config(mock_spark_iter):
 # ── 2. champion marking ──────────────────────────────────────────────────
 
 
-def test_mark_champion_iteration_clears_then_sets(mock_spark_iter):
+def test_mark_champion_iteration_is_a_single_atomic_update(mock_spark_iter):
+    """Atomic marking: ONE run-scoped conditional UPDATE recomputes
+    is_champion for the whole run as a boolean predicate, so a row can never
+    be cleared without the new champion being set in the same statement."""
     mark_champion_iteration(
         mock_spark_iter, "run-champ", 2,
         catalog="cat", schema="sch", eval_scope="full",
     )
     stmts = [c.args[0] for c in mock_spark_iter.sql.call_args_list if c.args]
     updates = [s for s in stmts if s.strip().upper().startswith("UPDATE")]
-    assert len(updates) == 2, f"expected clear + set UPDATE, got {updates}"
+    assert len(updates) == 1, f"expected a single atomic UPDATE, got {updates}"
 
-    clear_stmt = updates[0]
-    set_stmt = updates[1]
-    # Clear targets only the run (set is_champion=false where currently true).
-    assert "SET is_champion = false" in clear_stmt and "run-champ" in clear_stmt
-    assert "iteration =" not in clear_stmt
-    # Set targets the specific (run, iter, scope).
-    assert "SET is_champion = true" in set_stmt
-    assert "iteration = 2" in set_stmt
-    assert "eval_scope = 'full'" in set_stmt
+    stmt = updates[0]
+    # The whole run is rescoped; is_champion is set to the predicate value.
+    assert "WHERE run_id = 'run-champ'" in stmt
+    assert "SET is_champion = (iteration = 2 AND eval_scope = 'full')" in stmt
+    # No separate unconditional clear (would open a no-champion window).
+    assert "SET is_champion = false" not in stmt
+    assert "SET is_champion = true" not in stmt
 
 
 def test_mark_champion_iteration_without_scope_omits_scope_predicate(mock_spark_iter):
     mark_champion_iteration(
         mock_spark_iter, "run-noscope", 5, catalog="cat", schema="sch",
     )
-    set_stmt = [
+    updates = [
         c.args[0] for c in mock_spark_iter.sql.call_args_list
-        if c.args and "SET is_champion = true" in c.args[0]
-    ][0]
-    assert "iteration = 5" in set_stmt
-    assert "eval_scope" not in set_stmt
+        if c.args and c.args[0].strip().upper().startswith("UPDATE")
+    ]
+    assert len(updates) == 1
+    stmt = updates[0]
+    assert "SET is_champion = (iteration = 5)" in stmt
+    assert "eval_scope" not in stmt
+    assert "WHERE run_id = 'run-noscope'" in stmt
 
 
 def test_mark_champion_iteration_is_best_effort(mock_spark_iter):
@@ -319,6 +353,119 @@ def test_promote_best_model_no_uc_registration_added():
     src = inspect.getsource(models_mod.promote_best_model)
     assert "register_uc_model" not in src
     assert "mark_champion_iteration" in src
+
+
+# ── 1b. BLOCKING fix — lever-loop gate records the POST-apply candidate ──
+
+
+def test_run_gate_checks_records_post_apply_config_not_pre_patch():
+    """Regression test for the cross-review blocking bug.
+
+    The slice/P0/full gates inside ``_run_gate_checks`` must record the
+    config that was ACTUALLY evaluated — ``apply_log["post_snapshot"]`` (the
+    candidate ``apply_patch_set`` deployed to the live space) — NOT
+    ``metadata_snapshot`` (the pre-patch rollback anchor, which
+    ``apply_patch_set`` never mutates). This drives the REAL gate path (not a
+    direct ``write_iteration`` call): the slice gate runs, fails (forced
+    regression), writes the slice iteration, and returns. We assert the
+    recorded ``config_snapshot`` is the post-apply value.
+    """
+    from genie_space_optimizer.optimization import eval_runner as eval_runner_mod
+    from genie_space_optimizer.optimization import harness as harness_mod
+
+    pre_patch = {
+        "instructions": {"text_instructions": [{"content": "PRE-PATCH instructions"}]},
+        "data_sources": {"tables": []},
+    }
+    post_patch = {
+        "instructions": {"text_instructions": [{"content": "POST-PATCH instructions"}]},
+        "data_sources": {"tables": [{"identifier": "cat.sch.added_by_patch"}]},
+    }
+    apply_log = {
+        "applied": [],            # no instruction snippets ⇒ no propagation poll
+        "patched_objects": [],
+        "pre_snapshot": pre_patch,
+        "post_snapshot": post_patch,
+    }
+    benchmarks = [{"id": f"q{i}", "question": f"q{i}?", "sql": "SELECT 1"} for i in range(1, 4)]
+
+    captured: list[dict] = []
+
+    def _capture_write_iteration(*args, **kwargs):
+        captured.append(kwargs)
+
+    with patch.object(eval_runner_mod, "maybe_build_official_runner", return_value=object()), \
+         patch.object(harness_mod, "PROPAGATION_WAIT_SECONDS", 0), \
+         patch.object(harness_mod, "PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS", 0), \
+         patch.object(harness_mod, "_ensure_sql_context"), \
+         patch.object(harness_mod, "write_stage"), \
+         patch.object(harness_mod, "update_provenance_gate"), \
+         patch.object(harness_mod, "log_gate_feedback_on_traces"), \
+         patch.object(harness_mod, "run_evaluation",
+                      return_value={"scores": {"result_correctness": 50.0},
+                                    "overall_accuracy": 50.0, "failures": ["q1"]}), \
+         patch.object(harness_mod, "detect_regressions",
+                      return_value=[{"judge": "result_correctness", "drop": 40.0}]), \
+         patch.object(harness_mod, "write_iteration", side_effect=_capture_write_iteration):
+        result = harness_mod._run_gate_checks(
+            spark=MagicMock(),
+            w=MagicMock(),
+            run_id="run-gate",
+            space_id="sp-1",
+            exp_name="exp",
+            domain="dom",
+            iteration_counter=2,
+            ag_id="AG1",
+            benchmarks=benchmarks,
+            proposals=[],
+            patches=[],
+            apply_log=apply_log,
+            clusters=[],
+            metadata_snapshot=pre_patch,
+            predict_fn=MagicMock(),
+            scorers=[],
+            prev_model_id="m0",
+            best_scores={"result_correctness": 90.0},
+            best_accuracy=90.0,
+            catalog="cat",
+            schema="sch",
+            reference_sqls={},
+            noise_floor=1.0,
+            affected_question_ids={"q1"},
+            lever_keys=["5"],
+        )
+
+    # Slice gate failed → early return, exactly one (slice) iteration written.
+    assert result["passed"] is False
+    assert len(captured) == 1, f"expected 1 slice write, got {len(captured)}"
+    slice_write = captured[0]
+    assert slice_write["eval_scope"] == "slice"
+    # THE FIX: the recorded config is the POST-apply candidate, not pre-patch.
+    assert slice_write["config_snapshot"] is post_patch
+    assert slice_write["config_snapshot"] is not pre_patch
+    # Sanity: the recorded config carries the post-patch content.
+    assert (
+        slice_write["config_snapshot"]["data_sources"]["tables"][0]["identifier"]
+        == "cat.sch.added_by_patch"
+    )
+
+
+def test_all_three_gate_writes_use_candidate_not_pre_patch_snapshot():
+    """Static guard: all three gate write sites (slice / P0 / full) must pass
+    the POST-apply-derived ``_candidate_config_snapshot``, and NONE may pass
+    the pre-patch ``metadata_snapshot`` — pinning the blocking fix across all
+    sites without driving the full (heavy) gate machinery for each."""
+    import inspect
+
+    from genie_space_optimizer.optimization import harness as harness_mod
+
+    src = inspect.getsource(harness_mod._run_gate_checks)
+    # The candidate is derived from apply_log["post_snapshot"].
+    assert 'apply_log.get("post_snapshot")' in src
+    assert "_candidate_config_snapshot" in src
+    # All three gate writes use the candidate; none use the pre-patch anchor.
+    assert src.count("config_snapshot=_candidate_config_snapshot") == 3
+    assert "config_snapshot=metadata_snapshot" not in src
 
 
 # ── 3. rollback / discard — no regression ────────────────────────────────
