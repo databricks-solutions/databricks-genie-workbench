@@ -24,12 +24,13 @@ def test_run_evaluation_kwargs_keyword_only_keys_present() -> None:
     from genie_space_optimizer.optimization.stages import RunEvaluationKwargs
 
     annotations = RunEvaluationKwargs.__annotations__
-    # 16 keyword-only parameters of run_evaluation:
+    # 15 keyword-only parameters of run_evaluation (GSO v2 Phase 5 removed
+    # ``model_creation_kwargs`` with the MLflow LoggedModel path):
     for key in (
         "spark", "w", "catalog", "gold_schema", "uc_schema",
         "warehouse_id", "patched_objects", "reference_sqls",
         "metric_view_names", "metric_view_measures",
-        "optimization_run_id", "lever", "model_creation_kwargs",
+        "optimization_run_id", "lever",
         "max_benchmark_count", "run_name", "extra_tags",
     ):
         assert key in annotations, f"missing keyword-only key: {key}"

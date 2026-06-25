@@ -48,7 +48,7 @@
 # MAGIC
 # MAGIC ## MLflow Integration
 # MAGIC
-# MAGIC > **📝 Note:** Deploy does **not** mint a new MLflow run name. The pyfunc model snapshot is logged into the champion iteration's source `run_id` (see `register_uc_model` → `mlflow.start_run(run_id=source_run_id)` in `optimization/models.py`). The v2 run-naming scheme (`<run_short>/<stage>/<detail>`, see `common/mlflow_names.py`) governs every other task — baseline, enrichment, strategy, slice/p0/full evals, finalize/held_out, finalize/repeat_pass_k — so champion artefacts are reachable via the same `genie.run_id` tag (Tier 4).
+# MAGIC > **📝 Note:** Deploy does **not** mint a new MLflow run name, and (GSO v2 Phase 5, D3/D7) does **not** create an MLflow LoggedModel or UC Model Registry version — tracking is Delta-only and the champion iteration is marked in `genie_opt_iterations`. The v2 run-naming scheme (`<run_short>/<stage>/<detail>`, see `common/mlflow_names.py`) governs the surviving tracing tasks — baseline, enrichment, strategy, slice/p0/full evals, finalize/held_out, finalize/repeat_pass_k — reachable via the same `genie.run_id` tag (Tier 4).
 # MAGIC
 # MAGIC ## ⚠️ What Happens If This Task Fails
 # MAGIC

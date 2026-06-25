@@ -194,14 +194,15 @@ def test_write_iteration_accepts_enrichment_eval_scope(mock_spark_iter) -> None:
         catalog="cat",
         schema="sch",
         eval_scope="enrichment",
-        model_id="m-enrichment-test",
     )
 
     sql = _extract_insert_sql(mock_spark_iter)
     assert "'enrichment'" in sql, (
         f"eval_scope='enrichment' not present in INSERT: {sql[:500]}"
     )
-    assert "m-enrichment-test" in sql
+    # GSO v2 Phase 5: the ``model_id`` column was scrubbed — write_iteration no
+    # longer accepts model_id and never emits a model_id column.
+    assert "model_id" not in sql
     # Iteration must still be 0 — enrichment row anchors at the
     # baseline iteration so ``compute_run_scores`` matches it
     # against the iter-0 baseline.

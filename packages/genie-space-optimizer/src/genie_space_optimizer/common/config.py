@@ -3826,16 +3826,12 @@ UI 'Benchmark changes' view that consume it are Phase 6."""
 EXPERIMENT_PATH_TEMPLATE = "/Shared/genie-space-optimizer/{{ space_id }}/{{ domain }}"
 RUN_NAME_TEMPLATE = "iter_{{ iteration }}_eval_{{ timestamp }}"
 BASELINE_RUN_NAME_TEMPLATE = "baseline_eval_{{ timestamp }}"
-MODEL_NAME_TEMPLATE = "genie-space-{{ space_id }}"
 
-UC_REGISTERED_MODEL_TEMPLATE = "{{ catalog }}.{{ schema }}.genie_space_{{ space_id }}"
-"""Three-level UC registered model name. Interpolated at runtime."""
-
-ENABLE_UC_MODEL_REGISTRATION: bool = True
-"""When True, finalize registers the champion as a UC Registered Model."""
-
-DEPLOYMENT_JOB_NAME_TEMPLATE = "genie-optimizer-deploy-{{ space_id }}"
-"""Name pattern for the per-space deployment job."""
+# GSO v2 Phase 5 (D3/D7): MODEL_NAME_TEMPLATE / UC_REGISTERED_MODEL_TEMPLATE /
+# ENABLE_UC_MODEL_REGISTRATION / DEPLOYMENT_JOB_NAME_TEMPLATE were removed with
+# the MLflow LoggedModel + UC Model Registry + cross-env deploy paths. Tracking
+# is Delta-only; cross-environment deploy (future) will use the official DAB
+# ``genie_space`` resource.
 
 PROMPT_NAME_TEMPLATE = "{{ uc_schema }}.genie_opt_{{ judge_name }}"
 PROMPT_ALIAS = "production"

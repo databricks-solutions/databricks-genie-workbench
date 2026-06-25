@@ -48,8 +48,6 @@ _NOTEBOOK_SOURCES = {
     "run_lever_loop": Path(__file__).resolve().parent.parent / "jobs" / "run_lever_loop.py",
     "run_finalize": Path(__file__).resolve().parent.parent / "jobs" / "run_finalize.py",
     "run_deploy": Path(__file__).resolve().parent.parent / "jobs" / "run_deploy.py",
-    "run_cross_env_deploy": Path(__file__).resolve().parent.parent / "jobs" / "run_cross_env_deploy.py",
-    "run_deploy_approval": Path(__file__).resolve().parent.parent / "jobs" / "run_deploy_approval.py",
 }
 _WS_NOTEBOOKS = {name: f"{_WS_BASE}/{name}" for name in _NOTEBOOK_SOURCES}
 
@@ -361,7 +359,6 @@ def submit_optimization(
     levers: str = "[1,2,3,4,5]",
     max_iterations: str = "5",
     triggered_by: str = "",
-    experiment_name: str = "",
     deploy_target: str = "",
     warehouse_id: str = "",
     target_benchmark_count: str = "",
@@ -392,7 +389,6 @@ def submit_optimization(
                 "levers": levers,
                 "max_iterations": max_iterations,
                 "triggered_by": triggered_by,
-                "experiment_name": experiment_name,
                 "deploy_target": deploy_target,
                 "warehouse_id": warehouse_id,
                 "target_benchmark_count": target_benchmark_count,
@@ -500,129 +496,3 @@ def ensure_job_run_as(ws: WorkspaceClient, job_id: int, sp_client_id: str) -> No
             exc_info=True,
         )
 
-
-# ---------------------------------------------------------------------------
-# Per-space deployment jobs (still runtime-created)
-# ---------------------------------------------------------------------------
-
-def ensure_deployment_job(
-    ws: WorkspaceClient,
-    space_id: str,
-    catalog: str,
-    schema: str,
-) -> int:
-    """Find or create a per-space deployment job and return its job_id.
-
-    The job runs ``run_cross_env_deploy`` notebook which reads model_name,
-    model_version, target_workspace_url, and target_space_id as parameters.
-    """
-    from genie_space_optimizer.common.config import (
-        DEPLOYMENT_JOB_NAME_TEMPLATE,
-        format_mlflow_template,
-    )
-
-    job_name = format_mlflow_template(
-        DEPLOYMENT_JOB_NAME_TEMPLATE, space_id=space_id,
-    )
-
-    for job in ws.jobs.list(name=job_name, limit=1):
-        if job.job_id is not None:
-            logger.info("Found existing deployment job %s (id=%s)", job_name, job.job_id)
-            return int(job.job_id)
-
-    vol_wheel = _find_volume_wheel(ws, catalog, schema)
-    if vol_wheel:
-        ws_wheel_path = vol_wheel
-    else:
-        ws_wheel_path, _ = _ensure_artifacts(ws, catalog=catalog, schema=schema)
-    sp_client_id = _resolve_sp_client_id(ws)
-    run_as = JobRunAs(service_principal_name=sp_client_id) if sp_client_id else None
-
-    settings = JobSettings(
-        name=job_name,
-        run_as=run_as,
-        description=(
-            f"Cross-environment deployment job for Genie Space {space_id}. "
-            "Triggered after a new UC model version is registered."
-        ),
-        max_concurrent_runs=1,
-        queue=QueueSettings(enabled=True),
-        parameters=[
-            JobParameterDefinition(name="model_name", default=""),
-            JobParameterDefinition(name="model_version", default=""),
-            JobParameterDefinition(name="target_workspace_url", default=""),
-            JobParameterDefinition(name="target_space_id", default=space_id),
-        ],
-        tasks=[
-            Task(
-                task_key="Approval_Check",
-                notebook_task=NotebookTask(
-                    notebook_path=_WS_NOTEBOOKS["run_deploy_approval"],
-                    source=Source.WORKSPACE,
-                    base_parameters={
-                        "model_name": "{{job.parameters.model_name}}",
-                        "model_version": "{{job.parameters.model_version}}",
-                        "approval_tag_name": "{{task.name}}",
-                    },
-                ),
-                environment_key="default",
-                timeout_seconds=86400,
-                max_retries=0,
-            ),
-            Task(
-                task_key="cross_env_deploy",
-                depends_on=[TaskDependency(task_key="Approval_Check")],
-                notebook_task=NotebookTask(
-                    notebook_path=_WS_NOTEBOOKS["run_cross_env_deploy"],
-                    source=Source.WORKSPACE,
-                    base_parameters={
-                        "model_name": "{{job.parameters.model_name}}",
-                        "model_version": "{{job.parameters.model_version}}",
-                        "target_workspace_url": "{{job.parameters.target_workspace_url}}",
-                        "target_space_id": "{{job.parameters.target_space_id}}",
-                    },
-                ),
-                environment_key="default",
-                timeout_seconds=3600,
-                max_retries=0,
-            ),
-        ],
-        environments=[
-            JobEnvironment(
-                environment_key="default",
-                spec=Environment(
-                    client=_DEPLOY_JOB_ENVIRONMENT_CLIENT_VERSION,
-                    dependencies=[
-                        ws_wheel_path,
-                        "mlflow[databricks]>=3.4.0",
-                        "databricks-sdk>=0.40.0",
-                    ],
-                ),
-            ),
-        ],
-        tags={
-            "app": "genie-space-optimizer",
-            "managed-by": "backend-job-launcher",
-            "pattern": "deployment-job",
-            "space_id": space_id,
-        },
-    )
-
-    created = ws.jobs.create(
-        name=settings.name,
-        description=settings.description,
-        max_concurrent_runs=settings.max_concurrent_runs,
-        queue=settings.queue,
-        parameters=settings.parameters,
-        tasks=settings.tasks,
-        environments=settings.environments,
-        tags=settings.tags,
-        run_as=settings.run_as,
-    )
-    if created.job_id is None:
-        raise RuntimeError(f"Deployment job creation for space {space_id} returned no job_id")
-
-    job_id = int(created.job_id)
-    _ensure_job_visibility(ws, job_id)
-    logger.info("Created deployment job %s (id=%s) for space %s", job_name, job_id, space_id)
-    return job_id

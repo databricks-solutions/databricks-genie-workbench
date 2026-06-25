@@ -476,7 +476,6 @@ class PendingReviewsOut(BaseModel):
     flaggedQuestions: int = 0
     queuedPatches: int = 0
     totalPending: int = 0
-    labelingSessionUrl: str | None = None
     items: list[PendingReviewItem] = []
 
 
@@ -606,5 +605,4 @@ class IterationDetailResponse(SafeModel):
     totalIterations: int
     iterations: list[IterationDetail]
     flaggedQuestions: list[dict] = []
-    labelingSessionUrl: str | None = None
     proactiveChanges: dict | None = None

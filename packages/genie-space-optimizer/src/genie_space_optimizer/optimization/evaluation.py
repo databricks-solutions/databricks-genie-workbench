@@ -60,7 +60,6 @@ from genie_space_optimizer.common.config import (
     LLM_TEMPERATURE,
     MAX_BENCHMARK_COUNT,
     MLFLOW_THRESHOLDS,
-    MODEL_NAME_TEMPLATE,
     PROMPT_ALIAS,
     PROMPT_NAME_TEMPLATE,
     BASELINE_RUN_NAME_TEMPLATE,
@@ -539,10 +538,6 @@ EVAL_DEBUG = os.getenv("GENIE_SPACE_OPTIMIZER_EVAL_DEBUG", "true").lower() in {"
 EVAL_MAX_ATTEMPTS = int(os.getenv("GENIE_SPACE_OPTIMIZER_EVAL_MAX_ATTEMPTS", "4"))
 EVAL_RETRY_SLEEP_SECONDS = int(os.getenv("GENIE_SPACE_OPTIMIZER_EVAL_RETRY_SLEEP_SECONDS", "10"))
 EVAL_SINGLE_WORKER_FALLBACK = os.getenv("GENIE_SPACE_OPTIMIZER_EVAL_RETRY_WORKERS", "1")
-STRICT_PROMPT_REGISTRATION = (
-    os.getenv("GENIE_SPACE_OPTIMIZER_STRICT_PROMPT_REGISTRATION", "true").lower()
-    in {"1", "true", "yes", "on"}
-)
 FAIL_ON_INFRA_EVAL_ERRORS = (
     os.getenv("GENIE_SPACE_OPTIMIZER_FAIL_ON_INFRA_EVAL_ERRORS", "true").lower()
     in {"1", "true", "yes", "on"}
@@ -5700,235 +5695,6 @@ def register_benchmark_prompts(
     return registered
 
 
-def register_judge_prompts(
-    uc_schema: str,
-    domain: str,
-    experiment_name: str,
-    *,
-    register_registry: bool = True,
-) -> dict[str, dict]:
-    """Register judge prompts to MLflow Prompt Registry + experiment artifacts.
-
-    Dual storage: Prompt Registry (versioned, aliased) and experiment
-    artifacts (UI visibility). Idempotent.
-    """
-    registered: dict[str, dict] = {}
-    failed_judges: list[str] = []
-    failed_details: dict[str, dict[str, Any]] = {}
-
-    mlflow.set_experiment(experiment_name)
-    if uc_schema:
-        try:
-            # Align experiment with target prompt registry schema for discoverability.
-            mlflow.set_experiment_tags({"mlflow.promptRegistryLocation": uc_schema})
-        except Exception:
-            logger.warning(
-                "Failed to set experiment prompt registry location to %s",
-                uc_schema,
-                exc_info=True,
-            )
-
-    if register_registry:
-        for name, template in JUDGE_PROMPTS.items():
-            candidates = _prompt_name_candidates(uc_schema=uc_schema, domain=domain, judge_name=name)
-            attempt_failures: list[dict[str, Any]] = []
-            for prompt_name in candidates:
-                try:
-                    version = mlflow.genai.register_prompt(
-                        name=prompt_name,
-                        template=template,
-                        commit_message=f"Genie eval judge: {name} (domain: {domain})",
-                        tags={"domain": domain, "type": "judge"},
-                    )
-                    mlflow.genai.set_prompt_alias(
-                        name=prompt_name,
-                        alias=PROMPT_ALIAS,
-                        version=version.version,
-                    )
-                    registered[name] = {
-                        "prompt_name": prompt_name,
-                        "version": version.version,
-                    }
-                    _REGISTERED_PROMPT_NAMES[name] = prompt_name
-                    logger.info("[Prompt Registry] %s v%s", prompt_name, version.version)
-                    break
-                except Exception as exc:
-                    err_msg = str(exc).strip()
-                    if _is_ownership_conflict(err_msg) and _try_drop_prompt(prompt_name):
-                        try:
-                            version = mlflow.genai.register_prompt(
-                                name=prompt_name,
-                                template=template,
-                                commit_message=f"Genie eval judge: {name} (domain: {domain})",
-                                tags={"domain": domain, "type": "judge"},
-                            )
-                            mlflow.genai.set_prompt_alias(
-                                name=prompt_name,
-                                alias=PROMPT_ALIAS,
-                                version=version.version,
-                            )
-                            registered[name] = {
-                                "prompt_name": prompt_name,
-                                "version": version.version,
-                            }
-                            _REGISTERED_PROMPT_NAMES[name] = prompt_name
-                            logger.info("[Prompt Registry] %s v%s (re-created after drop)", prompt_name, version.version)
-                            break
-                        except Exception:
-                            pass
-                    classification = _classify_prompt_registration_error(
-                        err_msg,
-                        uc_schema=uc_schema,
-                    )
-                    attempt_failures.append(
-                        {
-                            "prompt_name": prompt_name,
-                            "error": err_msg[:1500],
-                            "classification": classification["reason"],
-                            "missing_privileges": classification["missing_privileges"],
-                            "remediation": classification["remediation"],
-                        },
-                    )
-                    logger.warning(
-                        "Prompt registration attempt failed for judge=%s name=%s cause=%s",
-                        name,
-                        prompt_name,
-                        classification["reason"],
-                        exc_info=True,
-                    )
-            if name not in registered:
-                logger.error("Prompt registration failed for judge=%s", name)
-                failed_judges.append(name)
-                last_attempt = attempt_failures[-1] if attempt_failures else {}
-                failed_details[name] = {
-                    "attempted_names": [attempt.get("prompt_name", "") for attempt in attempt_failures],
-                    "classification": last_attempt.get("classification", "unknown"),
-                    "missing_privileges": last_attempt.get("missing_privileges", []),
-                    "remediation": last_attempt.get("remediation", ""),
-                    "last_error": last_attempt.get("error", ""),
-                    "attempts": attempt_failures,
-                }
-
-    if register_registry:
-        _all_extra: dict[str, dict[str, str]] = {}
-        for category_label, prompt_dict, tag_type in [
-            ("lever", LEVER_PROMPTS, "lever"),
-            ("benchmark", BENCHMARK_PROMPTS, "benchmark"),
-        ]:
-            for name, template in prompt_dict.items():
-                if name in _REGISTERED_PROMPT_NAMES:
-                    _all_extra[name] = {
-                        "prompt_name": _REGISTERED_PROMPT_NAMES[name],
-                        "version": "pre-registered",
-                    }
-                    continue
-                candidates = _prompt_name_candidates(uc_schema=uc_schema, domain=domain, judge_name=name)
-                for prompt_name in candidates:
-                    try:
-                        version = mlflow.genai.register_prompt(
-                            name=prompt_name,
-                            template=template,
-                            commit_message=f"Genie {category_label}: {name} (domain: {domain})",
-                            tags={"domain": domain, "type": tag_type},
-                        )
-                        mlflow.genai.set_prompt_alias(
-                            name=prompt_name,
-                            alias=PROMPT_ALIAS,
-                            version=version.version,
-                        )
-                        _all_extra[name] = {
-                            "prompt_name": prompt_name,
-                            "version": str(version.version),
-                        }
-                        _REGISTERED_PROMPT_NAMES[name] = prompt_name
-                        logger.info("[Prompt Registry] %s %s v%s", category_label, prompt_name, version.version)
-                        break
-                    except Exception as exc:
-                        err_msg = str(exc).strip()
-                        if _is_ownership_conflict(err_msg) and _try_drop_prompt(prompt_name):
-                            try:
-                                version = mlflow.genai.register_prompt(
-                                    name=prompt_name,
-                                    template=template,
-                                    commit_message=f"Genie {category_label}: {name} (domain: {domain})",
-                                    tags={"domain": domain, "type": tag_type},
-                                )
-                                mlflow.genai.set_prompt_alias(
-                                    name=prompt_name,
-                                    alias=PROMPT_ALIAS,
-                                    version=version.version,
-                                )
-                                _all_extra[name] = {
-                                    "prompt_name": prompt_name,
-                                    "version": str(version.version),
-                                }
-                                _REGISTERED_PROMPT_NAMES[name] = prompt_name
-                                logger.info("[Prompt Registry] %s %s v%s (re-created after drop)", category_label, prompt_name, version.version)
-                                break
-                            except Exception:
-                                pass
-                        logger.debug(
-                            "Prompt registration attempt failed for %s=%s name=%s",
-                            category_label, name, prompt_name, exc_info=True,
-                        )
-                if name not in _all_extra:
-                    logger.warning("Could not register %s prompt: %s", category_label, name)
-        registered.update(_all_extra)
-
-    active = mlflow.active_run()
-    if active:
-        _log_judge_prompt_artifacts(
-            domain=domain,
-            uc_schema=uc_schema,
-            registered=registered,
-            register_registry=register_registry,
-            failed_judges=failed_judges,
-            failed_details=failed_details,
-        )
-    else:
-        logger.warning(
-            "register_judge_prompts called without an active MLflow run; "
-            "prompt artifacts will not be logged to any run."
-        )
-
-    if register_registry and STRICT_PROMPT_REGISTRATION and failed_judges:
-        cause_codes = sorted(
-            {
-                str(details.get("classification") or "unknown")
-                for details in failed_details.values()
-            }
-        )
-        missing_privileges = sorted(
-            {
-                str(priv)
-                for details in failed_details.values()
-                for priv in details.get("missing_privileges", [])
-            }
-        )
-        root_cause_hint = ""
-        if missing_privileges and uc_schema:
-            root_cause_hint = (
-                f" Root-cause hint: missing UC schema privileges {missing_privileges} on {uc_schema}."
-            )
-        if cause_codes:
-            root_cause_hint += f" Detected cause classes: {cause_codes}."
-        raise RuntimeError(
-            "Prompt registration failed for judges: "
-            + ", ".join(sorted(failed_judges))
-            + "."
-            + root_cause_hint,
-        )
-
-    total_prompt_count = len(JUDGE_PROMPTS) + len(LEVER_PROMPTS) + len(BENCHMARK_PROMPTS)
-    logger.info(
-        "Registered %d/%d prompts (judges=%d, levers=%d, benchmarks=%d, registry=%s)",
-        len(registered), total_prompt_count,
-        len(JUDGE_PROMPTS), len(LEVER_PROMPTS), len(BENCHMARK_PROMPTS),
-        bool(register_registry and uc_schema),
-    )
-    return registered
-
-
 def register_scorers_with_experiment(
     scorers: list,
     experiment_name: str,
@@ -7401,7 +7167,6 @@ def run_evaluation(
     metric_view_measures: dict[str, set[str]] | None = None,
     optimization_run_id: str = "",
     lever: int | None = None,
-    model_creation_kwargs: dict | None = None,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
     run_name: str | None = None,
     extra_tags: dict[str, str] | None = None,
@@ -7546,13 +7311,9 @@ def run_evaluation(
             model_id=model_id or "",
         )
 
-        if model_creation_kwargs:
-            from genie_space_optimizer.optimization.models import create_genie_model_version
-            with progress.phase("model_creation", space_id=space_id):
-                _created_model_id = create_genie_model_version(**model_creation_kwargs)
-            if _created_model_id:
-                mlflow_model_id = _created_model_id
-                model_id = _created_model_id
+        # GSO v2 Phase 5 (D3): per-mutation MLflow LoggedModel creation removed
+        # (``create_genie_model_version``). Tracking is Delta-only; the
+        # in-process eval below no longer mints or links a LoggedModel.
 
         # NOTE: We intentionally use the in-memory deduped eval_data DataFrame
         # for evaluation instead of the MLflow EvaluationDataset object.  The
@@ -7688,13 +7449,9 @@ def run_evaluation(
                 "evaluation_failure/no_evaluable_benchmarks.json",
             )
             raise RuntimeError(msg)
-        # Ensure every evaluation run carries a full, queryable judge manifest.
-        register_judge_prompts(
-            uc_schema=uc_schema,
-            domain=domain,
-            experiment_name=experiment_name,
-            register_registry=(iteration == 0 and eval_scope == "full"),
-        )
+        # GSO v2 Phase 5 (D6): MLflow Prompt Registry registration of judge
+        # prompts removed — judge prompts live as ``common/config.py`` constants
+        # and are no longer registered/gated at eval time.
 
         if iteration == 0 and eval_scope == "full":
             register_scorers_with_experiment(scorers, experiment_name)
@@ -8388,12 +8145,9 @@ def run_evaluation(
                 run_name, len(trace_map), len(rows_for_output), _rows_without_tid,
             )
 
-        if model_id and scores_100:
-            from genie_space_optimizer.optimization.models import link_eval_scores_to_model
-            try:
-                link_eval_scores_to_model(model_id, scores_100, eval_run_id=run.info.run_id)
-            except Exception:
-                logger.warning("Failed to link scores to model %s", model_id, exc_info=True)
+        # GSO v2 Phase 5 (D3): LoggedModel score-linking removed
+        # (``link_eval_scores_to_model``). Per-question scores live in Delta
+        # (``genie_opt_iterations.scores_json``); no MLflow LoggedModel exists.
 
         if run.info.run_id:
             try:

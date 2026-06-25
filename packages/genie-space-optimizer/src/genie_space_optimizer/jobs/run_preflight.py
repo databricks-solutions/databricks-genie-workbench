@@ -118,10 +118,9 @@ import traceback
 from functools import partial
 from typing import Any, cast
 
-# Pin STRICT prompt registration on the job env so missing Prompt Registry
-# privileges fail the run instead of silently degrading baseline accuracy.
-# Must run BEFORE any genie_space_optimizer imports that cache os.getenv.
-os.environ.setdefault("GENIE_SPACE_OPTIMIZER_STRICT_PROMPT_REGISTRATION", "true")
+# GSO v2 Phase 5 (D6): the MLflow Prompt Registry is no longer a required
+# dependency — judge prompts are not registered/gated, so the former
+# STRICT_PROMPT_REGISTRATION env pin was removed.
 
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
@@ -185,7 +184,6 @@ dbutils.widgets.text("space_id", "")
 dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("schema", "")
 dbutils.widgets.text("domain", "")
-dbutils.widgets.text("experiment_name", "")
 dbutils.widgets.text("max_iterations", str(MAX_ITERATIONS))
 dbutils.widgets.text("levers", "[1,2,3,4,5]")
 dbutils.widgets.text("apply_mode", "genie_config")
@@ -200,7 +198,9 @@ space_id = dbutils.widgets.get("space_id")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
 domain = dbutils.widgets.get("domain")
-experiment_name = dbutils.widgets.get("experiment_name") or None
+# GSO v2 Phase 5 (D3): the experiment_name job param was removed. Preflight
+# self-resolves a deterministic experiment path from (space_id, domain).
+experiment_name = None
 max_iterations = int(dbutils.widgets.get("max_iterations") or str(MAX_ITERATIONS))
 levers = json.loads(dbutils.widgets.get("levers") or "[1,2,3,4,5]")
 apply_mode = dbutils.widgets.get("apply_mode") or "genie_config"
@@ -595,16 +595,13 @@ ctx_feedback = preflight_load_human_feedback(
 )
 _log("Feedback loaded", corrections=len(ctx_feedback["human_corrections"]))
 
-# Assemble the preflight_out dict for downstream task value publication
-from mlflow.tracking import MlflowClient as _MlflowClient
-_exp = _MlflowClient().get_experiment_by_name(ctx_exp["experiment_name"])
-_experiment_id = _exp.experiment_id if _exp else ""
-
+# Assemble the preflight_out dict for downstream task value publication.
+# GSO v2 Phase 5 (D3): experiment_name/experiment_id pointer columns scrubbed;
+# the experiment_name still flows downstream via the taskValue (below) for the
+# surviving MLflow tracing — it is no longer persisted as a run column.
 update_run_status(
     spark, run_id, catalog, schema,
     status="IN_PROGRESS",
-    experiment_name=ctx_exp["experiment_name"],
-    experiment_id=_experiment_id,
     warehouse_id=warehouse_id,
     human_corrections=ctx_feedback["human_corrections"],
     max_benchmark_count=effective_max,
@@ -621,8 +618,11 @@ preflight_out = {
     "config": _config,
     "benchmarks": _benchmarks,
     "model_id": None,
+    # experiment_name/experiment_id flow as taskValues for the surviving
+    # MLflow tracing handoff (resolved by preflight_setup_experiment); the
+    # Delta pointer columns were scrubbed in Phase 5 (D3).
     "experiment_name": ctx_exp["experiment_name"],
-    "experiment_id": _experiment_id,
+    "experiment_id": ctx_exp["experiment_id"],
     "human_corrections": ctx_feedback["human_corrections"],
 }
 
