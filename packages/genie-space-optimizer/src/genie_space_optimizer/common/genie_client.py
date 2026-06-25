@@ -20,6 +20,8 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors.platform import ResourceExhausted
 
 from .config import (
+    BENCHMARK_WINDOW_MAX,
+    BENCHMARK_WINDOW_MIN,
     GENIE_MAX_WAIT,
     GENIE_POLL_INITIAL,
     GENIE_POLL_MAX,
@@ -1109,6 +1111,94 @@ def _extract_example_sql_questions(parsed: dict) -> set[str]:
     return {r for r in result if r}
 
 
+def compute_benchmark_window_recommendation(
+    benchmarks: list[dict],
+    *,
+    window_min: int = BENCHMARK_WINDOW_MIN,
+    window_max: int = BENCHMARK_WINDOW_MAX,
+) -> dict:
+    """Recommend how to bring a benchmark set into the 30–40 window (D8).
+
+    Pure function — produces a RECOMMENDATION only; it never mutates or
+    drops anything (prune is never a silent auto-delete). Returns a dict:
+
+    * ``status`` — ``within_window`` | ``over_window`` | ``under_window``
+    * ``count`` — current set count
+    * ``window`` — ``[window_min, window_max]``
+    * ``recommended_prune`` — for ``over_window``, the list of question ids
+      recommended for removal (near-duplicates first, then lowest
+      priority), trimmed down to ``window_max``.
+    * ``recommended_topup`` — for ``under_window``, how many synthetic
+      questions to generate to reach ``window_min``.
+
+    The caller passes the POST-MERGE candidate set — existing live
+    questions + net-new additions, after dedupe — so the resulting
+    ``status``/``count`` reflect the real live set, not the net-new
+    slice alone. Near-duplicate detection reuses the same normalized
+    n-gram Jaccard (>= 0.90) the publisher uses for merge dedup, so the
+    recommendation is consistent with how rows actually merge.
+    """
+    count = len(benchmarks)
+    rec: dict[str, Any] = {
+        "count": count,
+        "window": [window_min, window_max],
+        "recommended_prune": [],
+        "recommended_topup": 0,
+    }
+
+    def _qid(b: dict) -> str:
+        return str(b.get("id", b.get("question_id", "")) or "")
+
+    if count < window_min:
+        rec["status"] = "under_window"
+        rec["recommended_topup"] = window_min - count
+        return rec
+
+    if count <= window_max:
+        rec["status"] = "within_window"
+        return rec
+
+    # over_window — recommend trimming to window_max. Order of removal:
+    # near-duplicates first (keep the higher-priority member of each
+    # near-dup pair), then lowest priority. NEVER applied automatically.
+    rec["status"] = "over_window"
+    norms = [(_qid(b), _normalize_question_text(str(b.get("question", "")))) for b in benchmarks]
+    prio = {_qid(b): str(b.get("priority", "")) for b in benchmarks}
+    # P0 ranks highest (kept); blank/other lowest.
+    prio_rank = {"P0": 0, "P1": 1, "P2": 2}
+
+    near_dup_ids: list[str] = []
+    kept: list[tuple[str, str]] = []
+    for qid, norm in norms:
+        if not norm:
+            continue
+        is_dup = any(
+            _ngram_similarity_for_dedup(norm, kept_norm) >= _DEDUP_SIMILARITY_THRESHOLD
+            for _kid, kept_norm in kept
+        )
+        if is_dup:
+            near_dup_ids.append(qid)
+        else:
+            kept.append((qid, norm))
+
+    over_by = count - window_max
+    prune: list[str] = list(near_dup_ids[:over_by])
+    if len(prune) < over_by:
+        # Still over — recommend lowest-priority survivors (stable order).
+        remaining = [
+            qid for qid, _ in norms
+            if qid not in prune
+        ]
+        remaining.sort(key=lambda q: prio_rank.get(prio.get(q, ""), 3))
+        for qid in reversed(remaining):
+            if len(prune) >= over_by:
+                break
+            if qid not in prune:
+                prune.append(qid)
+    rec["recommended_prune"] = prune[:over_by]
+    return rec
+
+
 @dataclass
 class BenchmarkPushReport:
     """Structured outcome of a merge-only benchmark push to a Genie Space.
@@ -1116,17 +1206,29 @@ class BenchmarkPushReport:
     Surfaces enough detail for the v2 provenance ledger (§3.5) to record
     the added/removed/changed diff without re-deriving it. ``added`` rows
     are the net-new questions actually written into the space (each
-    ``{id, question, sql}``); ``merged_total`` is the post-merge total.
-    The push is additive/merge-only, so user-authored rows are never
-    removed here.
+    ``{id, question, sql}``); ``merged`` is the WHOLE post-merge set
+    (existing live + net-new) so callers can compute the 30–40 window
+    recommendation over the real resulting set; ``merged_total`` is its
+    length. The push is strictly additive/merge-only — user-authored rows
+    are NEVER removed or truncated here.
+
+    ``window`` is the post-merge 30–40 window recommendation (recommendation
+    only — never auto-applied). ``over_cap`` is set when the merged set would
+    exceed the genuine Genie API cap (``hard_cap``); in that case the push is
+    NOT applied (``patched`` stays False) — the publisher fails closed rather
+    than silently dropping rows.
     """
 
     added_count: int = 0
     dedup_skipped: int = 0
     mirror_skipped: int = 0
-    truncated: int = 0
     merged_total: int = 0
+    existing_count: int = 0
     added: list[dict] = field(default_factory=list)
+    merged: list[dict] = field(default_factory=list)
+    window: dict | None = None
+    over_cap: bool = False
+    hard_cap: int = GENIE_MAX_BENCHMARK_QUESTIONS
     patched: bool = False
 
 
@@ -1150,6 +1252,17 @@ def publish_benchmarks_to_genie_space_with_report(
     Questions that are already mirrored in the space's ``example_question_sqls``
     are excluded — keeping the same question in both slots would restore the
     exact leak Bug #4 guards against.
+
+    The push is **strictly additive/merge-only**: the merged set is NEVER
+    sliced or truncated, so pushed rows can't be silently dropped and
+    pre-existing user-authored rows can't be deleted. ``max_questions`` is
+    the genuine Genie API hard cap (``GENIE_MAX_BENCHMARK_QUESTIONS``), NOT
+    a train/held-out target. If the post-merge set would exceed that hard
+    cap, the publisher FAILS CLOSED — it does not patch and returns a
+    non-mutating report with ``over_cap=True`` (the caller turns that into a
+    hard failure). The 30–40 *working window* is surfaced as a
+    RECOMMENDATION only (``window``) computed over the post-merge set; it is
+    never auto-applied here.
 
     Returns a :class:`BenchmarkPushReport` describing the merge.
     ``publish_benchmarks_to_genie_space`` is the thin int-returning wrapper
@@ -1186,24 +1299,59 @@ def publish_benchmarks_to_genie_space_with_report(
     )
 
     existing_count = len(existing_questions)
-    merged_questions, added_count, dedup_skipped = _dedupe_and_merge_benchmarks(
+    merged_questions, _added_count, dedup_skipped = _dedupe_and_merge_benchmarks(
         existing_questions, new_genie_questions,
     )
     # The merge appends net-new rows after the existing ones, so the
     # tail [existing_count:] is exactly what GSO added this push.
     added_rows = merged_questions[existing_count:]
 
-    truncated = 0
+    def _first(v: Any) -> str:
+        if isinstance(v, list) and v:
+            return str(v[0])
+        return str(v) if v is not None else ""
+
+    def _to_record(r: dict) -> dict:
+        return {
+            "id": str(r.get("id", "")),
+            "question": _first(r.get("question")),
+            "sql": _first((r.get("answer") or [{}])[0].get("content")),
+        }
+
+    merged_detail = [_to_record(r) for r in merged_questions if isinstance(r, dict)]
+    added_detail = [_to_record(r) for r in added_rows if isinstance(r, dict)]
+
+    # 30–40 working-window recommendation over the POST-MERGE set (existing
+    # live rows + net-new additions, after dedupe). Recommendation only —
+    # the publisher never prunes or truncates.
+    window = compute_benchmark_window_recommendation(merged_detail)
+
+    # Genuine Genie API hard cap — additive/merge-only NEVER truncates. If
+    # the merged set would exceed the API cap we FAIL CLOSED: do not patch,
+    # return a non-mutating "would exceed cap" report. This protects both
+    # pushed rows (never silently dropped) and existing user-authored rows
+    # (never deleted to make room).
     if len(merged_questions) > max_questions:
-        truncated = len(merged_questions) - max_questions
-        logger.warning(
-            "Truncating benchmarks from %d to %d (Genie space limit). "
-            "User-authored entries are kept first.",
-            len(merged_questions),
-            max_questions,
+        logger.error(
+            "Refusing to push benchmarks to Genie space %s: merged set of %d "
+            "exceeds the Genie API hard cap of %d. Publisher is merge-only and "
+            "will not truncate — pruning the live set is an explicit operator "
+            "decision. No mutation performed.",
+            space_id, len(merged_questions), max_questions,
         )
-        merged_questions = merged_questions[:max_questions]
-        added_rows = [r for r in added_rows if r in merged_questions]
+        return BenchmarkPushReport(
+            added_count=0,
+            dedup_skipped=dedup_skipped,
+            mirror_skipped=skipped_mirror,
+            merged_total=len(merged_questions),
+            existing_count=existing_count,
+            added=[],
+            merged=merged_detail,
+            window=window,
+            over_cap=True,
+            hard_cap=max_questions,
+            patched=False,
+        )
 
     parsed["benchmarks"] = dict(existing_benchmarks_container)
     parsed["benchmarks"]["questions"] = merged_questions
@@ -1212,32 +1360,23 @@ def publish_benchmarks_to_genie_space_with_report(
 
     logger.info(
         "Published %d new benchmark question(s) to Genie space %s "
-        "(dedup-skipped: %d, example-sql-mirror-skipped: %d, total after merge: %d)",
-        len(added_rows), space_id, dedup_skipped, skipped_mirror, len(merged_questions),
+        "(dedup-skipped: %d, example-sql-mirror-skipped: %d, total after merge: %d, "
+        "window: %s)",
+        len(added_detail), space_id, dedup_skipped, skipped_mirror,
+        len(merged_questions), window.get("status"),
     )
-
-    def _first(v: Any) -> str:
-        if isinstance(v, list) and v:
-            return str(v[0])
-        return str(v) if v is not None else ""
-
-    added_detail = [
-        {
-            "id": str(r.get("id", "")),
-            "question": _first(r.get("question")),
-            "sql": _first((r.get("answer") or [{}])[0].get("content")),
-        }
-        for r in added_rows
-        if isinstance(r, dict)
-    ]
 
     return BenchmarkPushReport(
         added_count=len(added_detail),
         dedup_skipped=dedup_skipped,
         mirror_skipped=skipped_mirror,
-        truncated=truncated,
         merged_total=len(merged_questions),
+        existing_count=existing_count,
         added=added_detail,
+        merged=merged_detail,
+        window=window,
+        over_cap=False,
+        hard_cap=max_questions,
         patched=True,
     )
 

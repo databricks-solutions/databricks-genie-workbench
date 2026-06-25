@@ -514,10 +514,10 @@ _GENIE_OPT_BENCHMARK_MUTATIONS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_benchmark_mutations (
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
     question_id         STRING        NOT NULL COMMENT 'Benchmark question id the mutation applies to',
-    op                  STRING        NOT NULL COMMENT 'added | removed | changed',
+    op                  STRING        NOT NULL COMMENT 'added | removed | changed | prune_recommended (advisory, non-mutating)',
     before              STRING                 COMMENT 'JSON {question, sql} prior state (NULL for added)',
-    after               STRING                 COMMENT 'JSON {question, sql} new state (NULL for removed)',
-    reason              STRING                 COMMENT 'Why GSO made this mutation (preflight_push | explain_invalid | semantic_misalignment | ...)',
+    after               STRING                 COMMENT 'JSON {question, sql} new state (NULL for removed / prune_recommended)',
+    reason              STRING                 COMMENT 'Why GSO made this mutation (preflight_push | explain_invalid | over_window_recommendation | ...)',
     logged_at           TIMESTAMP     NOT NULL COMMENT 'When this mutation was recorded'
 )
 USING DELTA
