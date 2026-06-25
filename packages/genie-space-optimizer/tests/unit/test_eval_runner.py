@@ -338,6 +338,49 @@ def test_map_row_verdicts(assessment, expected_rc, needs_review) -> None:
         assert block["assessment_reasons"] == ["LLM_JUDGE_SEMANTIC_ERROR"]
 
 
+# ── derived asset-type annotation (Phase 3, D2) ──────────────────────────────
+def test_asset_type_annotation_on_bad_row_mismatch() -> None:
+    # Expected MV (MEASURE(...)) vs actual plain TABLE ⇒ routing mismatch.
+    summary = _result_row("rX", "qX", "question text")
+    detail = _detail(
+        "rX",
+        "qX",
+        "BAD",
+        ["LLM_JUDGE_INCORRECT_TABLE_OR_FIELD_USAGE"],
+        actual="SELECT region, sum(amount) FROM sales GROUP BY region",
+        expected="SELECT region, MEASURE(total_sales) FROM mv_sales GROUP BY region",
+    )
+    row = map_eval_detail_to_row(summary, detail)
+    assert row["expected_asset_type"] == "MV"
+    assert row["actual_asset_type"] == "TABLE"
+    assert row["asset_type_mismatch"] is True
+
+
+def test_asset_type_annotation_no_mismatch_when_same_type() -> None:
+    summary = _result_row("rX", "qX", "question text")
+    detail = _detail(
+        "rX",
+        "qX",
+        "BAD",
+        ["LLM_JUDGE_WRONG_FILTER"],
+        actual="SELECT a FROM t WHERE x = 1",
+        expected="SELECT a FROM t WHERE x = 2",
+    )
+    row = map_eval_detail_to_row(summary, detail)
+    assert row["expected_asset_type"] == "TABLE"
+    assert row["actual_asset_type"] == "TABLE"
+    assert row["asset_type_mismatch"] is False
+
+
+def test_asset_type_annotation_absent_on_good_row() -> None:
+    summary = _result_row("rX", "qX", "question text")
+    detail = _detail("rX", "qX", "GOOD", [])
+    row = map_eval_detail_to_row(summary, detail)
+    # GOOD rows carry no asset-type annotation (failing-row nugget only).
+    assert "asset_type_mismatch" not in row
+    assert "expected_asset_type" not in row
+
+
 # ── legacy-output mapper ─────────────────────────────────────────────────────
 def test_build_eval_output_from_official_contract() -> None:
     result = EvalRunResult(

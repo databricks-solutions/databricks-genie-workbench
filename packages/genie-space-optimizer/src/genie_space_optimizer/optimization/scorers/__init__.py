@@ -1,9 +1,18 @@
 """
-Scorer assembly — 9 judges for Genie Space evaluation.
+Scorer assembly — the 9 legacy LLM judges for Genie Space evaluation.
+
+**RETIRED in GSO Optimizer v2 / Phase 3 (D2).** The official Databricks Genie
+Benchmark (Eval-Run) API is the sole evaluator: accuracy comes from its
+GOOD/BAD/NEEDS_REVIEW verdict and lever routing from its ``assessment_reasons``
+taxonomy (see ``eval_runner.py`` + ``rca._findings_from_assessment_reasons``).
+None of these judges drives accuracy, routing, or acceptance on the active
+(official-runner) path any more. They survive ONLY behind the legacy in-process
+fallback (``USE_OFFICIAL_BENCHMARK_RUNNER`` off, or a mocked test workspace).
+Physical removal of these modules is **Phase 7** (cleanup).
 
 Scorers that depend on runtime context (``spark``, ``WorkspaceClient``)
-expose ``_make_*`` factory functions.  Use ``make_all_scorers()`` to get
-a fully bound ``all_scorers`` list ready for ``mlflow.genai.evaluate()``.
+expose ``_make_*`` factory functions.  ``make_all_scorers()`` returns the bound
+list for the legacy ``mlflow.genai.evaluate()`` fallback only.
 
 Stateless scorers (``asset_routing_scorer``, ``result_correctness_scorer``)
 are importable directly.
@@ -102,6 +111,13 @@ EXPECTED_JUDGE_SET = (
     "arbiter",
 )
 
+# Phase 3 (D2): the 9 scored judges retired from the v2 decision path. Kept as the
+# legacy-fallback assembly contract until Phase 7 deletes these modules. No entry
+# here may appear as a per-judge acceptance threshold (``DEFAULT_THRESHOLDS`` now
+# carries only the API-accuracy gate) — ``result_correctness`` survives in config
+# ONLY as the accuracy carrier key, not as a scored judge.
+RETIRED_JUDGES = EXPECTED_JUDGE_SET
+
 
 def make_all_scorers(
     w: WorkspaceClient,
@@ -154,6 +170,7 @@ def make_repeatability_scorers() -> list:
 
 __all__ = [
     "EXPECTED_JUDGE_SET",
+    "RETIRED_JUDGES",
     "asset_routing_scorer",
     "build_scorer_context",
     "repeatability_scorer",

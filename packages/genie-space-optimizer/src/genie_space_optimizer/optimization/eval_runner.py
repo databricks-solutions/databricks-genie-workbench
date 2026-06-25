@@ -240,6 +240,43 @@ def _first_response_text(responses: Any) -> str:
     return str(getattr(first, "response", "") or "")
 
 
+_DETECTABLE_ASSET_TYPES = frozenset({"MV", "TVF", "TABLE"})
+
+
+def _asset_type_annotations(
+    *,
+    is_failure: bool,
+    expected_sql: str,
+    actual_sql: str,
+) -> dict[str, Any]:
+    """Derive the asset-type annotation for a BAD / NEEDS_REVIEW row (Phase 3, D2).
+
+    The ``asset_routing`` judge is retired; the asset-type *nugget* it carried is
+    preserved as a cheap derived annotation on failing rows only. ``mv_names`` is
+    unavailable at this layer (no space config), so detection relies on the
+    SQL surface (``MEASURE(...)`` ⇒ MV, ``get_*(...)`` ⇒ TVF, else TABLE) — the
+    authoritative MV signals per :func:`detect_asset_type`. The annotation feeds
+    Lever 5 routing / example-SQL guidance via
+    :func:`rca._findings_from_assessment_reasons`.
+    """
+    if not is_failure:
+        return {}
+    from genie_space_optimizer.common.genie_client import detect_asset_type
+
+    expected_type = detect_asset_type(expected_sql)
+    actual_type = detect_asset_type(actual_sql)
+    mismatch = (
+        expected_type in _DETECTABLE_ASSET_TYPES
+        and actual_type in _DETECTABLE_ASSET_TYPES
+        and expected_type != actual_type
+    )
+    return {
+        "expected_asset_type": expected_type,
+        "actual_asset_type": actual_type,
+        "asset_type_mismatch": mismatch,
+    }
+
+
 def map_eval_detail_to_row(summary: Any, detail: Any) -> dict[str, Any]:
     """Map an official eval result (summary + details) into a GSO flat row dict.
 
@@ -263,6 +300,12 @@ def map_eval_detail_to_row(summary: Any, detail: Any) -> dict[str, Any]:
 
     is_correct = assessment == "GOOD"
     rc_value = "yes" if is_correct else "no"
+
+    asset_annotations = _asset_type_annotations(
+        is_failure=not is_correct,
+        expected_sql=expected_sql,
+        actual_sql=actual_sql,
+    )
 
     row: dict[str, Any] = {
         "question_id": qid,
@@ -298,6 +341,8 @@ def map_eval_detail_to_row(summary: Any, detail: Any) -> dict[str, Any]:
         "result_id": str(getattr(detail, "result_id", "") or getattr(summary, "result_id", "") or ""),
         "genie_equivalent_eval": _official_genie_eval_block(assessment, reasons),
     }
+    # Derived asset-type annotation on failing rows (Phase 3, D2) — empty for GOOD.
+    row.update(asset_annotations)
     return row
 
 

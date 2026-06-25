@@ -103,15 +103,15 @@ from genie_space_optimizer.iq_scan.scoring import (  # noqa: E402
 
 # ── 1. Quality Thresholds ───────────────────────────────────────────────
 
+# Phase 3 (D2): the 9 scored LLM judges are RETIRED. The official Databricks
+# Genie Benchmark API verdict is the sole quality signal, so acceptance gating is
+# on API accuracy alone — there are NO per-judge thresholds. Accuracy is carried
+# under the legacy ``result_correctness`` key (on the official path this equals
+# ``num_correct / num_questions``); ``all_thresholds_met`` reads it. Per-iteration
+# accept/reject is decided separately on the accuracy DELTA by
+# ``acceptance_policy.decide_acceptance``.
 DEFAULT_THRESHOLDS = {
-    "syntax_validity": 98.0,
-    "schema_accuracy": 95.0,
-    "logical_accuracy": 90.0,
-    "semantic_equivalence": 90.0,
-    "completeness": 90.0,
-    "response_quality": 0.0,
     "result_correctness": 85.0,
-    "asset_routing": 85.0,
 }
 
 INFO_ONLY_JUDGES = frozenset({
