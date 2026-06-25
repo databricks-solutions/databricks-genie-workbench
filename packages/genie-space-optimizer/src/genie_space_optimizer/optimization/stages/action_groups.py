@@ -49,15 +49,43 @@ _PER_QUESTION_PREFERRED_LEVERS: tuple[int, ...] = (3, 5)
 _DEFAULT_RECOMMENDED_LEVERS: tuple[int, ...] = (3, 5, 6)
 
 
+def _official_reason_levers_for_cluster(cluster: dict) -> tuple[int, ...]:
+    """Phase 3 (D2): levers derived from a cluster's official Benchmark API
+    ``assessment_reasons`` (when present), via the reason→RcaKind→lever mapping.
+
+    Returns ``()`` for legacy clusters (no ``assessment_reasons`` key) or when
+    the reasons carry no actionable lever (e.g. only ``EMPTY_GOOD_SQL``), so the
+    caller falls back to the legacy root-cause shape defaults.
+    """
+    reasons = cluster.get("assessment_reasons") or []
+    if not reasons:
+        return ()
+    from genie_space_optimizer.optimization.rca import (
+        levers_for_assessment_reasons,
+    )
+
+    return levers_for_assessment_reasons(reasons)
+
+
 def recommended_levers_for_cluster(cluster: dict) -> tuple[int, ...]:
     """Cycle 2 Task 4 — return the strategist's preferred lever
     ordering for a cluster.
+
+    Phase 3 (D2): clusters carrying official Benchmark API
+    ``assessment_reasons`` derive their levers from the reason→RcaKind→lever
+    mapping (``rca.levers_for_assessment_reasons``), which takes precedence over
+    the legacy root-cause shape defaults below. Only when no official reasons are
+    present (legacy / mocked rows) do the shape defaults apply.
 
     When ``GSO_QUESTION_SHAPE_LEVER_PREFERENCE`` is on and the cluster
     has ``q_count == 1`` AND ``root_cause`` is a question-shape root
     cause, returns the per-question lever set (3, 5) WITHOUT lever 6.
     Otherwise returns the default lever set that includes lever 6.
     """
+    official = _official_reason_levers_for_cluster(cluster)
+    if official:
+        return official
+
     from genie_space_optimizer.common.config import (
         question_shape_lever_preference_enabled,
     )
@@ -81,13 +109,28 @@ def stamp_recommended_levers_on_clusters(
     builder can surface the per-cluster lever hint to the LLM.
 
     Returns a NEW list of NEW dicts (does not mutate input). Idempotent —
-    re-stamping a cluster overwrites the prior ``recommended_levers``
-    with the same value.
+    re-stamping a cluster yields the same ``recommended_levers``.
+
+    Phase 3 (D2) precedence:
+
+    1. Official Benchmark API ``assessment_reasons`` → reason-derived levers
+       (these always win; the legacy root-cause shape defaults must never
+       overwrite them).
+    2. Otherwise, preserve an already-present explicit ``recommended_levers``
+       (do not clobber an upstream explicit recommendation with shape defaults).
+    3. Otherwise, fall back to the root-cause shape defaults.
     """
     out: list[dict] = []
     for cluster in clusters:
         c = dict(cluster)
-        c["recommended_levers"] = list(recommended_levers_for_cluster(c))
+        official = _official_reason_levers_for_cluster(c)
+        existing = cluster.get("recommended_levers")
+        if official:
+            c["recommended_levers"] = list(official)
+        elif existing:
+            c["recommended_levers"] = list(existing)
+        else:
+            c["recommended_levers"] = list(recommended_levers_for_cluster(c))
         out.append(c)
     return out
 

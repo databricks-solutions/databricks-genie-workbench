@@ -175,3 +175,165 @@ def test_all_thresholds_met_accepts_overall_accuracy_alias() -> None:
 def test_retired_judges_constant_matches_legacy_set() -> None:
     assert RETIRED_JUDGES == EXPECTED_JUDGE_SET
     assert len(RETIRED_JUDGES) == 9
+
+
+# ── Active cluster / routing path (cross-review regressions) ──────────────────
+# The reviewer flagged that the ACTIVE clustering + lever-assignment path
+# (cluster_failures → _map_to_lever in the harness; recommended_levers_for_cluster
+# / stamp_recommended_levers_on_clusters in the strategist path) still routed
+# official Benchmark rows via the legacy judge/root-cause maps. These regressions
+# pin the official-reason path through those active functions.
+from genie_space_optimizer.optimization.optimizer import (  # noqa: E402
+    _map_to_lever,
+    cluster_failures,
+)
+from genie_space_optimizer.optimization.stages.action_groups import (  # noqa: E402
+    recommended_levers_for_cluster,
+    stamp_recommended_levers_on_clusters,
+)
+
+
+def _official_bad_row(qid: str, reasons, *, expected_sql="", asset_mismatch=False):
+    """An official-runner-shaped BAD eval row (verdict ``no`` + reasons)."""
+    return {
+        "question_id": qid,
+        "result_correctness/value": "no",
+        "feedback/result_correctness/value": "no",
+        "arbiter/value": "skipped",
+        "assessment": "BAD",
+        "assessment_reasons": list(reasons),
+        "asset_type_mismatch": asset_mismatch,
+        "request": {"question": f"q {qid}", "expected_sql": expected_sql},
+        "response": {"response": "SELECT 1", "comparison": {}},
+    }
+
+
+def test_map_to_lever_prefers_official_reasons_over_legacy_judge_map() -> None:
+    # Legacy: root_cause='wrong_column' + judge='result_correctness' → Lever 1.
+    assert _map_to_lever("wrong_column", judge="result_correctness") == 1
+    # Official MISSING_JOIN reason must override → Lever 4 (Join Specs).
+    assert (
+        _map_to_lever(
+            "wrong_column",
+            judge="result_correctness",
+            assessment_reasons=["LLM_JUDGE_MISSING_JOIN"],
+        )
+        == 4
+    )
+
+
+def test_map_to_lever_falls_back_to_legacy_when_reasons_non_actionable() -> None:
+    # Non-actionable EMPTY_GOOD_SQL contributes no lever ⇒ legacy path wins.
+    assert (
+        _map_to_lever(
+            "wrong_column",
+            judge="result_correctness",
+            assessment_reasons=["EMPTY_GOOD_SQL"],
+        )
+        == 1
+    )
+    # No reasons at all ⇒ unchanged legacy routing.
+    assert _map_to_lever("wrong_join") == 4
+
+
+def test_cluster_failures_stamps_official_reasons_on_cluster() -> None:
+    row = _official_bad_row("q1", ["LLM_JUDGE_MISSING_JOIN"])
+    clusters = cluster_failures({"rows": [row]}, {}, verbose=False)
+    assert len(clusters) == 1
+    assert clusters[0]["assessment_reasons"] == ["LLM_JUDGE_MISSING_JOIN"]
+
+
+def test_active_mapped_lever_comes_from_assessment_reasons_not_legacy() -> None:
+    # End-to-end: an official BAD row whose SQL-shape root_cause would route one
+    # way under the legacy judge map, but whose official reason routes elsewhere.
+    row = _official_bad_row("q1", ["LLM_JUDGE_MISSING_JOIN"])
+    cluster = cluster_failures({"rows": [row]}, {}, verbose=False)[0]
+
+    # The legacy mapping (no reasons) and the official mapping disagree here.
+    legacy_lever = _map_to_lever(
+        cluster["root_cause"], judge=cluster.get("affected_judge")
+    )
+    # This mirrors the harness _mapped_lever call (harness.py ~11142).
+    active_lever = _map_to_lever(
+        cluster["root_cause"],
+        asi_failure_type=cluster.get("asi_failure_type"),
+        blame_set=cluster.get("asi_blame_set"),
+        judge=cluster.get("affected_judge"),
+        assessment_reasons=cluster.get("assessment_reasons"),
+    )
+    assert active_lever == 4  # Join Specs, from LLM_JUDGE_MISSING_JOIN
+    assert active_lever != legacy_lever
+
+
+def test_asset_mismatch_cluster_routes_to_lever_5_through_active_path() -> None:
+    row = _official_bad_row("q1", [], asset_mismatch=True)
+    cluster = cluster_failures({"rows": [row]}, {}, verbose=False)[0]
+    assert cluster.get("asset_type_mismatch") is True
+    assert "ASSET_TYPE_MISMATCH" in cluster["assessment_reasons"]
+    active_lever = _map_to_lever(
+        cluster["root_cause"],
+        judge=cluster.get("affected_judge"),
+        assessment_reasons=cluster.get("assessment_reasons"),
+    )
+    assert active_lever == 5
+
+
+# ── Strategist recommended_levers (blocking issue 2) ─────────────────────────
+def test_recommended_levers_for_cluster_official_overrides_shape_default() -> None:
+    # A single-question 'plural_top_n_collapse' cluster would get the per-question
+    # shape default (3, 5); the official MISSING_JOIN reason overrides → (4, 5).
+    cluster = {
+        "cluster_id": "H001",
+        "question_ids": ["q1"],
+        "q_count": 1,
+        "root_cause": "plural_top_n_collapse",
+        "assessment_reasons": ["LLM_JUDGE_MISSING_JOIN"],
+    }
+    assert recommended_levers_for_cluster(cluster) == (4, 5)
+
+
+def test_stamp_recommended_levers_on_official_cluster_uses_reason_mapping() -> None:
+    clusters = [
+        {
+            "cluster_id": "H001",
+            "question_ids": ["q1"],
+            "q_count": 1,
+            "root_cause": "plural_top_n_collapse",  # legacy default would be (3,5,6)/(3,5)
+            "assessment_reasons": ["LLM_JUDGE_WRONG_FILTER"],
+        }
+    ]
+    stamped = stamp_recommended_levers_on_clusters(clusters)
+    # WRONG_FILTER → FILTER_LOGIC_MISMATCH → (2, 5, 6); NOT the root-cause default.
+    assert stamped[0]["recommended_levers"] == [2, 5, 6]
+
+
+def test_stamp_recommended_levers_preserves_existing_when_no_official() -> None:
+    clusters = [
+        {
+            "cluster_id": "H001",
+            "question_ids": ["q1"],
+            "q_count": 1,
+            "root_cause": "plural_top_n_collapse",
+            "recommended_levers": [6],  # explicit upstream recommendation
+        }
+    ]
+    stamped = stamp_recommended_levers_on_clusters(clusters)
+    # No official reasons ⇒ the explicit value is preserved, not clobbered by
+    # the root-cause shape default.
+    assert stamped[0]["recommended_levers"] == [6]
+
+
+def test_stamp_recommended_levers_official_beats_existing_explicit() -> None:
+    clusters = [
+        {
+            "cluster_id": "H001",
+            "question_ids": ["q1"],
+            "q_count": 1,
+            "root_cause": "plural_top_n_collapse",
+            "recommended_levers": [6],
+            "assessment_reasons": ["LLM_JUDGE_MISSING_JOIN"],
+        }
+    ]
+    stamped = stamp_recommended_levers_on_clusters(clusters)
+    # Official reason-derived levers win over a stale explicit value.
+    assert stamped[0]["recommended_levers"] == [4, 5]
