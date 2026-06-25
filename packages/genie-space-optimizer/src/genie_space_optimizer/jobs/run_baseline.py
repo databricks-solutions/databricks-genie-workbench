@@ -179,9 +179,9 @@ import traceback
 from functools import partial
 from typing import Any, cast
 
-# Pin STRICT prompt registration — mirrors run_preflight.py. Must run BEFORE
-# any genie_space_optimizer imports so the module-level flag captures "true".
-os.environ.setdefault("GENIE_SPACE_OPTIMIZER_STRICT_PROMPT_REGISTRATION", "true")
+# GSO v2 Phase 5 (D6): the MLflow Prompt Registry is no longer a required
+# dependency — judge prompts are not registered/gated, so the former
+# STRICT_PROMPT_REGISTRATION env pin was removed.
 
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
@@ -352,24 +352,10 @@ _log(
     uc_routines=len(_uc_ctx.get("uc_routines") or []),
 )
 
-_baseline_model_kwargs = {
-    "w": w,
-    "space_id": space_id,
-    "config": _baseline_config,
-    "iteration": 0,
-    "domain": domain,
-    "experiment_name": exp_name,
-    "uc_schema": f"{catalog}.{schema}",
-    "uc_columns": _uc_ctx.get("uc_columns"),
-    "uc_tags": _uc_ctx.get("uc_tags"),
-    "uc_routines": _uc_ctx.get("uc_routines"),
-}
-
 try:
     _banner("Running 9-Judge Evaluation")
     eval_result = baseline_run_evaluation(
         spark, run_id, catalog, schema, benchmarks, setup_ctx, w=w,
-        model_creation_kwargs=_baseline_model_kwargs,
         max_benchmark_count=max_benchmark_count,
     )
     _log("Evaluation complete", overall_accuracy=eval_result.get("overall_accuracy", 0.0))

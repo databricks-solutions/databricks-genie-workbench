@@ -105,11 +105,6 @@ def preflight_run_name(
     return _with_retry(_v3(0, "preflight", detail, run_id=run_id), retry)
 
 
-def labeling_run_name(run_id: str, *, retry: int = 0) -> str:
-    """Labeling session bootstrapped before the optimisation loop."""
-    return _with_retry(_v3(0, "labeling_session", run_id=run_id), retry)
-
-
 # Tags added to every run, in addition to the name, so operators can filter
 # by field without parsing the name.
 RUN_NAME_VERSION = "v3"

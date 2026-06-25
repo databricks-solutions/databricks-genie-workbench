@@ -22,7 +22,7 @@
 # MAGIC | **Fetch Genie Space config** | Baseline configuration is needed for lever proposals and rollback |
 # MAGIC | **Collect UC metadata** | Columns, tags, routines inform benchmark generation and model context |
 # MAGIC | **Load or generate benchmarks** | Evaluation queries that drive accuracy scoring; LLM generates if none exist |
-# MAGIC | **Register judge prompts & create iteration 0 model** | MLflow experiment setup and initial LoggedModel for baseline comparison |
+# MAGIC | **Set up MLflow experiment** | Resolve/create the MLflow experiment used for tracing (Delta-only tracking; no judge-prompt registration, no LoggedModel) |
 # MAGIC
 # MAGIC ## ⚠️ What Happens If Preflight Fails?
 # MAGIC
@@ -118,10 +118,9 @@ import traceback
 from functools import partial
 from typing import Any, cast
 
-# Pin STRICT prompt registration on the job env so missing Prompt Registry
-# privileges fail the run instead of silently degrading baseline accuracy.
-# Must run BEFORE any genie_space_optimizer imports that cache os.getenv.
-os.environ.setdefault("GENIE_SPACE_OPTIMIZER_STRICT_PROMPT_REGISTRATION", "true")
+# GSO v2 Phase 5 (D6): the MLflow Prompt Registry is no longer a required
+# dependency — judge prompts are not registered/gated, so the former
+# STRICT_PROMPT_REGISTRATION env pin was removed.
 
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
@@ -168,8 +167,7 @@ _log = partial(_log_base, _TASK_LABEL)
 # MAGIC | `space_id` | text | `""` | Genie Space ID being optimized |
 # MAGIC | `catalog` | text | `""` | Unity Catalog name for state tables |
 # MAGIC | `schema` | text | `""` | UC schema for state tables and gold data |
-# MAGIC | `domain` | text | `""` | Domain name (e.g. `revenue_property`) for experiment path and prompts |
-# MAGIC | `experiment_name` | text | `""` | Optional MLflow experiment path; auto-resolved if empty |
+# MAGIC | `domain` | text | `""` | Domain name (e.g. `revenue_property`) for the auto-resolved experiment path |
 # MAGIC | `max_iterations` | text | `str(MAX_ITERATIONS)` | Max lever iterations before stopping |
 # MAGIC | `levers` | text | `"[1,2,3,4,5]"` | JSON array of lever numbers to try |
 # MAGIC | `apply_mode` | text | `"genie_config"` | Where patches apply: `genie_config` \| `uc_artifact` \| `both` |
@@ -185,7 +183,6 @@ dbutils.widgets.text("space_id", "")
 dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("schema", "")
 dbutils.widgets.text("domain", "")
-dbutils.widgets.text("experiment_name", "")
 dbutils.widgets.text("max_iterations", str(MAX_ITERATIONS))
 dbutils.widgets.text("levers", "[1,2,3,4,5]")
 dbutils.widgets.text("apply_mode", "genie_config")
@@ -200,7 +197,9 @@ space_id = dbutils.widgets.get("space_id")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
 domain = dbutils.widgets.get("domain")
-experiment_name = dbutils.widgets.get("experiment_name") or None
+# GSO v2 Phase 5 (D3): the experiment_name job param was removed. Preflight
+# self-resolves a deterministic experiment path from (space_id, domain).
+experiment_name = None
 max_iterations = int(dbutils.widgets.get("max_iterations") or str(MAX_ITERATIONS))
 levers = json.loads(dbutils.widgets.get("levers") or "[1,2,3,4,5]")
 apply_mode = dbutils.widgets.get("apply_mode") or "genie_config"
@@ -264,7 +263,7 @@ _log(
 # MAGIC | `genie_opt_data_access_grants` | Tracks data access grants applied during optimization |
 # MAGIC | `genie_opt_provenance` | End-to-end provenance linking patches to judge verdicts and gate outcomes |
 # MAGIC
-# MAGIC > **📝 Note:** Idempotent — safe to call on every run. For existing tables, `_migrate_add_columns()` adds any new columns (e.g. `reflection_json`, `labeling_session_url`) that were introduced in newer versions, making upgrades seamless. Missing catalog/schema permissions will raise.
+# MAGIC > **📝 Note:** Idempotent — safe to call on every run. For existing tables, `_migrate_add_columns()` adds any new columns (e.g. `reflection_json`, `config_json`) that were introduced in newer versions, making upgrades seamless. Missing catalog/schema permissions will raise.
 
 # COMMAND ----------
 
@@ -514,12 +513,12 @@ except Exception as exc:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 1e: Experiment and Model Setup
+# MAGIC ## Step 1e: Experiment Setup
 # MAGIC
-# MAGIC Create or resolve the MLflow experiment, register judge prompts, flag stale temporal
-# MAGIC benchmarks, sync the evaluation dataset, and create the initial LoggedModel
-# MAGIC (iteration 0). This cell writes the final `PREFLIGHT_STARTED → COMPLETE` stage record
-# MAGIC to Delta.
+# MAGIC Create or resolve the MLflow experiment (used for tracing only), flag stale temporal
+# MAGIC benchmarks, and sync the evaluation dataset. Tracking is Delta-only (GSO v2 Phase 5):
+# MAGIC no judge prompts are registered and no LoggedModel is created. This cell writes the
+# MAGIC final `PREFLIGHT_STARTED → COMPLETE` stage record to Delta.
 # MAGIC
 # MAGIC > **Note:** This step runs before human feedback loading so that
 # MAGIC > `mlflow.set_experiment()` is called first — label schemas and other MLflow
@@ -547,36 +546,9 @@ except Exception as exc:
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Step 1e.2: Prompt Registry Write-Path Probe
-# MAGIC
-# MAGIC Register and delete a throwaway prompt under ``{catalog}.{schema}`` to
-# MAGIC verify MLflow Prompt Registry is enabled AND the service principal has
-# MAGIC the UC privileges required to register judge prompts during baseline.
-# MAGIC
-# MAGIC Failing here produces a clear operator message and aborts before
-# MAGIC baseline_eval burns a warehouse. The probe is gated by the
-# MAGIC ``GSO_ENABLE_WRITE_PROBE`` env var (default: enabled).
-
-# COMMAND ----------
-
-try:
-    _banner("Step 1e.2 — Prompt Registry Probe")
-    from genie_space_optimizer.optimization.preflight import preflight_probe_prompt_registry
-    _probe_out = preflight_probe_prompt_registry(spark, run_id, catalog, schema)
-    if _probe_out.get("skipped"):
-        _log("Prompt Registry probe skipped", reason=_probe_out.get("reason_code"))
-    else:
-        _log("Prompt Registry probe OK")
-except Exception as exc:
-    _banner("Prompt Registry Probe FAILED")
-    _log(
-        "Failure details",
-        error_type=type(exc).__name__,
-        error_message=str(exc),
-        traceback=traceback.format_exc(),
-    )
-    raise
+# GSO v2 Phase 5 (D6): the MLflow Prompt Registry write-path probe (former
+# "Step 1e.2") was removed — judge prompts are no longer registered/gated, so
+# there is nothing to probe before baseline_eval.
 
 # COMMAND ----------
 
@@ -595,16 +567,13 @@ ctx_feedback = preflight_load_human_feedback(
 )
 _log("Feedback loaded", corrections=len(ctx_feedback["human_corrections"]))
 
-# Assemble the preflight_out dict for downstream task value publication
-from mlflow.tracking import MlflowClient as _MlflowClient
-_exp = _MlflowClient().get_experiment_by_name(ctx_exp["experiment_name"])
-_experiment_id = _exp.experiment_id if _exp else ""
-
+# Assemble the preflight_out dict for downstream task value publication.
+# GSO v2 Phase 5 (D3): experiment_name/experiment_id pointer columns scrubbed;
+# the experiment_name still flows downstream via the taskValue (below) for the
+# surviving MLflow tracing — it is no longer persisted as a run column.
 update_run_status(
     spark, run_id, catalog, schema,
     status="IN_PROGRESS",
-    experiment_name=ctx_exp["experiment_name"],
-    experiment_id=_experiment_id,
     warehouse_id=warehouse_id,
     human_corrections=ctx_feedback["human_corrections"],
     max_benchmark_count=effective_max,
@@ -621,8 +590,11 @@ preflight_out = {
     "config": _config,
     "benchmarks": _benchmarks,
     "model_id": None,
+    # experiment_name/experiment_id flow as taskValues for the surviving
+    # MLflow tracing handoff (resolved by preflight_setup_experiment); the
+    # Delta pointer columns were scrubbed in Phase 5 (D3).
     "experiment_name": ctx_exp["experiment_name"],
-    "experiment_id": _experiment_id,
+    "experiment_id": ctx_exp["experiment_id"],
     "human_corrections": ctx_feedback["human_corrections"],
 }
 
