@@ -8,7 +8,6 @@ import {
   ArrowRight,
   Lightbulb,
   RotateCcw,
-  BookOpen,
   RefreshCw,
 } from "lucide-react"
 import type { GSOIterationResult, GSOPipelineRun } from "@/types"
@@ -235,21 +234,13 @@ function RunNarrative({
         </div>
       )}
 
-      {/* Footer: rolled-back patches and/or human review flag */}
-      {(rolledBackCount > 0 || run.labelingSessionUrl != null) && (
+      {/* Footer: rolled-back patches */}
+      {rolledBackCount > 0 && (
         <div className="flex items-center gap-4 flex-wrap pt-2 border-t border-default">
-          {rolledBackCount > 0 && (
-            <span className="text-[11px] text-muted flex items-center gap-1">
-              <RotateCcw className="h-3 w-3" />
-              {rolledBackCount} patch{rolledBackCount !== 1 ? "es" : ""} rolled back
-            </span>
-          )}
-          {run.labelingSessionUrl != null && (
-            <span className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
-              <BookOpen className="h-3 w-3" />
-              Questions flagged for human review
-            </span>
-          )}
+          <span className="text-[11px] text-muted flex items-center gap-1">
+            <RotateCcw className="h-3 w-3" />
+            {rolledBackCount} patch{rolledBackCount !== 1 ? "es" : ""} rolled back
+          </span>
         </div>
       )}
     </div>

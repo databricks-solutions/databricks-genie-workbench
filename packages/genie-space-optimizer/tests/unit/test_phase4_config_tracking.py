@@ -310,18 +310,19 @@ def _iterations_df(rows: list[dict]) -> pd.DataFrame:
 def test_promote_best_model_marks_champion_reusing_existing_selection():
     """promote_best_model must persist the champion in Delta using the SAME
     best-iteration selection it already computes (idxmax of overall_accuracy
-    over non-rolled-back full/enrichment rows), even when there is no MLflow
-    model_id (the v2 Delta-only path returns early after the model_id guard)."""
+    over non-rolled-back full/enrichment rows). GSO v2 Phase 5 is Delta-only:
+    there is no MLflow model_id concept, so it returns the champion iteration
+    number and never short-circuits on a missing model_id."""
     from genie_space_optimizer.optimization import models as models_mod
 
     df = _iterations_df([
-        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 80.0, "rolled_back": False, "model_id": None},
-        {"iteration": 1, "eval_scope": "enrichment", "overall_accuracy": 85.0, "rolled_back": False, "model_id": None},
-        {"iteration": 2, "eval_scope": "full", "overall_accuracy": 92.0, "rolled_back": False, "model_id": None},
+        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 80.0, "rolled_back": False},
+        {"iteration": 1, "eval_scope": "enrichment", "overall_accuracy": 85.0, "rolled_back": False},
+        {"iteration": 2, "eval_scope": "full", "overall_accuracy": 92.0, "rolled_back": False},
         # Higher accuracy but rolled back → MUST be excluded from selection.
-        {"iteration": 3, "eval_scope": "full", "overall_accuracy": 99.0, "rolled_back": True, "model_id": None},
+        {"iteration": 3, "eval_scope": "full", "overall_accuracy": 99.0, "rolled_back": True},
         # A same-iteration slice row that must NOT be the champion target.
-        {"iteration": 2, "eval_scope": "slice", "overall_accuracy": 100.0, "rolled_back": False, "model_id": None},
+        {"iteration": 2, "eval_scope": "slice", "overall_accuracy": 100.0, "rolled_back": False},
     ])
 
     with patch.object(models_mod, "load_run", return_value={"space_id": "sp1"}), \
@@ -330,8 +331,8 @@ def test_promote_best_model_marks_champion_reusing_existing_selection():
          patch.object(models_mod, "update_run_status"):
         result = models_mod.promote_best_model(MagicMock(), "run-1", "cat", "sch")
 
-    # No model_id → returns None, but the champion was still marked first.
-    assert result is None
+    # Delta-only: returns the champion iteration number (2, full) and marks it.
+    assert result == 2
     mark.assert_called_once()
     _args, kwargs = mark.call_args
     # Called with the best iteration (2, full) — NOT the rolled-back 99.0 row

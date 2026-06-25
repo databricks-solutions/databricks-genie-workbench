@@ -92,8 +92,6 @@ resources:
           default: "5"
         - name: triggered_by
           default: ""
-        - name: experiment_name
-          default: ""
         - name: deploy_target
           default: ""
         - name: warehouse_id
@@ -111,7 +109,6 @@ resources:
               apply_mode: "{{job.parameters.apply_mode}}"
               levers: "{{job.parameters.levers}}"
               max_iterations: "{{job.parameters.max_iterations}}"
-              experiment_name: "{{job.parameters.experiment_name}}"
               deploy_target: "{{job.parameters.deploy_target}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
           environment_key: default

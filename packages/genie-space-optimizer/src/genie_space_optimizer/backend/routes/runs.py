@@ -2572,8 +2572,6 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
     except Exception:
         logger.debug("Could not load flagged questions for iteration detail", exc_info=True)
 
-    labeling_url = run_data.get("labeling_session_url")
-
     proactive = _extract_proactive_changes(stages_rows)
 
     return IterationDetailResponse(
@@ -2586,7 +2584,6 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
         totalIterations=len(iterations),
         iterations=iterations,
         flaggedQuestions=flagged,
-        labelingSessionUrl=labeling_url,
         proactiveChanges=proactive if proactive else None,
     )
 
@@ -2640,66 +2637,10 @@ def _build_links(
                 category="job",
             ))
 
-    experiment_id = run_data.get("experiment_id")
-    experiment_name = run_data.get("experiment_name")
-    _has_mlflow_runs = any(row.get("mlflow_run_id") for row in iters_rows)
-    if experiment_id and _has_mlflow_runs:
-        links.append(PipelineLink(
-            label="MLflow Experiment",
-            url=f"{host}/ml/experiments/{experiment_id}",
-            category="mlflow",
-        ))
-    elif experiment_name and _has_mlflow_runs:
-        from urllib.parse import quote
-        links.append(PipelineLink(
-            label="MLflow Experiment",
-            url=f"{host}/ml/experiments?searchFilter={quote(experiment_name)}",
-            category="mlflow",
-        ))
-
-    for row in iters_rows:
-        mlflow_run_id = row.get("mlflow_run_id")
-        iteration = row.get("iteration")
-        if mlflow_run_id and experiment_id:
-            label = "Baseline Evaluation" if iteration == 0 else f"Iteration {iteration} Evaluation"
-            links.append(PipelineLink(
-                label=label,
-                url=f"{host}/ml/experiments/{experiment_id}/runs/{mlflow_run_id}",
-                category="mlflow",
-            ))
-
-    uc_model = ""
-    uc_version = ""
-    for s in (stages_rows or []):
-        if str(s.get("stage", "")).startswith("FINALIZE") and str(s.get("status", "")).upper() == "COMPLETE":
-            fin_detail = safe_json_parse(s.get("detail_json"))
-            if isinstance(fin_detail, dict):
-                uc_model = fin_detail.get("uc_model_name", "")
-                uc_version = fin_detail.get("uc_model_version", "")
-            break
-    if uc_model and uc_version:
-        parts = uc_model.split(".")
-        if len(parts) == 3:
-            links.append(PipelineLink(
-                label="Best Model",
-                url=f"{host}/explore/data/models/{parts[0]}/{parts[1]}/{parts[2]}/version/{uc_version}",
-                category="mlflow",
-            ))
-
-    labeling_url = run_data.get("labeling_session_url")
-    labeling_name = run_data.get("labeling_session_name")
-    if labeling_url:
-        links.append(PipelineLink(
-            label=f"Human Review: {labeling_name}" if labeling_name else "Human Review Session",
-            url=labeling_url,
-            category="review",
-        ))
-    elif labeling_name and experiment_id:
-        links.append(PipelineLink(
-            label=f"Human Review: {labeling_name}",
-            url=f"{host}/ml/experiments/{experiment_id}",
-            category="review",
-        ))
+    # GSO v2 Phase 5 (D3/D7): MLflow experiment / per-run / UC-model resource
+    # links and the MLflow Review App "Human Review" link were removed. Tracking
+    # is Delta-only; human review surfaces via the official Benchmark API
+    # ``manual_assessment`` / ``NEEDS_REVIEW`` signal + Delta-backed flagging.
 
     catalog = config.catalog
     schema = config.schema_name
@@ -2795,7 +2736,6 @@ def get_pending_reviews(space_id: str, config: Dependencies.Config) -> PendingRe
     items: list[PendingReviewItem] = []
     flagged_count = 0
     queued_count = 0
-    labeling_url: str | None = None
 
     try:
         from genie_space_optimizer.optimization.labeling import get_flagged_questions
@@ -2825,24 +2765,13 @@ def get_pending_reviews(space_id: str, config: Dependencies.Config) -> PendingRe
     except Exception:
         logger.debug("Could not load queued patches", exc_info=True)
 
-    try:
-        from genie_space_optimizer.optimization.state import run_query
-        fqn = f"{catalog}.{schema}.genie_opt_runs"
-        df = run_query(
-            spark,
-            f"SELECT labeling_session_url FROM {fqn} "
-            f"WHERE space_id = '{space_id}' AND labeling_session_url IS NOT NULL "
-            f"ORDER BY started_at DESC LIMIT 1",
-        )
-        if not df.empty:
-            labeling_url = df.iloc[0].get("labeling_session_url")
-    except Exception:
-        logger.debug("Could not load labeling session URL", exc_info=True)
+    # GSO v2 Phase 5 (D7): the MLflow Review App labeling-session URL was
+    # removed; human review surfaces via flagged questions + the official
+    # Benchmark API ``manual_assessment`` / ``NEEDS_REVIEW`` signal.
 
     return PendingReviewsOut(
         flaggedQuestions=flagged_count,
         queuedPatches=queued_count,
         totalPending=flagged_count + queued_count,
-        labelingSessionUrl=labeling_url,
         items=items,
     )

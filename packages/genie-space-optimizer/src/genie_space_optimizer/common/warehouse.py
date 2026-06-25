@@ -268,7 +268,6 @@ def wh_create_run(
     apply_mode: str = "genie_config",
     levers: list[int] | None = None,
     triggered_by: str | None = None,
-    experiment_name: str | None = None,
     config_snapshot: dict | None = None,
     llm_model: str | None = None,
 ) -> None:
@@ -277,20 +276,22 @@ def wh_create_run(
 
     snap_json = json.dumps(config_snapshot).replace("'", "''") if config_snapshot else ""
     levers_json = json.dumps(levers if levers is not None else DEFAULT_LEVER_ORDER)
-    exp = (experiment_name or "").replace("'", "''")
     user = (triggered_by or "").replace("'", "''")
     model_escaped = llm_model.replace("'", "''") if llm_model else ""
     model_sql = f"'{model_escaped}'" if model_escaped else "NULL"
 
+    # GSO v2 Phase 5 (D3): the ``experiment_name`` column was scrubbed; the
+    # surviving MLflow tracing self-resolves a deterministic experiment path in
+    # ``preflight_setup_experiment`` (no pointer column needed).
     sql = (
         f"INSERT INTO {catalog}.{schema}.genie_opt_runs "
         f"(run_id, space_id, domain, catalog, uc_schema, status, started_at, "
         f"max_iterations, levers, apply_mode, updated_at, "
-        f"experiment_name, triggered_by, config_snapshot, llm_model) VALUES ("
+        f"triggered_by, config_snapshot, llm_model) VALUES ("
         f"'{run_id}', '{space_id}', '{domain}', '{catalog}', "
         f"'{catalog}.{schema}', 'QUEUED', current_timestamp(), "
         f"{MAX_ITERATIONS}, '{levers_json}', '{apply_mode}', current_timestamp(), "
-        f"'{exp}', '{user}', '{snap_json}', {model_sql})"
+        f"'{user}', '{snap_json}', {model_sql})"
     )
     sql_warehouse_execute(ws, warehouse_id, sql)
     logger.info("Created run %s via SQL warehouse", run_id)

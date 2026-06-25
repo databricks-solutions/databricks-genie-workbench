@@ -1673,14 +1673,11 @@ class TestRunEnrichmentSummaryBlock:
             },
         )
 
-        # ── Persistence: Delta writes and MLflow model versioning ────
+        # ── Persistence: Delta writes (GSO v2 Phase 5: MLflow LoggedModel
+        # versioning removed — no create_genie_model_version to stub) ────
         _stub(
             "genie_space_optimizer.optimization.harness.write_stage",
             lambda *a, **k: None,
-        )
-        _stub(
-            "genie_space_optimizer.optimization.harness.create_genie_model_version",
-            lambda *a, **k: "stub-model-id",
         )
         # fetch_space_config is imported inside the function body; stub
         # the source module so the ``from X import Y`` inside picks it up.

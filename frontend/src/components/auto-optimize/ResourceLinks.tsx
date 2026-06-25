@@ -1,6 +1,5 @@
 import {
   ExternalLink,
-  FlaskConical,
   BriefcaseBusiness,
   Database,
   Sparkles,
@@ -32,13 +31,6 @@ const categoryConfig: Record<string, {
     bgColor: "bg-blue-50 dark:bg-blue-950/30",
     borderColor: "border-blue-200 dark:border-blue-800",
   },
-  mlflow: {
-    icon: <FlaskConical className="h-4 w-4" />,
-    title: "MLflow",
-    color: "text-emerald-700 dark:text-emerald-400",
-    bgColor: "bg-emerald-50 dark:bg-emerald-950/30",
-    borderColor: "border-emerald-200 dark:border-emerald-800",
-  },
   data: {
     icon: <Database className="h-4 w-4" />,
     title: "Data",
@@ -58,7 +50,7 @@ export function ResourceLinks({ links }: ResourceLinksProps) {
     return acc
   }, {})
 
-  const categoryOrder = ["genie", "job", "mlflow", "data"]
+  const categoryOrder = ["genie", "job", "data"]
   const sortedCategories = Object.keys(grouped).sort(
     (a, b) =>
       (categoryOrder.indexOf(a) === -1 ? 99 : categoryOrder.indexOf(a)) -

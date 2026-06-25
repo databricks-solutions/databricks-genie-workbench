@@ -119,7 +119,6 @@ from genie_space_optimizer.optimization.evaluation import (
     run_repeatability_evaluation,
 )
 from genie_space_optimizer.optimization.models import (
-    create_genie_model_version,
     promote_best_model,
 )
 from genie_space_optimizer.optimization.optimizer import (
@@ -3570,6 +3569,10 @@ def _run_preflight(
         apply_mode, warehouse_id,
     )
 
+    # GSO v2 Phase 5 (D3): the experiment_name/experiment_id pointer COLUMNS were
+    # scrubbed, so update_run_status no longer persists them. experiment_id is
+    # still resolved here for the downstream taskValue handoff used by the
+    # surviving MLflow tracing (baseline/lever_loop/finalize set_experiment).
     import mlflow
     exp = mlflow.get_experiment_by_name(exp_name)
     experiment_id = exp.experiment_id if exp else ""
@@ -3577,8 +3580,6 @@ def _run_preflight(
     update_run_status(
         spark, run_id, catalog, schema,
         status="IN_PROGRESS",
-        experiment_name=exp_name,
-        experiment_id=experiment_id,
     )
 
     iq_scan_recommended_levers = (
@@ -3705,7 +3706,6 @@ def baseline_run_evaluation(
     benchmarks: list[dict],
     setup_ctx: dict,
     w: WorkspaceClient | None = None,
-    model_creation_kwargs: dict | None = None,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict:
     """Sub-step 2b: Run 9-judge evaluation with retry."""
@@ -3723,7 +3723,6 @@ def baseline_run_evaluation(
         setup_ctx["predict_fn"], setup_ctx["scorers"],
         spark=spark, w=w, catalog=catalog, gold_schema=schema,
         uc_schema=f"{catalog}.{schema}",
-        model_creation_kwargs=model_creation_kwargs,
         max_benchmark_count=max_benchmark_count,
         run_name=baseline_run_name(run_id),
         extra_tags=_v2_tags_baseline(
@@ -3794,7 +3793,7 @@ def baseline_persist_state(
     write_iteration(
         spark, run_id, 0, eval_result,
         catalog=catalog, schema=schema,
-        eval_scope="full", model_id=model_id,
+        eval_scope="full",
         config_snapshot=config_snapshot,
     )
 
@@ -3816,7 +3815,6 @@ def baseline_persist_state(
         spark, run_id, catalog, schema,
         best_iteration=0,
         best_accuracy=_anchored_best,
-        best_model_id=model_id,
     )
 
     write_stage(
@@ -8519,19 +8517,12 @@ def _run_enrichment(
                 "enrichment.total": total_enrichments,
             })
 
-            # ── 3. LoggedModel snapshot of enriched state ─────────────────
-            enrichment_model_id = create_genie_model_version(
-                w,
-                space_id,
-                config,
-                iteration=-1,
-                domain=domain,
-                experiment_name=exp_name,
-                uc_schema=uc_schema,
-                uc_columns=uc_columns,
-                parent_model_id=baseline_model_id or None,
-                optimization_run_id=optimization_run_id or run_id,
-            )
+            # ── 3. (GSO v2 Phase 5, D3) MLflow LoggedModel snapshot removed ──
+            # Tracking is Delta-only — the post-enrichment effective config is
+            # captured via ``write_iteration(config_snapshot=...)`` below. The
+            # ``enrichment_model_id`` plumbing is retained but inert (no
+            # LoggedModel is minted); it carries an empty string downstream.
+            enrichment_model_id = ""
 
         # ── 4. Post-enrichment evaluation (Tier 1.3) ──────────────────────
         # Enrichment mutates the Genie Space (descriptions, joins,
@@ -8545,7 +8536,7 @@ def _run_enrichment(
         post_enrichment_scores: dict[str, float] = {}
         post_enrichment_evaluated_count: int | None = None
         post_enrichment_thresholds_met: bool = False
-        if not enrichment_skipped and enrichment_model_id:
+        if not enrichment_skipped:
             # Own stage lifecycle here under POST_ENRICHMENT_EVAL_* so we
             # don't reuse BASELINE_EVAL_STARTED (which would leak an
             # unclosed STARTED row and pin Step 2 to "Running" until the
@@ -8612,10 +8603,9 @@ def _run_enrichment(
                         spark, run_id, 0, _pe_eval,
                         catalog=catalog, schema=schema,
                         eval_scope="enrichment",
-                        model_id=enrichment_model_id,
                         # GSO v2 Phase 4 (D3): ``config`` is the post-
-                        # enrichment effective config (same dict snapshotted
-                        # by create_genie_model_version above).
+                        # enrichment effective config captured for the
+                        # Delta-only per-iteration config history.
                         config_snapshot=config,
                     )
                     _pe_both_correct_rate = _pe_eval.get("both_correct_rate")
@@ -8630,7 +8620,6 @@ def _run_enrichment(
                         spark, run_id, catalog, schema,
                         best_iteration=0,
                         best_accuracy=_pe_anchored_best,
-                        best_model_id=enrichment_model_id,
                     )
                 except Exception:
                     logger.warning(
@@ -11780,7 +11769,7 @@ def _run_gate_checks(
                 spark, run_id, iteration_counter, slice_result,
                 catalog=catalog, schema=schema,
                 lever=int(lever_keys[0]) if lever_keys else 0,
-                eval_scope="slice", model_id=prev_model_id,
+                eval_scope="slice",
                 config_snapshot=_candidate_config_snapshot,
             )
         except Exception:
@@ -11903,7 +11892,7 @@ def _run_gate_checks(
                 spark, run_id, iteration_counter, p0_result,
                 catalog=catalog, schema=schema,
                 lever=int(lever_keys[0]) if lever_keys else 0,
-                eval_scope="p0", model_id=prev_model_id,
+                eval_scope="p0",
                 config_snapshot=_candidate_config_snapshot,
             )
         except Exception:
@@ -11943,13 +11932,6 @@ def _run_gate_checks(
         task_key="lever_loop", iteration=iteration_counter,
         catalog=catalog, schema=schema,
     )
-
-    _model_kwargs = {
-        "w": w, "space_id": space_id, "config": metadata_snapshot,
-        "iteration": iteration_counter, "domain": domain,
-        "experiment_name": exp_name, "uc_schema": uc_schema,
-        "patch_set": patches, "parent_model_id": prev_model_id,
-    }
 
     _ensure_sql_context(spark, catalog, schema)
     # Tier 4: v2 run name — ``<run_short>/iter_NN_full_eval/run_1``.
@@ -11999,7 +11981,6 @@ def _run_gate_checks(
         "gold_schema": schema,
         "uc_schema": uc_schema,
         "reference_sqls": reference_sqls if reference_sqls else None,
-        "model_creation_kwargs": _model_kwargs,
         "max_benchmark_count": max_benchmark_count,
         "run_name": full_eval_run_name(run_id, iteration_counter, pass_index=1),
         "extra_tags": _v2_tags_full(
@@ -12157,7 +12138,7 @@ def _run_gate_checks(
         spark, run_id, iteration_counter, full_result,
         catalog=catalog, schema=schema,
         lever=int(lever_keys[0]) if lever_keys else 0,
-        eval_scope="full", model_id=new_model_id,
+        eval_scope="full",
         # GSO v2 Phase 4 (D3): record the POST-apply candidate config the full
         # eval actually ran against (apply_log["post_snapshot"]), NOT the
         # pre-patch metadata_snapshot. See _candidate_config_snapshot above.
@@ -22097,7 +22078,6 @@ def _run_lever_loop(
                 spark, run_id, catalog, schema,
                 best_iteration=best_iteration,
                 best_accuracy=best_accuracy,
-                best_model_id=best_model_id,
             )
 
             post_instructions = _get_general_instructions(
@@ -23876,7 +23856,7 @@ def _run_finalize(
                 write_iteration(
                     spark, run_id, iteration_counter, held_out_result,
                     catalog=catalog, schema=schema,
-                    eval_scope="held_out", model_id=prev_model_id,
+                    eval_scope="held_out",
                     # GSO v2 Phase 4 (D3): ``_ho_parsed`` is the live config
                     # fetched just above for the held-out eval.
                     config_snapshot=_ho_parsed if isinstance(_ho_parsed, dict) else None,
@@ -23941,12 +23921,11 @@ def _run_finalize(
                 catalog=catalog, schema=schema,
             )
 
-        _review_lines = [_section("FINALIZE — HUMAN REVIEW SESSION", "-")]
+        _review_lines = [_section("FINALIZE — HUMAN REVIEW FLAGGING", "-")]
         print("\n".join(_review_lines))
 
         _check_timeout("human_review_session")
         _emit_heartbeat("human_review_session", force=True)
-        session_info: dict = {}
         try:
             for _rr in (rep_results if run_repeatability and benchmarks else []):
                 _rr_tmap = _rr.get("trace_map", {})
@@ -24014,52 +23993,18 @@ def _run_finalize(
                 except Exception:
                     logger.debug("Failed to resolve stale flags", exc_info=True)
 
-            _session_trace_ids = [
-                question_trace_map[qid][-1]
-                for qid in persistent_question_ids
-                if qid in question_trace_map
-            ] if persistent_question_ids else []
-            _session_question_ids = [
-                qid for qid in persistent_question_ids if qid in question_trace_map
-            ] if persistent_question_ids else []
-
-            if _session_question_ids:
-                from genie_space_optimizer.optimization.labeling import create_review_session
-                session_info = create_review_session(
-                    run_id=run_id,
-                    domain=domain,
-                    experiment_name=exp_name,
-                    uc_schema=f"{catalog}.{schema}",
-                    failure_trace_ids=list(dict.fromkeys(_session_trace_ids)),
-                    regression_trace_ids=[],
-                    eval_mlflow_run_ids=list(dict.fromkeys(all_eval_mlflow_run_ids)),
-                    failure_question_ids=list(dict.fromkeys(_session_question_ids)),
-                    flagged_trace_ids=list(dict.fromkeys(_session_trace_ids)),
+            # GSO v2 Phase 5 (D7): the MLflow Review App labeling session was
+            # removed. Human review now relies on the Delta-backed flagging
+            # above (``flag_for_human_review`` → ``genie_opt_flagged_questions``)
+            # plus the official Genie Benchmark API's ``manual_assessment`` /
+            # ``NEEDS_REVIEW`` signal. No MLflow labeling session is created.
+            if persistent_question_ids:
+                print(
+                    f"\n[Human Review] {len(persistent_question_ids)} persistent "
+                    f"question(s) flagged for review (genie_opt_flagged_questions)\n"
                 )
-                _sname = session_info.get("session_name", "")
-                _srun = session_info.get("session_run_id", "")
-                _surl = session_info.get("session_url", "")
-                if _sname:
-                    print(
-                        f"\n[MLflow Review] Labeling session created for human review:\n"
-                        f"  Name: {_sname}\n"
-                        f"  Traces: {session_info.get('trace_count', 0)}\n"
-                        f"  Persistent questions: {len(_session_question_ids)}\n"
-                    )
-                    if _surl:
-                        print(f"  URL: {_surl}\n")
-                if _sname or _srun:
-                    update_run_status(
-                        spark, run_id, catalog, schema,
-                        labeling_session_name=_sname,
-                        labeling_session_run_id=_srun,
-                        labeling_session_url=_surl,
-                    )
-            else:
-                print("\n[MLflow Review] No persistent failures — skipping labeling session creation\n")
-        except Exception as exc:
-            print(f"[Labeling] Failed to create post-repeatability review session: {exc}")
-            logger.warning("Failed to create post-repeatability review session", exc_info=True)
+        except Exception:
+            logger.warning("Persistent-failure flagging step failed", exc_info=True)
 
         # ── Phase 3: Model Promotion & Report ──
         _promo_lines = [_section("FINALIZE — MODEL PROMOTION & REPORT", "-")]
@@ -24067,21 +24012,11 @@ def _run_finalize(
 
         _check_timeout("promote_best_model")
         _emit_heartbeat("promote_best_model", force=True)
+        # GSO v2 Phase 5 (D3): champion is selected + marked in Delta only.
+        # No UC Model Registry version is created (``register_uc_model`` was
+        # removed); cross-environment deploy is out of scope and will use the
+        # official DAB ``genie_space`` resource in the future.
         promoted_model = promote_best_model(spark, run_id, catalog, schema)
-
-        from genie_space_optimizer.optimization.models import register_uc_model
-        uc_result = register_uc_model(spark, run_id, catalog, schema, ws=w, deploy_target=deploy_target)
-
-        if uc_result:
-            _uc_lines = [_section("FINALIZE — UC MODEL REGISTRATION", "-")]
-            _uc_lines.append(_kv("UC Model", uc_result["uc_model_name"]))
-            _uc_lines.append(_kv("Version", uc_result["version"]))
-            _uc_lines.append(_kv("Champion", "YES" if uc_result["promoted_to_champion"] else "NO (existing champion is better)"))
-            if uc_result.get("comparison"):
-                for _judge, _cmp in uc_result["comparison"].items():
-                    _uc_lines.append(_kv(f"  {_judge}", f"new={_cmp['new']:.1f} vs existing={_cmp['existing']:.1f}"))
-            _uc_lines.append(_bar("-"))
-            print("\n".join(_uc_lines))
 
         _check_timeout("generate_report")
         _emit_heartbeat("generate_report", force=True)
@@ -24211,9 +24146,6 @@ def _run_finalize(
                 "repeatability_pct": repeatability_pct,
                 "terminal_reason": terminal_reason,
                 "heartbeat_count": heartbeat_count,
-                "uc_model_name": (uc_result or {}).get("uc_model_name", ""),
-                "uc_model_version": (uc_result or {}).get("version", ""),
-                "uc_champion_promoted": (uc_result or {}).get("promoted_to_champion", False),
             },
             catalog=catalog, schema=schema,
         )
@@ -24237,8 +24169,6 @@ def _run_finalize(
             "promoted_model": promoted_model,
             "terminal_reason": terminal_reason,
             "benchmark_publish_count": benchmark_publish_count,
-            "labeling_session": session_info,
-            "uc_registration": uc_result,
             "elapsed_seconds": round(_elapsed_seconds(), 1),
             "heartbeat_count": heartbeat_count,
             "held_out_accuracy": held_out_accuracy,
