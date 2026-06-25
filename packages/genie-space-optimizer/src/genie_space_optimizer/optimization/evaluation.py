@@ -3569,14 +3569,25 @@ def all_thresholds_met(
     scores: dict[str, float],
     targets: dict[str, float] | None = None,
 ) -> bool:
-    """Return True only when every judge meets its threshold.
+    """Return True when the official Benchmark API accuracy meets target.
 
-    ``scores`` should be on a 0-100 scale. ``targets`` defaults to
-    ``DEFAULT_THRESHOLDS`` from config.
+    Phase 3 (D2): the 9 scored judges are retired, so gating is on API accuracy
+    alone — ``DEFAULT_THRESHOLDS`` now holds only the ``result_correctness``
+    accuracy gate (== ``num_correct/num_questions`` on the official path) and no
+    per-judge thresholds remain. The loop still honours any explicitly-passed
+    multi-key ``targets`` for backward compatibility, but the default path checks
+    accuracy only. Per-iteration accept/reject is decided on the accuracy DELTA by
+    ``acceptance_policy.decide_acceptance`` — this answers only the
+    objective-complete / skip-lever-loop question.
+
+    ``scores`` should be on a 0-100 scale.
     """
     targets = targets or DEFAULT_THRESHOLDS
     for judge, threshold in targets.items():
         actual = scores.get(judge)
+        if actual is None and judge == "result_correctness":
+            # Accept the headline-accuracy alias when the carrier key is absent.
+            actual = scores.get("overall_accuracy")
         if actual is None:
             return False
         if actual < threshold:

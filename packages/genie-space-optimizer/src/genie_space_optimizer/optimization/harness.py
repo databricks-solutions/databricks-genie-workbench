@@ -11144,6 +11144,9 @@ def _analyze_and_distribute(
             asi_failure_type=c.get("asi_failure_type"),
             blame_set=c.get("asi_blame_set"),
             judge=c.get("affected_judge"),
+            # Phase 3 (D2): official Benchmark reasons drive lever assignment
+            # before the legacy judge/root-cause fallbacks on official rows.
+            assessment_reasons=c.get("assessment_reasons"),
         )
         c["_mapped_lever"] = mapped
         lever_assignments.setdefault(mapped, []).append(c)
@@ -11224,6 +11227,7 @@ def _analyze_and_distribute(
             asi_failure_type=c.get("asi_failure_type"),
             blame_set=c.get("asi_blame_set"),
             judge=c.get("affected_judge"),
+            assessment_reasons=c.get("assessment_reasons"),
         ))
         for qt in c.get("question_traces", []):
             qid = qt.get("question_id", "")
