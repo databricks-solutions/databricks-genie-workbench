@@ -597,14 +597,32 @@ def _map_to_lever(
     asi_failure_type: str | None = None,
     blame_set: list | str | None = None,
     judge: str | None = None,
+    assessment_reasons: list | tuple | None = None,
 ) -> int:
     """Map a failure root cause to its primary control lever (1-6).
 
-    ASI ``failure_type`` takes precedence when present since it comes
-    directly from the FAILURE_TAXONOMY and is more precise.
+    Phase 3 (D2): when ``assessment_reasons`` are present (official Benchmark
+    API rows), they take precedence over every legacy signal — the primary
+    lever is derived from the reason→RcaKind→lever mapping
+    (``rca.levers_for_assessment_reasons``), reusing the established
+    ``_RCA_KIND_TO_LEVERS`` table. The legacy judge / root-cause / ASI
+    fallbacks below apply only to non-official rows (or when the reasons carry
+    no actionable lever, e.g. ``EMPTY_GOOD_SQL``).
+
+    ASI ``failure_type`` takes precedence over ``root_cause`` (legacy path)
+    since it comes directly from the FAILURE_TAXONOMY and is more precise.
     Falls back to the judge name when rationale-based pattern extraction
     yields "other".
     """
+    if assessment_reasons:
+        from genie_space_optimizer.optimization.rca import (
+            levers_for_assessment_reasons,
+        )
+
+        _reason_levers = levers_for_assessment_reasons(assessment_reasons)
+        if _reason_levers:
+            return _reason_levers[0]
+
     ft = (asi_failure_type if asi_failure_type and asi_failure_type != "other" else None) or root_cause
 
     if ft == "repeatability_issue":
@@ -2196,6 +2214,10 @@ def cluster_failures(
                     "asi_blame_set": asi_blame_set,
                     "asi_counterfactual_fix": asi_counterfactual,
                     "asi_wrong_clause": asi_wrong_clause,
+                    # Phase 3 (D2): official Benchmark API routing signal carried
+                    # on the row (top-level key set only by the official runner).
+                    "assessment_reasons": list(row.get("assessment_reasons") or []),
+                    "asset_type_mismatch": bool(row.get("asset_type_mismatch")),
                     "sql_context": sql_ctx,
                     # T1.3: signal-quality metadata.
                     "_signal_quality": {
@@ -2776,6 +2798,27 @@ def cluster_failures(
         _sig_bytes = "||".join(_sig_parts).encode("utf-8")
         _cluster_signature = _hashlib.sha1(_sig_bytes).hexdigest()[:16]
 
+        # Phase 3 (D2): aggregate the official Benchmark API assessment_reasons
+        # across the cluster's failing rows, ordered by frequency so the
+        # dominant failure mode maps to the primary lever. The derived
+        # asset-type mismatch is folded in as ``ASSET_TYPE_MISMATCH`` so the
+        # cluster's reason list is a self-contained routing signal consumed by
+        # ``_map_to_lever`` and ``recommended_levers_for_cluster``. Only set on
+        # official rows; legacy clusters never gain the key.
+        _reason_counter: Counter[str] = Counter()
+        _cluster_asset_mismatch = False
+        for _rqid in unique_qids:
+            for _rf in question_profiles.get(_rqid, {}).get("failures", []) or []:
+                for _r in _rf.get("assessment_reasons") or []:
+                    _rk = str(_r or "").strip().upper()
+                    if _rk:
+                        _reason_counter[_rk] += 1
+                if _rf.get("asset_type_mismatch"):
+                    _cluster_asset_mismatch = True
+        _cluster_assessment_reasons = [r for r, _ in _reason_counter.most_common()]
+        if _cluster_asset_mismatch and "ASSET_TYPE_MISMATCH" not in _cluster_assessment_reasons:
+            _cluster_assessment_reasons.append("ASSET_TYPE_MISMATCH")
+
         entry = {
             "cluster_id": f"{_ns}{len(clusters) + 1:03d}",
             "cluster_signature": _cluster_signature,
@@ -2833,6 +2876,10 @@ def cluster_failures(
                 "dominant_pattern_label": _dominant_pattern,
             },
         }
+        if _cluster_assessment_reasons:
+            entry["assessment_reasons"] = _cluster_assessment_reasons
+        if _cluster_asset_mismatch:
+            entry["asset_type_mismatch"] = True
         if join_assessments:
             entry["join_assessments"] = join_assessments
         if sql_pairs_for_ast_diff:
@@ -3120,6 +3167,7 @@ def rank_clusters(
                 asi_failure_type=enriched.get("asi_failure_type"),
                 blame_set=enriched.get("asi_blame_set"),
                 judge=enriched.get("affected_judge"),
+                assessment_reasons=enriched.get("assessment_reasons"),
             )
             enriched["_scan_lever_overlap"] = (
                 1.0 if implied_lever in recommended_levers else 0.0
@@ -15057,6 +15105,7 @@ def generate_metadata_proposals(
                 asi_failure_type=cluster.get("asi_failure_type"),
                 blame_set=cluster.get("asi_blame_set"),
                 judge=cluster.get("affected_judge"),
+                assessment_reasons=cluster.get("assessment_reasons"),
             )
             if natural_lever == 5 or natural_lever in failed_levers:
                 all_lever5_clusters.append(cluster)
@@ -15211,6 +15260,7 @@ def generate_metadata_proposals(
             asi_failure_type=cluster.get("asi_failure_type"),
             blame_set=cluster.get("asi_blame_set"),
             judge=cluster.get("affected_judge"),
+            assessment_reasons=cluster.get("assessment_reasons"),
         )
         lever = natural_lever
         if target_lever is not None and lever != target_lever:
