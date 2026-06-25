@@ -148,6 +148,146 @@ def patch_family_for_rca_kind(kind: RcaKind) -> str:
     return _RCA_KIND_TO_PATCH_FAMILY.get(kind, "generic_judge_guidance")
 
 
+# ── Phase 3 (D2): official Benchmark API reason → lever routing ──────────────
+#
+# The 9 scored LLM judges are retired. The official Genie Benchmark API returns
+# accuracy (the GOOD/BAD/NEEDS_REVIEW verdict) and a 25-value ``ScoreReason``
+# taxonomy (``databricks.sdk.service.dashboards.ScoreReason``). v2 lever routing
+# reads those reasons instead of judge verdicts.
+#
+# Each official reason maps to an existing :class:`RcaKind`; the recommended
+# levers then come from :data:`_RCA_KIND_TO_LEVERS` and the patch family from
+# :data:`_RCA_KIND_TO_PATCH_FAMILY` — i.e. we REUSE the established routing maps
+# rather than inventing a new lever map (§0.4 / §3.1 of the v2 plan). This is the
+# COARSE bucket: the deterministic SQL-shape RCA below (``_measures`` / ``_tables``
+# / ``_where_text`` / ``extract_failed_row_sql_expression_candidates`` etc.) stays
+# the FINE sub-router, fed by the API's ``actual_response`` / ``expected_response``,
+# and resolves what the reasons cannot (the 4 distinct Lever-1 sub-actions,
+# defensive-vs-missing filter, and the L5-example / L6-expression / L5-instruction
+# priority).
+#
+# All 25 official ScoreReason values are handled (8 result-diff + 17 LLM_JUDGE_*),
+# plus the derived ``ASSET_TYPE_MISMATCH`` annotation computed on BAD rows.
+_ASSESSMENT_REASON_TO_RCA_KIND: dict[str, RcaKind] = {
+    # ── Result-diff family (8) ──
+    "RESULT_EXTRA_ROWS": RcaKind.FILTER_LOGIC_MISMATCH,
+    "RESULT_MISSING_ROWS": RcaKind.FILTER_LOGIC_MISMATCH,
+    "RESULT_EXTRA_COLUMNS": RcaKind.GRAIN_OR_GROUPING_MISMATCH,
+    "RESULT_MISSING_COLUMNS": RcaKind.GRAIN_OR_GROUPING_MISMATCH,
+    "SINGLE_CELL_DIFFERENCE": RcaKind.MEASURE_SWAP,
+    "COLUMN_TYPE_DIFFERENCE": RcaKind.GRAIN_OR_GROUPING_MISMATCH,
+    "EMPTY_RESULT": RcaKind.FILTER_LOGIC_MISMATCH,
+    # Ground-truth quality, not a Genie fault — handled by GT-correction, not a
+    # lever; mapped to UNKNOWN and excluded from finding generation below.
+    "EMPTY_GOOD_SQL": RcaKind.UNKNOWN,
+    # ── LLM-judge family (17 — all official values, incl. the 6 not previously
+    #    mirrored: MISSING_JOIN, SEMANTIC_ERROR, SYNTAX_ERROR, WRONG_AGGREGATION,
+    #    WRONG_COLUMNS, WRONG_FILTER) ──
+    "LLM_JUDGE_SYNTAX_ERROR": RcaKind.SQL_EXPRESSION_MISSING,
+    "LLM_JUDGE_INCORRECT_FUNCTION_USAGE": RcaKind.FUNCTION_OR_TVF_NOT_INVOKED,
+    "LLM_JUDGE_WRONG_COLUMNS": RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING,
+    "LLM_JUDGE_INCORRECT_TABLE_OR_FIELD_USAGE": RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING,
+    "LLM_JUDGE_MISSING_JOIN": RcaKind.JOIN_SPEC_MISSING_OR_WRONG,
+    "LLM_JUDGE_MISSING_OR_INCORRECT_JOIN": RcaKind.JOIN_SPEC_MISSING_OR_WRONG,
+    "LLM_JUDGE_MISSING_OR_INCORRECT_AGGREGATION": RcaKind.GRAIN_OR_GROUPING_MISMATCH,
+    "LLM_JUDGE_WRONG_AGGREGATION": RcaKind.GRAIN_OR_GROUPING_MISMATCH,
+    "LLM_JUDGE_INCORRECT_METRIC_CALCULATION": RcaKind.MEASURE_SWAP,
+    "LLM_JUDGE_MISSING_OR_INCORRECT_FILTER": RcaKind.FILTER_LOGIC_MISMATCH,
+    "LLM_JUDGE_WRONG_FILTER": RcaKind.FILTER_LOGIC_MISMATCH,
+    "LLM_JUDGE_INSTRUCTION_COMPLIANCE_OR_MISSING_BUSINESS_LOGIC": RcaKind.EXAMPLE_SQL_SHAPE_NEEDED,
+    "LLM_JUDGE_SEMANTIC_ERROR": RcaKind.EXAMPLE_SQL_SHAPE_NEEDED,
+    "LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST": RcaKind.EXAMPLE_SQL_SHAPE_NEEDED,
+    "LLM_JUDGE_INCOMPLETE_OR_PARTIAL_OUTPUT": RcaKind.GRAIN_OR_GROUPING_MISMATCH,
+    "LLM_JUDGE_FORMATTING_ERROR": RcaKind.UNKNOWN,
+    "LLM_JUDGE_OTHER": RcaKind.UNKNOWN,
+    # ── Derived annotation (not an official ScoreReason; computed on BAD rows
+    #    via detect_asset_type, fed to Lever 5 routing / example-SQL guidance) ──
+    "ASSET_TYPE_MISMATCH": RcaKind.ASSET_TYPE_ROUTING_MISMATCH,
+}
+
+# Reasons that are real failures but carry NO actionable lever signal — they must
+# never generate a routing finding (EMPTY_GOOD_SQL is a ground-truth defect, not a
+# Genie fault). They stay in the map above so all 25 values are explicitly handled.
+_NON_ACTIONABLE_ASSESSMENT_REASONS: frozenset[str] = frozenset({"EMPTY_GOOD_SQL"})
+
+# Coarse reason-derived findings rank below the deterministic SQL-shape findings
+# (0.8–0.9). When both fire for the same (qid, kind) they share an ``rca_id`` and
+# ``_dedupe_rca_findings`` keeps ``max(confidence)`` + unions the levers.
+_ASSESSMENT_REASON_FINDING_CONFIDENCE = 0.6
+
+
+def rca_kind_for_assessment_reason(reason: Any) -> RcaKind:
+    """Map one official ``ScoreReason`` (or the derived ``ASSET_TYPE_MISMATCH``)
+    to an :class:`RcaKind`. Unknown / unmapped values fall back to
+    :attr:`RcaKind.UNKNOWN` (which routes to Lever 5)."""
+    key = str(reason or "").strip().upper()
+    return _ASSESSMENT_REASON_TO_RCA_KIND.get(key, RcaKind.UNKNOWN)
+
+
+def levers_for_assessment_reasons(reasons: Iterable[Any]) -> tuple[int, ...]:
+    """Recommended levers for a set of official assessment reasons.
+
+    Reuses :func:`recommended_levers_for_rca_kind` per reason and unions the
+    results in stable first-seen order. Non-actionable reasons
+    (:data:`_NON_ACTIONABLE_ASSESSMENT_REASONS`) contribute no levers.
+    """
+    out: list[int] = []
+    for reason in reasons or ():
+        key = str(reason or "").strip().upper()
+        if not key or key in _NON_ACTIONABLE_ASSESSMENT_REASONS:
+            continue
+        kind = rca_kind_for_assessment_reason(key)
+        for lever in recommended_levers_for_rca_kind(kind):
+            if lever not in out:
+                out.append(lever)
+    return tuple(out)
+
+
+def _findings_from_assessment_reasons(qid: str, row: dict) -> list[RcaFinding]:
+    """Build coarse RCA findings from a row's official ``assessment_reasons``.
+
+    Only official-runner rows carry the top-level ``assessment_reasons`` key, so
+    this is a no-op for legacy / in-process rows (which route via judge ASI
+    metadata + SQL-shape analysis, untouched). The derived ``asset_type_mismatch``
+    annotation on BAD rows contributes an ``ASSET_TYPE_MISMATCH`` reason.
+    """
+    reasons = list(row.get("assessment_reasons") or [])
+    if row.get("asset_type_mismatch"):
+        reasons.append("ASSET_TYPE_MISMATCH")
+    if not reasons:
+        return []
+
+    findings: list[RcaFinding] = []
+    seen_kinds: set[RcaKind] = set()
+    for reason in reasons:
+        key = str(reason or "").strip().upper()
+        if not key or key in _NON_ACTIONABLE_ASSESSMENT_REASONS:
+            continue
+        kind = rca_kind_for_assessment_reason(key)
+        if kind in seen_kinds:
+            continue
+        seen_kinds.add(kind)
+        findings.append(
+            RcaFinding(
+                rca_id=_mk_id(qid, kind),
+                question_id=qid,
+                rca_kind=kind,
+                confidence=_ASSESSMENT_REASON_FINDING_CONFIDENCE,
+                evidence=(
+                    RcaEvidence(
+                        source="assessment_reason",
+                        detail=f"official_benchmark_api reason={key}",
+                        confidence=_ASSESSMENT_REASON_FINDING_CONFIDENCE,
+                    ),
+                ),
+                recommended_levers=recommended_levers_for_rca_kind(kind),
+                patch_family=patch_family_for_rca_kind(kind),
+                target_qids=(qid,),
+            )
+        )
+    return findings
+
+
 _MEASURE_RE = re.compile(
     r"MEASURE\s*\(\s*`?([a-zA-Z_][a-zA-Z0-9_]*)`?\s*\)",
     re.IGNORECASE,
@@ -444,6 +584,13 @@ def extract_rca_findings_from_row(
             asi_finding = _asi_finding_from_metadata(qid, judge_name, metadata)
             if asi_finding is not None:
                 findings.append(asi_finding)
+
+    # Phase 3 (D2): official Benchmark API ``assessment_reasons`` are the coarse
+    # v2 routing signal that replaces the retired judges. Like ASI metadata, they
+    # can fire without SQL, so derive them before the SQL-required early return.
+    # No-op for legacy rows (which lack the top-level ``assessment_reasons`` key).
+    if qid:
+        findings.extend(_findings_from_assessment_reasons(qid, row))
 
     if not qid or not expected or not generated:
         return findings
