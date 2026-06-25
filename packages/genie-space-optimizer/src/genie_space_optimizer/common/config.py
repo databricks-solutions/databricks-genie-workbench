@@ -162,6 +162,58 @@ SQL_STATEMENT_POLL_INTERVAL = 2
 INLINE_EVAL_DELAY = 12
 CONNECTION_POOL_SIZE = 20
 
+# ── 2b. Official Benchmark Eval-Run API (GSO v2, Phase 1) ───────────────
+# The native Genie Benchmark (Eval-Run) API is the sole eval runner in v2
+# (decision D1). These knobs drive ``optimization.eval_runner`` /
+# ``eval_gates`` / ``eval_budget``. See GSO_OPTIMIZER_V2_TODO.md §3.3–§3.4.
+
+USE_OFFICIAL_BENCHMARK_RUNNER: bool = (
+    os.getenv("GSO_USE_OFFICIAL_BENCHMARK_RUNNER", "true").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""Feature switch (D1, default ON): when True and a real ``WorkspaceClient`` is
+available, the official Benchmark Eval-Run API is the active eval path and the
+in-process ``mlflow.genai.evaluate()`` scorer path is bypassed (never double-run).
+Off ⇒ legacy in-process path. Tests pass ``MagicMock`` workspaces, which are not
+``WorkspaceClient`` instances, so they stay on the legacy path regardless."""
+
+EVAL_RUN_POLL_INTERVAL_SECONDS: int = int(
+    os.getenv("GSO_EVAL_RUN_POLL_INTERVAL_SECONDS", "20")
+)
+"""Seconds between ``genie_get_eval_run`` status polls."""
+
+EVAL_RUN_TIMEOUT_SECONDS: int = int(
+    os.getenv("GSO_EVAL_RUN_TIMEOUT_SECONDS", "2700")
+)
+"""Per-run terminal-status timeout (~45 min — a single 30–40 Q run is ~17 min)."""
+
+EVAL_RUN_PAGE_SIZE: int = int(os.getenv("GSO_EVAL_RUN_PAGE_SIZE", "100"))
+"""Page size for the paginated ``genie_list_eval_results`` sweep."""
+
+EVAL_JOB_WALL_SECONDS: int = int(os.getenv("GSO_EVAL_JOB_WALL_SECONDS", "7200"))
+"""Hard 2-hour DABs-job wall the eval budget tracks cumulative wall-clock against."""
+
+EVAL_FINALIZE_RESERVE_SECONDS: int = int(
+    os.getenv("GSO_EVAL_FINALIZE_RESERVE_SECONDS", "1200")
+)
+"""Wall-clock reserved for the finalize full-benchmark run (~20 min)."""
+
+EVAL_PER_QUESTION_SECONDS: float = float(
+    os.getenv("GSO_EVAL_PER_QUESTION_SECONDS", "34")
+)
+"""Per-question eval-run cost estimate (§3.4: ~17 min / 30 Qs ⇒ ~34 s/Q)."""
+
+SLICE_GATE_MAX_QUESTIONS: int = int(os.getenv("GSO_SLICE_GATE_MAX_QUESTIONS", "10"))
+"""Cap on the slice gate's question subset (~5–10 failing-cluster Qs)."""
+
+P0_GATE_MAX_QUESTIONS: int = int(os.getenv("GSO_P0_GATE_MAX_QUESTIONS", "15"))
+"""Cap on the P0 gate's question subset (~10–15 priority Qs)."""
+
+WORKING_SET_MIN: int = int(os.getenv("GSO_WORKING_SET_MIN", "30"))
+WORKING_SET_MAX: int = int(os.getenv("GSO_WORKING_SET_MAX", "40"))
+"""Bounded working-benchmark window (D8). Outside it, preflight *recommends* a
+prune/top-up — GSO never silently deletes user-authored rows."""
+
 # ── 3. Iteration and Convergence ───────────────────────────────────────
 
 MAX_ITERATIONS = 5
