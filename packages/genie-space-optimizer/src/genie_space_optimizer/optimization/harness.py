@@ -3637,6 +3637,7 @@ def _build_predict_and_scorers(
     )
 
     from genie_space_optimizer.common.genie_client import fetch_space_config as _fetch_cfg
+    _bl_parsed: dict | None = None
     try:
         _bl_config = _fetch_cfg(w, space_id)
         _bl_parsed = _bl_config.get("_parsed_space", _bl_config)
@@ -3662,6 +3663,9 @@ def _build_predict_and_scorers(
         "exp_name": exp_name,
         "space_id": space_id,
         "domain": domain,
+        # GSO v2 Phase 4 (D3): carry the fetched baseline config so
+        # baseline_persist_state can record it as the iter-0 config_json.
+        "space_config": _bl_parsed,
     }
 
 
@@ -3776,8 +3780,13 @@ def baseline_persist_state(
     schema: str,
     eval_result: dict,
     scorecard: dict,
+    config_snapshot: dict | None = None,
 ) -> dict:
-    """Sub-step 2d: Write iteration, link scores, log expectations."""
+    """Sub-step 2d: Write iteration, link scores, log expectations.
+
+    ``config_snapshot`` (GSO v2 Phase 4, D3) is the baseline Genie Space
+    config recorded as the iter-0 ``config_json``; optional for back-compat.
+    """
     scores = scorecard["scores"]
     thresholds_met = scorecard["thresholds_met"]
 
@@ -3786,6 +3795,7 @@ def baseline_persist_state(
         spark, run_id, 0, eval_result,
         catalog=catalog, schema=schema,
         eval_scope="full", model_id=model_id,
+        config_snapshot=config_snapshot,
     )
 
     # Tier 1.7: anchor ``best_accuracy`` to the stricter of
@@ -3879,6 +3889,7 @@ def _run_baseline(
         scorecard = baseline_display_scorecard(eval_result)
         return baseline_persist_state(
             w, spark, run_id, model_id, catalog, schema, eval_result, scorecard,
+            config_snapshot=setup_ctx.get("space_config"),
         )
     except Exception as exc:
         err_msg = f"{type(exc).__name__}: {exc}"
@@ -8602,6 +8613,10 @@ def _run_enrichment(
                         catalog=catalog, schema=schema,
                         eval_scope="enrichment",
                         model_id=enrichment_model_id,
+                        # GSO v2 Phase 4 (D3): ``config`` is the post-
+                        # enrichment effective config (same dict snapshotted
+                        # by create_genie_model_version above).
+                        config_snapshot=config,
                     )
                     _pe_both_correct_rate = _pe_eval.get("both_correct_rate")
                     if _pe_both_correct_rate is not None:
@@ -11753,6 +11768,7 @@ def _run_gate_checks(
                 catalog=catalog, schema=schema,
                 lever=int(lever_keys[0]) if lever_keys else 0,
                 eval_scope="slice", model_id=prev_model_id,
+                config_snapshot=metadata_snapshot,
             )
         except Exception:
             logger.debug("Failed to write slice iteration", exc_info=True)
@@ -11875,6 +11891,7 @@ def _run_gate_checks(
                 catalog=catalog, schema=schema,
                 lever=int(lever_keys[0]) if lever_keys else 0,
                 eval_scope="p0", model_id=prev_model_id,
+                config_snapshot=metadata_snapshot,
             )
         except Exception:
             logger.debug("Failed to write P0 iteration", exc_info=True)
@@ -12128,6 +12145,10 @@ def _run_gate_checks(
         catalog=catalog, schema=schema,
         lever=int(lever_keys[0]) if lever_keys else 0,
         eval_scope="full", model_id=new_model_id,
+        # GSO v2 Phase 4 (D3): ``metadata_snapshot`` is the live (candidate)
+        # config this iteration's full eval ran against — the same dict
+        # passed as ``config`` to model creation in ``_model_kwargs`` above.
+        config_snapshot=metadata_snapshot,
     )
 
     # Soft baseline-drift diagnostic. Compares the current iteration's
@@ -23808,6 +23829,7 @@ def _run_finalize(
                     w, space_id, spark, catalog, schema,
                     warehouse_id=resolve_warehouse_id(""),
                 )
+                _ho_parsed: dict | None = None
                 try:
                     from genie_space_optimizer.common.genie_client import fetch_space_config as _ho_fetch
                     _ho_cfg = _ho_fetch(w, space_id)
@@ -23842,6 +23864,9 @@ def _run_finalize(
                     spark, run_id, iteration_counter, held_out_result,
                     catalog=catalog, schema=schema,
                     eval_scope="held_out", model_id=prev_model_id,
+                    # GSO v2 Phase 4 (D3): ``_ho_parsed`` is the live config
+                    # fetched just above for the held-out eval.
+                    config_snapshot=_ho_parsed if isinstance(_ho_parsed, dict) else None,
                 )
 
                 held_out_accuracy = held_out_result.get("overall_accuracy", 0.0)

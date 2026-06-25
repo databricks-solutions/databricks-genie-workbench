@@ -19,6 +19,7 @@ from genie_space_optimizer.common.config import MODEL_NAME_TEMPLATE, format_mlfl
 from genie_space_optimizer.optimization.state import (
     load_iterations,
     load_run,
+    mark_champion_iteration,
     update_run_status,
 )
 
@@ -203,6 +204,17 @@ def promote_best_model(
     best_model_id = best_row.get("model_id")
     best_iteration = int(best_row.get("iteration", 0))
     best_accuracy = float(best_row.get("overall_accuracy", 0.0))
+    best_eval_scope = str(best_row.get("eval_scope") or "full")
+
+    # GSO v2 Phase 4 (D3): persist the champion in Delta. This reuses the
+    # selection computed just above (no new selection logic) and runs
+    # BEFORE the MLflow ``model_id`` guard below so the Delta champion
+    # marker is recorded even when there is no LoggedModel (the v2
+    # Delta-only path). Best-effort inside ``mark_champion_iteration``.
+    mark_champion_iteration(
+        spark, run_id, best_iteration,
+        catalog=catalog, schema=schema, eval_scope=best_eval_scope,
+    )
 
     if not best_model_id:
         logger.warning("Best iteration %d has no model_id", best_iteration)
