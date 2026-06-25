@@ -114,7 +114,10 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
     # the frontend silently falls back to dividing by total_questions, which is
     # exactly the KPI-vs-tab-label mismatch that the bug exists to prevent.
     cols = "*" if include_rows_json else (
-        "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
+        # GSO v2 Phase 5: genie_opt_iterations.mlflow_run_id / model_id columns
+        # were scrubbed — selecting them would break on fresh post-Phase-5
+        # tables. Downstream readers fall back to None (intended Phase-6 no-op).
+        "run_id, iteration, lever, eval_scope, timestamp, "
         "overall_accuracy, total_questions, correct_count, "
         "evaluated_count, excluded_count, quarantined_benchmarks_json, "
         "scores_json, failures_json, "
