@@ -225,6 +225,9 @@ _REQUIRED_ITERATION_COLUMNS = (
     "cluster_fallback_to_instruction_count",
     "synthesis_archetype_distribution",
     "reflection_json",
+    # GSO v2 Phase 4 (D3): write_iteration emits both columns on every row.
+    "config_json",
+    "is_champion",
 )
 
 
@@ -564,6 +567,109 @@ def write_eval_heartbeat(
     )
 
 
+# GSO v2 Phase 4 (D3): whitelist of Genie-domain keys persisted into
+# ``genie_opt_iterations.config_json``.
+#
+# This is INTENTIONALLY DIFFERENT from ``models._SAFE_SPACE_CONFIG_KEYS``
+# (the MLflow artifact projection) — it is not a mirror:
+#   * it EXTENDS that set with ``benchmarks`` and ``config`` because the
+#     per-iteration record must track the FULL effective serialized space
+#     (incl. the benchmark questions/SQL and the config block) that the
+#     iteration was evaluated against, not just the MLflow snapshot subset;
+#   * ``_project_config_for_iteration`` also prefers ``_parsed_space`` so a
+#     raw fetched config and an already-parsed ``metadata_snapshot`` yield
+#     the same shape;
+#   * it deliberately OMITS ``permissions`` / ``owner`` (ACL / user-identity
+#     fields) — there is no consumer of those in Delta and they are exactly
+#     the PII we must not copy into the optimization tables (reviewer
+#     suggestion #2). The omission is also the guard for a future caller
+#     that passes a raw config WITHOUT ``_parsed_space``: ACL/owner data
+#     still never reaches ``config_json``.
+# Kept self-contained here (not imported from ``models``) so the Delta-only
+# write path carries no MLflow dependency (D3: Delta is the sole store).
+# Everything else — notably the optimizer-internal ``_*`` keys mutated by
+# the lever loop (``_failure_clusters``, ``_data_profile``, ``_parsed_space``,
+# ``_uc_columns``, ``_strategy`` …) — is dropped before serialization, which
+# also removes the only source of circular references. The projection carries
+# no credentials/tokens/secrets: those are not Genie-domain config keys and
+# are never present on the parsed space.
+_SAFE_ITERATION_CONFIG_KEYS: frozenset[str] = frozenset({
+    "data_sources",
+    "instructions",
+    "description",
+    "title",
+    "name",
+    "id",
+    "space_id",
+    "warehouse_id",
+    "created_at",
+    "updated_at",
+    "tags",
+    "serialized_space",
+    "benchmarks",
+    "config",
+})
+
+
+def _decycle_config(obj: Any, _seen: set[int] | None = None) -> Any:
+    """Break reference cycles by replacing repeats with ``"<cycle>"``.
+
+    Defense-in-depth for ``_project_config_for_iteration``: the whitelist
+    projection already drops the ``_*`` keys where cycles originate, but a
+    pathological nested structure must never crash ``json.dumps`` deep
+    inside ``write_iteration``. ``_seen`` tracks identities on the current
+    recursion path only, so legitimate shared sibling sub-trees survive.
+    """
+    if _seen is None:
+        _seen = set()
+    obj_id = id(obj)
+    if isinstance(obj, dict):
+        if obj_id in _seen:
+            return "<cycle>"
+        _seen.add(obj_id)
+        try:
+            return {k: _decycle_config(v, _seen) for k, v in obj.items()}
+        finally:
+            _seen.discard(obj_id)
+    if isinstance(obj, list):
+        if obj_id in _seen:
+            return "<cycle>"
+        _seen.add(obj_id)
+        try:
+            return [_decycle_config(v, _seen) for v in obj]
+        finally:
+            _seen.discard(obj_id)
+    if isinstance(obj, tuple):
+        return [_decycle_config(v, _seen) for v in obj]
+    return obj
+
+
+def _project_config_for_iteration(config: Any) -> dict[str, Any]:
+    """Return a clean, JSON-safe projection of the per-iteration config.
+
+    Accepts either a raw fetched config (which nests the parsed space under
+    ``_parsed_space``) or an already-parsed space dict (``metadata_snapshot``
+    in the lever loop); both yield the same Genie-domain shape. Drops every
+    ``_``-prefixed (optimizer-internal) key and every key not in
+    :data:`_SAFE_ITERATION_CONFIG_KEYS`, then de-cycles. Returns ``{}`` when
+    *config* is not a dict or has no whitelisted keys.
+    """
+    if not isinstance(config, dict):
+        return {}
+    base = config
+    parsed = config.get("_parsed_space")
+    if isinstance(parsed, dict):
+        base = parsed
+    out: dict[str, Any] = {}
+    for k, v in base.items():
+        if not isinstance(k, str) or k.startswith("_"):
+            continue
+        if k not in _SAFE_ITERATION_CONFIG_KEYS:
+            continue
+        out[k] = v
+    return _decycle_config(out)
+
+
 def write_iteration(
     spark: SparkSession,
     run_id: str,
@@ -576,6 +682,7 @@ def write_iteration(
     eval_scope: str = "full",
     model_id: str | None = None,
     reflection_json: dict | None = None,
+    config_snapshot: dict | None = None,
 ) -> None:
     """Insert into ``genie_opt_iterations`` with scores, failures, etc."""
     now = datetime.now(timezone.utc).isoformat()
@@ -654,6 +761,21 @@ def write_iteration(
             100.0 * _both_correct_count / int(_evaluated_count), 2
         ) if int(_evaluated_count) > 0 else 0.0
 
+    # GSO v2 Phase 4 (D3): capture the FULL effective config in force for
+    # this iteration. ``config_snapshot`` may be the raw fetched config or an
+    # already-parsed space dict; ``_project_config_for_iteration`` normalizes
+    # both to a whitelisted, cycle-safe Genie-domain projection. When the
+    # caller does not pass a snapshot (older/repeatability-only call sites)
+    # the column is written NULL — back-compat is preserved. ``is_champion``
+    # is always written ``false`` here; the champion is stamped later by
+    # ``mark_champion_iteration`` reusing the existing best-iteration
+    # selection.
+    _config_payload = (
+        _project_config_for_iteration(config_snapshot)
+        if config_snapshot is not None
+        else None
+    )
+
     col_names = (
         "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
         "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
@@ -663,7 +785,8 @@ def write_iteration(
         "leakage_count_by_type, firewall_rejection_count_by_type, secondary_mining_blocked, "
         "synthesis_slots_persisted, arbiter_rejection_count, "
         "cluster_fallback_to_instruction_count, synthesis_archetype_distribution, "
-        "rolled_back, both_correct_count, both_correct_rate"
+        "rolled_back, both_correct_count, both_correct_rate, "
+        "config_json, is_champion"
     )
     vals = ", ".join(
         [
@@ -699,6 +822,8 @@ def write_iteration(
             "false",
             str(_both_correct_count),
             str(_both_correct_rate_val) if _both_correct_rate_val is not None else "NULL",
+            _opt_json(_config_payload) if _config_payload else "NULL",
+            "false",
         ]
     )
 
@@ -882,6 +1007,65 @@ def mark_patches_rolled_back(
             run_id, iteration, exc_info=True,
         )
     logger.info("Rolled back patches + iteration row for run %s iteration %d: %s", run_id, iteration, reason)
+
+
+def mark_champion_iteration(
+    spark: SparkSession,
+    run_id: str,
+    iteration: int,
+    *,
+    catalog: str,
+    schema: str,
+    eval_scope: str | None = None,
+) -> None:
+    """Stamp ``is_champion=true`` on the champion iteration row (GSO v2 Phase 4, D3).
+
+    The champion is the best ``genie_opt_iterations`` row as chosen by the
+    EXISTING Delta-driven selection (``models.promote_best_model`` —
+    full/enrichment scope, rolled-back rows excluded, ``idxmax`` of
+    ``overall_accuracy``). This writer does not re-derive that decision; it
+    only persists it in Delta. There is intentionally **no UC model
+    registration** here (Phase 5 decommissions the MLflow champion alias;
+    this Delta marker is the durable signal that survives it).
+
+    Implemented as a SINGLE run-scoped conditional UPDATE that recomputes
+    ``is_champion`` for every row of the run as the boolean predicate
+    ``(iteration = <best> [AND eval_scope = <scope>])``. This is atomic: a
+    row can never be cleared without the new champion being set in the same
+    statement (there is no clear-then-set window where a mid-write failure
+    could leave the run with NO champion). ``eval_scope`` should be supplied
+    (e.g. ``"full"`` or ``"enrichment"``) so the marker lands on the selected
+    row rather than a same-iteration slice/p0 gate row. Best-effort: a write
+    failure is logged, not raised — champion marking is a transparency
+    signal, never a gating mechanism, and on failure the prior champion
+    state is left intact.
+    """
+    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+    safe_run = run_id.replace("'", "''")
+    if eval_scope:
+        safe_scope = eval_scope.replace("'", "''")
+        champion_pred = (
+            f"(iteration = {int(iteration)} AND eval_scope = '{safe_scope}')"
+        )
+    else:
+        champion_pred = f"(iteration = {int(iteration)})"
+    try:
+        execute_delta_write_with_retry(
+            spark,
+            f"UPDATE {fqn} SET is_champion = {champion_pred} "
+            f"WHERE run_id = '{safe_run}'",
+            operation_name="mark_champion_iteration",
+            table_name=fqn,
+        )
+        logger.info(
+            "Marked champion iteration for run %s: iteration=%d scope=%s",
+            run_id, int(iteration), eval_scope or "(any)",
+        )
+    except Exception:
+        logger.warning(
+            "Failed to mark champion iteration run=%s iter=%s scope=%s",
+            run_id, iteration, eval_scope, exc_info=True,
+        )
 
 
 # ── ASI & Provenance Write Functions ─────────────────────────────────────
