@@ -22,7 +22,7 @@
 # MAGIC | **Fetch Genie Space config** | Baseline configuration is needed for lever proposals and rollback |
 # MAGIC | **Collect UC metadata** | Columns, tags, routines inform benchmark generation and model context |
 # MAGIC | **Load or generate benchmarks** | Evaluation queries that drive accuracy scoring; LLM generates if none exist |
-# MAGIC | **Register judge prompts & create iteration 0 model** | MLflow experiment setup and initial LoggedModel for baseline comparison |
+# MAGIC | **Set up MLflow experiment** | Resolve/create the MLflow experiment used for tracing (Delta-only tracking; no judge-prompt registration, no LoggedModel) |
 # MAGIC
 # MAGIC ## ⚠️ What Happens If Preflight Fails?
 # MAGIC
@@ -167,8 +167,7 @@ _log = partial(_log_base, _TASK_LABEL)
 # MAGIC | `space_id` | text | `""` | Genie Space ID being optimized |
 # MAGIC | `catalog` | text | `""` | Unity Catalog name for state tables |
 # MAGIC | `schema` | text | `""` | UC schema for state tables and gold data |
-# MAGIC | `domain` | text | `""` | Domain name (e.g. `revenue_property`) for experiment path and prompts |
-# MAGIC | `experiment_name` | text | `""` | Optional MLflow experiment path; auto-resolved if empty |
+# MAGIC | `domain` | text | `""` | Domain name (e.g. `revenue_property`) for the auto-resolved experiment path |
 # MAGIC | `max_iterations` | text | `str(MAX_ITERATIONS)` | Max lever iterations before stopping |
 # MAGIC | `levers` | text | `"[1,2,3,4,5]"` | JSON array of lever numbers to try |
 # MAGIC | `apply_mode` | text | `"genie_config"` | Where patches apply: `genie_config` \| `uc_artifact` \| `both` |
@@ -264,7 +263,7 @@ _log(
 # MAGIC | `genie_opt_data_access_grants` | Tracks data access grants applied during optimization |
 # MAGIC | `genie_opt_provenance` | End-to-end provenance linking patches to judge verdicts and gate outcomes |
 # MAGIC
-# MAGIC > **📝 Note:** Idempotent — safe to call on every run. For existing tables, `_migrate_add_columns()` adds any new columns (e.g. `reflection_json`, `labeling_session_url`) that were introduced in newer versions, making upgrades seamless. Missing catalog/schema permissions will raise.
+# MAGIC > **📝 Note:** Idempotent — safe to call on every run. For existing tables, `_migrate_add_columns()` adds any new columns (e.g. `reflection_json`, `config_json`) that were introduced in newer versions, making upgrades seamless. Missing catalog/schema permissions will raise.
 
 # COMMAND ----------
 
@@ -514,12 +513,12 @@ except Exception as exc:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 1e: Experiment and Model Setup
+# MAGIC ## Step 1e: Experiment Setup
 # MAGIC
-# MAGIC Create or resolve the MLflow experiment, register judge prompts, flag stale temporal
-# MAGIC benchmarks, sync the evaluation dataset, and create the initial LoggedModel
-# MAGIC (iteration 0). This cell writes the final `PREFLIGHT_STARTED → COMPLETE` stage record
-# MAGIC to Delta.
+# MAGIC Create or resolve the MLflow experiment (used for tracing only), flag stale temporal
+# MAGIC benchmarks, and sync the evaluation dataset. Tracking is Delta-only (GSO v2 Phase 5):
+# MAGIC no judge prompts are registered and no LoggedModel is created. This cell writes the
+# MAGIC final `PREFLIGHT_STARTED → COMPLETE` stage record to Delta.
 # MAGIC
 # MAGIC > **Note:** This step runs before human feedback loading so that
 # MAGIC > `mlflow.set_experiment()` is called first — label schemas and other MLflow
@@ -547,36 +546,9 @@ except Exception as exc:
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Step 1e.2: Prompt Registry Write-Path Probe
-# MAGIC
-# MAGIC Register and delete a throwaway prompt under ``{catalog}.{schema}`` to
-# MAGIC verify MLflow Prompt Registry is enabled AND the service principal has
-# MAGIC the UC privileges required to register judge prompts during baseline.
-# MAGIC
-# MAGIC Failing here produces a clear operator message and aborts before
-# MAGIC baseline_eval burns a warehouse. The probe is gated by the
-# MAGIC ``GSO_ENABLE_WRITE_PROBE`` env var (default: enabled).
-
-# COMMAND ----------
-
-try:
-    _banner("Step 1e.2 — Prompt Registry Probe")
-    from genie_space_optimizer.optimization.preflight import preflight_probe_prompt_registry
-    _probe_out = preflight_probe_prompt_registry(spark, run_id, catalog, schema)
-    if _probe_out.get("skipped"):
-        _log("Prompt Registry probe skipped", reason=_probe_out.get("reason_code"))
-    else:
-        _log("Prompt Registry probe OK")
-except Exception as exc:
-    _banner("Prompt Registry Probe FAILED")
-    _log(
-        "Failure details",
-        error_type=type(exc).__name__,
-        error_message=str(exc),
-        traceback=traceback.format_exc(),
-    )
-    raise
+# GSO v2 Phase 5 (D6): the MLflow Prompt Registry write-path probe (former
+# "Step 1e.2") was removed — judge prompts are no longer registered/gated, so
+# there is nothing to probe before baseline_eval.
 
 # COMMAND ----------
 

@@ -218,5 +218,44 @@ def test_databricks_yml_has_no_experiment_name_param():
     assert "experiment_name" not in yml
 
 
+# ── Cross-review regression guards (codex review of PR #238) ──
+# Three parallel dangling-reference spots missed in the first pass: a notebook
+# entrypoint importing the removed preflight probe (ImportError at runtime —
+# unit suite never imports job notebooks), the iteration ORM mirror, and the
+# app-backend Lakebase reader still SELECTing the scrubbed columns.
+
+def test_run_preflight_notebook_has_no_prompt_probe_reference():
+    from genie_space_optimizer.optimization import preflight
+
+    jobs_dir = Path(preflight.__file__).resolve().parent.parent / "jobs"
+    src = (jobs_dir / "run_preflight.py").read_text(encoding="utf-8")
+    assert "preflight_probe_prompt_registry" not in src
+
+
+def test_iteration_orm_mirror_has_no_mlflow_pointer_fields():
+    from genie_space_optimizer.backend.models_db import GSOIterationRecord
+
+    fields = set(getattr(GSOIterationRecord, "model_fields", {}) or {})
+    fields |= set(getattr(GSOIterationRecord, "__annotations__", {}) or {})
+    assert "mlflow_run_id" not in fields
+    assert "model_id" not in fields
+
+
+def test_app_lakebase_iteration_select_drops_scrubbed_columns():
+    # backend/services/gso_lakebase.py is the app backend (separate package),
+    # so inspect it by path rather than importing it.
+    repo_root = Path(__file__).resolve().parents[4]
+    src = (repo_root / "backend" / "services" / "gso_lakebase.py").read_text(encoding="utf-8")
+    import re
+
+    # Find the explicit column-list string in load_gso_iterations (the line
+    # that starts the SELECT projection); assert it lists neither scrubbed col.
+    m = re.search(r'"run_id, iteration, lever, eval_scope, timestamp,[^"]*"', src)
+    assert m is not None, "expected the load_gso_iterations SELECT column list"
+    select_cols = m.group(0)
+    assert "mlflow_run_id" not in select_cols
+    assert "model_id" not in select_cols
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

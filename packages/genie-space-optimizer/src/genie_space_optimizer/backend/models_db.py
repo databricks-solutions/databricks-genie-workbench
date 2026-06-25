@@ -69,8 +69,6 @@ class GSOIterationRecord(SQLModel, table=True):
     lever: Optional[int] = None
     eval_scope: str = Field(max_length=32)
     timestamp: datetime
-    mlflow_run_id: Optional[str] = Field(default=None, max_length=128)
-    model_id: Optional[str] = Field(default=None, max_length=128)
     overall_accuracy: float
     total_questions: int
     correct_count: int
