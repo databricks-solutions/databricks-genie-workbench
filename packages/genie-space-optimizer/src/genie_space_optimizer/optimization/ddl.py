@@ -157,7 +157,9 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     rolled_back_at      TIMESTAMP              COMMENT 'Tier 1.1: timestamp of rollback',
     rollback_reason     STRING                 COMMENT 'Tier 1.1: human-readable rollback reason (mirrors genie_opt_patches.rollback_reason)',
     both_correct_count  INT                    COMMENT 'Tier 1.7: count of rows with arbiter verdict == both_correct. Used to anchor best_accuracy to both_correct_rate when rc=yes overrides inflate overall_accuracy.',
-    both_correct_rate   DOUBLE                 COMMENT 'Tier 1.7: both_correct_count / evaluated_count * 100. Stricter than overall_accuracy (which counts arbiter override rows as correct). Lever loop anchors acceptance to this to avoid ghost-ceiling rejections.'
+    both_correct_rate   DOUBLE                 COMMENT 'Tier 1.7: both_correct_count / evaluated_count * 100. Stricter than overall_accuracy (which counts arbiter override rows as correct). Lever loop anchors acceptance to this to avoid ghost-ceiling rejections.',
+    config_json         STRING                 COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Space config in force for THIS iteration (baseline iter 0, enrichment iter 1, lever loop iters 2..N). Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.',
+    is_champion         BOOLEAN       DEFAULT false COMMENT 'GSO v2 Phase 4 (D3): true on the single champion iteration row (the best iteration as chosen by the existing Delta-driven selection in promote_best_model). Marked in Delta only — NO UC model registration.'
 )
 USING DELTA
 PARTITIONED BY (run_id)
@@ -581,4 +583,6 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_RUNS, "warehouse_id", "STRING COMMENT 'SQL warehouse ID resolved at preflight; Delta-fallback for the preflight.warehouse_id taskValue'"),
     (TABLE_RUNS, "human_corrections_json", "STRING COMMENT 'JSON array of carry-forward human corrections; Delta-fallback for the preflight.human_corrections taskValue'"),
     (TABLE_RUNS, "max_benchmark_count", "INT COMMENT 'Effective max benchmark count; Delta-fallback for the preflight.max_benchmark_count taskValue'"),
+    (TABLE_ITERATIONS, "config_json", "STRING COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Space config in force for this iteration. Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.'"),
+    (TABLE_ITERATIONS, "is_champion", "BOOLEAN DEFAULT false COMMENT 'GSO v2 Phase 4 (D3): true on the single champion iteration row (best iteration per the existing Delta-driven selection in promote_best_model). Marked in Delta only — NO UC model registration.'"),
 )
