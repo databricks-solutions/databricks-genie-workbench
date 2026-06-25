@@ -11432,6 +11432,19 @@ def _run_gate_checks(
     uc_schema = f"{catalog}.{schema}"
     _primary_lever = int(lever_keys[0]) if lever_keys else 0
 
+    # GSO v2 Phase 4 (D3): the config the slice/P0/full gates actually
+    # evaluate is the POST-apply candidate that ``apply_patch_set`` deployed
+    # to the live space (``apply_log["post_snapshot"]``) — NOT
+    # ``metadata_snapshot``, which is the PRE-patch rollback anchor and is
+    # never mutated by ``apply_patch_set``. Recording the candidate is what
+    # versions the rejected-iteration configs Phase 4 must capture. Fall back
+    # to ``metadata_snapshot`` only when there is genuinely no post-apply
+    # snapshot. This is a read-only derivation: ``metadata_snapshot`` stays
+    # the rollback anchor everywhere else in this function (rollback
+    # semantics are unchanged — only the recorded ``config_json`` differs).
+    _post_snapshot = apply_log.get("post_snapshot") if isinstance(apply_log, dict) else None
+    _candidate_config_snapshot = _post_snapshot if isinstance(_post_snapshot, dict) and _post_snapshot else metadata_snapshot
+
     # Task 3: collect decision audit rows as the gates run, persist them
     # in one shot before every return so the audit trail survives even
     # an early rollback. ``_audit_emit`` accepts plain Python lists/dicts;
@@ -11768,7 +11781,7 @@ def _run_gate_checks(
                 catalog=catalog, schema=schema,
                 lever=int(lever_keys[0]) if lever_keys else 0,
                 eval_scope="slice", model_id=prev_model_id,
-                config_snapshot=metadata_snapshot,
+                config_snapshot=_candidate_config_snapshot,
             )
         except Exception:
             logger.debug("Failed to write slice iteration", exc_info=True)
@@ -11891,7 +11904,7 @@ def _run_gate_checks(
                 catalog=catalog, schema=schema,
                 lever=int(lever_keys[0]) if lever_keys else 0,
                 eval_scope="p0", model_id=prev_model_id,
-                config_snapshot=metadata_snapshot,
+                config_snapshot=_candidate_config_snapshot,
             )
         except Exception:
             logger.debug("Failed to write P0 iteration", exc_info=True)
@@ -12145,10 +12158,10 @@ def _run_gate_checks(
         catalog=catalog, schema=schema,
         lever=int(lever_keys[0]) if lever_keys else 0,
         eval_scope="full", model_id=new_model_id,
-        # GSO v2 Phase 4 (D3): ``metadata_snapshot`` is the live (candidate)
-        # config this iteration's full eval ran against — the same dict
-        # passed as ``config`` to model creation in ``_model_kwargs`` above.
-        config_snapshot=metadata_snapshot,
+        # GSO v2 Phase 4 (D3): record the POST-apply candidate config the full
+        # eval actually ran against (apply_log["post_snapshot"]), NOT the
+        # pre-patch metadata_snapshot. See _candidate_config_snapshot above.
+        config_snapshot=_candidate_config_snapshot,
     )
 
     # Soft baseline-drift diagnostic. Compares the current iteration's
