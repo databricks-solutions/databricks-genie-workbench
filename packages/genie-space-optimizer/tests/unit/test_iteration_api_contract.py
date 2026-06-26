@@ -102,6 +102,20 @@ def test_bug2_denominator_contract_12_correct_of_14_with_2_excluded() -> None:
     assert counts["correct"] / counts["evaluated"] == 1.0
 
 
+def test_official_evalrunner_row_uses_full_corpus_not_legacy_evaluated_count() -> None:
+    """V2 Optimize rows with native eval metadata report the full benchmark
+    corpus, even if a legacy evaluated_count field still says 25."""
+    row = _iter_row(total=30, correct=24, evaluated=25, excluded=0)
+    row["eval_run_id"] = "er-30"
+    row["eval_run_status"] = "DONE"
+
+    counts = _resolve_eval_counts(row)
+
+    assert counts["total"] == 30
+    assert counts["evaluated"] == 30
+    assert counts["correct"] == 24
+
+
 def test_back_compat_missing_evaluated_derives_from_total_minus_excluded() -> None:
     """Old rows written before Bug #2 didn't have evaluated_count. The helper
     must derive it so stored overall_accuracy keeps tying out."""

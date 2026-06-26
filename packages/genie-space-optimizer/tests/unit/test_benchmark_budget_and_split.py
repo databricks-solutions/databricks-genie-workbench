@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from genie_space_optimizer.optimization.benchmarks import assign_splits
+from genie_space_optimizer.optimization.benchmarks import (
+    assign_splits,
+    benchmark_corpus_for_optimization,
+    build_eval_records,
+    load_benchmarks_from_dataset,
+)
 
 
 def _rows(n: int) -> list[dict]:
@@ -14,37 +19,67 @@ def _rows(n: int) -> list[dict]:
     ]
 
 
-def test_assign_splits_is_random_across_curated_and_synthetic_rows() -> None:
-    # Curated rows must no longer be pinned to train. With deterministic
-    # random sampling, a seed that yields a mixed held_out proves the gate
-    # is open to both provenances; pinning would always send the 10 curated
-    # rows to train regardless of seed.
+def test_assign_splits_marks_every_question_full_scope() -> None:
     rows = assign_splits(_rows(30), seed=0)
 
-    held_out = [row for row in rows if row["split"] == "held_out"]
-    train = [row for row in rows if row["split"] == "train"]
-
-    assert len(train) == 25
-    assert len(held_out) == 5
-    assert any(row["provenance"] == "curated" for row in held_out)
-    assert any(row["provenance"] == "synthetic" for row in held_out)
+    assert len(rows) == 30
+    assert {row["split"] for row in rows} == {"full"}
+    assert sum(1 for row in rows if row["provenance"] == "curated") == 10
+    assert sum(1 for row in rows if row["provenance"] == "synthetic") == 20
 
 
-def test_assign_splits_is_deterministic_for_same_seed() -> None:
-    first = assign_splits(_rows(30), seed=42)
-    second = assign_splits(_rows(30), seed=42)
+def test_benchmark_corpus_for_optimization_ignores_legacy_split_labels() -> None:
+    legacy_rows = _rows(30)
+    for i, row in enumerate(legacy_rows):
+        row["split"] = "held_out" if i < 5 else "train"
 
-    first_held_out = [row["id"] for row in first if row["split"] == "held_out"]
-    second_held_out = [row["id"] for row in second if row["split"] == "held_out"]
+    corpus = benchmark_corpus_for_optimization(legacy_rows)
 
-    assert first_held_out == second_held_out
+    assert len(corpus) == 30
+    assert {row["split"] for row in corpus} == {"full"}
+    assert [row["id"] for row in corpus] == [row["id"] for row in legacy_rows]
 
 
-def test_assign_splits_best_effort_for_small_corpus() -> None:
+def test_build_eval_records_normalizes_legacy_split_labels() -> None:
+    legacy_rows = _rows(30)
+    for i, row in enumerate(legacy_rows):
+        row["split"] = "held_out" if i < 5 else "train"
+
+    records = build_eval_records(legacy_rows)
+
+    assert len(records) == 30
+    assert {record["expectations"]["split"] for record in records} == {"full"}
+
+
+def test_list_backed_benchmark_loader_normalizes_legacy_split_labels() -> None:
+    legacy_rows = _rows(30)
+    for i, row in enumerate(legacy_rows):
+        row["split"] = "held_out" if i < 5 else "train"
+
+    loaded = load_benchmarks_from_dataset(legacy_rows, "cat.sch", "sales")
+
+    assert len(loaded) == 30
+    assert {row["split"] for row in loaded} == {"full"}
+
+
+def test_assign_splits_small_corpus_still_uses_full_scope() -> None:
     rows = assign_splits(_rows(10), seed=42)
 
-    assert sum(1 for row in rows if row["split"] == "held_out") >= 1
-    assert sum(1 for row in rows if row["split"] == "train") >= 1
+    assert len(rows) == 10
+    assert {row["split"] for row in rows} == {"full"}
+
+
+def test_legacy_held_out_scope_is_full_corpus_alias() -> None:
+    from genie_space_optimizer.optimization.evaluation import filter_benchmarks_by_scope
+
+    legacy_rows = _rows(30)
+    for i, row in enumerate(legacy_rows):
+        row["split"] = "held_out" if i < 5 else "train"
+
+    scoped = filter_benchmarks_by_scope(legacy_rows, "held_out")
+
+    assert len(scoped) == 30
+    assert [row["id"] for row in scoped] == [row["id"] for row in legacy_rows]
 
 
 def test_truncate_benchmarks_caps_to_thirty_and_prefers_user_rows() -> None:

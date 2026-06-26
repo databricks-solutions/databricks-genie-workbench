@@ -130,7 +130,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
           // Get total questions from the first iteration that has it
           const withTotal = iterations.find((it) => it.total_questions > 0)
           if (withTotal) setTotalQuestions(withTotal.total_questions)
-          // Filter to full-scope evaluations only (skip slice/p0/held_out)
+          // Filter to full-scope evaluations only (skip slice/p0 probes)
           const fullIters = iterations.filter((it) => it.eval_scope === "full")
           if (fullIters.length === 0) return
           const maxIter = Math.max(...fullIters.map((it) => it.iteration))

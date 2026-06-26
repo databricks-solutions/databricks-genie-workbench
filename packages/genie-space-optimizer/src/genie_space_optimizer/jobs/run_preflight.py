@@ -112,7 +112,6 @@
 # COMMAND ----------
 
 import json
-import math
 import os
 import traceback
 from functools import partial
@@ -126,7 +125,6 @@ from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
 
 from genie_space_optimizer.common.config import (
-    HELD_OUT_RATIO,
     MAX_BENCHMARK_COUNT,
     MAX_ITERATIONS,
     TARGET_BENCHMARK_COUNT,
@@ -212,11 +210,7 @@ if llm_model:
     os.environ["LLM_MODEL"] = llm_model
 
 effective_target = target_benchmark_count or TARGET_BENCHMARK_COUNT
-effective_max = (
-    math.ceil(effective_target / (1 - HELD_OUT_RATIO))
-    if target_benchmark_count
-    else MAX_BENCHMARK_COUNT
-)
+effective_max = effective_target if target_benchmark_count else MAX_BENCHMARK_COUNT
 
 _banner("Resolved Widget Inputs")
 _log(
@@ -600,15 +594,11 @@ preflight_out = {
 
 persisted_benchmark_count = int(ctx_exp.get("benchmark_count", len(_benchmarks)))
 
-_train_n = sum(1 for _b in _benchmarks if _b.get("split") != "held_out")
-_held_n = len(_benchmarks) - _train_n
 _log(
     "Preflight complete",
     benchmark_count=persisted_benchmark_count,
-    train_count=_train_n,
-    held_out_count=_held_n,
-    held_out_ratio=f"{HELD_OUT_RATIO:.0%}",
-    held_out_note="reserved for Finalize generalization check; baseline/lever_loop see train only",
+    assessed_count=len(_benchmarks),
+    note="V2 uses the whole benchmark set; no train/held-out split",
     model_creation="deferred to baseline eval",
     experiment_name=preflight_out["experiment_name"],
 )

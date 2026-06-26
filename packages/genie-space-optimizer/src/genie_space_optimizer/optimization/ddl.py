@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_runs (
     triggered_by        STRING                 COMMENT 'User email who initiated the run',
     warehouse_id        STRING                 COMMENT 'SQL warehouse ID resolved at preflight; used by lever_loop / finalize / deploy as a Delta-fallback for the preflight taskValue when Repair Run drops in-memory state',
     human_corrections_json STRING              COMMENT 'JSON array of carry-forward human corrections loaded by preflight; Delta-fallback for the preflight.human_corrections taskValue',
-    max_benchmark_count INT                    COMMENT 'Effective max benchmark count computed by preflight (target_benchmark_count adjusted for held-out ratio); Delta-fallback for the preflight.max_benchmark_count taskValue',
+    max_benchmark_count INT                    COMMENT 'Effective max benchmark count computed by preflight; Delta-fallback for the preflight.max_benchmark_count taskValue',
     updated_at          TIMESTAMP     NOT NULL COMMENT 'Last update timestamp'
 )
 USING DELTA
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
     iteration           INT           NOT NULL COMMENT 'Evaluation iteration number (0 = baseline)',
     lever               INT                    COMMENT 'Which lever was applied before this eval (null for baseline)',
-    eval_scope          STRING        NOT NULL COMMENT 'full|slice|p0|held_out|enrichment',
+    eval_scope          STRING        NOT NULL COMMENT 'full|slice|p0|enrichment; legacy held_out rows may exist from older runs',
     timestamp           TIMESTAMP     NOT NULL COMMENT 'When this evaluation completed',
     overall_accuracy    DOUBLE        NOT NULL COMMENT 'Overall accuracy percentage (0-100)',
     total_questions     INT           NOT NULL COMMENT 'Number of benchmark questions evaluated',
@@ -285,7 +285,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_finalize_attestation_mat
     qid                 STRING        NOT NULL COMMENT 'Benchmark question_id',
     iteration_idx       STRING        NOT NULL COMMENT 'Canonical marker: "baseline" | "final" | integer iteration index',
     passed              BOOLEAN                COMMENT 'True if the question passed in this sweep (NULL = quarantined/excluded)',
-    is_heldout          BOOLEAN       NOT NULL COMMENT 'True if qid is in the held-out subset (evaluated only at baseline+finalize)',
+    is_heldout          BOOLEAN       NOT NULL COMMENT 'Legacy compatibility marker; V2 uses the full benchmark corpus',
     logged_at           TIMESTAMP     NOT NULL COMMENT 'When this row was written'
 )
 USING DELTA

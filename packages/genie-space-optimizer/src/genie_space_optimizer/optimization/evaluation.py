@@ -4080,7 +4080,8 @@ def filter_benchmarks_by_scope(
     """Filter benchmarks based on evaluation scope.
 
     Scopes: "full" (all), "slice" (affected by patches),
-    "p0" (priority P0 only), "held_out" (held-out split).
+    "p0" (priority P0 only). The legacy "held_out" scope is a V2 alias for
+    "full"; the optimizer no longer maintains a train/held-out corpus split.
 
     For "slice" scope, benchmarks are included if:
     - Their required tables/columns overlap with *patched_objects*, OR
@@ -4145,7 +4146,7 @@ def filter_benchmarks_by_scope(
     if scope == "p0":
         return [b for b in benchmarks if b.get("priority", "P1") == "P0"]
     if scope == "held_out":
-        return [b for b in benchmarks if b.get("split") == "held_out"]
+        return benchmarks
     return benchmarks
 
 
@@ -6483,6 +6484,10 @@ def create_evaluation_dataset(
             )
         if len(benchmarks) > max_benchmark_count:
             benchmarks = _truncate_benchmarks(benchmarks, max_benchmark_count)
+        from genie_space_optimizer.optimization.benchmarks import (
+            benchmark_corpus_for_optimization,
+        )
+        benchmarks = benchmark_corpus_for_optimization(benchmarks)
         records = []
         for b in benchmarks:
             _expected_sql = b.get("expected_sql", "")
@@ -6504,7 +6509,7 @@ def create_evaluation_dataset(
                 "required_columns": b.get("required_columns", []),
                 "temporal_stale": b.get("temporal_stale", False),
                 "asset_fingerprint": b.get("asset_fingerprint", ""),
-                "split": b.get("split", "train"),
+                "split": b.get("split", "full"),
             }
             expectations = {k: v for k, v in expectations.items() if v is not None}
             records.append(
@@ -11694,14 +11699,9 @@ def _compute_synthetic_target(
 
 
 def _needs_benchmark_top_up(benchmarks: list[dict]) -> bool:
-    from genie_space_optimizer.common.config import (
-        MIN_HELD_OUT_BENCHMARK_COUNT,
-        MIN_TRAIN_BENCHMARK_COUNT,
-    )
+    from genie_space_optimizer.common.config import TARGET_BENCHMARK_COUNT
 
-    train_n = sum(1 for b in benchmarks if b.get("split") == "train")
-    held_out_n = sum(1 for b in benchmarks if b.get("split") == "held_out")
-    return train_n < MIN_TRAIN_BENCHMARK_COUNT or held_out_n < MIN_HELD_OUT_BENCHMARK_COUNT
+    return len(benchmarks) < TARGET_BENCHMARK_COUNT
 
 
 def _make_benchmark_id_allocator(existing_benchmarks: list[dict]) -> Callable[[str, int], str]:
@@ -12294,21 +12294,16 @@ def generate_benchmarks(
     if len(all_benchmarks) > max_benchmark_count:
         all_benchmarks = _truncate_benchmarks(all_benchmarks, max_benchmark_count)
     all_benchmarks = assign_splits(all_benchmarks)
-    _train_n = sum(1 for b in all_benchmarks if b.get("split") == "train")
-    _held_n = len(all_benchmarks) - _train_n
 
     logger.info(
         "Final benchmark set: %d total (%d curated from Genie space, "
-        "%d synthetic, %d gap-fill, %d discarded out of %d raw generated, "
-        "split: %d train / %d held_out)",
+        "%d synthetic, %d gap-fill, %d discarded out of %d raw generated)",
         len(all_benchmarks),
         len(curated),
         len(valid_benchmarks),
         len(gap_fill_benchmarks),
         len(invalid_benchmarks),
         len(raw_benchmarks),
-        _train_n,
-        _held_n,
     )
     return all_benchmarks
 
@@ -12406,7 +12401,7 @@ def load_benchmarks_from_dataset(
                     "validation_reason_code": expectations.get("validation_reason_code", ""),
                     "validation_error": expectations.get("validation_error"),
                     "correction_source": expectations.get("correction_source", ""),
-                    "split": expectations.get("split", "train"),
+                    "split": expectations.get("split", "full"),
                 }
             )
         pre_dedup = len(benchmarks)
@@ -12428,6 +12423,10 @@ def load_benchmarks_from_dataset(
         from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
         if len(benchmarks) > MAX_BENCHMARK_COUNT:
             benchmarks = _truncate_benchmarks(benchmarks, MAX_BENCHMARK_COUNT)
+        from genie_space_optimizer.optimization.benchmarks import (
+            benchmark_corpus_for_optimization,
+        )
+        benchmarks = benchmark_corpus_for_optimization(benchmarks)
 
         logger.info("Loaded %d benchmarks from %s", len(benchmarks), table_name)
         return benchmarks

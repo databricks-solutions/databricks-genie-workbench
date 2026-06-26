@@ -113,6 +113,7 @@ from pyspark.sql import SparkSession
 
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
+from genie_space_optimizer.optimization.benchmarks import benchmark_corpus_for_optimization
 from genie_space_optimizer.optimization.evaluation import load_benchmarks_from_dataset
 from genie_space_optimizer.optimization.harness import _run_finalize
 
@@ -277,15 +278,16 @@ _log(
 # COMMAND ----------
 
 uc_schema = f"{catalog}.{schema}"
-benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
-_held_out_n = sum(1 for b in benchmarks if b.get("split") == "held_out")
-_banner("Loaded Benchmarks for Repeatability + Held-Out Eval")
+_all_benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
+benchmarks = benchmark_corpus_for_optimization(_all_benchmarks)
+_banner("Loaded Benchmarks for Repeatability")
 _log(
-    "Benchmark dataset (train + held_out)",
+    "Benchmark corpus",
     uc_schema=uc_schema,
     domain=domain,
+    total_loaded=len(_all_benchmarks),
     benchmark_count=len(benchmarks),
-    held_out_count=_held_out_n,
+    note="V2 uses the whole benchmark set; no train/held-out split",
 )
 
 # COMMAND ----------
@@ -326,7 +328,6 @@ _log(
 # MAGIC
 # MAGIC | Stage | v2 run name |
 # MAGIC |---|---|
-# MAGIC | Held-out generalization eval | `<run_short>/finalize/held_out` |
 # MAGIC | Repeatability pass *k* | `<run_short>/finalize/repeat_pass_{k}` |
 # MAGIC | Pyfunc deploy snapshot | reuses the champion's source `run_id` (no new name) |
 # MAGIC
