@@ -570,28 +570,11 @@ export interface GSOSchemaAccessStatus {
   grant_sql: string | null
 }
 
-export type GSOPromptRegistryReasonCode =
-  | "ok"
-  | "feature_not_enabled"
-  | "missing_uc_permissions"
-  | "registry_path_not_found"
-  | "missing_sp_scope"
-  | "vendor_bug"
-  | "unknown"
-  | "probe_error"
-
-export type GSOPromptRegistryActionableBy = "customer" | "platform"
-
 export interface GSOPermissionCheck {
   sp_display_name: string
   sp_application_id: string
   sp_has_manage: boolean
   schemas: GSOSchemaAccessStatus[]
-  prompt_registry_available: boolean
-  prompt_registry_error: string | null
-  prompt_registry_reason_code?: GSOPromptRegistryReasonCode | null
-  prompt_registry_error_code?: string | null
-  prompt_registry_actionable_by?: GSOPromptRegistryActionableBy | null
   can_start: boolean
   errors: string[]
 }

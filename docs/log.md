@@ -9,16 +9,15 @@
 - Workbench app discovered: `genie-workbench`
 - Workbench app URL: `https://genie-workbench-7474646443183435.aws.databricksapps.com`
 - Bundle-managed optimizer job discovered: `1036606061019898` (`[dev prashanth_subrahmanyam] gso-optimization-job`)
-- Initial diagnosis: deployment surface is present and active; next step is to verify Workbench API health and permission gates before submitting `POST /api/auto-optimize/trigger`.
+- Initial diagnosis: deployment surface is present and active; next step is to verify Workbench API health and exposed permission checks before submitting `POST /api/auto-optimize/trigger`.
 
 ## 2026-04-25 04:46 UTC - Pre-Trigger Health and Permission Gate
 
 - `GET /api/auto-optimize/health` returned HTTP 200 with `configured=true` and `issues=[]`.
-- `GET /api/auto-optimize/permissions/01f13e844eba1088b8393150f1551f35?refresh=true` returned HTTP 200 with `can_start=true`.
+- `GET /api/auto-optimize/permissions/01f13e844eba1088b8393150f1551f35` returned HTTP 200 with `can_start=true`.
 - Service principal: `app-2jck05 genie-workbench` / `97e9e8da-ef5a-42ee-b04e-81e98d9e4202`.
 - Genie Space SP access: `sp_has_manage=true`.
 - Referenced data schema: `prashanth_subrahmanyam_catalog.sales_reports`, `read_granted=true`.
-- Prompt Registry probe: `prompt_registry_available=true`, `reason_code=ok`.
 - Diagnosis: all server-side preconditions that the Workbench exposes before trigger are satisfied. Proceeding to submit the optimization trigger.
 
 ## 2026-04-25 04:46 UTC - Optimization Trigger Submitted
@@ -62,7 +61,7 @@
   - Experiment name: `/Shared/genie-space-optimizer/01f13e844eba1088b8393150f1551f35/retail_store_sales_analytics`
   - Artifact location: `dbfs:/databricks/mlflow-tracking/1384105862318993`
   - Experiment kind: `genai_development`
-  - Prompt Registry location: `prashanth_subrahmanyam_catalog.genie_space_optimizer`
+  - GSO schema: `prashanth_subrahmanyam_catalog.genie_space_optimizer`
 - MLflow run search found an active run:
   - Run ID: `a4745afaa30c41daae895d0d0900abf7`
   - Run name: `benchmark_generation`
@@ -310,4 +309,3 @@
   - Latest prediction trace request time: `2026-04-25T05:13:23.477Z`
 - Baseline error-trace search remains empty.
 - Diagnosis: observed baseline predictions remain fully matched. About `8` of the `27` benchmarks remain before aggregation can produce the official baseline score.
-

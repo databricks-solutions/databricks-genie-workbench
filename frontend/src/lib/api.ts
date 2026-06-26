@@ -45,10 +45,9 @@ class ApiError extends Error {
   /**
    * Structured error payload from the backend, when the router raises
    * `HTTPException(detail={...})`. Callers that care about fields like
-   * `reason_code`, `error_code`, `actionable_by`, or `prompt_registry_available`
-   * (e.g. the Auto-Optimize PermissionAlert) should read from here rather
-   * than parsing `message`. `null` when the response didn't carry one, or
-   * when `detail` was already a string.
+   * `reason_code`, `error_code`, or `actionable_by` should read from here
+   * rather than parsing `message`. `null` when the response didn't carry one,
+   * or when `detail` was already a string.
    */
   detail: Record<string, unknown> | null
 
@@ -459,11 +458,9 @@ export async function getAutoOptimizeHealth(): Promise<{ configured: boolean; is
 
 export async function getAutoOptimizePermissions(
   spaceId: string,
-  options?: { refresh?: boolean },
 ): Promise<GSOPermissionCheck> {
-  const qs = options?.refresh ? "?refresh=true" : ""
   return fetchWithTimeout<GSOPermissionCheck>(
-    `${API_BASE}/auto-optimize/permissions/${spaceId}${qs}`,
+    `${API_BASE}/auto-optimize/permissions/${spaceId}`,
   )
 }
 

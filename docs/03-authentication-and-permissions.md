@@ -205,7 +205,7 @@ This is distinct from the runtime identities documented above: installer permiss
 | Unity Catalog (target catalog) | `USE CATALOG` on the catalog and `CREATE SCHEMA` (or catalog ownership). Either ownership of the catalog or `MANAGE` on the new schema is needed to grant the app SP |
 | UC schema (`<catalog>.genie_space_optimizer`) | `CREATE TABLE`, `CREATE VOLUME`, and `MANAGE` after the schema is created |
 | Lakebase | Lakebase Autoscaling project creation entitlement; ownership of the project to create roles and run `GRANT CONNECT, CREATE ON DATABASE databricks_postgres` |
-| MLflow | Workspace files write at the experiment path (default `/Shared/genie-workbench-agent-tracing`); workspace admin to enable Prompt Registry if it is disabled (required by Auto-Optimize) |
+| MLflow | Workspace files write at the experiment path (default `/Shared/genie-workbench-agent-tracing`) |
 | Jobs (GSO optimization job) | Jobs create entitlement; `CAN_MANAGE` on the resulting job and on the bundle workspace directory |
 | Genie Spaces (optional grants) | `CAN_MANAGE` on each space the installer grants the app SP access to |
 | Model Serving | The configured `LLM_MODEL` endpoint must exist and be callable by both the installer (validation) and the app SP at runtime |
@@ -223,7 +223,6 @@ This is distinct from the runtime identities documented above: installer permiss
 | Create Postgres role for the app SP | `scripts/deploy_lib/lakebase.py` `ensure_role()` | Lakebase project ownership |
 | `GRANT CONNECT, CREATE ON DATABASE databricks_postgres` to the app SP | `scripts/deploy_lib/lakebase.py` `grant_database_permissions()` | Role with `GRANT` on the Lakebase database (effectively project owner / superuser) |
 | Create or look up MLflow experiment for tracing (optional) | `scripts/install.sh` step 6; dormant in the notebook installer | Workspace files write at the experiment path |
-| Probe / require MLflow Prompt Registry for Auto-Optimize | `backend/routers/auto_optimize.py` (Prompt Registry probe) | Workspace admin to enable Prompt Registry on the workspace if it is not already on |
 | Build and deploy the GSO optimization job | `databricks bundle deploy -t app` (local), `scripts/deploy_lib/gso_job.py` (notebook) | Jobs create entitlement; write on the bundle workspace directory |
 | Set GSO job ACL (owner=installer, SP=`CAN_MANAGE`, users=`CAN_VIEW`) | `scripts/deploy.sh` step 6 (`PUT /api/2.0/permissions/jobs/<id>`) | `CAN_MANAGE` on the job |
 | Grant SP `CAN_MANAGE` on the bundle workspace directory | `scripts/deploy.sh` step 6, `scripts/deploy_lib/gso_job.py` `grant_directory_permissions()` | `CAN_MANAGE` on the directory |
