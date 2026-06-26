@@ -1950,7 +1950,14 @@ class TestSqlSeedingGroundingGate:
     def test_schema_only_candidates_dropped_when_no_grounding(self, monkeypatch):
         """No grounded benchmark candidates -> schema-only candidates are
         dropped, nothing is seeded, and neither the validator nor the
-        space PATCH is invoked."""
+        space PATCH is invoked.
+
+        The gate is intentionally SILENT: it asserts skip semantics
+        (nothing seeded, no LLM enrichment, no validation, no PATCH)
+        without depending on any new result field or changed
+        console/report text. The persisted result shape stays identical
+        to a normal empty-pool outcome.
+        """
         from genie_space_optimizer.optimization import harness as _harness_mod
 
         schema_candidates = [self._schema_candidate()]
@@ -2025,10 +2032,13 @@ class TestSqlSeedingGroundingGate:
         assert result["total_seeded"] == 0, (
             f"schema-only candidates must not be seeded; got result={result}"
         )
-        assert result["schema_only_skipped"] == len(schema_candidates)
-        assert result["skipped_reason"] == "no_grounded_candidates"
         assert result["measures_seeded"] == 0
+        assert result["expressions_seeded"] == 0
+        assert result["filters_seeded"] == 0
         assert result["validation_rejected"] == 0
+        # Gate is silent: it must NOT mutate the persisted result shape.
+        assert "schema_only_skipped" not in result
+        assert result["skipped_reason"] is None
         assert enrich_calls == [], "LLM enrichment ran on ungrounded candidates"
         assert validate_calls == [], "validator ran on ungrounded candidates"
         assert patch_calls == [], "space was patched with ungrounded snippets"
@@ -2093,7 +2103,9 @@ class TestSqlSeedingGroundingGate:
             catalog="c", schema="sch",
         )
 
-        assert result["schema_only_skipped"] == 0
+        # Gate did not fire (grounding present): result shape unchanged and
+        # no skip reason set by the gate.
+        assert "schema_only_skipped" not in result
         assert result["skipped_reason"] != "no_grounded_candidates"
         # Both candidates reached the validator -> the gate did not drop
         # the schema candidate when grounding was present.
