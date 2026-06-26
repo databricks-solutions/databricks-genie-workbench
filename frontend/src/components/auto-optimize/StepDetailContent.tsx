@@ -153,20 +153,12 @@ function FinalizationContent({ outputs }: { outputs: Record<string, any> }) {
   const bNorm = bestAcc != null ? (bestAcc > 1 ? bestAcc : bestAcc * 100) : null
   const rep = outputs.repeatability != null ? Number(outputs.repeatability) : null
   const repNorm = rep != null ? (rep > 1 ? rep : rep * 100) : null
-  const hoAcc = outputs.heldOutAccuracy != null ? Number(outputs.heldOutAccuracy) : null
-  const hoNorm = hoAcc != null ? (hoAcc > 1 ? hoAcc : hoAcc * 100) : null
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-1.5">
         <StatBadge label="Best accuracy" value={bNorm != null ? `${bNorm.toFixed(1)}%` : null} />
         <StatBadge label="Repeatability" value={repNorm != null ? `${repNorm.toFixed(1)}%` : null} />
-        {hoNorm != null && (
-          <StatBadge
-            label="Held-out"
-            value={`${hoNorm.toFixed(1)}% (${outputs.heldOutCount ?? "?"} Qs)${outputs.heldOutDeltaPp != null ? ` ${Number(outputs.heldOutDeltaPp).toFixed(1)}pp above train` : ""}`}
-          />
-        )}
         {outputs.convergenceReason && (
           <StatBadge label="Convergence" value={outputs.convergenceReason} />
         )}

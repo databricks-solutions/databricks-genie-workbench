@@ -242,6 +242,7 @@ from pyspark.sql import SparkSession
 
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
+from genie_space_optimizer.optimization.benchmarks import benchmark_corpus_for_optimization
 from genie_space_optimizer.optimization.evaluation import load_benchmarks_from_dataset
 from genie_space_optimizer.optimization.harness import _run_lever_loop
 
@@ -464,17 +465,15 @@ if thresholds_met:
 
 uc_schema = f"{catalog}.{schema}"
 _all_benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
-benchmarks = [b for b in _all_benchmarks if b.get("split") != "held_out"]
-_held_out_n = len(_all_benchmarks) - len(benchmarks)
+benchmarks = benchmark_corpus_for_optimization(_all_benchmarks)
 _banner("Loaded Benchmarks")
 _log(
-    "Benchmark dataset (train/held-out split)",
+    "Benchmark corpus",
     uc_schema=uc_schema,
     domain=domain,
     total_loaded=len(_all_benchmarks),
-    train_count=len(benchmarks),
-    held_out_count=_held_out_n,
-    note="held-out reserved for Finalize generalization check",
+    assessed_count=len(benchmarks),
+    note="V2 uses the whole benchmark set; no train/held-out split",
 )
 if not benchmarks:
     raise RuntimeError(f"No benchmarks found in {uc_schema}.genie_benchmarks_{domain}")

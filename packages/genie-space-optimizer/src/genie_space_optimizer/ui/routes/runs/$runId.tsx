@@ -1006,32 +1006,12 @@ function StepInsights({
     const ucModelName = outputs.ucModelName as string | undefined;
     const ucModelVersion = outputs.ucModelVersion as string | undefined;
     const ucChampionPromoted = outputs.ucChampionPromoted as boolean | undefined;
-    const heldOutAccuracy = outputs.heldOutAccuracy as number | undefined;
-    const heldOutCount = outputs.heldOutCount as number | undefined;
-    const heldOutDeltaPp = outputs.heldOutDeltaPp as number | undefined;
 
     return (
       <div className="space-y-2 text-xs">
         <div className="flex flex-wrap gap-2">
           {bestAccuracy != null && <Badge variant="secondary">Best accuracy (arbiter-adjusted): {bestAccuracy.toFixed(1)}%</Badge>}
           {repeatability != null && <Badge variant="secondary">Repeatability: {repeatability.toFixed(1)}%</Badge>}
-          {heldOutAccuracy != null && (
-            <Badge
-              variant="secondary"
-              className={
-                heldOutDeltaPp != null && heldOutDeltaPp > 15
-                  ? "border-amber-200 bg-amber-50 text-amber-800"
-                  : ""
-              }
-            >
-              Held-out: {heldOutAccuracy.toFixed(1)}% ({heldOutCount ?? "?"} Qs)
-              {heldOutDeltaPp != null && (
-                <span className="ml-1 opacity-70">
-                  {heldOutDeltaPp > 0 ? `${heldOutDeltaPp.toFixed(1)}pp below train` : `${Math.abs(heldOutDeltaPp).toFixed(1)}pp above train`}
-                </span>
-              )}
-            </Badge>
-          )}
           {convergenceReason && <Badge variant="secondary">Convergence: {convergenceReason}</Badge>}
         </div>
         {ucModelName && ucModelVersion && (

@@ -223,5 +223,6 @@ def test_create_evaluation_dataset_persists_30_unique_topup_records(monkeypatch:
 
     assert result["record_count"] == 30
     assert len(merged_records) == 30
+    assert {r["expectations"]["split"] for r in merged_records} == {"full"}
     assert len({r["inputs"]["question_id"] for r in merged_records}) == 30
     assert len({r["inputs"]["question"].lower().strip() for r in merged_records}) == 30

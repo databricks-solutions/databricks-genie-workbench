@@ -120,9 +120,8 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 class BenchmarkCorpus:
     """Pre-computed view of the benchmark corpus for fast leakage checks.
 
-    Both train and held-out benchmarks must be passed in — held-out
-    leakage is equally disqualifying even though held-out questions are
-    never fed into any LLM prompt.
+    The V2 corpus is the whole assessed benchmark set. Expected SQL remains
+    protected from Genie-visible examples even without a train/held-out split.
     """
     questions: list[str] = field(default_factory=list)
     expected_sqls: list[str] = field(default_factory=list)
