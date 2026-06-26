@@ -1845,17 +1845,22 @@ class TestSqlSeedingRejectionCapture:
 
         stub_candidate = self._build_stub_candidate()
 
-        # Mine returns nothing; schema-discovery returns our stub so we
-        # have exactly one candidate to exercise the validator path.
+        # Benchmark mining returns our stub (a *grounded* candidate) so we
+        # have exactly one candidate to exercise the validator path. The
+        # stub MUST come from the benchmark source, not schema-discovery:
+        # the grounding gate in ``_seed_new_sql_snippets`` drops
+        # schema-only candidates when there are no grounded benchmark
+        # candidates, so a schema-only stub would never reach the
+        # validator. Schema-discovery returns nothing here.
         monkeypatch.setattr(
             "genie_space_optimizer.optimization.optimizer."
             "_mine_sql_expression_candidates",
-            lambda *_a, **_kw: [],
+            lambda *_a, **_kw: [stub_candidate],
         )
         monkeypatch.setattr(
             "genie_space_optimizer.optimization.optimizer."
             "_discover_schema_sql_expressions",
-            lambda *_a, **_kw: [stub_candidate],
+            lambda *_a, **_kw: [],
         )
         # Bypass the LLM enrichment step — return candidates as-is.
         monkeypatch.setattr(
@@ -1904,6 +1909,197 @@ class TestSqlSeedingRejectionCapture:
         assert rejected["snippet_type"] == "measure"
         assert "UNRESOLVED_COLUMN" in rejected["reason"]
         assert stub_candidate["sql"].split("(")[0] in rejected["sql_prefix"]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pillar E.6 — SQL expression seeding grounding gate
+# ─────────────────────────────────────────────────────────────────────
+#
+# Regression guard for the accuracy regression on run
+# 92253d6e-0a8f-4b42-ad3c-f3b401d865de / space
+# 01f16ff7bc2c1d76b427399652a720e6 (baseline full accuracy 92% ->
+# post-enrichment 84%). The baseline arbiter verdict distribution was
+# all ``skipped`` so ``_extract_arbiter_approved_benchmarks`` returned an
+# empty subset and benchmark mining produced zero grounded candidates;
+# join discovery also surfaced nothing. Schema-discovery nonetheless
+# proposed candidates which were seeded as ``proactive_sql_expression``
+# snippets with no grounding, flipping passing questions.
+#
+# The fix gates schema-only seeding: when there are no grounded benchmark
+# candidates, schema-discovery candidates are dropped rather than seeded.
+
+
+class TestSqlSeedingGroundingGate:
+    """Schema-only candidates must not be seeded without grounding."""
+
+    def _schema_candidate(self) -> dict:
+        # ``source_count == 0`` is the schema-discovery signature: the
+        # candidate came from column pattern matching, not from any
+        # observed (arbiter-approved) benchmark query. Use a date
+        # expression so it is n-gram-distinct from any aggregation measure
+        # in the supplement test (avoids the >0.85 Jaccard dedup merge).
+        return {
+            "snippet_type": "expression",
+            "sql": "MONTH(cat.sch.fact_sales.order_date)",
+            "display_name": "Order Date Month",
+            "alias": "order_date_month",
+            "source_count": 0,
+            "target_table": "cat.sch.fact_sales",
+        }
+
+    def test_schema_only_candidates_dropped_when_no_grounding(self, monkeypatch):
+        """No grounded benchmark candidates -> schema-only candidates are
+        dropped, nothing is seeded, and neither the validator nor the
+        space PATCH is invoked."""
+        from genie_space_optimizer.optimization import harness as _harness_mod
+
+        schema_candidates = [self._schema_candidate()]
+
+        # Benchmark mining is empty (mirrors arbiter approving 0 rows);
+        # schema-discovery still proposes candidates.
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer."
+            "_mine_sql_expression_candidates",
+            lambda *_a, **_kw: [],
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer."
+            "_discover_schema_sql_expressions",
+            lambda *_a, **_kw: list(schema_candidates),
+        )
+
+        # The grounding gate must short-circuit BEFORE these run. Make
+        # them explode so the test fails loudly if a schema-only candidate
+        # ever reaches validation or persistence again.
+        enrich_calls: list[int] = []
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer."
+            "_enrich_candidates_with_llm",
+            lambda candidates, *_a, **_kw: (
+                enrich_calls.append(len(candidates)) or candidates
+            ),
+        )
+
+        validate_calls: list[tuple] = []
+
+        def _boom_validate(*_a, **_kw):
+            validate_calls.append(_a)
+            raise AssertionError(
+                "validate_sql_snippet must not be called for schema-only "
+                "candidates when there is no grounding"
+            )
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+            _boom_validate,
+        )
+
+        patch_calls: list[tuple] = []
+
+        def _boom_patch(*_a, **_kw):
+            patch_calls.append(_a)
+            raise AssertionError(
+                "patch_space_config must not be called when no candidates "
+                "are seeded"
+            )
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.common.genie_client.patch_space_config",
+            _boom_patch,
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.harness.write_stage",
+            lambda *_a, **_kw: None,
+        )
+
+        config = {"_parsed_space": {"instructions": {"sql_snippets": {}}}}
+        metadata_snapshot = {"data_sources": {"tables": [], "metric_views": []}}
+
+        result = _harness_mod._seed_new_sql_snippets(
+            w=MagicMock(), spark=MagicMock(),
+            run_id="r", space_id="01f16ff7bc2c1d76b427399652a720e6",
+            config=config, metadata_snapshot=metadata_snapshot,
+            benchmarks=[], catalog="c", schema="sch",
+        )
+
+        assert result["total_seeded"] == 0, (
+            f"schema-only candidates must not be seeded; got result={result}"
+        )
+        assert result["schema_only_skipped"] == len(schema_candidates)
+        assert result["skipped_reason"] == "no_grounded_candidates"
+        assert result["measures_seeded"] == 0
+        assert result["validation_rejected"] == 0
+        assert enrich_calls == [], "LLM enrichment ran on ungrounded candidates"
+        assert validate_calls == [], "validator ran on ungrounded candidates"
+        assert patch_calls == [], "space was patched with ungrounded snippets"
+
+    def test_schema_candidates_seed_when_benchmark_grounded(self, monkeypatch):
+        """When at least one grounded benchmark candidate exists, schema
+        candidates are kept as a supplement and still flow to validation
+        (the gate only fires when grounding is wholly absent)."""
+        from genie_space_optimizer.optimization import harness as _harness_mod
+
+        grounded = {
+            "snippet_type": "measure",
+            "sql": "SUM(cat.sch.fact_sales.amount)",
+            "display_name": "Total Amount",
+            "alias": "total_amount",
+            "source_count": 3,
+        }
+        schema = self._schema_candidate()
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer."
+            "_mine_sql_expression_candidates",
+            lambda *_a, **_kw: [grounded],
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer."
+            "_discover_schema_sql_expressions",
+            lambda *_a, **_kw: [schema],
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer."
+            "_enrich_candidates_with_llm",
+            lambda candidates, *_a, **_kw: candidates,
+        )
+
+        validated: list[str] = []
+
+        def _validate(sql_raw, *_a, **_kw):
+            validated.append(sql_raw)
+            # Reject everything so we don't need to stub the PATCH path; the
+            # point is that BOTH the grounded and schema candidates reach
+            # the validator (the gate did not fire).
+            return (False, "UNRESOLVED_COLUMN", sql_raw)
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+            _validate,
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.harness.write_stage",
+            lambda *_a, **_kw: None,
+        )
+
+        config = {"_parsed_space": {"instructions": {"sql_snippets": {}}}}
+        metadata_snapshot = {"data_sources": {"tables": [], "metric_views": []}}
+
+        result = _harness_mod._seed_new_sql_snippets(
+            w=MagicMock(), spark=MagicMock(),
+            run_id="r", space_id="s",
+            config=config, metadata_snapshot=metadata_snapshot,
+            benchmarks=[{"id": "q1", "expected_sql": "SELECT 1"}],
+            catalog="c", schema="sch",
+        )
+
+        assert result["schema_only_skipped"] == 0
+        assert result["skipped_reason"] != "no_grounded_candidates"
+        # Both candidates reached the validator -> the gate did not drop
+        # the schema candidate when grounding was present.
+        assert len(validated) == 2, (
+            f"expected both candidates validated; got {validated}"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────
