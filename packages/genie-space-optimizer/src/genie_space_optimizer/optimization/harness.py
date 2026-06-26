@@ -7466,6 +7466,44 @@ def _seed_new_sql_snippets(
         )
         schema_candidates = _discover_schema_sql_expressions(metadata_snapshot)
 
+        # ── Grounding gate ───────────────────────────────────────────────
+        # Schema-discovery candidates are heuristic: they are produced by
+        # column name/type pattern matching (``SUM(<numeric>)``,
+        # ``MONTH(<date>)``) and carry ``source_count == 0`` — nothing ties
+        # them to a question the space is actually asked. They are only safe
+        # as a SUPPLEMENT to benchmark-mined candidates, whose patterns come
+        # from arbiter-approved (``both_correct``) gold SQL.
+        #
+        # When benchmark mining yields zero grounded candidates the seeding
+        # pool has no grounding at all. That happens when the baseline
+        # arbiter approved no rows (e.g. the whole verdict distribution is
+        # ``skipped``, so ``_extract_arbiter_approved_benchmarks`` returns
+        # an empty subset) and proactive join discovery surfaced nothing.
+        # Seeding schema-only snippets in that state injects unvalidated
+        # structure that can flip passing questions — the regression on run
+        # 92253d6e-0a8f-4b42-ad3c-f3b401d865de / space
+        # 01f16ff7bc2c1d76b427399652a720e6 (baseline 92% -> post-enrichment
+        # 84%), where 22 ``proactive_sql_expression`` snippets were seeded
+        # purely from schema with no grounding. Drop the schema-only
+        # candidates rather than seeding them ungrounded.
+        #
+        # The gate is intentionally SILENT in the persisted result/detail:
+        # it does not add fields to ``result`` or set ``skipped_reason``, so
+        # the seeding result shape and the downstream MLflow/report behavior
+        # are unchanged. With the schema candidates dropped and no grounded
+        # candidates, the pool is empty and the existing "No candidates"
+        # path reports the outcome exactly as before. Log-only diagnostics
+        # (not persisted into ``write_stage`` detail) explain the drop.
+        if not benchmark_candidates and schema_candidates:
+            logger.info(
+                "SQL expression seeding: dropping %d schema-only candidate(s) "
+                "— no grounded benchmark candidates to anchor seeding "
+                "(arbiter approved 0 baseline rows / no join discovery "
+                "evidence); space_id=%s",
+                len(schema_candidates), space_id,
+            )
+            schema_candidates = []
+
         all_candidates = benchmark_candidates + schema_candidates
 
         seen_sqls: set[str] = set()
