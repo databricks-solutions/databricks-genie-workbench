@@ -379,7 +379,6 @@ export interface GSOLeverIteration {
   scoreBefore: number | null
   scoreAfter: number | null
   scoreDelta: number | null
-  judgeScores: Record<string, number | null>
   mlflowRunId: string | null
   rollbackReason: string | null
   patches: GSOPatchDetail[]

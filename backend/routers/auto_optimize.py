@@ -400,17 +400,26 @@ def _build_step_summary(
         return f"Analyzed {tables_val or '?'} tables, {columns_val or '?'} columns, {instr_val or '?'} instructions, {bench_val or '?'} sample questions"
     if step_name == "Baseline Evaluation":
         baseline_iter = next((r for r in iterations_rows if _safe_int(r.get("iteration")) == 0), None)
-        score = f"{_finite(baseline_iter.get('overall_accuracy', 0)):.1f}" if baseline_iter else "?"
-        total = (_safe_int(baseline_iter.get("total_questions")) or 0) if baseline_iter else 0
-        correct = (_safe_int(baseline_iter.get("correct_count")) or 0) if baseline_iter else 0
-        # overall_accuracy = correct / (total - excluded) * 100, so effective denominator = correct / (accuracy/100)
-        accuracy_val = _finite(baseline_iter.get("overall_accuracy", 0)) if baseline_iter else 0
-        effective_denom = round(correct / (accuracy_val / 100)) if accuracy_val > 0 and correct > 0 else correct
-        excluded = total - effective_denom if total > effective_denom else 0
-        correct_str = str(correct) if correct else "?"
-        denom_str = str(effective_denom) if effective_denom else str(total or "?")
-        excluded_note = f" ({excluded} excluded)" if excluded > 0 else ""
-        return f"Evaluated {total or '?'} benchmark questions with 9 evaluation judges. Baseline score: {score}% ({correct_str}/{denom_str} correct{excluded_note})"
+        if not baseline_iter:
+            return None
+        # GSO v2 Phase 6 — assessment-centric summary. Accuracy is the official
+        # num_correct / num_questions (no judges); NEEDS_REVIEW rows are
+        # surfaced distinctly rather than folded into a pass/fail bucket.
+        num_questions = _safe_int(baseline_iter.get("total_questions")) or 0
+        num_correct = _safe_int(baseline_iter.get("correct_count")) or 0
+        num_needs_review = _safe_int(baseline_iter.get("num_needs_review")) or 0
+        if num_questions > 0:
+            score = f"{100.0 * num_correct / num_questions:.1f}"
+        else:
+            score = f"{_finite(baseline_iter.get('overall_accuracy', 0)):.1f}"
+        correct_str = str(num_correct) if num_correct else "?"
+        denom_str = str(num_questions) if num_questions else "?"
+        nr_note = f", {num_needs_review} need review" if num_needs_review else ""
+        return (
+            f"Scored {num_questions or '?'} benchmark questions with the native "
+            f"Genie evaluation. Baseline accuracy: {score}% "
+            f"({correct_str}/{denom_str} correct{nr_note})"
+        )
     if step_name == "Proactive Enrichment":
         descriptions = _safe_int(detail.get("descriptions_enriched")) or 0
         joins = _safe_int(detail.get("joins_discovered")) or 0
@@ -639,21 +648,6 @@ def _build_step_io(
 # ---------------------------------------------------------------------------
 
 
-def _iteration_scores(iter_row: dict | None) -> dict[str, float | None]:
-    """Parse per-judge scores from scores_json."""
-    if not iter_row:
-        return {}
-    scores = iter_row.get("scores_json", {})
-    if isinstance(scores, str):
-        try:
-            scores = json.loads(scores)
-        except (json.JSONDecodeError, TypeError):
-            scores = {}
-    if not isinstance(scores, dict):
-        return {}
-    return {str(k): _safe_float(v) for k, v in scores.items()}
-
-
 def _patch_for_ui(row: dict) -> dict[str, Any]:
     """Convert patch table row to compact UI object."""
     return {
@@ -774,7 +768,6 @@ def _build_lever_iterations(
             "iteration": iteration, "status": status, "patchCount": len(entry["patches"]),
             "patchTypes": [str(p.get("patchType") or "") for p in entry["patches"] if p.get("patchType")],
             "scoreBefore": score_before, "scoreAfter": score_after, "scoreDelta": score_delta,
-            "judgeScores": _iteration_scores(full_row),
             "mlflowRunId": full_row.get("mlflow_run_id") if full_row else None,
             "rollbackReason": rollback_reason, "patches": entry["patches"],
         })
@@ -1648,7 +1641,7 @@ async def list_iterations(run_id: RunId):
         it["lever"] = _safe_int(it.get("lever"))
 
         # GSO v2 Phase 6 — assessment-centric counts contract. Headline
-        # accuracy stays `num_correct / num_questions`; the UI repoints onto
+        # accuracy is `num_correct / num_questions`; the UI repoints onto
         # these official counts + the native eval-run status.
         num_correct = it["correct_count"]
         num_questions = it["total_questions"]
@@ -1662,6 +1655,16 @@ async def list_iterations(run_id: RunId):
             _safe_int(it.get("num_needs_review"))
             if it.get("num_needs_review") is not None else None
         )
+
+        # Expose the OFFICIAL overall accuracy derived from the new counts.
+        # An official row (from the native EvalRunner) carries eval-run
+        # metadata; for it, accuracy is num_correct / num_questions — NOT the
+        # legacy correct_count / evaluated_count denominator (which differs on
+        # a partial run where num_done < num_questions). Legacy rows keep their
+        # stored overall_accuracy untouched.
+        is_official = bool(it.get("eval_run_id") or it.get("eval_run_status"))
+        if is_official and num_questions > 0:
+            it["overall_accuracy"] = round(100.0 * num_correct / num_questions, 2)
 
         # Replace the retired per-judge `thresholds_met` with the explicit
         # single API-accuracy gate + a coarse per-iteration gate status. Phase 3
