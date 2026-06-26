@@ -8140,7 +8140,6 @@ def _run_enrichment(
     baseline_model_id: str = "",
     optimization_run_id: str = "",
     *,
-    held_out_benchmarks: list[dict] | None = None,
     baseline_both_correct_rows: list[dict] | None = None,
 ) -> dict:
     """Stage 2.5: Config preparation + proactive enrichment + LoggedModel snapshot.
@@ -8169,10 +8168,15 @@ def _run_enrichment(
     )
 
     try:
+        from genie_space_optimizer.optimization.benchmarks import (
+            benchmark_corpus_for_optimization,
+        )
+        benchmark_corpus = benchmark_corpus_for_optimization(benchmarks)
+
         # ── 1. Load config (delegates to _prepare_lever_loop) ─────────────
         config = _prepare_lever_loop(
             w, spark, run_id, space_id, catalog, schema,
-            benchmarks=benchmarks,
+            benchmarks=benchmark_corpus,
         )
 
         uc_columns = config.get("_uc_columns", [])
@@ -8268,13 +8272,12 @@ def _run_enrichment(
             #
             # ``benchmarks`` here is used ONLY as the firewall corpus for
             # the prose miner's example_qsql target (it does not mine
-            # from benchmarks). Pass the full train+held_out corpus so
-            # the example-SQL firewall can catch held-out leakage.
+            # from benchmarks). V2 passes the whole benchmark corpus.
             _miner_out = _run_instruction_prose_mining(
                 w, spark, run_id, space_id, config, metadata_snapshot,
                 catalog, schema,
                 warehouse_id=resolve_warehouse_id(""),
-                benchmarks=list(benchmarks) + list(held_out_benchmarks or []),
+                benchmarks=benchmark_corpus,
             )
             if _miner_out["total_applied"] or _miner_out["keep_in_prose_count"]:
                 config, metadata_snapshot = _refresh_config_preserving_mv_state(
@@ -8314,11 +8317,9 @@ def _run_enrichment(
             #   to false to restore the pre-unification behaviour.
             #
             # Both paths share the same last-mile firewall at
-            # ``_apply_proactive_example_sqls``, which MUST see the full
-            # benchmark corpus (train + held_out) so the SQL fingerprint
-            # check catches held-out leakage. See
-            # ``docs/example-sql-isolation.md``.
-            _full_firewall_corpus = list(benchmarks) + list(held_out_benchmarks or [])
+            # ``_apply_proactive_example_sqls``, which MUST see the whole
+            # benchmark corpus. See ``docs/example-sql-isolation.md``.
+            _full_firewall_corpus = benchmark_corpus
             preflight_example_result: dict = {}
             unified_example_result: dict = {}
             if ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS:
@@ -23641,22 +23642,22 @@ def _run_finalize(
     terminal_reason = ""
     repeatability_pct = 0.0
     try:
-        # ── Phase 0: Split benchmarks ──
-        train_benchmarks = [b for b in (benchmarks or []) if b.get("split") != "held_out"]
-        held_out_benchmarks = [b for b in (benchmarks or []) if b.get("split") == "held_out"]
+        # ── Phase 0: Resolve V2 benchmark corpus ──
+        from genie_space_optimizer.optimization.benchmarks import (
+            benchmark_corpus_for_optimization,
+        )
+        benchmark_corpus = benchmark_corpus_for_optimization(benchmarks)
 
         # ── Phase 1: Repeatability Testing ──
         _lines = [_section("FINALIZE — REPEATABILITY TESTING", "-")]
         _lines.append(_kv("Run repeatability", run_repeatability))
-        _lines.append(_kv("Train benchmarks", len(train_benchmarks)))
-        _lines.append(_kv("Held-out benchmarks", len(held_out_benchmarks)))
+        _lines.append(_kv("Benchmark corpus", len(benchmark_corpus)))
         _lines.append(_bar("-"))
         print("\n".join(_lines))
 
         rep_results: list[dict] = []
-        held_out_accuracy: float | None = None
         _check_timeout("pre_repeatability")
-        if run_repeatability and train_benchmarks:
+        if run_repeatability and benchmark_corpus:
             write_stage(
                 spark, run_id, "REPEATABILITY_TEST", "STARTED",
                 task_key="finalize", catalog=catalog, schema=schema,
@@ -23664,7 +23665,7 @@ def _run_finalize(
             _emit_heartbeat(
                 "repeatability_test",
                 force=True,
-                detail={"benchmark_count": len(train_benchmarks), "runs": FINALIZE_REPEATABILITY_PASSES},
+                detail={"benchmark_count": len(benchmark_corpus), "runs": FINALIZE_REPEATABILITY_PASSES},
             )
 
             uc_schema = f"{catalog}.{schema}"
@@ -23684,9 +23685,9 @@ def _run_finalize(
                         reference_result_hashes = extract_reference_result_hashes(_rows_payload)
                     except (json.JSONDecodeError, TypeError):
                         pass
-            if not reference_sqls and train_benchmarks:
+            if not reference_sqls and benchmark_corpus:
                 logger.warning("No reference SQLs from iterations — extracting from benchmarks")
-                for b in train_benchmarks:
+                for b in benchmark_corpus:
                     qid = b.get("id", "")
                     sql = b.get("expected_sql", "")
                     if qid and sql:
@@ -23725,7 +23726,7 @@ def _run_finalize(
                         space_id=space_id,
                         experiment_name=exp_name,
                         iteration=iteration_counter,
-                        benchmarks=train_benchmarks,
+                        benchmarks=benchmark_corpus,
                         domain=domain,
                         reference_sqls=reference_sqls,
                         predict_fn=predict_fn,
@@ -23765,7 +23766,7 @@ def _run_finalize(
                     detail={
                         "average_pct": repeatability_pct,
                         "per_run_pcts": rep_pcts,
-                        "total_questions": len(train_benchmarks),
+                        "total_questions": len(benchmark_corpus),
                     },
                     catalog=catalog, schema=schema,
                 )
@@ -23804,130 +23805,13 @@ def _run_finalize(
         _rep_lines.append(_bar("-"))
         print("\n".join(_rep_lines))
 
-        # ── Phase 1b: Held-Out Generalization Check ──
-        if held_out_benchmarks:
-            try:
-                write_stage(
-                    spark, run_id, "HELD_OUT_EVAL", "STARTED",
-                    task_key="finalize", catalog=catalog, schema=schema,
-                )
-                _emit_heartbeat(
-                    "held_out_eval", force=True,
-                    detail={"held_out_count": len(held_out_benchmarks)},
-                )
-                _check_timeout("held_out_eval")
-
-                _ensure_sql_context(spark, catalog, schema)
-                ho_predict_fn = make_predict_fn(
-                    w, space_id, spark, catalog, schema,
-                    warehouse_id=resolve_warehouse_id(""),
-                )
-                _ho_parsed: dict | None = None
-                try:
-                    from genie_space_optimizer.common.genie_client import fetch_space_config as _ho_fetch
-                    _ho_cfg = _ho_fetch(w, space_id)
-                    _ho_parsed = _ho_cfg.get("_parsed_space", _ho_cfg)
-                    _ho_instr = _ho_parsed.get("instructions", {}) if isinstance(_ho_parsed, dict) else {}
-                    _ho_instr_text = _ho_instr.get("text_instructions", "") if isinstance(_ho_instr, dict) else ""
-                except Exception:
-                    _ho_instr_text = ""
-                ho_scorers = make_all_scorers(w, spark, catalog, schema, instruction_context=_ho_instr_text)
-
-                # Tier 4: v2 name — ``<run_short>/finalize/held_out``.
-                from genie_space_optimizer.common.mlflow_names import (
-                    default_tags as _v2_tags_ho,
-                    finalize_run_name as _finalize_run_name_ho,
-                )
-                held_out_result = run_evaluation(
-                    space_id, exp_name, iteration_counter, held_out_benchmarks,
-                    domain, prev_model_id, "held_out",
-                    ho_predict_fn, ho_scorers,
-                    spark=spark, w=w, catalog=catalog, gold_schema=schema,
-                    uc_schema=f"{catalog}.{schema}",
-                    run_name=_finalize_run_name_ho(
-                        run_id, detail="held_out", iteration=iteration_counter,
-                    ),
-                    extra_tags=_v2_tags_ho(
-                        run_id, space_id=space_id, stage="finalize_held_out",
-                        iteration=iteration_counter,
-                    ),
-                )
-
-                write_iteration(
-                    spark, run_id, iteration_counter, held_out_result,
-                    catalog=catalog, schema=schema,
-                    eval_scope="held_out",
-                    # GSO v2 Phase 4 (D3): ``_ho_parsed`` is the live config
-                    # fetched just above for the held-out eval.
-                    config_snapshot=_ho_parsed if isinstance(_ho_parsed, dict) else None,
-                )
-
-                held_out_accuracy = held_out_result.get("overall_accuracy", 0.0)
-                train_accuracy = prev_scores.get(
-                    "genie_correct",
-                    prev_scores.get("overall_accuracy", 0.0),
-                )
-                delta = train_accuracy - held_out_accuracy
-                _ho_lines = [_section("FINALIZE — HELD-OUT GENERALIZATION CHECK", "-")]
-                _ho_lines.append(_kv("Train accuracy", f"{train_accuracy:.1f}%"))
-                _ho_lines.append(_kv("Held-out accuracy", f"{held_out_accuracy:.1f}%"))
-                _ho_lines.append(_kv("Delta", f"{delta:+.1f} pp"))
-                _ho_lines.append(_kv("Held-out questions", len(held_out_benchmarks)))
-                if delta > 15.0:
-                    _ho_lines.append(_kv("Warning", "Possible instruction overfitting (>15pp gap)"))
-                _ho_lines.append(_bar("-"))
-                print("\n".join(_ho_lines))
-
-                write_stage(
-                    spark, run_id, "HELD_OUT_EVAL", "COMPLETE",
-                    task_key="finalize",
-                    detail={
-                        "held_out_accuracy": held_out_accuracy,
-                        "train_accuracy": train_accuracy,
-                        "delta_pp": round(delta, 1),
-                        "held_out_count": len(held_out_benchmarks),
-                    },
-                    catalog=catalog, schema=schema,
-                )
-
-                _best_eval_run_id = (latest_iter or {}).get("mlflow_run_id", "")
-                if _best_eval_run_id:
-                    try:
-                        from mlflow.tracking import MlflowClient as _HoMlflowClient
-                        _ho_client = _HoMlflowClient()
-                        _ho_client.log_metric(_best_eval_run_id, "held_out_accuracy", held_out_accuracy)
-                        _ho_client.log_metric(_best_eval_run_id, "held_out_count", float(len(held_out_benchmarks)))
-                        logger.info(
-                            "Logged held-out metrics to eval run %s: accuracy=%.1f%%, count=%d",
-                            _best_eval_run_id, held_out_accuracy, len(held_out_benchmarks),
-                        )
-                    except Exception:
-                        logger.debug("Failed to log held-out metrics to eval run", exc_info=True)
-            except TimeoutError:
-                raise
-            except Exception:
-                logger.exception("Held-out evaluation failed — continuing")
-                write_stage(
-                    spark, run_id, "HELD_OUT_EVAL", "FAILED",
-                    task_key="finalize",
-                    error_message="Held-out evaluation exception",
-                    catalog=catalog, schema=schema,
-                )
-        else:
-            write_stage(
-                spark, run_id, "HELD_OUT_EVAL", "SKIPPED",
-                task_key="finalize",
-                detail={"reason": "no_held_out_benchmarks"},
-                catalog=catalog, schema=schema,
-            )
-
         _review_lines = [_section("FINALIZE — HUMAN REVIEW FLAGGING", "-")]
         print("\n".join(_review_lines))
 
         _check_timeout("human_review_session")
         _emit_heartbeat("human_review_session", force=True)
         try:
-            for _rr in (rep_results if run_repeatability and benchmarks else []):
+            for _rr in (rep_results if run_repeatability and benchmark_corpus else []):
                 _rr_tmap = _rr.get("trace_map", {})
                 for qid, tid in _rr_tmap.items():
                     question_trace_map.setdefault(qid, []).append(tid)
@@ -24171,8 +24055,6 @@ def _run_finalize(
             "benchmark_publish_count": benchmark_publish_count,
             "elapsed_seconds": round(_elapsed_seconds(), 1),
             "heartbeat_count": heartbeat_count,
-            "held_out_accuracy": held_out_accuracy,
-            "held_out_count": len(held_out_benchmarks) if held_out_benchmarks else 0,
         }
 
     except TimeoutError as exc:
@@ -24317,7 +24199,7 @@ def _run_deploy(
     catalog: str,
     schema: str,
 ) -> dict:
-    """Stage 5: Deploy via DABs, held-out evaluation (optional).
+    """Stage 5: Deploy via DABs.
 
     Wrapper that calls deploy_check() then deploy_execute() in sequence.
     """
@@ -24692,16 +24574,18 @@ def optimize_genie_space(
         result.experiment_name = exp_name
         result.experiment_id = str(preflight_out.get("experiment_id", ""))
 
-        train_benchmarks = [b for b in benchmarks if b.get("split") != "held_out"]
-        held_out_benchmarks = [b for b in benchmarks if b.get("split") == "held_out"]
+        from genie_space_optimizer.optimization.benchmarks import (
+            benchmark_corpus_for_optimization,
+        )
+        benchmark_corpus = benchmark_corpus_for_optimization(benchmarks)
         logger.info(
-            "Benchmark split: %d train, %d held_out",
-            len(train_benchmarks), len(held_out_benchmarks),
+            "Benchmark corpus: %d questions (V2 no train/held-out split)",
+            len(benchmark_corpus),
         )
 
         # Stage 2: Baseline
         baseline_out = _run_baseline(
-            w, spark, run_id_str, space_id, train_benchmarks, exp_name,
+            w, spark, run_id_str, space_id, benchmark_corpus, exp_name,
             model_id, catalog, schema, domain,
         )
         prev_scores = cast(dict[str, float], baseline_out["scores"])
@@ -24747,10 +24631,9 @@ def optimize_genie_space(
         _effective_model_id = model_id
         try:
             _enrichment_out = _run_enrichment(
-                w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
+                w, spark, run_id_str, space_id, domain, benchmark_corpus, exp_name,
                 catalog, schema,
                 baseline_model_id=model_id,
-                held_out_benchmarks=held_out_benchmarks,
                 baseline_both_correct_rows=_baseline_both_correct,
             )
             if not _enrichment_out["enrichment_skipped"]:
@@ -24905,7 +24788,7 @@ def optimize_genie_space(
         else:
             # Stage 3: Lever Loop (enrichment already done)
             loop_out = _run_lever_loop(
-                w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
+                w, spark, run_id_str, space_id, domain, benchmark_corpus, exp_name,
                 prev_scores, prev_accuracy, _effective_model_id,
                 _enrichment_out["config"] if _enrichment_out else {},
                 catalog, schema, levers, max_iterations, thresholds, apply_mode,
@@ -24938,7 +24821,7 @@ def optimize_genie_space(
             finalize_out = _run_finalize(
                 w, spark, run_id_str, space_id, domain, exp_name,
                 prev_scores, prev_model_id, int(loop_out["iteration_counter"]),
-                catalog, schema, run_repeat, benchmarks, thresholds,
+                catalog, schema, run_repeat, benchmark_corpus, thresholds,
                 question_trace_map=loop_out.get("question_trace_map"),
                 reflection_buffer=loop_out.get("reflection_buffer"),
                 all_eval_mlflow_run_ids=loop_out.get("all_eval_mlflow_run_ids"),

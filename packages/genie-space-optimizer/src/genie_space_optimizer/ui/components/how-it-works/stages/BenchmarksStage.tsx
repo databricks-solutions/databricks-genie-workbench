@@ -174,14 +174,12 @@ export function BenchmarksStage() {
           content: <AnimatedChecklist items={VALIDATION_PHASES} />,
         },
         {
-          id: "train-heldout",
-          title: "Train/Held-Out Split",
+          id: "benchmark-corpus",
+          title: "Benchmark Corpus",
           content: (
             <p className="text-sm">
-              15% of synthetic/gap-fill benchmarks are held out (deterministic
-              seed=42). Curated questions always remain in train. The optimizer
-              never sees held-out questions — they are evaluated once in Finalize
-              as a directional generalization check.
+              Optimize evaluates the full validated benchmark set. The V2 flow
+              does not split benchmark questions into train and held-out subsets.
             </p>
           ),
         },

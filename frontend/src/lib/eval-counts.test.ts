@@ -191,6 +191,26 @@ describe("evalCountsFromIteration", () => {
     expect(c.hasDrift).toBe(false)
   })
 
+  it("OFFICIAL: reports the full 30-question benchmark corpus even when legacy evaluated_count is 25", () => {
+    const c = evalCountsFromIteration(
+      iter({
+        overall_accuracy: 80.0,
+        total_questions: 30,
+        evaluated_count: 25,
+        correct_count: 24,
+        num_correct: 24,
+        num_questions: 30,
+        num_done: 25,
+        eval_run_status: "DONE",
+        eval_run_id: "er-30",
+      }),
+    )
+    expect(c.total).toBe(30)
+    expect(c.evaluated).toBe(30)
+    expect(c.correct).toBe(24)
+    expect(c.accuracyPct).toBeCloseTo(80, 4)
+  })
+
   it("OFFICIAL: needs-review rows stay in the num_questions denominator", () => {
     // 7 GOOD, 2 NEEDS_REVIEW, 1 BAD over 10 questions → 70% (GOOD / total).
     const c = evalCountsFromIteration(

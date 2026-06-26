@@ -1,5 +1,5 @@
 """
-Benchmark management — loading, validation, splitting, and corrections.
+Benchmark management — loading, validation, corpus normalization, and corrections.
 
 Benchmarks are stored as MLflow evaluation datasets in UC (no YAML files).
 """
@@ -9,12 +9,11 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
-import random
 import re as _re
 from contextlib import contextmanager
 from typing import Any
 
-from genie_space_optimizer.common.config import HELD_OUT_RATIO, TEMPLATE_VARIABLES
+from genie_space_optimizer.common.config import TEMPLATE_VARIABLES
 from genie_space_optimizer.common.genie_client import detect_asset_type
 
 logger = logging.getLogger(__name__)
@@ -212,7 +211,7 @@ def load_benchmarks_from_dataset(
     table_name = f"{uc_schema}.genie_benchmarks_{domain}"
 
     if isinstance(spark_or_dataset, list):
-        return spark_or_dataset
+        return benchmark_corpus_for_optimization(spark_or_dataset)
 
     try:
         if hasattr(spark_or_dataset, "read"):
@@ -229,7 +228,7 @@ def load_benchmarks_from_dataset(
                     from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
                     if len(benchmarks) > MAX_BENCHMARK_COUNT:
                         benchmarks = benchmarks[:MAX_BENCHMARK_COUNT]
-                    return benchmarks
+                    return benchmark_corpus_for_optimization(benchmarks)
                 except Exception as read_err:
                     err_msg = str(read_err)
                     if "DELTA_SCHEMA_CHANGE_SINCE_ANALYSIS" in err_msg and attempt < _max_retries - 1:
@@ -249,7 +248,7 @@ def load_benchmarks_from_dataset(
             from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
             if len(benchmarks) > MAX_BENCHMARK_COUNT:
                 benchmarks = benchmarks[:MAX_BENCHMARK_COUNT]
-            return benchmarks
+            return benchmark_corpus_for_optimization(benchmarks)
     except Exception:
         logger.exception("Failed to load benchmarks from %s", table_name)
         return []
@@ -866,7 +865,7 @@ def validate_predicate_values(
         profile_lower[norm_key] = {"columns": cols_lower}
 
     results: list[dict] = []
-    for b in benchmarks:
+    for b in benchmark_corpus_for_optimization(benchmarks):
         sql = b.get("expected_sql", "")
         question = b.get("question", "")
         if not sql or not sql.strip():
@@ -1020,47 +1019,34 @@ def validate_gt_returns_results(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3. Train/Held-Out Split
+# 3. Benchmark Corpus Normalization
 # ═══════════════════════════════════════════════════════════════════════
+
+
+def benchmark_corpus_for_optimization(benchmarks: list[dict] | None) -> list[dict]:
+    """Return the V2 optimization corpus: every validated benchmark question.
+
+    Legacy rows may still carry ``split=train`` / ``split=held_out`` from older
+    runs. V2 treats the whole benchmark set as held out by nature, so monitoring
+    and evaluation handoffs must ignore those labels.
+    """
+    corpus: list[dict] = []
+    for benchmark in benchmarks or []:
+        normalized = dict(benchmark)
+        normalized["split"] = "full"
+        corpus.append(normalized)
+    return corpus
 
 
 def assign_splits(
     benchmarks: list[dict],
-    train_ratio: float = 1.0 - HELD_OUT_RATIO,
+    train_ratio: float = 1.0,
     seed: int = 42,
 ) -> list[dict]:
-    """Assign ``split`` field using deterministic random sampling.
-
-    Split assignment is intentionally independent of benchmark provenance.
-    User-authored, sample-derived, synthetic, and gap-fill questions all
-    participate in the same random split so the held-out set is a real random
-    sample of the final validated corpus.
-    """
-    from genie_space_optimizer.common.config import (
-        MIN_HELD_OUT_BENCHMARK_COUNT,
-        MIN_TRAIN_BENCHMARK_COUNT,
-    )
-
-    n = len(benchmarks)
-    if n == 0:
-        return benchmarks
-    if n == 1:
-        benchmarks[0]["split"] = "train"
-        return benchmarks
-
-    if n >= MIN_TRAIN_BENCHMARK_COUNT + MIN_HELD_OUT_BENCHMARK_COUNT:
-        held_out_count = MIN_HELD_OUT_BENCHMARK_COUNT
-    else:
-        held_out_count = max(1, min(n - 1, int(round(n * (1.0 - train_ratio)))))
-
-    indices = list(range(n))
-    rng = random.Random(seed)
-    rng.shuffle(indices)
-    held_out_indices = set(indices[:held_out_count])
-
-    for i, benchmark in enumerate(benchmarks):
-        benchmark["split"] = "held_out" if i in held_out_indices else "train"
-
+    """Compatibility wrapper for the V2 no-split benchmark contract."""
+    _ = (train_ratio, seed)
+    for benchmark in benchmarks:
+        benchmark["split"] = "full"
     return benchmarks
 
 
@@ -1077,7 +1063,7 @@ def build_eval_records(benchmarks: list[dict]) -> list[dict]:
     """
     _VALID_ASSET_TYPES = frozenset({"MV", "TVF", "TABLE"})
     records: list[dict] = []
-    for b in benchmarks:
+    for b in benchmark_corpus_for_optimization(benchmarks):
         question = b.get("question", "")
         qid = b.get("question_id") or hashlib.md5(
             question.encode()
@@ -1104,7 +1090,7 @@ def build_eval_records(benchmarks: list[dict]) -> list[dict]:
                     "required_tables": b.get("required_tables", []),
                     "required_columns": b.get("required_columns", []),
                     "category": b.get("category", ""),
-                    "split": b.get("split", "train"),
+                    "split": b.get("split", "full"),
                 },
             }
         )

@@ -22,8 +22,8 @@ const CARDS = [
     accent: "text-blue-700",
   },
   {
-    title: "Generalization",
-    subtitle: "Held-out questions tested",
+    title: "Corpus Check",
+    subtitle: "Full benchmark set reviewed",
     iconArea: (
       <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-purple-100">
         <ShieldCheck className="h-5 w-5 text-purple-600" />
@@ -85,7 +85,7 @@ export function FinalizeDeployStage() {
 
   const explanation = (
     <p>
-      The final stage validates that improvements are repeatable, runs a held-out generalization check on questions the optimizer never saw, promotes the best configuration to &quot;champion&quot; status, creates a human review session, and optionally deploys to a target workspace.
+      The final stage validates that improvements are repeatable across the full benchmark corpus, promotes the best configuration to &quot;champion&quot; status, creates a human review session, and optionally deploys to a target workspace.
     </p>
   );
 
@@ -95,16 +95,7 @@ export function FinalizeDeployStage() {
       title: "Repeatability Testing",
       content: (
         <div className="space-y-2 text-sm">
-          <p>Runs 1 pass on train benchmarks; compares SQL hashes per benchmark. REPEATABILITY_TARGET=90%.</p>
-        </div>
-      ),
-    },
-    {
-      id: "held-out-check",
-      title: "Held-Out Generalization Check",
-      content: (
-        <div className="space-y-2 text-sm">
-          <p>Evaluates ~3-4 benchmark questions the optimizer never saw during the lever loop. Compares held-out accuracy to train accuracy. A gap over 15pp may indicate instruction overfitting. This check is directional only and does not affect optimization decisions.</p>
+          <p>Runs 1 pass on the full benchmark corpus and compares SQL hashes per benchmark. REPEATABILITY_TARGET=90%.</p>
         </div>
       ),
     },

@@ -1142,7 +1142,7 @@ export const BENCHMARK_MODEL_FIELDS = [
   { name: "required_tables", type: "string[]", example: '["sales_fact"]' },
   { name: "required_columns", type: "string[]", example: '["region", "revenue"]' },
   { name: "priority", type: "enum", example: '"P0" | "P1"' },
-  { name: "split", type: "enum", example: '"train" | "held_out"' },
+  { name: "split", type: "enum", example: '"full"' },
   { name: "provenance", type: "enum", example: '"curated" | "synthetic" | "coverage_gap_fill"' },
   { name: "validation_status", type: "enum", example: '"valid" | "invalid"' },
 ];
