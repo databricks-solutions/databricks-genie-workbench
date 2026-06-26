@@ -7364,6 +7364,10 @@ def _seed_new_sql_snippets(
         "measures_seeded": 0,
         "filters_seeded": 0,
         "expressions_seeded": 0,
+        # Number of schema-discovery candidates dropped because there were
+        # no grounded benchmark candidates to anchor them (see the grounding
+        # gate below). Stays 0 on the normal path.
+        "schema_only_skipped": 0,
         "skipped_reason": None,
         # Per-candidate rejection diagnostics — bounded list so the
         # pretty summary block can explain WHY candidates died without
@@ -7466,6 +7470,38 @@ def _seed_new_sql_snippets(
         )
         schema_candidates = _discover_schema_sql_expressions(metadata_snapshot)
 
+        # ── Grounding gate ───────────────────────────────────────────────
+        # Schema-discovery candidates are heuristic: they are produced by
+        # column name/type pattern matching (``SUM(<numeric>)``,
+        # ``MONTH(<date>)``) and carry ``source_count == 0`` — nothing ties
+        # them to a question the space is actually asked. They are only safe
+        # as a SUPPLEMENT to benchmark-mined candidates, whose patterns come
+        # from arbiter-approved (``both_correct``) gold SQL.
+        #
+        # When benchmark mining yields zero grounded candidates the seeding
+        # pool has no grounding at all. That happens when the baseline
+        # arbiter approved no rows (e.g. the whole verdict distribution is
+        # ``skipped``, so ``_extract_arbiter_approved_benchmarks`` returns
+        # an empty subset) and proactive join discovery surfaced nothing.
+        # Seeding schema-only snippets in that state injects unvalidated
+        # structure that can flip passing questions — the regression on run
+        # 92253d6e-0a8f-4b42-ad3c-f3b401d865de / space
+        # 01f16ff7bc2c1d76b427399652a720e6 (baseline 92% -> post-enrichment
+        # 84%), where 22 ``proactive_sql_expression`` snippets were seeded
+        # purely from schema with no grounding. Drop the schema-only
+        # candidates rather than seeding them ungrounded.
+        if not benchmark_candidates and schema_candidates:
+            result["schema_only_skipped"] = len(schema_candidates)
+            result["skipped_reason"] = "no_grounded_candidates"
+            logger.info(
+                "SQL expression seeding: dropping %d schema-only candidate(s) "
+                "— no grounded benchmark candidates to anchor seeding "
+                "(arbiter approved 0 baseline rows / no join discovery "
+                "evidence); space_id=%s",
+                len(schema_candidates), space_id,
+            )
+            schema_candidates = []
+
         all_candidates = benchmark_candidates + schema_candidates
 
         seen_sqls: set[str] = set()
@@ -7481,9 +7517,16 @@ def _seed_new_sql_snippets(
         result["total_candidates"] = len(deduped)
 
         if not deduped:
+            if result.get("schema_only_skipped"):
+                status = (
+                    f"Skipped {result['schema_only_skipped']} schema-only "
+                    f"candidate(s) — no grounded benchmark candidates"
+                )
+            else:
+                status = "No candidates"
             _lines = [_section("SQL EXPRESSION SEEDING", "-")]
             _lines.append(_kv("Candidates found", 0))
-            _lines.append(_kv("Status", "No candidates"))
+            _lines.append(_kv("Status", status))
             _lines.append(_bar("-"))
             print("\n".join(_lines))
             write_stage(
