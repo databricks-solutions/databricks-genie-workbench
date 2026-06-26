@@ -495,4 +495,3 @@ def ensure_job_run_as(ws: WorkspaceClient, job_id: int, sp_client_id: str) -> No
             job_id,
             exc_info=True,
         )
-
