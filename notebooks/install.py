@@ -13,7 +13,7 @@
 # MAGIC **Optional:** Lakebase Autoscaling is recommended for persistent app state. Set `lakebase_mode` to `skip` only when ephemeral in-memory state is acceptable.
 
 # COMMAND ----------
-# MAGIC %pip install databricks-sdk==0.102.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" hatchling==1.29.0 uv-dynamic-versioning==0.13.0
+# MAGIC %pip install databricks-sdk==0.117.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" hatchling==1.29.0 uv-dynamic-versioning==0.13.0
 
 # COMMAND ----------
 dbutils.library.restartPython()
@@ -21,6 +21,10 @@ dbutils.library.restartPython()
 # COMMAND ----------
 from pathlib import Path
 import sys
+
+# Workspace Git folders (wsfs) reject __pycache__ writes; skip bytecode caching
+# so importing scripts.deploy_lib does not log wsfs errors.
+sys.dont_write_bytecode = True
 
 
 def path_exists(path: Path) -> bool:
