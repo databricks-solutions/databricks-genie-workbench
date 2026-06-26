@@ -380,17 +380,19 @@ def _build_mlflow_links(run_row: dict, iterations_df: pd.DataFrame) -> str:
         section += "\n"
 
     if not iterations_df.empty:
-        run_ids = iterations_df["mlflow_run_id"].dropna().unique()
-        if len(run_ids) > 0:
-            section += "- **Evaluation Run IDs:**\n"
-            for rid in run_ids:
-                section += f"  - `{rid}`\n"
+        if "mlflow_run_id" in iterations_df.columns:
+            run_ids = iterations_df["mlflow_run_id"].dropna().unique()
+            if len(run_ids) > 0:
+                section += "- **Evaluation Run IDs:**\n"
+                for rid in run_ids:
+                    section += f"  - `{rid}`\n"
 
-        model_ids = iterations_df["model_id"].dropna().unique()
-        if len(model_ids) > 0:
-            section += "- **Model IDs:**\n"
-            for mid in model_ids:
-                section += f"  - `{mid}`\n"
+        if "model_id" in iterations_df.columns:
+            model_ids = iterations_df["model_id"].dropna().unique()
+            if len(model_ids) > 0:
+                section += "- **Model IDs:**\n"
+                for mid in model_ids:
+                    section += f"  - `{mid}`\n"
 
     best_model = run_row.get("best_model_id", "")
     if best_model:
