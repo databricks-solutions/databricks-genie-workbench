@@ -53,10 +53,6 @@ LLM calls in the create agent and optimization pipeline are traced via MLflow. T
 
 At startup, the app validates that the experiment ID exists in the workspace. If it doesn't, tracing is silently disabled (the variable is cleared).
 
-### Prompt Registry
-
-Auto-Optimize requires MLflow Prompt Registry for versioned judge prompts. If Prompt Registry is not enabled on the workspace, the optimization preflight task will fail with `FEATURE_DISABLED`.
-
 ### Configuration
 
 ```yaml

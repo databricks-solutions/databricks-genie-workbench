@@ -11,7 +11,6 @@
 | `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | `databricks catalogs list --profile <profile>` |
 | `Invalid SQL warehouse resource` | Warehouse doesn't exist or no CAN_USE | `databricks warehouses list --profile <profile>` |
 | `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
-| Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled | Contact workspace admin to enable MLflow Prompt Registry |
 | Unresolved `__GSO_*__` placeholders | The active deploy path could not patch `app.yaml` | Ensure `GENIE_CATALOG` or notebook `catalog` is set; check deploy output for warnings |
 | GSO job creation fails during local deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 |
 | GSO job creation fails in notebook install | Generated GSO notebook/wheel upload or Jobs API reset failed | Review notebook status output; rerun from the top after pulling latest repo changes |
@@ -66,7 +65,6 @@ the existing `genie` schema, tables, and sequences.
 | Optimization job never starts | Job doesn't exist or SP can't run it | Check job exists in workspace; verify SP has CAN_MANAGE on job |
 | Job stuck in QUEUED | No available cluster or warehouse | Check cluster policies and warehouse availability |
 | "Baseline Evaluation" fails | Benchmark questions reference inaccessible tables | Grant SP `SELECT` on all referenced schemas |
-| "FEATURE_DISABLED" during preflight | MLflow Prompt Registry not enabled | Contact workspace admin to enable it |
 | Patches generated but accuracy doesn't improve | Optimization strategy exhausted | Run may reach `STALLED` status — review suggestions for manual improvements |
 | `__GSO_*__` values in running app | The active deploy path did not patch `app.yaml` before deploy | Check `GENIE_CATALOG` in `.env.deploy` or notebook `catalog`; re-run deploy |
 
