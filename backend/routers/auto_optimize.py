@@ -48,7 +48,12 @@ _ITER_COLS = _ITER_COLS_V2 = (
     "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
     "evaluated_count, excluded_count, quarantined_benchmarks_json, "
     "scores_json, failures_json, thresholds_met, lever, repeatability_pct, "
-    "reflection_json, rolled_back"
+    "reflection_json, rolled_back, "
+    # GSO v2 Phase 6 — native official eval-run metadata. The Workbench
+    # surfaces these as num_needs_review / eval_run_id / eval_run_status. A
+    # table behind the Phase-6 ALTER degrades to _ITER_COLS_LEGACY (these
+    # become None in the response — TS-safe no-op).
+    "num_needs_review, eval_run_id, eval_run_status"
 )
 _ITER_COLS_LEGACY = (
     "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
@@ -512,14 +517,6 @@ def _build_step_io(
         baseline_iter = next((r for r in iterations_rows if _safe_int(r.get("iteration")) == 0 and str(r.get("eval_scope", "")).lower() == "full"), None)
         if not baseline_iter:
             return None, {"stageEvents": timeline}
-        scores = baseline_iter.get("scores_json", {})
-        if isinstance(scores, str):
-            try:
-                scores = json.loads(scores)
-            except (json.JSONDecodeError, TypeError):
-                scores = {}
-        if not isinstance(scores, dict):
-            scores = {}
         rows_json = baseline_iter.get("rows_json", [])
         if isinstance(rows_json, str):
             try:
@@ -528,26 +525,83 @@ def _build_step_io(
                 rows_json = []
         if not isinstance(rows_json, list):
             rows_json = []
+        # GSO v2 Phase 6 — emit an official assessment/reason summary instead
+        # of the retired per-judge scores. State is GOOD / BAD / NEEDS_REVIEW;
+        # `assessment_reasons` replaces the per-judge verdict columns.
+        #
+        # Counts come from the lightweight iteration columns (always loaded);
+        # the reason aggregation + sample rows are best-effort from rows_json,
+        # which is only present when the caller attaches it (get_run does).
+        total_questions = _safe_int(baseline_iter.get("total_questions")) or 0
+        correct_count = _safe_int(baseline_iter.get("correct_count")) or 0
+        needs_review_count = _safe_int(baseline_iter.get("num_needs_review"))
+        reason_counts: dict[str, int] = {}
         sample_rows: list[dict[str, Any]] = []
-        for row in rows_json[:5]:
+        row_assessment_counts = {"GOOD": 0, "BAD": 0, "NEEDS_REVIEW": 0}
+        for row in rows_json:
             if not isinstance(row, dict):
                 continue
-            question = ""
-            if isinstance(row.get("inputs"), dict):
-                question = str(row.get("inputs", {}).get("question") or "").strip()
-            if not question:
-                question = str(row.get("inputs/question") or "").strip()
-            sample_rows.append({
-                "question": question,
-                "resultCorrectness": row.get("result_correctness/value", row.get("result_correctness")),
-                "syntaxValidity": row.get("syntax_validity/value", row.get("syntax_validity")),
-                "assetRouting": row.get("asset_routing/value", row.get("asset_routing")),
-                "matchType": row.get("outputs", {}).get("comparison", {}).get("match_type") if isinstance(row.get("outputs"), dict) else None,
-                "error": row.get("outputs", {}).get("comparison", {}).get("error") if isinstance(row.get("outputs"), dict) else None,
-            })
+            a = str(row.get("assessment") or "").upper()
+            if a in row_assessment_counts:
+                row_assessment_counts[a] += 1
+            raw_reasons = row.get("assessment_reasons")
+            if isinstance(raw_reasons, str):
+                try:
+                    raw_reasons = json.loads(raw_reasons)
+                except (json.JSONDecodeError, TypeError):
+                    raw_reasons = []
+            row_reasons = [str(r).strip() for r in raw_reasons if str(r).strip()] if isinstance(raw_reasons, list) else []
+            for r in row_reasons:
+                reason_counts[r] = reason_counts.get(r, 0) + 1
+            if len(sample_rows) < 5:
+                question = ""
+                if isinstance(row.get("inputs"), dict):
+                    question = str(row.get("inputs", {}).get("question") or "").strip()
+                if not question:
+                    question = str(row.get("inputs/question") or row.get("question") or "").strip()
+                sample_rows.append({
+                    "question": question,
+                    "assessment": a or None,
+                    "reasons": row_reasons,
+                    "matchType": row.get("outputs", {}).get("comparison", {}).get("match_type") if isinstance(row.get("outputs"), dict) else None,
+                })
+        top_reasons = [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+        ]
+        # Prefer the persisted column count; fall back to the row tally.
+        if needs_review_count is None:
+            needs_review_count = row_assessment_counts["NEEDS_REVIEW"] or None
+        good_count = correct_count or row_assessment_counts["GOOD"]
+        nr = needs_review_count or 0
+        bad_count = row_assessment_counts["BAD"] or max(0, total_questions - good_count - nr)
+        assessment_counts = {"GOOD": good_count, "BAD": bad_count, "NEEDS_REVIEW": nr}
+        failed_count = bad_count
+        # Native eval-run surfacing (reuses the StepDetailContent
+        # evaluationRunUrl hook). The benchmark eval ran on the live Genie
+        # Space, so link the room; the SDK exposes no per-eval-run deep link.
+        host = get_databricks_host()
+        space_id = run_data.get("space_id")
+        evaluation_run_url = f"{host}/genie/rooms/{space_id}" if host and space_id else None
         return (
-            {"benchmarkCount": baseline_iter.get("total_questions"), "iteration": 0},
-            {"judgeScores": {k: _safe_float(v) for k, v in scores.items()}, "totalQuestions": baseline_iter.get("total_questions"), "correctCount": baseline_iter.get("correct_count"), "failedCount": int(_finite(baseline_iter.get("total_questions", 0)) - _finite(baseline_iter.get("correct_count", 0))), "mlflowRunId": baseline_iter.get("mlflow_run_id"), "invalidBenchmarkCount": _safe_int(detail.get("invalid_benchmark_count")), "permissionBlockedCount": _safe_int(detail.get("permission_blocked_count")), "unresolvedColumnCount": _safe_int(detail.get("unresolved_column_count")), "harnessRetryCount": _safe_int(detail.get("harness_retry_count")), "sampleQuestions": sample_rows, "stageEvents": timeline},
+            {"benchmarkCount": total_questions, "iteration": 0},
+            {
+                "assessmentSummary": assessment_counts,
+                "assessmentReasons": top_reasons,
+                "totalQuestions": total_questions,
+                "correctCount": correct_count,
+                "needsReviewCount": needs_review_count,
+                "failedCount": failed_count,
+                "evalRunId": baseline_iter.get("eval_run_id") or None,
+                "evalRunStatus": baseline_iter.get("eval_run_status") or None,
+                "evaluationRunUrl": evaluation_run_url,
+                "invalidBenchmarkCount": _safe_int(detail.get("invalid_benchmark_count")),
+                "permissionBlockedCount": _safe_int(detail.get("permission_blocked_count")),
+                "unresolvedColumnCount": _safe_int(detail.get("unresolved_column_count")),
+                "harnessRetryCount": _safe_int(detail.get("harness_retry_count")),
+                "sampleQuestions": sample_rows,
+                "stageEvents": timeline,
+            },
         )
 
     if step_name == "Proactive Enrichment":
@@ -1228,6 +1282,30 @@ async def get_run(run_id: RunId):
     if not iterations and _is_configured():
         iterations = _select_iterations_delta(run_id)
 
+    # GSO v2 Phase 6 — attach the baseline iteration's rows_json so the
+    # Baseline step detail can emit an assessment/reason summary + sample
+    # rows. The lightweight iteration load omits the heavy rows_json column,
+    # so fetch it once for iteration 0 (full) only. Not echoed in the
+    # response (get_run returns steps/levers, not raw iterations).
+    baseline_row = next(
+        (r for r in iterations
+         if _safe_int(r.get("iteration")) == 0
+         and str(r.get("eval_scope", "")).lower() == "full"
+         and not r.get("rows_json")),
+        None,
+    )
+    if baseline_row is not None:
+        rows_json_str = await gso_lakebase.load_gso_iteration_rows(run_id, 0, "full")
+        if not rows_json_str and _is_configured():
+            _dr = _delta_query(
+                f"SELECT rows_json FROM {_delta_table('genie_opt_iterations')} "
+                f"WHERE run_id = '{run_id}' AND iteration = 0 AND eval_scope = 'full' "
+                f"AND rows_json IS NOT NULL LIMIT 1"
+            )
+            rows_json_str = _dr[0]["rows_json"] if _dr else None
+        if rows_json_str:
+            baseline_row["rows_json"] = rows_json_str
+
     # Fetch patches for lever detail
     patches = await gso_lakebase.load_gso_patches(run_id)
     if not patches and _is_configured():
@@ -1568,6 +1646,43 @@ async def list_iterations(run_id: RunId):
             it["excluded_count"] = _safe_int(it.get("excluded_count")) or 0
         it["iteration"] = _safe_int(it.get("iteration")) or 0
         it["lever"] = _safe_int(it.get("lever"))
+
+        # GSO v2 Phase 6 — assessment-centric counts contract. Headline
+        # accuracy stays `num_correct / num_questions`; the UI repoints onto
+        # these official counts + the native eval-run status.
+        num_correct = it["correct_count"]
+        num_questions = it["total_questions"]
+        evaluated = it.get("evaluated_count")
+        it["num_correct"] = num_correct
+        it["num_questions"] = num_questions
+        # num_done = questions actually evaluated (engine writes this as
+        # evaluated_count = result.num_done or num_questions).
+        it["num_done"] = evaluated if evaluated is not None else num_questions
+        it["num_needs_review"] = (
+            _safe_int(it.get("num_needs_review"))
+            if it.get("num_needs_review") is not None else None
+        )
+
+        # Replace the retired per-judge `thresholds_met` with the explicit
+        # single API-accuracy gate + a coarse per-iteration gate status. Phase 3
+        # collapsed acceptance to one API-accuracy gate, so `thresholds_met`
+        # IS the API-accuracy gate verdict.
+        gate_met = it.get("thresholds_met")
+        if isinstance(gate_met, (int, float)) and not isinstance(gate_met, bool):
+            gate_met = gate_met == 1
+        api_accuracy_gate_met = bool(gate_met)
+        it["api_accuracy_gate_met"] = api_accuracy_gate_met
+        if it.get("rolled_back"):
+            it["eval_gate_status"] = "rolled_back"
+        elif api_accuracy_gate_met:
+            it["eval_gate_status"] = "passed"
+        else:
+            it["eval_gate_status"] = "failed"
+
+        # Drop the retired per-judge fields from the response (the TS
+        # IterationRow no longer declares scores_json / thresholds_met).
+        it.pop("thresholds_met", None)
+        it.pop("scores_json", None)
     return iterations
 
 
@@ -1670,28 +1785,17 @@ async def debug_data(run_id: RunId):
     return diag
 
 
-@router.get("/runs/{run_id}/asi-results")
-async def list_asi_results(run_id: RunId, iteration: int = Query(..., description="Iteration number")):
-    """Get per-judge ASI failure analysis for a specific iteration."""
-    results = await gso_lakebase.load_gso_asi_results(run_id, iteration)
-    if not results and _is_configured():
-        results = _delta_query(
-            f"SELECT * FROM {_delta_table('genie_eval_asi_results')} "
-            f"WHERE run_id = '{run_id}' AND iteration = {iteration}"
-        )
-    return results
+async def _load_iteration_rows_json(run_id: str, iteration: int) -> str | None:
+    """Load the rows_json blob for an iteration (full scope, any-scope fallback).
 
-
-@router.get("/runs/{run_id}/question-results")
-async def list_question_results(run_id: RunId, iteration: int = Query(..., description="Iteration number")):
-    """Get per-question results (question text + SQL) for a specific iteration."""
-
-    # Try full-scope first, then fall back to any scope
+    Synced Lakebase reads are disabled today, so this resolves through the
+    Delta SQL-warehouse fallback in practice. Shared by the question-results
+    and official-eval-results endpoints.
+    """
     rows_json_str = await gso_lakebase.load_gso_iteration_rows(run_id, iteration, "full")
     if not rows_json_str:
         rows_json_str = await gso_lakebase.load_gso_iteration_rows(run_id, iteration, None)
 
-    # Always try Delta if Lakebase returned nothing usable (None, empty string, etc.)
     if not rows_json_str and _is_configured():
         logger.info("Lakebase returned no rows_json for run=%s iter=%s, trying Delta", run_id, iteration)
         delta_rows = _delta_query(
@@ -1705,7 +1809,29 @@ async def list_question_results(run_id: RunId, iteration: int = Query(..., descr
                 f"AND rows_json IS NOT NULL LIMIT 1"
             )
         rows_json_str = delta_rows[0]["rows_json"] if delta_rows else None
+    return rows_json_str
 
+
+@router.get("/runs/{run_id}/eval-results")
+@router.get("/runs/{run_id}/asi-results")
+async def list_eval_results(run_id: RunId, iteration: int = Query(..., description="Iteration number")):
+    """Lightweight official eval-results for an iteration.
+
+    GSO v2 Phase 6: replaces the retired per-judge ASI rows. Returns one row
+    per benchmark question carrying the native ``assessment`` (GOOD / BAD /
+    NEEDS_REVIEW) and ``assessment_reasons[]`` (the ``failure_type``
+    successor) — sourced from the iteration's rows_json, with no dependency on
+    the legacy ``genie_eval_asi_results`` judge table. The ``/asi-results``
+    path is kept as an alias for older clients.
+    """
+    rows_json_str = await _load_iteration_rows_json(run_id, iteration)
+    return _parse_official_eval_results(rows_json_str)
+
+
+@router.get("/runs/{run_id}/question-results")
+async def list_question_results(run_id: RunId, iteration: int = Query(..., description="Iteration number")):
+    """Get per-question results (question text + SQL) for a specific iteration."""
+    rows_json_str = await _load_iteration_rows_json(run_id, iteration)
     return _parse_question_rows(rows_json_str)
 
 
@@ -1752,6 +1878,111 @@ async def list_suggestions(run_id: RunId):
             "affectedQuestions": aff,
             "estimatedImpact": s.get("estimated_impact"),
             "status": s.get("status", "PROPOSED"),
+        })
+    return results
+
+
+@router.get("/runs/{run_id}/benchmark-changes")
+async def list_benchmark_changes(run_id: RunId):
+    """Benchmark provenance ledger for a run (GSO v2 Phase 6, §3.5).
+
+    Serves ``genie_opt_benchmark_mutations`` — every benchmark question GSO
+    added / removed / changed (and prune recommendations) in the live Genie
+    Space — grouped so the Workbench can render the added/removed/changed diff
+    with provenance. The diff is also reconstructable as
+    (current space benchmarks) − (preflight snapshot); this ledger is the
+    direct, attributable source.
+    """
+    mutations = await gso_lakebase.load_gso_benchmark_mutations(run_id)
+    if not mutations and _is_configured():
+        mutations = _delta_query(
+            f"SELECT run_id, question_id, op, before, after, reason, logged_at "
+            f"FROM {_delta_table('genie_opt_benchmark_mutations')} "
+            f"WHERE run_id = '{run_id}' ORDER BY logged_at ASC"
+        )
+
+    buckets: dict[str, list[dict]] = {
+        "added": [], "removed": [], "changed": [], "prune_recommended": [],
+    }
+    items: list[dict] = []
+    for m in mutations:
+        op = str(m.get("op") or "").strip().lower()
+        item = {
+            "questionId": m.get("question_id"),
+            "op": op,
+            "before": _safe_json_parse(m.get("before")),
+            "after": _safe_json_parse(m.get("after")),
+            "reason": m.get("reason"),
+            "loggedAt": _isoformat(m.get("logged_at")),
+        }
+        items.append(item)
+        if op in buckets:
+            buckets[op].append(item)
+
+    return {
+        "runId": run_id,
+        "added": buckets["added"],
+        "removed": buckets["removed"],
+        "changed": buckets["changed"],
+        "pruneRecommended": buckets["prune_recommended"],
+        "items": items,
+        "counts": {
+            "added": len(buckets["added"]),
+            "removed": len(buckets["removed"]),
+            "changed": len(buckets["changed"]),
+            "pruneRecommended": len(buckets["prune_recommended"]),
+            "total": len(items),
+        },
+    }
+
+
+def _parse_official_eval_results(rows_json_str: str | None) -> list[dict]:
+    """Parse rows_json into lightweight official eval-results (GSO v2 Phase 6).
+
+    One entry per benchmark question: ``question_id`` + native ``assessment``
+    (GOOD/BAD/NEEDS_REVIEW) + ``assessment_reasons[]``. This is the successor
+    to the retired per-judge ASI rows (the reasons list replaces
+    ``failure_type``).
+    """
+    if not rows_json_str:
+        return []
+    try:
+        rows = json.loads(rows_json_str) if isinstance(rows_json_str, str) else rows_json_str
+    except Exception:
+        return []
+    if not isinstance(rows, list):
+        return []
+
+    results: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        _req = row.get("request") if isinstance(row.get("request"), dict) else {}
+        _req_kw = _req.get("kwargs") if isinstance(_req.get("kwargs"), dict) else {}
+        question_id = str(
+            row.get("question_id")
+            or row.get("inputs/question_id")
+            or _req_kw.get("question_id")
+            or row.get("request_id")
+            or ""
+        ).strip()
+        assessment = str(row.get("assessment") or row.get("outputs/assessment") or "").strip().upper()
+        if not question_id and not assessment:
+            continue
+        raw_reasons = row.get("assessment_reasons")
+        if isinstance(raw_reasons, str):
+            try:
+                raw_reasons = json.loads(raw_reasons)
+            except (json.JSONDecodeError, TypeError):
+                raw_reasons = []
+        assessment_reasons = (
+            [str(r).strip() for r in raw_reasons if str(r).strip()]
+            if isinstance(raw_reasons, list) else []
+        )
+        results.append({
+            "question_id": question_id,
+            "assessment": assessment or None,
+            "assessment_reasons": assessment_reasons,
         })
     return results
 
@@ -1877,36 +2108,38 @@ def _parse_question_rows(rows_json_str: str | None) -> list[dict]:
             or row.get("match_type")
         )
 
-        # Extract judge verdicts
+        # ---------------- Official assessment (GSO v2 Phase 6) ----------------
+        # The native Benchmark API verdict drives per-question display state:
+        #   GOOD → pass, BAD → fail, NEEDS_REVIEW → a distinct third state
+        #   (review-pending, neither pass nor fail). `assessment_reasons`
+        #   replaces the retired hardcoded per-judge `judge_verdicts`.
+        assessment = str(
+            row.get("assessment")
+            or row.get("outputs/assessment")
+            or ""
+        ).strip().upper()
+
+        raw_reasons = row.get("assessment_reasons")
+        if isinstance(raw_reasons, str):
+            try:
+                raw_reasons = json.loads(raw_reasons)
+            except (json.JSONDecodeError, TypeError):
+                raw_reasons = []
+        assessment_reasons: list[str] = (
+            [str(r).strip() for r in raw_reasons if str(r).strip()]
+            if isinstance(raw_reasons, list) else []
+        )
+
+        # Legacy exclusion markers — only relevant for in-process rows that
+        # predate the official runner. The official path emits no per-row
+        # exclusion (its excluded_count is always 0); ambiguous rows surface
+        # as NEEDS_REVIEW instead.
         rc = str(
             row.get("result_correctness/value")
             or row.get("outputs/result_correctness/value")
             or outputs.get("result_correctness/value")
             or ""
         ).lower()
-        arbiter = str(
-            row.get("arbiter/value")
-            or row.get("arbiter")
-            or ""
-        ).lower()
-
-        # Collect all judge verdicts for the response
-        judge_verdicts: dict[str, str] = {}
-        for judge in (
-            "syntax_validity", "schema_accuracy", "logical_accuracy",
-            "semantic_equivalence", "completeness", "response_quality",
-            "asset_routing", "result_correctness", "arbiter",
-        ):
-            val = str(
-                row.get(f"{judge}/value") or row.get(judge) or ""
-            ).strip()
-            if val:
-                judge_verdicts[judge] = val
-
-        # Determine pass/fail using arbiter-adjusted accuracy logic
-        # (matches GSO engine's _compute_arbiter_adjusted_accuracy)
-        #
-        # Exclusions: result_correctness=="excluded", both_empty, genie_result_unavailable
         error_type = str(
             comparison.get("error_type")
             or row.get("outputs/comparison/error_type")
@@ -1917,24 +2150,31 @@ def _parse_question_rows(rows_json_str: str | None) -> list[dict]:
             or error_type in ("both_empty", "genie_result_unavailable")
         )
 
-        if excluded:
-            passed = None  # neither pass nor fail — excluded from accuracy
+        if assessment in ("GOOD", "BAD", "NEEDS_REVIEW"):
+            # Official path — the API assessment is authoritative.
+            passed = True if assessment == "GOOD" else (
+                False if assessment == "BAD" else None
+            )
         else:
-            # Arbiter-based pass/fail:
-            # - both_correct / genie_correct → pass (overrides individual judge failures)
-            # - ground_truth_correct / neither_correct → fail
-            # - skipped / empty → fall back to result_correctness
-            rc_pass = rc in ("yes", "true", "1", "1.0")
-            arbiter_pass = arbiter in ("genie_correct", "both_correct")
-            arbiter_fail = arbiter in ("ground_truth_correct", "neither_correct")
-
-            if arbiter_pass:
-                passed = True
-            elif arbiter_fail:
-                passed = False
+            # Legacy fallback — derive from result_correctness + arbiter, then
+            # normalise to an assessment string so the UI sees one contract.
+            arbiter = str(
+                row.get("arbiter/value") or row.get("arbiter") or ""
+            ).lower()
+            if excluded:
+                passed = None
+                assessment = ""
             else:
-                # No arbiter verdict — use result_correctness
-                passed = rc_pass
+                rc_pass = rc in ("yes", "true", "1", "1.0")
+                arbiter_pass = arbiter in ("genie_correct", "both_correct")
+                arbiter_fail = arbiter in ("ground_truth_correct", "neither_correct")
+                if arbiter_pass:
+                    passed = True
+                elif arbiter_fail:
+                    passed = False
+                else:
+                    passed = rc_pass
+                assessment = "GOOD" if passed else "BAD"
 
         results.append({
             "question_id": question_id,
@@ -1942,8 +2182,9 @@ def _parse_question_rows(rows_json_str: str | None) -> list[dict]:
             "generated_sql": generated_sql,
             "expected_sql": expected_sql,
             "passed": passed,
+            "assessment": assessment or None,
+            "assessment_reasons": assessment_reasons,
             "match_type": match_type,
-            "judge_verdicts": judge_verdicts,
             "excluded": excluded,
             "genie_sample": comparison.get("genie_sample"),
             "gt_sample": comparison.get("gt_sample"),

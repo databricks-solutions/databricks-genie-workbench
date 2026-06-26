@@ -432,7 +432,7 @@ function AutoOptimizeContent() {
             {[
               { gate: "Gate 1 — SQL Validity", desc: "Does the generated SQL parse and execute?", color: INFO },
               { gate: "Gate 2 — Schema Match", desc: "Do columns and tables match the expected output?", color: WARNING },
-              { gate: "Gate 3 — Semantic Accuracy", desc: "Do results match ground-truth answers? (9 judges)", color: SUCCESS },
+              { gate: "Gate 3 — Semantic Accuracy", desc: "Do results match ground-truth answers? (native Genie benchmark assessment)", color: SUCCESS },
             ].map((g) => (
               <div key={g.gate} className="rounded-lg border p-3" style={{ borderColor: `${g.color}30`, background: `${g.color}05` }}>
                 <h4 className="text-sm font-semibold" style={{ color: g.color }}>{g.gate}</h4>
