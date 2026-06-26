@@ -67,22 +67,52 @@ class FakeOp:
         return None
 
 
+class FakeProject:
+    def __init__(self, name, *, delete_time=None):
+        self.name = name
+        self.delete_time = delete_time
+
+
 class FakePostgres:
-    def __init__(self, *, project_exists=True):
+    def __init__(self, *, project_exists=True, soft_deleted=False, reserved_soft_deleted=None):
         self.project_exists = project_exists
+        # When True, get_project returns a project whose delete_time is set —
+        # Lakebase reports soft-deleted projects as if live.
+        self.soft_deleted = soft_deleted
+        # Project names that only surface as soft-deleted via list_projects:
+        # the reservation that makes a same-name create fail after get 404s.
+        self.reserved_soft_deleted = list(reserved_soft_deleted or [])
         self.created_projects = []
         self.created_roles = []
+        self.purged_projects = []
 
     def get_project(self, *, name):
         if not self.project_exists:
             from databricks.sdk.errors import NotFound
 
             raise NotFound(f"{name} not found")
-        return {"name": name}
+        return FakeProject(name, delete_time="2026-06-20T00:00:00Z" if self.soft_deleted else None)
+
+    def list_projects(self, *, show_deleted=False):
+        if not show_deleted:
+            return []
+        return [
+            FakeProject(f"projects/{name}", delete_time="2026-06-20T00:00:00Z")
+            for name in self.reserved_soft_deleted
+        ]
+
+    def delete_project(self, *, name, purge=False):
+        self.purged_projects.append((name, purge))
+        # Purging frees the reserved name so the subsequent create succeeds.
+        self.soft_deleted = False
+        self.project_exists = False
+        self.reserved_soft_deleted = [n for n in self.reserved_soft_deleted if f"projects/{n}" != name]
+        return FakeOp()
 
     def create_project(self, *, project, project_id):
         self.created_projects.append(project_id)
         self.project_exists = True
+        self.soft_deleted = False
         return FakeOp()
 
     def create_role(self, **kwargs):
@@ -869,4 +899,81 @@ def test_lakebase_create_mode_creates_missing_project():
     lakebase = ensure_lakebase(w, cfg, "sp-client-id")
 
     assert w.postgres.created_projects == ["new-lakebase"]
+    assert w.postgres.purged_projects == []
     assert lakebase.database_resource == "projects/new-lakebase/branches/production/databases/databricks_postgres"
+
+
+def _databases_response():
+    return {
+        (
+            "GET",
+            "/api/2.0/postgres/projects/new-lakebase/branches/production/databases",
+        ): {
+            "databases": [
+                {"name": "projects/new-lakebase/branches/production/databases/databricks_postgres"}
+            ]
+        }
+    }
+
+
+def test_lakebase_create_mode_purges_soft_deleted_name_reservation():
+    # Reported failure: get_project 404s, but the name is still reserved by a
+    # soft-deleted project that surfaces via list_projects(show_deleted=True).
+    w = FakeWorkspaceClient(_databases_response())
+    w.config = type("Config", (), {"client_id": None})()
+    w.postgres = FakePostgres(project_exists=False, reserved_soft_deleted=["new-lakebase"])
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+        lakebase_mode="create",
+        lakebase_instance="new-lakebase",
+    )
+
+    lakebase = ensure_lakebase(w, cfg, "sp-client-id")
+
+    assert w.postgres.purged_projects == [("projects/new-lakebase", True)]
+    assert w.postgres.created_projects == ["new-lakebase"]
+    assert lakebase.database_resource == "projects/new-lakebase/branches/production/databases/databricks_postgres"
+
+
+def test_lakebase_create_mode_purges_project_reported_soft_deleted_by_get():
+    # get_project returns a soft-deleted project as if live (delete_time set);
+    # create mode must purge and recreate it rather than treat it as usable.
+    w = FakeWorkspaceClient(_databases_response())
+    w.config = type("Config", (), {"client_id": None})()
+    w.postgres = FakePostgres(project_exists=True, soft_deleted=True)
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+        lakebase_mode="create",
+        lakebase_instance="new-lakebase",
+    )
+
+    lakebase = ensure_lakebase(w, cfg, "sp-client-id")
+
+    assert w.postgres.purged_projects == [("projects/new-lakebase", True)]
+    assert w.postgres.created_projects == ["new-lakebase"]
+    assert lakebase.database_resource == "projects/new-lakebase/branches/production/databases/databricks_postgres"
+
+
+def test_lakebase_existing_mode_rejects_soft_deleted_project():
+    w = FakeWorkspaceClient()
+    w.postgres = FakePostgres(project_exists=True, soft_deleted=True)
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+        lakebase_mode="existing",
+        lakebase_instance="stale-lakebase",
+    )
+
+    with pytest.raises(RuntimeError, match="stale-lakebase.*soft-deleted"):
+        ensure_lakebase(w, cfg, "sp-client-id")
+
+    assert w.postgres.created_projects == []
+    assert w.postgres.purged_projects == []
