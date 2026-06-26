@@ -449,11 +449,7 @@ def _build_step_summary(
     if step_name == "Finalization":
         score = f"{_finite(run_data.get('best_accuracy', 0)):.1f}" if run_data.get("best_accuracy") else "?"
         rep = f"{_finite(run_data.get('best_repeatability', 0)):.1f}" if run_data.get("best_repeatability") else "?"
-        summary = f"Final evaluation complete. Optimized score: {score}%. Repeatability: {rep}%"
-        ho_acc = _safe_float(detail.get("held_out_accuracy"))
-        if ho_acc is not None:
-            summary += f" Held-out: {ho_acc:.1f}%"
-        return summary
+        return f"Final evaluation complete. Optimized score: {score}%. Repeatability: {rep}%"
     if step_name == "Deploy":
         return f"Deployment {detail.get('status', 'pending')}"
     return None
@@ -631,7 +627,7 @@ def _build_step_io(
     if step_name == "Finalization":
         return (
             {"bestIteration": run_data.get("best_iteration")},
-            {"bestAccuracy": _safe_float(run_data.get("best_accuracy")), "repeatability": _safe_float(run_data.get("best_repeatability")), "convergenceReason": run_data.get("convergence_reason"), "ucModelName": detail.get("uc_model_name") or None, "ucModelVersion": detail.get("uc_model_version") or None, "ucChampionPromoted": detail.get("uc_champion_promoted", False), "heldOutAccuracy": _safe_float(detail.get("held_out_accuracy")), "heldOutCount": _safe_int(detail.get("held_out_count")), "trainAccuracy": _safe_float(detail.get("train_accuracy")), "heldOutDeltaPp": _safe_float(detail.get("delta_pp")), "stageEvents": timeline},
+            {"bestAccuracy": _safe_float(run_data.get("best_accuracy")), "repeatability": _safe_float(run_data.get("best_repeatability")), "convergenceReason": run_data.get("convergence_reason"), "ucModelName": detail.get("uc_model_name") or None, "ucModelVersion": detail.get("uc_model_version") or None, "ucChampionPromoted": detail.get("uc_champion_promoted", False), "stageEvents": timeline},
         )
 
     if step_name == "Deploy":
@@ -1072,7 +1068,7 @@ _STEP_DEFINITIONS = [
     {"stepNumber": 2, "name": "Baseline Evaluation",   "stage_prefixes": ["BASELINE_EVAL"]},
     {"stepNumber": 3, "name": "Proactive Enrichment",  "stage_prefixes": ["ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL"]},
     {"stepNumber": 4, "name": "Adaptive Optimization", "stage_prefixes": ["LEVER_", "AG_"]},
-    {"stepNumber": 5, "name": "Finalization",          "stage_prefixes": ["FINALIZE", "REPEATABILITY", "HELD_OUT", "COMPLETE"]},
+    {"stepNumber": 5, "name": "Finalization",          "stage_prefixes": ["FINALIZE", "REPEATABILITY", "COMPLETE"]},
     {"stepNumber": 6, "name": "Deploy",                "stage_prefixes": ["DEPLOY", "UC_OBO_WRITE"]},
 ]
 
@@ -1562,11 +1558,15 @@ async def list_iterations(run_id: RunId):
         num_correct = it["correct_count"]
         num_questions = it["total_questions"]
         evaluated = it.get("evaluated_count")
+        is_official = bool(it.get("eval_run_id") or it.get("eval_run_status"))
         it["num_correct"] = num_correct
         it["num_questions"] = num_questions
-        # num_done = questions actually evaluated (engine writes this as
-        # evaluated_count = result.num_done or num_questions).
-        it["num_done"] = evaluated if evaluated is not None else num_questions
+        # V2 official rows report progress against the full benchmark corpus.
+        # Legacy rows without eval-run metadata keep the older evaluated_count
+        # fallback for back-compat.
+        it["num_done"] = num_questions if is_official else (
+            evaluated if evaluated is not None else num_questions
+        )
         it["num_needs_review"] = (
             _safe_int(it.get("num_needs_review"))
             if it.get("num_needs_review") is not None else None
@@ -1578,7 +1578,6 @@ async def list_iterations(run_id: RunId):
         # legacy correct_count / evaluated_count denominator (which differs on
         # a partial run where num_done < num_questions). Legacy rows keep their
         # stored overall_accuracy untouched.
-        is_official = bool(it.get("eval_run_id") or it.get("eval_run_status"))
         if is_official and num_questions > 0:
             it["overall_accuracy"] = round(100.0 * num_correct / num_questions, 2)
 

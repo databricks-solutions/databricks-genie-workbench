@@ -785,7 +785,7 @@ def test_baseline_step_summary_is_assessment_centric_no_judges() -> None:
 
 
 def test_iterations_official_accuracy_uses_num_questions_not_evaluated_count(monkeypatch) -> None:
-    """On a PARTIAL official run (num_done < num_questions), the headline
+    """On an official run with legacy evaluated_count < total_questions, the headline
     accuracy must be num_correct / num_questions — NOT correct / evaluated_count
     (which would inflate). Legacy rows keep their stored overall_accuracy."""
     monkeypatch.setenv("GSO_CATALOG", "main")
@@ -795,7 +795,8 @@ def test_iterations_official_accuracy_uses_num_questions_not_evaluated_count(mon
     from backend.routers import auto_optimize
 
     delta_rows = [
-        # Official, partial: 8 correct, only 8 done, but 10 total questions.
+        # Official V2: 8 correct and 10 total questions. A stale evaluated_count
+        # must not make the API/UI report an 8-question assessed subset.
         # Stored overall_accuracy is the stale 100.0; the endpoint must
         # recompute 8/10 = 80.0 from the official counts.
         {
@@ -833,6 +834,44 @@ def test_iterations_official_accuracy_uses_num_questions_not_evaluated_count(mon
     assert out[0]["overall_accuracy"] == 80.0
     assert out[0]["num_correct"] == 8
     assert out[0]["num_questions"] == 10
-    assert out[0]["num_done"] == 8
+    assert out[0]["num_done"] == 10
     # Legacy row: stored value preserved (no official recompute).
     assert out[1]["overall_accuracy"] == 88.0
+
+
+def test_iterations_official_v2_reports_full_30_question_corpus(monkeypatch) -> None:
+    """Regression guard for the removed split: a 30-question official row with
+    stale evaluated_count=25 must report 30 assessed questions."""
+    monkeypatch.setenv("GSO_CATALOG", "main")
+    monkeypatch.setenv("GSO_JOB_ID", "12345")
+    monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+
+    from backend.routers import auto_optimize
+
+    delta_rows = [
+        {
+            "iteration": 0, "eval_scope": "full", "overall_accuracy": 96.0,
+            "total_questions": 30, "correct_count": 24, "evaluated_count": 25,
+            "excluded_count": 0, "thresholds_met": True, "rolled_back": False,
+            "scores_json": "{}", "num_needs_review": 0, "lever": None,
+            "eval_run_id": "er-30", "eval_run_status": "DONE",
+        },
+    ]
+
+    async def fake_lakebase(_run_id):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", fake_lakebase)
+    monkeypatch.setattr(auto_optimize, "_select_iterations_delta", lambda _rid: [dict(r) for r in delta_rows])
+
+    app = FastAPI()
+    app.include_router(auto_optimize.router)
+    client = TestClient(app)
+
+    resp = client.get("/api/auto-optimize/runs/12345678-1234-1234-1234-1234567890ab/iterations")
+    assert resp.status_code == 200
+    row = resp.json()[0]
+
+    assert row["num_questions"] == 30
+    assert row["num_done"] == 30
+    assert row["overall_accuracy"] == 80.0

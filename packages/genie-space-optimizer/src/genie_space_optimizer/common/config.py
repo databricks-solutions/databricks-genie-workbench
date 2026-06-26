@@ -775,8 +775,7 @@ CURATED_SQL_GENERATION_MAX_RETRIES = 2
 question that originally lacked expected_sql."""
 
 HELD_OUT_RATIO = 0.15
-"""Fraction of non-curated benchmarks reserved for held-out generalization
-check in Finalize.  The optimizer never sees these during the lever loop."""
+"""Legacy split ratio retained for compatibility; inactive in the V2 flow."""
 
 PUBLISH_BENCHMARKS_TO_SPACE: bool = (
     os.environ.get("GSO_PUBLISH_BENCHMARKS_TO_SPACE", "true").lower()
@@ -794,7 +793,7 @@ out and keep the space's benchmark section untouched."""
 # All Bug-#4-era changes to these values are hidden behind GSO_NEW_SIZING so
 # rollback to previous behaviour is a one-env-var flip. The legacy values
 # were TARGET=24, MAX=29, HELD_OUT=0.15 (~20 train + ~4 held-out); the Phase
-# 4 plan specifies 30 total (~25 train + ~5 held-out), MAX=35 cap.
+# 4 plan later collapsed to the V2 30-question full-corpus contract.
 _GSO_NEW_SIZING = os.environ.get("GSO_NEW_SIZING", "true").lower() in {
     "1", "true", "yes", "on",
 }
@@ -807,9 +806,8 @@ else:
     MAX_BENCHMARK_COUNT = 29
 """Hard ceiling on benchmark count. No evaluation should ever run on more
 than this many questions, regardless of how many are generated or loaded.
-With the Phase 4 default the corpus is exactly 30 questions (~25 train + ~5
-held out via HELD_OUT_RATIO=0.15). Flip GSO_NEW_SIZING=0 to restore the
-legacy 24/29 values."""
+With the V2 default the assessed corpus is exactly 30 questions. Flip
+GSO_NEW_SIZING=0 to restore the legacy 24/29 values."""
 
 BENCHMARK_WINDOW_MIN = int(os.environ.get("GSO_BENCHMARK_WINDOW_MIN", "30") or "30")
 """GSO v2 (D8) — lower bound of the working benchmark window. At preflight,
@@ -823,10 +821,10 @@ a validated set ABOVE this count produces a RECOMMENDED prune set
 is a recommendation only — GSO never silently auto-deletes benchmark rows."""
 
 MIN_TRAIN_BENCHMARK_COUNT = 20
-"""Minimum desired train benchmark count after split assignment."""
+"""Legacy split minimum retained for compatibility; inactive in V2."""
 
 MIN_HELD_OUT_BENCHMARK_COUNT = 5
-"""Minimum desired held-out benchmark count when the corpus has enough rows."""
+"""Legacy split minimum retained for compatibility; inactive in V2."""
 
 # Phase 4 (Bug #4) — per-iteration / acceptance-gate defaults.
 # The optimizer re-evaluates the full training corpus each iteration and
@@ -856,8 +854,7 @@ iterations that fail. Set to False during debugging to disable rollback
 while keeping the metrics visible on the iteration row."""
 
 FINALIZE_REPEATABILITY_PASSES = 1
-"""Number of repeatability passes in Finalize.  Reduced from 2 to make room
-for a held-out generalization eval without increasing total Genie API calls."""
+"""Number of repeatability passes in Finalize."""
 
 COVERAGE_GAP_SOFT_CAP_FACTOR = 1.5
 
@@ -1623,7 +1620,7 @@ Regression policy awareness:
   collateral risk.
 
 Leakage boundary:
-- Do not copy held-out benchmark expected SQL into Genie-visible examples.
+- Do not copy benchmark expected SQL into Genie-visible examples.
 - Use failure evidence and generated SQL to understand behavior, but output
   reusable guidance, scoped metadata, SQL expressions, or safe example patterns.
 
@@ -1644,7 +1641,7 @@ This prompt creates one reusable Genie-visible example question/SQL pair.
 
 Rules:
 - Return exactly one single JSON object matching the requested schema.
-- Do not copy held-out benchmark expected SQL into Genie-visible examples.
+- Do not copy benchmark expected SQL into Genie-visible examples.
 - Use schema metadata and the supplied failure pattern to create a reusable
   example; remove benchmark-specific literals, aliases, row limits, and wording.
 - Keep the generated SQL narrow to the requested tables, joins, filters, and

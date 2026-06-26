@@ -282,7 +282,7 @@ _STEP_DEFINITIONS: list[_StepDefinition] = [
     {
         "stepNumber": 5,
         "name": "Finalization",
-        "stage_prefixes": ["FINALIZE", "REPEATABILITY", "HELD_OUT"],
+        "stage_prefixes": ["FINALIZE", "REPEATABILITY"],
         "summary_template": "Final evaluation complete. Optimized score: {score}%. Repeatability: {repeatability}%",
     },
     {
@@ -751,10 +751,6 @@ def _build_step_io(
                 "ucModelName": detail.get("uc_model_name") or None,
                 "ucModelVersion": detail.get("uc_model_version") or None,
                 "ucChampionPromoted": detail.get("uc_champion_promoted", False),
-                "heldOutAccuracy": _safe_float(detail.get("held_out_accuracy")),
-                "heldOutCount": _safe_int(detail.get("held_out_count")),
-                "trainAccuracy": _safe_float(detail.get("train_accuracy")),
-                "heldOutDeltaPp": _safe_float(detail.get("delta_pp")),
                 "stageEvents": timeline,
             },
         )
@@ -903,11 +899,7 @@ def _build_step_summary(
     if step_name == "Finalization":
         score = f"{_finite(run_data.get('best_accuracy', 0)):.1f}" if run_data.get("best_accuracy") else "?"
         rep = f"{_finite(run_data.get('best_repeatability', 0)):.1f}" if run_data.get("best_repeatability") else "?"
-        summary = defn["summary_template"].format(score=score, repeatability=rep)
-        ho_acc = _safe_float(detail.get("held_out_accuracy"))
-        if ho_acc is not None:
-            summary += f" Held-out: {ho_acc:.1f}%"
-        return summary
+        return defn["summary_template"].format(score=score, repeatability=rep)
     if step_name == "Deploy":
         status = detail.get("status", "pending")
         return defn["summary_template"].format(status=status)
@@ -1217,14 +1209,14 @@ def _build_lever_iterations(
 def _resolve_eval_counts(iter_row: dict | None) -> dict[str, int]:
     """Return canonical {total, evaluated, correct, excluded, quarantined} counts.
 
-    This is the single source of truth for Bug #2's denominator contract on
-    the API side. All endpoints that emit per-iteration counts must go
-    through this helper so that the values sent to the UI stay aligned with
-    the ones used to compute overall_accuracy by
-    _compute_arbiter_adjusted_accuracy.
+    This is the single source of truth for the API side count contract. Native
+    EvalRunner rows are V2 full-corpus rows, so their evaluated count is the
+    full ``total_questions`` value even when a legacy ``evaluated_count`` field
+    is present. Older rows without eval-run metadata keep the Bug #2 fallback.
 
     Back-compat rules:
-      * evaluated_count is preferred; if missing (old rows written before
+      * official EvalRunner rows use total_questions.
+      * legacy rows prefer evaluated_count; if missing (old rows written before
         Bug #2), fall back to total_questions - excluded_count (clamped ≥ 0),
         and then to total_questions when excluded is also missing.
       * excluded_count defaults to 0 (not None) so UI math is safe.
@@ -1250,8 +1242,9 @@ def _resolve_eval_counts(iter_row: dict | None) -> dict[str, int]:
     correct = _safe_int(iter_row.get("correct_count")) or 0
     excluded = _safe_int(iter_row.get("excluded_count")) or 0
 
+    is_official = bool(iter_row.get("eval_run_id") or iter_row.get("eval_run_status"))
     evaluated_raw = iter_row.get("evaluated_count")
-    evaluated = _safe_int(evaluated_raw)
+    evaluated = total if is_official and total > 0 else _safe_int(evaluated_raw)
     if evaluated is None:
         # Old rows: derive from (total - excluded), clamped at 0.
         # Preserves correctness when excluded_count was backfilled but
