@@ -212,6 +212,33 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
         return None
 
 
+async def load_gso_benchmark_mutations(run_id: str) -> list[dict]:
+    """Load the benchmark provenance ledger for a run (GSO v2 Phase 6, §3.5).
+
+    Rows record every benchmark question GSO added / removed / changed (or
+    recommended for prune) in the live Genie Space. Synced reads are disabled
+    today, so this falls through to the Delta SQL-warehouse fallback in the
+    router.
+    """
+    pool = _get_pool()
+    if pool is None:
+        return []
+
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT run_id, question_id, op, before, after, reason, logged_at
+                   FROM {_tbl('genie_opt_benchmark_mutations')}
+                   WHERE run_id = $1
+                   ORDER BY logged_at ASC""",
+                run_id,
+            )
+            return [dict(r) for r in rows]
+    except Exception:
+        logger.warning("Lakebase query failed for genie_opt_benchmark_mutations", exc_info=True)
+        return []
+
+
 async def load_gso_suggestions(run_id: str) -> list[dict]:
     """Load optimization suggestions for a run."""
     pool = _get_pool()

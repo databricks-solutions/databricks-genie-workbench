@@ -228,6 +228,10 @@ _REQUIRED_ITERATION_COLUMNS = (
     # GSO v2 Phase 4 (D3): write_iteration emits both columns on every row.
     "config_json",
     "is_champion",
+    # GSO v2 Phase 6: native official eval-run metadata (assessment contract).
+    "num_needs_review",
+    "eval_run_id",
+    "eval_run_status",
 )
 
 
@@ -749,6 +753,19 @@ def write_iteration(
         else None
     )
 
+    # GSO v2 Phase 6: native official eval-run metadata surfaced to the
+    # Workbench UI (assessment-centric contract). ``num_needs_review`` lets the
+    # UI distinguish review-pending rows from failures; ``eval_run_id`` /
+    # ``eval_run_status`` reference the underlying native run. All three are
+    # produced by ``build_eval_output_from_official`` and default to NULL on the
+    # legacy in-process / repeatability-only paths that don't emit them.
+    _num_needs_review = eval_result.get("num_needs_review")
+    _num_needs_review = (
+        int(_num_needs_review) if isinstance(_num_needs_review, (int, float)) else None
+    )
+    _eval_run_id = eval_result.get("eval_run_id") or None
+    _eval_run_status = eval_result.get("eval_run_status") or None
+
     col_names = (
         "run_id, iteration, lever, eval_scope, timestamp, "
         "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
@@ -759,7 +776,8 @@ def write_iteration(
         "synthesis_slots_persisted, arbiter_rejection_count, "
         "cluster_fallback_to_instruction_count, synthesis_archetype_distribution, "
         "rolled_back, both_correct_count, both_correct_rate, "
-        "config_json, is_champion"
+        "config_json, is_champion, "
+        "num_needs_review, eval_run_id, eval_run_status"
     )
     vals = ", ".join(
         [
@@ -795,6 +813,9 @@ def write_iteration(
             str(_both_correct_rate_val) if _both_correct_rate_val is not None else "NULL",
             _opt_json(_config_payload) if _config_payload else "NULL",
             "false",
+            str(_num_needs_review) if _num_needs_review is not None else "NULL",
+            f"'{_esc(str(_eval_run_id))}'" if _eval_run_id is not None else "NULL",
+            f"'{_esc(str(_eval_run_status))}'" if _eval_run_status is not None else "NULL",
         ]
     )
 

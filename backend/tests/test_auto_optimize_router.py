@@ -730,3 +730,209 @@ def test_probe_iterations_schema_unconfigured(monkeypatch) -> None:
     from backend.routers import auto_optimize
 
     assert auto_optimize.probe_iterations_schema() == "unconfigured"
+
+
+# ── GSO v2 Phase 6 — assessment-centric API contract ─────────────────────
+
+
+def test_iter_cols_v2_includes_phase6_native_eval_columns() -> None:
+    """The lightweight iteration SELECT must carry the native eval-run metadata
+    so /iterations can surface num_needs_review + eval_run_id/status."""
+    from backend.routers.auto_optimize import _ITER_COLS_V2
+
+    for col in ("num_needs_review", "eval_run_id", "eval_run_status"):
+        assert col in _ITER_COLS_V2
+
+
+def test_parse_question_rows_uses_official_assessment() -> None:
+    """Question-results derives state from the API `assessment` (GOOD/BAD/
+    NEEDS_REVIEW) and returns assessment + assessment_reasons, not the retired
+    judge_verdicts."""
+    import json
+
+    from backend.routers.auto_optimize import _parse_question_rows
+
+    rows = [
+        {
+            "question_id": "q1",
+            "inputs/question": "good one",
+            "assessment": "GOOD",
+            "assessment_reasons": [],
+            "result_correctness/value": "yes",
+            "outputs/response": "SELECT 1",
+        },
+        {
+            "question_id": "q2",
+            "inputs/question": "bad one",
+            "assessment": "BAD",
+            "assessment_reasons": ["LLM_JUDGE_INCORRECT_TABLE_OR_FIELD_USAGE"],
+            "result_correctness/value": "no",
+        },
+        {
+            "question_id": "q3",
+            "inputs/question": "review one",
+            "assessment": "NEEDS_REVIEW",
+            "assessment_reasons": ["LLM_JUDGE_UNCLEAR"],
+        },
+    ]
+    out = _parse_question_rows(json.dumps(rows))
+    by_id = {r["question_id"]: r for r in out}
+
+    assert by_id["q1"]["passed"] is True
+    assert by_id["q1"]["assessment"] == "GOOD"
+    assert by_id["q2"]["passed"] is False
+    assert by_id["q2"]["assessment"] == "BAD"
+    assert by_id["q2"]["assessment_reasons"] == ["LLM_JUDGE_INCORRECT_TABLE_OR_FIELD_USAGE"]
+    # NEEDS_REVIEW is a third state — neither pass nor fail, not excluded.
+    assert by_id["q3"]["passed"] is None
+    assert by_id["q3"]["assessment"] == "NEEDS_REVIEW"
+    assert by_id["q3"]["excluded"] is False
+    # The retired per-judge verdict map must be gone from every row.
+    for r in out:
+        assert "judge_verdicts" not in r
+
+
+def test_parse_question_rows_legacy_fallback_without_assessment() -> None:
+    """Rows predating the official runner (no `assessment`) fall back to the
+    result_correctness/arbiter logic and are normalised to an assessment."""
+    import json
+
+    from backend.routers.auto_optimize import _parse_question_rows
+
+    rows = [
+        {"question_id": "lq1", "inputs/question": "q", "result_correctness/value": "yes"},
+        {"question_id": "lq2", "inputs/question": "q", "result_correctness/value": "no"},
+    ]
+    out = {r["question_id"]: r for r in _parse_question_rows(json.dumps(rows))}
+    assert out["lq1"]["passed"] is True and out["lq1"]["assessment"] == "GOOD"
+    assert out["lq2"]["passed"] is False and out["lq2"]["assessment"] == "BAD"
+
+
+def test_parse_official_eval_results_lightweight_shape() -> None:
+    """The official eval-results endpoint emits question_id + assessment +
+    assessment_reasons (the failure_type successor), no per-judge rows."""
+    import json
+
+    from backend.routers.auto_optimize import _parse_official_eval_results
+
+    rows = [
+        {"question_id": "q1", "assessment": "GOOD", "assessment_reasons": []},
+        {"question_id": "q2", "assessment": "BAD", "assessment_reasons": ["LLM_JUDGE_WRONG_FILTER"]},
+    ]
+    out = _parse_official_eval_results(json.dumps(rows))
+    assert out == [
+        {"question_id": "q1", "assessment": "GOOD", "assessment_reasons": []},
+        {"question_id": "q2", "assessment": "BAD", "assessment_reasons": ["LLM_JUDGE_WRONG_FILTER"]},
+    ]
+    # No legacy per-judge keys leak through.
+    for r in out:
+        assert "judge" not in r and "failure_type" not in r and "value" not in r
+
+
+def test_parse_official_eval_results_empty() -> None:
+    from backend.routers.auto_optimize import _parse_official_eval_results
+
+    assert _parse_official_eval_results(None) == []
+    assert _parse_official_eval_results("") == []
+
+
+def test_iterations_endpoint_emits_phase6_counts_and_gate(monkeypatch) -> None:
+    """/iterations adds num_done / num_correct / num_needs_review and replaces
+    thresholds_met with api_accuracy_gate_met + eval_gate_status."""
+    monkeypatch.setenv("GSO_CATALOG", "main")
+    monkeypatch.setenv("GSO_JOB_ID", "12345")
+    monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+
+    from backend.routers import auto_optimize
+
+    delta_rows = [
+        {
+            "iteration": 0, "eval_scope": "full", "overall_accuracy": 80.0,
+            "total_questions": 10, "correct_count": 8, "evaluated_count": 10,
+            "excluded_count": 0, "thresholds_met": False, "rolled_back": False,
+            "scores_json": "{}", "num_needs_review": 1, "lever": None,
+            "eval_run_id": "er-1", "eval_run_status": "DONE",
+        },
+        {
+            "iteration": 2, "eval_scope": "full", "overall_accuracy": 90.0,
+            "total_questions": 10, "correct_count": 9, "evaluated_count": 10,
+            "excluded_count": 0, "thresholds_met": True, "rolled_back": False,
+            "scores_json": "{}", "num_needs_review": 0, "lever": 1,
+            "eval_run_id": "er-2", "eval_run_status": "DONE",
+        },
+        {
+            "iteration": 3, "eval_scope": "full", "overall_accuracy": 70.0,
+            "total_questions": 10, "correct_count": 7, "evaluated_count": 10,
+            "excluded_count": 0, "thresholds_met": False, "rolled_back": True,
+            "scores_json": "{}", "num_needs_review": 0, "lever": 5,
+            "eval_run_id": "er-3", "eval_run_status": "DONE",
+        },
+    ]
+
+    async def fake_lakebase(_run_id):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", fake_lakebase)
+    monkeypatch.setattr(auto_optimize, "_select_iterations_delta", lambda _rid: [dict(r) for r in delta_rows])
+
+    app = FastAPI()
+    app.include_router(auto_optimize.router)
+    client = TestClient(app)
+
+    resp = client.get("/api/auto-optimize/runs/12345678-1234-1234-1234-1234567890ab/iterations")
+    assert resp.status_code == 200
+    out = {r["iteration"]: r for r in resp.json()}
+
+    # Headline accuracy + official counts.
+    assert out[0]["num_correct"] == 8
+    assert out[0]["num_questions"] == 10
+    assert out[0]["num_done"] == 10
+    assert out[0]["num_needs_review"] == 1
+    # thresholds_met / scores_json are dropped; replaced by the gate fields.
+    assert "thresholds_met" not in out[0]
+    assert "scores_json" not in out[0]
+    assert out[0]["api_accuracy_gate_met"] is False
+    assert out[0]["eval_gate_status"] == "failed"
+    assert out[2]["api_accuracy_gate_met"] is True
+    assert out[2]["eval_gate_status"] == "passed"
+    assert out[3]["eval_gate_status"] == "rolled_back"
+    # Native eval-run metadata passes through.
+    assert out[0]["eval_run_status"] == "DONE"
+
+
+def test_benchmark_changes_endpoint_groups_by_op(monkeypatch) -> None:
+    """/benchmark-changes groups the mutations ledger into added/removed/
+    changed/prune_recommended with provenance + counts."""
+    monkeypatch.setenv("GSO_CATALOG", "main")
+    monkeypatch.setenv("GSO_JOB_ID", "12345")
+    monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+
+    from backend.routers import auto_optimize
+
+    ledger = [
+        {"run_id": "12345678-1234-1234-1234-1234567890ab", "question_id": "q1", "op": "added", "before": None,
+         "after": '{"question": "new q", "sql": "SELECT 1"}', "reason": "preflight_push", "logged_at": "2026-06-25T00:00:00Z"},
+        {"run_id": "12345678-1234-1234-1234-1234567890ab", "question_id": "q2", "op": "removed", "before": '{"question": "old"}',
+         "after": None, "reason": "explain_invalid", "logged_at": "2026-06-25T00:01:00Z"},
+        {"run_id": "12345678-1234-1234-1234-1234567890ab", "question_id": "q3", "op": "changed", "before": '{"sql": "a"}',
+         "after": '{"sql": "b"}', "reason": "normalized", "logged_at": "2026-06-25T00:02:00Z"},
+    ]
+
+    async def fake_lakebase(_run_id):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_benchmark_mutations", fake_lakebase)
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [dict(r) for r in ledger])
+
+    app = FastAPI()
+    app.include_router(auto_optimize.router)
+    client = TestClient(app)
+
+    resp = client.get("/api/auto-optimize/runs/12345678-1234-1234-1234-1234567890ab/benchmark-changes")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["counts"] == {"added": 1, "removed": 1, "changed": 1, "pruneRecommended": 0, "total": 3}
+    assert body["added"][0]["questionId"] == "q1"
+    # before/after JSON strings are parsed into objects.
+    assert body["added"][0]["after"] == {"question": "new q", "sql": "SELECT 1"}
+    assert body["changed"][0]["before"] == {"sql": "a"}

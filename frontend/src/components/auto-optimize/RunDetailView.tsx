@@ -98,6 +98,14 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
   const finalCounts = evalCountsFromIteration(finalIterRow)
   const activeCounts = activeTab === "baseline" ? baselineCounts : finalCounts
 
+  // GSO v2 Phase 6 — official needs-review count for the displayed evaluation.
+  // Prefer the iteration row's num_needs_review; fall back to counting the
+  // loaded per-question results by assessment.
+  const activeIterRow = activeTab === "baseline" ? baselineIterRow : finalIterRow
+  const needsReviewCount =
+    activeIterRow?.num_needs_review ??
+    questions.filter((q) => (q.assessment ?? "").toUpperCase() === "NEEDS_REVIEW").length
+
   if (!run) {
     return <div className="py-8 text-center text-muted text-sm">Loading run details...</div>
   }
@@ -149,6 +157,7 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         optimizedScore={run.optimizedScore}
         bestIteration={run.bestIteration}
         status={run.status}
+        needsReviewCount={needsReviewCount}
       />
 
       {/* Tabs */}

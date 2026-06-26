@@ -207,8 +207,10 @@ def test_write_iteration_persists_projected_config_json(mock_spark_iter):
     assert "cat.sch.sales" in sql
     assert "_failure_clusters" not in sql
     assert "should" not in sql
-    # is_champion is written false at iteration-write time.
-    assert sql.rstrip().endswith("false)")
+    # is_champion is written false at iteration-write time. GSO v2 Phase 6
+    # appends num_needs_review / eval_run_id / eval_run_status (all NULL here,
+    # since _BASE_EVAL carries no native eval-run metadata) after is_champion.
+    assert sql.rstrip().endswith("false, NULL, NULL, NULL)")
 
 
 def test_write_iteration_config_json_null_when_not_provided(mock_spark_iter):
@@ -220,8 +222,10 @@ def test_write_iteration_config_json_null_when_not_provided(mock_spark_iter):
     )
     sql = _extract_insert_sql(mock_spark_iter)
     assert "config_json" in sql  # column always listed
-    # The two trailing values are NULL (config_json) then false (is_champion).
-    assert sql.rstrip().endswith("NULL, false)")
+    # config_json (NULL) then is_champion (false), then the GSO v2 Phase 6
+    # native eval-run trio num_needs_review / eval_run_id / eval_run_status
+    # (all NULL when the eval_result carries no native metadata).
+    assert sql.rstrip().endswith("NULL, false, NULL, NULL, NULL)")
 
 
 def test_write_iteration_empty_projection_writes_null(mock_spark_iter):
@@ -232,7 +236,7 @@ def test_write_iteration_empty_projection_writes_null(mock_spark_iter):
         config_snapshot={"_only": "internal", "junk": 1},
     )
     sql = _extract_insert_sql(mock_spark_iter)
-    assert sql.rstrip().endswith("NULL, false)")
+    assert sql.rstrip().endswith("NULL, false, NULL, NULL, NULL)")
 
 
 def test_write_iteration_escapes_quotes_in_config(mock_spark_iter):

@@ -31,6 +31,7 @@ import type {
   GSOQuestionDetail,
   GSOPermissionCheck,
   GSOPatch,
+  GSOBenchmarkChanges,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -522,10 +523,16 @@ export async function getAutoOptimizeIterations(runId: string): Promise<GSOItera
   return fetchWithTimeout<GSOIterationResult[]>(`${API_BASE}/auto-optimize/runs/${runId}/iterations`)
 }
 
-export async function getAutoOptimizeAsiResults(runId: string, iteration: number): Promise<GSOQuestionResult[]> {
-  return fetchWithTimeout<GSOQuestionResult[]>(
-    `${API_BASE}/auto-optimize/runs/${runId}/asi-results?iteration=${iteration}`
-  )
+// GSO v2 Phase 6 — lightweight official eval-results (assessment +
+// assessment_reasons per question). Replaces the retired per-judge ASI rows.
+export async function getAutoOptimizeEvalResults(runId: string, iteration: number): Promise<GSOQuestionResult[]> {
+  try {
+    return await fetchWithTimeout<GSOQuestionResult[]>(
+      `${API_BASE}/auto-optimize/runs/${runId}/eval-results?iteration=${iteration}`
+    )
+  } catch {
+    return []
+  }
 }
 
 export async function getAutoOptimizeQuestionResults(runId: string, iteration: number): Promise<GSOQuestionDetail[]> {
@@ -555,6 +562,18 @@ export async function getAutoOptimizeSuggestions(runId: string): Promise<import(
     )
   } catch {
     return []
+  }
+}
+
+// GSO v2 Phase 6 (§3.5) — benchmark provenance ledger (added/removed/changed
+// questions GSO made in the live Genie Space).
+export async function getAutoOptimizeBenchmarkChanges(runId: string): Promise<GSOBenchmarkChanges | null> {
+  try {
+    return await fetchWithTimeout<GSOBenchmarkChanges>(
+      `${API_BASE}/auto-optimize/runs/${runId}/benchmark-changes`
+    )
+  } catch {
+    return null
   }
 }
 

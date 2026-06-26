@@ -16,7 +16,7 @@ import {
   getActiveRunForSpace,
   getAutoOptimizePermissions,
   getAutoOptimizeIterations,
-  getAutoOptimizeAsiResults,
+  getAutoOptimizeEvalResults,
   getAutoOptimizeQuestionResults,
 } from "@/lib/api"
 import { convergenceReasonText } from "@/lib/score-display"
@@ -146,24 +146,25 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
             return
           }
 
-          // Fallback: ASI results (lightweight, available before rows_json is written)
-          const asiResults = await getAutoOptimizeAsiResults(activeRunId!, maxIter)
-          if (asiResults && asiResults.length > 0) {
-            const seen = new Map<string, typeof asiResults[0]>()
-            for (const r of asiResults) {
-              if (!seen.has(r.question_id) || (r.failure_type == null)) {
-                seen.set(r.question_id, r)
-              }
-            }
+          // Fallback: lightweight official eval-results (assessment +
+          // assessment_reasons per question). One row per question on the
+          // official path, so no per-judge dedup is needed.
+          const evalResults = await getAutoOptimizeEvalResults(activeRunId!, maxIter)
+          if (evalResults && evalResults.length > 0) {
             setQuestions(
-              Array.from(seen.values()).map((r) => ({
-                question_id: r.question_id,
-                question: "",
-                generated_sql: null,
-                expected_sql: null,
-                passed: r.failure_type == null || r.failure_type === "",
-                match_type: null,
-              }))
+              evalResults.map((r) => {
+                const assessment = (r.assessment ?? "").toString().toUpperCase()
+                return {
+                  question_id: r.question_id,
+                  question: "",
+                  generated_sql: null,
+                  expected_sql: null,
+                  passed: assessment === "GOOD" ? true : assessment === "BAD" ? false : null,
+                  assessment: r.assessment ?? null,
+                  assessment_reasons: r.assessment_reasons ?? [],
+                  match_type: null,
+                }
+              })
             )
           }
         })
