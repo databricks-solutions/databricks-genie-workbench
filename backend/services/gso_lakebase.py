@@ -122,7 +122,10 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
         "evaluated_count, excluded_count, quarantined_benchmarks_json, "
         "scores_json, failures_json, "
         "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
-        "thresholds_met, reflection_json, rolled_back"
+        "thresholds_met, reflection_json, rolled_back, "
+        # GSO v2 Phase 6: native official eval-run metadata surfaced by
+        # /iterations (num_needs_review + eval_run_id/status).
+        "num_needs_review, eval_run_id, eval_run_status"
     )
     try:
         async with pool.acquire() as conn:
