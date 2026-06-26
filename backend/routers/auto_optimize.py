@@ -913,16 +913,8 @@ async def health():
 
 
 @router.get("/permissions/{space_id}")
-async def check_permissions(
-    space_id: SpaceId,
-    refresh: bool = Query(False, description="Bypass the Prompt Registry probe cache."),
-):
-    """Pre-check SP permissions for a Genie Space before optimization.
-
-    ``?refresh=true`` bypasses the in-process TTL cache of the Prompt
-    Registry probe. The UI's Re-check button should pass it; regular
-    page loads should not.
-    """
+async def check_permissions(space_id: SpaceId):
+    """Pre-check SP and UC permissions for a Genie Space before optimization."""
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
@@ -1007,45 +999,14 @@ async def check_permissions(
         errors.append(f"Could not probe data access: {exc}")
         logger.warning("Could not probe data access for space %s", space_id, exc_info=True)
 
-    # Probe MLflow Prompt Registry availability (fail-closed; structured codes).
-    # Scope the probe to the GSO target schema so permission errors bind to
-    # the exact catalog.schema the job will write to — probe-workload parity.
-    from backend.services.prompt_registry import check_prompt_registry
-
-    gso_config = _build_gso_config()
-    gso_uc_schema = (
-        f"{gso_config.catalog}.{gso_config.schema_name}"
-        if gso_config.catalog and gso_config.schema_name
-        else None
-    )
-
-    probe = check_prompt_registry(
-        sp_ws,
-        mode="read",
-        uc_schema=gso_uc_schema,
-        bypass_cache=refresh,
-    )
-    prompt_registry_available = probe.available
-    prompt_registry_error = None if probe.available else probe.user_message
-    prompt_registry_reason_code = probe.reason_code
-    prompt_registry_error_code = probe.vendor_error_code
-    prompt_registry_actionable_by = probe.actionable_by
-    if not probe.available:
-        errors.append(probe.user_message)
-
     all_read = all(s.read_granted for s in schemas) if schemas else True
-    can_start = sp_has_manage and all_read and prompt_registry_available
+    can_start = sp_has_manage and all_read
 
     return PermissionCheckResponse(
         sp_display_name=sp_display_name,
         sp_application_id=sp_application_id,
         sp_has_manage=sp_has_manage,
         schemas=schemas,
-        prompt_registry_available=prompt_registry_available,
-        prompt_registry_error=prompt_registry_error,
-        prompt_registry_reason_code=prompt_registry_reason_code,
-        prompt_registry_error_code=prompt_registry_error_code,
-        prompt_registry_actionable_by=prompt_registry_actionable_by,
         can_start=can_start,
         errors=errors,
     )
@@ -1067,51 +1028,6 @@ async def trigger(body: TriggerRequest, request: Request):
             raise HTTPException(status_code=400, detail=str(exc))
 
     config = _build_gso_config(llm_model_override=selected_llm_model)
-
-    # Server-side gate: re-verify Prompt Registry is available under the same
-    # identity (sp_ws) the job will use. The UI also checks via /permissions,
-    # but that is advisory — clients can skip it. This closes the bypass.
-    # Always bypass the TTL cache here: /trigger is low-frequency and must
-    # decide on a fresh probe.
-    from backend.services.prompt_registry import (
-        ACTIONABLE_BY_PLATFORM,
-        check_prompt_registry,
-    )
-
-    trigger_uc_schema = (
-        f"{config.catalog}.{config.schema_name}"
-        if config.catalog and config.schema_name
-        else None
-    )
-    probe = check_prompt_registry(
-        sp_ws,
-        mode="read",
-        uc_schema=trigger_uc_schema,
-        bypass_cache=True,
-    )
-    if not probe.available:
-        logger.warning(
-            "Trigger blocked: Prompt Registry unavailable (code=%s actionable_by=%s raw=%s)",
-            probe.reason_code,
-            probe.actionable_by,
-            (probe.raw_error or "")[:200],
-        )
-        # Two different HTTP semantics so the UI and on-call routing can
-        # distinguish "admin fix" from "our outage":
-        #   412 Precondition Failed — customer must grant/enable something.
-        #   503 Service Unavailable — Databricks/our platform is broken;
-        #     the customer cannot fix it from the workspace.
-        status_code = 503 if probe.actionable_by == ACTIONABLE_BY_PLATFORM else 412
-        raise HTTPException(
-            status_code=status_code,
-            detail={
-                "error": probe.user_message,
-                "reason_code": probe.reason_code,
-                "error_code": probe.vendor_error_code,
-                "actionable_by": probe.actionable_by,
-                "prompt_registry_available": False,
-            },
-        )
 
     try:
         result = trigger_optimization(

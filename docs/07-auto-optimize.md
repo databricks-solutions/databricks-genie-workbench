@@ -22,7 +22,7 @@ The optimization runs as a Databricks Lakeflow Job with six sequential tasks:
 
 | # | Task | Purpose | Key Actions |
 |---|------|---------|-------------|
-| 1 | **Preflight** | Validate prerequisites | Check SP permissions, verify benchmark questions, validate table access, ensure Prompt Registry is enabled |
+| 1 | **Preflight** | Validate prerequisites | Check SP permissions, verify benchmark questions, validate table access |
 | 2 | **Baseline Evaluation** | Measure current accuracy | Run all benchmark questions through Genie, evaluate with 9 judges, establish baseline score |
 | 3 | **Enrichment** | Gather optimization context | Proactive metadata enrichment — profile tables, analyze query patterns, identify improvement opportunities |
 | 4 | **Lever Loop** | Iterative optimization | The core loop: cluster failures → pick levers → generate patches → 3-gate evaluation → accept or rollback |
@@ -73,7 +73,7 @@ Accuracy evaluation uses 9 specialized judges that compare Genie's generated SQL
 
 Each judge evaluates a different dimension of SQL correctness (e.g., table selection, join logic, filter conditions, aggregation, column selection, output format). A question is considered "correct" when it passes the required subset of judges.
 
-Judge prompts are managed via **MLflow Prompt Registry**, providing version control and traceability for evaluation criteria.
+Judge prompts are packaged with the GSO engine, so Auto-Optimize can run without MLflow Prompt Registry being enabled in the workspace.
 
 ## Convergence
 
@@ -119,16 +119,13 @@ The optimization job runs entirely as the app's **Service Principal** (SP). See 
 ## MLflow Integration
 
 - **Experiment tracking**: each optimization run is tracked as an MLflow experiment
-- **Prompt Registry**: judge prompts are versioned in MLflow Prompt Registry, enabling reproducible evaluations
 - **`MLFLOW_EXPERIMENT_ID`**: configured in `app.yaml`, validated at startup
-
-> MLflow Prompt Registry must be enabled on the workspace. If disabled, the preflight task will fail with `FEATURE_DISABLED`.
 
 ## Triggering from the UI
 
 Users trigger optimization from the **Optimize** tab in the Space Detail view:
 
-1. The UI calls `GET /api/auto-optimize/permissions/{space_id}` to pre-check SP access
+1. The UI calls `GET /api/auto-optimize/permissions/{space_id}` to pre-check SP manage and UC read access
 2. User configures options (apply mode, levers, and optional LLM model) and clicks "Optimize"
 3. `POST /api/auto-optimize/trigger` starts the job (see [trigger flow](03-authentication-and-permissions.md#optimization-trigger-flow))
 4. The UI polls `GET /api/auto-optimize/runs/{run_id}/status` for progress

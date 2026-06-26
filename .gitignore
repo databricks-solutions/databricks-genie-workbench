@@ -13,6 +13,8 @@ docs/superpowers/
 context/
 .env.deploy
 *.bak
+/.pi
+/.polly
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

@@ -16,7 +16,6 @@ Both paths deploy the same app and provision the same core resources. The local 
   - A SQL Warehouse (Serverless recommended)
   - A Unity Catalog where the GSO schema can be created
   - Lakebase Autoscaling available (optional but recommended for persistent scan history, starred spaces, and agent sessions)
-  - MLflow Prompt Registry enabled (required for Auto-Optimize judge prompts)
   - Databricks Foundation Model APIs enabled for the curated Create Agent and Auto-Optimize model list
 
 ### Installer permissions

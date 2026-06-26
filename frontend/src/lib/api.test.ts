@@ -26,16 +26,15 @@ describe("extractDetailMessage", () => {
     )
   })
 
-  it("picks `error` from a structured dict (Prompt Registry probe shape)", () => {
+  it("picks `error` from a structured dict", () => {
     const detail = {
-      error: "Prompt Registry is not available in this workspace.",
-      reason_code: "not_enabled",
+      error: "Optimization prerequisites are not met.",
+      reason_code: "missing_permission",
       error_code: null,
       actionable_by: "customer",
-      prompt_registry_available: false,
     }
     expect(extractDetailMessage(detail, "fallback")).toBe(
-      "Prompt Registry is not available in this workspace.",
+      "Optimization prerequisites are not met.",
     )
   })
 
@@ -60,13 +59,12 @@ describe("extractDetailMessage", () => {
 describe("ApiError", () => {
   it("carries structured detail for callers that need reason_code / actionable_by", () => {
     const detail = {
-      error: "Prompt Registry is not available",
+      error: "Missing optimization permission",
       reason_code: "permission_denied",
       actionable_by: "customer",
-      prompt_registry_available: false,
     }
     const err = new ApiError(detail.error, 412, detail)
-    expect(err.message).toBe("Prompt Registry is not available")
+    expect(err.message).toBe("Missing optimization permission")
     expect(err.status).toBe(412)
     expect(err.detail).toEqual(detail)
     expect(err.detail?.reason_code).toBe("permission_denied")

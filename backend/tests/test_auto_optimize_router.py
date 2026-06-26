@@ -1,16 +1,8 @@
-"""Integration tests for the Auto-Optimize router (Bug #1 gate enforcement).
+"""Integration tests for the Auto-Optimize router.
 
-These tests lock in the three-layer gate that prevents users from starting an
-optimization when MLflow Prompt Registry is unavailable:
-
-    Layer 1 (this file):  /permissions/{space_id} -> can_start = False,
-                          prompt_registry_reason_code carries the code.
-    Layer 2 (this file):  POST /trigger -> 412 Precondition Failed with
-                          {reason_code, prompt_registry_available: False}.
-    Layer 3 (elsewhere):  preflight write-probe inside the GSO job.
-
-The server-side /trigger gate is the critical one — UI-only checks can be
-bypassed by a client that skips /permissions (Bug #1 root cause).
+These tests lock in the app-layer permission/start contract for GSO v2:
+the Workbench backend pre-checks Genie Space CAN_MANAGE and UC read access,
+but it does not probe or gate on MLflow Prompt Registry availability.
 
 Style mirrors backend/tests/test_llm_utils.py: pure FastAPI TestClient + light
 monkeypatching, no real Databricks connectivity required.
@@ -18,7 +10,6 @@ monkeypatching, no real Databricks connectivity required.
 
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,7 +17,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.routers import auto_optimize
-from backend.services.prompt_registry import ProbeResult
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -62,28 +52,17 @@ def mock_user_ws() -> MagicMock:
     return MagicMock()
 
 
-# ── /permissions — Layer 1 (advisory UI gate) ───────────────────────────
+# ── /permissions — advisory UI gate ─────────────────────────────────────
 
 
-def test_permissions_surfaces_prompt_registry_failure(
+def test_permissions_contract_omits_prompt_registry_fields(
     client, mock_sp_ws, mock_user_ws, monkeypatch,
 ) -> None:
-    """When the probe says unavailable, /permissions MUST return
-    can_start=False, reason_code propagated, and error in errors[]."""
+    """Prompt Registry availability is no longer part of the app API contract."""
     monkeypatch.setattr(
         auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
     )
     monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-
-    # Stub the subsystems /permissions reaches into so we isolate to prompt_registry.
-    fake_probe = ProbeResult(
-        available=False,
-        reason_code="feature_not_enabled",
-        actionable_by="customer",
-        user_message="MLflow Prompt Registry is not enabled on this workspace.",
-        raw_error="FEATURE_DISABLED",
-        vendor_error_code="FEATURE_DISABLED",
-    )
 
     with patch(
         "genie_space_optimizer.common.sp_permissions.get_sp_principal_aliases",
@@ -100,39 +79,27 @@ def test_permissions_surfaces_prompt_registry_failure(
     ), patch(
         "genie_space_optimizer.common.uc_metadata.get_unique_schemas",
         return_value=set(),
-    ), patch(
-        "backend.services.prompt_registry.check_prompt_registry",
-        return_value=fake_probe,
     ):
         resp = client.get("/api/auto-optimize/permissions/space-abc")
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["prompt_registry_available"] is False
-    assert data["prompt_registry_reason_code"] == "feature_not_enabled"
-    assert data["prompt_registry_error_code"] == "FEATURE_DISABLED"
-    assert data["prompt_registry_actionable_by"] == "customer"
-    assert data["can_start"] is False
-    assert any("not enabled" in e.lower() for e in data["errors"])
+    assert data["can_start"] is True
+    assert "prompt_registry_available" not in data
+    assert "prompt_registry_error" not in data
+    assert "prompt_registry_reason_code" not in data
+    assert "prompt_registry_error_code" not in data
+    assert "prompt_registry_actionable_by" not in data
 
 
 def test_permissions_happy_path_allows_start(
     client, mock_sp_ws, mock_user_ws, monkeypatch,
 ) -> None:
-    """With SP manage + all schemas granted + prompt registry available,
-    can_start must be True and reason_code must be "ok"."""
+    """With SP manage + all schemas granted, can_start must be True."""
     monkeypatch.setattr(
         auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
     )
     monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-
-    ok_probe = ProbeResult(
-        available=True,
-        reason_code="ok",
-        actionable_by="customer",
-        user_message="",
-        raw_error=None,
-    )
 
     with patch(
         "genie_space_optimizer.common.sp_permissions.get_sp_principal_aliases",
@@ -149,34 +116,23 @@ def test_permissions_happy_path_allows_start(
     ), patch(
         "genie_space_optimizer.common.uc_metadata.get_unique_schemas",
         return_value=set(),
-    ), patch(
-        "backend.services.prompt_registry.check_prompt_registry",
-        return_value=ok_probe,
     ):
         resp = client.get("/api/auto-optimize/permissions/space-abc")
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["prompt_registry_available"] is True
-    assert data["prompt_registry_reason_code"] == "ok"
     assert data["can_start"] is True
-    assert data["prompt_registry_error"] is None
+    assert data["errors"] == []
 
 
-def test_permissions_threads_uc_schema_and_refresh_to_probe(
+def test_permissions_blocks_start_when_schema_read_is_missing(
     client, mock_sp_ws, mock_user_ws, monkeypatch,
 ) -> None:
-    """Probe–workload parity on the API surface: /permissions must scope
-    the probe to the GSO target schema, and must pass bypass_cache=True
-    when the UI clicks Re-check (?refresh=true)."""
+    """can_start is computed from SP manage + UC read, not Prompt Registry."""
     monkeypatch.setattr(
         auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
     )
     monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-
-    ok_probe = ProbeResult(
-        available=True, reason_code="ok", actionable_by="customer"
-    )
 
     with patch(
         "genie_space_optimizer.common.sp_permissions.get_sp_principal_aliases",
@@ -189,26 +145,37 @@ def test_permissions_threads_uc_schema_and_refresh_to_probe(
         return_value={},
     ), patch(
         "genie_space_optimizer.common.uc_metadata.extract_genie_space_table_refs",
-        return_value=[],
+        return_value=["main.sales.orders"],
     ), patch(
         "genie_space_optimizer.common.uc_metadata.get_unique_schemas",
-        return_value=set(),
+        return_value={("main", "sales")},
     ), patch(
-        "backend.services.prompt_registry.check_prompt_registry",
-        return_value=ok_probe,
-    ) as probe_mock:
-        # Default (no ?refresh): cache MUST be used.
-        r1 = client.get("/api/auto-optimize/permissions/space-abc")
-        # With ?refresh=true: cache MUST be bypassed.
-        r2 = client.get("/api/auto-optimize/permissions/space-abc?refresh=true")
+        "genie_space_optimizer.common.sp_permissions.probe_sp_required_access",
+        return_value=(set(), set()),
+    ):
+        resp = client.get("/api/auto-optimize/permissions/space-abc")
 
-    assert r1.status_code == 200 and r2.status_code == 200
-
-    # Both calls should have received uc_schema="main.gso_test" (from env fixture).
-    kwargs_list = [c.kwargs for c in probe_mock.call_args_list]
-    assert all(k["uc_schema"] == "main.gso_test" for k in kwargs_list), kwargs_list
-    assert kwargs_list[0]["bypass_cache"] is False
-    assert kwargs_list[1]["bypass_cache"] is True
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["can_start"] is False
+    assert data["sp_has_manage"] is True
+    assert data["schemas"] == [
+        {
+            "catalog": "main",
+            "schema_name": "sales",
+            "read_granted": False,
+            "grant_sql": (
+                "GRANT USE CATALOG ON CATALOG `main` TO "
+                "`11111111-2222-3333-4444-555555555555`;\n"
+                "GRANT USE SCHEMA ON SCHEMA `main`.`sales` TO "
+                "`11111111-2222-3333-4444-555555555555`;\n"
+                "GRANT SELECT ON SCHEMA `main`.`sales` TO "
+                "`11111111-2222-3333-4444-555555555555`;\n"
+                "GRANT EXECUTE ON SCHEMA `main`.`sales` TO "
+                "`11111111-2222-3333-4444-555555555555`;"
+            ),
+        }
+    ]
 
 
 def test_permissions_requires_configured_gso(client, monkeypatch) -> None:
@@ -218,113 +185,18 @@ def test_permissions_requires_configured_gso(client, monkeypatch) -> None:
     assert resp.status_code == 503
 
 
-# ── /trigger — Layer 2 (authoritative server-side gate) ─────────────────
+# ── /trigger ────────────────────────────────────────────────────────────
 
 
-def test_trigger_blocked_when_prompt_registry_unavailable(
+def test_trigger_proceeds_without_prompt_registry_gate(
     client, mock_sp_ws, mock_user_ws, monkeypatch,
 ) -> None:
-    """This is the Bug #1 regression: even if the UI allows it, the server
-    must refuse to launch the job when the probe fails."""
-    monkeypatch.setattr(
-        auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
-    )
-    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-
-    fail_probe = ProbeResult(
-        available=False,
-        reason_code="missing_uc_permissions",
-        actionable_by="customer",
-        user_message="SP lacks USE SCHEMA on main.gso_test",
-        raw_error="PERMISSION_DENIED",
-        vendor_error_code="PERMISSION_DENIED",
-    )
-
-    trigger_mock = MagicMock()
-
-    with patch(
-        "backend.services.prompt_registry.check_prompt_registry",
-        return_value=fail_probe,
-    ), patch.object(auto_optimize, "trigger_optimization", trigger_mock):
-        resp = client.post(
-            "/api/auto-optimize/trigger",
-            json={"space_id": "space-abc", "apply_mode": "genie_config"},
-        )
-
-    assert resp.status_code == 412, (
-        f"Expected 412 Precondition Failed for customer-actionable probe failure, "
-        f"got {resp.status_code}: {resp.text}"
-    )
-    detail = resp.json()["detail"]
-    assert detail["reason_code"] == "missing_uc_permissions"
-    assert detail["error_code"] == "PERMISSION_DENIED"
-    assert detail["actionable_by"] == "customer"
-    assert detail["prompt_registry_available"] is False
-    assert "SP lacks" in detail["error"]
-
-    # Critical invariant: the underlying job launcher must NOT have been called.
-    trigger_mock.assert_not_called()
-
-
-def test_trigger_returns_503_for_platform_actionable_probe_failure(
-    client, mock_sp_ws, mock_user_ws, monkeypatch,
-) -> None:
-    """Root-cause follow-up: when Prompt Registry returns a vendor-side
-    error (ENDPOINT_NOT_FOUND, INTERNAL_ERROR, etc.), /trigger must
-    return 503 Service Unavailable rather than 412 Precondition Failed.
-
-    - 412 tells the UI "ask the customer to fix it" (grant a privilege).
-    - 503 tells the UI "this is a platform outage" and lets on-call alerts
-      key off the status code without parsing the body.
-    """
-    monkeypatch.setattr(
-        auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
-    )
-    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-
-    vendor_bug_probe = ProbeResult(
-        available=False,
-        reason_code="vendor_bug",
-        actionable_by="platform",
-        user_message="Platform error (error_code: ENDPOINT_NOT_FOUND).",
-        raw_error="No API found for 'GET /mlflow/unity-catalog/prompts'",
-        vendor_error_code="ENDPOINT_NOT_FOUND",
-    )
-
-    trigger_mock = MagicMock()
-    with patch(
-        "backend.services.prompt_registry.check_prompt_registry",
-        return_value=vendor_bug_probe,
-    ), patch.object(auto_optimize, "trigger_optimization", trigger_mock):
-        resp = client.post(
-            "/api/auto-optimize/trigger",
-            json={"space_id": "space-abc", "apply_mode": "genie_config"},
-        )
-
-    assert resp.status_code == 503, (
-        f"Expected 503 for platform-actionable failure, got {resp.status_code}: {resp.text}"
-    )
-    detail = resp.json()["detail"]
-    assert detail["reason_code"] == "vendor_bug"
-    assert detail["error_code"] == "ENDPOINT_NOT_FOUND"
-    assert detail["actionable_by"] == "platform"
-    trigger_mock.assert_not_called()
-
-
-def test_trigger_proceeds_when_prompt_registry_available(
-    client, mock_sp_ws, mock_user_ws, monkeypatch,
-) -> None:
-    """Happy path: probe succeeds → trigger_optimization runs and its result
-    is returned. Ensures the gate doesn't over-block."""
+    """Prompt Registry availability no longer blocks app-layer job launch."""
     monkeypatch.setattr(
         auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
     )
     monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
     monkeypatch.setenv("LLM_MODEL", "custom-trigger-model")
-
-    ok_probe = ProbeResult(
-        available=True, reason_code="ok", actionable_by="customer"
-    )
 
     fake_result = MagicMock(
         run_id="run-xyz",
@@ -333,10 +205,7 @@ def test_trigger_proceeds_when_prompt_registry_available(
         status="QUEUED",
     )
 
-    with patch(
-        "backend.services.prompt_registry.check_prompt_registry",
-        return_value=ok_probe,
-    ), patch.object(
+    with patch.object(
         auto_optimize, "trigger_optimization", return_value=fake_result
     ) as trigger_mock:
         resp = client.post(
@@ -379,10 +248,7 @@ def test_trigger_uses_selected_llm_model(
         status="QUEUED",
     )
 
-    with patch(
-        "backend.services.prompt_registry.check_prompt_registry",
-        return_value=ProbeResult(available=True, reason_code="ok", actionable_by="customer"),
-    ), patch.object(
+    with patch.object(
         auto_optimize, "trigger_optimization", return_value=fake_result
     ) as trigger_mock:
         resp = client.post(
@@ -421,50 +287,6 @@ def test_trigger_rejects_invalid_llm_model(
     assert resp.status_code == 400
     assert resp.json()["detail"] == "not a chat model"
     trigger_mock.assert_not_called()
-
-
-def test_trigger_blocks_on_probe_error_fail_closed(
-    client, mock_sp_ws, mock_user_ws, monkeypatch,
-) -> None:
-    """Fail-closed invariant: unexpected reason_codes must still block
-    the job. The status code follows the probe's ``actionable_by`` axis
-    so the UI can distinguish "customer-fixable" (412) from "platform
-    outage" (503). Only reason_code=="ok" unlocks."""
-    monkeypatch.setattr(
-        auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
-    )
-    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-
-    cases = [
-        ("registry_path_not_found", "customer", 412),
-        ("missing_sp_scope", "customer", 412),
-        ("probe_error", "platform", 503),
-        ("vendor_bug", "platform", 503),
-        ("unknown", "platform", 503),  # legacy — must still block, on platform axis
-    ]
-
-    for reason, actionable, expected_status in cases:
-        bad_probe = ProbeResult(
-            available=False,
-            reason_code=reason,
-            actionable_by=actionable,
-            user_message=f"probe said {reason}",
-        )
-        trigger_mock = MagicMock()
-        with patch(
-            "backend.services.prompt_registry.check_prompt_registry",
-            return_value=bad_probe,
-        ), patch.object(auto_optimize, "trigger_optimization", trigger_mock):
-            resp = client.post(
-                "/api/auto-optimize/trigger",
-                json={"space_id": "space-abc"},
-            )
-        assert resp.status_code == expected_status, (
-            f"reason={reason} actionable_by={actionable} should yield "
-            f"{expected_status}, got {resp.status_code}"
-        )
-        assert resp.json()["detail"]["reason_code"] == reason
-        trigger_mock.assert_not_called()
 
 
 def test_trigger_unconfigured_returns_503(client, monkeypatch) -> None:
