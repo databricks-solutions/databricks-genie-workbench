@@ -7364,10 +7364,6 @@ def _seed_new_sql_snippets(
         "measures_seeded": 0,
         "filters_seeded": 0,
         "expressions_seeded": 0,
-        # Number of schema-discovery candidates dropped because there were
-        # no grounded benchmark candidates to anchor them (see the grounding
-        # gate below). Stays 0 on the normal path.
-        "schema_only_skipped": 0,
         "skipped_reason": None,
         # Per-candidate rejection diagnostics — bounded list so the
         # pretty summary block can explain WHY candidates died without
@@ -7490,9 +7486,15 @@ def _seed_new_sql_snippets(
         # 84%), where 22 ``proactive_sql_expression`` snippets were seeded
         # purely from schema with no grounding. Drop the schema-only
         # candidates rather than seeding them ungrounded.
+        #
+        # The gate is intentionally SILENT in the persisted result/detail:
+        # it does not add fields to ``result`` or set ``skipped_reason``, so
+        # the seeding result shape and the downstream MLflow/report behavior
+        # are unchanged. With the schema candidates dropped and no grounded
+        # candidates, the pool is empty and the existing "No candidates"
+        # path reports the outcome exactly as before. Log-only diagnostics
+        # (not persisted into ``write_stage`` detail) explain the drop.
         if not benchmark_candidates and schema_candidates:
-            result["schema_only_skipped"] = len(schema_candidates)
-            result["skipped_reason"] = "no_grounded_candidates"
             logger.info(
                 "SQL expression seeding: dropping %d schema-only candidate(s) "
                 "— no grounded benchmark candidates to anchor seeding "
@@ -7517,16 +7519,9 @@ def _seed_new_sql_snippets(
         result["total_candidates"] = len(deduped)
 
         if not deduped:
-            if result.get("schema_only_skipped"):
-                status = (
-                    f"Skipped {result['schema_only_skipped']} schema-only "
-                    f"candidate(s) — no grounded benchmark candidates"
-                )
-            else:
-                status = "No candidates"
             _lines = [_section("SQL EXPRESSION SEEDING", "-")]
             _lines.append(_kv("Candidates found", 0))
-            _lines.append(_kv("Status", status))
+            _lines.append(_kv("Status", "No candidates"))
             _lines.append(_bar("-"))
             print("\n".join(_lines))
             write_stage(
