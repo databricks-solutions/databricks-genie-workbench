@@ -151,7 +151,10 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     both_correct_count  INT                    COMMENT 'Tier 1.7: count of rows with arbiter verdict == both_correct. Used to anchor best_accuracy to both_correct_rate when rc=yes overrides inflate overall_accuracy.',
     both_correct_rate   DOUBLE                 COMMENT 'Tier 1.7: both_correct_count / evaluated_count * 100. Stricter than overall_accuracy (which counts arbiter override rows as correct). Lever loop anchors acceptance to this to avoid ghost-ceiling rejections.',
     config_json         STRING                 COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Space config in force for THIS iteration (baseline iter 0, enrichment iter 1, lever loop iters 2..N). Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.',
-    is_champion         BOOLEAN       DEFAULT false COMMENT 'GSO v2 Phase 4 (D3): true on the single champion iteration row (the best iteration as chosen by the existing Delta-driven selection in promote_best_model). Marked in Delta only — NO UC model registration.'
+    is_champion         BOOLEAN       DEFAULT false COMMENT 'GSO v2 Phase 4 (D3): true on the single champion iteration row (the best iteration as chosen by the existing Delta-driven selection in promote_best_model). Marked in Delta only — NO UC model registration.',
+    num_needs_review    INT                    COMMENT 'GSO v2 Phase 6: count of per-question rows whose official assessment is NEEDS_REVIEW (neither GOOD nor BAD). Surfaced by the Workbench /iterations endpoint so the UI can distinguish review-pending from failing questions. Sourced from build_eval_output_from_official; NULL on legacy/repeatability-only rows.',
+    eval_run_id         STRING                 COMMENT 'GSO v2 Phase 6: native Genie benchmark eval-run id for this iteration (from the official EvalRunner). Surfaced so the UI can reference the underlying eval run. NULL on the legacy in-process path.',
+    eval_run_status     STRING                 COMMENT 'GSO v2 Phase 6: native eval-run terminal status (e.g. DONE / EVALUATION_FAILED / CANCELLED) for this iteration. NULL on the legacy in-process path.'
 )
 USING DELTA
 PARTITIONED BY (run_id)
@@ -574,4 +577,7 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_RUNS, "max_benchmark_count", "INT COMMENT 'Effective max benchmark count; Delta-fallback for the preflight.max_benchmark_count taskValue'"),
     (TABLE_ITERATIONS, "config_json", "STRING COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Space config in force for this iteration. Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.'"),
     (TABLE_ITERATIONS, "is_champion", "BOOLEAN DEFAULT false COMMENT 'GSO v2 Phase 4 (D3): true on the single champion iteration row (best iteration per the existing Delta-driven selection in promote_best_model). Marked in Delta only — NO UC model registration.'"),
+    (TABLE_ITERATIONS, "num_needs_review", "INT COMMENT 'GSO v2 Phase 6: count of per-question rows whose official assessment is NEEDS_REVIEW. Surfaced by the Workbench /iterations endpoint. NULL on legacy/repeatability-only rows.'"),
+    (TABLE_ITERATIONS, "eval_run_id", "STRING COMMENT 'GSO v2 Phase 6: native Genie benchmark eval-run id for this iteration (from the official EvalRunner). NULL on the legacy in-process path.'"),
+    (TABLE_ITERATIONS, "eval_run_status", "STRING COMMENT 'GSO v2 Phase 6: native eval-run terminal status (DONE / EVALUATION_FAILED / CANCELLED). NULL on the legacy in-process path.'"),
 )

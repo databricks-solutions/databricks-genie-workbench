@@ -1,5 +1,6 @@
 import { ExternalLink } from "lucide-react"
 import type { GSOPipelineStep } from "@/types"
+import { formatAssessmentReason } from "@/lib/assessment"
 
 interface StepDetailContentProps {
   step: GSOPipelineStep
@@ -10,16 +11,6 @@ function StatBadge({ label, value }: { label: string; value: string | number | n
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-default bg-elevated/50 px-2.5 py-0.5 text-xs font-medium text-primary">
       {label}: {value}
-    </span>
-  )
-}
-
-function JudgeScoreBadge({ name, score }: { name: string; score: number | null }) {
-  if (score == null) return null
-  const pct = score > 1 ? score : score * 100
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-default bg-elevated/50 px-2.5 py-0.5 text-xs font-medium text-primary">
-      {name.replace(/_/g, "_")}: {pct.toFixed(1)}%
     </span>
   )
 }
@@ -45,24 +36,44 @@ function PreflightContent({ outputs }: { outputs: Record<string, any> }) {
 }
 
 function BaselineContent({ outputs }: { outputs: Record<string, any> }) {
-  const judgeScores = outputs.judgeScores as Record<string, number | null> | undefined
+  // GSO v2 Phase 6 — assessment + reason-count summary (replaces per-judge
+  // scores). The native verdict is GOOD / BAD / NEEDS_REVIEW.
+  const assessmentSummary = outputs.assessmentSummary as Record<string, number> | undefined
+  const assessmentReasons = outputs.assessmentReasons as Array<{ reason: string; count: number }> | undefined
   const sampleQuestions = outputs.sampleQuestions as Array<Record<string, any>> | undefined
+  const evalRunStatus = outputs.evalRunStatus as string | undefined
 
   return (
     <div className="space-y-3">
+      {/* Official assessment summary */}
+      {assessmentSummary && (
+        <div className="flex flex-wrap gap-1.5">
+          <StatBadge label="Good" value={assessmentSummary.GOOD ?? 0} />
+          <StatBadge label="Bad" value={assessmentSummary.BAD ?? 0} />
+          <StatBadge label="Needs review" value={assessmentSummary.NEEDS_REVIEW ?? 0} />
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-1.5">
         <StatBadge label="Invalid benchmarks" value={outputs.invalidBenchmarkCount ?? 0} />
         <StatBadge label="Permission blocked" value={outputs.permissionBlockedCount ?? 0} />
         <StatBadge label="Unresolved columns" value={outputs.unresolvedColumnCount ?? 0} />
         <StatBadge label="Harness retries" value={outputs.harnessRetryCount ?? 0} />
+        {evalRunStatus && <StatBadge label="Eval run" value={evalRunStatus} />}
       </div>
 
-      {judgeScores && Object.keys(judgeScores).length > 0 && (
+      {assessmentReasons && assessmentReasons.length > 0 && (
         <div className="space-y-1">
-          <p className="text-xs font-medium text-muted">Judge scores</p>
+          <p className="text-xs font-medium text-muted">Top assessment reasons</p>
           <div className="flex flex-wrap gap-1.5">
-            {Object.entries(judgeScores).map(([name, score]) => (
-              <JudgeScoreBadge key={name} name={name} score={score} />
+            {assessmentReasons.map((r) => (
+              <span
+                key={r.reason}
+                title={r.reason}
+                className="inline-flex items-center gap-1 rounded-full border border-default bg-elevated/50 px-2.5 py-0.5 text-xs font-medium text-primary"
+              >
+                {formatAssessmentReason(r.reason)}: {r.count}
+              </span>
             ))}
           </div>
         </div>
@@ -77,7 +88,7 @@ function BaselineContent({ outputs }: { outputs: Record<string, any> }) {
                 key={i}
                 className="flex items-center gap-2 rounded border border-default bg-elevated/30 px-3 py-1.5 text-xs"
               >
-                <span className="text-muted">result_correctness: {String(q.resultCorrectness ?? "—")}</span>
+                <span className="text-muted uppercase">{String(q.assessment ?? "—")}</span>
                 {q.question && <span className="text-primary truncate ml-2">{q.question}</span>}
               </div>
             ))}
@@ -92,7 +103,7 @@ function BaselineContent({ outputs }: { outputs: Record<string, any> }) {
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1.5 rounded-lg border border-default bg-elevated px-3 py-1.5 text-xs font-medium text-primary hover:bg-elevated/80 transition-colors"
         >
-          Open baseline evaluation run
+          Open evaluation run
           <ExternalLink className="h-3 w-3" />
         </a>
       )}

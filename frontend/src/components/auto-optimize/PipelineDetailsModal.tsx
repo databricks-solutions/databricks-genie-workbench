@@ -10,8 +10,8 @@ import { StageTimeline } from "@/components/auto-optimize/StageTimeline"
 import { ResourceLinks } from "@/components/auto-optimize/ResourceLinks"
 import { QuestionJourney } from "@/components/auto-optimize/QuestionJourney"
 import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
+import { BenchmarkChangesPanel } from "@/components/auto-optimize/BenchmarkChangesPanel"
 import { ActivityLog } from "@/components/auto-optimize/ActivityLog"
-import { JudgePassRates } from "@/components/auto-optimize/JudgePassRates"
 import { OptimizationNarrative } from "@/components/auto-optimize/OptimizationNarrative"
 import { SuggestionsPanel } from "@/components/auto-optimize/SuggestionsPanel"
 import { getAutoOptimizeRun, getAutoOptimizeIterations } from "@/lib/api"
@@ -32,7 +32,7 @@ interface PipelineDetailsModalProps {
 
 const STEP_DESCRIPTIONS: Record<number, { name: string; description: string }> = {
   1: { name: "Preflight",             description: "Reads config and queries Unity Catalog for metadata" },
-  2: { name: "Baseline Evaluation",   description: "Runs benchmarks through 9 evaluation judges" },
+  2: { name: "Baseline Evaluation",   description: "Scores benchmarks with the native Genie evaluation API" },
   3: { name: "Proactive Enrichment",  description: "Enriches descriptions, joins, and instructions" },
   4: { name: "Adaptive Optimization", description: "Applies optimization levers with 3-gate eval" },
   5: { name: "Finalization",          description: "Repeatability checks and model promotion" },
@@ -149,10 +149,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
   const hasAnyScore =
     baselinePresentation.pct != null || optimizedPresentation.pct != null
 
-  // Extract baseline judge scores from step 2 (Baseline Evaluation) outputs
-  const baselineStep = run?.steps?.find((s) => s.stepNumber === 2)
-  const baselineJudgeScores = (baselineStep?.outputs?.judgeScores as Record<string, number | null> | undefined) ?? null
-
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-surface">
       {/* Header */}
@@ -246,6 +242,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                   <TabsList>
                     <TabsTrigger value="summary">Summary</TabsTrigger>
                     <TabsTrigger value="iterations">Iteration Explorer</TabsTrigger>
+                    <TabsTrigger value="benchmark">Benchmark Changes</TabsTrigger>
                     <TabsTrigger value="suggestions">Suggestions</TabsTrigger>
                   </TabsList>
 
@@ -257,7 +254,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                         <TabsTrigger value="questions">Questions</TabsTrigger>
                         <TabsTrigger value="patches">Patches</TabsTrigger>
                         <TabsTrigger value="activity">Activity</TabsTrigger>
-                        <TabsTrigger value="judges">Judges</TabsTrigger>
                       </TabsList>
 
                       <TabsContent value="overview">
@@ -267,8 +263,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                             <IterationChart iterations={iterations} />
                             <StageTimeline stages={run.stages ?? []} />
                           </div>
-                          {/* Per-Judge Score Progression */}
-                          <JudgePassRates iterations={iterations} baselineJudgeScores={baselineJudgeScores} />
                           {/* Optimization Narrative — rich per-iteration reflections */}
                           <OptimizationNarrative run={run} iterations={iterations} convergenceReason={run.convergenceReason} />
                         </div>
@@ -285,10 +279,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                       <TabsContent value="activity">
                         <ActivityLog stages={run.stages ?? []} />
                       </TabsContent>
-
-                      <TabsContent value="judges">
-                        <JudgePassRates iterations={iterations} baselineJudgeScores={baselineJudgeScores} />
-                      </TabsContent>
                     </Tabs>
                   </TabsContent>
 
@@ -304,7 +294,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted">Lever</th>
                               <th className="text-right px-4 py-2.5 text-xs font-medium text-muted">Accuracy</th>
                               <th className="text-right px-4 py-2.5 text-xs font-medium text-muted">Questions</th>
-                              <th className="text-center px-4 py-2.5 text-xs font-medium text-muted">Gates Met</th>
+                              <th className="text-center px-4 py-2.5 text-xs font-medium text-muted">API Accuracy Gate</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -342,8 +332,10 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                                     {it.correct_count}/{it.total_questions}
                                   </td>
                                   <td className="px-4 py-2.5 text-center">
-                                    {it.thresholds_met ? (
-                                      <span className="text-emerald-500 text-xs font-medium">Yes</span>
+                                    {it.api_accuracy_gate_met ? (
+                                      <span className="text-emerald-500 text-xs font-medium">Met</span>
+                                    ) : it.eval_gate_status === "rolled_back" ? (
+                                      <span className="text-red-400 text-xs">Rolled back</span>
                                     ) : (
                                       <span className="text-muted text-xs">\u2014</span>
                                     )}
@@ -355,6 +347,11 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                         </table>
                       </div>
                     </div>
+                  </TabsContent>
+
+                  {/* Benchmark Changes tab (GSO v2 Phase 6 §3.5) */}
+                  <TabsContent value="benchmark">
+                    <BenchmarkChangesPanel runId={runId} />
                   </TabsContent>
 
                   {/* Suggestions tab */}

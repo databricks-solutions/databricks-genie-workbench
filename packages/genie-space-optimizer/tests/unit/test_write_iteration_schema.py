@@ -169,6 +169,67 @@ def test_write_iteration_escapes_quotes_in_quarantine_payload(mock_spark_iter) -
     assert "''amount''" in payload or r"\u0027amount\u0027" in payload
 
 
+def test_write_iteration_persists_native_eval_run_metadata(mock_spark_iter) -> None:
+    """GSO v2 Phase 6: native official eval-run metadata
+    (num_needs_review / eval_run_id / eval_run_status) emitted by
+    build_eval_output_from_official must round-trip into the INSERT so the
+    Workbench /iterations + baseline step can surface them.
+    """
+    eval_result = {
+        "overall_accuracy": 80.0,
+        "total_questions": 10,
+        "evaluated_count": 10,
+        "correct_count": 8,
+        "scores": {},
+        "thresholds_met": False,
+        "num_needs_review": 2,
+        "eval_run_id": "er-12345",
+        "eval_run_status": "DONE",
+    }
+
+    write_iteration(
+        mock_spark_iter,
+        run_id="run-native",
+        iteration=0,
+        eval_result=eval_result,
+        catalog="cat",
+        schema="sch",
+        eval_scope="full",
+    )
+
+    sql = _extract_insert_sql(mock_spark_iter)
+    # Columns present in the col list.
+    assert "num_needs_review" in sql
+    assert "eval_run_id" in sql
+    assert "eval_run_status" in sql
+    # Values survive serialization (trailing trio after is_champion=false).
+    assert sql.rstrip().endswith("false, 2, 'er-12345', 'DONE')")
+
+
+def test_write_iteration_native_eval_run_metadata_defaults_null(mock_spark_iter) -> None:
+    """Legacy / repeatability-only eval_results omit the native trio — the
+    INSERT must write NULL for all three rather than crashing."""
+    eval_result = {
+        "overall_accuracy": 90.0,
+        "total_questions": 10,
+        "correct_count": 9,
+        "scores": {},
+        "thresholds_met": True,
+    }
+
+    write_iteration(
+        mock_spark_iter,
+        run_id="run-legacy",
+        iteration=1,
+        eval_result=eval_result,
+        catalog="cat",
+        schema="sch",
+    )
+
+    sql = _extract_insert_sql(mock_spark_iter)
+    assert sql.rstrip().endswith("false, NULL, NULL, NULL)")
+
+
 def test_write_iteration_accepts_enrichment_eval_scope(mock_spark_iter) -> None:
     """Lock down ``eval_scope='enrichment'`` as a valid value.
 

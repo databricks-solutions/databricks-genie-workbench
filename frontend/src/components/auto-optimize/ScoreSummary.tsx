@@ -21,6 +21,12 @@ interface ScoreSummaryProps {
    * from "ran to completion and baseline won" (show baseline).
    */
   status?: string | null
+  /**
+   * GSO v2 Phase 6 — count of questions in the displayed evaluation whose
+   * official assessment is NEEDS_REVIEW. Surfaced as a footnote so accuracy
+   * (num_correct / num_questions) is never silently conflated with review.
+   */
+  needsReviewCount?: number | null
 }
 
 export function ScoreSummary({
@@ -28,6 +34,7 @@ export function ScoreSummary({
   optimizedScore,
   bestIteration = null,
   status = null,
+  needsReviewCount = null,
 }: ScoreSummaryProps) {
   const baseline = presentBaselineScore(baselineScore)
   const optimized = presentOptimizedScore({
@@ -63,6 +70,7 @@ export function ScoreSummary({
   )
 
   return (
+   <div className="w-full space-y-1.5">
     <div className="grid grid-cols-3 gap-3 w-full">
       <div className="rounded-xl border border-default bg-surface px-4 py-3">
         <div className="flex items-center gap-1.5 mb-1.5">
@@ -104,5 +112,11 @@ export function ScoreSummary({
         </p>
       </div>
     </div>
+    {needsReviewCount != null && needsReviewCount > 0 && (
+      <p className="text-xs text-amber-600 dark:text-amber-400">
+        {needsReviewCount} question{needsReviewCount === 1 ? "" : "s"} need review (excluded from pass/fail)
+      </p>
+    )}
+   </div>
   )
 }

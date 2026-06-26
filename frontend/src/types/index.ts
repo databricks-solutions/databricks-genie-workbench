@@ -379,7 +379,6 @@ export interface GSOLeverIteration {
   scoreBefore: number | null
   scoreAfter: number | null
   scoreDelta: number | null
-  judgeScores: Record<string, number | null>
   mlflowRunId: string | null
   rollbackReason: string | null
   patches: GSOPatchDetail[]
@@ -422,6 +421,7 @@ export interface GSOIterationResult {
   iteration: number
   lever: number | null
   eval_scope: string
+  // GSO v2 Phase 6 — headline accuracy stays num_correct / num_questions.
   overall_accuracy: number
   // Bug #2 denominator contract. evaluated_count is the denominator of
   // overall_accuracy; total_questions is the pre-exclusion count kept for
@@ -433,8 +433,23 @@ export interface GSOIterationResult {
   excluded_count?: number | null
   quarantined_benchmarks_json?: string | null
   rolled_back?: boolean | null
-  scores_json: string | Record<string, number>
-  thresholds_met: boolean
+  // GSO v2 Phase 6 — official assessment counts (replace per-judge scores_json).
+  // num_correct / num_questions mirror correct_count / total_questions;
+  // num_done is the count actually evaluated; num_needs_review counts rows
+  // whose native assessment is NEEDS_REVIEW (null on legacy/pre-Phase-6 rows).
+  num_correct?: number
+  num_questions?: number
+  num_done?: number | null
+  num_needs_review?: number | null
+  // GSO v2 Phase 6 — replaces the retired per-judge `thresholds_met`. Phase 3
+  // collapsed acceptance to a single API-accuracy gate; eval_gate_status is
+  // the coarse per-iteration outcome ("passed" | "failed" | "rolled_back").
+  api_accuracy_gate_met?: boolean
+  eval_gate_status?: "passed" | "failed" | "rolled_back" | string
+  // GSO v2 Phase 6 — native Genie benchmark eval-run metadata (null on the
+  // legacy in-process path).
+  eval_run_id?: string | null
+  eval_run_status?: string | null
   reflection_json?: string | Record<string, any> | null
 }
 
@@ -452,12 +467,18 @@ export interface GSOSuggestion {
   status: string
 }
 
+// GSO v2 Phase 6 — official per-question assessment. The native Benchmark API
+// verdict drives a three-valued display state (GOOD/BAD/NEEDS_REVIEW); a row
+// is never collapsed to a plain pass/fail boolean.
+export type GSOAssessment = "GOOD" | "BAD" | "NEEDS_REVIEW"
+
+// Lightweight official eval-result row (GSO v2 Phase 6). Replaces the retired
+// per-judge ASI shape (judge / value / failure_type / confidence);
+// `assessment_reasons` is the `failure_type` successor.
 export interface GSOQuestionResult {
   question_id: string
-  judge: string
-  value: string
-  failure_type: string | null
-  confidence: number | null
+  assessment: GSOAssessment | string | null
+  assessment_reasons: string[]
 }
 
 // Bug #3 — stable exclusion reason codes mirrored from EXCLUSION_* in
@@ -476,9 +497,15 @@ export interface GSOQuestionDetail {
   question: string
   generated_sql: string | null
   expected_sql: string | null
+  // GSO v2 Phase 6 — `assessment` is the canonical three-valued state
+  // (GOOD/BAD/NEEDS_REVIEW). `passed` is kept as a derived convenience
+  // (GOOD=true, BAD=false, NEEDS_REVIEW=null) for the Bug #2 denominator math;
+  // UI state must read `assessment` so NEEDS_REVIEW is never mislabeled as a
+  // plain fail. `assessment_reasons` replaces the retired `judge_verdicts`.
   passed: boolean | null
+  assessment?: GSOAssessment | string | null
+  assessment_reasons?: string[]
   match_type: string | null
-  judge_verdicts?: Record<string, string>
   excluded?: boolean
   exclusion_reason_code?: GSOExclusionReasonCode | null
   exclusion_reason_detail?: string | null
@@ -488,6 +515,42 @@ export interface GSOQuestionDetail {
   gt_columns?: string[]
   genie_rows?: number | null
   gt_rows?: number | null
+}
+
+// GSO v2 Phase 6 (§3.5) — benchmark provenance ledger. Each entry records a
+// benchmark question GSO added / removed / changed (or recommended for prune)
+// in the user's live Genie Space, with provenance. Backed by
+// genie_opt_benchmark_mutations via /runs/{id}/benchmark-changes.
+export type GSOBenchmarkOp = "added" | "removed" | "changed" | "prune_recommended"
+
+export interface GSOBenchmarkQuestionState {
+  question?: string | null
+  sql?: string | null
+}
+
+export interface GSOBenchmarkMutation {
+  questionId: string | null
+  op: GSOBenchmarkOp | string
+  before: GSOBenchmarkQuestionState | null
+  after: GSOBenchmarkQuestionState | null
+  reason: string | null
+  loggedAt: string | null
+}
+
+export interface GSOBenchmarkChanges {
+  runId: string
+  added: GSOBenchmarkMutation[]
+  removed: GSOBenchmarkMutation[]
+  changed: GSOBenchmarkMutation[]
+  pruneRecommended: GSOBenchmarkMutation[]
+  items: GSOBenchmarkMutation[]
+  counts: {
+    added: number
+    removed: number
+    changed: number
+    pruneRecommended: number
+    total: number
+  }
 }
 
 // Bug #3 — pre-evaluation quarantine entry (SQL failed EXPLAIN, missing
