@@ -348,6 +348,47 @@ def test_question_result_preserves_native_review_signal() -> None:
     assert payload["expectedSql"] == "select * from expected"
 
 
+def test_question_result_manual_assessment_is_metadata_not_review_state() -> None:
+    question = _question_result_from_row(
+        {
+            "question_id": "q_manual_pass",
+            "inputs/question": "Which suppliers passed manual grading?",
+            "result_correctness/value": "yes",
+            "assessment": "GOOD",
+            "manual_assessment": True,
+            "assessment_reasons": [],
+        }
+    )
+
+    payload = question.model_dump()
+
+    assert payload["assessment"] == "GOOD"
+    assert payload["manualAssessment"] is True
+    assert payload["needsReview"] is False
+
+
+def test_question_result_legacy_rows_default_to_pass_fail_not_review() -> None:
+    passed = _question_result_from_row(
+        {
+            "question_id": "q_legacy_pass",
+            "inputs/question": "Legacy passing question",
+            "result_correctness/value": "yes",
+        }
+    )
+    failed = _question_result_from_row(
+        {
+            "question_id": "q_legacy_fail",
+            "inputs/question": "Legacy failing question",
+            "result_correctness/value": "no",
+        }
+    )
+
+    assert passed.needsReview is False
+    assert failed.needsReview is False
+    assert passed.resultCorrectness == "yes"
+    assert failed.resultCorrectness == "no"
+
+
 def test_all_endpoints_use_same_helper() -> None:
     """Regression guard: grep the runs.py source file and confirm every
     call-site that builds a per-iteration counts payload goes through

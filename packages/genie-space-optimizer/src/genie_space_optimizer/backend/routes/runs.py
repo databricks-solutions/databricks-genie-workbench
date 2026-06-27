@@ -1448,7 +1448,6 @@ def _question_result_from_row(row: dict[str, Any]) -> QuestionResult:
     needs_review = (
         _is_truthy(row.get("needs_review"))
         or assessment == "NEEDS_REVIEW"
-        or manual_assessment
     )
 
     return QuestionResult(
