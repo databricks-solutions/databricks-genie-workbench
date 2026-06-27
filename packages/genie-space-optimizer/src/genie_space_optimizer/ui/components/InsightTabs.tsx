@@ -41,6 +41,13 @@ import type {
   ProactiveChanges,
   QuestionResult,
 } from "@/lib/transparency-api";
+import {
+  isQuestionNeedsReview,
+  needsReviewCount,
+  questionOutcome,
+  questionPassed,
+  reviewReasonText,
+} from "@/lib/review-signal";
 import type { StageEvent } from "@/components/StageTimeline";
 import { IterationChart } from "@/components/IterationChart";
 import { StageTimeline, formatStageDisplayName } from "@/components/StageTimeline";
@@ -52,14 +59,7 @@ interface InsightTabsProps {
   links?: { label: string; url: string; category: string }[];
 }
 
-type QuestionFilter = "all" | "failing" | "fixed" | "regressed" | "persistent";
-
-function questionPassed(r: QuestionResult | undefined): boolean {
-  if (!r) return false;
-  const arbiter = r.judgeVerdicts?.arbiter;
-  if (arbiter === "both_correct" || arbiter === "genie_correct") return true;
-  return r.resultCorrectness === "yes" || r.resultCorrectness === "pass";
-}
+type QuestionFilter = "all" | "failing" | "review" | "fixed" | "regressed" | "persistent";
 
 export type FlagCategory = "persistence" | "tvf_removal" | "strategist" | "other";
 
@@ -362,6 +362,8 @@ function OverviewTab({
 
 function QuestionsTab({ detail }: { detail: IterationDetailResponse }) {
   const [filter, setFilter] = useState<QuestionFilter>("all");
+  const finalIteration = detail.iterations[detail.iterations.length - 1];
+  const finalNeedsReviewCount = finalIteration ? needsReviewCount(finalIteration) : 0;
 
   const flaggedMap = useMemo(() => {
     const m = new Map<string, FlaggedInfo>();
@@ -424,6 +426,7 @@ function QuestionsTab({ detail }: { detail: IterationDetailResponse }) {
       const finalPassed = questionPassed(finalResult);
 
       if (filter === "failing") return !finalPassed;
+      if (filter === "review") return isQuestionNeedsReview(finalResult);
       if (filter === "fixed") return !basePassed && finalPassed;
       if (filter === "regressed") return basePassed && !finalPassed;
       if (filter === "persistent") return data.persistentFail || (data.flagged && !finalPassed);
@@ -435,9 +438,16 @@ function QuestionsTab({ detail }: { detail: IterationDetailResponse }) {
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-sm">Question Journey</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-sm">Question Journey</CardTitle>
+            {finalNeedsReviewCount > 0 && (
+              <Badge variant="outline" className="border-amber-300 text-amber-700 text-[10px]">
+                {finalNeedsReviewCount} need review
+              </Badge>
+            )}
+          </div>
           <div className="flex gap-1">
-            {(["all", "failing", "fixed", "regressed", "persistent"] as QuestionFilter[]).map(
+            {(["all", "failing", "review", "fixed", "regressed", "persistent"] as QuestionFilter[]).map(
               (f) => (
                 <Button
                   key={f}
@@ -476,12 +486,23 @@ function QuestionsTab({ detail }: { detail: IterationDetailResponse }) {
                   </TableCell>
                   {iters.map((it) => {
                     const r = data.results.get(it);
-                    if (!r) return <TableCell key={it} className="text-center text-xs">—</TableCell>;
-                    const passed = questionPassed(r);
+                    if (!r) {
+                      return (
+                        <TableCell key={it} className="text-center text-xs">
+                          —
+                        </TableCell>
+                      );
+                    }
+                    const outcome = questionOutcome(r);
                     return (
                       <TableCell key={it} className="text-center">
-                        {passed ? (
+                        {outcome === "pass" ? (
                           <CheckCircle2 className="mx-auto h-4 w-4 text-green-500" />
+                        ) : outcome === "review" ? (
+                          <AlertTriangle
+                            className="mx-auto h-4 w-4 text-amber-500"
+                            aria-label="Needs review"
+                          />
                         ) : (
                           <XCircle className="mx-auto h-4 w-4 text-red-400" />
                         )}
@@ -490,6 +511,23 @@ function QuestionsTab({ detail }: { detail: IterationDetailResponse }) {
                   })}
                   <TableCell className="text-center">
                     <div className="flex items-center justify-center gap-1">
+                      {isQuestionNeedsReview(data.results.get(iters[iters.length - 1])) && (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge
+                                variant="outline"
+                                className="cursor-help border-amber-300 bg-amber-50 text-[10px] text-amber-700"
+                              >
+                                Needs Review
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent side="left" className="max-w-xs text-xs">
+                              {reviewReasonText(data.results.get(iters[iters.length - 1])!)}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
                       {data.persistentFail && !data.flagInfo && (
                         <Badge variant="destructive" className="text-[10px]">
                           Persistent
@@ -551,12 +589,27 @@ function QuestionsTab({ detail }: { detail: IterationDetailResponse }) {
 function RecommendationsCard({ detail }: { detail: IterationDetailResponse }) {
   const recommendations = useMemo(() => {
     const items: {
-      category: FlagCategory;
+      category: FlagCategory | "native_review";
       title: string;
       description: string;
       questions: string[];
-      icon: "tvf" | "persistence" | "strategist";
+      icon: "tvf" | "persistence" | "strategist" | "review";
     }[] = [];
+
+    const finalIteration = detail.iterations[detail.iterations.length - 1];
+    const nativeReviewQuestions =
+      finalIteration?.questions.filter((q) => isQuestionNeedsReview(q)) ?? [];
+    if (nativeReviewQuestions.length > 0) {
+      items.push({
+        category: "native_review",
+        title: `${nativeReviewQuestions.length} Native Benchmark Review${nativeReviewQuestions.length > 1 ? "s" : ""}`,
+        description:
+          "The Genie Benchmark assessment returned NEEDS_REVIEW for these questions. " +
+          "Review the benchmark outcome before treating them as ordinary failures.",
+        questions: nativeReviewQuestions.map((q) => q.questionId || q.question).filter(Boolean),
+        icon: "review",
+      });
+    }
 
     const byCategory = new Map<FlagCategory, { reasons: string[]; questions: string[] }>();
     for (const fq of detail.flaggedQuestions) {
@@ -617,7 +670,7 @@ function RecommendationsCard({ detail }: { detail: IterationDetailResponse }) {
     }
 
     return items;
-  }, [detail.flaggedQuestions, detail.labelingSessionUrl]);
+  }, [detail.flaggedQuestions, detail.iterations, detail.labelingSessionUrl]);
 
   if (recommendations.length === 0) return null;
 
@@ -638,7 +691,9 @@ function RecommendationsCard({ detail }: { detail: IterationDetailResponse }) {
                 ? "border-orange-200 bg-orange-50/50"
                 : rec.icon === "persistence"
                   ? "border-red-200 bg-red-50/50"
-                  : "border-amber-200 bg-amber-50/50"
+                  : rec.icon === "review"
+                    ? "border-amber-200 bg-amber-50/50"
+                    : "border-amber-200 bg-amber-50/50"
             }`}
           >
             <div className="flex items-start gap-3">
@@ -646,6 +701,8 @@ function RecommendationsCard({ detail }: { detail: IterationDetailResponse }) {
                 <Trash2 className="mt-0.5 h-4 w-4 shrink-0 text-orange-600" />
               ) : rec.icon === "persistence" ? (
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+              ) : rec.icon === "review" ? (
+                <UserCheck className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
               ) : (
                 <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
               )}
