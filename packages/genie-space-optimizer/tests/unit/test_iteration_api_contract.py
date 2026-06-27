@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import json
 
-from genie_space_optimizer.backend.routes.runs import _resolve_eval_counts
+from genie_space_optimizer.backend.routes.runs import (
+    _question_result_from_row,
+    _resolve_eval_counts,
+)
 
 
 def _iter_row(
@@ -309,6 +312,81 @@ def test_get_baseline_and_best_accuracy_uses_derived_values() -> None:
     baseline, best = _get_baseline_and_best_accuracy(iters, run_id="r1")
     assert baseline == 84.21
     assert best == 94.74  # round(100 * 18 / 19, 2)
+
+
+def test_question_result_preserves_native_review_signal() -> None:
+    """Official EvalRunner rows must keep NEEDS_REVIEW distinct from BAD."""
+    question = _question_result_from_row(
+        {
+            "question_id": "q_review",
+            "inputs/question": "Which suppliers need review?",
+            "result_correctness/value": "no",
+            "assessment": "NEEDS_REVIEW",
+            "manual_assessment": True,
+            "assessment_reasons": [
+                "LLM_JUDGE_OTHER",
+                "SINGLE_CELL_DIFFERENCE",
+            ],
+            "needs_review": True,
+            "generated_sql": "select * from generated",
+            "expected_sql": "select * from expected",
+        }
+    )
+
+    payload = question.model_dump()
+
+    assert payload["questionId"] == "q_review"
+    assert payload["resultCorrectness"] == "no"
+    assert payload["assessment"] == "NEEDS_REVIEW"
+    assert payload["manualAssessment"] is True
+    assert payload["assessmentReasons"] == [
+        "LLM_JUDGE_OTHER",
+        "SINGLE_CELL_DIFFERENCE",
+    ]
+    assert payload["needsReview"] is True
+    assert payload["generatedSql"] == "select * from generated"
+    assert payload["expectedSql"] == "select * from expected"
+
+
+def test_question_result_manual_assessment_is_metadata_not_review_state() -> None:
+    question = _question_result_from_row(
+        {
+            "question_id": "q_manual_pass",
+            "inputs/question": "Which suppliers passed manual grading?",
+            "result_correctness/value": "yes",
+            "assessment": "GOOD",
+            "manual_assessment": True,
+            "assessment_reasons": [],
+        }
+    )
+
+    payload = question.model_dump()
+
+    assert payload["assessment"] == "GOOD"
+    assert payload["manualAssessment"] is True
+    assert payload["needsReview"] is False
+
+
+def test_question_result_legacy_rows_default_to_pass_fail_not_review() -> None:
+    passed = _question_result_from_row(
+        {
+            "question_id": "q_legacy_pass",
+            "inputs/question": "Legacy passing question",
+            "result_correctness/value": "yes",
+        }
+    )
+    failed = _question_result_from_row(
+        {
+            "question_id": "q_legacy_fail",
+            "inputs/question": "Legacy failing question",
+            "result_correctness/value": "no",
+        }
+    )
+
+    assert passed.needsReview is False
+    assert failed.needsReview is False
+    assert passed.resultCorrectness == "yes"
+    assert failed.resultCorrectness == "no"
 
 
 def test_all_endpoints_use_same_helper() -> None:

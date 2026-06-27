@@ -447,6 +447,7 @@ class IterationSummary(SafeModel):
     correctCount: int
     excludedCount: int = 0
     quarantinedCount: int = 0
+    needsReviewCount: int = 0
     repeatabilityPct: float | None = None
     thresholdsMet: bool
     judgeScores: dict[str, float | None] = {}
@@ -515,6 +516,12 @@ class QuestionResult(SafeModel):
     matchType: str | None = None
     expectedSql: str | None = None
     generatedSql: str | None = None
+    # Native Genie Benchmark assessment signal. ``resultCorrectness`` remains
+    # the accuracy input; these fields preserve the third state for review UI.
+    assessment: str | None = None
+    manualAssessment: bool = False
+    assessmentReasons: list[str] = []
+    needsReview: bool = False
     # Bug #3 — when a row was excluded from the arbiter-adjusted denominator,
     # these fields explain why. The UI renders these in the iteration
     # drill-down so items no longer silently disappear. reasonCode is the
@@ -573,6 +580,7 @@ class IterationDetail(SafeModel):
     correctCount: int = 0
     excludedCount: int = 0
     quarantinedCount: int = 0
+    needsReviewCount: int = 0
     mlflowRunId: str | None = None
     modelId: str | None = None
     gates: list[GateResult] = []
