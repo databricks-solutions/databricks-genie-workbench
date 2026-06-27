@@ -41,10 +41,16 @@ def test_finalize_uses_arbiter_objective_for_converged_status() -> None:
 
     from genie_space_optimizer.optimization import harness
 
-    src = inspect.getsource(harness._run_finalize)
+    # The terminal-status verdict (incl. the arbiter-objective branch) was
+    # extracted from ``_run_finalize`` into a pure, unit-testable helper.
+    # ``_run_finalize`` must still delegate to it, and the helper must keep
+    # gating CONVERGED on the arbiter objective.
+    finalize_src = inspect.getsource(harness._run_finalize)
+    assert "_resolve_finalize_terminal_status" in finalize_src
 
-    assert "arbiter_objective_complete" in src
-    assert 'reason = "post_arbiter_objective_met"' in src
+    verdict_src = inspect.getsource(harness._resolve_finalize_terminal_status)
+    assert "arbiter_objective_complete" in verdict_src
+    assert '"post_arbiter_objective_met"' in verdict_src
 
 
 def test_fn_mtd_or_mtday_rca_flow_forces_non_lever5_paths_and_grounding() -> None:
