@@ -23541,6 +23541,48 @@ def _run_lever_loop(
 # ── Stage 4: FINALIZE ───────────────────────────────────────────────
 
 
+def _resolve_finalize_terminal_status(
+    prev_scores: dict[str, float] | Any,
+    iteration_counter: int,
+    max_iterations: int,
+    thresholds: dict[str, float] | None = None,
+) -> tuple[str, str]:
+    """Resolve the terminal ``(status, convergence_reason)`` for a run.
+
+    The verdict is a pure function of the *final scorecard* fed to
+    finalize, the iteration count, and the thresholds:
+
+    * post-arbiter objective met (accuracy == target) → ``CONVERGED`` /
+      ``post_arbiter_objective_met``
+    * all thresholds met → ``CONVERGED`` / ``threshold_met``
+    * iteration budget exhausted → ``MAX_ITERATIONS`` / ``max_iterations``
+    * otherwise → ``STALLED`` / ``no_further_improvement``
+
+    Extracted from ``_run_finalize`` so the verdict can be unit-tested
+    directly — it is the exact decision the finalize stage applies.
+    Feeding it the *stale baseline* scorecard on the lever-loop skip path
+    is what produced the post-enrichment-converged-as-STALLED bug; see
+    ``jobs/run_finalize.py`` and
+    ``jobs/_handoff.select_finalize_skip_scores``.
+    """
+    from genie_space_optimizer.optimization.acceptance_policy import (
+        arbiter_objective_complete,
+    )
+
+    thresholds = thresholds or DEFAULT_THRESHOLDS
+    prev_accuracy = (
+        float(prev_scores.get("accuracy", 0.0))
+        if isinstance(prev_scores, dict) else 0.0
+    )
+    if arbiter_objective_complete(float(prev_accuracy)):
+        return "CONVERGED", "post_arbiter_objective_met"
+    if all_thresholds_met(prev_scores, thresholds):
+        return "CONVERGED", "threshold_met"
+    if iteration_counter >= max_iterations:
+        return "MAX_ITERATIONS", "max_iterations"
+    return "STALLED", "no_further_improvement"
+
+
 def _run_finalize(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -24001,25 +24043,10 @@ def _run_finalize(
         print("\n".join(_term_lines))
 
         _check_timeout("resolve_terminal_status")
-        from genie_space_optimizer.optimization.acceptance_policy import (
-            arbiter_objective_complete,
-        )
 
-        prev_accuracy = float(prev_scores.get("accuracy", 0.0)) if isinstance(prev_scores, dict) else 0.0
-        objective_met = arbiter_objective_complete(float(prev_accuracy))
-        thresholds_met = all_thresholds_met(prev_scores, thresholds)
-        if objective_met:
-            status = "CONVERGED"
-            reason = "post_arbiter_objective_met"
-        elif thresholds_met:
-            status = "CONVERGED"
-            reason = "threshold_met"
-        elif iteration_counter >= max_iterations:
-            status = "MAX_ITERATIONS"
-            reason = "max_iterations"
-        else:
-            status = "STALLED"
-            reason = "no_further_improvement"
+        status, reason = _resolve_finalize_terminal_status(
+            prev_scores, iteration_counter, max_iterations, thresholds,
+        )
 
         terminal_reason = f"finalize_completed:{reason}"
 
