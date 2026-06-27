@@ -74,12 +74,23 @@ describe("review signal helpers", () => {
     expect(reviewReasonText(review)).toBe("LLM_JUDGE_OTHER");
   });
 
-  test("manualAssessment and needsReview booleans also trigger review state", () => {
-    expect(questionOutcome(q({ manualAssessment: true }))).toBe("review");
+  test("manualAssessment alone is metadata, not a review signal", () => {
+    const manualPass = q({
+      assessment: "GOOD",
+      manualAssessment: true,
+      resultCorrectness: "yes",
+    });
+
+    expect(isQuestionNeedsReview(manualPass)).toBe(false);
+    expect(questionPassed(manualPass)).toBe(true);
+    expect(questionOutcome(manualPass)).toBe("pass");
+  });
+
+  test("explicit needsReview boolean still triggers review state", () => {
     expect(questionOutcome(q({ needsReview: true }))).toBe("review");
   });
 
-  test("ordinary pass and fail outcomes remain binary", () => {
+  test("older rows without native fields remain pass/fail", () => {
     expect(questionOutcome(q({ resultCorrectness: "yes" }))).toBe("pass");
     expect(questionOutcome(q({ resultCorrectness: "no" }))).toBe("fail");
   });

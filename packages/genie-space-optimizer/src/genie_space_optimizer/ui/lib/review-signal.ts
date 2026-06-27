@@ -9,7 +9,6 @@ export function isQuestionNeedsReview(
   const assessment = question.assessment?.trim().toUpperCase();
   return (
     question.needsReview === true ||
-    question.manualAssessment === true ||
     assessment === "NEEDS_REVIEW"
   );
 }
