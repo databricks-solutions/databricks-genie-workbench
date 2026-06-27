@@ -32,6 +32,11 @@ import type {
   IterationDetailResponse,
 } from "@/lib/transparency-api";
 import { computeBaselineCounts, humanizeExclusionReason } from "@/lib/exclusions";
+import {
+  needsReviewCount,
+  questionOutcome,
+  reviewReasonText,
+} from "@/lib/review-signal";
 
 interface IterationExplorerProps {
   detail: IterationDetailResponse;
@@ -203,10 +208,11 @@ function IterationView({
   if (iteration.iteration === 0) {
     return <BaselineView iteration={iteration} detail={detail} experimentLink={experimentLink} />;
   }
+  const reviewCount = needsReviewCount(iteration);
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-4">
         <Card>
           <CardHeader className="pb-1">
             <CardTitle className="text-xs uppercase tracking-wide text-muted">
@@ -241,6 +247,18 @@ function IterationView({
           <CardContent>
             <span className="text-2xl font-bold">
               {Object.keys(iteration.judgeScores).length}
+            </span>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-1">
+            <CardTitle className="text-xs uppercase tracking-wide text-muted">
+              Needs Review
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <span className="text-2xl font-bold text-amber-600">
+              {reviewCount}
             </span>
           </CardContent>
         </Card>
@@ -538,7 +556,7 @@ function BaselineView({
 }) {
   const [showAll, setShowAll] = useState(false);
   const [showExclusions, setShowExclusions] = useState(false);
-  const displayed = showAll ? iteration.questions : iteration.questions.slice(0, 20);
+  const reviewCount = needsReviewCount(iteration);
 
   // Bug #2 denominator contract + Bug #3 exclusion partitioning — derived in
   // a pure helper so it can be unit-tested without React/JSDOM. The helper
@@ -554,7 +572,7 @@ function BaselineView({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-4">
         <Card>
           <CardHeader className="pb-1">
             <CardTitle className="text-xs uppercase tracking-wide text-muted">
@@ -603,6 +621,18 @@ function BaselineView({
             </span>
           </CardContent>
         </Card>
+        <Card>
+          <CardHeader className="pb-1">
+            <CardTitle className="text-xs uppercase tracking-wide text-muted">
+              Needs Review
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <span className="text-2xl font-bold text-amber-600">
+              {reviewCount}
+            </span>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Score breakdown */}
@@ -645,18 +675,25 @@ function BaselineView({
                 </TableHeader>
                 <TableBody>
                   {(showAll ? evaluatedQuestions : evaluatedQuestions.slice(0, 20)).map((q) => {
-                    const passed =
-                      q.resultCorrectness === "yes" || q.resultCorrectness === "pass";
+                    const outcome = questionOutcome(q);
                     return (
                       <TableRow key={q.questionId}>
                         <TableCell className="max-w-[400px] truncate text-xs" title={q.question}>
                           {q.question || q.questionId}
                         </TableCell>
                         <TableCell className="text-center">
-                          {passed ? (
+                          {outcome === "pass" ? (
                             <CheckCircle2 className="mx-auto h-4 w-4 text-green-500" />
+                          ) : outcome === "review" ? (
+                            <AlertTriangle
+                              className="mx-auto h-4 w-4 text-amber-500"
+                              aria-label="Needs review"
+                            />
                           ) : (
                             <XCircle className="mx-auto h-4 w-4 text-red-400" />
+                          )}
+                          {outcome === "review" && (
+                            <span className="sr-only">{reviewReasonText(q)}</span>
                           )}
                         </TableCell>
                         <TableCell className="text-center text-xs">

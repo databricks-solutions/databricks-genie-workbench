@@ -90,6 +90,7 @@ export interface IterationSummary {
   correctCount: number;
   excludedCount: number;
   quarantinedCount: number;
+  needsReviewCount: number;
   repeatabilityPct: number | null;
   thresholdsMet: boolean;
   judgeScores: Record<string, number | null>;
@@ -123,6 +124,10 @@ export interface QuestionResult {
   matchType: string | null;
   expectedSql: string | null;
   generatedSql: string | null;
+  assessment?: string | null;
+  manualAssessment?: boolean;
+  assessmentReasons?: string[];
+  needsReview?: boolean;
   // Bug #3 — runtime exclusion metadata.
   excluded?: boolean;
   exclusionReasonCode?: ExclusionReasonCode | null;
@@ -179,6 +184,7 @@ export interface IterationDetail {
   correctCount: number;
   excludedCount: number;
   quarantinedCount: number;
+  needsReviewCount: number;
   mlflowRunId: string | null;
   modelId: string | null;
   gates: GateResultEntry[];

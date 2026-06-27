@@ -1350,6 +1350,125 @@ def _iteration_scores(iter_row: dict | None) -> dict[str, float | None]:
     return {str(k): _safe_float(v) for k, v in scores.items()}
 
 
+def _list_of_str(raw: Any) -> list[str]:
+    """Normalize list-like JSON/string values into non-empty strings."""
+    parsed = safe_json_parse(raw)
+    if parsed is None:
+        return []
+    if isinstance(parsed, str):
+        text = parsed.strip()
+        return [text] if text else []
+    if isinstance(parsed, (list, tuple, set)):
+        out: list[str] = []
+        for item in parsed:
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+    return []
+
+
+def _assessment_value(row: dict[str, Any]) -> str | None:
+    raw = row.get("assessment")
+    if raw is None:
+        return None
+    assessment = str(raw).strip().upper()
+    return assessment or None
+
+
+def _question_result_from_row(row: dict[str, Any]) -> QuestionResult:
+    """Project a persisted eval row into the standalone transparency contract."""
+    inputs = row.get("inputs") if isinstance(row.get("inputs"), dict) else {}
+    q_text = str(
+        row.get("inputs/question")
+        or inputs.get("question", "")
+        or row.get("question")
+        or row.get("question_text")
+        or ""
+    ).strip()
+
+    request = row.get("request") or {}
+    if isinstance(request, str):
+        request = safe_json_parse(request)
+        if not isinstance(request, dict):
+            request = {}
+    request_kwargs = request.get("kwargs", {}) if isinstance(request, dict) else {}
+
+    if not q_text:
+        q_text = str(
+            request_kwargs.get("question")
+            or (request.get("question") if isinstance(request, dict) else None)
+            or ""
+        ).strip()
+
+    q_id = str(
+        row.get("inputs/question_id")
+        or inputs.get("question_id", "")
+        or row.get("question_id")
+        or row.get("request_id")
+        or request_kwargs.get("question_id")
+        or (request.get("question_id") if isinstance(request, dict) else None)
+        or ""
+    )
+    if not q_id and q_text:
+        q_id = q_text[:80]
+
+    verdicts: dict[str, str] = {}
+    failure_types: list[str] = []
+    for key, val in row.items():
+        if key.endswith("/value") and "/" in key:
+            judge_name = key.rsplit("/value", 1)[0]
+            verdicts[judge_name] = str(val)
+
+    rc = row.get("result_correctness/value", row.get("result_correctness"))
+    if rc:
+        verdicts.setdefault("result_correctness", str(rc))
+
+    match_type = None
+    gen_sql = None
+    expected_sql = None
+    if isinstance(row.get("outputs"), dict):
+        comp = row["outputs"].get("comparison", {})
+        if isinstance(comp, dict):
+            match_type = comp.get("match_type")
+        gen_sql = str(row["outputs"].get("generated_sql", ""))[:500] or None
+        expected_sql = str(row["outputs"].get("expected_sql", ""))[:500] or None
+    if gen_sql is None and row.get("generated_sql") is not None:
+        gen_sql = str(row.get("generated_sql", ""))[:500] or None
+    if expected_sql is None and row.get("expected_sql") is not None:
+        expected_sql = str(row.get("expected_sql", ""))[:500] or None
+
+    excl = row.get("exclusion") if isinstance(row.get("exclusion"), dict) else None
+    is_excluded = bool(excl)
+    excl_code = str(excl.get("reason_code") or "") if excl else None
+    excl_detail = str(excl.get("reason_detail") or "") if excl else None
+
+    assessment = _assessment_value(row)
+    manual_assessment = _is_truthy(row.get("manual_assessment"))
+    needs_review = (
+        _is_truthy(row.get("needs_review"))
+        or assessment == "NEEDS_REVIEW"
+    )
+
+    return QuestionResult(
+        questionId=q_id,
+        question=q_text,
+        resultCorrectness=verdicts.get("result_correctness"),
+        judgeVerdicts=verdicts,
+        failureTypes=failure_types,
+        matchType=match_type,
+        expectedSql=expected_sql,
+        generatedSql=gen_sql,
+        assessment=assessment,
+        manualAssessment=manual_assessment,
+        assessmentReasons=_list_of_str(row.get("assessment_reasons")),
+        needsReview=needs_review,
+        excluded=is_excluded,
+        exclusionReasonCode=excl_code or None,
+        exclusionReasonDetail=excl_detail or None,
+    )
+
+
 def _derive_lever_status(stages: list[dict]) -> str:
     statuses = {str(s.get("status", "")).upper() for s in stages}
     if "ROLLED_BACK" in statuses:
@@ -1984,6 +2103,7 @@ def get_iterations(run_id: str, config: Dependencies.Config):
                 correctCount=_counts["correct"],
                 excludedCount=_counts["excluded"],
                 quarantinedCount=_counts["quarantined"],
+                needsReviewCount=_safe_int(row.get("num_needs_review")) or 0,
                 repeatabilityPct=_safe_float(row.get("repeatability_pct")),
                 thresholdsMet=bool(row.get("thresholds_met", False)),
                 judgeScores={str(k): _safe_float(v) for k, v in scores.items()},
@@ -2324,6 +2444,7 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
         evaluated_c = _iter_counts["evaluated"]
         excluded_c = _iter_counts["excluded"]
         quarantined_c = _iter_counts["quarantined"]
+        needs_review_c = _safe_int(full_row.get("num_needs_review")) or 0
 
         # Bug #2 (PR #79 review #4) — serve the derived accuracy so the
         # iteration detail tile agrees with the KPI card and iteration
@@ -2434,80 +2555,11 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
             for row in rows_json:
                 if not isinstance(row, dict):
                     continue
-                q_text = str(
-                    row.get("inputs/question")
-                    or (row.get("inputs") or {}).get("question", "")
-                    or row.get("question")
-                    or row.get("question_text")
-                    or ""
-                ).strip()
+                question = _question_result_from_row(row)
+                questions.append(question)
 
-                _rq = row.get("request") or {}
-                if isinstance(_rq, str):
-                    try:
-                        _rq = json.loads(_rq)
-                    except (json.JSONDecodeError, TypeError):
-                        _rq = {}
-                _rqk = _rq.get("kwargs", {}) if isinstance(_rq, dict) else {}
-
-                if not q_text:
-                    q_text = str(
-                        _rqk.get("question")
-                        or (_rq.get("question") if isinstance(_rq, dict) else None)
-                        or ""
-                    ).strip()
-
-                q_id = str(
-                    row.get("inputs/question_id")
-                    or (row.get("inputs") or {}).get("question_id", "")
-                    or row.get("question_id")
-                    or row.get("request_id")
-                    or _rqk.get("question_id")
-                    or (_rq.get("question_id") if isinstance(_rq, dict) else None)
-                    or ""
-                )
-                if not q_id and q_text:
-                    q_id = q_text[:80]
-
-                verdicts: dict[str, str] = {}
-                failure_types: list[str] = []
-                for key, val in row.items():
-                    if key.endswith("/value") and "/" in key:
-                        judge_name = key.rsplit("/value", 1)[0]
-                        verdicts[judge_name] = str(val)
-
-                rc = row.get("result_correctness/value", row.get("result_correctness"))
-                if rc:
-                    verdicts.setdefault("result_correctness", str(rc))
-
-                match_type = None
-                gen_sql = None
-                expected_sql = None
-                if isinstance(row.get("outputs"), dict):
-                    comp = row["outputs"].get("comparison", {})
-                    if isinstance(comp, dict):
-                        match_type = comp.get("match_type")
-                    gen_sql = str(row["outputs"].get("generated_sql", ""))[:500] or None
-                    expected_sql = str(row["outputs"].get("expected_sql", ""))[:500] or None
-
-                _excl = row.get("exclusion") if isinstance(row.get("exclusion"), dict) else None
-                _is_excluded = bool(_excl)
-                _excl_code = str(_excl.get("reason_code") or "") if _excl else None
-                _excl_detail = str(_excl.get("reason_detail") or "") if _excl else None
-
-                questions.append(QuestionResult(
-                    questionId=q_id,
-                    question=q_text,
-                    resultCorrectness=verdicts.get("result_correctness"),
-                    judgeVerdicts=verdicts,
-                    failureTypes=failure_types,
-                    matchType=match_type,
-                    expectedSql=expected_sql,
-                    generatedSql=gen_sql,
-                    excluded=_is_excluded,
-                    exclusionReasonCode=_excl_code or None,
-                    exclusionReasonDetail=_excl_detail or None,
-                ))
+        if needs_review_c == 0:
+            needs_review_c = sum(1 for q in questions if q.needsReview)
 
         iterations.append(IterationDetail(
             iteration=it_num,
@@ -2520,6 +2572,7 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
             correctCount=correct_c,
             excludedCount=excluded_c,
             quarantinedCount=quarantined_c,
+            needsReviewCount=needs_review_c,
             mlflowRunId=mlflow_rid,
             modelId=model_id,
             gates=gates,
