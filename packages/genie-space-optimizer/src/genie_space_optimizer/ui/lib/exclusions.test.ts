@@ -58,6 +58,7 @@ function iteration(
     correctCount: 0,
     excludedCount: 0,
     quarantinedCount: 0,
+    needsReviewCount: 0,
     mlflowRunId: null,
     modelId: null,
     gates: [],
@@ -67,6 +68,13 @@ function iteration(
     quarantinedBenchmarks: [],
     clusterInfo: null,
     timestamp: null,
+    leakageCountByType: {},
+    firewallRejectionCountByType: {},
+    secondaryMiningBlocked: 0,
+    synthesisSlotsPersisted: 0,
+    arbiterRejectionCount: 0,
+    clusterFallbackToInstructionCount: 0,
+    synthesisArchetypeDistribution: {},
     ...partial,
   };
 }
