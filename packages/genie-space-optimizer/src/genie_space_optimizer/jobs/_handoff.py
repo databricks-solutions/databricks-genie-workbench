@@ -445,6 +445,7 @@ def get_enrichment_state(
 from genie_space_optimizer.optimization.state import (
     load_iterations,
     load_latest_full_iteration,
+    load_latest_state_iteration,
 )
 
 
@@ -596,6 +597,61 @@ def select_finalize_skip_scores(
     if lever_loop_scores:
         return lever_loop_scores
     return baseline_scores or {}
+
+
+def resolve_finalize_skip_scores(
+    spark: "SparkSession",
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    lever_loop_scores: HandoffValue,
+    baseline_scores: Any,
+) -> Any:
+    """Resolve the scorecard finalize scores on the lever-loop skip path.
+
+    Resolution priority:
+
+    1. **Authoritative published skip scorecard** — when
+       ``lever_loop.scores`` came straight from task values, the lever-
+       loop skip path already resolved it (baseline OR post-enrichment),
+       so it is the source of truth.
+    2. **Repair / Delta fallback** — when task values were lost,
+       ``get_lever_loop_outputs`` resolves ``lever_loop.scores`` from
+       ``load_latest_full_iteration`` (``eval_scope='full'``), which on a
+       skip is the *stale baseline* row. That leaks the pre-enrichment
+       scorecard for a ``post_enrichment_meets_thresholds`` skip and makes
+       finalize stall. Re-resolve via ``load_latest_state_iteration``
+       (``eval_scope IN ('full', 'enrichment')``, enrichment preferred so
+       the newer iter-0 row wins) so the post-enrichment scorecard is
+       chosen instead.
+    3. **Baseline scorecard** — last resort when neither a published nor a
+       Delta state scorecard exists.
+
+    Args:
+        spark: Active Spark session for the Delta read.
+        run_id, catalog, schema: Locate the run's iteration state.
+        lever_loop_scores: The ``lever_loop.scores`` HandoffValue (carries
+            the ``HandoffSource`` so authoritative task values can be told
+            apart from the stale full-row Delta fallback).
+        baseline_scores: ``baseline_eval`` scores (dict) or ``None``.
+
+    Returns:
+        The scorecard dict to feed ``_run_finalize`` (never ``None``).
+    """
+    if (
+        lever_loop_scores.source is HandoffSource.TASK_VALUES
+        and lever_loop_scores.value
+    ):
+        return lever_loop_scores.value
+
+    state_row = (
+        load_latest_state_iteration(spark, run_id, catalog, schema) or {}
+    )
+    return select_finalize_skip_scores(
+        lever_loop_scores=state_row.get("scores_json"),
+        baseline_scores=baseline_scores,
+    )
 
 
 def assert_lever_loop_inputs_sane(state: dict[str, HandoffValue]) -> None:

@@ -16,11 +16,18 @@ Production divergence:
   ``{"status": "STALLED", "convergence_reason": "no_further_improvement"}``
   even though the live Genie Space was genuinely above threshold.
 
-These tests lock the fix at both layers:
+These tests lock the fix at three layers:
 
-* :func:`select_finalize_skip_scores` — the skip path prefers the
-  lever_loop (post-enrichment) scorecard, falling back to baseline only
+* :func:`select_finalize_skip_scores` — the pure priority core: prefer
+  the lever_loop (post-enrichment) scorecard, fall back to baseline only
   when no skip scores were published.
+* :func:`resolve_finalize_skip_scores` — the wired resolver. On the happy
+  path it returns the authoritative published task value; on a **repair**
+  run where task values were lost (so ``lever_loop.scores`` fell back to
+  the stale baseline *full* row), it re-reads the skip-aware Delta state
+  row (``eval_scope IN ('full', 'enrichment')``, enrichment preferred) so
+  a ``post_enrichment_meets_thresholds`` skip still resolves to the
+  post-enrichment scorecard.
 * :func:`_resolve_finalize_terminal_status` — the exact verdict
   ``_run_finalize`` applies. Wiring the correct scorecard through it must
   yield ``CONVERGED`` / ``threshold_met``, and the stale baseline
@@ -30,8 +37,15 @@ These tests lock the fix at both layers:
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 from genie_space_optimizer.common.config import DEFAULT_THRESHOLDS
-from genie_space_optimizer.jobs._handoff import select_finalize_skip_scores
+from genie_space_optimizer.jobs._handoff import (
+    HandoffSource,
+    HandoffValue,
+    resolve_finalize_skip_scores,
+    select_finalize_skip_scores,
+)
 from genie_space_optimizer.optimization.harness import (
     _resolve_finalize_terminal_status,
 )
@@ -166,3 +180,113 @@ def test_verdict_perfect_accuracy_is_arbiter_objective_met():
     )
     assert status == "CONVERGED"
     assert reason == "post_arbiter_objective_met"
+
+
+# ── Layer 3: wired skip-score resolver (incl. repair / Delta path) ────
+
+
+def _scores_hv(value, source):
+    """Build a ``lever_loop.scores`` HandoffValue for the resolver."""
+    return HandoffValue(key="scores", value=value, source=source)
+
+
+def _patch_state_row(scores_json):
+    """Patch ``load_latest_state_iteration`` to return a Delta state row
+    (or ``None``) with the given ``scores_json``."""
+    row = None if scores_json is None else {"iteration": 0, "scores_json": scores_json}
+    return patch(
+        "genie_space_optimizer.jobs._handoff.load_latest_state_iteration",
+        return_value=row,
+    )
+
+
+def test_resolver_authoritative_task_value_short_circuits_delta_read():
+    """Happy path: when ``lever_loop.scores`` came from task values it is
+    authoritative — the resolver returns it without touching Delta."""
+    hv = _scores_hv(_POST_ENRICHMENT_SCORES, HandoffSource.TASK_VALUES)
+    with patch(
+        "genie_space_optimizer.jobs._handoff.load_latest_state_iteration",
+    ) as mock_state:
+        resolved = resolve_finalize_skip_scores(
+            MagicMock(),
+            run_id="r", catalog="c", schema="s",
+            lever_loop_scores=hv,
+            baseline_scores=_BASELINE_SCORES,
+        )
+    mock_state.assert_not_called()
+    assert resolved == _POST_ENRICHMENT_SCORES
+
+
+def test_resolver_repair_path_prefers_enrichment_state_over_stale_baseline():
+    """Repair / Delta-fallback regression (the cross-review blocker):
+
+    lever_loop task values were lost, so ``get_lever_loop_outputs``
+    resolved ``lever_loop.scores`` from ``load_latest_full_iteration`` —
+    the stale baseline *full* row (83.33%, below threshold). The skip-
+    aware resolver must instead pick the enrichment state row (86.67%,
+    above threshold) so finalize converges rather than stalls.
+    """
+    # ll["scores"] is the stale baseline full row, NOT from task values.
+    stale_ll = _scores_hv(_BASELINE_SCORES, HandoffSource.DELTA_FALLBACK)
+    with _patch_state_row(_POST_ENRICHMENT_SCORES):
+        resolved = resolve_finalize_skip_scores(
+            MagicMock(),
+            run_id="r", catalog="c", schema="s",
+            lever_loop_scores=stale_ll,
+            baseline_scores=_BASELINE_SCORES,
+        )
+    assert resolved == _POST_ENRICHMENT_SCORES
+
+    status, reason = _resolve_finalize_terminal_status(
+        resolved, _SKIP_ITERATION_COUNTER, _MAX_ITERATIONS,
+    )
+    assert (status, reason) == ("CONVERGED", "threshold_met"), (
+        "repair path must converge on the enrichment scorecard, not stall "
+        "on the stale baseline full row"
+    )
+
+
+def test_resolver_repair_path_baseline_meets_thresholds_unchanged():
+    """``baseline_meets_thresholds`` skip on a repair: enrichment was
+    skipped so there is no enrichment row, and ``load_latest_state_iteration``
+    returns the baseline full row. The resolver returns those baseline
+    scores — the legacy skip case is preserved."""
+    baseline_above = {"result_correctness": 90.0, "accuracy": 90.0}
+    stale_ll = _scores_hv(None, HandoffSource.MISSING)
+    with _patch_state_row(baseline_above):
+        resolved = resolve_finalize_skip_scores(
+            MagicMock(),
+            run_id="r", catalog="c", schema="s",
+            lever_loop_scores=stale_ll,
+            baseline_scores=baseline_above,
+        )
+    assert resolved == baseline_above
+
+
+def test_resolver_repair_path_falls_back_to_baseline_when_state_empty():
+    """Last resort: task values lost AND no Delta state row at all → fall
+    back to the baseline scorecard rather than an empty dict."""
+    stale_ll = _scores_hv(None, HandoffSource.MISSING)
+    with _patch_state_row(None):
+        resolved = resolve_finalize_skip_scores(
+            MagicMock(),
+            run_id="r", catalog="c", schema="s",
+            lever_loop_scores=stale_ll,
+            baseline_scores=_BASELINE_SCORES,
+        )
+    assert resolved == _BASELINE_SCORES
+
+
+def test_resolver_empty_authoritative_value_falls_through_to_state_read():
+    """Defensive: a TASK_VALUES source carrying an empty scorecard must not
+    short-circuit — the resolver falls through to the skip-aware state
+    read so an empty published value never wins over real Delta scores."""
+    empty_auth = _scores_hv({}, HandoffSource.TASK_VALUES)
+    with _patch_state_row(_POST_ENRICHMENT_SCORES):
+        resolved = resolve_finalize_skip_scores(
+            MagicMock(),
+            run_id="r", catalog="c", schema="s",
+            lever_loop_scores=empty_auth,
+            baseline_scores=_BASELINE_SCORES,
+        )
+    assert resolved == _POST_ENRICHMENT_SCORES
