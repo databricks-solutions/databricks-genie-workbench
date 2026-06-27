@@ -32,7 +32,7 @@
 # MAGIC
 # MAGIC > **📝 Note:** This task reads scores and model metadata from **either** `lever_loop` **or** `baseline_eval`, depending on whether the lever loop was skipped. The `skipped` task value from `lever_loop` determines which source to use.
 # MAGIC
-# MAGIC - **If lever loop was skipped** (baseline already met all thresholds): reads from `baseline_eval` — scores, model_id, and iteration_counter=0.
+# MAGIC - **If lever loop was skipped** (baseline OR post-enrichment already met all thresholds): reads `scores`/`model_id` from `lever_loop` (the skip path publishes the resolved current scorecard there) with iteration_counter=0.
 # MAGIC - **If lever loop ran**: reads from `lever_loop` — scores, model_id, and iteration_counter from the last iteration.
 # MAGIC
 # MAGIC ## ⚠️ What Happens If This Task Fails
@@ -143,12 +143,12 @@ _log = partial(_log_base, _TASK_LABEL)
 # MAGIC **From lever_loop or baseline_eval (conditional):**
 # MAGIC
 # MAGIC | Key | Source when skipped | Source when ran | Purpose |
-# MAGIC |-----|--------------------|-----------------|---------| 
-# MAGIC | `scores` | `baseline_eval` | `lever_loop` | Per-judge score dict |
-# MAGIC | `model_id` | `baseline_eval` | `lever_loop` | Best model version ID |
-# MAGIC | `iteration_counter` | `0` (hardcoded) | `lever_loop` | Number of lever iterations completed |
+# MAGIC |-----|--------------------|-----------------|---------|
+# MAGIC | `scores` | `lever_loop` (resolved skip scorecard) | `lever_loop` | Per-judge score dict |
+# MAGIC | `model_id` | `lever_loop` | `lever_loop` | Best model version ID |
+# MAGIC | `iteration_counter` | `0` | `lever_loop` | Number of lever iterations completed |
 # MAGIC
-# MAGIC > **📝 Note:** The `skipped` key from `lever_loop` determines which source to use. When `True`, baseline values are used directly since no optimization was needed.
+# MAGIC > **📝 Note:** The `skipped` key from `lever_loop` flags that no optimization iterations ran. Even on a skip the scorecard comes from `lever_loop`, because the skip path publishes the *resolved current* scorecard (baseline OR post-enrichment) — reading `baseline_eval.scores` would leak the stale pre-enrichment numbers and mis-finalize a post-enrichment-converged run as STALLED.
 
 # COMMAND ----------
 
@@ -177,6 +177,7 @@ from genie_space_optimizer.jobs._handoff import (
     get_baseline_eval_state,
     get_lever_loop_outputs,
     get_run_context,
+    select_finalize_skip_scores,
 )
 
 ctx = get_run_context(
@@ -229,7 +230,18 @@ baseline = get_baseline_eval_state(
 _baseline_mlflow_run_id = baseline["mlflow_run_id"].value or ""
 
 if lever_skipped:
-    prev_scores = baseline["scores"].value
+    # PR 34: the lever_loop skip path publishes the *resolved* current
+    # scorecard (baseline OR post-enrichment) as ``lever_loop.scores``.
+    # Reading baseline_eval.scores here would leak the stale pre-
+    # enrichment scorecard whenever enrichment raised accuracy above
+    # thresholds — _run_finalize would then evaluate thresholds against
+    # numbers below target and finalize a CONVERGED run as STALLED
+    # (no_further_improvement). Prefer the lever_loop scorecard; fall
+    # back to baseline only for the recovery path where it is empty.
+    prev_scores = select_finalize_skip_scores(
+        lever_loop_scores=ll["scores"].value,
+        baseline_scores=baseline["scores"].value,
+    )
     all_eval_mlflow_run_ids = (
         [_baseline_mlflow_run_id] if _baseline_mlflow_run_id else []
     )

@@ -562,6 +562,42 @@ def get_lever_loop_outputs(
     return out
 
 
+def select_finalize_skip_scores(
+    *,
+    lever_loop_scores: Any,
+    baseline_scores: Any,
+) -> Any:
+    """Pick the scorecard finalize evaluates when the lever loop skipped.
+
+    ``jobs/run_lever_loop.py`` publishes the *resolved* current scorecard
+    (baseline OR post-enrichment) into the ``lever_loop.scores`` task
+    value before exiting on its starting-point gate — see the skip path
+    in that notebook. So when enrichment raised accuracy above thresholds
+    and the loop skipped with ``post_enrichment_meets_thresholds``, the
+    post-enrichment scorecard is what lives in ``lever_loop.scores``.
+
+    Historically the finalize task read ``baseline_eval.scores`` whenever
+    the loop was skipped. That leaked the *stale pre-enrichment*
+    scorecard: ``_run_finalize`` then evaluated thresholds against numbers
+    below target and finalized a genuinely CONVERGED run as STALLED
+    (``no_further_improvement``). The lever_loop scores are authoritative
+    whenever present; the baseline scorecard is only a degraded fallback
+    for the recovery path where the skip never published scores.
+
+    Args:
+        lever_loop_scores: Scores published by ``lever_loop`` (dict) or a
+            falsy value (``None`` / ``{}``) if the task value and Delta
+            fallback were both empty.
+        baseline_scores: Scores from ``baseline_eval`` (dict) or ``None``.
+
+    Returns:
+        The scorecard dict to feed ``_run_finalize`` (never ``None``).
+    """
+    if lever_loop_scores:
+        return lever_loop_scores
+    return baseline_scores or {}
+
+
 def assert_lever_loop_inputs_sane(state: dict[str, HandoffValue]) -> None:
     """Refuse to run the lever loop with degenerate baseline inputs.
 
