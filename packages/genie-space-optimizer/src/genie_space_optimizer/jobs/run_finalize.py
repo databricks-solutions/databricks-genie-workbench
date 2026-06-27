@@ -177,7 +177,7 @@ from genie_space_optimizer.jobs._handoff import (
     get_baseline_eval_state,
     get_lever_loop_outputs,
     get_run_context,
-    select_finalize_skip_scores,
+    resolve_finalize_skip_scores,
 )
 
 ctx = get_run_context(
@@ -230,16 +230,24 @@ baseline = get_baseline_eval_state(
 _baseline_mlflow_run_id = baseline["mlflow_run_id"].value or ""
 
 if lever_skipped:
-    # PR 34: the lever_loop skip path publishes the *resolved* current
-    # scorecard (baseline OR post-enrichment) as ``lever_loop.scores``.
-    # Reading baseline_eval.scores here would leak the stale pre-
-    # enrichment scorecard whenever enrichment raised accuracy above
-    # thresholds — _run_finalize would then evaluate thresholds against
-    # numbers below target and finalize a CONVERGED run as STALLED
-    # (no_further_improvement). Prefer the lever_loop scorecard; fall
-    # back to baseline only for the recovery path where it is empty.
-    prev_scores = select_finalize_skip_scores(
-        lever_loop_scores=ll["scores"].value,
+    # PR 34 + cross-review: the lever_loop skip path publishes the
+    # *resolved* current scorecard (baseline OR post-enrichment) as
+    # ``lever_loop.scores``. Reading baseline_eval.scores here would leak
+    # the stale pre-enrichment scorecard whenever enrichment raised
+    # accuracy above thresholds — _run_finalize would then evaluate
+    # thresholds against numbers below target and finalize a CONVERGED
+    # run as STALLED (no_further_improvement).
+    #
+    # ``resolve_finalize_skip_scores`` prefers the authoritative published
+    # task value; on a repair run where task values were lost it re-reads
+    # the skip-aware Delta state row (enrichment preferred over the stale
+    # baseline full row) before falling back to baseline.
+    prev_scores = resolve_finalize_skip_scores(
+        spark,
+        run_id=run_id,
+        catalog=catalog,
+        schema=schema,
+        lever_loop_scores=ll["scores"],
         baseline_scores=baseline["scores"].value,
     )
     all_eval_mlflow_run_ids = (
