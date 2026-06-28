@@ -127,7 +127,7 @@ C-<cycle>-<letter> (seed): <pattern>
 
 | `opt_run_id` | Genie Space | Domain | Baseline % | Final % | Target QID(s) | Hard-fail QIDs at termination | Postmortem path |
 |---|---|---|---|---|---|---|---|
-| `0ade1a99-9406-4a68-a3bc-8c77be78edcb` | `01f143dfbeec15a3a0e87ced8662f4ed` | `airline_ticketing_and_fare_analysis` | 87.5% | 91.7% | `gs_009`, `gs_024` | `gs_009`, `gs_024` (both unresolved) | [`runid_analysis/0ade1a99-9406-4a68-a3bc-8c77be78edcb/postmortem.md`](./runid_analysis/0ade1a99-9406-4a68-a3bc-8c77be78edcb/postmortem.md) |
+| `0ade1a99-9406-4a68-a3bc-8c77be78edcb` | `<SPACE_ID>` | `airline_ticketing_and_fare_analysis` | 87.5% | 91.7% | `gs_009`, `gs_024` | `gs_009`, `gs_024` (both unresolved) | [`runid_analysis/0ade1a99-9406-4a68-a3bc-8c77be78edcb/postmortem.md`](./runid_analysis/0ade1a99-9406-4a68-a3bc-8c77be78edcb/postmortem.md) |
 
 #### Section 2: Postmortem clustering
 
@@ -358,7 +358,7 @@ C-2-B (seed): F3 strategist coverage gaps with missing RCA cards
 
 ### Cycle 3 — 2026-05-04 — Truth-of-state and causal-candidate generation from `2423b960`
 
-**Inspiration:** [`docs/runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md`](./runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md). The 7Now-delivery-analytics run on space `01f128aea2c210559cffb663d9c58282` had four lever-loop attempts fail before a successful retry: 2× `soft-cluster currency drift` (the assertion fixed in this branch's prior turn) and 2× `get_run_context: run_id_widget is required`. The successful attempt then exhausted 5 iterations at 89.47% with zero accepted action groups. Acceptance behaved correctly — AG1 regressed two qids and rolled back. The breakdowns are upstream of acceptance: cross-lever patch-id collisions, soft→hard regression accounting silently miscounting `gs_001`, lever-5 structural gate dropping instruction-only proposals for SQL-shape RCAs (`gs_021 missing_filter`) without any synthesis fallback, iter-3/iter-4 emitting `Proposals (0 total)` with no logged drop reason, and iter-5 replaying the same dead AG_COVERAGE_H002 because the DOA dedup didn't catch generator-emitted-then-gate-dropped proposals.
+**Inspiration:** [`docs/runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md`](./runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md). The 7Now-delivery-analytics run on space `<SPACE_ID>` had four lever-loop attempts fail before a successful retry: 2× `soft-cluster currency drift` (the assertion fixed in this branch's prior turn) and 2× `get_run_context: run_id_widget is required`. The successful attempt then exhausted 5 iterations at 89.47% with zero accepted action groups. Acceptance behaved correctly — AG1 regressed two qids and rolled back. The breakdowns are upstream of acceptance: cross-lever patch-id collisions, soft→hard regression accounting silently miscounting `gs_001`, lever-5 structural gate dropping instruction-only proposals for SQL-shape RCAs (`gs_021 missing_filter`) without any synthesis fallback, iter-3/iter-4 emitting `Proposals (0 total)` with no logged drop reason, and iter-5 replaying the same dead AG_COVERAGE_H002 because the DOA dedup didn't catch generator-emitted-then-gate-dropped proposals.
 
 **Implementation plans:** Five sibling plans, landing in dependency order.
 
@@ -376,7 +376,7 @@ C-2-B (seed): F3 strategist coverage gaps with missing RCA cards
 
 | `opt_run_id` | Genie Space | Domain | Baseline % | Final % | Target QID(s) | Hard-fail QIDs at termination | Postmortem path |
 |---|---|---|---|---|---|---|---|
-| `2423b960-16e8-41d4-a0cb-74c563378e05` | `01f128aea2c210559cffb663d9c58282` | `7now_delivery_analytics_space` | 89.47% | 89.47% | `gs_026` (iter 1) | `gs_026` (`H001 plural_top_n_collapse`), `gs_021` (`H002 missing_filter`) | [`runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md`](./runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md) |
+| `2423b960-16e8-41d4-a0cb-74c563378e05` | `<SPACE_ID>` | `7now_delivery_analytics_space` | 89.47% | 89.47% | `gs_026` (iter 1) | `gs_026` (`H001 plural_top_n_collapse`), `gs_021` (`H002 missing_filter`) | [`runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md`](./runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md) |
 
 #### Section 2: Postmortem clustering
 
