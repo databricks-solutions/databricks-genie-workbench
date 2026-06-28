@@ -4,8 +4,8 @@
 ``:20746``).
 
 Cycle 11's typed ``PRODUCER_EXCEPTION`` decision record from run
-``476499410793687`` (7now, parent run
-``3b050ec5-4032-457f-a785-2d1a3942a097``) named the bug:
+``900000000000002`` (7now, parent run
+``11110001-0000-4000-8000-000000000001``) named the bug:
 
     NameError("name '_baseline_rows_for_control_plane' is not defined")
 

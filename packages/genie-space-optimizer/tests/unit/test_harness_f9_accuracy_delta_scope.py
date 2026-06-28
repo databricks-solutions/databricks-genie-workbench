@@ -3,8 +3,8 @@ on ``full_accuracy`` at ``harness.py:_run_lever_loop`` (line ``:13779``
 post-Bug-A-fix; ``:13751`` pre-fix as named in the deployed traceback).
 
 Cycle 11's typed ``PRODUCER_EXCEPTION`` decision record from run
-``40405156883710`` (airline, parent run
-``1099b152-8655-4f1e-ab43-1240a9400280``) named the bug:
+``90000000000004`` (airline, parent run
+``11110002-0000-4000-8000-000000000002``) named the bug:
 
     UnboundLocalError("cannot access local variable 'full_accuracy'
     where it is not associated with a value")

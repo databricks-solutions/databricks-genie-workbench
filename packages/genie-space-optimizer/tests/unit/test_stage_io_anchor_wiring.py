@@ -1,7 +1,7 @@
 """Pin that every _StageCtx in the lever loop carries
 _phase_h_anchor_run_id, not None.
 
-Run 1099b152's MLflow audit showed only stages 04 and 05 captured.
+Run 11110002's MLflow audit showed only stages 04 and 05 captured.
 Stages 01 (clustering), 03 (full eval), 06 (safety_gates), 07 (applied
 patches) were skipped because their _StageCtx hard-coded
 mlflow_anchor_run_id=None. This test scans the source for any

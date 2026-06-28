@@ -635,7 +635,7 @@ def test_benchmark_firewall_only_blocks_example_sql_answer_shape() -> None:
             "id": "q1",
             "question": "Use fn_mtd_or_mtday for PY sales MTD.",
             "expected_sql": (
-                "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+                "SELECT main.sales_reports."
                 "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
             ),
         }
@@ -644,7 +644,7 @@ def test_benchmark_firewall_only_blocks_example_sql_answer_shape() -> None:
     example = {
         "example_question": "Use fn_mtd_or_mtday for PY sales MTD.",
         "example_sql": (
-            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "SELECT main.sales_reports."
             "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
         ),
     }
@@ -674,7 +674,7 @@ def test_failed_row_structural_learning_allows_snippets_but_blocks_example_sql()
             "id": "q_fn",
             "question": "Show prior-year month-to-date sales.",
             "expected_sql": (
-                "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+                "SELECT main.sales_reports."
                 "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
             ),
         }
@@ -684,7 +684,7 @@ def test_failed_row_structural_learning_allows_snippets_but_blocks_example_sql()
         "patch_type": "add_sql_snippet_expression",
         "source": "rca_failed_question_sql",
         "sql": (
-            "prashanth_subrahmanyam_catalog.sales_reports."
+            "main.sales_reports."
             "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
         ),
         "display_name": "7NOW PY MTD Selector",
@@ -694,7 +694,7 @@ def test_failed_row_structural_learning_allows_snippets_but_blocks_example_sql()
         "source": "rca_failed_question_sql",
         "example_question": "Show prior-year month-to-date sales.",
         "example_sql": (
-            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "SELECT main.sales_reports."
             "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
         ),
     }

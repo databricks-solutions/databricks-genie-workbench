@@ -1,6 +1,6 @@
 """Regression — closes the cross-scope NameError at
 ``harness.py:20531`` that Cycle 11's typed ``PRODUCER_EXCEPTION``
-record surfaced in run ``80532762433063`` (space 7now).
+record surfaced in run ``90000000000003`` (space 7now).
 
 The acceptance stage's candidate-pre-arbiter computation referenced
 ``full_pre_arbiter_accuracy``, a name only assigned in a sibling eval
