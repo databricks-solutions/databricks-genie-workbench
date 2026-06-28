@@ -60,10 +60,19 @@ def nested_get(row: dict, *paths: str, default: Any = "") -> Any:
 
 def request_kwargs(row: dict) -> dict:
     request = _json_dict(row.get("request"))
+    if not isinstance(request, dict):
+        return {}
     kwargs = request.get("kwargs")
     if isinstance(kwargs, dict):
-        return kwargs
-    return request if isinstance(request, dict) else {}
+        # The canonical MLflow shape nests every call arg under ``kwargs``
+        # (question_id / question / expected_sql together). Some in-process
+        # rows instead place ``question`` / ``expected_sql`` as request-level
+        # siblings while only ``question_id`` lives under ``kwargs``. Surface
+        # both, with ``kwargs`` taking precedence, so neither shape drops a
+        # field — request-level siblings are no longer hidden by the presence
+        # of a ``kwargs`` sub-dict.
+        return {**request, **kwargs}
+    return request
 
 
 def response_payload(row: dict) -> dict:

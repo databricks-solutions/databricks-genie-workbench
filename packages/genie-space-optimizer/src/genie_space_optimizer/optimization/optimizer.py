@@ -74,6 +74,11 @@ from genie_space_optimizer.common.config import (
     get_llm_endpoint,
 )
 from genie_space_optimizer.common.genie_schema import ensure_join_spec_fields
+from genie_space_optimizer.optimization.eval_row_access import (
+    row_expected_sql,
+    row_generated_sql,
+    row_question,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2013,13 +2018,15 @@ def cluster_failures(
         if qid and qid in _held_out:
             continue
 
-        _req = row.get("request") or {}
-        if isinstance(_req, str):
-            try:
-                _req = json.loads(_req)
-            except (json.JSONDecodeError, TypeError):
-                _req = {}
-        _req_kwargs = _req.get("kwargs", {}) if isinstance(_req, dict) else {}
+        # ``question`` / ``expected_sql`` / ``generated_sql`` are read via the
+        # canonical path-agnostic accessors in ``eval_row_access`` rather than
+        # ``row["request"]``. The official Benchmark eval runner
+        # (``eval_runner.map_eval_detail_to_row``) never writes a ``request``
+        # key — it carries the gold SQL at top-level ``expected_sql`` /
+        # ``inputs/expected_response`` / ``expectations.expected_response`` and
+        # the question at ``inputs/question``. The legacy in-process row builder
+        # (``harness.py``) emits ``request``; the accessors resolve both shapes.
+        # ``comparison`` still lives under ``response`` for both runners.
         _resp = row.get("response") or {}
         if isinstance(_resp, str):
             try:
@@ -2031,10 +2038,13 @@ def cluster_failures(
 
         # S2: disambiguate duplicate qids by request signature. Signature is
         # (question_text, expected_sql) — stable across the benchmark row
-        # identity but unique across distinct rows that share an id.
-        _row_question = _req.get("question", "") if isinstance(_req, dict) else ""
-        _row_expected = _req.get("expected_sql", "") if isinstance(_req, dict) else ""
-        _row_signature = (str(_row_question).strip(), str(_row_expected).strip())
+        # identity but unique across distinct rows that share an id. Read via
+        # the accessors so official rows (no ``request`` key) produce a real
+        # signature instead of collapsing to ``("", "")`` and being dropped as
+        # spurious pure-duplicates.
+        _row_question = row_question(row)
+        _row_expected = row_expected_sql(row)
+        _row_signature = (_row_question, _row_expected)
         # Tier 2.12: capture the base question_id (the real benchmark id)
         # separately so ``:vN`` tokens never propagate into outward-facing
         # fields. Downstream consumers that need to map back to a benchmark
@@ -2058,9 +2068,9 @@ def cluster_failures(
             _qid_version[question_id] = 1
 
         sql_ctx = {
-            "question": _req.get("question", "") if isinstance(_req, dict) else "",
-            "expected_sql": _req.get("expected_sql", "") if isinstance(_req, dict) else "",
-            "generated_sql": _resp.get("response", "") if isinstance(_resp, dict) else "",
+            "question": row_question(row),
+            "expected_sql": row_expected_sql(row),
+            "generated_sql": row_generated_sql(row),
             "comparison": _resp.get("comparison", {}) if isinstance(_resp, dict) else {},
         }
 
