@@ -1,6 +1,6 @@
 """Pin the harness's iteration pre-stamp / finalise contract.
 
-Run ``1099b152-8655-4f1e-ab43-1240a9400280`` rolled back twice via the
+Run ``11110002-0000-4000-8000-000000000002`` rolled back twice via the
 content-regression continue at ``harness.py:19749``. Because
 ``_iter_traces[N]`` was only populated at the end-of-iteration body, the
 rendered ``operator_transcript.md`` was 567 bytes — only the run-overview

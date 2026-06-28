@@ -1,7 +1,7 @@
 """Phase H Fidelity Task 4 — pin Stage 10 (Learning / Next Action)
 emission for no-op and rollback iteration paths.
 
-Run ``3b050ec5-4032-457f-a785-2d1a3942a097`` exhibited Stage 10 reading
+Run ``11110001-0000-4000-8000-000000000001`` exhibited Stage 10 reading
 ``(no decisions emitted for this stage in this iteration)`` for every
 iteration despite the postmortem evidence being explicit:
 ``proposals_empty`` four iterations in a row plus a rollback in

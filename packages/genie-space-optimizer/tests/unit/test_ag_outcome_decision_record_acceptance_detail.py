@@ -1,7 +1,7 @@
 """Phase H Fidelity Task 3 — pin acceptance-detail wiring on
 ``ag_outcome_decision_record``.
 
-Run ``3b050ec5-4032-457f-a785-2d1a3942a097`` exhibited a Stage 9
+Run ``11110001-0000-4000-8000-000000000001`` exhibited a Stage 9
 (Acceptance / Rollback) section that read ``(no decisions emitted for
 this stage in this iteration)`` despite the run's stdout postmortem
 clearly logging an acceptance decision: ``rollback`` with

@@ -51,4 +51,4 @@ def test_parser_module_imports_and_exposes_documented_api():
 def test_canonical_example_reference_present():
     for skill_name in ("gso-postmortem", "gso-lever-loop-run-analysis"):
         skill = _read_skill(skill_name)
-        assert "0ade1a99-9406-4a68-a3bc-8c77be78edcb" in skill, skill_name
+        assert "11110003-0000-4000-8000-000000000003" in skill, skill_name

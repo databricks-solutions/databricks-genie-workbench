@@ -1,7 +1,7 @@
 """Pin that the acceptance stage's capture wrapper still flushes
 inputs to MLflow even when the inner stage raises.
 
-Run 1099b152 captured acceptance_decision/inputs/iter_*.json but no
+Run 11110002 captured acceptance_decision/inputs/iter_*.json but no
 outputs/ or decisions/ across all 3 iterations. The wrapper logs
 input.json BEFORE invoking the wrapped stage, so even if the wrapped
 stage raises, the input artifact is logged. This pins the contract
