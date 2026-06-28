@@ -10,9 +10,9 @@ that fails LEGB at runtime.
 
 | Bug | Name | Helper that owns the assignment | Surfaced in run |
 |-----|------|--------------------------------|-----------------|
-| A   | ``full_pre_arbiter_accuracy``     | ``_run_gate_checks`` | ``80532762433063`` |
-| B   | ``full_accuracy``                 | ``_run_gate_checks`` | ``40405156883710`` |
-| C   | ``_baseline_rows_for_control_plane`` | ``_run_gate_checks`` | ``476499410793687`` |
+| A   | ``full_pre_arbiter_accuracy``     | ``_run_gate_checks`` | ``90000000000003`` |
+| B   | ``full_accuracy``                 | ``_run_gate_checks`` | ``90000000000004`` |
+| C   | ``_baseline_rows_for_control_plane`` | ``_run_gate_checks`` | ``900000000000002`` |
 
 Each one cost a half-cycle of investigation (postmortem read,
 fixture capture, helper authoring, regression assertion). This lint

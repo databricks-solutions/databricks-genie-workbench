@@ -69,7 +69,7 @@ def test_fn_mtd_or_mtday_rca_flow_forces_non_lever5_paths_and_grounding() -> Non
         {
             "question_id": "q_022",
             "inputs.expected_sql": (
-                "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+                "SELECT main.sales_reports."
                 "fn_mtd_or_mtday(MEASURE(`_7now_cy_sales_mtd`))"
             ),
             "outputs.predictions.sql": (
@@ -85,7 +85,7 @@ def test_fn_mtd_or_mtday_rca_flow_forces_non_lever5_paths_and_grounding() -> Non
         {
             "question_id": "q_031",
             "inputs.expected_sql": (
-                "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+                "SELECT main.sales_reports."
                 "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
             ),
             "outputs.predictions.sql": (
@@ -346,7 +346,7 @@ def test_failed_question_gt_sql_flows_to_rca_forced_lever6_structural_candidate(
         "question_id": "q_fn",
         "arbiter/value": "ground_truth_correct",
         "inputs.expected_sql": (
-            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "SELECT main.sales_reports."
             "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
         ),
         "outputs.predictions.sql": (

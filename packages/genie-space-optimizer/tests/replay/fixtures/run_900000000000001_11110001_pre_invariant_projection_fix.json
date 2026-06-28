@@ -1,5 +1,5 @@
 {
-  "fixture_id": "airline_real_v1_run_3b050ec5-4032-457f-a785-2d1a3942a097",
+  "fixture_id": "airline_real_v1_run_11110001-0000-4000-8000-000000000001",
   "iterations": [
     {
       "ag_outcomes": {
@@ -56,7 +56,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_030",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_030"
           ]
@@ -74,7 +74,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_018",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_018"
           ]
@@ -92,7 +92,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_028",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_028"
           ]
@@ -110,7 +110,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_019",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_019"
           ]
@@ -128,7 +128,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_025",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_025"
           ]
@@ -146,7 +146,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_004",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_004"
           ]
@@ -164,7 +164,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_006",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_006"
           ]
@@ -182,7 +182,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_008",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_008"
           ]
@@ -200,7 +200,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_014",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_014"
           ]
@@ -219,7 +219,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_013",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -237,7 +237,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_002",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_002"
           ]
@@ -255,7 +255,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_007",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_007"
           ]
@@ -273,7 +273,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_009",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_009"
           ]
@@ -291,7 +291,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_029",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_029"
           ]
@@ -309,7 +309,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_022",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_022"
           ]
@@ -327,7 +327,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_024",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_024"
           ]
@@ -345,7 +345,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_017",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_017"
           ]
@@ -363,7 +363,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_016",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_016"
           ]
@@ -382,7 +382,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_026",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -401,7 +401,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_001",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -419,7 +419,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_010",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_010"
           ]
@@ -438,7 +438,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_021",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -457,7 +457,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_012",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -478,7 +478,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "clustered",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -499,7 +499,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "clustered",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -519,7 +519,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -539,7 +539,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -559,7 +559,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -581,7 +581,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "rca_grounded",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H001"
           ],
@@ -606,7 +606,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "rca_grounded",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -630,7 +630,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H003"
           ],
@@ -654,7 +654,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H004"
           ],
@@ -678,7 +678,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H005"
           ],
@@ -693,7 +693,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -705,7 +705,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -720,7 +720,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H001",
@@ -732,7 +732,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -741,7 +741,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -753,7 +753,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -768,7 +768,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -780,7 +780,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -789,7 +789,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -801,7 +801,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -816,7 +816,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -828,7 +828,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -837,7 +837,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -849,7 +849,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -864,7 +864,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -876,7 +876,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "affected_qids": [
@@ -897,7 +897,7 @@
           "outcome": "unresolved",
           "reason_code": "lever6_force_llm_declined",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -925,7 +925,7 @@
           "outcome": "dropped",
           "reason_code": "proposal_generation_empty",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -942,14 +942,14 @@
           "evidence_refs": [
             "cluster:H002"
           ],
-          "expected_effect": "AG AG1 should produce proposals that resolve When users ask for 'zone VP' sales rankings, Genie uses mv_7now_store_sales with zone_combination instead of joining mv_7now_fact_sales to mv_esr_dim_location to get zone_vp_name, and returns only TOP 1 instead of a ranked list. on 1 target qid(s).",
+          "expected_effect": "AG AG1 should produce proposals that resolve When users ask for 'zone VP' sales rankings, Genie routes to mv_7now_store_sales and uses zone_combination instead of joining mv_7now_fact_sales to mv_esr_dim_location to get zone_vp_name, and returns only TOP 1 instead of a ranked list. on 1 target qid(s).",
           "iteration": 1,
           "next_action": "Emit proposals for AG",
           "outcome": "info",
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "strategist_selected",
-          "root_cause": "When users ask for 'zone VP' sales rankings, Genie uses mv_7now_store_sales with zone_combination instead of joining mv_7now_fact_sales to mv_esr_dim_location to get zone_vp_name, and returns only TOP 1 instead of a ranked list.",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "root_cause": "When users ask for 'zone VP' sales rankings, Genie routes to mv_7now_store_sales and uses zone_combination instead of joining mv_7now_fact_sales to mv_esr_dim_location to get zone_vp_name, and returns only TOP 1 instead of a ranked list.",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -981,7 +981,7 @@
             "P001"
           ],
           "reason_code": "proposal_emitted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "AG1"
           ],
@@ -1013,7 +1013,7 @@
             "P002"
           ],
           "reason_code": "proposal_emitted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "rca_7now_delivery_analytics_space_gs_026_metric_view_routing_confusion"
           ],
@@ -1045,41 +1045,9 @@
             "P003"
           ],
           "reason_code": "proposal_emitted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "rca_7now_delivery_analytics_space_gs_026_metric_view_routing_confusion"
-          ],
-          "target_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ]
-        },
-        {
-          "affected_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ],
-          "ag_id": "AG1",
-          "cluster_id": "AG1",
-          "decision_type": "proposal_generated",
-          "evidence_refs": [
-            "ag:AG1",
-            "cluster:AG1"
-          ],
-          "expected_effect": "Proposal P001 (rewrite_instruction) should resolve failure pattern on 1 target qid(s).",
-          "iteration": 1,
-          "metrics": {
-            "parent_proposal_id": "P001",
-            "patch_type": "rewrite_instruction"
-          },
-          "next_action": "Apply proposal and observe target qid outcome.",
-          "outcome": "accepted",
-          "proposal_id": "P001",
-          "proposal_ids": [
-            "P001"
-          ],
-          "reason_code": "proposal_emitted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
-          "source_cluster_ids": [
-            "AG1"
           ],
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
@@ -1112,7 +1080,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "proposal_emitted",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -1145,7 +1113,7 @@
           ],
           "reason_code": "rca_ungrounded",
           "reason_detail": "groundedness:proposal:rca_ungrounded",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -1176,7 +1144,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_metric_view_routing_confusion",
           "reason_code": "rca_ungrounded",
           "reason_detail": "groundedness:proposal:rca_ungrounded",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -1207,7 +1175,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_metric_view_routing_confusion",
           "reason_code": "rca_ungrounded",
           "reason_detail": "groundedness:proposal:rca_ungrounded",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -1237,37 +1205,7 @@
           ],
           "reason_code": "rca_ungrounded",
           "reason_detail": "groundedness:proposal:rca_ungrounded",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
-          "target_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ]
-        },
-        {
-          "affected_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ],
-          "ag_id": "AG1",
-          "decision_type": "gate_decision",
-          "evidence_refs": [
-            "ag:AG1"
-          ],
-          "expected_effect": "Proposal would address failure pattern on 1 target qid(s).",
-          "gate": "rca_groundedness",
-          "iteration": 1,
-          "metrics": {
-            "target_kind": "proposal",
-            "verdict_finding_id": ""
-          },
-          "next_action": "Strategist must re-target an RCA-grounded scope or skip this AG.",
-          "observed_effect": "Dropped at groundedness gate: rca_ungrounded.",
-          "outcome": "dropped",
-          "proposal_id": "P001",
-          "proposal_ids": [
-            "P001"
-          ],
-          "reason_code": "rca_ungrounded",
-          "reason_detail": "groundedness:proposal:rca_ungrounded",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -1292,7 +1230,7 @@
           "outcome": "unresolved",
           "reason_code": "narrow_not_applicable",
           "reason_detail": "original_patch_type=; reason=unrecognized_patch_type",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ]
@@ -1317,7 +1255,7 @@
           "outcome": "unresolved",
           "reason_code": "narrow_not_applicable",
           "reason_detail": "original_patch_type=; reason=unrecognized_patch_type",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ]
@@ -1342,7 +1280,7 @@
           "outcome": "unresolved",
           "reason_code": "narrow_not_applicable",
           "reason_detail": "original_patch_type=; reason=unrecognized_patch_type",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ]
@@ -1389,7 +1327,7 @@
           "reason_code": "no_causal_target",
           "reason_detail": "high_collateral_risk_flagged",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -1432,7 +1370,7 @@
           "reason_code": "no_causal_target",
           "reason_detail": "high_collateral_risk_flagged",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -1462,205 +1400,20 @@
               "7now_delivery_analytics_space_gs_012"
             ],
             "patch_type": "add_sql_snippet_expression",
-            "target": "prashanth_subrahmanyam_catalog.sales_reports.mv_esr_dim_location"
+            "target": "main.sales_reports.mv_esr_dim_location"
           },
           "next_action": "Add target table to AG forbid_tables and re-strategize",
           "observed_effect": "Dropped: collateral risk on 8 passing dependent(s) outside target.",
           "outcome": "dropped",
-          "proposal_id": "L6:P001#4",
+          "proposal_id": "L6:P001#3",
           "proposal_ids": [
-            "L6:P001#4"
+            "L6:P001#3"
           ],
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "no_causal_target",
           "reason_detail": "high_collateral_risk_flagged",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
-          "target_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ]
-        },
-        {
-          "affected_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ],
-          "ag_id": "AG1",
-          "decision_type": "gate_decision",
-          "gate": "patch_cap",
-          "iteration": 1,
-          "metrics": {
-            "expanded_patch_id": "L1:P001#1",
-            "lever": 1,
-            "parent_proposal_id": "P001",
-            "patch_type": "update_column_description",
-            "rank": 1,
-            "rca_id": "",
-            "relevance_score": 1.0,
-            "root_cause": "",
-            "selection_reason": "target_coverage",
-            "target_qids": [
-              "7now_delivery_analytics_space_gs_026"
-            ]
-          },
-          "next_action": "Apply selected patch and evaluate target qids",
-          "observed_effect": "Selected for apply",
-          "outcome": "accepted",
-          "proposal_id": "L1:P001#1",
-          "proposal_ids": [
-            "L1:P001#1"
-          ],
-          "question_id": "7now_delivery_analytics_space_gs_026",
-          "reason_code": "patch_cap_selected",
-          "reason_detail": "target_coverage",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
-          "target_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ]
-        },
-        {
-          "affected_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ],
-          "ag_id": "AG1",
-          "decision_type": "gate_decision",
-          "gate": "patch_cap",
-          "iteration": 1,
-          "metrics": {
-            "expanded_patch_id": "L1:P001#2",
-            "lever": 1,
-            "parent_proposal_id": "P001",
-            "patch_type": "add_column_synonym",
-            "rank": 2,
-            "rca_id": "",
-            "relevance_score": 1.0,
-            "root_cause": "",
-            "selection_reason": "target_coverage",
-            "target_qids": [
-              "7now_delivery_analytics_space_gs_026"
-            ]
-          },
-          "next_action": "Apply selected patch and evaluate target qids",
-          "observed_effect": "Selected for apply",
-          "outcome": "accepted",
-          "proposal_id": "L1:P001#2",
-          "proposal_ids": [
-            "L1:P001#2"
-          ],
-          "question_id": "7now_delivery_analytics_space_gs_026",
-          "reason_code": "patch_cap_selected",
-          "reason_detail": "target_coverage",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
-          "target_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ]
-        },
-        {
-          "affected_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ],
-          "ag_id": "AG1",
-          "decision_type": "gate_decision",
-          "gate": "patch_cap",
-          "iteration": 1,
-          "metrics": {
-            "expanded_patch_id": "P001#1",
-            "lever": 5,
-            "parent_proposal_id": "P001",
-            "patch_type": "update_instruction_section",
-            "rank": 3,
-            "rca_id": "",
-            "relevance_score": 1.0,
-            "root_cause": "",
-            "selection_reason": "target_coverage",
-            "target_qids": [
-              "7now_delivery_analytics_space_gs_026"
-            ]
-          },
-          "next_action": "Apply selected patch and evaluate target qids",
-          "observed_effect": "Selected for apply",
-          "outcome": "accepted",
-          "proposal_id": "P001#1",
-          "proposal_ids": [
-            "P001#1"
-          ],
-          "question_id": "7now_delivery_analytics_space_gs_026",
-          "reason_code": "patch_cap_selected",
-          "reason_detail": "target_coverage",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
-          "target_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ]
-        },
-        {
-          "affected_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ],
-          "ag_id": "AG1",
-          "decision_type": "gate_decision",
-          "gate": "patch_cap",
-          "iteration": 1,
-          "metrics": {
-            "expanded_patch_id": "P001#2",
-            "lever": 5,
-            "parent_proposal_id": "P001",
-            "patch_type": "update_instruction_section",
-            "rank": null,
-            "rca_id": "",
-            "relevance_score": 1.0,
-            "root_cause": "",
-            "selection_reason": "family_already_selected",
-            "target_qids": [
-              "7now_delivery_analytics_space_gs_026"
-            ]
-          },
-          "next_action": "Inspect lower-ranked patch if target remains unresolved",
-          "observed_effect": "Dropped by patch cap",
-          "outcome": "dropped",
-          "proposal_id": "P001#2",
-          "proposal_ids": [
-            "P001#2"
-          ],
-          "question_id": "7now_delivery_analytics_space_gs_026",
-          "reason_code": "patch_cap_dropped",
-          "reason_detail": "family_already_selected",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
-          "target_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ]
-        },
-        {
-          "affected_qids": [
-            "7now_delivery_analytics_space_gs_026"
-          ],
-          "ag_id": "AG1",
-          "decision_type": "gate_decision",
-          "gate": "patch_cap",
-          "iteration": 1,
-          "metrics": {
-            "expanded_patch_id": "P001#3",
-            "lever": 5,
-            "parent_proposal_id": "P001",
-            "patch_type": "update_instruction_section",
-            "rank": null,
-            "rca_id": "",
-            "relevance_score": 1.0,
-            "root_cause": "",
-            "selection_reason": "family_already_selected",
-            "target_qids": [
-              "7now_delivery_analytics_space_gs_026"
-            ]
-          },
-          "next_action": "Inspect lower-ranked patch if target remains unresolved",
-          "observed_effect": "Dropped by patch cap",
-          "outcome": "dropped",
-          "proposal_id": "P001#3",
-          "proposal_ids": [
-            "P001#3"
-          ],
-          "question_id": "7now_delivery_analytics_space_gs_026",
-          "reason_code": "patch_cap_dropped",
-          "reason_detail": "family_already_selected",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -1689,7 +1442,7 @@
             "L1:P001#1"
           ],
           "reason_code": "patch_applied",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "AG1"
           ],
@@ -1721,7 +1474,7 @@
             "L1:P001#2"
           ],
           "reason_code": "patch_applied",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "AG1"
           ],
@@ -1734,28 +1487,21 @@
             "7now_delivery_analytics_space_gs_026"
           ],
           "ag_id": "AG1",
-          "cluster_id": "AG1",
-          "decision_type": "patch_applied",
+          "decision_type": "acceptance_decided",
           "evidence_refs": [
-            "ag:AG1",
-            "cluster:AG1"
+            "cluster:H002"
           ],
-          "expected_effect": "Patch P001#1 (update_instruction_section) should resolve failure pattern on 1 target qid(s).",
+          "expected_effect": "AG AG1 should land patches that improve 1 target qid(s).",
           "iteration": 1,
-          "metrics": {
-            "patch_type": "update_instruction_section"
-          },
-          "next_action": "Run post-eval and observe target qid outcomes.",
-          "observed_effect": "Patch applied successfully.",
-          "outcome": "applied",
-          "proposal_id": "P001#1",
-          "proposal_ids": [
-            "P001#1"
-          ],
-          "reason_code": "patch_applied",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "next_action": "Triage rollback reason; consider alternative RCA.",
+          "observed_effect": "Patches applied but eval regressed; reverted.",
+          "outcome": "rolled_back",
+          "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
+          "reason_code": "patch_skipped",
+          "root_cause": "When users ask for 'zone VP' sales rankings, Genie routes to mv_7now_store_sales and uses zone_combination instead of joining mv_7now_fact_sales to mv_esr_dim_location to get zone_vp_name, and returns only TOP 1 instead of a ranked list.",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
-            "AG1"
+            "H002"
           ],
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
@@ -1950,14 +1696,6 @@
                 ]
               },
               {
-                "cluster_id": "AG1",
-                "patch_type": "rewrite_instruction",
-                "proposal_id": "P001",
-                "target_qids": [
-                  "7now_delivery_analytics_space_gs_026"
-                ]
-              },
-              {
                 "cluster_id": "H002",
                 "patch_type": "add_sql_snippet_expression",
                 "proposal_id": "P001",
@@ -2023,7 +1761,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_030",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_030"
           ]
@@ -2041,7 +1779,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_018",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_018"
           ]
@@ -2059,7 +1797,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_028",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_028"
           ]
@@ -2077,7 +1815,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_019",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_019"
           ]
@@ -2095,7 +1833,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_025",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_025"
           ]
@@ -2113,7 +1851,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_004",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_004"
           ]
@@ -2131,7 +1869,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_006",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_006"
           ]
@@ -2149,7 +1887,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_008",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_008"
           ]
@@ -2167,7 +1905,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_014",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_014"
           ]
@@ -2186,7 +1924,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_013",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -2204,7 +1942,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_002",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_002"
           ]
@@ -2222,7 +1960,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_007",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_007"
           ]
@@ -2240,7 +1978,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_009",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_009"
           ]
@@ -2258,7 +1996,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_029",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_029"
           ]
@@ -2276,7 +2014,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_022",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_022"
           ]
@@ -2294,7 +2032,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_024",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_024"
           ]
@@ -2312,7 +2050,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_017",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_017"
           ]
@@ -2330,7 +2068,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_016",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_016"
           ]
@@ -2349,7 +2087,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_026",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -2368,7 +2106,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_001",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -2386,7 +2124,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_010",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_010"
           ]
@@ -2405,7 +2143,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_021",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -2424,7 +2162,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_012",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -2445,7 +2183,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "clustered",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -2466,7 +2204,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "clustered",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -2486,7 +2224,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -2506,7 +2244,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -2526,7 +2264,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -2548,7 +2286,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "rca_grounded",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H001"
           ],
@@ -2573,7 +2311,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "rca_grounded",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -2597,7 +2335,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H003"
           ],
@@ -2621,7 +2359,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H004"
           ],
@@ -2645,7 +2383,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H005"
           ],
@@ -2660,7 +2398,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -2672,7 +2410,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -2687,7 +2425,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H001",
@@ -2699,7 +2437,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -2708,7 +2446,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -2720,7 +2458,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -2735,7 +2473,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -2747,7 +2485,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -2756,7 +2494,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -2768,7 +2506,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -2783,7 +2521,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -2795,7 +2533,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -2804,7 +2542,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -2816,7 +2554,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -2831,7 +2569,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -2843,7 +2581,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "affected_qids": [
@@ -2864,7 +2602,7 @@
           "outcome": "unresolved",
           "reason_code": "lever6_force_llm_declined",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -2892,7 +2630,7 @@
           "outcome": "dropped",
           "reason_code": "proposal_generation_empty",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -3121,7 +2859,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_030",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_030"
           ]
@@ -3139,7 +2877,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_018",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_018"
           ]
@@ -3157,7 +2895,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_028",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_028"
           ]
@@ -3175,7 +2913,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_019",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_019"
           ]
@@ -3193,7 +2931,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_025",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_025"
           ]
@@ -3211,7 +2949,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_004",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_004"
           ]
@@ -3229,7 +2967,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_006",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_006"
           ]
@@ -3247,7 +2985,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_008",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_008"
           ]
@@ -3265,7 +3003,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_014",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_014"
           ]
@@ -3284,7 +3022,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_013",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -3302,7 +3040,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_002",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_002"
           ]
@@ -3320,7 +3058,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_007",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_007"
           ]
@@ -3338,7 +3076,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_009",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_009"
           ]
@@ -3356,7 +3094,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_029",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_029"
           ]
@@ -3374,7 +3112,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_022",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_022"
           ]
@@ -3392,7 +3130,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_024",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_024"
           ]
@@ -3410,7 +3148,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_017",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_017"
           ]
@@ -3428,7 +3166,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_016",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_016"
           ]
@@ -3447,7 +3185,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_026",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -3466,7 +3204,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_001",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -3484,7 +3222,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_010",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_010"
           ]
@@ -3503,7 +3241,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_021",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -3522,7 +3260,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_012",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -3543,7 +3281,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "clustered",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -3564,7 +3302,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "clustered",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -3584,7 +3322,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -3604,7 +3342,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -3624,7 +3362,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -3646,7 +3384,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "rca_grounded",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H001"
           ],
@@ -3671,7 +3409,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "rca_grounded",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -3695,7 +3433,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H003"
           ],
@@ -3719,7 +3457,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H004"
           ],
@@ -3743,7 +3481,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H005"
           ],
@@ -3758,7 +3496,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -3770,7 +3508,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -3785,7 +3523,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H001",
@@ -3797,7 +3535,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -3806,7 +3544,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -3818,7 +3556,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -3833,7 +3571,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -3845,7 +3583,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -3854,7 +3592,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -3866,7 +3604,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -3881,7 +3619,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -3893,7 +3631,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -3902,7 +3640,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -3914,7 +3652,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -3929,7 +3667,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -3941,7 +3679,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "affected_qids": [
@@ -3962,7 +3700,7 @@
           "outcome": "unresolved",
           "reason_code": "lever6_force_llm_declined",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -3990,7 +3728,7 @@
           "outcome": "dropped",
           "reason_code": "proposal_generation_empty",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -4219,7 +3957,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_030",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_030"
           ]
@@ -4237,7 +3975,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_018",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_018"
           ]
@@ -4255,7 +3993,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_028",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_028"
           ]
@@ -4273,7 +4011,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_019",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_019"
           ]
@@ -4291,7 +4029,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_025",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_025"
           ]
@@ -4309,7 +4047,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_004",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_004"
           ]
@@ -4327,7 +4065,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_006",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_006"
           ]
@@ -4345,7 +4083,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_008",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_008"
           ]
@@ -4363,7 +4101,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_014",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_014"
           ]
@@ -4382,7 +4120,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_013",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -4400,7 +4138,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_002",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_002"
           ]
@@ -4418,7 +4156,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_007",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_007"
           ]
@@ -4436,7 +4174,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_009",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_009"
           ]
@@ -4454,7 +4192,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_029",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_029"
           ]
@@ -4472,7 +4210,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_022",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_022"
           ]
@@ -4490,7 +4228,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_024",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_024"
           ]
@@ -4508,7 +4246,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_017",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_017"
           ]
@@ -4526,7 +4264,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_016",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_016"
           ]
@@ -4545,7 +4283,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_026",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -4564,7 +4302,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_001",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -4582,7 +4320,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_010",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_010"
           ]
@@ -4601,7 +4339,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_021",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -4620,7 +4358,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_012",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -4641,7 +4379,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "clustered",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -4662,7 +4400,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "clustered",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -4682,7 +4420,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -4702,7 +4440,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -4722,7 +4460,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -4744,7 +4482,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "rca_grounded",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H001"
           ],
@@ -4769,7 +4507,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "rca_grounded",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -4793,7 +4531,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H003"
           ],
@@ -4817,7 +4555,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H004"
           ],
@@ -4841,7 +4579,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H005"
           ],
@@ -4856,7 +4594,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -4868,7 +4606,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -4883,7 +4621,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H001",
@@ -4895,7 +4633,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -4904,7 +4642,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -4916,7 +4654,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -4931,7 +4669,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -4943,7 +4681,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -4952,7 +4690,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -4964,7 +4702,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -4979,7 +4717,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -4991,7 +4729,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -5000,7 +4738,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -5012,7 +4750,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -5027,7 +4765,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -5039,7 +4777,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "affected_qids": [
@@ -5060,7 +4798,7 @@
           "outcome": "unresolved",
           "reason_code": "lever6_force_llm_declined",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -5088,7 +4826,7 @@
           "outcome": "dropped",
           "reason_code": "proposal_generation_empty",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -5317,7 +5055,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_030",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_030"
           ]
@@ -5335,7 +5073,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_018",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_018"
           ]
@@ -5353,7 +5091,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_028",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_028"
           ]
@@ -5371,7 +5109,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_019",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_019"
           ]
@@ -5389,7 +5127,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_025",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_025"
           ]
@@ -5407,7 +5145,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_004",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_004"
           ]
@@ -5425,7 +5163,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_006",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_006"
           ]
@@ -5443,7 +5181,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_008",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_008"
           ]
@@ -5461,7 +5199,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_014",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_014"
           ]
@@ -5480,7 +5218,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_013",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -5498,7 +5236,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_002",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_002"
           ]
@@ -5516,7 +5254,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_007",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_007"
           ]
@@ -5534,7 +5272,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_009",
           "reason_code": "gt_correction",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_009"
           ]
@@ -5552,7 +5290,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_029",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_029"
           ]
@@ -5570,7 +5308,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_022",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_022"
           ]
@@ -5588,7 +5326,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_024",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_024"
           ]
@@ -5606,7 +5344,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_017",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_017"
           ]
@@ -5624,7 +5362,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_016",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_016"
           ]
@@ -5643,7 +5381,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_026",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -5662,7 +5400,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_001",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -5680,7 +5418,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_010",
           "reason_code": "soft_signal",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_010"
           ]
@@ -5699,7 +5437,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_021",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -5718,7 +5456,7 @@
           "outcome": "info",
           "question_id": "7now_delivery_analytics_space_gs_012",
           "reason_code": "hard_failure",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -5739,7 +5477,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "clustered",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -5760,7 +5498,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "clustered",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_026"
           ]
@@ -5780,7 +5518,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -5800,7 +5538,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -5820,7 +5558,7 @@
           "outcome": "info",
           "reason_code": "clustered",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -5842,7 +5580,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_013_time_window_logic_mismatch",
           "reason_code": "rca_grounded",
           "root_cause": "wrong_filter_condition",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H001"
           ],
@@ -5867,7 +5605,7 @@
           "rca_id": "rca_7now_delivery_analytics_space_gs_026_top_n_cardinality_collapse",
           "reason_code": "rca_grounded",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -5891,7 +5629,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "column_disambiguation",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H003"
           ],
@@ -5915,7 +5653,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H004"
           ],
@@ -5939,7 +5677,7 @@
           "outcome": "unresolved",
           "reason_code": "rca_ungrounded",
           "root_cause": "missing_filter",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H005"
           ],
@@ -5954,7 +5692,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -5966,7 +5704,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_013"
           ]
@@ -5981,7 +5719,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H001",
@@ -5993,7 +5731,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -6002,7 +5740,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -6014,7 +5752,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_001"
           ]
@@ -6029,7 +5767,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H003",
@@ -6041,7 +5779,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -6050,7 +5788,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -6062,7 +5800,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_021"
           ]
@@ -6077,7 +5815,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H004",
@@ -6089,7 +5827,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -6098,7 +5836,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -6110,7 +5848,7 @@
           "next_action": "Re-run RCA prompt with broader evidence (failure_buckets, ASI, cluster cohort).",
           "outcome": "info",
           "reason_code": "rca_regeneration_triggered",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "target_qids": [
             "7now_delivery_analytics_space_gs_012"
           ]
@@ -6125,7 +5863,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "cluster_id": "H005",
@@ -6137,7 +5875,7 @@
           "next_action": "Promote cluster to benchmark-review queue.",
           "outcome": "unresolved",
           "reason_code": "rca_regeneration_exhausted",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097"
+          "run_id": "11110001-0000-4000-8000-000000000001"
         },
         {
           "affected_qids": [
@@ -6158,7 +5896,7 @@
           "outcome": "unresolved",
           "reason_code": "lever6_force_llm_declined",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],
@@ -6186,7 +5924,7 @@
           "outcome": "dropped",
           "reason_code": "proposal_generation_empty",
           "root_cause": "plural_top_n_collapse",
-          "run_id": "3b050ec5-4032-457f-a785-2d1a3942a097",
+          "run_id": "11110001-0000-4000-8000-000000000001",
           "source_cluster_ids": [
             "H002"
           ],

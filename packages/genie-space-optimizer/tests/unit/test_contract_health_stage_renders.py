@@ -1,6 +1,6 @@
 """Phase H Fidelity Task 5 — pin Stage 11 (Contract Health) renderer.
 
-Run ``3b050ec5-4032-457f-a785-2d1a3942a097`` exhibited Stage 11 reading
+Run ``11110001-0000-4000-8000-000000000001`` exhibited Stage 11 reading
 ``(no decisions emitted for this stage in this iteration)`` despite
 producer exceptions and invariant violations being present in the
 postmortem evidence. The transcript renderer's

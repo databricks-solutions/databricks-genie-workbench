@@ -1,6 +1,6 @@
 """Composition regression: pre-stamp + rolled-back finalise + render
 together must produce a transcript with per-iteration sections and
-exit_path=rolled_back. Mirrors run-1099b152-8655-4f1e-ab43-1240a9400280
+exit_path=rolled_back. Mirrors run-11110002-0000-4000-8000-000000000002
 where the lever loop rolled back twice and the rendered transcript was
 567 bytes (header only).
 """
@@ -108,8 +108,8 @@ def test_rolled_back_run_renders_complete_transcript() -> None:
     )
 
     overview = render_run_overview(
-        run_id="1099b152-8655-4f1e-ab43-1240a9400280",
-        space_id="01f143dfbeec15a3a0e87ced8662f4ed",
+        run_id="11110002-0000-4000-8000-000000000002",
+        space_id="01f10000000000000000000000000001",
         domain="airline_ticketing",
         max_iters=8,
         baseline=_build_baseline_overview_dict(

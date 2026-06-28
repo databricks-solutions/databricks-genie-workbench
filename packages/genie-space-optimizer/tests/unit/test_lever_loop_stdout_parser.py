@@ -1,7 +1,7 @@
 """Unit tests for the lever-loop stdout parser.
 
-The fixture file ``lever_loop_stdout_0ade1a99.txt`` is the recovered
-notebook stdout from run 0ade1a99-9406-4a68-a3bc-8c77be78edcb. The
+The fixture file ``lever_loop_stdout_11110003.txt`` is the recovered
+notebook stdout from run 11110003-0000-4000-8000-000000000003. The
 parser must surface every block the postmortem skill needs."""
 
 from pathlib import Path
@@ -14,7 +14,7 @@ from genie_space_optimizer.tools.lever_loop_stdout_parser import (
 )
 
 
-_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "lever_loop_stdout_0ade1a99.txt"
+_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "lever_loop_stdout_11110003.txt"
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ def test_proposal_inventory_carries_rca_id_per_proposal(view: LeverLoopStdoutVie
     inv = view.proposal_inventory.get(3, {}).get("AG_COVERAGE_H003", ())
     assert inv, "expected proposal inventory for AG_COVERAGE_H003 in iter 3"
     rca_ids = {p.rca_id for p in inv}
-    assert None in rca_ids or "" in rca_ids, "0ade1a99 had ungrounded proposals"
+    assert None in rca_ids or "" in rca_ids, "11110003 had ungrounded proposals"
 
 
 def test_patch_survival_separates_selected_and_dropped(view: LeverLoopStdoutView) -> None:

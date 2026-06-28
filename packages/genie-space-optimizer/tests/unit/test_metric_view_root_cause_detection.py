@@ -125,14 +125,14 @@ def test_extract_metric_view_fqns_from_spark_plan_error():
 
     message = """
     Project [...]
-    +- SubqueryAlias prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales
-       +- MetricView `prashanth_subrahmanyam_catalog`.`sales_reports`.`mv_7now_store_sales`
+    +- SubqueryAlias main.sales_reports.mv_7now_store_sales
+       +- MetricView `main`.`sales_reports`.`mv_7now_store_sales`
     +- SubqueryAlias cat.sch.mv_other
        +- MetricView `cat`.`sch`.`mv_other`
     """
 
     assert extract_metric_view_identifiers_from_error(message) == {
-        "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_store_sales",
+        "main.sales_reports.mv_7now_store_sales",
         "cat.sch.mv_other",
     }
 
