@@ -511,7 +511,7 @@ def test_function_or_tvf_not_invoked_maps_to_function_and_sql_levers() -> None:
     row = {
         "question_id": "q_fn",
         "inputs.expected_sql": (
-            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "SELECT main.sales_reports."
             "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
         ),
         "outputs.predictions.sql": (

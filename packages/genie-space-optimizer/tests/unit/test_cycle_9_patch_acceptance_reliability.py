@@ -3,7 +3,7 @@
 Combines the per-workstream test files described in the plan
 (W1 force-L6 fallback, W2 plateau open-hard guard, W3 narrow-
 replacement builder, W4 DOA fingerprint buffer, W5 double-plateau
-prefix). Anchored on run 1099b152 and 2afb0be2 596465849524605.
+prefix). Anchored on run 11110002 and 2afb0be2 596465849524605.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def test_w1_flag_off_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_w2_open_hard_returns_progress_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The N3 anchor case from run 1099b152: gs_009/gs_013/gs_024
+    """The N3 anchor case from run 11110002: gs_009/gs_013/gs_024
     are still hard, no SQL delta, no overlapping AG, not in
     quarantine, no regression debt — resolver must return
     PROGRESS_PENDING_OPEN_HARD with should_continue=True."""

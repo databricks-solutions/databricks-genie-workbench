@@ -1917,7 +1917,7 @@ class TestSqlSeedingRejectionCapture:
 #
 # Regression guard for the accuracy regression on run
 # 92253d6e-0a8f-4b42-ad3c-f3b401d865de / space
-# 01f16ff7bc2c1d76b427399652a720e6 (baseline full accuracy 92% ->
+# 01f10000000000000000000000000002 (baseline full accuracy 92% ->
 # post-enrichment 84%). The baseline arbiter verdict distribution was
 # all ``skipped`` so ``_extract_arbiter_approved_benchmarks`` returned an
 # empty subset and benchmark mining produced zero grounded candidates;
@@ -2024,7 +2024,7 @@ class TestSqlSeedingGroundingGate:
 
         result = _harness_mod._seed_new_sql_snippets(
             w=MagicMock(), spark=MagicMock(),
-            run_id="r", space_id="01f16ff7bc2c1d76b427399652a720e6",
+            run_id="r", space_id="01f10000000000000000000000000002",
             config=config, metadata_snapshot=metadata_snapshot,
             benchmarks=[], catalog="c", schema="sch",
         )
@@ -2755,7 +2755,7 @@ class TestLever6StructuralCandidateBridge:
                 {
                     "snippet_type": "expression",
                     "sql": (
-                        "prashanth_subrahmanyam_catalog.sales_reports."
+                        "main.sales_reports."
                         "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
                     ),
                     "display_name": "Expression: fn_mtd_or_mtday",

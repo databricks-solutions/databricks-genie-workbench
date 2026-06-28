@@ -665,7 +665,7 @@ def test_extracts_missing_function_expression_candidate_from_failed_sql():
         "question_id": "q_fn",
         "arbiter/value": "ground_truth_correct",
         "inputs.expected_sql": (
-            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "SELECT main.sales_reports."
             "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
         ),
         "outputs.predictions.sql": (

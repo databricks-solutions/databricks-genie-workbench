@@ -1,6 +1,6 @@
 """P0 Task 1 (DIAGNOSTIC): pin the current narrow-replacement
 behavior for add_sql_snippet_expression / add_sql_snippet_measure
-patch shapes mirroring the H002 drop in run 809960554692716.
+patch shapes mirroring the H002 drop in run 900000000000001.
 
 These tests document the *current* state. They are not the fix —
 they are the failing baseline that determines which branch (A/B/C)

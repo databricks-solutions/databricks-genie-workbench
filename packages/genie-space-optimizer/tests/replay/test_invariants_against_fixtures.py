@@ -12,13 +12,13 @@ import pathlib
 import pytest
 
 FIXTURES = {
-    "1099b152_airline": (
-        pathlib.Path(__file__).parent / "fixtures" / "run_1099b152_airline.json"
+    "11110002_airline": (
+        pathlib.Path(__file__).parent / "fixtures" / "run_11110002_airline.json"
     ),
-    "3b050ec5_7now": (
-        pathlib.Path(__file__).parent / "fixtures" / "run_3b050ec5_7now.json"
+    "11110001_7now": (
+        pathlib.Path(__file__).parent / "fixtures" / "run_11110001_7now.json"
     ),
-    # Run 80532762433063 — the run whose typed PRODUCER_EXCEPTION
+    # Run 90000000000003 — the run whose typed PRODUCER_EXCEPTION
     # decision record (Cycle 11 instrumentation) named the actual
     # root cause of the optimizer's silent acceptance failures: a
     # cross-scope ``NameError`` on ``full_pre_arbiter_accuracy`` at
@@ -28,12 +28,12 @@ FIXTURES = {
     # skips this exact fixture so the bug-on-disk does not block
     # merge of the fix; it asserts against every other fixture so
     # any fresh run that re-introduces the same NameError fails CI.
-    "80532762433063_7now_pre_nameerror_fix": (
+    "90000000000003_7now_pre_nameerror_fix": (
         pathlib.Path(__file__).parent
         / "fixtures"
-        / "run_80532762433063_7now_pre_nameerror_fix.json"
+        / "run_90000000000003_7now_pre_nameerror_fix.json"
     ),
-    # Run 40405156883710 — captured *after* Bug A landed and Cycle 11
+    # Run 90000000000004 — captured *after* Bug A landed and Cycle 11
     # observability shipped to production. The same instrumentation
     # that named Bug A then named Bug B: a cross-scope
     # ``UnboundLocalError`` on ``full_accuracy`` at the F9 plateau-
@@ -45,12 +45,12 @@ FIXTURES = {
     # merge of the fix; it asserts against every other fixture so
     # any fresh run that re-introduces the same UnboundLocalError
     # fails CI.
-    "40405156883710_airline_pre_bugb_fix": (
+    "90000000000004_airline_pre_bugb_fix": (
         pathlib.Path(__file__).parent
         / "fixtures"
-        / "run_40405156883710_airline_pre_bugb_fix.json"
+        / "run_90000000000004_airline_pre_bugb_fix.json"
     ),
-    # Run 476499410793687 — captured WITH Cycle 11 instrumentation
+    # Run 900000000000002 — captured WITH Cycle 11 instrumentation
     # active in production AND with the Bug A NameError absent
     # (post-Bug-A-fix), exposing the third sibling: a NameError on
     # ``_baseline_rows_for_control_plane`` at the rollback-side
@@ -61,10 +61,10 @@ FIXTURES = {
     # skips this fixture so the bug-on-disk does not block merge of
     # the fix; it asserts against every other fixture so any fresh
     # run that re-introduces the same NameError fails CI.
-    "476499410793687_7now_pre_bugc_fix": (
+    "900000000000002_7now_pre_bugc_fix": (
         pathlib.Path(__file__).parent
         / "fixtures"
-        / "run_476499410793687_7now_pre_bugc_fix.json"
+        / "run_900000000000002_7now_pre_bugc_fix.json"
     ),
 }
 
@@ -72,12 +72,12 @@ FIXTURES = {
 # NameError fix — they intentionally carry the bug-on-disk for
 # regression provenance and are exempt from the post-fix assertion.
 _PRE_NAMEERROR_FIX_FIXTURES = frozenset({
-    "80532762433063_7now_pre_nameerror_fix",
-    # 40405156883710 was captured with Cycle 11 instrumentation
+    "90000000000003_7now_pre_nameerror_fix",
+    # 90000000000004 was captured with Cycle 11 instrumentation
     # active but BEFORE the Bug A NameError fix landed in production.
     # The same run also surfaced Bug B (``UnboundLocalError`` on
     # ``full_accuracy``); it appears in ``_PRE_BUGB_FIX_FIXTURES`` too.
-    "40405156883710_airline_pre_bugb_fix",
+    "90000000000004_airline_pre_bugb_fix",
 })
 
 # Fixtures that pre-date the harness.py:_run_lever_loop Bug B
@@ -85,7 +85,7 @@ _PRE_NAMEERROR_FIX_FIXTURES = frozenset({
 # termination call site). Kept on disk for regression provenance and
 # exempted from the post-Bug-B-fix assertion.
 _PRE_BUGB_FIX_FIXTURES = frozenset({
-    "40405156883710_airline_pre_bugb_fix",
+    "90000000000004_airline_pre_bugb_fix",
 })
 
 # Fixtures that pre-date the harness.py:_run_lever_loop Bug C
@@ -94,7 +94,7 @@ _PRE_BUGB_FIX_FIXTURES = frozenset({
 # disk for regression provenance and exempted from the post-Bug-C-fix
 # assertion.
 _PRE_BUGC_FIX_FIXTURES = frozenset({
-    "476499410793687_7now_pre_bugc_fix",
+    "900000000000002_7now_pre_bugc_fix",
 })
 
 
@@ -326,7 +326,7 @@ def test_no_full_pre_arbiter_accuracy_nameerror_in_committed_fixtures(
     ``_best_pre_arbiter`` / ``full_result_1``) as the missing name.
 
     Closes the actual root cause Cycle 11's typed
-    ``PRODUCER_EXCEPTION`` record surfaced in run 80532762433063.
+    ``PRODUCER_EXCEPTION`` record surfaced in run 90000000000003.
 
     Fixtures captured *before* the fix are kept on disk for
     provenance (see ``_PRE_NAMEERROR_FIX_FIXTURES``) and skipped
@@ -373,8 +373,8 @@ def test_no_full_accuracy_unbound_local_error_in_committed_fixtures(
     ``UnboundLocalError``.
 
     Closes Bug B surfaced by Cycle 11's typed
-    ``PRODUCER_EXCEPTION`` record in run 40405156883710 (parent run
-    1099b152-8655-4f1e-ab43-1240a9400280, airline). The bug fired
+    ``PRODUCER_EXCEPTION`` record in run 90000000000004 (parent run
+    11110002-0000-4000-8000-000000000002, airline). The bug fired
     because ``full_accuracy`` was assigned only inside the
     acceptance branch of ``_run_lever_loop``; on rollback-only
     plateau paths the local stayed unbound and the F9 plateau-
@@ -423,8 +423,8 @@ def test_no_baseline_rows_for_control_plane_nameerror_in_committed_fixtures(
     ``NameError``.
 
     Closes Bug C surfaced by Cycle 11's typed
-    ``PRODUCER_EXCEPTION`` record in run 476499410793687 (parent
-    run 3b050ec5-4032-457f-a785-2d1a3942a097, 7now). Same family as
+    ``PRODUCER_EXCEPTION`` record in run 900000000000002 (parent
+    run 11110001-0000-4000-8000-000000000001, 7now). Same family as
     Bug A (``full_pre_arbiter_accuracy``) and Bug B
     (``full_accuracy``) — an inner-helper variable name leaked to
     the outer ``_run_lever_loop`` scope. The
@@ -501,14 +501,14 @@ def invariants_evidence_for_fixture():
 
 
 _INVARIANTS_MUST_FIRE_FIXTURES: frozenset[str] = frozenset({
-    "run_809960554692716_3b050ec5_pre_invariant_projection_fix",
+    "run_900000000000001_11110001_pre_invariant_projection_fix",
 })
 
 
-def test_invariants_fire_on_run_809960554692716_pre_projection_fixture(
+def test_invariants_fire_on_run_900000000000001_pre_projection_fixture(
     invariants_evidence_for_fixture,
 ) -> None:
-    """The latest 3b050ec5 attempt produced 0 invariant violations even
+    """The latest 11110001 attempt produced 0 invariant violations even
     though F2/F3/F5/F6 in the postmortem are textbook fires for
     I3/I4/I7/I8. After the projector lands the same fixture must
     surface at least one violation across I3 and I7.
@@ -519,7 +519,7 @@ def test_invariants_fire_on_run_809960554692716_pre_projection_fixture(
     from genie_space_optimizer.optimization.invariants import run_invariants
 
     fixture_name = (
-        "run_809960554692716_3b050ec5_pre_invariant_projection_fix"
+        "run_900000000000001_11110001_pre_invariant_projection_fix"
     )
     evidence = invariants_evidence_for_fixture(fixture_name)
     violations = run_invariants(evidence)

@@ -4,7 +4,7 @@ These tests pin the shape that ``project_iter_evidence`` must
 emit so the live invariant runner in ``_run_iteration_invariants_and_append_records``
 can exercise I2/I3/I4/I7 against real iteration state. The replay
 fixture in ``tests/replay/test_invariants_against_fixtures.py``
-asserts the integration against the run-809960554692716 capture.
+asserts the integration against the run-900000000000001 capture.
 """
 
 from __future__ import annotations

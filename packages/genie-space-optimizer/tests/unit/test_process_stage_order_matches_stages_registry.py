@@ -56,7 +56,7 @@ def test_transcript_only_keys_are_documented() -> None:
 
 
 def test_manifest_stage_keys_in_process_order_uses_full_11_stage_contract() -> None:
-    """Run ``3b050ec5`` showed ``manifest.stage_keys_in_process_order``
+    """Run ``11110001`` showed ``manifest.stage_keys_in_process_order``
     contained only 9 entries (the executable ``STAGES`` registry) while
     the 11-stage transcript contract includes ``post_patch_evaluation``
     and ``contract_health``. The mismatch made postmortem skills walk

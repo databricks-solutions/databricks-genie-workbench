@@ -27,7 +27,7 @@ def _patches_for_replay() -> list[dict]:
         {
             "proposal_id": "P001#1",
             "type": "update_column_description",
-            "target": "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales",
+            "target": "main.sales_reports.mv_7now_fact_sales",
             "column": "time_window",
             "passing_dependents": [
                 "q002", "q004", "q006", "q008", "q030",
@@ -44,7 +44,7 @@ def _patches_for_replay() -> list[dict]:
         {
             "proposal_id": "P007#1",
             "type": "add_sql_snippet_filter",
-            "target": "prashanth_subrahmanyam_catalog.sales_reports.mv_7now_fact_sales",
+            "target": "main.sales_reports.mv_7now_fact_sales",
             "passing_dependents": [
                 "q001", "q002", "q004", "q006", "q008",
                 "q030", "q014", "q018", "q022", "q010",

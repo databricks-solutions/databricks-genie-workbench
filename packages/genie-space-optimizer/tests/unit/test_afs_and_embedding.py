@@ -335,7 +335,7 @@ def test_afs_validation_allows_schema_identifier_overlap_with_expected_sql() -> 
             "id": "q1",
             "question": "How should PY sales be calculated?",
             "expected_sql": (
-                "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+                "SELECT main.sales_reports."
                 "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
             ),
         }
