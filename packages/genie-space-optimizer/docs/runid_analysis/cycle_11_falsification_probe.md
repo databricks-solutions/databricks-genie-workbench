@@ -14,8 +14,8 @@ investment goes to space-config or sample-question layers instead.
 
 | Space | qid | Cluster | Root cause | Counterfactual |
 |---|---|---|---|---|
-| 01f143dfbeec15a3a0e87ced8662f4ed (airline) | gs_024 | H004 | missing_filter | "do not add `PAYMENT_CURRENCY_CD = 'USD'`, do not require IS NOT NULL on payment columns" |
-| 01f128aea2c210559cffb663d9c58282 (7NOW) | gs_026 | H002 | plural_top_n_collapse + asset routing | "use `mv_esr_dim_location.zone_vp_name`, return ranked plural results not LIMIT 1" |
+| <SPACE_ID> (airline) | gs_024 | H004 | missing_filter | "do not add `PAYMENT_CURRENCY_CD = 'USD'`, do not require IS NOT NULL on payment columns" |
+| <SPACE_ID> (7NOW) | gs_026 | H002 | plural_top_n_collapse + asset routing | "use `mv_esr_dim_location.zone_vp_name`, return ranked plural results not LIMIT 1" |
 
 ## Procedure
 
