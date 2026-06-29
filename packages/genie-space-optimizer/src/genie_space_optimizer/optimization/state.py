@@ -840,8 +840,16 @@ def write_iteration(
     reflection_json: dict | None = None,
     config_snapshot: dict | None = None,
     loop_state: dict | None = None,
+    rolled_back: bool = False,
 ) -> None:
     """Insert into ``genie_opt_iterations`` with scores, failures, etc.
+
+    ``rolled_back`` (GSO v2 Phase 8) marks the row excluded from current-state
+    selection at INSERT time. ``load_latest_state_iteration`` /
+    ``load_latest_full_iteration`` filter ``rolled_back = false``, so a coverage
+    attempt that regressed and was rolled back to the frozen baseline must be
+    written with ``rolled_back=True`` — otherwise resume/clustering would read the
+    rejected coverage eval as current state (the baseline-pollution Phase 8 kills).
 
     ``loop_state`` (GSO v2 Phase 8, arch §7.4) carries the two-mode controller's
     per-attempt loop-state columns (``attempt_no``, ``attempt_mode``, ``decision``,
@@ -1000,7 +1008,7 @@ def write_iteration(
             str(_arbiter_rejection_count),
             str(_cluster_fallback_to_instruction_count),
             _opt_json(_synthesis_archetype_distribution) if _synthesis_archetype_distribution else "NULL",
-            "false",
+            "true" if rolled_back else "false",
             str(_both_correct_count),
             str(_both_correct_rate_val) if _both_correct_rate_val is not None else "NULL",
             _opt_json(_config_payload) if _config_payload else "NULL",

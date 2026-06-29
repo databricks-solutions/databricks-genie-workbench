@@ -164,6 +164,9 @@ def test_build_loop_state_rejects_unknown_terminal_reason() -> None:
 
 
 def test_loop_terminal_reasons_is_the_arch_vocabulary() -> None:
+    # The arch §5.1 five + EVAL_BUDGET_EXHAUSTED (Phase-8 NB1): the eval-budget
+    # wall can stop the loop while surgical attempts remain, so it is its own
+    # typed reason rather than being mislabeled MAX_ATTEMPTS.
     assert LOOP_TERMINAL_REASONS == frozenset(
         {
             "TARGET_REACHED",
@@ -171,5 +174,6 @@ def test_loop_terminal_reasons_is_the_arch_vocabulary() -> None:
             "NO_NEW_HYPOTHESIS",
             "EVAL_INVALID",
             "LOOP_STATE_INVALID",
+            "EVAL_BUDGET_EXHAUSTED",
         }
     )
