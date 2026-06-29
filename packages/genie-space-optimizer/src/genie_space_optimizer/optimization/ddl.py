@@ -6,6 +6,7 @@ pulling in pandas or other heavy runtime dependencies.
 """
 
 from genie_space_optimizer.common.config import (
+    TABLE_ARTIFACTS,
     TABLE_ASI,
     TABLE_BENCHMARK_MUTATIONS,
     TABLE_FINALIZE_ATTESTATION,
@@ -154,7 +155,16 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     is_champion         BOOLEAN       DEFAULT false COMMENT 'GSO v2 Phase 4 (D3): true on the single champion iteration row (the best iteration as chosen by the existing Delta-driven selection in promote_best_model). Marked in Delta only — NO UC model registration.',
     num_needs_review    INT                    COMMENT 'GSO v2 Phase 6: count of per-question rows whose official assessment is NEEDS_REVIEW (neither GOOD nor BAD). Surfaced by the Workbench /iterations endpoint so the UI can distinguish review-pending from failing questions. Sourced from build_eval_output_from_official; NULL on legacy/repeatability-only rows.',
     eval_run_id         STRING                 COMMENT 'GSO v2 Phase 6: native Genie benchmark eval-run id for this iteration (from the official EvalRunner). Surfaced so the UI can reference the underlying eval run. NULL on the legacy in-process path.',
-    eval_run_status     STRING                 COMMENT 'GSO v2 Phase 6: native eval-run terminal status (e.g. DONE / EVALUATION_FAILED / CANCELLED) for this iteration. NULL on the legacy in-process path.'
+    eval_run_status     STRING                 COMMENT 'GSO v2 Phase 6: native eval-run terminal status (e.g. DONE / EVALUATION_FAILED / CANCELLED) for this iteration. NULL on the legacy in-process path.',
+    attempt_no          INT                    COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): monotonic display counter for the 03_optimize controller loop — 1=coverage attempt, 2..N=surgical attempts. NULL on baseline iter 0 / legacy rows.',
+    attempt_mode        STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): coverage (broad attempt 1) or surgical (attempts 2..N). NULL on baseline / legacy rows.',
+    best_accuracy       DOUBLE                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): best full-benchmark accuracy seen so far at the end of this attempt (the champion staircase value).',
+    best_config_version_id STRING              COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): serialized config snapshot reference for the current champion.',
+    current_hypothesis  STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): JSON of the active patch hypothesis tested in this attempt.',
+    do_not_repeat       STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): JSON ARRAY of rejected lever families / strategies the controller will not retry.',
+    terminal_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | LOOP_STATE_INVALID. Set on the final attempt row only.',
+    decision            STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): per-attempt aggregate decision — accept | reject | continue.',
+    decision_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): human-readable reason for the decision (e.g. rolled_back (Δacc<0), no_enrichment_candidates).'
 )
 USING DELTA
 PARTITIONED BY (run_id)
@@ -526,26 +536,71 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
-# ── Combined DDL dict ────────────────────────────────────────────────────
+# GSO v2 orchestration (Phase 7, arch §7.1): generic Delta handoff table for
+# the stage-level fat JSON blobs that don't fit a per-attempt scored row.
+# Scoped to 5 artifact_kind values — run_manifest, space_snapshot,
+# benchmark_qc, triage, publish_record. Per-attempt truth (scores, loop-state,
+# patches, decisions) lives in genie_opt_iterations / genie_opt_patches /
+# genie_eval_lever_loop_decisions, NOT here (see arch §7 reconciliation).
+_GENIE_OPT_ARTIFACTS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_artifacts (
+    artifact_id         STRING        NOT NULL COMMENT 'UUID for this artifact row',
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
+    stage_name          STRING                 COMMENT 'Notebook or stage that wrote the artifact (00_intake_and_snapshot, 01_benchmark_qc_and_repair, ...)',
+    iteration           INT                    COMMENT 'Iteration number, when applicable (NULL for run-level artifacts)',
+    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | space_snapshot | benchmark_qc | triage | publish_record',
+    artifact_json       STRING                 COMMENT 'JSON payload for the artifact (enough to reconstruct the pass without notebook-local state)',
+    content_hash        STRING                 COMMENT 'Hash of artifact_json for dedupe / idempotency / replay safety',
+    parent_artifact_id  STRING                 COMMENT 'Lineage pointer to the artifact this one derives from',
+    source_notebook     STRING                 COMMENT 'Notebook name that produced the row',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'Write timestamp'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'GSO v2 (arch §7.1) generic Delta handoff table for stage-level JSON blobs (run_manifest, space_snapshot, benchmark_qc, triage, publish_record)'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
 
+# ── Combined DDL dict ────────────────────────────────────────────────────
+#
+# GSO v2 orchestration (Phase 7, arch §7): the 8 retired 6-notebook tables
+# (ASI judge, MLflow human-review, enrichment sidecars, finalize attestation,
+# suggestions, subset-gate regressions, GT-correction candidates) plus
+# genie_opt_data_access_grants are NO LONGER created — they were removed from
+# this dict so fresh installs never get them, and existing installs are
+# rename-retired to ``*_deprecated`` by ``state.migrate_retire_dropped_tables``
+# (see ``RETIRED_TABLES`` below). genie_opt_artifacts is added; the loop-state
+# columns are folded into genie_opt_iterations (see ADDITIVE_COLUMN_MIGRATIONS).
 _ALL_DDL: dict[str, str] = {
     TABLE_RUNS: _GENIE_OPT_RUNS_DDL,
     TABLE_STAGES: _GENIE_OPT_STAGES_DDL,
     TABLE_ITERATIONS: _GENIE_OPT_ITERATIONS_DDL,
     TABLE_PATCHES: _GENIE_OPT_PATCHES_DDL,
-    TABLE_ASI: _GENIE_EVAL_ASI_RESULTS_DDL,
-    TABLE_DATA_ACCESS_GRANTS: _GENIE_OPT_DATA_ACCESS_GRANTS_DDL,
     TABLE_PROVENANCE: _GENIE_OPT_PROVENANCE_DDL,
-    TABLE_SUGGESTIONS: _GENIE_OPT_SUGGESTIONS_DDL,
-    TABLE_FINALIZE_ATTESTATION: _GENIE_OPT_FINALIZE_ATTESTATION_DDL,
-    TABLE_GT_CORRECTION_CANDIDATES: _GENIE_EVAL_GT_CORRECTION_CANDIDATES_DDL,
     TABLE_LEVER_LOOP_DECISIONS: _GENIE_EVAL_LEVER_LOOP_DECISIONS_DDL,
-    TABLE_QUESTION_REGRESSIONS: _GENIE_EVAL_QUESTION_REGRESSIONS_DDL,
-    TABLE_HUMAN_REQUIRED: _GENIE_EVAL_HUMAN_REQUIRED_DDL,
-    TABLE_PROACTIVE_CORPUS_PROFILE: _GENIE_EVAL_PROACTIVE_CORPUS_PROFILE_DDL,
-    TABLE_PROACTIVE_PATCHES: _GENIE_EVAL_PROACTIVE_PATCHES_DDL,
     TABLE_BENCHMARK_MUTATIONS: _GENIE_OPT_BENCHMARK_MUTATIONS_DDL,
+    TABLE_ARTIFACTS: _GENIE_OPT_ARTIFACTS_DDL,
 }
+
+# GSO v2 orchestration (Phase 7, arch §7): tables tied to retired 6-notebook
+# stages, no longer created (removed from _ALL_DDL above). The one-shot
+# migration in ``state.migrate_retire_dropped_tables`` DROPs these on fresh
+# installs (they were never created) or RENAMEs them to ``<name>_deprecated``
+# on existing installs (data preserved, never hard-dropped). Idempotent.
+RETIRED_TABLES: tuple[str, ...] = (
+    TABLE_ASI,                       # ASI judge feedback — judges retired (Phase 3 / D2)
+    TABLE_HUMAN_REQUIRED,            # MLflow human-review escalation — retired (Phase 5 / D7)
+    TABLE_PROACTIVE_CORPUS_PROFILE,  # old enrichment sidecar — folded into 03 coverage pass
+    TABLE_PROACTIVE_PATCHES,         # old enrichment sidecar — folded; use genie_opt_patches
+    TABLE_FINALIZE_ATTESTATION,      # old finalize attestation — superseded by publish_record artifact
+    TABLE_SUGGESTIONS,               # old suggestions output — superseded by artifacts
+    TABLE_QUESTION_REGRESSIONS,      # subset-gate regression tracking — subset-first 3-gate retired for the loop
+    TABLE_GT_CORRECTION_CANDIDATES,  # bespoke GT-correction — folded into the benchmark_qc artifact
+    TABLE_DATA_ACCESS_GRANTS,        # no runtime writer (markdown-only refs) — folded into space_snapshot / dropped
+)
 
 
 ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
@@ -580,4 +635,17 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_ITERATIONS, "num_needs_review", "INT COMMENT 'GSO v2 Phase 6: count of per-question rows whose official assessment is NEEDS_REVIEW. Surfaced by the Workbench /iterations endpoint. NULL on legacy/repeatability-only rows.'"),
     (TABLE_ITERATIONS, "eval_run_id", "STRING COMMENT 'GSO v2 Phase 6: native Genie benchmark eval-run id for this iteration (from the official EvalRunner). NULL on the legacy in-process path.'"),
     (TABLE_ITERATIONS, "eval_run_status", "STRING COMMENT 'GSO v2 Phase 6: native eval-run terminal status (DONE / EVALUATION_FAILED / CANCELLED). NULL on the legacy in-process path.'"),
+    # GSO v2 Phase 7 (loop-state, arch §7.4): genie_opt_iterations is the
+    # single per-attempt truth — extend it with the controller loop-state
+    # columns alongside the Phase-4 config_json/is_champion. The 03_optimize
+    # two-mode controller (Phase 8) writes these; Phase 7 only adds them.
+    (TABLE_ITERATIONS, "attempt_no", "INT COMMENT 'GSO v2 Phase 7 (loop-state): monotonic display counter — 1=coverage, 2..N=surgical. NULL on baseline / legacy rows.'"),
+    (TABLE_ITERATIONS, "attempt_mode", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): coverage (attempt 1, broad) or surgical (attempts 2..N).'"),
+    (TABLE_ITERATIONS, "best_accuracy", "DOUBLE COMMENT 'GSO v2 Phase 7 (loop-state): best full-benchmark accuracy so far (champion staircase value).'"),
+    (TABLE_ITERATIONS, "best_config_version_id", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): serialized config snapshot reference for the current champion.'"),
+    (TABLE_ITERATIONS, "current_hypothesis", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): JSON of the active patch hypothesis tested in this attempt.'"),
+    (TABLE_ITERATIONS, "do_not_repeat", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): JSON ARRAY of rejected lever families / strategies.'"),
+    (TABLE_ITERATIONS, "terminal_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | LOOP_STATE_INVALID.'"),
+    (TABLE_ITERATIONS, "decision", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): per-attempt aggregate decision — accept | reject | continue.'"),
+    (TABLE_ITERATIONS, "decision_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): human-readable reason for the decision.'"),
 )

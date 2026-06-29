@@ -253,6 +253,34 @@ def wh_ensure_optimization_tables(
             col_def=col_def,
         )
 
+    # GSO v2 Phase 7: one-shot retire of the dropped 6-notebook tables, kept in
+    # lockstep with the Spark bootstrapper (state.migrate_retire_dropped_tables).
+    # Rename-to-*_deprecated on existing installs (data preserved); no-op on
+    # fresh installs. Best-effort per table.
+    from genie_space_optimizer.optimization.ddl import RETIRED_TABLES
+
+    for table in RETIRED_TABLES:
+        fqn = f"{catalog}.{schema}.{table}"
+        dep_fqn = f"{catalog}.{schema}.{table}_deprecated"
+        try:
+            _wh_describe_columns(ws, warehouse_id, fqn)
+        except Exception:
+            continue  # absent — fresh install or already retired
+        try:
+            try:
+                _wh_describe_columns(ws, warehouse_id, dep_fqn)
+                dep_exists = True
+            except Exception:
+                dep_exists = False
+            if dep_exists:
+                sql_warehouse_execute(ws, warehouse_id, f"DROP TABLE IF EXISTS {fqn}")
+                logger.info("Retired stray %s via SQL warehouse (data in %s)", fqn, dep_fqn)
+            else:
+                sql_warehouse_execute(ws, warehouse_id, f"ALTER TABLE {fqn} RENAME TO {dep_fqn}")
+                logger.info("Renamed %s -> %s via SQL warehouse", fqn, dep_fqn)
+        except Exception:
+            logger.warning("Could not retire %s via SQL warehouse (continuing)", fqn, exc_info=True)
+
     _wh_verify_required_run_columns(ws, warehouse_id, catalog, schema)
 
 
