@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 
 from genie_space_optimizer.common.config import (
+    TABLE_ARTIFACTS,
     TABLE_ASI,
     TABLE_BENCHMARK_MUTATIONS,
     TABLE_FINALIZE_ATTESTATION,
@@ -41,6 +42,7 @@ from genie_space_optimizer.common.delta_helpers import (
 )
 from genie_space_optimizer.optimization.ddl import (
     ADDITIVE_COLUMN_MIGRATIONS,
+    RETIRED_TABLES,
     TABLE_DATA_ACCESS_GRANTS,
     TABLE_GT_CORRECTION_CANDIDATES,
     TABLE_HUMAN_REQUIRED,
@@ -99,6 +101,73 @@ def ensure_optimization_tables(spark: SparkSession, catalog: str, schema: str) -
                 raise
 
     _migrate_add_columns(spark, catalog, schema)
+    migrate_retire_dropped_tables(spark, catalog, schema)
+
+
+def _table_exists(spark: SparkSession, fqn: str) -> bool:
+    """Return True if Delta table ``fqn`` exists (best-effort).
+
+    Uses ``DESCRIBE TABLE`` so it works against the same mock-friendly
+    surface the migration helpers use. Any error (table absent, permission
+    denied, mock with no rows) is treated as "does not exist / unknown" so
+    the retire migration stays safe and never raises.
+    """
+    try:
+        spark.sql(f"DESCRIBE TABLE {fqn}").collect()
+        return True
+    except Exception:
+        return False
+
+
+def migrate_retire_dropped_tables(
+    spark: SparkSession, catalog: str, schema: str,
+) -> None:
+    """One-shot, idempotent retire of the 6-notebook tables removed in GSO v2.
+
+    The 9 tables in ``ddl.RETIRED_TABLES`` are tied to retired stages (ASI
+    judges, MLflow human-review, enrichment sidecars, finalize attestation,
+    suggestions, subset-gate regressions, GT-correction candidates, and the
+    writer-less data-access-grants table). They were removed from ``_ALL_DDL``
+    so **fresh installs never create them** (the "drop" path). For **existing
+    installs** that still hold the tables (possibly with data), this renames
+    each to ``<name>_deprecated`` rather than hard-dropping — data is
+    preserved, never lost.
+
+    Idempotent and safe:
+      * active table absent  → skip (fresh install, or already retired).
+      * active present, ``*_deprecated`` absent → RENAME (preserve data).
+      * active present, ``*_deprecated`` present → the rename already
+        happened on a prior run and the active table is a post-rename
+        recreation (e.g. a stray best-effort writer); DROP the stray so the
+        schema converges, leaving the preserved ``*_deprecated`` copy intact.
+
+    Best-effort per table: a failure (permission denied, etc.) is logged and
+    the loop continues — it never aborts table bootstrap.
+    """
+    for table in RETIRED_TABLES:
+        fqn = _fqn(catalog, schema, table)
+        dep_fqn = _fqn(catalog, schema, f"{table}_deprecated")
+        try:
+            if not _table_exists(spark, fqn):
+                continue  # fresh install or already retired — nothing to do
+            if _table_exists(spark, dep_fqn):
+                # Already retired previously; the active table is a stray
+                # recreation. The preserved copy lives in *_deprecated, so
+                # the stray can be dropped to converge the schema.
+                spark.sql(f"DROP TABLE IF EXISTS {fqn}")
+                logger.info(
+                    "  [RETIRE] Dropped stray %s (data preserved in %s_deprecated)",
+                    fqn, table,
+                )
+            else:
+                # Existing install with (possibly populated) data — preserve
+                # it by renaming, never hard-drop.
+                spark.sql(f"ALTER TABLE {fqn} RENAME TO {dep_fqn}")
+                logger.info("  [RETIRE] Renamed %s -> %s", fqn, dep_fqn)
+        except Exception as exc:
+            logger.warning(
+                "  [RETIRE] Could not retire %s (continuing): %s", fqn, exc,
+            )
 
 
 def _try_enable_column_defaults(spark: SparkSession, fqn: str) -> None:
@@ -1604,6 +1673,121 @@ def write_benchmark_mutations(
             "Wrote %d benchmark mutation row(s) for run %s", written, run_id,
         )
     return written
+
+
+# GSO v2 orchestration (Phase 7, arch §7.1–7.3): the 5 stage-level handoff
+# blob kinds carried by genie_opt_artifacts. Per-attempt scored truth
+# (scores, loop-state, patches, decisions) is NOT an artifact — it lives in
+# genie_opt_iterations / genie_opt_patches / genie_eval_lever_loop_decisions.
+ARTIFACT_KINDS: tuple[str, ...] = (
+    "run_manifest",
+    "space_snapshot",
+    "benchmark_qc",
+    "triage",
+    "publish_record",
+)
+
+
+def write_artifact(
+    spark: SparkSession,
+    run_id: str,
+    artifact_kind: str,
+    payload: dict | list | str | None,
+    *,
+    catalog: str,
+    schema: str,
+    stage_name: str | None = None,
+    iteration: int | None = None,
+    source_notebook: str | None = None,
+    parent_artifact_id: str | None = None,
+) -> str | None:
+    """Append one stage-level handoff blob to ``genie_opt_artifacts`` (arch §7.1).
+
+    ``artifact_kind`` must be one of ``ARTIFACT_KINDS`` (run_manifest,
+    space_snapshot, benchmark_qc, triage, publish_record). ``payload`` is
+    JSON-serialized into ``artifact_json``; a ``content_hash`` is computed for
+    dedupe / replay safety. Returns the generated ``artifact_id`` (or ``None``
+    on a swallowed write failure — best-effort, never aborts the notebook).
+    """
+    import hashlib
+    import uuid
+
+    if artifact_kind not in ARTIFACT_KINDS:
+        logger.warning(
+            "write_artifact: unknown artifact_kind=%r (expected one of %s)",
+            artifact_kind, ARTIFACT_KINDS,
+        )
+
+    if payload is None:
+        artifact_json = None
+    elif isinstance(payload, str):
+        artifact_json = payload
+    else:
+        try:
+            artifact_json = json.dumps(payload, default=str, sort_keys=True)
+        except (TypeError, ValueError):
+            logger.warning(
+                "write_artifact: payload for kind=%s not JSON-serializable",
+                artifact_kind,
+            )
+            artifact_json = None
+
+    content_hash = (
+        hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
+        if artifact_json is not None
+        else None
+    )
+    artifact_id = str(uuid.uuid4())
+    payload_row: dict[str, Any] = {
+        "artifact_id": artifact_id,
+        "run_id": run_id,
+        "stage_name": stage_name,
+        "iteration": int(iteration) if iteration is not None else None,
+        "artifact_kind": artifact_kind,
+        "artifact_json": artifact_json,
+        "content_hash": content_hash,
+        "parent_artifact_id": parent_artifact_id,
+        "source_notebook": source_notebook or stage_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        insert_row(spark, catalog, schema, TABLE_ARTIFACTS, payload_row)
+        logger.info(
+            "Wrote %s artifact %s for run %s", artifact_kind, artifact_id, run_id,
+        )
+        return artifact_id
+    except Exception:
+        logger.warning(
+            "Failed to write %s artifact for run %s", artifact_kind, run_id,
+            exc_info=True,
+        )
+        return None
+
+
+def load_artifacts(
+    spark: SparkSession,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    *,
+    artifact_kind: str | None = None,
+) -> pd.DataFrame:
+    """Read ``genie_opt_artifacts`` rows for ``run_id`` (optionally one kind).
+
+    Most-recent-first. Returns an empty DataFrame when the table is absent or
+    has no matching rows (best-effort — never raises).
+    """
+    fqn = _fqn(catalog, schema, TABLE_ARTIFACTS)
+    where = f"run_id = '{run_id}'"
+    if artifact_kind:
+        where += f" AND artifact_kind = '{artifact_kind}'"
+    try:
+        return run_query(
+            spark, f"SELECT * FROM {fqn} WHERE {where} ORDER BY created_at DESC",
+        )
+    except Exception:
+        logger.debug("load_artifacts: no rows for run %s", run_id, exc_info=True)
+        return pd.DataFrame()
 
 
 def update_provenance_proposals(
