@@ -164,7 +164,11 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     do_not_repeat       STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): JSON ARRAY of rejected lever families / strategies the controller will not retry.',
     terminal_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | LOOP_STATE_INVALID. Set on the final attempt row only.',
     decision            STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): per-attempt aggregate decision — accept | reject | continue.',
-    decision_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): human-readable reason for the decision (e.g. rolled_back (Δacc<0), no_enrichment_candidates).'
+    decision_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): human-readable reason for the decision (e.g. rolled_back (Δacc<0), no_enrichment_candidates).',
+    surgical_attempts_used INT                 COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): SURGICAL attempt budget consumed so far (distinct from the monotonic attempt_no — the coverage pass never increments it).',
+    next_hypothesis     STRING                 COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): JSON of the next patch idea the controller chose from the residual failures.',
+    target_accuracy     DOUBLE                 COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): stop-early target accuracy in force for this run (0-100 scale; default 90.0).',
+    max_attempts        INT                    COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): SURGICAL hill-climb budget in force for this run (default 3); the attempt-1 coverage pass is a free probe.'
 )
 USING DELTA
 PARTITIONED BY (run_id)
@@ -648,4 +652,12 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_ITERATIONS, "terminal_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | LOOP_STATE_INVALID.'"),
     (TABLE_ITERATIONS, "decision", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): per-attempt aggregate decision — accept | reject | continue.'"),
     (TABLE_ITERATIONS, "decision_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): human-readable reason for the decision.'"),
+    # GSO v2 Phase 8 (loop-state, arch §7.4): the two-mode 03_optimize controller
+    # adds the surgical-budget counter, the next-hypothesis pointer, and the two
+    # run-level stop knobs (target_accuracy / max_attempts) as per-attempt columns
+    # so the Attempt Ladder/Ledger and resume read one self-describing row.
+    (TABLE_ITERATIONS, "surgical_attempts_used", "INT COMMENT 'GSO v2 Phase 8 (loop-state): SURGICAL attempt budget consumed so far (distinct from attempt_no; coverage never increments it).'"),
+    (TABLE_ITERATIONS, "next_hypothesis", "STRING COMMENT 'GSO v2 Phase 8 (loop-state): JSON of the next patch idea chosen by the controller from residual failures.'"),
+    (TABLE_ITERATIONS, "target_accuracy", "DOUBLE COMMENT 'GSO v2 Phase 8 (loop-state): stop-early target accuracy in force (0-100 scale; default 90.0).'"),
+    (TABLE_ITERATIONS, "max_attempts", "INT COMMENT 'GSO v2 Phase 8 (loop-state): SURGICAL hill-climb budget in force (default 3); coverage is a free probe.'"),
 )

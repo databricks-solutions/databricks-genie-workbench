@@ -1156,3 +1156,185 @@ def assert_soft_cluster_currency(
             f"{bad}; the soft-clusterer read stale ASI / cached rows that no "
             f"longer reflect the latest eval"
         )
+
+
+# ── GSO v2 Phase 8 — two-mode 03_optimize controller (pure helpers) ─────────
+# The controller LOOP BODY lives in the harness (it must call _run_enrichment,
+# apply_patch_set, and the eval stage — all of which need Spark / WorkspaceClient
+# / LLM access, which this module intentionally has none of). What lives HERE is
+# only the PURE control logic the loop dispatches on: the attempt-mode decision,
+# the coverage accept/reject/rollback rule, and the post-attempt terminal-reason
+# check. Keeping these here makes the §5.1 control flow unit-testable without a
+# Databricks workspace, exactly like the rest of control_plane.
+
+#: Closed vocabulary of controller terminal reasons (arch §5.1 / §7.4).
+LOOP_TERMINAL_REASONS: frozenset[str] = frozenset(
+    {
+        "TARGET_REACHED",
+        "MAX_ATTEMPTS",
+        "NO_NEW_HYPOTHESIS",
+        "EVAL_INVALID",
+        "LOOP_STATE_INVALID",
+    }
+)
+
+
+def decide_attempt_mode(attempt_no: int) -> str:
+    """Return the controller attempt mode for ``attempt_no`` (arch §5.1).
+
+    Attempt 1 is the broad, cluster-agnostic *coverage* pass (the relocated
+    enrichment executor, measured against the frozen baseline and reversible).
+    Attempts 2..N are *surgical* (one failure cluster + one compatible patch
+    family per attempt). Pure: the mode is a function of the monotonic display
+    counter only — ``1`` (and any non-positive guard value) ⇒ ``"coverage"``,
+    every later attempt ⇒ ``"surgical"``.
+    """
+    return "coverage" if int(attempt_no) <= 1 else "surgical"
+
+
+@dataclass(frozen=True)
+class CoverageOutcome:
+    """Decision for the attempt-1 coverage pass, measured as ONE unit (§5.2)."""
+
+    decision: str  # "accept" | "reject" | "continue"
+    decision_reason: str
+    should_rollback: bool
+    delta_pp: float
+
+
+def decide_coverage_outcome(
+    *,
+    frozen_baseline_accuracy: float,
+    post_coverage_accuracy: float,
+    had_candidates: bool,
+) -> CoverageOutcome:
+    """Decide the fate of the attempt-1 coverage pass as a WHOLE unit (§5.2 / §13.5).
+
+    Coverage is a *free probe*: it is measured against the frozen baseline with
+    the single-criterion gain gate (``acceptance_policy.decide_acceptance`` with
+    ``min_gain_pp=0``) and accepted or rolled back as one attempt. It NEVER
+    consumes a surgical ``max_attempts`` slot regardless of outcome.
+
+      * No candidates (warm/well-documented space) ⇒ ``continue`` with
+        ``decision_reason="no_enrichment_candidates"`` (the §13.5 free-probe rung).
+      * ``Δacc < 0`` ⇒ ``reject`` + ``should_rollback=True``. The whole attempt
+        rolls back to the frozen baseline — this fixes the old silent
+        baseline-pollution bug where enrichment moved the baseline even when it
+        regressed.
+      * ``Δacc > 0`` ⇒ ``accept`` — coverage becomes the new champion.
+      * ``Δacc == 0`` ⇒ ``continue`` — the additive enrichment is kept (harmless),
+        the champion accuracy is unchanged.
+
+    Pure function: no I/O, no globals.
+    """
+    if not had_candidates:
+        return CoverageOutcome(
+            decision="continue",
+            decision_reason="no_enrichment_candidates",
+            should_rollback=False,
+            delta_pp=0.0,
+        )
+    from genie_space_optimizer.optimization.acceptance_policy import (
+        REJECTED_REGRESSION,
+        decide_acceptance,
+    )
+
+    gate = decide_acceptance(
+        post_arbiter_candidate=float(post_coverage_accuracy),
+        post_arbiter_baseline=float(frozen_baseline_accuracy),
+        min_gain_pp=0.0,
+    )
+    if gate.reason_code == REJECTED_REGRESSION:
+        return CoverageOutcome(
+            decision="reject",
+            decision_reason=f"rolled_back (Δacc {gate.delta_pp})",
+            should_rollback=True,
+            delta_pp=gate.delta_pp,
+        )
+    if gate.accepted:
+        return CoverageOutcome(
+            decision="accept",
+            decision_reason="coverage_lift",
+            should_rollback=False,
+            delta_pp=gate.delta_pp,
+        )
+    return CoverageOutcome(
+        decision="continue",
+        decision_reason="no_lift",
+        should_rollback=False,
+        delta_pp=gate.delta_pp,
+    )
+
+
+def decide_loop_terminal_reason(
+    *,
+    best_accuracy: float,
+    target_accuracy: float,
+    surgical_used: int,
+    max_attempts: int,
+) -> str | None:
+    """Post-attempt terminal-reason check for the surgical loop (arch §5.1).
+
+    Returns the terminal reason that ends the bounded hill-climb, or ``None`` to
+    keep going. Only the two budget/target stops are decided here:
+
+      * ``TARGET_REACHED`` — best-so-far full-benchmark accuracy met the target.
+      * ``MAX_ATTEMPTS`` — the surgical attempt budget is exhausted.
+
+    ``NO_NEW_HYPOTHESIS`` (empty surgical patch), ``EVAL_INVALID`` (eval data
+    missing/invalid), and ``LOOP_STATE_INVALID`` (loop-state sanity failure) are
+    raised at their own break points in the controller, not here. Plateau /
+    no-improvement stop is DEFERRED (arch §13.2). Pure function.
+    """
+    if float(best_accuracy) >= float(target_accuracy):
+        return "TARGET_REACHED"
+    if int(surgical_used) >= int(max_attempts):
+        return "MAX_ATTEMPTS"
+    return None
+
+
+def build_loop_state(
+    *,
+    attempt_no: int,
+    attempt_mode: str,
+    surgical_attempts_used: int,
+    max_attempts: int,
+    target_accuracy: float,
+    best_accuracy: float | None = None,
+    best_iteration: int | None = None,
+    best_config_version_id: str | None = None,
+    current_hypothesis: Any = None,
+    next_hypothesis: Any = None,
+    do_not_repeat: Any = None,
+    decision: str | None = None,
+    decision_reason: str | None = None,
+    terminal_reason: str | None = None,
+) -> dict:
+    """Assemble the per-attempt loop-state column map (arch §7.4).
+
+    The returned dict is the contract consumed by ``state.write_iteration(loop_state=...)``
+    and ``state.update_iteration_loop_state``. Keeping construction here keeps the
+    column names in one pure, testable place. ``terminal_reason`` is validated
+    against :data:`LOOP_TERMINAL_REASONS` when set.
+    """
+    if terminal_reason is not None and terminal_reason not in LOOP_TERMINAL_REASONS:
+        raise ValueError(
+            f"unknown terminal_reason {terminal_reason!r}; "
+            f"expected one of {sorted(LOOP_TERMINAL_REASONS)}"
+        )
+    return {
+        "attempt_no": int(attempt_no),
+        "attempt_mode": str(attempt_mode),
+        "surgical_attempts_used": int(surgical_attempts_used),
+        "max_attempts": int(max_attempts),
+        "target_accuracy": float(target_accuracy),
+        "best_accuracy": (None if best_accuracy is None else float(best_accuracy)),
+        "best_iteration": (None if best_iteration is None else int(best_iteration)),
+        "best_config_version_id": best_config_version_id,
+        "current_hypothesis": current_hypothesis,
+        "next_hypothesis": next_hypothesis,
+        "do_not_repeat": do_not_repeat,
+        "decision": decision,
+        "decision_reason": decision_reason,
+        "terminal_reason": terminal_reason,
+    }
