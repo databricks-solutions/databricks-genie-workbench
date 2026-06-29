@@ -219,6 +219,13 @@ prune/top-up — GSO never silently deletes user-authored rows."""
 MAX_ITERATIONS = 5
 MAX_ITERATIONS_PER_CLUSTER = 1
 MAX_ITERATIONS_HARD_CEILING = 15
+# GSO v2 Phase 8 (arch §5 / §12): the two-mode 03_optimize controller stops at
+# whichever comes first — ``TARGET_ACCURACY`` or ``MAX_ATTEMPTS``. ``MAX_ATTEMPTS``
+# counts SURGICAL attempts only (attempts 2..N); the attempt-1 coverage pass is a
+# free probe that never consumes a slot (§13.5). ``TARGET_ACCURACY`` is expressed
+# on the 0–100 accuracy scale the lever loop carries (90% target = 90.0).
+MAX_ATTEMPTS = 3
+TARGET_ACCURACY = 90.0
 SLICE_GATE_TOLERANCE = 15.0
 ENABLE_SLICE_GATE: bool = True
 """T2.15: re-enabled after iteration-1 log showed a 3-patch / 3-lever AG
@@ -5415,6 +5422,19 @@ def regression_debt_invariant_enabled() -> bool:
     soft_to_hard / passing_to_hard / unknown_to_hard.
     Production-locked: always on."""
     return True
+
+
+def full_benchmark_only_eval_enabled() -> bool:
+    """GSO v2 Phase 8 (arch §7.3): the 03_optimize loop scores every attempt
+    (coverage + surgical) on the FULL 30–40-question benchmark, so the Attempt
+    Ladder/Ledger plots one consistent per-attempt accuracy. This supersedes the
+    Phase-1 subset-first 3-gate (slice → P0 → full) inside the loop: ``_run_gate_checks``
+    runs ONLY the full block, and the ``EvalBudget`` cap becomes the primary stop.
+
+    Default ON. Operators can opt back into the legacy subset gates for the loop by
+    setting ``GSO_FULL_BENCHMARK_ONLY_EVAL=false`` (alongside
+    ``GSO_ENABLE_LEGACY_SLICE_P0_GATES=true``)."""
+    return _flag_default_on("GSO_FULL_BENCHMARK_ONLY_EVAL")
 
 
 def lever_qualified_patch_ids_enabled() -> bool:

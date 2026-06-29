@@ -719,6 +719,114 @@ def _project_config_for_iteration(config: Any) -> dict[str, Any]:
     return _decycle_config(out)
 
 
+# GSO v2 Phase 8 (arch §7.4): the ordered loop-state columns the two-mode
+# controller commits on each per-attempt ``genie_opt_iterations`` row. Order is
+# the contract shared by ``write_iteration`` (INSERT) and
+# ``update_iteration_loop_state`` (UPDATE); ``(name, kind)`` where kind ∈
+# {int, float, str, json}. ``best_iteration`` is intentionally absent — it is a
+# ``genie_opt_runs`` column, not an iterations column (see control_plane.build_loop_state).
+_LOOP_STATE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("attempt_no", "int"),
+    ("attempt_mode", "str"),
+    ("best_accuracy", "float"),
+    ("best_config_version_id", "str"),
+    ("current_hypothesis", "json"),
+    ("do_not_repeat", "json"),
+    ("terminal_reason", "str"),
+    ("decision", "str"),
+    ("decision_reason", "str"),
+    ("surgical_attempts_used", "int"),
+    ("next_hypothesis", "json"),
+    ("target_accuracy", "float"),
+    ("max_attempts", "int"),
+)
+
+
+def _render_loop_state_value(kind: str, value: Any, esc: Any) -> str:
+    """Render one loop-state value as a Spark-SQL literal (or ``NULL``)."""
+    if value is None:
+        return "NULL"
+    if kind == "int":
+        return str(int(value))
+    if kind == "float":
+        return str(float(value))
+    if kind == "json":
+        if isinstance(value, str):
+            return "NULL" if value == "" else f"'{esc(value)}'"
+        return f"'{esc(json.dumps(value))}'"
+    # str
+    text = str(value)
+    return "NULL" if text == "" else f"'{esc(text)}'"
+
+
+def _render_loop_state_sql(loop_state: dict | None, esc: Any) -> tuple[str, list[str]]:
+    """Return ``(column_list_sql, value_literals)`` for the loop-state columns.
+
+    ``column_list_sql`` is a comma-joined column-name string (no trailing comma);
+    ``value_literals`` is the matching list of SQL literals. Absent keys ⇒ ``NULL``.
+    """
+    ls = loop_state or {}
+    cols = ", ".join(name for name, _ in _LOOP_STATE_COLUMNS)
+    vals = [
+        _render_loop_state_value(kind, ls.get(name), esc)
+        for name, kind in _LOOP_STATE_COLUMNS
+    ]
+    return cols, vals
+
+
+def update_iteration_loop_state(
+    spark: SparkSession,
+    run_id: str,
+    iteration: int,
+    *,
+    catalog: str,
+    schema: str,
+    loop_state: dict,
+    eval_scope: str | None = None,
+) -> None:
+    """UPDATE the per-attempt ``genie_opt_iterations`` row with final loop-state.
+
+    GSO v2 Phase 8 (arch §7.5): the surgical candidate's eval row is INSERTed by
+    ``_run_gate_checks`` *before* the accept/reject decision is known, so the
+    controller commits the post-decision loop-state (``decision``, ``decision_reason``,
+    ``best_accuracy``, ``best_config_version_id``, ``terminal_reason``, ...) here at
+    the END of each attempt. Only the keys present in ``loop_state`` are SET; this
+    is additive over the existing row. Best-effort — a failed UPDATE is logged but
+    never aborts the loop."""
+    if not loop_state:
+        return
+    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("'", "''")
+
+    set_clauses: list[str] = []
+    for name, kind in _LOOP_STATE_COLUMNS:
+        if name not in loop_state:
+            continue
+        set_clauses.append(
+            f"{name} = {_render_loop_state_value(kind, loop_state.get(name), _esc)}"
+        )
+    if not set_clauses:
+        return
+
+    where = f"run_id = '{_esc(str(run_id))}' AND iteration = {int(iteration)}"
+    if eval_scope:
+        where += f" AND eval_scope = '{_esc(str(eval_scope))}'"
+    try:
+        execute_delta_write_with_retry(
+            spark,
+            f"UPDATE {fqn} SET {', '.join(set_clauses)} WHERE {where}",
+            operation_name="update_iteration_loop_state",
+            table_name=fqn,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to update loop-state for run %s iteration %s (non-fatal)",
+            run_id, iteration, exc_info=True,
+        )
+
+
 def write_iteration(
     spark: SparkSession,
     run_id: str,
@@ -731,8 +839,17 @@ def write_iteration(
     eval_scope: str = "full",
     reflection_json: dict | None = None,
     config_snapshot: dict | None = None,
+    loop_state: dict | None = None,
 ) -> None:
-    """Insert into ``genie_opt_iterations`` with scores, failures, etc."""
+    """Insert into ``genie_opt_iterations`` with scores, failures, etc.
+
+    ``loop_state`` (GSO v2 Phase 8, arch §7.4) carries the two-mode controller's
+    per-attempt loop-state columns (``attempt_no``, ``attempt_mode``, ``decision``,
+    ``best_accuracy``, ``surgical_attempts_used``, ``target_accuracy``, etc.). The
+    map is the contract built by ``control_plane.build_loop_state``; absent keys
+    are written ``NULL`` so legacy / baseline / repeatability-only writes are
+    unaffected. ``genie_opt_iterations`` is the single per-attempt truth, so the
+    loop commits its state here rather than in a separate artifact."""
     now = datetime.now(timezone.utc).isoformat()
     fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
 
@@ -835,6 +952,11 @@ def write_iteration(
     _eval_run_id = eval_result.get("eval_run_id") or None
     _eval_run_status = eval_result.get("eval_run_status") or None
 
+    # GSO v2 Phase 8 (arch §7.4): per-attempt loop-state columns. Rendered from
+    # the ``loop_state`` map (control_plane.build_loop_state); every column is
+    # written ``NULL`` when the caller omits it (baseline / legacy writes).
+    _loop_state_cols, _loop_state_vals = _render_loop_state_sql(loop_state, _esc)
+
     col_names = (
         "run_id, iteration, lever, eval_scope, timestamp, "
         "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
@@ -846,7 +968,8 @@ def write_iteration(
         "cluster_fallback_to_instruction_count, synthesis_archetype_distribution, "
         "rolled_back, both_correct_count, both_correct_rate, "
         "config_json, is_champion, "
-        "num_needs_review, eval_run_id, eval_run_status"
+        "num_needs_review, eval_run_id, eval_run_status, "
+        + _loop_state_cols
     )
     vals = ", ".join(
         [
@@ -886,6 +1009,7 @@ def write_iteration(
             f"'{_esc(str(_eval_run_id))}'" if _eval_run_id is not None else "NULL",
             f"'{_esc(str(_eval_run_status))}'" if _eval_run_status is not None else "NULL",
         ]
+        + _loop_state_vals
     )
 
     execute_delta_write_with_retry(

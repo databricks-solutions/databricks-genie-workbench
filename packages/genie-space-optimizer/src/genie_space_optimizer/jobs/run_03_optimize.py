@@ -88,6 +88,15 @@ schema = dbutils.widgets.get("schema").strip()
 apply_mode = dbutils.widgets.get("apply_mode").strip() or "genie_config"
 levers = json.loads(dbutils.widgets.get("levers") or "[1,2,3,4,5,6]")
 max_iterations = int(dbutils.widgets.get("max_iterations") or "5")
+# GSO v2 Phase 8 (arch §5 / §12): the two-mode controller's stop knobs.
+# max_attempts is the SURGICAL budget (coverage is a free probe); target_accuracy
+# is the stop-early target on the 0–100 accuracy scale.
+max_attempts = int(dbutils.widgets.get("max_attempts") or "3")
+target_accuracy = float(dbutils.widgets.get("target_accuracy") or "0.90")
+# Job param is the 0–1 fraction (databricks.yml default "0.90"); the lever loop
+# carries accuracy on the 0–100 scale, so promote a fractional target to percent.
+if target_accuracy <= 1.0:
+    target_accuracy *= 100.0
 triggered_by = dbutils.widgets.get("triggered_by").strip()
 llm_model = dbutils.widgets.get("llm_model").strip()
 if llm_model:
@@ -194,12 +203,16 @@ try:
         enrichment_done=False,
         enrichment_model_id="",
         max_benchmark_count=MAX_BENCHMARK_COUNT,
+        max_attempts=max_attempts,
+        target_accuracy=target_accuracy,
     )
     _log(
         "Optimize loop finished",
         accuracy=loop_out.get("accuracy"),
         iteration_counter=loop_out.get("iteration_counter"),
         best_iteration=loop_out.get("best_iteration"),
+        terminal_reason=loop_out.get("terminal_reason"),
+        surgical_attempts_used=loop_out.get("surgical_attempts_used"),
         levers_accepted=loop_out.get("levers_accepted"),
         levers_rolled_back=loop_out.get("levers_rolled_back"),
     )
@@ -225,6 +238,8 @@ write_stage(
         "accuracy": loop_out.get("accuracy"),
         "best_iteration": loop_out.get("best_iteration"),
         "iteration_counter": loop_out.get("iteration_counter"),
+        "terminal_reason": loop_out.get("terminal_reason"),
+        "surgical_attempts_used": loop_out.get("surgical_attempts_used"),
     },
 )
 
@@ -233,4 +248,5 @@ dbutils.notebook.exit(json.dumps({
     "run_id": run_id,
     "accuracy": loop_out.get("accuracy"),
     "best_iteration": loop_out.get("best_iteration"),
+    "terminal_reason": loop_out.get("terminal_reason"),
 }, default=str))

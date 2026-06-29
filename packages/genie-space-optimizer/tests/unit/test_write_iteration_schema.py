@@ -202,8 +202,11 @@ def test_write_iteration_persists_native_eval_run_metadata(mock_spark_iter) -> N
     assert "num_needs_review" in sql
     assert "eval_run_id" in sql
     assert "eval_run_status" in sql
-    # Values survive serialization (trailing trio after is_champion=false).
-    assert sql.rstrip().endswith("false, 2, 'er-12345', 'DONE')")
+    # Values survive serialization (the native trio follows is_champion=false).
+    # GSO v2 Phase 8 appends the loop-state columns (all NULL here) after the
+    # native trio, so assert the trio is present rather than that it is last.
+    assert "false, 2, 'er-12345', 'DONE'," in sql
+    assert sql.rstrip().endswith("NULL)")
 
 
 def test_write_iteration_native_eval_run_metadata_defaults_null(mock_spark_iter) -> None:
@@ -227,7 +230,10 @@ def test_write_iteration_native_eval_run_metadata_defaults_null(mock_spark_iter)
     )
 
     sql = _extract_insert_sql(mock_spark_iter)
-    assert sql.rstrip().endswith("false, NULL, NULL, NULL)")
+    # is_champion=false then the native trio (all NULL); GSO v2 Phase 8 loop-state
+    # columns (also NULL on legacy writes) trail after.
+    assert "false, NULL, NULL, NULL," in sql
+    assert sql.rstrip().endswith("NULL)")
 
 
 def test_write_iteration_accepts_enrichment_eval_scope(mock_spark_iter) -> None:
