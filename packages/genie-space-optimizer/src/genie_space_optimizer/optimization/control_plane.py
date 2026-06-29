@@ -1168,6 +1168,9 @@ def assert_soft_cluster_currency(
 # Databricks workspace, exactly like the rest of control_plane.
 
 #: Closed vocabulary of controller terminal reasons (arch §5.1 / §7.4).
+#: ``EVAL_BUDGET_EXHAUSTED`` (Phase-8 NB1) is distinct from ``MAX_ATTEMPTS``: the
+#: hard 2-hour eval-budget wall can stop the loop while surgical attempts remain,
+#: so it is its own typed reason rather than being mislabeled ``MAX_ATTEMPTS``.
 LOOP_TERMINAL_REASONS: frozenset[str] = frozenset(
     {
         "TARGET_REACHED",
@@ -1175,6 +1178,7 @@ LOOP_TERMINAL_REASONS: frozenset[str] = frozenset(
         "NO_NEW_HYPOTHESIS",
         "EVAL_INVALID",
         "LOOP_STATE_INVALID",
+        "EVAL_BUDGET_EXHAUSTED",
     }
 )
 
