@@ -354,10 +354,10 @@ depending on notebook-local state.
 | `baseline_eval` | baseline score, question counts, excluded counts, failure set, benchmark denominator used |
 | `triage` | selected cluster, root cause, compatibility decision, allowed patch family, regression questions |
 | `patch_bundle` | proposed edits, patch count, affected question IDs, rollback token, config surface touched |
-| `targeted_eval` | affected-subset score, full-benchmark score, delta vs frozen baseline, fixed / regressed counts |
+| `targeted_eval` | full-benchmark score, delta vs frozen baseline, fixed / regressed / unchanged / excluded counts. **Full-benchmark only** (no affected-subset-then-regression-subset gating): the eval's job is specifically to catch regressions on questions the champion already passes, so every candidate is evaluated against the entire benchmark. |
 | `decision` | accept / reject / continue, reason, candidate version pointer, next hypothesis hint |
 | `loop_state` | attempt number, attempt mode (`coverage`/`surgical`), best iteration, best accuracy, best config version id, current champion config version id, target accuracy, max attempts, current hypothesis, do-not-repeat list, terminal reason |
-| `publish_record` | final run status, champion pointer, audit summary, publish or wait result |
+| `publish_record` | final run status, champion pointer, audit summary, publish or wait result, **LLM-generated 1–2 paragraph human-readable summary** of all changes, improvement trajectory, and any concerns (e.g., stopped on budget with clusters still failing). This is the surface where concerns get raised — there is no separate escalation branch. |
 
 ### 7.4 Loop-state fields
 
@@ -481,14 +481,23 @@ Because the loop is in-notebook, these are **job parameters**, not graph shape:
 ## 13. Open Decisions
 
 1. Set a concrete default for `benchmark_repair_max_tries` (K).
-2. Whether to keep a plateau/no-improvement safety stop in addition to the
-   `max_attempts` cap. If yes, it is another `break` condition in §5.1 — no DAG change.
+2. **Plateau safety stop (deferred).** Whether to add a `break` condition for 3
+   consecutive non-improving passes, in addition to the `max_attempts` cap. If
+   added later, it is another `break` in §5.1 — no DAG change. Deferred for now:
+   `max_attempts=5` is the only stop on non-progress. Kept here for future
+   consideration.
 3. Whether `publish_and_audit` should set the run to `PUBLISHED_AUDITED` or a
    different terminal status.
 4. Confirm `target_accuracy` and `max_attempts` are surfaced as job parameters in the Jobs UI.
 5. Whether an empty attempt-1 coverage pass (warm space, nothing to enrich) should consume a budget
    slot or fall through to surgical without counting against `max_attempts`.
-6. **Net-new code for the two-mode loop** (see §5.2): a per-attempt breadth/mode parameter threaded
+6. **Agent-mode support (deferred).** Whether to add explicit Agent-mode
+   (UI-only, no API) support as a first-class execution mode alongside Chat
+   mode. Not in scope for this redesign; deferred for future consideration. If
+   added later, it affects triage (response/plan/evidence inspection instead of
+   generated vs expected SQL), the eval comparison (Agent assessment delta),
+   and the `targeted_eval` payload, but not the loop shape.
+7. **Net-new code for the two-mode loop** (see §5.2): a per-attempt breadth/mode parameter threaded
    into the strategist and prompt, and a controller branch that routes attempt 1 to coverage mode and
    bypasses the one-source-cluster-per-action-group invariant for that attempt only. Confirm
    scope/ownership.
