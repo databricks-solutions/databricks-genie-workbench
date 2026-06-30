@@ -117,22 +117,27 @@ def test_coverage_failure_after_enrichment_rolls_back_before_surgical() -> None:
     assert "rolling back any" in src.lower() or "roll back any" in src.lower()
 
 
-# ── B3: coverage example SQLs routed through apply_patch_set firewall ────────
-def test_firewall_coverage_examples_calls_apply_patch_set_with_corpus() -> None:
+# ── B3 / C1: coverage example SQLs routed through apply_patch_set firewall over
+#            the REAL instructions.example_question_sqls path, list-value normalized
+def test_firewall_coverage_examples_reads_instructions_path_and_normalizes() -> None:
     captured = {}
 
     def _fake_aps(w, space_id, patches, snapshot, **kwargs):  # noqa: ANN001
         captured["benchmark_corpus"] = kwargs.get("benchmark_corpus")
         captured["w"] = w
-        captured["n_patches"] = len(patches)
+        captured["patches"] = patches
         return {"dropped_patches": []}
 
+    # Real schema path is instructions.example_question_sqls; one entry carries
+    # list[str]-valued question/sql which must be normalized to the string value.
     cfg = {
         "_parsed_space": {
-            "example_question_sqls": [
-                {"question": "q1?", "sql": "SELECT 1"},
-                {"question": "q2?", "sql": "SELECT 2"},
-            ]
+            "instructions": {
+                "example_question_sqls": [
+                    {"question": ["q1?"], "sql": ["SELECT 1"]},
+                    {"question": "q2?", "sql": "SELECT 2"},
+                ]
+            }
         }
     }
     with patch.object(applier_mod, "apply_patch_set", _fake_aps):
@@ -141,24 +146,28 @@ def test_firewall_coverage_examples_calls_apply_patch_set_with_corpus() -> None:
             benchmarks=[{"id": "b1", "question": "x", "sql": "SELECT 9"}],
             apply_mode="genie_config",
         )
-    # The firewall path is exercised: apply_patch_set is called WITH a corpus and
-    # the example SQLs are turned into add_example_sql patches.
+    # Patches reach the firewall WITH a corpus, built from the instructions path …
     assert captured["benchmark_corpus"] is not None
-    assert captured["n_patches"] == 2
     assert captured["w"] is None  # NON-MUTATING dry-run (no live PATCH)
+    assert len(captured["patches"]) == 2
+    # … and list-valued fields are normalized to the actual string (not str(list)).
+    qs = sorted(p["example_question"] for p in captured["patches"])
+    sqls = sorted(p["example_sql"] for p in captured["patches"])
+    assert qs == ["q1?", "q2?"]
+    assert sqls == ["SELECT 1", "SELECT 2"]
     assert out["apply_log"] == {"dropped_patches": []}
 
 
-def test_firewall_coverage_examples_strips_detected_leak() -> None:
+def test_firewall_coverage_examples_strips_leak_from_instructions_path() -> None:
     def _fake_aps(w, space_id, patches, snapshot, **kwargs):  # noqa: ANN001
         return {"dropped_patches": [
             {"example_question": "leak?", "drop_reason": "benchmark_leak:qid"},
         ]}
 
-    cfg = {"_parsed_space": {"example_question_sqls": [
+    cfg = {"_parsed_space": {"instructions": {"example_question_sqls": [
         {"question": "leak?", "sql": "SELECT 1"},
         {"question": "ok?", "sql": "SELECT 2"},
-    ]}}
+    ]}}}
     _patched = {}
     with patch.object(applier_mod, "apply_patch_set", _fake_aps), \
          patch("genie_space_optimizer.common.genie_client.patch_space_config",
@@ -168,9 +177,69 @@ def test_firewall_coverage_examples_strips_detected_leak() -> None:
             benchmarks=[{"id": "b1"}], apply_mode="genie_config",
         )
     assert len(out["dropped"]) == 1
-    # The leaking example was stripped from the re-PATCHed config.
-    kept = [e["question"] for e in _patched["cfg"]["example_question_sqls"]]
+    # The leak is stripped from the LIVE instructions.example_question_sqls path
+    # (not a stale top-level copy), and that cleaned config is what is re-PATCHed.
+    kept = [
+        e["question"]
+        for e in _patched["cfg"]["instructions"]["example_question_sqls"]
+    ]
     assert kept == ["ok?"]
+    assert cfg["_parsed_space"]["instructions"]["example_question_sqls"][0]["question"] in ("leak?", "ok?")
+
+
+# ── C2: mutation detection via real pre/post config comparison ──────────────
+def test_coverage_candidate_detection_catches_instruction_only_mutation() -> None:
+    # A coverage pass whose ONLY mutator touched instructions (e.g. the legacy
+    # miner / preflight synthesis) must register as a CANDIDATE so eval+rollback
+    # run. The controller derives this from a canonical pre/post compare, so a
+    # miner-only instruction change is detected (the old per-mutator heuristic
+    # missed it). We prove the comparison primitive the controller uses.
+    canon = applier_mod._canonical_for_rollback_compare
+    pre = {"instructions": {"text_instructions": [{"content": "base"}]}}
+    post = {"instructions": {"text_instructions": [{"content": "base + mined hint"}]}}
+    assert canon(pre) != canon(post)  # ⇒ _coverage_had_candidates is True
+    # Unchanged config (runtime-only keys differ) ⇒ NOT a candidate.
+    assert canon({"a": 1, "_uc_columns": [1]}) == canon({"a": 1, "_uc_columns": [2, 3]})
+
+
+def test_coverage_block_uses_config_comparison_for_candidates() -> None:
+    src = inspect.getsource(harness._run_lever_loop)
+    assert "_canonical_for_rollback_compare as _canon_cfg" in src
+    assert "_canon_cfg(_coverage_pre_snapshot) != _canon_cfg(metadata_snapshot)" in src
+
+
+# ── C3: standalone path hides the rejected enrichment row + resets best ─────
+def test_mark_iteration_rolled_back_is_scoped_by_eval_scope() -> None:
+    captured: list[str] = []
+    with patch.object(state_mod, "execute_delta_write_with_retry",
+                      lambda spark, sql, **k: captured.append(sql)):
+        state_mod.mark_iteration_rolled_back(
+            MagicMock(), "run1", 0, catalog="c", schema="s",
+            eval_scope="enrichment", reason="coverage_rolled_back",
+        )
+    sql = captured[-1]
+    assert sql.startswith("UPDATE")
+    assert "rolled_back = true" in sql
+    # Scoped so the sibling 'full' baseline row at the same iteration is untouched.
+    assert "eval_scope = 'enrichment'" in sql
+    assert "iteration = 0" in sql
+
+
+def test_optimize_genie_space_rollback_hides_enrichment_row_and_resets_best() -> None:
+    src = inspect.getsource(harness.optimize_genie_space)
+    # On a post-enrichment regression the rejected enrichment row is marked
+    # rolled_back (scoped) and run best-iteration/best-accuracy reset to baseline.
+    assert "mark_iteration_rolled_back" in src
+    assert 'eval_scope="enrichment"' in src
+    assert "best_iteration=0" in src
+
+
+# ── NB1: no-candidate loader failure does NOT leave synthetic counts current ─
+def test_no_candidate_loader_failure_marks_rung_excluded() -> None:
+    src = inspect.getsource(harness._run_lever_loop)
+    assert "_coverage_eval_incomplete = True" in src
+    # The final coverage write excludes an incomplete rung from current state.
+    assert 'or _coverage_eval_incomplete' in src
 
 
 def test_coverage_block_invokes_firewall_helper() -> None:

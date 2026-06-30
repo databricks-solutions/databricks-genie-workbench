@@ -12991,16 +12991,35 @@ def _firewall_coverage_example_sqls(
     from genie_space_optimizer.optimization.applier import apply_patch_set
     from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
 
+    def _as_text(v: Any) -> str:
+        # C1: example_question_sqls entries may carry list[str]-valued question/sql
+        # fields; normalize to the actual string value (first non-empty element),
+        # never the str() of a list.
+        if isinstance(v, (list, tuple)):
+            for _x in v:
+                if str(_x or "").strip():
+                    return str(_x)
+            return ""
+        return str(v or "")
+
     _parsed = config.get("_parsed_space", config) if isinstance(config, dict) else {}
     if not isinstance(_parsed, dict):
         _parsed = {}
-    _examples = [e for e in (_parsed.get("example_question_sqls") or []) if isinstance(e, dict)]
+    # C1: example SQLs live under instructions.example_question_sqls (the real
+    # schema/applier path), NOT top level. Reading top level made the firewall a
+    # no-op and the strip re-PATCH miss the live entries.
+    _instr = _parsed.get("instructions")
+    if not isinstance(_instr, dict):
+        _instr = {}
+    _examples = [
+        e for e in (_instr.get("example_question_sqls") or []) if isinstance(e, dict)
+    ]
     corpus = BenchmarkCorpus.from_benchmarks(benchmarks or [])
     _patches = [
         {
             "type": "add_example_sql",
-            "example_question": str(e.get("question") or e.get("example_question") or ""),
-            "example_sql": str(e.get("sql") or e.get("example_sql") or ""),
+            "example_question": _as_text(e.get("question") or e.get("example_question")),
+            "example_sql": _as_text(e.get("sql") or e.get("example_sql")),
             "question_id": e.get("question_id") or e.get("benchmark_id"),
         }
         for e in _examples
@@ -13019,15 +13038,19 @@ def _firewall_coverage_example_sqls(
         _leak_qs = {str(d.get("example_question") or "") for d in dropped}
         try:
             from genie_space_optimizer.common.genie_client import patch_space_config
+            # C1: strip the leaking entries from instructions.example_question_sqls
+            # (the LIVE path) before re-PATCHing, so the leak does not persist.
             _cleaned = copy.deepcopy(_parsed)
-            _cleaned["example_question_sqls"] = [
+            _cleaned_instr = _cleaned.setdefault("instructions", {})
+            _cleaned_instr["example_question_sqls"] = [
                 e for e in _examples
-                if str(e.get("question") or e.get("example_question") or "") not in _leak_qs
+                if _as_text(e.get("question") or e.get("example_question")) not in _leak_qs
             ]
             patch_space_config(w, space_id, _cleaned)
             logger.warning(
                 "Coverage firewall: stripped %d scored-benchmark-leaking example "
-                "SQL(s) from the live space before measurement (qids/questions=%s)",
+                "SQL(s) from instructions.example_question_sqls before measurement "
+                "(questions=%s)",
                 len(dropped), sorted(_leak_qs),
             )
             if isinstance(config, dict):
@@ -14320,9 +14343,33 @@ def _run_lever_loop(
             )
 
             _frozen_baseline_accuracy = float(prev_accuracy or 0.0)
+            # C2: detect whether the inline enrichment ACTUALLY mutated the live
+            # space by comparing the pre-enrichment snapshot to the post-enrichment
+            # config (canonical, runtime-key-stripped). This supersedes the
+            # per-mutator heuristic, which missed mutators like the instruction
+            # miner / preflight synthesis — a missed mutation would skip the
+            # eval+rollback and silently pollute the baseline. "No candidates" is
+            # true ONLY when the live config is provably unchanged.
+            from genie_space_optimizer.optimization.applier import (
+                _canonical_for_rollback_compare as _canon_cfg,
+            )
+            try:
+                _coverage_had_candidates = (
+                    _canon_cfg(_coverage_pre_snapshot) != _canon_cfg(metadata_snapshot)
+                )
+            except Exception:
+                # Conservative: if the compare fails, assume a mutation occurred so
+                # the attempt is measured + reversible rather than silently skipped.
+                logger.warning(
+                    "Coverage mutation compare failed — assuming mutated (non-fatal)",
+                    exc_info=True,
+                )
+                _coverage_had_candidates = True
+
             # B3: route the coverage example SQLs through the canonical
             # apply_patch_set leakage firewall (drops any scored-benchmark Q/A leak)
             # BEFORE the eval, so the measured accuracy reflects the firewalled space.
+            _coverage_eval_incomplete = False
             if _coverage_had_candidates:
                 try:
                     _firewall_coverage_example_sqls(
@@ -14381,9 +14428,13 @@ def _run_lever_loop(
                         "evaluated_count": _baseline_full.get("evaluated_count"),
                     }
                 except Exception:
+                    # NB1: do NOT write synthetic counts (correct_count=0) that could
+                    # be read as current state. Mark the rung incomplete so it is
+                    # written rolled_back=True (excluded from current-state selection).
                     logger.warning(
                         "Coverage no-candidate rung: failed to load baseline payload; "
-                        "falling back to carried baseline scores (non-fatal)",
+                        "writing the rung rolled_back so synthetic counts cannot be "
+                        "read as current state (non-fatal)",
                         exc_info=True,
                     )
                     _coverage_eval = {
@@ -14392,6 +14443,7 @@ def _run_lever_loop(
                         "total_questions": _eval_working_set_size,
                         "correct_count": 0,
                     }
+                    _coverage_eval_incomplete = True
 
             # B2 / B4: the ONE measured/reversible coverage decision + PROVEN rollback.
             _cov = _finalize_coverage_decision(
@@ -14455,7 +14507,9 @@ def _run_lever_loop(
                     catalog=catalog, schema=schema,
                     eval_scope="enrichment",
                     config_snapshot=config,
-                    rolled_back=bool(_cov["should_rollback"]),
+                    # B1 + NB1: rejected (rolled-back) OR incomplete (synthetic
+                    # loader-failure) rungs are excluded from current-state.
+                    rolled_back=bool(_cov["should_rollback"]) or _coverage_eval_incomplete,
                     loop_state=_build_loop_state(
                         attempt_no=1,
                         attempt_mode=_decide_attempt_mode_cov(1),
@@ -25400,6 +25454,34 @@ def optimize_genie_space(
                 # Regression rolled back → keep the FROZEN BASELINE (no silent move).
                 _accuracy_source = "baseline_eval_coverage_rolled_back"
                 _effective_model_id = model_id
+                # C3: _run_enrichment already wrote an eval_scope='enrichment'
+                # iteration-0 row with the REJECTED post-enrichment eval/config.
+                # Mark ONLY that row rolled_back (scoped by eval_scope so the
+                # sibling 'full' baseline row at iteration 0 stays current state),
+                # and reset run best-iteration / best-accuracy back to the baseline
+                # so resume / clustering / champion selection never read the
+                # rejected enrichment state.
+                try:
+                    from genie_space_optimizer.optimization.state import (
+                        mark_iteration_rolled_back as _mark_iter_rb,
+                    )
+                    _mark_iter_rb(
+                        spark, run_id_str, 0,
+                        catalog=catalog, schema=schema,
+                        eval_scope="enrichment",
+                        reason=f"coverage_rolled_back (Δacc {_cov_std['delta_pp']})",
+                    )
+                    update_run_status(
+                        spark, run_id_str, catalog, schema,
+                        best_iteration=0,
+                        best_accuracy=float(prev_accuracy),
+                    )
+                except Exception:
+                    logger.warning(
+                        "C3: failed to mark rejected enrichment row rolled_back / "
+                        "reset run best metadata (non-fatal)",
+                        exc_info=True,
+                    )
             else:
                 # Accepted / no-op → adopt the post-enrichment state as the start.
                 _post_scores = _enr_dict.get("post_enrichment_scores") or {}
