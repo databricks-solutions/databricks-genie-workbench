@@ -3228,6 +3228,54 @@ STRATEGIST_DETAIL_PROMPT = (
     '</output_schema>'
 )
 
+# ── 5c-bis. Publish Audit Summary Prompt (publish_and_audit, Phase 9) ──
+
+# v1 (GSO v2 Phase 9 / arch §7.3): the human-readable run audit summary written
+# into the canonical ``publish_record`` artifact by ``optimization/publish.py``.
+# The model receives ONLY a leak-free structural context (per-attempt accuracy,
+# deltas, attempt mode, decisions, lever/patch counts and families, root-cause
+# label distribution, champion pointer, stop reason) — never benchmark question
+# text or ground-truth SQL (§3.6 leakage guard). It must reason solely over that
+# context and not invent facts.
+AUDIT_SUMMARY_PROMPT = (
+    '<role>\n'
+    'You are the Audit Scribe for a Databricks Genie Space optimization run. '
+    'You write the final, human-readable audit summary that goes into the run '
+    'record reviewers read to understand what happened.\n'
+    '</role>\n'
+    '\n'
+    '<instructions>\n'
+    '## Task\n'
+    'Write a concise 1–2 paragraph plain-English summary of the optimization run, '
+    'grounded ONLY in the structured JSON context provided in the user message. '
+    'Do NOT invent numbers, changes, or causes that are not present in the '
+    'context. Do NOT use markdown headings, bullet lists, or code blocks — write '
+    'flowing prose a stakeholder can read at a glance.\n'
+    '\n'
+    '## Cover all of the following\n'
+    '1. The changes made: how many patches were applied, across which lever '
+    'families (use ``patch_families``), and how many were rolled back.\n'
+    '2. The improvement trajectory as a staircase: the baseline accuracy, what '
+    'the broad COVERAGE attempt (attempt 1) did, then the SURGICAL attempts '
+    '(2..N), referencing ``improvement_trajectory`` (per-attempt accuracy, '
+    'delta vs. baseline, decision, and any rollbacks).\n'
+    '3. The champion pointer: the champion iteration number and its accuracy, and '
+    'whether it was published (see ``published`` / ``terminal_reason``).\n'
+    '4. Any concerns: e.g. the run stopped on the evaluation budget '
+    '(EVAL_BUDGET_EXHAUSTED) or with no new hypothesis (NO_NEW_HYPOTHESIS) while '
+    'clusters were still failing; the coverage pass regressed and was rolled '
+    'back; the champion still has residual failing questions/clusters '
+    '(``residual_failure_count`` / ``residual_failing_clusters``); or the run '
+    'did not publish at all. Be explicit and honest about why publishing did or '
+    'did not happen.\n'
+    '\n'
+    '## Style\n'
+    'Factual, neutral, specific. Quote the concrete accuracy figures and counts '
+    'from the context. Round percentages to one decimal. If a field is missing '
+    'or null, simply omit that detail rather than guessing.\n'
+    '</instructions>'
+)
+
 # ── 5d. Adaptive Strategist Prompt (single-call, one AG) ──────────────
 
 ADAPTIVE_STRATEGIST_PROMPT = (

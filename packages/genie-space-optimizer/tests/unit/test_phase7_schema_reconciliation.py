@@ -324,6 +324,51 @@ def test_artifact_kinds_constant_matches_spec():
     assert set(state_mod.ARTIFACT_KINDS) == set(_ARTIFACT_KINDS)
 
 
+def test_publish_record_payload_shape_round_trips_through_write_artifact(monkeypatch):
+    """Phase 9: the real ``publish_record`` payload (champion pointer, stamped
+    terminal_reason, published flag, LLM audit summary, improvement trajectory,
+    concerns) is a valid ``publish_record`` artifact and serializes intact —
+    superseding the Phase-7 shell's None/[] placeholders + 'Phase 7 shell' note."""
+    from genie_space_optimizer.optimization.publish import build_publish_record
+
+    captured = {}
+
+    def fake_insert_row(spark, catalog, schema, table, payload):
+        captured["table"] = table
+        captured["payload"] = payload
+
+    monkeypatch.setattr(state_mod, "insert_row", fake_insert_row)
+
+    record = build_publish_record(
+        run_id="run-1", space_id="space-1", run_status="CONVERGED",
+        terminal_reason="TARGET_REACHED", published=True, publish_outcome="published",
+        champion_iteration=2, champion_accuracy=91.0,
+        champion_config_version_id="cfg-v2", target_accuracy=90.0, max_attempts=3,
+        audit_summary="Baseline 80% climbed to 91%; champion iter 2 published.",
+        improvement_trajectory=[{"iteration": 0, "accuracy": 80.0}],
+        concerns=[],
+    )
+    # The Phase-9 payload carries the real fields, not the shell placeholders.
+    for field in (
+        "final_status", "terminal_reason", "published", "publish_outcome",
+        "champion_iteration", "champion_accuracy", "champion_config_version_id",
+        "audit_summary", "improvement_trajectory", "concerns",
+    ):
+        assert field in record
+    assert "note" not in record  # no 'Phase 7 shell' placeholder note
+
+    aid = state_mod.write_artifact(
+        MagicMock(), "run-1", "publish_record", record,
+        catalog="c", schema="s", stage_name="PUBLISH_AND_AUDIT",
+        source_notebook="run_publish_and_audit.py",
+    )
+    assert aid is not None
+    assert captured["table"] == TABLE_ARTIFACTS
+    assert captured["payload"]["artifact_kind"] == "publish_record"
+    assert captured["payload"]["content_hash"]
+    assert '"terminal_reason": "TARGET_REACHED"' in captured["payload"]["artifact_json"]
+
+
 # ── ensure_optimization_tables wires the retire migration ────────────────
 
 
