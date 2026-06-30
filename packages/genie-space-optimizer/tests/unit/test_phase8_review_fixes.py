@@ -185,7 +185,22 @@ def test_firewall_coverage_examples_strips_leak_from_instructions_path() -> None
         for e in _patched["cfg"]["instructions"]["example_question_sqls"]
     ]
     assert kept == ["ok?"]
-    assert cfg["_parsed_space"]["instructions"]["example_question_sqls"][0]["question"] in ("leak?", "ok?")
+    # E1: the CALLER-VISIBLE config (config["_parsed_space"], carried into surgical
+    # via the helper's return) is rebound to the cleaned copy — the dropped example
+    # must NOT survive in the snapshot the controller uses afterward.
+    cleaned = out["config"]["_parsed_space"]["instructions"]["example_question_sqls"]
+    assert [e["question"] for e in cleaned] == ["ok?"]
+    assert cfg["_parsed_space"]["instructions"]["example_question_sqls"] == cleaned
+
+
+def test_coverage_caller_rebinds_metadata_snapshot_to_firewalled_config() -> None:
+    # E1: after the firewall call the controller re-points config + metadata_snapshot
+    # at the cleaned config (the helper's return), so the stale parsed object with the
+    # dropped example is never carried into surgical mode.
+    src = inspect.getsource(harness._run_lever_loop)
+    assert "_fw_out = _firewall_coverage_example_sqls(" in src
+    assert "config = _fw_cfg" in src
+    assert "metadata_snapshot = _fw_parsed" in src
 
 
 # ── D1: firewall is FAIL-CLOSED — strip/re-PATCH failure must NOT be swallowed ─
@@ -359,6 +374,70 @@ def test_no_candidate_loader_failure_marks_rung_excluded() -> None:
     assert "_coverage_eval_incomplete = True" in src
     # The final coverage write excludes an incomplete rung from current state.
     assert 'or _coverage_eval_incomplete' in src
+
+
+# ── E2: standalone path is fail-closed (anchor + measured/rollback/baseline gate) ─
+from genie_space_optimizer.optimization.control_plane import (  # noqa: E402
+    decide_standalone_coverage_gate,
+    resolve_coverage_rollback_anchor,
+)
+
+
+def test_e2a_anchor_prefers_dedicated_then_baseline_else_empty() -> None:
+    # Dedicated snapshot present → used.
+    assert resolve_coverage_rollback_anchor(
+        dedicated_snapshot={"a": 1}, baseline_config={"_parsed_space": {"b": 2}},
+    ) == {"a": 1}
+    # E2a: dedicated fetch failed (empty) → fall back to the baseline config's parsed space.
+    assert resolve_coverage_rollback_anchor(
+        dedicated_snapshot={}, baseline_config={"_parsed_space": {"b": 2}},
+    ) == {"b": 2}
+    # No anchor at all → {} (the caller must STOP before mutating, fail-closed).
+    assert resolve_coverage_rollback_anchor(
+        dedicated_snapshot={}, baseline_config={},
+    ) == {}
+
+
+def test_e2b_enrichment_raised_after_mutation_rolls_back_and_stops() -> None:
+    # (b) _run_enrichment raised after possibly mutating → no measured accuracy and
+    # a possibly-mutated live space ⇒ roll back + stop (never surgical).
+    assert decide_standalone_coverage_gate(
+        enrichment_raised=True, post_accuracy=None, live_may_be_mutated=True,
+    ) == "rollback_and_stop"
+
+
+def test_e2c_no_post_accuracy_with_mutation_rolls_back_and_stops() -> None:
+    # (c) post_enrichment_accuracy=None while the live space differs from the
+    # pre-enrichment snapshot ⇒ roll back + stop; baseline_eval must NOT stand.
+    assert decide_standalone_coverage_gate(
+        enrichment_raised=False, post_accuracy=None, live_may_be_mutated=True,
+    ) == "rollback_and_stop"
+
+
+def test_e2_provably_unmutated_noop_uses_baseline() -> None:
+    # No post-accuracy AND provably unmutated (true no-op) ⇒ baseline is safe.
+    assert decide_standalone_coverage_gate(
+        enrichment_raised=False, post_accuracy=None, live_may_be_mutated=False,
+    ) == "baseline"
+
+
+def test_e2_measured_when_post_accuracy_present() -> None:
+    assert decide_standalone_coverage_gate(
+        enrichment_raised=False, post_accuracy=88.0, live_may_be_mutated=True,
+    ) == "measured"
+
+
+def test_optimize_genie_space_wires_e2_fail_closed_gates() -> None:
+    src = inspect.getsource(harness.optimize_genie_space)
+    # E2a: anchor resolved (via the imported helper) + hard-stop before mutation.
+    assert "resolve_coverage_rollback_anchor as _resolve_anchor" in src
+    assert "_resolve_anchor(" in src
+    assert "no valid pre-enrichment rollback anchor" in src
+    # E2b/c: the gate drives rollback_and_stop / measured / baseline.
+    assert "decide_standalone_coverage_gate as _decide_std_gate" in src
+    assert "_decide_std_gate(" in src
+    assert 'if _std_gate == "rollback_and_stop":' in src
+    assert 'if _std_gate == "measured"' in src
 
 
 def test_coverage_block_invokes_firewall_helper() -> None:

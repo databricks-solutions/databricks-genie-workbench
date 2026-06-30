@@ -14431,10 +14431,23 @@ def _run_lever_loop(
             # so coverage is NEVER evaluated against a leaked config.
             _coverage_eval_incomplete = False
             if _coverage_had_candidates:
-                _firewall_coverage_example_sqls(
+                _fw_out = _firewall_coverage_example_sqls(
                     w=w, space_id=space_id, config=config,
                     benchmarks=benchmarks, apply_mode=apply_mode,
                 )
+                # E1: carry the FIREWALLED config into surgical mode. When the
+                # firewall strips a leak it rebinds config["_parsed_space"] to the
+                # cleaned copy; re-point config + metadata_snapshot at it so the
+                # stale parsed object (still holding the dropped example) is never
+                # carried into surgical mode where a later apply_patch_set could
+                # re-PATCH the dropped example (the applier firewall only checks
+                # INCOMING patches, not already-present base-snapshot contents).
+                _fw_cfg = _fw_out.get("config") if isinstance(_fw_out, dict) else None
+                if isinstance(_fw_cfg, dict):
+                    config = _fw_cfg
+                _fw_parsed = config.get("_parsed_space") if isinstance(config, dict) else None
+                if isinstance(_fw_parsed, dict):
+                    metadata_snapshot = _fw_parsed
 
             # B1: the no-candidate rung persists the REAL baseline eval payload
             # (loaded from the iteration-0 'full' row), never an empty synthetic eval.
@@ -25437,27 +25450,54 @@ def optimize_genie_space(
             ) == "both_correct"
         ]
 
-        # GSO v2 Phase 8 (B4): capture the pre-enrichment snapshot so the coverage
-        # pass below is REVERSIBLE — the same measured/reversible protocol the inline
-        # _run_lever_loop coverage block uses. There is now exactly ONE coverage
-        # protocol, and it is the measured one.
-        _pre_enrichment_snapshot: dict = {}
+        # GSO v2 Phase 8 (B4 / E2a — FAIL-CLOSED): require a VALID rollback anchor
+        # BEFORE any enrichment mutation. Try a dedicated fetch; fall back to the
+        # already-loaded baseline ``config``; if neither yields a snapshot, STOP
+        # LOOP_STATE_INVALID before mutating the space (a later rollback could
+        # otherwise restore nothing).
+        from genie_space_optimizer.optimization.control_plane import (
+            resolve_coverage_rollback_anchor as _resolve_anchor,
+        )
+        _dedicated_snapshot: dict = {}
         try:
             from genie_space_optimizer.common.genie_client import (
                 fetch_space_config as _fetch_cfg_pre,
             )
             _pre_cfg = _fetch_cfg_pre(w, space_id) or {}
-            _pre_enrichment_snapshot = _pre_cfg.get("_parsed_space", _pre_cfg) or {}
+            _dedicated_snapshot = _pre_cfg.get("_parsed_space", _pre_cfg) or {}
         except Exception:
             logger.warning(
-                "B4: failed to capture pre-enrichment snapshot — coverage rollback "
-                "will be unprovable if enrichment regresses",
+                "E2a: dedicated pre-enrichment snapshot fetch failed — falling back "
+                "to the already-loaded baseline config as the rollback anchor",
                 exc_info=True,
             )
+        _pre_enrichment_snapshot = _resolve_anchor(
+            dedicated_snapshot=_dedicated_snapshot, baseline_config=config,
+        )
+        if not _pre_enrichment_snapshot:
+            logger.error(
+                "E2a FAIL-CLOSED: no valid pre-enrichment rollback anchor for run %s "
+                "— stopping LOOP_STATE_INVALID before mutating the space",
+                run_id_str,
+            )
+            result.status = "FAILED"
+            result.convergence_reason = "LOOP_STATE_INVALID"
+            result.best_accuracy = float(prev_accuracy)
+            result.best_model_id = model_id
+            result.final_scores = prev_scores
+            try:
+                update_run_status(
+                    spark, run_id_str, catalog, schema,
+                    status="FAILED", convergence_reason="LOOP_STATE_INVALID",
+                )
+            except Exception:
+                logger.error("Terminal run-status write failed", exc_info=True)
+            return result
 
         # Stage 2.5: Proactive Enrichment (always runs)
         _enrichment_out = None
         _effective_model_id = model_id
+        _enrichment_raised = False
         try:
             _enrichment_out = _run_enrichment(
                 w, spark, run_id_str, space_id, domain, benchmark_corpus, exp_name,
@@ -25468,10 +25508,8 @@ def optimize_genie_space(
             if not _enrichment_out["enrichment_skipped"]:
                 _effective_model_id = _enrichment_out["enrichment_model_id"]
         except Exception:
-            logger.exception(
-                "Enrichment failed for run %s — continuing with baseline model",
-                run_id_str,
-            )
+            _enrichment_raised = True
+            logger.exception("Enrichment FAILED for run %s", run_id_str)
 
         # GSO v2 Phase 8 (B4): the SINGLE measured/reversible coverage protocol.
         # Post-enrichment state becomes the surgical starting point ONLY when it does
@@ -25483,7 +25521,71 @@ def optimize_genie_space(
         _post_acc = None
         if not _enr_dict.get("enrichment_skipped"):
             _post_acc = _enr_dict.get("post_enrichment_accuracy")
-        if _post_acc is not None:
+
+        # E2b/c (FAIL-CLOSED): is the live space possibly mutated? Provably unmutated
+        # ONLY when enrichment returned cleanly AND its post-config equals the
+        # pre-enrichment snapshot (canonical compare, like the inline C2 path). A
+        # raise — or any config delta — means the live space may be mutated.
+        from genie_space_optimizer.optimization.applier import (
+            _canonical_for_rollback_compare as _canon_std,
+        )
+        _live_may_be_mutated = True
+        if not _enrichment_raised and isinstance(_enrichment_out, dict):
+            try:
+                _post_parsed = _enrichment_out.get("config") or {}
+                if isinstance(_post_parsed, dict):
+                    _post_parsed = _post_parsed.get("_parsed_space", _post_parsed)
+                _live_may_be_mutated = (
+                    _canon_std(_pre_enrichment_snapshot) != _canon_std(_post_parsed)
+                )
+            except Exception:
+                _live_may_be_mutated = True
+
+        from genie_space_optimizer.optimization.control_plane import (
+            decide_standalone_coverage_gate as _decide_std_gate,
+        )
+        _std_gate = _decide_std_gate(
+            enrichment_raised=_enrichment_raised,
+            post_accuracy=_post_acc,
+            live_may_be_mutated=_live_may_be_mutated,
+        )
+        if _std_gate == "rollback_and_stop":
+            # E2b/c FAIL-CLOSED: the live space may be mutated but is UNMEASURED
+            # (enrichment raised, or produced no post-eval accuracy). Roll back to the
+            # proven baseline and stop LOOP_STATE_INVALID — never enter surgical mode
+            # from un-rolled-back, unmeasured coverage state, and never let
+            # _accuracy_source='baseline_eval' stand while the live space is post-enrichment.
+            logger.error(
+                "E2b/c FAIL-CLOSED: enrichment %s with a possibly-mutated live space "
+                "and no post-eval accuracy — rolling back to baseline + LOOP_STATE_INVALID",
+                "raised" if _enrichment_raised else "produced no post-accuracy",
+            )
+            try:
+                _finalize_coverage_decision(
+                    w=w, space_id=space_id, pre_snapshot=_pre_enrichment_snapshot,
+                    frozen_baseline_accuracy=float(prev_accuracy),
+                    post_coverage_accuracy=float(prev_accuracy) - 1.0,  # force rollback
+                    had_candidates=True,
+                )
+            except Exception:
+                logger.error(
+                    "E2b/c rollback ALSO failed (live space state unknown)", exc_info=True,
+                )
+            result.status = "FAILED"
+            result.convergence_reason = "LOOP_STATE_INVALID"
+            result.best_accuracy = float(prev_accuracy)
+            result.best_model_id = model_id
+            result.final_scores = prev_scores
+            try:
+                update_run_status(
+                    spark, run_id_str, catalog, schema,
+                    status="FAILED", convergence_reason="LOOP_STATE_INVALID",
+                )
+            except Exception:
+                logger.error("Terminal run-status write failed", exc_info=True)
+            return result
+
+        if _std_gate == "measured" and _post_acc is not None:
             _cov_std = _finalize_coverage_decision(
                 w=w, space_id=space_id, pre_snapshot=_pre_enrichment_snapshot,
                 frozen_baseline_accuracy=float(prev_accuracy),
@@ -25552,7 +25654,10 @@ def optimize_genie_space(
                 )
                 _accuracy_source = "enrichment.post_enrichment_accuracy"
         else:
-            # Enrichment skipped or produced no post-eval → baseline is the start.
+            # Reached ONLY when the live space is PROVABLY unmutated (post_acc is
+            # None AND not _live_may_be_mutated) — i.e. enrichment was a true no-op.
+            # The fail-closed E2b/c guard above already returned for any
+            # possibly-mutated-but-unmeasured case, so baseline is safe here.
             _accuracy_source = "baseline_eval"
         logger.info(
             "Lever-loop gate (measured coverage): accuracy_source=%s accuracy=%.2f "
