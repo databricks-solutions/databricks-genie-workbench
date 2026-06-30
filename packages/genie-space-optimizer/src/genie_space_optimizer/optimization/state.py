@@ -2218,6 +2218,41 @@ def load_all_full_iterations(
     return rows
 
 
+def load_all_scored_iterations(
+    spark: SparkSession, run_id: str, catalog: str, schema: str
+) -> list[dict]:
+    """All iterations with ``eval_scope IN ('full', 'enrichment')``.
+
+    GSO v2 Phase 9: this mirrors the candidate universe ``promote_best_model``
+    selects over — the accepted attempt-1 *coverage* rung is persisted with
+    ``eval_scope='enrichment'`` (harness ``_run_lever_loop``), so a publish/audit
+    pass that read only ``eval_scope='full'`` would miss a coverage champion and
+    drop the coverage rung from the improvement trajectory. Ordered by
+    ``iteration ASC, timestamp ASC``; JSON columns parsed like
+    ``load_all_full_iterations``.
+    """
+    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+    df = run_query(
+        spark,
+        f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' "
+        f"AND eval_scope IN ('full', 'enrichment') "
+        f"ORDER BY iteration ASC, timestamp ASC",
+    )
+    if df.empty:
+        return []
+    rows = df.to_dict("records")
+    for row in rows:
+        for col in ("scores_json", "failures_json", "remaining_failures",
+                     "arbiter_actions_json", "repeatability_json", "rows_json",
+                     "reflection_json"):
+            if row.get(col) and isinstance(row[col], str):
+                try:
+                    row[col] = json.loads(row[col])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    return rows
+
+
 def load_runs_for_space(
     spark: SparkSession, space_id: str, catalog: str, schema: str
 ) -> pd.DataFrame:
