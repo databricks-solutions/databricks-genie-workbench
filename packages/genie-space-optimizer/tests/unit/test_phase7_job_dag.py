@@ -152,3 +152,26 @@ def test_no_dbutils_notebook_run_or_task_values_in_new_notebooks():
         assert "dbutils.notebook.run" not in src, f"{nb} uses dbutils.notebook.run"
         assert "taskValues.set" not in src, f"{nb} sets task values"
         assert "taskValues.get" not in src, f"{nb} reads task values directly"
+
+
+def _publish_notebook_src() -> str:
+    jobs_dir = _PKG_ROOT / "src" / "genie_space_optimizer" / "jobs"
+    return (jobs_dir / "run_publish_and_audit.py").read_text()
+
+
+def test_publish_notebook_delegates_to_publish_and_audit():
+    """Phase 9: the notebook is a thin shell over ``optimization/publish.py``."""
+    src = _publish_notebook_src()
+    assert "from genie_space_optimizer.optimization.publish import publish_and_audit" in src
+    assert "publish_and_audit(" in src
+
+
+def test_publish_notebook_does_not_rederive_terminal_reason_from_accuracy():
+    """Phase 9 correctness fix: terminal_reason is READ off the stamped champion
+    row, never re-derived from accuracy-vs-target (the Phase-7 shell's collapse
+    bug). The shell's tell-tale derivation must be gone from the notebook."""
+    src = _publish_notebook_src()
+    # The Phase-7 shell derived the reason via this accuracy comparison.
+    assert "_acc_fraction" not in src
+    assert 'terminal_reason = "TARGET_REACHED"' not in src
+    assert 'terminal_reason = "MAX_ATTEMPTS"' not in src
