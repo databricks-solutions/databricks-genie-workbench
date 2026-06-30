@@ -77,6 +77,47 @@ _TERMINAL_RUN_STATUSES = {
     "APPLIED", "DISCARDED",
 }
 
+# GSO v2 (arch §5.1 / §7.4) — the closed set of typed loop terminal reasons the
+# 03_optimize controller stamps and `publish_and_audit` records as the run's
+# convergence_reason (never collapsed). This supersedes the free-text
+# convergence_reason for the UI; the typed `terminalReason` field is derived by
+# validating convergence_reason against this set (legacy free-text reasons and
+# in-progress runs ⇒ None). EVAL_BUDGET_EXHAUSTED is included because Phase 8
+# emits it as a primary stop (the eval-budget cap), alongside the 5 named in the
+# Phase-10 contract. Mirrored on the frontend as the `GSOTerminalReason` union.
+_TYPED_TERMINAL_REASONS = (
+    "TARGET_REACHED",
+    "MAX_ATTEMPTS",
+    "NO_NEW_HYPOTHESIS",
+    "EVAL_INVALID",
+    "LOOP_STATE_INVALID",
+    "EVAL_BUDGET_EXHAUSTED",
+)
+
+# Defaults for the round-tripped loop knobs (arch §13 / D9). target_accuracy is
+# on the 0–1 request scale (the job param + databricks.yml default is "0.90");
+# the loop normalizes ≤1 to the 0–100 internal/Delta scale. max_attempts counts
+# SURGICAL attempts only (coverage is a free probe).
+_DEFAULT_TARGET_ACCURACY = 0.90
+_DEFAULT_MAX_ATTEMPTS = 3
+
+
+def _typed_terminal_reason(run: dict | None) -> str | None:
+    """Return the run's typed loop terminal reason, or None.
+
+    The Phase-9 `publish_and_audit` stamps `genie_opt_runs.convergence_reason`
+    with the ACTUAL terminal reason (e.g. ``TARGET_REACHED``); we validate it
+    against the closed `_TYPED_TERMINAL_REASONS` set so the UI gets a typed
+    value. Legacy free-text reasons (``threshold_met``, ``job_submission_error:
+    …``) and in-progress runs (no reason yet) return None.
+    """
+    if not run:
+        return None
+    reason = run.get("convergence_reason")
+    if reason and str(reason) in _TYPED_TERMINAL_REASONS:
+        return str(reason)
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -88,6 +129,13 @@ class TriggerRequest(BaseModel):
     levers: list[int] | None = None
     deploy_target: str | None = None
     llm_model: str | None = Field(None, max_length=256)
+    # GSO v2 loop knobs (arch §13 / D9). Both optional/nullable; when omitted the
+    # job's databricks.yml defaults apply (target_accuracy "0.90", max_attempts
+    # "3"). target_accuracy is the 0–1 stop-early target; max_attempts bounds the
+    # SURGICAL hill-climb (the attempt-1 coverage pass is a free probe). The loop
+    # stops at whichever comes first.
+    target_accuracy: float | None = Field(None, ge=0.0, le=1.0)
+    max_attempts: int | None = Field(None, ge=1, le=20)
 
 
 # PermissionCheckResponse + SchemaAccessStatus now live in `backend.models`
@@ -249,6 +297,179 @@ def _select_iterations_delta(run_id: str) -> list[dict]:
         return _delta_query(f"SELECT {_ITER_COLS_LEGACY} FROM {table} {order}")
 
 
+# GSO v2 Phase 7/8 loop-state columns on genie_opt_iterations (arch §7.4). These
+# are read by the /loop-state endpoint and merged onto /iterations rows for the
+# Attempt Ladder/Ledger (Phases 11–14). They land only after the Phase-7/8
+# additive migration, so the read is tolerant: a pre-migration table raises
+# UNRESOLVED_COLUMN and we return [] (the new fields are all optional/nullable,
+# so legacy runs simply omit them). `config_json` is included here (not in the
+# shared _ITER_COLS_V2) so the high-frequency status poll never pays for it.
+_LOOP_STATE_COLS = (
+    "iteration, eval_scope, lever, timestamp, overall_accuracy, "
+    "attempt_no, attempt_mode, best_accuracy, best_config_version_id, "
+    "current_hypothesis, next_hypothesis, do_not_repeat, "
+    "decision, decision_reason, terminal_reason, "
+    "surgical_attempts_used, target_accuracy, max_attempts, "
+    "rolled_back, rollback_reason, is_champion, config_json"
+)
+
+
+def _select_loop_state_delta(run_id: str) -> list[dict]:
+    """Load loop-state iteration rows from Delta, tolerating pre-migration tables.
+
+    Returns ``[]`` when the loop-state columns are absent (legacy 6-step runs or
+    a table behind the Phase-7/8 additive migration) — detected via the same
+    UNRESOLVED_COLUMN heuristic as `_select_iterations_delta`. All loop-state
+    fields are optional on the wire, so callers degrade to "no loop artifacts".
+    """
+    table = _delta_table("genie_opt_iterations")
+    order = f"WHERE run_id = '{run_id}' ORDER BY iteration ASC"
+    try:
+        return _delta_query(f"SELECT {_LOOP_STATE_COLS} FROM {table} {order}", strict=True)
+    except Exception as exc:
+        if _looks_like_legacy_schema_error(exc):
+            logger.info(
+                "gso.runs.no_loop_state genie_opt_iterations has no Phase-7/8 "
+                "loop-state columns for run %s — returning empty (legacy run or "
+                "pre-migration table). err=%s",
+                run_id, str(exc)[:160],
+            )
+        else:
+            logger.warning("Delta loop-state query failed: %s", exc, exc_info=True)
+        return []
+
+
+def _load_latest_artifact(run_id: str, artifact_kind: str) -> dict | None:
+    """Load the most-recent genie_opt_artifacts blob of ``artifact_kind``.
+
+    Returns the parsed ``artifact_json`` payload as a dict, or None when the
+    table/kind is absent (best-effort; tolerates pre-Phase-7 installs without
+    the genie_opt_artifacts table). Used by the publish-record and benchmark-QC
+    read paths.
+    """
+    rows = _delta_query(
+        f"SELECT artifact_json, created_at FROM {_delta_table('genie_opt_artifacts')} "
+        f"WHERE run_id = '{run_id}' AND artifact_kind = '{artifact_kind}' "
+        f"ORDER BY created_at DESC LIMIT 1"
+    )
+    if not rows:
+        return None
+    payload = _safe_json_parse(rows[0].get("artifact_json"))
+    return payload if isinstance(payload, dict) else None
+
+
+# target_accuracy lives on TWO native scales across the loop artifacts (B3):
+#   • genie_opt_iterations.target_accuracy + publish_record.target_accuracy →
+#     0–100 (run_03 / run_publish_and_audit normalize ≤1 to 0–100 so the value
+#     lines up with the per-attempt accuracies).
+#   • run_manifest.target_accuracy + the job-run parameter → 0–1 (run_00 writes
+#     the raw 0–1 param; the job param is the raw "0.90" string).
+# The request + echo contract is 0–1. We therefore use SOURCE-SPECIFIC
+# conversion — NEVER a value-magnitude heuristic, which would mishandle small
+# valid targets (e.g. a 0.01 request is stored as 1.0 in the 0–100 column; a
+# `>1` heuristic leaves it at 1.0 instead of 0.01).
+
+
+def _delta_accuracy_to_unit_scale(val: Any) -> float | None:
+    """Convert a 0–100 accuracy (Delta loop column / publish_record) → 0–1.
+
+    Unconditional divide-by-100 (the source is always 0–100), so small targets
+    round-trip correctly. Returns None when the value is missing/non-numeric.
+    """
+    f = _safe_float(val)
+    if f is None:
+        return None
+    return round(f / 100.0, 4)
+
+
+def _loop_state_knobs(run_id: str) -> tuple[float | None, int | None]:
+    """Loop knobs from the genie_opt_iterations loop-state columns (0–100 →
+    0–1). Cheap read off the latest attempt row; None when the columns/rows are
+    absent (legacy run, pre-migration table, or a run with no committed attempt
+    yet)."""
+    table = _delta_table("genie_opt_iterations")
+    try:
+        rows = _delta_query(
+            f"SELECT target_accuracy, max_attempts FROM {table} "
+            f"WHERE run_id = '{run_id}' AND target_accuracy IS NOT NULL "
+            f"ORDER BY attempt_no DESC NULLS LAST, iteration DESC LIMIT 1",
+            strict=True,
+        )
+    except Exception as exc:
+        if not _looks_like_legacy_schema_error(exc):
+            logger.warning("Delta loop-knobs query failed: %s", exc, exc_info=True)
+        return None, None
+    if not rows:
+        return None, None
+    return (
+        _delta_accuracy_to_unit_scale(rows[0].get("target_accuracy")),
+        _safe_int(rows[0].get("max_attempts")),
+    )
+
+
+def _manifest_knobs(run_id: str) -> tuple[float | None, int | None]:
+    """Loop knobs from the run_manifest artifact (written by 00_intake, the
+    first task). target_accuracy is already on the 0–1 request scale here (run_00
+    writes the raw param, unlike run_03). This is the durable run-level source
+    that exists from the very start of the pipeline — see _resolve_run_knobs."""
+    manifest = _load_latest_artifact(run_id, "run_manifest")
+    if not manifest:
+        return None, None
+    ta = _safe_float(manifest.get("target_accuracy"))
+    return (round(ta, 4) if ta is not None else None, _safe_int(manifest.get("max_attempts")))
+
+
+def _job_param_knobs(run: dict) -> tuple[float | None, int | None]:
+    """Loop knobs from the Databricks job-run parameters the trigger set.
+
+    These exist the instant the job is submitted (before 00 writes the
+    manifest), so they cover the brief QUEUED/startup window. Best-effort + on
+    the 0–1 scale (the job param is the raw "0.90" string). Only consulted for
+    non-terminal runs with a job_run_id, so terminal legacy runs never pay a
+    Jobs API call."""
+    job_run_id = run.get("job_run_id")
+    if not job_run_id:
+        return None, None
+    try:
+        sp_ws = get_service_principal_client()
+        job_run = sp_ws.jobs.get_run(run_id=int(job_run_id))
+        params = getattr(job_run, "job_parameters", None) or []
+        by_name = {getattr(p, "name", None): getattr(p, "value", None) for p in params}
+        ta = _safe_float(by_name.get("target_accuracy"))
+        return (
+            round(ta, 4) if ta is not None else None,
+            _safe_int(by_name.get("max_attempts")),
+        )
+    except Exception as exc:
+        logger.info("Job-run params knob read failed for run %s: %s", run.get("run_id"), str(exc)[:160])
+        return None, None
+
+
+def _resolve_run_knobs(run: dict) -> tuple[float | None, int | None]:
+    """Resolve the loop knobs in force for a run on the 0–1 request scale (B4).
+
+    Layered durable read so the knobs are available from trigger time, NOT only
+    after the loop commits its first attempt:
+      1. run_manifest artifact (cheap Delta; exists from 00 — covers ~all of the
+         run's observable life: 01/02/loop/publish).
+      2. loop-state columns (cheap Delta; robust if the manifest write failed).
+      3. job-run parameters (Jobs API; covers the brief QUEUED→00 startup window,
+         gated to non-terminal runs so terminal legacy runs skip the call).
+    Returns (None, None) ONLY for true legacy runs where the knobs are
+    unknowable (no manifest, no loop-state, no job params). No DDL — every source
+    is an existing run-level artifact/param/column.
+    """
+    ta, ma = _manifest_knobs(run.get("run_id", ""))
+    if ta is not None or ma is not None:
+        return ta, ma
+    ta, ma = _loop_state_knobs(run.get("run_id", ""))
+    if ta is not None or ma is not None:
+        return ta, ma
+    if str(run.get("status", "")).upper() not in _TERMINAL_RUN_STATUSES:
+        return _job_param_knobs(run)
+    return None, None
+
+
 def _build_gso_config(llm_model_override: str | None = None) -> IntegrationConfig:
     return IntegrationConfig(
         catalog=os.environ.get("GSO_CATALOG", ""),
@@ -391,14 +612,29 @@ def _build_step_summary(
     for s in matching:
         detail.update(_parse_detail(s))
 
-    if step_name == "Preflight":
+    if step_name in _INTAKE_STEP_NAMES:
         all_pf = _collect_all_preflight_detail(stages_rows or [])
         tables_val = _safe_int(detail.get("table_count")) or _safe_int(all_pf.get("table_count")) or _safe_int(all_pf.get("table_ref_count"))
         columns_val = _safe_int(detail.get("columns_collected")) or _safe_int(detail.get("columnsCollected")) or _safe_int(all_pf.get("columns_collected"))
         instr_val = _safe_int(detail.get("instruction_count")) or _safe_int(all_pf.get("instruction_count"))
         bench_val = _safe_int(detail.get("benchmark_count")) or _safe_int(all_pf.get("benchmark_count")) or _safe_int(run_data.get("benchmark_count"))
         return f"Analyzed {tables_val or '?'} tables, {columns_val or '?'} columns, {instr_val or '?'} instructions, {bench_val or '?'} sample questions"
-    if step_name == "Baseline Evaluation":
+    if step_name in _QC_STEP_NAMES:
+        # GSO v2 (01_benchmark_qc_and_repair): benchmark validity/repair summary
+        # from the stage detail (valid_count / repair_tries_used / window_status).
+        valid = _safe_int(detail.get("valid_count"))
+        tries = _safe_int(detail.get("repair_tries_used"))
+        window = detail.get("window")
+        window_status = detail.get("window_status") or (
+            window.get("status") if isinstance(window, dict) else None
+        )
+        parts = [f"{valid} valid benchmark questions" if valid is not None else "Benchmark QC complete"]
+        if tries:
+            parts.append(f"{tries} repair sweep(s)")
+        if window_status:
+            parts.append(f"window: {window_status}")
+        return ", ".join(parts)
+    if step_name in _BASELINE_STEP_NAMES:
         baseline_iter = next((r for r in iterations_rows if _safe_int(r.get("iteration")) == 0), None)
         if not baseline_iter:
             return None
@@ -420,7 +656,7 @@ def _build_step_summary(
             f"Genie evaluation. Baseline accuracy: {score}% "
             f"({correct_str}/{denom_str} correct{nr_note})"
         )
-    if step_name == "Proactive Enrichment":
+    if step_name in _ENRICHMENT_STEP_NAMES:
         descriptions = _safe_int(detail.get("descriptions_enriched")) or 0
         joins = _safe_int(detail.get("joins_discovered")) or 0
         examples = _safe_int(detail.get("examples_mined")) or 0
@@ -440,13 +676,13 @@ def _build_step_summary(
             parts.append(f"{sql_expressions} SQL expressions")
         breakdown = ", ".join(parts) if parts else "no changes"
         return f"Applied {total} proactive enrichments: {breakdown}"
-    if step_name == "Adaptive Optimization":
+    if step_name in _OPTIMIZE_STEP_NAMES:
         patches = detail.get("patches_applied", 0)
         levers_accepted = detail.get("levers_accepted", [])
         before = f"{_finite(run_data.get('baseline_accuracy', 0)):.1f}" if run_data.get("baseline_accuracy") else "?"
         after = f"{_finite(run_data.get('best_accuracy', 0)):.1f}" if run_data.get("best_accuracy") else "?"
         return f"Applied {patches} optimizations across {len(levers_accepted) if isinstance(levers_accepted, list) else '?'} categories. Score improved from {before}% to {after}%"
-    if step_name == "Finalization":
+    if step_name in _PUBLISH_STEP_NAMES:
         score = f"{_finite(run_data.get('best_accuracy', 0)):.1f}" if run_data.get("best_accuracy") else "?"
         rep = f"{_finite(run_data.get('best_repeatability', 0)):.1f}" if run_data.get("best_repeatability") else "?"
         return f"Final evaluation complete. Optimized score: {score}%. Repeatability: {rep}%"
@@ -476,7 +712,7 @@ def _build_step_io(
         parsed = _safe_json_parse(raw_snap)
         config_snapshot = parsed if isinstance(parsed, dict) else {}
 
-    if step_name == "Preflight":
+    if step_name in _INTAKE_STEP_NAMES:
         all_pf = _collect_all_preflight_detail(stages_rows or [])
         parsed_space = _resolve_parsed_space(config_snapshot)
         ds = parsed_space.get("data_sources", {}) if isinstance(parsed_space, dict) else {}
@@ -518,7 +754,21 @@ def _build_step_io(
             {"tableCount": table_count, "functionCount": function_count, "instructionCount": instruction_count, "sampleQuestionCount": sample_q_count, "columnsCollected": columns_collected, "tagsCollected": tags_collected, "columnSamples": column_samples, "stageEvents": timeline},
         )
 
-    if step_name == "Baseline Evaluation":
+    if step_name in _QC_STEP_NAMES:
+        # GSO v2 (01_benchmark_qc_and_repair) — surface the repair/window detail
+        # the stage stamped. Richer QC metadata (validity / contamination /
+        # 30–40 window) is served by the /benchmark-changes `qc` field.
+        return (
+            {"spaceId": run_data.get("space_id")},
+            {
+                "validCount": _safe_int(detail.get("valid_count")),
+                "repairTriesUsed": _safe_int(detail.get("repair_tries_used")),
+                "windowStatus": detail.get("window_status"),
+                "stageEvents": timeline,
+            },
+        )
+
+    if step_name in _BASELINE_STEP_NAMES:
         baseline_iter = next((r for r in iterations_rows if _safe_int(r.get("iteration")) == 0 and str(r.get("eval_scope", "")).lower() == "full"), None)
         if not baseline_iter:
             return None, {"stageEvents": timeline}
@@ -609,14 +859,14 @@ def _build_step_io(
             },
         )
 
-    if step_name == "Proactive Enrichment":
+    if step_name in _ENRICHMENT_STEP_NAMES:
         proactive = _extract_proactive_changes(matching)
         return (
             {"spaceId": run_data.get("space_id")},
             {"proactiveChanges": proactive if proactive else None, "enrichmentModelId": detail.get("enrichment_model_id"), "totalEnrichments": detail.get("total_enrichments", 0), "enrichmentSkipped": detail.get("enrichment_skipped", False), "stageEvents": timeline},
         )
 
-    if step_name == "Adaptive Optimization":
+    if step_name in _OPTIMIZE_STEP_NAMES:
         patches_applied = detail.get("patches_applied") or detail.get("patches_count")
         iteration_counter = detail.get("iteration_counter") or run_data.get("best_iteration")
         return (
@@ -624,10 +874,10 @@ def _build_step_io(
             {"patchesApplied": patches_applied, "leversAccepted": detail.get("levers_accepted", []), "leversRolledBack": detail.get("levers_rolled_back", []), "iterationCounter": iteration_counter, "baselineAccuracy": run_data.get("baseline_accuracy"), "bestAccuracy": _safe_float(run_data.get("best_accuracy")), "stageEvents": timeline},
         )
 
-    if step_name == "Finalization":
+    if step_name in _PUBLISH_STEP_NAMES:
         return (
             {"bestIteration": run_data.get("best_iteration")},
-            {"bestAccuracy": _safe_float(run_data.get("best_accuracy")), "repeatability": _safe_float(run_data.get("best_repeatability")), "convergenceReason": run_data.get("convergence_reason"), "ucModelName": detail.get("uc_model_name") or None, "ucModelVersion": detail.get("uc_model_version") or None, "ucChampionPromoted": detail.get("uc_champion_promoted", False), "stageEvents": timeline},
+            {"bestAccuracy": _safe_float(run_data.get("best_accuracy")), "repeatability": _safe_float(run_data.get("best_repeatability")), "convergenceReason": run_data.get("convergence_reason"), "terminalReason": _typed_terminal_reason(run_data), "ucModelName": detail.get("uc_model_name") or None, "ucModelVersion": detail.get("uc_model_version") or None, "ucChampionPromoted": detail.get("uc_champion_promoted", False), "stageEvents": timeline},
         )
 
     if step_name == "Deploy":
@@ -1036,12 +1286,20 @@ async def trigger(body: TriggerRequest, request: Request):
             apply_mode=body.apply_mode,
             levers=body.levers,
             deploy_target=body.deploy_target,
+            target_accuracy=body.target_accuracy,
+            max_attempts=body.max_attempts,
         )
+        # Echo the resolved knobs (request value or the job default) so the UI
+        # can confirm what the run will use without re-reading the job config.
+        resolved_target = body.target_accuracy if body.target_accuracy is not None else _DEFAULT_TARGET_ACCURACY
+        resolved_max_attempts = body.max_attempts if body.max_attempts is not None else _DEFAULT_MAX_ATTEMPTS
         return {
             "runId": result.run_id,
             "jobRunId": result.job_run_id,
             "jobUrl": result.job_url,
             "status": result.status,
+            "targetAccuracy": resolved_target,
+            "maxAttempts": resolved_max_attempts,
         }
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -1059,18 +1317,42 @@ async def trigger(body: TriggerRequest, request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Pipeline step definitions — group raw sub-stages into 6 logical steps
-# (Ported from Genie Space Optimizer's map_stages_to_steps)
-# ---------------------------------------------------------------------------
-
+# Pipeline step definitions — group raw sub-stages into the GSO v2 5-task DAG
+# (arch §7 / Phases 7–9): 00_intake_and_snapshot → 01_benchmark_qc_and_repair →
+# 02_baseline_eval_and_triage → 03_optimize → publish_and_audit. The standalone
+# Deploy task was dropped (D7 — cross-env deploy out of scope).
+#
+# Each task emits a top-level stage (INTAKE_AND_SNAPSHOT / BENCHMARK_QC_AND_REPAIR
+# / BASELINE_EVAL_AND_TRIAGE / OPTIMIZE / PUBLISH_AND_AUDIT). The 03_optimize
+# controller runs the whole hill-climb (enrichment coverage pass + surgical
+# lever loop) in-process, so its internal LEVER_/AG_/ENRICHMENT/… sub-stages all
+# roll up into step 4 "Optimize".
+#
+# Backward compatibility: the prefixes ALSO cover the legacy 6-notebook stage
+# names so legacy runs still render — legacy PREFLIGHT folds into both intake (1)
+# and QC (2) since the old preflight did both jobs; legacy FINALIZE/REPEATABILITY/
+# COMPLETE fold into Publish & Audit (5). Legacy DEPLOY/UC_OBO_WRITE stages are
+# intentionally unmatched (the deploy step is gone) — they still appear in the
+# raw stage-event list. New optional fields keep legacy runs serializable.
 _STEP_DEFINITIONS = [
-    {"stepNumber": 1, "name": "Preflight",             "stage_prefixes": ["PREFLIGHT"]},
-    {"stepNumber": 2, "name": "Baseline Evaluation",   "stage_prefixes": ["BASELINE_EVAL"]},
-    {"stepNumber": 3, "name": "Proactive Enrichment",  "stage_prefixes": ["ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL"]},
-    {"stepNumber": 4, "name": "Adaptive Optimization", "stage_prefixes": ["LEVER_", "AG_"]},
-    {"stepNumber": 5, "name": "Finalization",          "stage_prefixes": ["FINALIZE", "REPEATABILITY", "COMPLETE"]},
-    {"stepNumber": 6, "name": "Deploy",                "stage_prefixes": ["DEPLOY", "UC_OBO_WRITE"]},
+    {"stepNumber": 1, "name": "Intake & Snapshot",      "stage_prefixes": ["INTAKE", "PREFLIGHT"]},
+    {"stepNumber": 2, "name": "Benchmark QC & Repair",  "stage_prefixes": ["BENCHMARK_QC", "PREFLIGHT"]},
+    {"stepNumber": 3, "name": "Baseline Eval & Triage", "stage_prefixes": ["BASELINE_EVAL"]},
+    {"stepNumber": 4, "name": "Optimize",               "stage_prefixes": ["OPTIMIZE", "LEVER_", "AG_", "ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL"]},
+    {"stepNumber": 5, "name": "Publish & Audit",        "stage_prefixes": ["PUBLISH", "FINALIZE", "REPEATABILITY", "COMPLETE"]},
 ]
+
+_TOTAL_STEPS = len(_STEP_DEFINITIONS)  # 5-task DAG (Deploy dropped, D7)
+
+# Step-name → semantic builder kind. Both the GSO v2 5-task names and the legacy
+# 6-notebook names map onto the same summary/IO logic so `_build_step_summary` /
+# `_build_step_io` keep working for runs from either pipeline shape.
+_INTAKE_STEP_NAMES = {"Intake & Snapshot", "Preflight"}
+_QC_STEP_NAMES = {"Benchmark QC & Repair"}
+_BASELINE_STEP_NAMES = {"Baseline Eval & Triage", "Baseline Evaluation"}
+_ENRICHMENT_STEP_NAMES = {"Proactive Enrichment"}  # legacy standalone step 3
+_OPTIMIZE_STEP_NAMES = {"Optimize", "Adaptive Optimization"}
+_PUBLISH_STEP_NAMES = {"Publish & Audit", "Finalization"}
 
 
 def _derive_step_status(matching_stages: list[dict]) -> str:
@@ -1127,7 +1409,7 @@ def _normalize_step_status_for_terminal_run(*, status: str, run_status: str) -> 
 def _map_stages_to_steps(
     stages: list[dict], run: dict, iterations: list[dict],
 ) -> list[dict]:
-    """Group raw stages by prefix into 6 logical pipeline steps with rich IO."""
+    """Group raw stages by prefix into the 5-task DAG steps with rich IO."""
     run_status = str(run.get("status", "")).upper()
 
     steps = []
@@ -1306,6 +1588,12 @@ async def get_run(run_id: RunId):
         links.append({"label": "Runs Table", "url": f"{host}/explore/data/{config.catalog}/{config.schema_name}/genie_opt_runs", "category": "data"})
         links.append({"label": "Iterations Table", "url": f"{host}/explore/data/{config.catalog}/{config.schema_name}/genie_opt_iterations", "category": "data"})
 
+    # Echo the loop knobs in force (0–1 target, surgical max_attempts), resolved
+    # from the durable run-level sources (manifest / loop-state / job params).
+    target_accuracy, max_attempts = (None, None)
+    if _is_configured():
+        target_accuracy, max_attempts = _resolve_run_knobs(run)
+
     return {
         "runId": run.get("run_id"),
         "spaceId": run.get("space_id"),
@@ -1323,6 +1611,11 @@ async def get_run(run_id: RunId):
         "levers": levers,
         "links": links,
         "convergenceReason": run.get("convergence_reason"),
+        # GSO v2 — typed loop terminal reason + round-tripped loop knobs (echoed
+        # from the loop-state columns; None for legacy runs / pre-loop reads).
+        "terminalReason": _typed_terminal_reason(run),
+        "targetAccuracy": target_accuracy,
+        "maxAttempts": max_attempts,
         "deploymentStatus": run.get("deploy_status"),
     }
 
@@ -1365,7 +1658,7 @@ async def get_run_status(run_id: RunId):
             steps_completed += 1
         elif status == "running" and current_step_name is None:
             current_step_name = step_def["name"]
-    if current_step_name is None and steps_completed < 6:
+    if current_step_name is None and steps_completed < _TOTAL_STEPS:
         # Next pending step
         current_step_name = _STEP_DEFINITIONS[steps_completed]["name"]
 
@@ -1384,6 +1677,13 @@ async def get_run_status(run_id: RunId):
     # closes both: full-scope only, exclude rolled-back, floor-at-baseline.
     run_scores = compute_run_scores(iterations, run_id=run_id, logger=logger)
 
+    # Echo the loop knobs in force (0–1 target, surgical max_attempts), resolved
+    # from durable run-level sources so they are present from trigger time
+    # (manifest at 00 / job params during QUEUED), not only once the loop runs.
+    target_accuracy, max_attempts = (None, None)
+    if _is_configured():
+        target_accuracy, max_attempts = _resolve_run_knobs(run)
+
     return {
         "runId": run.get("run_id"),
         "status": run.get("status"),
@@ -1394,8 +1694,13 @@ async def get_run_status(run_id: RunId):
         "optimizedScore": run_scores.optimized,
         "bestIteration": run_scores.best_iteration,
         "convergenceReason": run.get("convergence_reason"),
+        # GSO v2 — typed loop terminal reason (closed set; None for legacy
+        # free-text reasons / in-progress runs) + round-tripped loop knobs.
+        "terminalReason": _typed_terminal_reason(run),
+        "targetAccuracy": target_accuracy,
+        "maxAttempts": max_attempts,
         "stepsCompleted": steps_completed,
-        "totalSteps": 6,
+        "totalSteps": _TOTAL_STEPS,
         "currentStepName": current_step_name,
     }
 
@@ -1506,6 +1811,18 @@ async def get_active_run(space_id: SpaceId):
         return {"hasActiveRun": False, "activeRunId": None, "activeRunStatus": None}
 
 
+def _enrich_run_summaries(runs: list[dict]) -> list[dict]:
+    """Add the typed `terminal_reason` to each run-summary row (item 3).
+
+    Derived from the stored `convergence_reason` (validated against the closed
+    typed set); legacy free-text reasons / in-progress runs ⇒ None. The raw
+    `convergence_reason` is preserved for back-compat.
+    """
+    for r in runs:
+        r["terminal_reason"] = _typed_terminal_reason(r)
+    return runs
+
+
 async def load_runs_with_fallback(space_id: str) -> list[dict]:
     """Load optimization runs — Lakebase primary, Delta table fallback.
 
@@ -1513,17 +1830,17 @@ async def load_runs_with_fallback(space_id: str) -> list[dict]:
     """
     runs = await gso_lakebase.load_gso_runs_for_space(space_id)
     if runs:
-        return runs
+        return _enrich_run_summaries(runs)
 
     if not _is_configured():
         return []
 
-    return _delta_query(
+    return _enrich_run_summaries(_delta_query(
         f"SELECT run_id, space_id, status, started_at, completed_at, "
         f"best_accuracy, best_iteration, convergence_reason, triggered_by, llm_model "
         f"FROM {_delta_table('genie_opt_runs')} "
         f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
-    )
+    ))
 
 
 @router.get("/spaces/{space_id}/runs")
@@ -1601,7 +1918,271 @@ async def list_iterations(run_id: RunId):
         # IterationRow no longer declares scores_json / thresholds_met).
         it.pop("thresholds_met", None)
         it.pop("scores_json", None)
+
+    # GSO v2 (item 5 + Attempt Ledger) — merge the EXPLICIT champion flag +
+    # loop-state fields onto each row so the UI stops re-deriving the champion
+    # via idxmax(accuracy) and can render the per-attempt ledger. These come
+    # from a separate tolerant loop-state read (config_json is kept off the
+    # high-frequency status poll). All optional/nullable: legacy runs and
+    # pre-migration tables return no loop-state rows, so rows simply omit them
+    # and the UI keeps its legacy idxmax fallback.
+    if iterations and _is_configured():
+        loop_by_key: dict[tuple[int | None, str], dict] = {}
+        for lr in _select_loop_state_delta(run_id):
+            key = (_safe_int(lr.get("iteration")), str(lr.get("eval_scope") or "").lower())
+            loop_by_key[key] = lr
+        if loop_by_key:
+            for it in iterations:
+                lr = loop_by_key.get(
+                    (_safe_int(it.get("iteration")), str(it.get("eval_scope") or "").lower())
+                )
+                if not lr:
+                    continue
+                it["is_champion"] = bool(lr.get("is_champion"))
+                it["config_json"] = lr.get("config_json") or None
+                it["attempt_no"] = _safe_int(lr.get("attempt_no"))
+                it["attempt_mode"] = lr.get("attempt_mode") or None
+                it["decision"] = lr.get("decision") or None
+                it["decision_reason"] = lr.get("decision_reason") or None
     return iterations
+
+
+# The 03_optimize loop scores every attempt on the FULL benchmark: surgical
+# attempts land at eval_scope='full', the attempt-1 coverage pass at
+# eval_scope='enrichment' (both full-benchmark — exactly the candidate universe
+# of state.load_all_scored_iterations). Any other scope on an attempt row (e.g.
+# a legacy slice/p0 probe) is NOT the authoritative per-attempt accuracy.
+_FULL_BENCHMARK_SCOPES = frozenset({"full", "enrichment"})
+
+
+def _attempt_row_sort_key(r: dict) -> tuple:
+    """Deterministic recency key for collapsing duplicate rows of one attempt:
+    latest iteration, then latest timestamp."""
+    return (_safe_int(r.get("iteration")) or 0, str(r.get("timestamp") or ""))
+
+
+def _dedup_attempt_rows(loop_rows: list[dict]) -> list[dict]:
+    """One authoritative full-benchmark row per ``attempt_no`` (B1).
+
+    Filters to the full-benchmark scopes (``full``/``enrichment``) so non-full
+    probe rows never become a phantom attempt, and collapses any duplicates of
+    the same ``attempt_no`` to the most recent row (so accuracy/decision reflect
+    the final committed eval). Returned ordered by ``attempt_no`` ascending, so
+    ``len()`` is the DISTINCT attempt count.
+    """
+    by_attempt: dict[int, dict] = {}
+    for r in loop_rows:
+        attempt_no = _safe_int(r.get("attempt_no"))
+        if attempt_no is None:
+            continue
+        if str(r.get("eval_scope") or "").lower() not in _FULL_BENCHMARK_SCOPES:
+            continue
+        existing = by_attempt.get(attempt_no)
+        if existing is None or _attempt_row_sort_key(r) > _attempt_row_sort_key(existing):
+            by_attempt[attempt_no] = r
+    return [by_attempt[k] for k in sorted(by_attempt)]
+
+
+def _build_attempt(lr: dict) -> dict:
+    """Map a loop-state iteration row → a GSOAttempt (camelCase) dict.
+
+    ``accuracy`` / ``bestAccuracy`` stay on the 0–100 scale (as everywhere in
+    the app); JSON-string columns (hypotheses, do_not_repeat) are parsed to
+    objects/lists. Per-attempt ledger fields (``bestConfigVersionId``,
+    ``nextHypothesis``, ``doNotRepeat``) are surfaced here in addition to the
+    run-level aggregate on ``loopState`` (B2).
+    """
+    dnr = _safe_json_parse(lr.get("do_not_repeat"))
+    return {
+        "attemptNo": _safe_int(lr.get("attempt_no")),
+        "attemptMode": lr.get("attempt_mode") or None,
+        "iteration": _safe_int(lr.get("iteration")),
+        "evalScope": lr.get("eval_scope") or None,
+        "lever": _safe_int(lr.get("lever")),
+        "accuracy": _safe_float(lr.get("overall_accuracy")),
+        "bestAccuracy": _safe_float(lr.get("best_accuracy")),
+        "decision": lr.get("decision") or None,
+        # rejection/rollback explanation so a higher-accuracy-but-rolled-back
+        # attempt can be explained (progress §5 resolution).
+        "decisionReason": lr.get("decision_reason") or None,
+        "rolledBack": bool(lr.get("rolled_back")),
+        "rollbackReason": lr.get("rollback_reason") or None,
+        "isChampion": bool(lr.get("is_champion")),
+        "currentHypothesis": _safe_json_parse(lr.get("current_hypothesis")),
+        # Per-attempt ledger fields (B2) — surfaced in addition to the run-level
+        # aggregate on loopState, parsed the same way as the aggregate.
+        "bestConfigVersionId": lr.get("best_config_version_id") or None,
+        "nextHypothesis": _safe_json_parse(lr.get("next_hypothesis")),
+        "doNotRepeat": dnr if isinstance(dnr, list) else [],
+        "terminalReason": (
+            lr.get("terminal_reason")
+            if lr.get("terminal_reason") in _TYPED_TERMINAL_REASONS else None
+        ),
+    }
+
+
+def _build_loop_state(attempt_rows: list[dict]) -> dict | None:
+    """Run-level GSOLoopState aggregate from the per-attempt loop-state rows.
+
+    ``targetAccuracy`` is normalized to the 0–1 request scale (matching the
+    trigger contract); the per-attempt ``accuracy``/``bestAccuracy`` remain
+    0–100. Returns None when there are no attempt rows (legacy / pre-loop run).
+    """
+    if not attempt_rows:
+        return None
+    # Head = the latest attempt — it carries the final best_* / terminal_reason
+    # / do_not_repeat / next_hypothesis. best_accuracy is monotonic; take the
+    # max defensively in case the head row missed a stamp.
+    head = max(attempt_rows, key=lambda r: (_safe_int(r.get("attempt_no")) or 0))
+    best_acc: float | None = None
+    for r in attempt_rows:
+        b = _safe_float(r.get("best_accuracy"))
+        if b is not None and (best_acc is None or b > best_acc):
+            best_acc = b
+    terminal_reason = next(
+        (r.get("terminal_reason") for r in attempt_rows
+         if r.get("terminal_reason") in _TYPED_TERMINAL_REASONS),
+        None,
+    )
+    dnr = _safe_json_parse(head.get("do_not_repeat"))
+    return {
+        "bestAccuracy": best_acc,
+        "bestConfigVersionId": head.get("best_config_version_id") or None,
+        # The loop-state column is 0–100; normalize to the 0–1 request scale.
+        "targetAccuracy": _delta_accuracy_to_unit_scale(head.get("target_accuracy")),
+        "maxAttempts": _safe_int(head.get("max_attempts")),
+        "surgicalAttemptsUsed": _safe_int(head.get("surgical_attempts_used")),
+        "terminalReason": terminal_reason,
+        "doNotRepeat": dnr if isinstance(dnr, list) else [],
+        "nextHypothesis": _safe_json_parse(head.get("next_hypothesis")),
+        "attemptCount": len(attempt_rows),
+    }
+
+
+@router.get("/runs/{run_id}/loop-state")
+async def get_loop_state(run_id: RunId):
+    """GSO v2 03_optimize controller loop-state + per-attempt ledger (arch §7.4).
+
+    Surfaces the Phase-7/8 loop-state columns on ``genie_opt_iterations``:
+    per attempt — ``attempt_no``, ``attempt_mode`` (coverage/surgical),
+    full-benchmark accuracy, the ``best_accuracy`` staircase, ``decision`` plus
+    its rejection/rollback reason, the rolled-back + champion flags, and the
+    active hypothesis; run-level — ``best_accuracy``, ``best_config_version_id``,
+    ``target_accuracy`` (0–1), ``max_attempts``, ``surgical_attempts_used``,
+    the typed ``terminal_reason``, ``do_not_repeat``, and ``next_hypothesis``.
+
+    Returns ``{runId, loopState, attempts}``. A legacy 6-step run (no loop-state
+    columns / rows) returns ``loopState=null`` + ``attempts=[]`` so the UI can
+    fall back to the classic iteration view without error.
+    """
+    loop_rows = _select_loop_state_delta(run_id) if _is_configured() else []
+    # Attempts = ONE authoritative full-benchmark row per attempt_no
+    # (1=coverage, 2..N=surgical), de-duped so multiple/non-full rows never
+    # render as phantom attempts (B1). The baseline (iter 0, no attempt_no) is
+    # the ladder floor served by /iterations — it is not itself an attempt.
+    attempt_rows = _dedup_attempt_rows(loop_rows)
+    attempts = [_build_attempt(r) for r in attempt_rows]  # already ordered by attempt_no
+    return {
+        "runId": run_id,
+        "loopState": _build_loop_state(attempt_rows),
+        "attempts": attempts,
+    }
+
+
+def _build_publish_record(payload: dict) -> dict:
+    """Map a ``publish_record`` artifact payload → a camelCase GSOPublishRecord.
+
+    The publish_record stores ``target_accuracy`` on the 0–100 scale (run_publish_
+    and_audit normalizes the ≤1 job param to 0–100), so it is converted to the
+    0–1 echo scale; ``improvement_trajectory`` entries are camelCased explicitly
+    (their structural shape is bounded — no leaky free-text, per the §3.6
+    firewall).
+    """
+    trajectory: list[dict] = []
+    raw_traj = payload.get("improvement_trajectory")
+    if isinstance(raw_traj, list):
+        for t in raw_traj:
+            if not isinstance(t, dict):
+                continue
+            trajectory.append({
+                "iteration": _safe_int(t.get("iteration")),
+                "attemptNo": _safe_int(t.get("attempt_no")),
+                "attemptMode": t.get("attempt_mode") or None,
+                "evalScope": t.get("eval_scope") or None,
+                "accuracy": _safe_float(t.get("accuracy")),
+                "deltaVsBaseline": _safe_float(t.get("delta_vs_baseline")),
+                "bestAccuracy": _safe_float(t.get("best_accuracy")),
+                "decision": t.get("decision") or None,
+                "rolledBack": bool(t.get("rolled_back")),
+                "isChampion": bool(t.get("is_champion")),
+            })
+    concerns = payload.get("concerns")
+    reason = payload.get("terminal_reason")
+    return {
+        "runId": payload.get("run_id"),
+        "spaceId": payload.get("space_id"),
+        "finalStatus": payload.get("final_status") or None,
+        "terminalReason": reason if reason in _TYPED_TERMINAL_REASONS else None,
+        "published": bool(payload.get("published")),
+        "publishOutcome": payload.get("publish_outcome") or None,
+        "championIteration": _safe_int(payload.get("champion_iteration")),
+        "championAccuracy": _safe_float(payload.get("champion_accuracy")),
+        "championConfigVersionId": payload.get("champion_config_version_id") or None,
+        # publish_record stores target_accuracy on the 0–100 scale (run_publish_
+        # and_audit normalizes ≤1 to 0–100, like run_03); convert to 0–1.
+        "targetAccuracy": _delta_accuracy_to_unit_scale(payload.get("target_accuracy")),
+        "maxAttempts": _safe_int(payload.get("max_attempts")),
+        "auditSummary": payload.get("audit_summary") or None,
+        "improvementTrajectory": trajectory,
+        "concerns": concerns if isinstance(concerns, list) else [],
+    }
+
+
+@router.get("/runs/{run_id}/publish")
+async def get_publish_record(run_id: RunId):
+    """GSO v2 ``publish_and_audit`` record (arch §7.3).
+
+    Serves the ``publish_record`` artifact from ``genie_opt_artifacts``: the
+    LLM audit summary + structured improvement trajectory + concerns + the
+    champion pointer (iteration / accuracy / config-version) + the
+    published/outcome verdict gated on the typed terminal reason. Returns
+    ``{runId, publishRecord}`` with ``publishRecord=null`` when the run has not
+    reached publish yet or predates the artifact (legacy run).
+    """
+    payload = _load_latest_artifact(run_id, "publish_record") if _is_configured() else None
+    return {
+        "runId": run_id,
+        "publishRecord": _build_publish_record(payload) if payload else None,
+    }
+
+
+def _build_benchmark_qc(payload: dict) -> dict:
+    """Map a ``benchmark_qc`` artifact payload → camelCase GSOBenchmarkQC.
+
+    The ``window`` recommendation (30–40 status + counts) is passed through
+    as-is; repair-try usage and validity/contamination findings are surfaced
+    for the QC panel (Phase 13).
+    """
+    window = payload.get("window")
+    repaired = payload.get("repaired_ids")
+    gt_candidates = payload.get("gt_correction_candidates")
+    still_invalid = payload.get("still_invalid_ids")
+    final_validity = payload.get("final_validity")
+    return {
+        "validCount": _safe_int(payload.get("valid_count")),
+        "persistedCount": _safe_int(payload.get("persisted_count")),
+        "repairTriesUsed": _safe_int(payload.get("repair_tries_used")),
+        "repairMaxTries": _safe_int(payload.get("benchmark_repair_max_tries")),
+        "repairedIds": repaired if isinstance(repaired, list) else [],
+        "repairSweeps": payload.get("repair_sweeps"),
+        "finalValidity": bool(final_validity) if final_validity is not None else None,
+        "window": window if isinstance(window, dict) else None,
+        "windowTargetMin": _safe_int(payload.get("window_target_min")),
+        "windowTargetMax": _safe_int(payload.get("window_target_max")),
+        "gtCorrectionCandidates": gt_candidates if isinstance(gt_candidates, list) else [],
+        "terminalReason": payload.get("terminal_reason") or None,
+        "stillInvalidIds": still_invalid if isinstance(still_invalid, list) else None,
+    }
 
 
 @router.get("/runs/{run_id}/debug-data")
@@ -1810,6 +2391,11 @@ async def list_benchmark_changes(run_id: RunId):
     with provenance. The diff is also reconstructable as
     (current space benchmarks) − (preflight snapshot); this ledger is the
     direct, attributable source.
+
+    GSO v2 (item 7): the response also carries a ``qc`` field with the
+    01_benchmark_qc_and_repair metadata (30–40 window status, repair tries
+    used / max, validity findings) from the ``benchmark_qc`` artifact, so the
+    QC + provenance views share one fetch. ``qc`` is null for legacy runs.
     """
     mutations = await gso_lakebase.load_gso_benchmark_mutations(run_id)
     if not mutations and _is_configured():
@@ -1818,6 +2404,8 @@ async def list_benchmark_changes(run_id: RunId):
             f"FROM {_delta_table('genie_opt_benchmark_mutations')} "
             f"WHERE run_id = '{run_id}' ORDER BY logged_at ASC"
         )
+
+    qc_payload = _load_latest_artifact(run_id, "benchmark_qc") if _is_configured() else None
 
     buckets: dict[str, list[dict]] = {
         "added": [], "removed": [], "changed": [], "prune_recommended": [],
@@ -1851,6 +2439,7 @@ async def list_benchmark_changes(run_id: RunId):
             "pruneRecommended": len(buckets["prune_recommended"]),
             "total": len(items),
         },
+        "qc": _build_benchmark_qc(qc_payload) if qc_payload else None,
     }
 
 
