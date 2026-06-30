@@ -13036,31 +13036,29 @@ def _firewall_coverage_example_sqls(
     ]
     if dropped and w is not None:
         _leak_qs = {str(d.get("example_question") or "") for d in dropped}
-        try:
-            from genie_space_optimizer.common.genie_client import patch_space_config
-            # C1: strip the leaking entries from instructions.example_question_sqls
-            # (the LIVE path) before re-PATCHing, so the leak does not persist.
-            _cleaned = copy.deepcopy(_parsed)
-            _cleaned_instr = _cleaned.setdefault("instructions", {})
-            _cleaned_instr["example_question_sqls"] = [
-                e for e in _examples
-                if _as_text(e.get("question") or e.get("example_question")) not in _leak_qs
-            ]
-            patch_space_config(w, space_id, _cleaned)
-            logger.warning(
-                "Coverage firewall: stripped %d scored-benchmark-leaking example "
-                "SQL(s) from instructions.example_question_sqls before measurement "
-                "(questions=%s)",
-                len(dropped), sorted(_leak_qs),
-            )
-            if isinstance(config, dict):
-                config["_parsed_space"] = _cleaned
-        except Exception:
-            logger.warning(
-                "Coverage firewall: failed to strip leaking example SQLs (non-fatal)",
-                exc_info=True,
-            )
-    return {"apply_log": fw_log, "dropped": dropped, "config": config}
+        # D1 (FAIL-CLOSED): the strip/re-PATCH is NOT best-effort. If it raises,
+        # the live config still contains the scored-benchmark leak — re-raise so
+        # the caller hard-stops (proven rollback + LOOP_STATE_INVALID) instead of
+        # evaluating coverage against a leaked config.
+        from genie_space_optimizer.common.genie_client import patch_space_config
+        # C1: strip the leaking entries from instructions.example_question_sqls
+        # (the LIVE path) before re-PATCHing, so the leak does not persist.
+        _cleaned = copy.deepcopy(_parsed)
+        _cleaned_instr = _cleaned.setdefault("instructions", {})
+        _cleaned_instr["example_question_sqls"] = [
+            e for e in _examples
+            if _as_text(e.get("question") or e.get("example_question")) not in _leak_qs
+        ]
+        patch_space_config(w, space_id, _cleaned)
+        logger.warning(
+            "Coverage firewall: stripped %d scored-benchmark-leaking example "
+            "SQL(s) from instructions.example_question_sqls before measurement "
+            "(questions=%s)",
+            len(dropped), sorted(_leak_qs),
+        )
+        if isinstance(config, dict):
+            config["_parsed_space"] = _cleaned
+    return {"ok": True, "apply_log": fw_log, "dropped": dropped, "config": config}
 
 
 def _finalize_coverage_decision(
@@ -13127,6 +13125,61 @@ def _finalize_coverage_decision(
         result["decision_reason"] = "rolled_back_unprovable"
         result["terminal_reason"] = "LOOP_STATE_INVALID"
     return result
+
+
+def _correct_state_after_standalone_coverage_rollback(
+    *,
+    spark: SparkSession,
+    w: "WorkspaceClient | None",
+    run_id: str,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    enrichment_out: dict | None,
+    baseline_accuracy: float,
+    delta_pp: float,
+) -> bool:
+    """Required post-rollback state correction for the standalone path (D2/D3).
+
+    After ``optimize_genie_space`` rolls back a regressing coverage pass, three
+    things MUST hold before surgical mode can start, or the run is fail-closed:
+
+      * the rejected ``eval_scope='enrichment'`` iteration-0 row is marked
+        ``rolled_back=true`` (scoped, so the sibling 'full' baseline row stays
+        current state) — ``mark_iteration_rolled_back`` raises on failure;
+      * run best-iteration / best-accuracy are reset to the frozen baseline;
+      * D2: ``enrichment_out['config']`` is replaced with the PROVEN baseline config
+        (the live space is now rolled back to it) so ``_run_lever_loop``'s pre-loop
+        SQL-snippet repair never re-PATCHes the rejected post-enrichment config.
+
+    Returns ``True`` on success; ``False`` signals the caller to stop
+    ``LOOP_STATE_INVALID``. Never raises.
+    """
+    from genie_space_optimizer.common.genie_client import fetch_space_config
+    from genie_space_optimizer.optimization.state import mark_iteration_rolled_back
+
+    try:
+        mark_iteration_rolled_back(
+            spark, run_id, 0,
+            catalog=catalog, schema=schema, eval_scope="enrichment",
+            reason=f"coverage_rolled_back (Δacc {delta_pp})",
+        )
+        update_run_status(
+            spark, run_id, catalog, schema,
+            best_iteration=0, best_accuracy=float(baseline_accuracy),
+        )
+        if w is not None:
+            _baseline_cfg = fetch_space_config(w, space_id) or {}
+            if isinstance(enrichment_out, dict):
+                enrichment_out["config"] = _baseline_cfg
+        return True
+    except Exception:
+        logger.error(
+            "C3/D2/D3 FAIL-CLOSED: post-rollback state correction failed "
+            "(row-hide / best reset / baseline refetch) for run %s",
+            run_id, exc_info=True,
+        )
+        return False
 
 
 def _run_lever_loop(
@@ -13830,19 +13883,23 @@ def _run_lever_loop(
             _enr_summary.append(_bar("-"))
             print("\n".join(_enr_summary))
 
-            # GSO v2 Phase 8 (arch §5.2 / §13.5): did the coverage pass actually
-            # apply anything? A warm/well-documented space finds nothing → the
-            # attempt-1 rung renders as the "no_enrichment_candidates" free probe.
-            _coverage_had_candidates = bool(
-                enrichment_result.get("total_enriched", 0)
-                or enrichment_result.get("tables_enriched", 0)
-                or join_result.get("total_applied", 0)
-                or meta_result.get("description_generated")
-                or meta_result.get("questions_generated")
-                or instruction_result.get("instructions_seeded")
-                or instruction_result.get("instructions_expanded")
-                or sql_expr_result.get("total_seeded", 0)
-                or sql_expr_result.get("repair", {}).get("rewritten", 0)
+            # GSO v2 Phase 8 (C2): TELEMETRY ONLY — this per-mutator tally is NOT
+            # the coverage candidate flag (that is derived authoritatively from a
+            # canonical pre/post config comparison in the coverage block, which
+            # also catches mutators omitted here, e.g. the instruction miner /
+            # preflight synthesis). Logged for observability; never read for control.
+            _enrichment_mutator_telemetry = {
+                "columns_enriched": enrichment_result.get("total_enriched", 0),
+                "tables_enriched": enrichment_result.get("tables_enriched", 0),
+                "joins_applied": join_result.get("total_applied", 0),
+                "description_generated": bool(meta_result.get("description_generated")),
+                "questions_generated": bool(meta_result.get("questions_generated")),
+                "instructions_seeded": bool(instruction_result.get("instructions_seeded")),
+                "sql_expr_seeded": sql_expr_result.get("total_seeded", 0),
+            }
+            logger.info(
+                "Coverage enrichment mutator telemetry (NOT the candidate flag): %s",
+                _enrichment_mutator_telemetry,
             )
 
             _mlflow_legacy_enr.log_metrics({
@@ -14366,21 +14423,18 @@ def _run_lever_loop(
                 )
                 _coverage_had_candidates = True
 
-            # B3: route the coverage example SQLs through the canonical
-            # apply_patch_set leakage firewall (drops any scored-benchmark Q/A leak)
-            # BEFORE the eval, so the measured accuracy reflects the firewalled space.
+            # B3 / D1 (FAIL-CLOSED): route the coverage example SQLs through the
+            # canonical apply_patch_set leakage firewall (drops any scored-benchmark
+            # Q/A leak) BEFORE the eval, so the measured accuracy reflects the
+            # firewalled space. A firewall failure is NOT swallowed — it propagates
+            # to the fail-closed handler below (proven rollback + LOOP_STATE_INVALID),
+            # so coverage is NEVER evaluated against a leaked config.
             _coverage_eval_incomplete = False
             if _coverage_had_candidates:
-                try:
-                    _firewall_coverage_example_sqls(
-                        w=w, space_id=space_id, config=config,
-                        benchmarks=benchmarks, apply_mode=apply_mode,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Coverage example-SQL firewall pass raised (non-fatal)",
-                        exc_info=True,
-                    )
+                _firewall_coverage_example_sqls(
+                    w=w, space_id=space_id, config=config,
+                    benchmarks=benchmarks, apply_mode=apply_mode,
+                )
 
             # B1: the no-candidate rung persists the REAL baseline eval payload
             # (loaded from the iteration-0 'full' row), never an empty synthetic eval.
@@ -14529,31 +14583,33 @@ def _run_lever_loop(
                     exc_info=True,
                 )
         except Exception:
-            # B2: any failure AFTER enrichment mutated the space must degrade to the
-            # UNMODIFIED frozen baseline — roll back the coverage mutation (PROVEN)
-            # before surgical mode; an unprovable rollback stops with LOOP_STATE_INVALID.
-            logger.warning(
-                "GSO v2 Phase 8 coverage measurement failed — rolling back any "
-                "coverage mutation to the frozen baseline before surgical mode",
+            # D1/B2 (FAIL-CLOSED): ANY failure on the coverage path after enrichment
+            # mutated the space (firewall, strip/re-PATCH, eval, decision) must roll
+            # the live space back to the UNMODIFIED frozen baseline (PROVEN) and
+            # HARD-STOP with LOOP_STATE_INVALID. The run NEVER falls through into
+            # surgical mode against an un-firewalled / rejected config, even when the
+            # rollback itself succeeds — a coverage-path failure means the attempt
+            # state is untrustworthy.
+            logger.error(
+                "GSO v2 Phase 8 coverage measurement FAILED — rolling back any "
+                "coverage mutation to the frozen baseline and stopping LOOP_STATE_INVALID",
                 exc_info=True,
             )
             try:
-                _cov_fail = _finalize_coverage_decision(
+                _finalize_coverage_decision(
                     w=w, space_id=space_id, pre_snapshot=_coverage_pre_snapshot,
                     frozen_baseline_accuracy=float(prev_accuracy or 0.0),
                     post_coverage_accuracy=float(prev_accuracy or 0.0) - 1.0,  # force rollback
                     had_candidates=True,
                     metadata_snapshot=metadata_snapshot,
                 )
-                if _cov_fail.get("terminal_reason") == "LOOP_STATE_INVALID":
-                    _loop_terminal_reason = "LOOP_STATE_INVALID"
             except Exception:
                 logger.error(
-                    "Coverage failure rollback ALSO failed — stopping with "
-                    "LOOP_STATE_INVALID (live space state unknown)",
+                    "Coverage failure rollback ALSO failed (live space state unknown)",
                     exc_info=True,
                 )
-                _loop_terminal_reason = "LOOP_STATE_INVALID"
+            # Fail-closed: hard-stop regardless of whether the rollback proved out.
+            _loop_terminal_reason = "LOOP_STATE_INVALID"
 
     # ── GSO v2 Phase 8 — two-mode controller while loop (arch §5.1) ──────────
     # The attempt-1 COVERAGE pass (broad enrichment, measured against the frozen
@@ -25452,36 +25508,32 @@ def optimize_genie_space(
                 return result
             if _cov_std["should_rollback"]:
                 # Regression rolled back → keep the FROZEN BASELINE (no silent move).
+                # C3 / D2 / D3 (FAIL-CLOSED): the post-rollback state correction is
+                # REQUIRED — hide the rejected enrichment row, reset run best-* to
+                # baseline, and replace _enrichment_out["config"] with the proven
+                # baseline so _run_lever_loop never re-PATCHes the rejected config.
+                # If it cannot be committed, stop LOOP_STATE_INVALID.
                 _accuracy_source = "baseline_eval_coverage_rolled_back"
                 _effective_model_id = model_id
-                # C3: _run_enrichment already wrote an eval_scope='enrichment'
-                # iteration-0 row with the REJECTED post-enrichment eval/config.
-                # Mark ONLY that row rolled_back (scoped by eval_scope so the
-                # sibling 'full' baseline row at iteration 0 stays current state),
-                # and reset run best-iteration / best-accuracy back to the baseline
-                # so resume / clustering / champion selection never read the
-                # rejected enrichment state.
-                try:
-                    from genie_space_optimizer.optimization.state import (
-                        mark_iteration_rolled_back as _mark_iter_rb,
-                    )
-                    _mark_iter_rb(
-                        spark, run_id_str, 0,
-                        catalog=catalog, schema=schema,
-                        eval_scope="enrichment",
-                        reason=f"coverage_rolled_back (Δacc {_cov_std['delta_pp']})",
-                    )
-                    update_run_status(
-                        spark, run_id_str, catalog, schema,
-                        best_iteration=0,
-                        best_accuracy=float(prev_accuracy),
-                    )
-                except Exception:
-                    logger.warning(
-                        "C3: failed to mark rejected enrichment row rolled_back / "
-                        "reset run best metadata (non-fatal)",
-                        exc_info=True,
-                    )
+                if not _correct_state_after_standalone_coverage_rollback(
+                    spark=spark, w=w, run_id=run_id_str, space_id=space_id,
+                    catalog=catalog, schema=schema, enrichment_out=_enrichment_out,
+                    baseline_accuracy=float(prev_accuracy),
+                    delta_pp=float(_cov_std["delta_pp"]),
+                ):
+                    result.status = "FAILED"
+                    result.convergence_reason = "LOOP_STATE_INVALID"
+                    result.best_accuracy = float(prev_accuracy)
+                    result.best_model_id = model_id
+                    result.final_scores = prev_scores
+                    try:
+                        update_run_status(
+                            spark, run_id_str, catalog, schema,
+                            status="FAILED", convergence_reason="LOOP_STATE_INVALID",
+                        )
+                    except Exception:
+                        logger.error("Terminal run-status write also failed", exc_info=True)
+                    return result
             else:
                 # Accepted / no-op → adopt the post-enrichment state as the start.
                 _post_scores = _enr_dict.get("post_enrichment_scores") or {}

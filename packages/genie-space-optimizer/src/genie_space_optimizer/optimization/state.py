@@ -1160,28 +1160,31 @@ def mark_iteration_rolled_back(
     ``optimize_genie_space`` path can mark ONLY the rejected ``eval_scope='enrichment'``
     coverage row rolled-back on a post-enrichment regression — WITHOUT touching the
     sibling ``eval_scope='full'`` baseline row at the same iteration (which must
-    remain the current state). Best-effort; a failed UPDATE is logged, not raised.
+    remain the current state).
+
+    D3 (FAIL-CLOSED): this is REQUIRED, not best-effort — it RAISES on failure so
+    the caller can stop the run ``LOOP_STATE_INVALID`` rather than leaving the
+    rejected row selectable. ``run_id`` / ``eval_scope`` are escaped the same way
+    as the rest of the per-row writers (SQL-literal quote-doubling).
     """
     now = datetime.now(timezone.utc).isoformat()
     iters_fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
-    safe_reason = (reason or "").replace("'", "''")
-    where = f"run_id = '{run_id}' AND iteration = {int(iteration)}"
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("'", "''")
+
+    safe_reason = _esc(str(reason or ""))
+    where = f"run_id = '{_esc(str(run_id))}' AND iteration = {int(iteration)}"
     if eval_scope:
-        where += f" AND eval_scope = '{eval_scope}'"
-    try:
-        execute_delta_write_with_retry(
-            spark,
-            f"UPDATE {iters_fqn} SET rolled_back = true, "
-            f"rolled_back_at = TIMESTAMP '{now}', "
-            f"rollback_reason = '{safe_reason}' WHERE {where}",
-            operation_name="mark_iteration_rolled_back",
-            table_name=iters_fqn,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to mark iteration %s (scope=%s) rolled_back for run %s (non-fatal)",
-            iteration, eval_scope, run_id, exc_info=True,
-        )
+        where += f" AND eval_scope = '{_esc(str(eval_scope))}'"
+    execute_delta_write_with_retry(
+        spark,
+        f"UPDATE {iters_fqn} SET rolled_back = true, "
+        f"rolled_back_at = TIMESTAMP '{now}', "
+        f"rollback_reason = '{safe_reason}' WHERE {where}",
+        operation_name="mark_iteration_rolled_back",
+        table_name=iters_fqn,
+    )
 
 
 def mark_patches_rolled_back(
