@@ -9533,8 +9533,22 @@ def _call_llm_for_adaptive_strategy(
     max_ag_patches: int | None = None,
     intent_collisions: list[dict] | None = None,
     prior_iteration_dropped_causal_patches: list | tuple | None = None,
+    attempt_no: int | None = None,
+    attempt_mode: str | None = None,
+    allow_cluster_agnostic: bool = False,
 ) -> dict:
     """Single-call strategist that produces exactly ONE action group.
+
+    GSO v2 Phase 8 (arch §5.2 / §13.7): ``attempt_no`` / ``attempt_mode`` are the
+    two-mode controller signal (there is no attempt-number or mode concept in the
+    strategist otherwise). ``allow_cluster_agnostic`` is the parameterized escape
+    hatch for the attempt-1 *coverage* pass: when True it relaxes the
+    one-source-cluster-per-action-group invariant at the THREE enforcement points
+    in this function (the system-prompt scope bound, the cross-namespace secondary
+    drop, and the RCA defect-identity scope bound) so coverage can span clusters.
+    Surgical attempts (2..N) keep ``allow_cluster_agnostic=False`` and the invariant
+    fully enforced. This is the SINGLE chokepoint — there is no scattered
+    ``if attempt == 1`` anywhere else.
 
     Combines schema context, failure clusters, SQL diffs, a priority
     ranking, and a reflection buffer into one prompt.  Designed for the
@@ -9677,15 +9691,39 @@ def _call_llm_for_adaptive_strategy(
     context_data = _truncate_context_to_budget(context_data, _adaptive_context_budget_tokens())
     context_json = json.dumps(context_data, indent=2, default=str)
 
+    # GSO v2 Phase 8 (arch §5.2): thread the two-mode controller signal into the
+    # strategist's format_kwargs. ``attempt_mode`` defaults to ``"surgical"`` so
+    # legacy callers (which pass neither) keep the single-cluster discipline.
+    _resolved_attempt_mode = attempt_mode or ("coverage" if allow_cluster_agnostic else "surgical")
+    _resolved_attempt_no = attempt_no if attempt_no is not None else (len(reflection_buffer) + 1)
     format_kwargs: dict[str, Any] = {
         "context_json": context_json,
         "identifier_allowlist": _format_identifier_allowlist(
             _build_identifier_allowlist(metadata_snapshot)
         ),
         "instruction_char_budget": max(0, 24500 - 500),
+        "attempt_no": _resolved_attempt_no,
+        "attempt_mode": _resolved_attempt_mode,
     }
 
     prompt = format_mlflow_template(ADAPTIVE_STRATEGIST_PROMPT, **format_kwargs)
+    # Phase 8: prepend an explicit mode preamble so the controller signal reaches
+    # the LLM even when the template carries no {{ attempt_mode }} marker. Coverage
+    # (attempt 1) is the broad cluster-agnostic pass; surgical (2..N) is the smallest
+    # compatible single-cluster fix.
+    if _resolved_attempt_mode == "coverage":
+        _mode_text = (
+            f"ATTEMPT {_resolved_attempt_no} — COVERAGE MODE (broad, cluster-agnostic): "
+            "produce a broad enrichment action group that may span multiple failure "
+            "clusters. The whole attempt is measured against the frozen baseline and "
+            "rolled back as a unit if it regresses."
+        )
+    else:
+        _mode_text = (
+            f"ATTEMPT {_resolved_attempt_no} — SURGICAL MODE: target exactly ONE failure "
+            "cluster with the smallest compatible patch family."
+        )
+    prompt = _mode_text + "\n\n" + prompt
     # v2 Task 5: prepend cap budget so the strategist sees it before any
     # cluster bundling instructions in the templated prompt body.
     # v2 Task 12: intent_collision_text follows the budget so collisions
@@ -9760,29 +9798,47 @@ def _call_llm_for_adaptive_strategy(
 
     _link_prompt_to_trace("adaptive_strategist")
 
-    system_msg = (
-        "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
-        "Do NOT include any explanation, analysis, or markdown outside the JSON. "
-        "Your entire response must be parseable by json.loads(). "
-        "The JSON must contain an 'action_groups' array with EXACTLY one entry. "
-        # Tier 2.5: scope bound — one source cluster per AG.
-        "The action group MUST target exactly ONE source cluster. Multiple "
-        "failure signatures require multiple iterations, not one giant AG. "
-        # T2.16: require an explicit primary_cluster_id plus optional
-        # secondary_cluster_ids. source_cluster_ids is still accepted for
-        # backward-compatible replay; validator promotes the first entry
-        # to primary_cluster_id and rejects cross-namespace spans
-        # (mixing H### with S###) unless secondary_cluster_ids was set.
-        "Set 'primary_cluster_id' to the single cluster this AG addresses "
-        "(H### for hard, S### for soft). If the AG legitimately spans "
-        "both hard and soft clusters that share a blame set, add the "
-        "cross-namespace IDs to 'secondary_cluster_ids'. For backward "
-        "compatibility you may instead populate 'source_cluster_ids' "
-        "with a list of length 1; the validator will migrate it to "
-        "primary_cluster_id. If the same root cause spans multiple "
-        "clusters with the same blame set, pick the highest impact one; "
-        "the remaining clusters will be addressed in subsequent iterations."
-    )
+    if allow_cluster_agnostic:
+        # GSO v2 Phase 8 (arch §5.2): coverage mode (attempt 1). The one-source-
+        # cluster scope bound is RELAXED — coverage is intentionally cluster-
+        # agnostic (broad enrichment across descriptions/joins/example SQL). The
+        # action group may span multiple clusters; the whole attempt is measured
+        # against the frozen baseline and rolled back as a unit if it regresses.
+        system_msg = (
+            "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
+            "Do NOT include any explanation, analysis, or markdown outside the JSON. "
+            "Your entire response must be parseable by json.loads(). "
+            "The JSON must contain an 'action_groups' array with EXACTLY one entry. "
+            # Phase 8 coverage: cluster-agnostic broad pass — no single-cluster bound.
+            "This is a BROAD COVERAGE pass: the action group MAY span multiple "
+            "failure clusters and namespaces. Set 'primary_cluster_id' to the "
+            "highest-impact cluster and list the others in 'secondary_cluster_ids'; "
+            "you do NOT need to restrict the group to a single source cluster."
+        )
+    else:
+        system_msg = (
+            "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
+            "Do NOT include any explanation, analysis, or markdown outside the JSON. "
+            "Your entire response must be parseable by json.loads(). "
+            "The JSON must contain an 'action_groups' array with EXACTLY one entry. "
+            # Tier 2.5: scope bound — one source cluster per AG.
+            "The action group MUST target exactly ONE source cluster. Multiple "
+            "failure signatures require multiple iterations, not one giant AG. "
+            # T2.16: require an explicit primary_cluster_id plus optional
+            # secondary_cluster_ids. source_cluster_ids is still accepted for
+            # backward-compatible replay; validator promotes the first entry
+            # to primary_cluster_id and rejects cross-namespace spans
+            # (mixing H### with S###) unless secondary_cluster_ids was set.
+            "Set 'primary_cluster_id' to the single cluster this AG addresses "
+            "(H### for hard, S### for soft). If the AG legitimately spans "
+            "both hard and soft clusters that share a blame set, add the "
+            "cross-namespace IDs to 'secondary_cluster_ids'. For backward "
+            "compatibility you may instead populate 'source_cluster_ids' "
+            "with a list of length 1; the validator will migrate it to "
+            "primary_cluster_id. If the same root cause spans multiple "
+            "clusters with the same blame set, pick the highest impact one; "
+            "the remaining clusters will be addressed in subsequent iterations."
+        )
 
     try:
         text, _response = _traced_llm_call(
@@ -9860,7 +9916,13 @@ def _call_llm_for_adaptive_strategy(
                 if not _sid_str or _sid_str == _primary_id:
                     continue
                 _sid_ns = _cluster_namespace(_sid_str)
-                if _sid_ns and _primary_ns and _sid_ns != _primary_ns and not _explicit_secondary:
+                if (
+                    _sid_ns and _primary_ns and _sid_ns != _primary_ns
+                    and not _explicit_secondary
+                    # GSO v2 Phase 8 (arch §5.2): coverage mode is cluster-agnostic,
+                    # so the implicit cross-namespace drop is bypassed for attempt 1.
+                    and not allow_cluster_agnostic
+                ):
                     logger.warning(
                         "T2.16: dropped implicit cross-namespace secondary %s "
                         "(primary=%s, namespaces differ). Declare secondary_cluster_ids "
@@ -9876,6 +9938,14 @@ def _call_llm_for_adaptive_strategy(
             # Mirror into source_cluster_ids so all downstream back-fill
             # and printer code paths keep working without duplication.
             _ag["source_cluster_ids"] = [_primary_id] + _kept_secondaries
+        # GSO v2 Phase 8 (arch §5.2): coverage mode (attempt 1) is intentionally
+        # cluster-agnostic — bypass the RCA defect-identity scope bound below so a
+        # broad enrichment AG may span multiple clusters. The whole attempt is
+        # measured against the frozen baseline and rolled back as a unit if it
+        # regresses; surgical attempts keep the single-cluster bound enforced.
+        if allow_cluster_agnostic:
+            _validated_ags.append(_ag)
+            continue
         _src_ids = list(_ag.get("source_cluster_ids") or [])
         if len(_src_ids) <= 1:
             _validated_ags.append(_ag)

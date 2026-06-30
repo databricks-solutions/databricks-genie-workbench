@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -209,8 +210,10 @@ def test_write_iteration_persists_projected_config_json(mock_spark_iter):
     assert "should" not in sql
     # is_champion is written false at iteration-write time. GSO v2 Phase 6
     # appends num_needs_review / eval_run_id / eval_run_status (all NULL here,
-    # since _BASE_EVAL carries no native eval-run metadata) after is_champion.
-    assert sql.rstrip().endswith("false, NULL, NULL, NULL)")
+    # since _BASE_EVAL carries no native eval-run metadata) after is_champion;
+    # GSO v2 Phase 8 appends the loop-state columns (also NULL here) after that.
+    assert "false, NULL, NULL, NULL," in sql
+    assert sql.rstrip().endswith("NULL)")
 
 
 def test_write_iteration_config_json_null_when_not_provided(mock_spark_iter):
@@ -224,8 +227,10 @@ def test_write_iteration_config_json_null_when_not_provided(mock_spark_iter):
     assert "config_json" in sql  # column always listed
     # config_json (NULL) then is_champion (false), then the GSO v2 Phase 6
     # native eval-run trio num_needs_review / eval_run_id / eval_run_status
-    # (all NULL when the eval_result carries no native metadata).
-    assert sql.rstrip().endswith("NULL, false, NULL, NULL, NULL)")
+    # (all NULL when the eval_result carries no native metadata); GSO v2 Phase 8
+    # loop-state columns (also NULL) trail after.
+    assert "NULL, false, NULL, NULL, NULL," in sql
+    assert sql.rstrip().endswith("NULL)")
 
 
 def test_write_iteration_empty_projection_writes_null(mock_spark_iter):
@@ -236,7 +241,8 @@ def test_write_iteration_empty_projection_writes_null(mock_spark_iter):
         config_snapshot={"_only": "internal", "junk": 1},
     )
     sql = _extract_insert_sql(mock_spark_iter)
-    assert sql.rstrip().endswith("NULL, false, NULL, NULL, NULL)")
+    assert "NULL, false, NULL, NULL, NULL," in sql
+    assert sql.rstrip().endswith("NULL)")
 
 
 def test_write_iteration_escapes_quotes_in_config(mock_spark_iter):
@@ -399,7 +405,13 @@ def test_run_gate_checks_records_post_apply_config_not_pre_patch():
     def _capture_write_iteration(*args, **kwargs):
         captured.append(kwargs)
 
-    with patch.object(eval_runner_mod, "maybe_build_official_runner", return_value=object()), \
+    # GSO v2 Phase 8 retires the subset-first slice/P0 gates inside the loop
+    # (full-benchmark-only eval, arch §7.3). This regression test specifically
+    # drives the SLICE-gate config-recording path, so opt back into the legacy
+    # gates for it; the same post-apply-config contract is what the full gate
+    # records in the default full-only regime.
+    with patch.dict(os.environ, {"GSO_FULL_BENCHMARK_ONLY_EVAL": "false"}), \
+         patch.object(eval_runner_mod, "maybe_build_official_runner", return_value=object()), \
          patch.object(harness_mod, "PROPAGATION_WAIT_SECONDS", 0), \
          patch.object(harness_mod, "PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS", 0), \
          patch.object(harness_mod, "_ensure_sql_context"), \

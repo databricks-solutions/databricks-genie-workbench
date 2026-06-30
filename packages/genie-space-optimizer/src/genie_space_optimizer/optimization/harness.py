@@ -75,10 +75,12 @@ from genie_space_optimizer.common.config import (
     INSTRUCTION_PROMPT_NAME_TEMPLATE,
     LEVER_NAMES,
     MAX_AG_PATCHES,
+    MAX_ATTEMPTS,
     MAX_BENCHMARK_COUNT,
     MAX_ITERATIONS,
     MAX_NOISE_FLOOR,
     MIN_POST_ARBITER_GAIN_PP,
+    TARGET_ACCURACY,
     NEITHER_CORRECT_QUARANTINE_THRESHOLD,
     NEITHER_CORRECT_REPAIR_THRESHOLD,
     PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS,
@@ -11644,6 +11646,7 @@ def _run_gate_checks(
         ENABLE_LEGACY_SLICE_P0_GATES,
         P0_GATE_MAX_QUESTIONS,
         SLICE_GATE_MAX_QUESTIONS,
+        full_benchmark_only_eval_enabled,
     )
     from genie_space_optimizer.optimization.eval_gates import (
         select_p0_qids as _select_p0_qids,
@@ -11661,8 +11664,26 @@ def _run_gate_checks(
     # / P0 failures / decide_acceptance) are UNCHANGED — only the sequencing is
     # added here (the threshold rework is Phase 3). Mocked-workspace tests get a
     # ``None`` runner ⇒ legacy behaviour, so this is production-only.
+    #
+    # GSO v2 Phase 8 (arch §7.3): the 03_optimize loop is full-benchmark-only —
+    # every attempt scores the whole 30–40-question set so the Attempt Ladder
+    # plots one consistent per-attempt accuracy. This RETIRES the subset-first
+    # 3-gate inside the loop: the slice and P0 gates are skipped and the full
+    # block is the only gate. The EvalBudget cap becomes the primary stop.
+    _full_only = full_benchmark_only_eval_enabled()
     _official_v2_active = _maybe_official_runner(w) is not None
-    if _official_v2_active:
+    if _full_only:
+        print(
+            _section(f"SLICE GATE [{ag_id}]: SKIPPED (Phase 8 full-eval-only)", "-") + "\n"
+            + _kv(
+                "Reason",
+                "GSO v2 Phase 8 — every attempt is scored on the full benchmark "
+                "(arch §7.3); the subset-first 3-gate is retired for the loop. Opt "
+                "back in via GSO_FULL_BENCHMARK_ONLY_EVAL=false.",
+            ) + "\n"
+            + _bar("-")
+        )
+    elif _official_v2_active:
         _all_qids_v2 = [str(b.get("id")) for b in benchmarks if b.get("id")]
         _failing_v2 = [str(q) for q in (affected_question_ids or set())] + [
             str(q) for q in (prev_failure_qids or [])
@@ -11877,7 +11898,19 @@ def _run_gate_checks(
     # Task 2: P0 gate is a legacy approval gate alongside the slice gate.
     # GSO v2 §3.4: when the official runner is active the P0 gate runs as the
     # second subset-first gate (capped priority subset) before the full eval.
-    if _official_v2_active:
+    # GSO v2 Phase 8: full-benchmark-only eval retires the P0 gate inside the loop.
+    if _full_only:
+        p0_benchmarks = []
+        print(
+            _section(f"P0 GATE [{ag_id}]: SKIPPED (Phase 8 full-eval-only)", "-") + "\n"
+            + _kv(
+                "Reason",
+                "GSO v2 Phase 8 — every attempt is scored on the full benchmark "
+                "(arch §7.3); the subset-first 3-gate is retired for the loop.",
+            ) + "\n"
+            + _bar("-")
+        )
+    elif _official_v2_active:
         _all_qids_p0 = [str(b.get("id")) for b in benchmarks if b.get("id")]
         _p0_priority = [
             str(b.get("id"))
@@ -12928,6 +12961,302 @@ def compute_iteration_budget(
     return max(capped_scaled, requested) if requested > int(_MAX_ITERATIONS) else capped_scaled
 
 
+# ── GSO v2 Phase 8 — the SINGLE measured/reversible coverage protocol ────────
+# Both the inline ``_run_lever_loop`` coverage block AND the legacy
+# ``optimize_genie_space`` standalone path call these so there is exactly ONE
+# coverage protocol (arch §5.2): broad enrichment, scored against the frozen
+# baseline, accepted on Δacc>0 / PROVEN-rolled-back on Δacc<0. No silent
+# "better-of" starting point survives.
+
+
+def _firewall_coverage_example_sqls(
+    *,
+    w: "WorkspaceClient | None",
+    space_id: str,
+    config: dict,
+    benchmarks: list[dict],
+    apply_mode: str,
+) -> dict:
+    """Run the coverage attempt's example SQLs through the canonical apply_patch_set
+    leakage firewall (arch §3.6 / B3).
+
+    Builds ``add_example_sql`` patches from the post-coverage config and runs
+    ``apply_patch_set(w=None, …, benchmark_corpus=corpus)`` as a NON-MUTATING
+    firewall pass — with ``w=None`` the applier builds a real apply log and runs
+    the last-mile scored-benchmark Q/A hard-block but does NOT PATCH the live
+    space. Any example SQL the firewall drops is stripped from the live config and
+    re-PATCHed (defense-in-depth on top of the per-mutator firewall enrichment
+    already applies). Returns ``{"apply_log", "dropped", "config"}``.
+    """
+    from genie_space_optimizer.optimization.applier import apply_patch_set
+    from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
+
+    def _as_text(v: Any) -> str:
+        # C1: example_question_sqls entries may carry list[str]-valued question/sql
+        # fields; normalize to the actual string value (first non-empty element),
+        # never the str() of a list.
+        if isinstance(v, (list, tuple)):
+            for _x in v:
+                if str(_x or "").strip():
+                    return str(_x)
+            return ""
+        return str(v or "")
+
+    _parsed = config.get("_parsed_space", config) if isinstance(config, dict) else {}
+    if not isinstance(_parsed, dict):
+        _parsed = {}
+    # C1: example SQLs live under instructions.example_question_sqls (the real
+    # schema/applier path), NOT top level. Reading top level made the firewall a
+    # no-op and the strip re-PATCH miss the live entries.
+    _instr = _parsed.get("instructions")
+    if not isinstance(_instr, dict):
+        _instr = {}
+    _examples = [
+        e for e in (_instr.get("example_question_sqls") or []) if isinstance(e, dict)
+    ]
+    corpus = BenchmarkCorpus.from_benchmarks(benchmarks or [])
+    _patches = [
+        {
+            "type": "add_example_sql",
+            "example_question": _as_text(e.get("question") or e.get("example_question")),
+            "example_sql": _as_text(e.get("sql") or e.get("example_sql")),
+            "question_id": e.get("question_id") or e.get("benchmark_id"),
+        }
+        for e in _examples
+    ]
+    # w=None ⇒ apply_patch_set runs the firewall + builds the apply log but never
+    # PATCHes the live space (see applier.apply_patch_set: PATCH is gated on w).
+    fw_log = apply_patch_set(
+        None, space_id, _patches, copy.deepcopy(_parsed),
+        apply_mode=apply_mode, benchmark_corpus=corpus,
+    )
+    dropped = [
+        d for d in (fw_log.get("dropped_patches") or [])
+        if str(d.get("drop_reason") or "").startswith("benchmark_leak")
+    ]
+    if dropped and w is not None:
+        _leak_qs = {str(d.get("example_question") or "") for d in dropped}
+        # D1 (FAIL-CLOSED): the strip/re-PATCH is NOT best-effort. If it raises,
+        # the live config still contains the scored-benchmark leak — re-raise so
+        # the caller hard-stops (proven rollback + LOOP_STATE_INVALID) instead of
+        # evaluating coverage against a leaked config.
+        from genie_space_optimizer.common.genie_client import patch_space_config
+        # C1: strip the leaking entries from instructions.example_question_sqls
+        # (the LIVE path) before re-PATCHing, so the leak does not persist.
+        _cleaned = copy.deepcopy(_parsed)
+        _cleaned_instr = _cleaned.setdefault("instructions", {})
+        _cleaned_instr["example_question_sqls"] = [
+            e for e in _examples
+            if _as_text(e.get("question") or e.get("example_question")) not in _leak_qs
+        ]
+        patch_space_config(w, space_id, _cleaned)
+        logger.warning(
+            "Coverage firewall: stripped %d scored-benchmark-leaking example "
+            "SQL(s) from instructions.example_question_sqls before measurement "
+            "(questions=%s)",
+            len(dropped), sorted(_leak_qs),
+        )
+        if isinstance(config, dict):
+            config["_parsed_space"] = _cleaned
+    return {"ok": True, "apply_log": fw_log, "dropped": dropped, "config": config}
+
+
+def _finalize_coverage_decision(
+    *,
+    w: "WorkspaceClient | None",
+    space_id: str,
+    pre_snapshot: dict,
+    frozen_baseline_accuracy: float,
+    post_coverage_accuracy: float,
+    had_candidates: bool,
+    metadata_snapshot: dict | None = None,
+) -> dict:
+    """Decide the coverage attempt's fate and, on regression, perform a PROVEN
+    whole-attempt rollback to ``pre_snapshot`` (arch §5.2 / B2 / B4).
+
+    Returns ``{decision, decision_reason, should_rollback, rollback_proven,
+    terminal_reason, delta_pp}``. On Δacc<0 the WHOLE coverage attempt is rolled
+    back via ``applier.rollback`` and the restore is VERIFIED against
+    ``pre_snapshot`` (``verify_rollback_restored``); if the rollback cannot be
+    PROVEN, ``terminal_reason`` is ``LOOP_STATE_INVALID`` so the controller stops
+    rather than entering surgical mode against an unknown live state.
+    """
+    from genie_space_optimizer.optimization.applier import (
+        rollback as _rb,
+        verify_rollback_restored as _verify,
+    )
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_coverage_outcome as _decide,
+    )
+
+    outcome = _decide(
+        frozen_baseline_accuracy=frozen_baseline_accuracy,
+        post_coverage_accuracy=post_coverage_accuracy,
+        had_candidates=had_candidates,
+    )
+    result = {
+        "decision": outcome.decision,
+        "decision_reason": outcome.decision_reason,
+        "should_rollback": outcome.should_rollback,
+        "rollback_proven": True,
+        "terminal_reason": None,
+        "delta_pp": outcome.delta_pp,
+    }
+    if not outcome.should_rollback:
+        return result
+
+    _rb_out = _rb(
+        {"pre_snapshot": pre_snapshot, "rollback_commands": []},
+        w, space_id, metadata_snapshot,
+    )
+    proven = str(_rb_out.get("status")) == "SUCCESS" and not _rb_out.get("errors")
+    if proven and w is not None:
+        try:
+            _v = _verify(w=w, space_id=space_id, expected_snapshot=pre_snapshot)
+            proven = bool(_v.get("verified", False))
+        except Exception:
+            logger.warning(
+                "Coverage rollback verification raised — treating as unprovable",
+                exc_info=True,
+            )
+            proven = False
+    result["rollback_proven"] = bool(proven)
+    if not proven:
+        result["decision_reason"] = "rolled_back_unprovable"
+        result["terminal_reason"] = "LOOP_STATE_INVALID"
+    return result
+
+
+def _correct_state_after_standalone_coverage_rollback(
+    *,
+    spark: SparkSession,
+    w: "WorkspaceClient | None",
+    run_id: str,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    enrichment_out: dict | None,
+    baseline_accuracy: float,
+    delta_pp: float,
+) -> bool:
+    """Required post-rollback state correction for the standalone path (D2/D3).
+
+    After ``optimize_genie_space`` rolls back a regressing coverage pass, three
+    things MUST hold before surgical mode can start, or the run is fail-closed:
+
+      * the rejected ``eval_scope='enrichment'`` iteration-0 row is marked
+        ``rolled_back=true`` (scoped, so the sibling 'full' baseline row stays
+        current state) — ``mark_iteration_rolled_back`` raises on failure;
+      * run best-iteration / best-accuracy are reset to the frozen baseline;
+      * D2: ``enrichment_out['config']`` is replaced with the PROVEN baseline config
+        (the live space is now rolled back to it) so ``_run_lever_loop``'s pre-loop
+        SQL-snippet repair never re-PATCHes the rejected post-enrichment config.
+
+    Returns ``True`` on success; ``False`` signals the caller to stop
+    ``LOOP_STATE_INVALID``. Never raises.
+    """
+    from genie_space_optimizer.common.genie_client import fetch_space_config
+    from genie_space_optimizer.optimization.state import mark_iteration_rolled_back
+
+    try:
+        mark_iteration_rolled_back(
+            spark, run_id, 0,
+            catalog=catalog, schema=schema, eval_scope="enrichment",
+            reason=f"coverage_rolled_back (Δacc {delta_pp})",
+        )
+        update_run_status(
+            spark, run_id, catalog, schema,
+            best_iteration=0, best_accuracy=float(baseline_accuracy),
+        )
+        if w is not None:
+            _baseline_cfg = fetch_space_config(w, space_id) or {}
+            if isinstance(enrichment_out, dict):
+                enrichment_out["config"] = _baseline_cfg
+        return True
+    except Exception:
+        logger.error(
+            "C3/D2/D3 FAIL-CLOSED: post-rollback state correction failed "
+            "(row-hide / best reset / baseline refetch) for run %s",
+            run_id, exc_info=True,
+        )
+        return False
+
+
+def _standalone_coverage_fail_closed_stop(
+    *,
+    result: Any,
+    spark: SparkSession,
+    w: "WorkspaceClient | None",
+    run_id: str,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    enrichment_out: dict | None,
+    pre_snapshot: dict,
+    baseline_accuracy: float,
+    model_id: str,
+    prev_scores: dict,
+    reason_detail: str,
+) -> Any:
+    """Fail-closed stop for the standalone coverage path (E2b / F1).
+
+    Used when the live space may be mutated but UNMEASURED (``_run_enrichment``
+    raised or produced no post-eval accuracy). Does, in order:
+
+      1. a PROVEN rollback of the live config to the frozen-baseline snapshot;
+      2. the REQUIRED scoped state correction
+         (:func:`_correct_state_after_standalone_coverage_rollback`) — F1: a LATE
+         ``_run_enrichment`` raise can have ALREADY committed the
+         ``eval_scope='enrichment'`` iteration-0 row and updated run best-* before
+         raising, so the live-config rollback alone is not enough; this hides that
+         row and resets run best-* to baseline. It RUNS even when
+         ``enrichment_out is None`` (the late raise can lose the return object after
+         the side effects committed); a correction failure stays fail-closed; and
+      3. sets the run terminal ``LOOP_STATE_INVALID`` and returns ``result``.
+
+    The run NEVER proceeds to surgical mode from here.
+    """
+    logger.error(
+        "E2b/F1 FAIL-CLOSED: %s — rolling back to baseline + correcting persisted "
+        "state + stopping LOOP_STATE_INVALID (run %s)",
+        reason_detail, run_id,
+    )
+    try:
+        _finalize_coverage_decision(
+            w=w, space_id=space_id, pre_snapshot=pre_snapshot,
+            frozen_baseline_accuracy=float(baseline_accuracy),
+            post_coverage_accuracy=float(baseline_accuracy) - 1.0,  # force rollback
+            had_candidates=True,
+        )
+    except Exception:
+        logger.error(
+            "E2b/F1 rollback ALSO failed (live space state unknown)", exc_info=True,
+        )
+    if not _correct_state_after_standalone_coverage_rollback(
+        spark=spark, w=w, run_id=run_id, space_id=space_id,
+        catalog=catalog, schema=schema, enrichment_out=enrichment_out,
+        baseline_accuracy=float(baseline_accuracy), delta_pp=-1.0,
+    ):
+        logger.error(
+            "F1: post-rollback state correction FAILED — the rejected enrichment row "
+            "may remain persisted; staying LOOP_STATE_INVALID (run %s does not proceed)",
+            run_id,
+        )
+    result.status = "FAILED"
+    result.convergence_reason = "LOOP_STATE_INVALID"
+    result.best_accuracy = float(baseline_accuracy)
+    result.best_model_id = model_id
+    result.final_scores = prev_scores
+    try:
+        update_run_status(
+            spark, run_id, catalog, schema,
+            status="FAILED", convergence_reason="LOOP_STATE_INVALID",
+        )
+    except Exception:
+        logger.error("Terminal run-status write failed", exc_info=True)
+    return result
+
+
 def _run_lever_loop(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -12954,6 +13283,8 @@ def _run_lever_loop(
     iq_scan_recommended_levers: list[int] | None = None,
     iq_scan_summary: dict | None = None,
     baseline_overview_evidence: dict | None = None,
+    max_attempts: int = MAX_ATTEMPTS,
+    target_accuracy: float = TARGET_ACCURACY,
 ) -> dict:
     """Stage 3: Iterate levers with convergence checking.
 
@@ -13451,6 +13782,17 @@ def _run_lever_loop(
     meta_result: dict = {}
     instruction_result: dict = {}
 
+    # ── GSO v2 Phase 8 (arch §5.2): attempt-1 COVERAGE pre-snapshot ──────────
+    # Capture the FROZEN-BASELINE space config BEFORE the broad enrichment pass
+    # mutates the live space. This is the rollback anchor that lets coverage be
+    # measured and reversed AS ONE UNIT (the fix for the old silent baseline-
+    # pollution: enrichment used to move the live space with no measured rollback
+    # when it regressed). ``_coverage_had_candidates`` records whether the pass
+    # actually applied anything, so a warm/well-documented space renders the §13.5
+    # "no_enrichment_candidates" free-probe rung rather than a misleading lift.
+    _coverage_pre_snapshot = copy.deepcopy(metadata_snapshot)
+    _coverage_had_candidates = False
+
     if not enrichment_done:
         # ── Phase 1: Proactive Enrichment (inline, legacy path) ──
         import mlflow as _mlflow_legacy_enr
@@ -13615,6 +13957,25 @@ def _run_lever_loop(
             _enr_summary.append(_kv("SQL expressions seeded", sql_expr_result.get("total_seeded", 0)))
             _enr_summary.append(_bar("-"))
             print("\n".join(_enr_summary))
+
+            # GSO v2 Phase 8 (C2): TELEMETRY ONLY — this per-mutator tally is NOT
+            # the coverage candidate flag (that is derived authoritatively from a
+            # canonical pre/post config comparison in the coverage block, which
+            # also catches mutators omitted here, e.g. the instruction miner /
+            # preflight synthesis). Logged for observability; never read for control.
+            _enrichment_mutator_telemetry = {
+                "columns_enriched": enrichment_result.get("total_enriched", 0),
+                "tables_enriched": enrichment_result.get("tables_enriched", 0),
+                "joins_applied": join_result.get("total_applied", 0),
+                "description_generated": bool(meta_result.get("description_generated")),
+                "questions_generated": bool(meta_result.get("questions_generated")),
+                "instructions_seeded": bool(instruction_result.get("instructions_seeded")),
+                "sql_expr_seeded": sql_expr_result.get("total_seeded", 0),
+            }
+            logger.info(
+                "Coverage enrichment mutator telemetry (NOT the candidate flag): %s",
+                _enrichment_mutator_telemetry,
+            )
 
             _mlflow_legacy_enr.log_metrics({
                 "enrichment.columns_enriched": enrichment_result.get("total_enriched", 0),
@@ -14070,34 +14431,331 @@ def _run_lever_loop(
     # around the gate call below.
     from genie_space_optimizer.optimization.eval_budget import (
         EvalBudget as _EvalBudget,
-        estimate_three_gate_seconds as _estimate_three_gate_seconds,
+        estimate_full_benchmark_seconds as _estimate_full_benchmark_seconds,
+    )
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_attempt_mode as _decide_attempt_mode,
     )
 
     _eval_budget = _EvalBudget.from_config()
     _eval_working_set_size = len(benchmarks) if benchmarks else 0
 
-    for _iter_num in range(1, max_iterations + 1):
+    # ── GSO v2 Phase 8 — controller counters + resume (arch §5.1 / §7.5 / B5) ─
+    # ``max_iterations`` is the hard pass ceiling; ``max_attempts`` is the surgical
+    # budget. On a task retry we resume from the last committed loop-state row:
+    # ``surgical_attempts_used`` seeds the budget counters and ``coverage_committed``
+    # tells us the attempt-1 coverage rung already ran, so it is NOT re-run.
+    _resumed_surgical_used = int(resume_state.get("resumed_surgical_attempts_used") or 0)
+    _coverage_already_committed = bool(resume_state.get("coverage_committed"))
+    _surgical_iter = _resumed_surgical_used
+    _surgical_used = _resumed_surgical_used
+    _loop_terminal_reason: str | None = None
+    _target_reached = False
+
+    # ── GSO v2 Phase 8 — attempt-1 COVERAGE: measure-as-a-unit + PROVEN rollback ─
+    # The broad enrichment pass above mutated the live space. Per arch §5.2 the
+    # coverage pass is now a MEASURED, REVERSIBLE first attempt against the frozen
+    # baseline (``prev_accuracy``), NOT a silent baseline move. The SINGLE coverage
+    # protocol (shared with optimize_genie_space via _finalize_coverage_decision):
+    #   Δacc < 0  → roll the WHOLE pass back to the frozen-baseline snapshot,
+    #               VERIFIED (B2); an unprovable rollback stops with LOOP_STATE_INVALID;
+    #   Δacc > 0  → coverage becomes the champion (best_accuracy moves up);
+    #   Δacc == 0 / no candidates → keep the additive enrichment, champion unchanged.
+    # The post-coverage example SQLs are run through the canonical apply_patch_set
+    # leakage firewall (B3) before measurement. Coverage is display attempt 1 and a
+    # FREE probe — it never consumes a surgical ``max_attempts`` slot (§13.5). It
+    # always commits a loop-state row (rejected rungs marked rolled_back so they are
+    # never read as current state — B1). Only the inline path (enrichment_done=False)
+    # AND only when not already committed by a prior attempt (resume — B5).
+    if not enrichment_done and not _coverage_already_committed:
+        try:
+            from genie_space_optimizer.optimization.control_plane import (
+                build_loop_state as _build_loop_state,
+                decide_attempt_mode as _decide_attempt_mode_cov,
+            )
+
+            _frozen_baseline_accuracy = float(prev_accuracy or 0.0)
+            # C2: detect whether the inline enrichment ACTUALLY mutated the live
+            # space by comparing the pre-enrichment snapshot to the post-enrichment
+            # config (canonical, runtime-key-stripped). This supersedes the
+            # per-mutator heuristic, which missed mutators like the instruction
+            # miner / preflight synthesis — a missed mutation would skip the
+            # eval+rollback and silently pollute the baseline. "No candidates" is
+            # true ONLY when the live config is provably unchanged.
+            from genie_space_optimizer.optimization.applier import (
+                _canonical_for_rollback_compare as _canon_cfg,
+            )
+            try:
+                _coverage_had_candidates = (
+                    _canon_cfg(_coverage_pre_snapshot) != _canon_cfg(metadata_snapshot)
+                )
+            except Exception:
+                # Conservative: if the compare fails, assume a mutation occurred so
+                # the attempt is measured + reversible rather than silently skipped.
+                logger.warning(
+                    "Coverage mutation compare failed — assuming mutated (non-fatal)",
+                    exc_info=True,
+                )
+                _coverage_had_candidates = True
+
+            # B3 / D1 (FAIL-CLOSED): route the coverage example SQLs through the
+            # canonical apply_patch_set leakage firewall (drops any scored-benchmark
+            # Q/A leak) BEFORE the eval, so the measured accuracy reflects the
+            # firewalled space. A firewall failure is NOT swallowed — it propagates
+            # to the fail-closed handler below (proven rollback + LOOP_STATE_INVALID),
+            # so coverage is NEVER evaluated against a leaked config.
+            _coverage_eval_incomplete = False
+            if _coverage_had_candidates:
+                _fw_out = _firewall_coverage_example_sqls(
+                    w=w, space_id=space_id, config=config,
+                    benchmarks=benchmarks, apply_mode=apply_mode,
+                )
+                # E1: carry the FIREWALLED config into surgical mode. When the
+                # firewall strips a leak it rebinds config["_parsed_space"] to the
+                # cleaned copy; re-point config + metadata_snapshot at it so the
+                # stale parsed object (still holding the dropped example) is never
+                # carried into surgical mode where a later apply_patch_set could
+                # re-PATCH the dropped example (the applier firewall only checks
+                # INCOMING patches, not already-present base-snapshot contents).
+                _fw_cfg = _fw_out.get("config") if isinstance(_fw_out, dict) else None
+                if isinstance(_fw_cfg, dict):
+                    config = _fw_cfg
+                _fw_parsed = config.get("_parsed_space") if isinstance(config, dict) else None
+                if isinstance(_fw_parsed, dict):
+                    metadata_snapshot = _fw_parsed
+
+            # B1: the no-candidate rung persists the REAL baseline eval payload
+            # (loaded from the iteration-0 'full' row), never an empty synthetic eval.
+            _coverage_eval: dict = {}
+            _post_coverage_accuracy = _frozen_baseline_accuracy
+            if _coverage_had_candidates and benchmarks:
+                _cov_t0 = time.monotonic()
+                _cov_setup = _build_predict_and_scorers(
+                    w, spark, space_id, catalog, schema, exp_name,
+                    enrichment_model_id, domain,
+                    banner_title="COVERAGE — POST-ENRICHMENT EVAL SETUP",
+                )
+                _coverage_eval = run_evaluation(
+                    space_id, exp_name, iteration_counter, benchmarks,
+                    domain, enrichment_model_id, "full",
+                    _cov_setup["predict_fn"], _cov_setup["scorers"],
+                    spark=spark, w=w, catalog=catalog, gold_schema=schema,
+                    uc_schema=uc_schema,
+                    reference_sqls=reference_sqls if reference_sqls else None,
+                    max_benchmark_count=max_benchmark_count,
+                )
+                _eval_budget.record(time.monotonic() - _cov_t0)
+                _post_coverage_accuracy = float(
+                    _coverage_eval.get("overall_accuracy", _frozen_baseline_accuracy)
+                    or _frozen_baseline_accuracy
+                )
+            else:
+                # No enrichment candidates: the live space was not mutated, so the
+                # rung carries the REAL frozen-baseline eval payload (B1).
+                try:
+                    _baseline_full = load_latest_full_iteration(
+                        spark, run_id, catalog, schema,
+                    ) or {}
+                    _coverage_eval = {
+                        "overall_accuracy": float(
+                            _baseline_full.get("overall_accuracy", _frozen_baseline_accuracy)
+                            or _frozen_baseline_accuracy
+                        ),
+                        "scores": _baseline_full.get("scores_json") or dict(best_scores),
+                        "rows": _baseline_full.get("rows_json") or [],
+                        "total_questions": int(
+                            _baseline_full.get("total_questions", _eval_working_set_size) or 0
+                        ),
+                        "correct_count": int(_baseline_full.get("correct_count", 0) or 0),
+                        "evaluated_count": _baseline_full.get("evaluated_count"),
+                    }
+                except Exception:
+                    # NB1: do NOT write synthetic counts (correct_count=0) that could
+                    # be read as current state. Mark the rung incomplete so it is
+                    # written rolled_back=True (excluded from current-state selection).
+                    logger.warning(
+                        "Coverage no-candidate rung: failed to load baseline payload; "
+                        "writing the rung rolled_back so synthetic counts cannot be "
+                        "read as current state (non-fatal)",
+                        exc_info=True,
+                    )
+                    _coverage_eval = {
+                        "overall_accuracy": _frozen_baseline_accuracy,
+                        "scores": dict(best_scores),
+                        "total_questions": _eval_working_set_size,
+                        "correct_count": 0,
+                    }
+                    _coverage_eval_incomplete = True
+
+            # B2 / B4: the ONE measured/reversible coverage decision + PROVEN rollback.
+            _cov = _finalize_coverage_decision(
+                w=w, space_id=space_id, pre_snapshot=_coverage_pre_snapshot,
+                frozen_baseline_accuracy=_frozen_baseline_accuracy,
+                post_coverage_accuracy=_post_coverage_accuracy,
+                had_candidates=_coverage_had_candidates,
+                metadata_snapshot=metadata_snapshot,
+            )
+            print("\n".join([
+                _section("ATTEMPT 1 — COVERAGE (measured vs frozen baseline)", "-"),
+                _kv("Baseline accuracy", f"{_frozen_baseline_accuracy:.1f}%"),
+                _kv("Post-coverage accuracy", f"{_post_coverage_accuracy:.1f}%"),
+                _kv("Δacc", f"{_cov['delta_pp']:+.1f}pp"),
+                _kv("Decision", f"{_cov['decision']} ({_cov['decision_reason']})"),
+                _kv("Rollback proven", str(_cov["rollback_proven"])),
+                _bar("-"),
+            ]))
+
+            if _cov["should_rollback"]:
+                logger.info(
+                    "Coverage attempt rolled back (Δacc=%.1fpp < 0); frozen baseline "
+                    "restored=%s.",
+                    _cov["delta_pp"], _cov["rollback_proven"],
+                )
+                if _cov["terminal_reason"] == "LOOP_STATE_INVALID":
+                    # B2: rollback could not be PROVEN — do NOT enter surgical mode
+                    # against an unknown live state.
+                    _loop_terminal_reason = "LOOP_STATE_INVALID"
+                elif w is not None:
+                    # Refresh local config/snapshot from the restored live space so
+                    # the surgical loop reads the baseline, not the rolled-back pass.
+                    try:
+                        from genie_space_optimizer.common.genie_client import (
+                            fetch_space_config,
+                        )
+                        config = fetch_space_config(w, space_id) or {}
+                        config["_uc_columns"] = uc_columns
+                        metadata_snapshot = config.get("_parsed_space", config) or {}
+                        metadata_snapshot["_data_profile"] = data_profile
+                        if uc_columns:
+                            enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                    except Exception:
+                        logger.warning(
+                            "Coverage rollback: config refetch failed (non-fatal)",
+                            exc_info=True,
+                        )
+            elif _cov["decision"] == "accept":
+                # Coverage lifted accuracy → it becomes the champion staircase value.
+                best_scores = dict(_coverage_eval.get("scores", {}) or best_scores)
+                best_accuracy = _post_coverage_accuracy
+                best_iteration = iteration_counter
+
+            # Always commit the coverage loop-state row (§13.5: the rung renders
+            # even at zero lift / no candidates). A REJECTED (rolled-back) rung is
+            # written rolled_back=True so load_latest_state_iteration never reads it
+            # as current state (B1). Coverage NEVER consumes a surgical slot.
+            try:
+                write_iteration(
+                    spark, run_id, iteration_counter, _coverage_eval,
+                    catalog=catalog, schema=schema,
+                    eval_scope="enrichment",
+                    config_snapshot=config,
+                    # B1 + NB1: rejected (rolled-back) OR incomplete (synthetic
+                    # loader-failure) rungs are excluded from current-state.
+                    rolled_back=bool(_cov["should_rollback"]) or _coverage_eval_incomplete,
+                    loop_state=_build_loop_state(
+                        attempt_no=1,
+                        attempt_mode=_decide_attempt_mode_cov(1),
+                        surgical_attempts_used=0,
+                        max_attempts=max_attempts,
+                        target_accuracy=target_accuracy,
+                        best_accuracy=best_accuracy,
+                        best_iteration=best_iteration,
+                        decision=_cov["decision"],
+                        decision_reason=_cov["decision_reason"],
+                        terminal_reason=_loop_terminal_reason,
+                    ),
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to persist coverage attempt loop-state row (non-fatal)",
+                    exc_info=True,
+                )
+        except Exception:
+            # D1/B2 (FAIL-CLOSED): ANY failure on the coverage path after enrichment
+            # mutated the space (firewall, strip/re-PATCH, eval, decision) must roll
+            # the live space back to the UNMODIFIED frozen baseline (PROVEN) and
+            # HARD-STOP with LOOP_STATE_INVALID. The run NEVER falls through into
+            # surgical mode against an un-firewalled / rejected config, even when the
+            # rollback itself succeeds — a coverage-path failure means the attempt
+            # state is untrustworthy.
+            logger.error(
+                "GSO v2 Phase 8 coverage measurement FAILED — rolling back any "
+                "coverage mutation to the frozen baseline and stopping LOOP_STATE_INVALID",
+                exc_info=True,
+            )
+            try:
+                _finalize_coverage_decision(
+                    w=w, space_id=space_id, pre_snapshot=_coverage_pre_snapshot,
+                    frozen_baseline_accuracy=float(prev_accuracy or 0.0),
+                    post_coverage_accuracy=float(prev_accuracy or 0.0) - 1.0,  # force rollback
+                    had_candidates=True,
+                    metadata_snapshot=metadata_snapshot,
+                )
+            except Exception:
+                logger.error(
+                    "Coverage failure rollback ALSO failed (live space state unknown)",
+                    exc_info=True,
+                )
+            # Fail-closed: hard-stop regardless of whether the rollback proved out.
+            _loop_terminal_reason = "LOOP_STATE_INVALID"
+
+    # ── GSO v2 Phase 8 — two-mode controller while loop (arch §5.1) ──────────
+    # The attempt-1 COVERAGE pass (broad enrichment, measured against the frozen
+    # baseline and rolled back as a unit if it regresses) runs above as display
+    # attempt 1 — a FREE probe that never consumes a surgical slot (§13.5). This
+    # ``while`` loop is the bounded SURGICAL hill-climb (display attempts 2..N).
+    # ``max_attempts`` is the surgical budget (the primary attempt cap);
+    # ``max_iterations`` is kept only as a hard pass ceiling so a no-patch pass
+    # can never spin. The EvalBudget cap (checked at the top of the body) is the
+    # PRIMARY wall-clock stop (§3.4 / §7.3) and may end the loop before
+    # ``max_attempts``. ``_iter_num`` stays the 1-based surgical iteration counter
+    # the loop body has always used; ``_attempt_no`` is the display counter
+    # (coverage=1, surgical=2..N) threaded into the strategist + the loop-state row.
+    # A coverage LOOP_STATE_INVALID (unprovable rollback) blocks the surgical loop.
+    while (
+        _loop_terminal_reason is None
+        and _surgical_used < max_attempts
+        and _surgical_iter < max_iterations
+    ):
+        _surgical_iter += 1
+        _iter_num = _surgical_iter
+        _attempt_no = _surgical_iter + 1
+        _attempt_mode = _decide_attempt_mode(_attempt_no)  # always "surgical" here
         try:
             # ── Exit checks ──────────────────────────────────────────────
-            # Eval-run budget guard (§3.4): stop before this iteration when the
-            # remaining 2-hour wall can't fund another subset-first gate cycle
-            # plus the reserved finalize run. Eval-runs are sequential, so the
-            # budget is the running sum of recorded gate wall-clocks.
-            _est_next_cycle = _estimate_three_gate_seconds(
-                working_set_size=_eval_working_set_size,
-            )
+            # Eval-run budget guard (§3.4 / §7.3 — PRIMARY stop): with
+            # full-benchmark-only eval each attempt costs one full run, so stop
+            # before this attempt when the remaining 2-hour wall can't fund
+            # another full benchmark plus the reserved finalize run. Eval-runs are
+            # sequential, so the budget is the running sum of recorded wall-clocks.
+            _est_next_cycle = _estimate_full_benchmark_seconds(_eval_working_set_size)
             if not _eval_budget.can_afford(_est_next_cycle):
                 logger.info(
-                    "Eval-run budget guard: stopping lever loop before iteration "
+                    "Eval-run budget guard: stopping lever loop before attempt "
                     "%d — eval wall-clock spent=%.0fs, remaining after finalize "
-                    "reserve=%.0fs, estimated next gate cycle=%.0fs "
-                    "(max_iterations=%d is an upper bound, not a target).",
-                    _iter_num,
+                    "reserve=%.0fs, estimated next full eval=%.0fs "
+                    "(max_attempts=%d surgical budget; budget cap is the primary stop).",
+                    _attempt_no,
                     _eval_budget.spent(),
                     _eval_budget.remaining_after_reserve(),
                     _est_next_cycle,
-                    max_iterations,
+                    max_attempts,
                 )
+                # NB1: budget exhaustion is its OWN typed reason — distinct from
+                # MAX_ATTEMPTS, which means the surgical attempt budget ran out.
+                _loop_terminal_reason = "EVAL_BUDGET_EXHAUSTED"
+                break
+
+            # GSO v2 Phase 8 (arch §5.1): target-accuracy stop. Best-so-far
+            # full-benchmark accuracy meeting the target ends the hill-climb.
+            if float(best_accuracy) >= float(target_accuracy):
+                logger.info(
+                    "Target accuracy reached before attempt %d: best=%.1f%% >= "
+                    "target=%.1f%%. Stopping surgical loop (TARGET_REACHED).",
+                    _attempt_no, float(best_accuracy), float(target_accuracy),
+                )
+                _loop_terminal_reason = "TARGET_REACHED"
+                _target_reached = True
                 break
 
             from genie_space_optimizer.optimization.acceptance_policy import (
@@ -14116,6 +14774,9 @@ def _run_lever_loop(
                     int(_best_evaluated_count),
                     int(_best_total_questions),
                 )
+                # B6: the arbiter objective being complete IS the target being met.
+                _loop_terminal_reason = "TARGET_REACHED"
+                _target_reached = True
                 break
             if all_thresholds_met(best_scores, thresholds):
                 logger.info(
@@ -14128,7 +14789,17 @@ def _run_lever_loop(
                 legacy_plateau_allows_stop,
             )
 
-            _plateau_detected = _diminishing_returns(reflection_buffer)
+            # GSO v2 Phase 8 (B6 / arch §13.2): the plateau / diminishing-returns
+            # stop stays DEFERRED. Under the full-benchmark-only controller the
+            # only stops are target / max_attempts / budget / no-hypothesis /
+            # eval-invalid / loop-state-invalid — so the legacy plateau termination
+            # is guarded OFF and cannot fire. (Operators who opt out of full-only
+            # eval, GSO_FULL_BENCHMARK_ONLY_EVAL=false, keep the legacy plateau.)
+            from genie_space_optimizer.common.config import (
+                full_benchmark_only_eval_enabled as _full_only_for_plateau,
+            )
+            _plateau_stop_enabled = not _full_only_for_plateau()
+            _plateau_detected = _plateau_stop_enabled and _diminishing_returns(reflection_buffer)
             _prev_terminal_state = metadata_snapshot.get("_rca_terminal_state") or {}
             _prev_terminal_decision: _RcaTerminalDecision | None
             if _prev_terminal_state:
@@ -14479,6 +15150,9 @@ def _run_lever_loop(
                     + _kv("Iteration", _iteration_label(_iter_num)) + "\n"
                     + _bar("!")
                 )
+                # B6: divergence means the loop can no longer form a productive
+                # hypothesis from the residual failures.
+                _loop_terminal_reason = "NO_NEW_HYPOTHESIS"
                 break
             # Phase C3: only CONTENT_REGRESSION rollbacks count toward the
             # consecutive-rollback limit. INFRA / SCHEMA / escalation / OTHER
@@ -14505,6 +15179,8 @@ def _run_lever_loop(
                     "Consecutive content-rollback limit (%d) reached — stopping at iteration %d",
                     CONSECUTIVE_ROLLBACK_LIMIT, _iter_num,
                 )
+                # B6: repeated content rollbacks ⇒ no productive hypothesis remains.
+                _loop_terminal_reason = "NO_NEW_HYPOTHESIS"
                 break
 
             _consecutive_esc = 0
@@ -14534,6 +15210,8 @@ def _run_lever_loop(
                     },
                     catalog=catalog, schema=schema,
                 )
+                # B6: repeated unresolved escalations ⇒ no productive hypothesis.
+                _loop_terminal_reason = "NO_NEW_HYPOTHESIS"
                 break
 
             iteration_counter += 1
@@ -16192,6 +16870,15 @@ def _run_lever_loop(
                             prior_iteration_dropped_causal_patches=(
                                 _t2_drops_for_strategist
                             ),
+                            # GSO v2 Phase 8 (arch §5.2): the strategist is invoked
+                            # only on SURGICAL attempts (the attempt-1 coverage pass
+                            # uses the broad-enrichment executor, not the strategist),
+                            # so the single-cluster invariant stays fully enforced
+                            # here (allow_cluster_agnostic=False). attempt_no is the
+                            # controller's monotonic display counter.
+                            attempt_no=_attempt_no,
+                            attempt_mode="surgical",
+                            allow_cluster_agnostic=False,
                         )
                         strategist_memo_cache[_memo_key] = copy.deepcopy(strategy)
                         strategy["_memoized"] = False
@@ -16638,6 +17325,8 @@ def _run_lever_loop(
                     _section("Strategy produced 0 action groups — nothing to do", "-") + "\n"
                     + _bar("-")
                 )
+                # B6: zero action groups / no proposal ⇒ NO_NEW_HYPOTHESIS.
+                _loop_terminal_reason = "NO_NEW_HYPOTHESIS"
                 try:
                     _phase_h_a, _phase_h_r, _phase_h_s, _phase_h_g = (
                         _compute_iteration_counters(_current_iter_inputs)
@@ -16671,6 +17360,13 @@ def _run_lever_loop(
                 )
                 break
 
+            # GSO v2 Phase 8: type-narrowing rebind. The ``if ag is None: break``
+            # above guarantees ``ag`` is a dict from here on; the two-mode
+            # ``while`` controller perturbs the flow inference the old ``for``
+            # loop gave for free, so pin ``ag`` to ``dict`` with a cast (a hard
+            # rebind ty keeps across the branchy body, unlike a soft ``assert``).
+            # Behaviour-preserving: ``cast`` is a no-op at runtime.
+            ag = cast("dict[str, Any]", ag)
             ag_id = ag.get("id", f"AG{iteration_counter}")
             ags_attempted.append(ag_id)
             lever_keys = sorted(ag.get("lever_directives", {}).keys())
@@ -21093,6 +21789,77 @@ def _run_lever_loop(
                 else (time.monotonic() - _gate_t0)
             )
 
+            # B6: EVAL_INVALID stop — the surgical attempt ran a full eval but it
+            # produced no scorable rows (eval data missing/invalid). Continuing
+            # would gate against meaningless data, so stop with the typed reason.
+            _gate_full_result = gate_result.get("full_result") or {}
+            if isinstance(_gate_full_result, dict) and _gate_full_result:
+                _gate_evaluated = _gate_full_result.get("evaluated_count")
+                _gate_total = _gate_full_result.get("total_questions")
+                if (
+                    (_gate_evaluated is not None and int(_gate_evaluated or 0) <= 0)
+                    or (_gate_total is not None and int(_gate_total or 0) <= 0)
+                ):
+                    logger.warning(
+                        "Surgical attempt %d full eval produced no scorable rows "
+                        "(evaluated=%s total=%s) — stopping with EVAL_INVALID.",
+                        _attempt_no, _gate_evaluated, _gate_total,
+                    )
+                    _loop_terminal_reason = "EVAL_INVALID"
+                    break
+
+            # ── GSO v2 Phase 8 (arch §5.1 / §7.5): surgical attempt accounting,
+            # heartbeat, and per-attempt loop-state checkpoint. A surgical attempt
+            # consumes one max_attempts slot once it reaches the eval (whether it
+            # is later accepted or rolled back) — this is the §5.1 "if mode ==
+            # surgical: surgical_used += 1" after evaluate(). The provisional
+            # loop-state (decision filled in by the accept/reject branches below
+            # via update_iteration_loop_state) is committed onto the candidate's
+            # eval row so the Attempt Ladder/Ledger and resume read one row per
+            # attempt. The heartbeat is the live "is it still alive?" driver-log
+            # signal the single-task Jobs UI can no longer give per attempt.
+            _surgical_used += 1
+            logger.info(
+                "[03_optimize HEARTBEAT] attempt_no=%d mode=%s surgical_used=%d/%d "
+                "iteration=%d candidate_accuracy=%.1f%% best=%.1f%% target=%.1f%% "
+                "eval_wall_spent=%.0fs",
+                _attempt_no, _attempt_mode, _surgical_used, max_attempts,
+                iteration_counter,
+                float(gate_result.get("full_accuracy", best_accuracy) or best_accuracy),
+                float(best_accuracy), float(target_accuracy),
+                _eval_budget.spent(),
+            )
+            try:
+                from genie_space_optimizer.optimization.control_plane import (
+                    build_loop_state as _build_loop_state,
+                )
+                from genie_space_optimizer.optimization.state import (
+                    update_iteration_loop_state as _update_iteration_loop_state,
+                )
+                _ls_current_hypothesis = {
+                    "ag_id": ag_id,
+                    "levers": list(lever_keys or []),
+                }
+                _update_iteration_loop_state(
+                    spark, run_id, iteration_counter,
+                    catalog=catalog, schema=schema,
+                    loop_state=_build_loop_state(
+                        attempt_no=_attempt_no,
+                        attempt_mode=_attempt_mode,
+                        surgical_attempts_used=_surgical_used,
+                        max_attempts=max_attempts,
+                        target_accuracy=target_accuracy,
+                        best_accuracy=best_accuracy,
+                        best_iteration=best_iteration,
+                        current_hypothesis=_ls_current_hypothesis,
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "Phase 8: provisional loop-state checkpoint failed (non-fatal)",
+                    exc_info=True,
+                )
+
             # Phase A — Lossless contract: refresh the deterministic eval-result
             # carrier IMMEDIATELY after the gate returns, BEFORE the accept/
             # rollback branch below. The previous wiring only refreshed on the
@@ -21125,66 +21892,14 @@ def _run_lever_loop(
                         exc_info=True,
                     )
 
-            # v2 Task 21 — Per-question regression rows with full attribution.
-            # The gate returns the verdict and suppressed-qid set; the lever
-            # loop owns persistence here because ``strategy`` (cluster
-            # provenance), ``all_proposals`` (proposal IDs by qid), and
-            # ``apply_log`` (which patches actually deployed) are all in
-            # scope at this level.
-            try:
-                _t4_verdict_for_persist = gate_result.get("_t4_verdict")
-                _t4_suppressed_for_persist = gate_result.get("_suppressed_qids") or set()
-                if _t4_verdict_for_persist is not None:
-                    from genie_space_optimizer.optimization.per_question_regression import (
-                        build_question_regression_rows,
-                    )
-                    _cluster_ids_by_qid: dict[str, list[str]] = {}
-                    for _c in (strategy.get("_source_clusters") or []) if strategy else []:
-                        _cid = str(_c.get("cluster_id") or "").strip()
-                        if not _cid:
-                            continue
-                        for _q in _c.get("question_ids") or []:
-                            _cluster_ids_by_qid.setdefault(str(_q), []).append(_cid)
-                    _proposal_ids_by_qid: dict[str, list[str]] = {}
-                    for _p in (all_proposals or []):
-                        _pid = str(_p.get("proposal_id") or _p.get("id") or "").strip()
-                        if not _pid:
-                            continue
-                        for _q in _p.get("target_qids") or []:
-                            _proposal_ids_by_qid.setdefault(str(_q), []).append(_pid)
-                    _applied_patch_entries = apply_log.get("applied", []) or []
-                    _applied_patch_ids: list[str] = []
-                    for _entry in _applied_patch_entries:
-                        _ap = _entry.get("patch", {}) or {}
-                        _ap_pid = str(
-                            _ap.get("proposal_id")
-                            or _ap.get("expanded_patch_id")
-                            or _ap.get("id")
-                            or ""
-                        )
-                        if _ap_pid:
-                            _applied_patch_ids.append(_ap_pid)
-                    _t4_rows = build_question_regression_rows(
-                        run_id=run_id,
-                        iteration=iteration_counter,
-                        ag_id=ag_id,
-                        verdict=_t4_verdict_for_persist,
-                        suppressed_qids=_t4_suppressed_for_persist,
-                        cluster_ids_by_qid=_cluster_ids_by_qid,
-                        proposal_ids_by_qid=_proposal_ids_by_qid,
-                        applied_patch_ids=_applied_patch_ids,
-                    )
-                    if _t4_rows:
-                        from genie_space_optimizer.optimization.state import (
-                            write_question_regressions,
-                        )
-                        write_question_regressions(
-                            spark, _t4_rows, catalog=catalog, schema=schema,
-                        )
-            except Exception:
-                logger.debug(
-                    "Failed to persist per-question regression rows", exc_info=True,
-                )
+            # GSO v2 Phase 8 (arch §7 / §7.3): the per-question regression write
+            # (v2 Task 21 → ``genie_eval_question_regressions``) is RETIRED. That
+            # table was a subset-first-3-gate vestige tracking slice/P0 regression
+            # rows, and Phase 7 already dropped/renamed it. With full-benchmark-only
+            # eval (every attempt scores the whole set, §7.3) per-attempt regression
+            # truth lives on the ``genie_opt_iterations`` row (rows_json + the
+            # loop-state ``decision``/``decision_reason`` columns), so there is no
+            # separate regression table to write here.
 
             # After the gate finishes, this iteration's pre-acceptance
             # baseline becomes the reference for the next iteration's
@@ -21404,6 +22119,27 @@ def _run_lever_loop(
                 # A5 v2.1: F8 emits ACCEPTANCE_DECIDED above.
                 _render_current_journey()
                 rollback(apply_log, w, space_id, metadata_snapshot)
+                # GSO v2 Phase 8 (arch §7.5): stamp the surgical attempt's
+                # rejection onto its loop-state row (after the journey render +
+                # rollback) so the Attempt Ledger shows a rolled-back rung with
+                # its reason.
+                try:
+                    from genie_space_optimizer.optimization.state import (
+                        update_iteration_loop_state as _update_iteration_loop_state,
+                    )
+                    _update_iteration_loop_state(
+                        spark, run_id, iteration_counter,
+                        catalog=catalog, schema=schema,
+                        loop_state={
+                            "decision": "reject",
+                            "decision_reason": f"rolled_back ({reason})"[:480],
+                        },
+                    )
+                except Exception:
+                    logger.debug(
+                        "Phase 8: reject loop-state stamp failed (non-fatal)",
+                        exc_info=True,
+                    )
                 # Task 7 — verify the Genie Space actually returned to its
                 # pre-AG state. If not, halt subsequent AGs because clustering
                 # against a still-modified space pollutes downstream RCA.
@@ -22070,6 +22806,29 @@ def _run_lever_loop(
             best_accuracy = full_accuracy
             best_model_id = new_model_id
             best_iteration = iteration_counter
+            # GSO v2 Phase 8 (arch §7.5): the surgical attempt was accepted — it
+            # is the new champion. Stamp the accept decision + the advanced
+            # champion staircase value onto this attempt's loop-state row so the
+            # Attempt Ladder shows the climb.
+            try:
+                from genie_space_optimizer.optimization.state import (
+                    update_iteration_loop_state as _update_iteration_loop_state,
+                )
+                _update_iteration_loop_state(
+                    spark, run_id, iteration_counter,
+                    catalog=catalog, schema=schema,
+                    loop_state={
+                        "decision": "accept",
+                        "decision_reason": "surgical_lift",
+                        "best_accuracy": float(best_accuracy),
+                        "best_iteration": int(best_iteration),
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Phase 8: accept loop-state stamp failed (non-fatal)",
+                    exc_info=True,
+                )
             # Roll the in-scope pre-arbiter baseline forward to whatever the
             # gate just consumed for this accepted candidate. Mirrors the
             # post-arbiter ``best_accuracy`` update one line up.
@@ -22973,6 +23732,47 @@ def _run_lever_loop(
                         "skipped (non-fatal)",
                         exc_info=True,
                     )
+
+    # ── GSO v2 Phase 8 (arch §5.1): resolve + persist the controller terminal
+    # reason. The budget / target breaks set ``_loop_terminal_reason`` directly;
+    # all other surgical-loop exits (plateau, divergence, no-progress, or natural
+    # while-condition exhaustion) fall back to TARGET_REACHED vs MAX_ATTEMPTS by
+    # whether the target was met. (NO_NEW_HYPOTHESIS / EVAL_INVALID /
+    # LOOP_STATE_INVALID would be set at their own break points; the plateau stop
+    # itself stays DEFERRED, arch §13.2.) The reason is stamped on the champion
+    # iteration's loop-state row and surfaced on ``loop_out`` for publish_and_audit.
+    if _loop_terminal_reason is None:
+        _loop_terminal_reason = (
+            "TARGET_REACHED"
+            if float(best_accuracy or 0.0) >= float(target_accuracy)
+            else "MAX_ATTEMPTS"
+        )
+    try:
+        from genie_space_optimizer.optimization.state import (
+            update_iteration_loop_state as _update_iteration_loop_state,
+        )
+        _update_iteration_loop_state(
+            spark, run_id, int(best_iteration),
+            catalog=catalog, schema=schema,
+            loop_state={
+                "terminal_reason": _loop_terminal_reason,
+                "surgical_attempts_used": int(_surgical_used),
+                "max_attempts": int(max_attempts),
+                "target_accuracy": float(target_accuracy),
+            },
+        )
+    except Exception:
+        logger.debug(
+            "Phase 8: terminal-reason loop-state stamp failed (non-fatal)",
+            exc_info=True,
+        )
+    logger.info(
+        "[03_optimize] surgical loop terminated: reason=%s surgical_used=%d/%d "
+        "best=%.1f%% target=%.1f%%",
+        _loop_terminal_reason, int(_surgical_used), int(max_attempts),
+        float(best_accuracy or 0.0), float(target_accuracy),
+    )
+
     write_stage(
         spark, run_id, "LEVER_LOOP_STARTED", "COMPLETE",
         task_key="lever_loop",
@@ -23494,6 +24294,13 @@ def _run_lever_loop(
         "model_id": best_model_id,
         "iteration_counter": iteration_counter,
         "best_iteration": best_iteration,
+        # GSO v2 Phase 8 (arch §5.1 / §7.4): the controller's terminal reason and
+        # surgical-budget accounting, surfaced so publish_and_audit (Phase 9) and
+        # the Workbench cockpit (Phase 10+) can key off the typed stop reason.
+        "terminal_reason": _loop_terminal_reason,
+        "surgical_attempts_used": int(_surgical_used),
+        "max_attempts": int(max_attempts),
+        "target_accuracy": float(target_accuracy),
         "levers_attempted": levers_attempted,
         "levers_accepted": levers_accepted,
         "levers_rolled_back": levers_rolled_back,
@@ -24376,6 +25183,31 @@ def _resume_lever_loop(
             len(restored_reflections),
         )
 
+    # GSO v2 Phase 8 (B5): surface the controller loop-state counters so a task
+    # retry resumes from the last committed attempt instead of re-running the
+    # coverage rung and reusing attempt numbers. We read the latest loop-state row
+    # INCLUDING rolled-back rows — a rejected/rolled-back coverage or surgical
+    # attempt still RAN (and a surgical one still consumed budget), so resume must
+    # see it even though ``load_latest_state_iteration`` (rolled_back=false) hides
+    # it from current-state selection.
+    _coverage_committed = False
+    _resumed_surgical_used = 0
+    try:
+        _latest_any = load_latest_state_iteration(
+            spark, run_id, catalog, schema, include_rolled_back=True,
+        ) or {}
+        _att_no = _latest_any.get("attempt_no")
+        if _att_no is not None and int(_att_no) >= 1:
+            # attempt_no>=1 ⇒ the coverage rung (display attempt 1) committed;
+            # attempt_no>=2 ⇒ surgical attempts ran on top of coverage.
+            _coverage_committed = True
+            _resumed_surgical_used = int(_latest_any.get("surgical_attempts_used") or 0)
+    except Exception:
+        logger.warning(
+            "Resume: failed to read loop-state counters (treating as cold start)",
+            exc_info=True,
+        )
+
     return {
         "resume_from_lever": last_lever,
         "iteration_counter": int(latest_iter.get("iteration", 0)),
@@ -24386,6 +25218,8 @@ def _resume_lever_loop(
         "tried_patches": restored_tried_patches,
         "tried_root_causes": restored_tried_root_causes,
         "skill_exemplars": restored_skill_exemplars,
+        "coverage_committed": _coverage_committed,
+        "resumed_surgical_attempts_used": _resumed_surgical_used,
     }
 
 
@@ -24691,9 +25525,54 @@ def optimize_genie_space(
             ) == "both_correct"
         ]
 
+        # GSO v2 Phase 8 (B4 / E2a — FAIL-CLOSED): require a VALID rollback anchor
+        # BEFORE any enrichment mutation. Try a dedicated fetch; fall back to the
+        # already-loaded baseline ``config``; if neither yields a snapshot, STOP
+        # LOOP_STATE_INVALID before mutating the space (a later rollback could
+        # otherwise restore nothing).
+        from genie_space_optimizer.optimization.control_plane import (
+            resolve_coverage_rollback_anchor as _resolve_anchor,
+        )
+        _dedicated_snapshot: dict = {}
+        try:
+            from genie_space_optimizer.common.genie_client import (
+                fetch_space_config as _fetch_cfg_pre,
+            )
+            _pre_cfg = _fetch_cfg_pre(w, space_id) or {}
+            _dedicated_snapshot = _pre_cfg.get("_parsed_space", _pre_cfg) or {}
+        except Exception:
+            logger.warning(
+                "E2a: dedicated pre-enrichment snapshot fetch failed — falling back "
+                "to the already-loaded baseline config as the rollback anchor",
+                exc_info=True,
+            )
+        _pre_enrichment_snapshot = _resolve_anchor(
+            dedicated_snapshot=_dedicated_snapshot, baseline_config=config,
+        )
+        if not _pre_enrichment_snapshot:
+            logger.error(
+                "E2a FAIL-CLOSED: no valid pre-enrichment rollback anchor for run %s "
+                "— stopping LOOP_STATE_INVALID before mutating the space",
+                run_id_str,
+            )
+            result.status = "FAILED"
+            result.convergence_reason = "LOOP_STATE_INVALID"
+            result.best_accuracy = float(prev_accuracy)
+            result.best_model_id = model_id
+            result.final_scores = prev_scores
+            try:
+                update_run_status(
+                    spark, run_id_str, catalog, schema,
+                    status="FAILED", convergence_reason="LOOP_STATE_INVALID",
+                )
+            except Exception:
+                logger.error("Terminal run-status write failed", exc_info=True)
+            return result
+
         # Stage 2.5: Proactive Enrichment (always runs)
         _enrichment_out = None
         _effective_model_id = model_id
+        _enrichment_raised = False
         try:
             _enrichment_out = _run_enrichment(
                 w, spark, run_id_str, space_id, domain, benchmark_corpus, exp_name,
@@ -24704,32 +25583,144 @@ def optimize_genie_space(
             if not _enrichment_out["enrichment_skipped"]:
                 _effective_model_id = _enrichment_out["enrichment_model_id"]
         except Exception:
-            logger.exception(
-                "Enrichment failed for run %s — continuing with baseline model",
-                run_id_str,
+            _enrichment_raised = True
+            logger.exception("Enrichment FAILED for run %s", run_id_str)
+
+        # GSO v2 Phase 8 (B4): the SINGLE measured/reversible coverage protocol.
+        # Post-enrichment state becomes the surgical starting point ONLY when it does
+        # NOT regress the frozen baseline; a regression is rolled back (PROVEN) and
+        # the baseline is kept. This REPLACES the old silent better-of
+        # (``_resolve_effective_starting_point``), so no unmeasured post-enrichment
+        # state can become the surgical baseline on any optimize path.
+        _enr_dict: dict = _enrichment_out if isinstance(_enrichment_out, dict) else {}
+        _post_acc = None
+        if not _enr_dict.get("enrichment_skipped"):
+            _post_acc = _enr_dict.get("post_enrichment_accuracy")
+
+        # E2b/c (FAIL-CLOSED): is the live space possibly mutated? Provably unmutated
+        # ONLY when enrichment returned cleanly AND its post-config equals the
+        # pre-enrichment snapshot (canonical compare, like the inline C2 path). A
+        # raise — or any config delta — means the live space may be mutated.
+        from genie_space_optimizer.optimization.applier import (
+            _canonical_for_rollback_compare as _canon_std,
+        )
+        _live_may_be_mutated = True
+        if not _enrichment_raised and isinstance(_enrichment_out, dict):
+            try:
+                _post_parsed = _enrichment_out.get("config") or {}
+                if isinstance(_post_parsed, dict):
+                    _post_parsed = _post_parsed.get("_parsed_space", _post_parsed)
+                _live_may_be_mutated = (
+                    _canon_std(_pre_enrichment_snapshot) != _canon_std(_post_parsed)
+                )
+            except Exception:
+                _live_may_be_mutated = True
+
+        from genie_space_optimizer.optimization.control_plane import (
+            decide_standalone_coverage_gate as _decide_std_gate,
+        )
+        _std_gate = _decide_std_gate(
+            enrichment_raised=_enrichment_raised,
+            post_accuracy=_post_acc,
+            live_may_be_mutated=_live_may_be_mutated,
+        )
+        if _std_gate == "rollback_and_stop":
+            # E2b/c + F1 FAIL-CLOSED: the live space may be mutated but is UNMEASURED
+            # (enrichment raised, or produced no post-eval accuracy). Roll back to the
+            # proven baseline, run the REQUIRED persisted-state correction (F1: a late
+            # _run_enrichment raise can have already committed the enrichment row +
+            # best-*), and stop LOOP_STATE_INVALID — never enter surgical mode and
+            # never let _accuracy_source='baseline_eval' stand while the live space is
+            # an unverified post-enrichment state.
+            return _standalone_coverage_fail_closed_stop(
+                result=result, spark=spark, w=w, run_id=run_id_str, space_id=space_id,
+                catalog=catalog, schema=schema, enrichment_out=_enrichment_out,
+                pre_snapshot=_pre_enrichment_snapshot,
+                baseline_accuracy=float(prev_accuracy),
+                model_id=model_id, prev_scores=prev_scores,
+                reason_detail=(
+                    "enrichment raised" if _enrichment_raised
+                    else "enrichment produced no post-eval accuracy"
+                ),
             )
 
-        # PR 34: gate the lever loop on the *current* evaluated state of
-        # the Genie Space, not the stale pre-enrichment baseline. When
-        # enrichment mutates the space and post-enrichment eval regresses
-        # below thresholds, the run must enter the lever loop instead of
-        # silently converging as ``baseline_meets_thresholds``.
-        _start = _resolve_effective_starting_point(
-            baseline_scores=prev_scores,
-            baseline_accuracy=prev_accuracy,
-            baseline_thresholds_met=thresholds_met,
-            baseline_model_id=model_id,
-            enrichment_out=_enrichment_out,
-        )
-        prev_scores = cast(dict[str, float], _start["scores"])
-        prev_accuracy = float(_start["accuracy"])
-        thresholds_met = bool(_start["thresholds_met"])
-        _accuracy_source = str(_start["source"])
-        if _accuracy_source == "enrichment.post_enrichment_accuracy":
-            _effective_model_id = str(_start["model_id"]) or _effective_model_id
+        if _std_gate == "measured" and _post_acc is not None:
+            _cov_std = _finalize_coverage_decision(
+                w=w, space_id=space_id, pre_snapshot=_pre_enrichment_snapshot,
+                frozen_baseline_accuracy=float(prev_accuracy),
+                post_coverage_accuracy=float(_post_acc),
+                had_candidates=True,
+            )
+            if _cov_std["terminal_reason"] == "LOOP_STATE_INVALID":
+                # B2: unprovable rollback — do not gate surgical on an unknown state.
+                logger.error(
+                    "Coverage rollback unprovable for run %s — stopping LOOP_STATE_INVALID",
+                    run_id_str,
+                )
+                result.status = "FAILED"
+                result.convergence_reason = "LOOP_STATE_INVALID"
+                result.best_accuracy = float(prev_accuracy)
+                result.best_model_id = model_id
+                result.final_scores = prev_scores
+                update_run_status(
+                    spark, run_id_str, catalog, schema,
+                    status="FAILED", convergence_reason="LOOP_STATE_INVALID",
+                )
+                return result
+            if _cov_std["should_rollback"]:
+                # Regression rolled back → keep the FROZEN BASELINE (no silent move).
+                # C3 / D2 / D3 (FAIL-CLOSED): the post-rollback state correction is
+                # REQUIRED — hide the rejected enrichment row, reset run best-* to
+                # baseline, and replace _enrichment_out["config"] with the proven
+                # baseline so _run_lever_loop never re-PATCHes the rejected config.
+                # If it cannot be committed, stop LOOP_STATE_INVALID.
+                _accuracy_source = "baseline_eval_coverage_rolled_back"
+                _effective_model_id = model_id
+                if not _correct_state_after_standalone_coverage_rollback(
+                    spark=spark, w=w, run_id=run_id_str, space_id=space_id,
+                    catalog=catalog, schema=schema, enrichment_out=_enrichment_out,
+                    baseline_accuracy=float(prev_accuracy),
+                    delta_pp=float(_cov_std["delta_pp"]),
+                ):
+                    result.status = "FAILED"
+                    result.convergence_reason = "LOOP_STATE_INVALID"
+                    result.best_accuracy = float(prev_accuracy)
+                    result.best_model_id = model_id
+                    result.final_scores = prev_scores
+                    try:
+                        update_run_status(
+                            spark, run_id_str, catalog, schema,
+                            status="FAILED", convergence_reason="LOOP_STATE_INVALID",
+                        )
+                    except Exception:
+                        logger.error("Terminal run-status write also failed", exc_info=True)
+                    return result
+            else:
+                # Accepted / no-op → adopt the post-enrichment state as the start.
+                _post_scores = _enr_dict.get("post_enrichment_scores") or {}
+                if isinstance(_post_scores, dict) and _post_scores:
+                    prev_scores = {
+                        str(k): float(v) for k, v in _post_scores.items() if v is not None
+                    }
+                prev_accuracy = float(_post_acc)
+                thresholds_met = bool(
+                    _enr_dict.get("post_enrichment_thresholds_met", False)
+                )
+                _effective_model_id = str(
+                    _enr_dict.get("post_enrichment_model_id")
+                    or _enr_dict.get("enrichment_model_id")
+                    or _effective_model_id
+                )
+                _accuracy_source = "enrichment.post_enrichment_accuracy"
+        else:
+            # Reached ONLY when the live space is PROVABLY unmutated (post_acc is
+            # None AND not _live_may_be_mutated) — i.e. enrichment was a true no-op.
+            # The fail-closed E2b/c guard above already returned for any
+            # possibly-mutated-but-unmeasured case, so baseline is safe here.
+            _accuracy_source = "baseline_eval"
         logger.info(
-            "Lever-loop gate: accuracy_source=%s accuracy=%.2f thresholds_met=%s "
-            "effective_model_id=%s",
+            "Lever-loop gate (measured coverage): accuracy_source=%s accuracy=%.2f "
+            "thresholds_met=%s effective_model_id=%s",
             _accuracy_source, prev_accuracy, thresholds_met, _effective_model_id,
         )
 
