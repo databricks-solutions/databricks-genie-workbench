@@ -358,27 +358,35 @@ def _load_latest_artifact(run_id: str, artifact_kind: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _target_accuracy_to_request_scale(val: Any) -> float | None:
-    """Normalize a Delta `target_accuracy` (0–100) to the 0–1 request scale.
+# target_accuracy lives on TWO native scales across the loop artifacts (B3):
+#   • genie_opt_iterations.target_accuracy + publish_record.target_accuracy →
+#     0–100 (run_03 / run_publish_and_audit normalize ≤1 to 0–100 so the value
+#     lines up with the per-attempt accuracies).
+#   • run_manifest.target_accuracy + the job-run parameter → 0–1 (run_00 writes
+#     the raw 0–1 param; the job param is the raw "0.90" string).
+# The request + echo contract is 0–1. We therefore use SOURCE-SPECIFIC
+# conversion — NEVER a value-magnitude heuristic, which would mishandle small
+# valid targets (e.g. a 0.01 request is stored as 1.0 in the 0–100 column; a
+# `>1` heuristic leaves it at 1.0 instead of 0.01).
 
-    The loop stores target_accuracy on the 0–100 scale (it multiplies the ≤1
-    job param by 100). The trigger request + echo use the 0–1 scale (default
-    0.90) for a clean round-trip, so we divide values > 1 by 100.
+
+def _delta_accuracy_to_unit_scale(val: Any) -> float | None:
+    """Convert a 0–100 accuracy (Delta loop column / publish_record) → 0–1.
+
+    Unconditional divide-by-100 (the source is always 0–100), so small targets
+    round-trip correctly. Returns None when the value is missing/non-numeric.
     """
     f = _safe_float(val)
     if f is None:
         return None
-    return round(f / 100.0, 4) if f > 1.0 else round(f, 4)
+    return round(f / 100.0, 4)
 
 
-def _run_loop_knobs(run_id: str) -> tuple[float | None, int | None]:
-    """Echo the loop knobs in force for a run: ``(target_accuracy_0_1, max_attempts)``.
-
-    Reads only the two cheap loop-state columns off the latest attempt row (no
-    heavy config_json), so the status poll stays light. Returns ``(None, None)``
-    when the columns/rows are absent (legacy run, pre-migration table, or a run
-    whose loop has not committed an attempt yet).
-    """
+def _loop_state_knobs(run_id: str) -> tuple[float | None, int | None]:
+    """Loop knobs from the genie_opt_iterations loop-state columns (0–100 →
+    0–1). Cheap read off the latest attempt row; None when the columns/rows are
+    absent (legacy run, pre-migration table, or a run with no committed attempt
+    yet)."""
     table = _delta_table("genie_opt_iterations")
     try:
         rows = _delta_query(
@@ -394,9 +402,72 @@ def _run_loop_knobs(run_id: str) -> tuple[float | None, int | None]:
     if not rows:
         return None, None
     return (
-        _target_accuracy_to_request_scale(rows[0].get("target_accuracy")),
+        _delta_accuracy_to_unit_scale(rows[0].get("target_accuracy")),
         _safe_int(rows[0].get("max_attempts")),
     )
+
+
+def _manifest_knobs(run_id: str) -> tuple[float | None, int | None]:
+    """Loop knobs from the run_manifest artifact (written by 00_intake, the
+    first task). target_accuracy is already on the 0–1 request scale here (run_00
+    writes the raw param, unlike run_03). This is the durable run-level source
+    that exists from the very start of the pipeline — see _resolve_run_knobs."""
+    manifest = _load_latest_artifact(run_id, "run_manifest")
+    if not manifest:
+        return None, None
+    ta = _safe_float(manifest.get("target_accuracy"))
+    return (round(ta, 4) if ta is not None else None, _safe_int(manifest.get("max_attempts")))
+
+
+def _job_param_knobs(run: dict) -> tuple[float | None, int | None]:
+    """Loop knobs from the Databricks job-run parameters the trigger set.
+
+    These exist the instant the job is submitted (before 00 writes the
+    manifest), so they cover the brief QUEUED/startup window. Best-effort + on
+    the 0–1 scale (the job param is the raw "0.90" string). Only consulted for
+    non-terminal runs with a job_run_id, so terminal legacy runs never pay a
+    Jobs API call."""
+    job_run_id = run.get("job_run_id")
+    if not job_run_id:
+        return None, None
+    try:
+        sp_ws = get_service_principal_client()
+        job_run = sp_ws.jobs.get_run(run_id=int(job_run_id))
+        params = getattr(job_run, "job_parameters", None) or []
+        by_name = {getattr(p, "name", None): getattr(p, "value", None) for p in params}
+        ta = _safe_float(by_name.get("target_accuracy"))
+        return (
+            round(ta, 4) if ta is not None else None,
+            _safe_int(by_name.get("max_attempts")),
+        )
+    except Exception as exc:
+        logger.info("Job-run params knob read failed for run %s: %s", run.get("run_id"), str(exc)[:160])
+        return None, None
+
+
+def _resolve_run_knobs(run: dict) -> tuple[float | None, int | None]:
+    """Resolve the loop knobs in force for a run on the 0–1 request scale (B4).
+
+    Layered durable read so the knobs are available from trigger time, NOT only
+    after the loop commits its first attempt:
+      1. run_manifest artifact (cheap Delta; exists from 00 — covers ~all of the
+         run's observable life: 01/02/loop/publish).
+      2. loop-state columns (cheap Delta; robust if the manifest write failed).
+      3. job-run parameters (Jobs API; covers the brief QUEUED→00 startup window,
+         gated to non-terminal runs so terminal legacy runs skip the call).
+    Returns (None, None) ONLY for true legacy runs where the knobs are
+    unknowable (no manifest, no loop-state, no job params). No DDL — every source
+    is an existing run-level artifact/param/column.
+    """
+    ta, ma = _manifest_knobs(run.get("run_id", ""))
+    if ta is not None or ma is not None:
+        return ta, ma
+    ta, ma = _loop_state_knobs(run.get("run_id", ""))
+    if ta is not None or ma is not None:
+        return ta, ma
+    if str(run.get("status", "")).upper() not in _TERMINAL_RUN_STATUSES:
+        return _job_param_knobs(run)
+    return None, None
 
 
 def _build_gso_config(llm_model_override: str | None = None) -> IntegrationConfig:
@@ -1517,10 +1588,11 @@ async def get_run(run_id: RunId):
         links.append({"label": "Runs Table", "url": f"{host}/explore/data/{config.catalog}/{config.schema_name}/genie_opt_runs", "category": "data"})
         links.append({"label": "Iterations Table", "url": f"{host}/explore/data/{config.catalog}/{config.schema_name}/genie_opt_iterations", "category": "data"})
 
-    # Echo the loop knobs in force (0–1 target, surgical max_attempts).
+    # Echo the loop knobs in force (0–1 target, surgical max_attempts), resolved
+    # from the durable run-level sources (manifest / loop-state / job params).
     target_accuracy, max_attempts = (None, None)
     if _is_configured():
-        target_accuracy, max_attempts = _run_loop_knobs(run_id)
+        target_accuracy, max_attempts = _resolve_run_knobs(run)
 
     return {
         "runId": run.get("run_id"),
@@ -1605,11 +1677,12 @@ async def get_run_status(run_id: RunId):
     # closes both: full-scope only, exclude rolled-back, floor-at-baseline.
     run_scores = compute_run_scores(iterations, run_id=run_id, logger=logger)
 
-    # Echo the loop knobs in force (0–1 target, surgical max_attempts) — None
-    # until the loop commits an attempt row, or for legacy runs.
+    # Echo the loop knobs in force (0–1 target, surgical max_attempts), resolved
+    # from durable run-level sources so they are present from trigger time
+    # (manifest at 00 / job params during QUEUED), not only once the loop runs.
     target_accuracy, max_attempts = (None, None)
     if _is_configured():
-        target_accuracy, max_attempts = _run_loop_knobs(run_id)
+        target_accuracy, max_attempts = _resolve_run_knobs(run)
 
     return {
         "runId": run.get("run_id"),
@@ -1874,12 +1947,52 @@ async def list_iterations(run_id: RunId):
     return iterations
 
 
+# The 03_optimize loop scores every attempt on the FULL benchmark: surgical
+# attempts land at eval_scope='full', the attempt-1 coverage pass at
+# eval_scope='enrichment' (both full-benchmark — exactly the candidate universe
+# of state.load_all_scored_iterations). Any other scope on an attempt row (e.g.
+# a legacy slice/p0 probe) is NOT the authoritative per-attempt accuracy.
+_FULL_BENCHMARK_SCOPES = frozenset({"full", "enrichment"})
+
+
+def _attempt_row_sort_key(r: dict) -> tuple:
+    """Deterministic recency key for collapsing duplicate rows of one attempt:
+    latest iteration, then latest timestamp."""
+    return (_safe_int(r.get("iteration")) or 0, str(r.get("timestamp") or ""))
+
+
+def _dedup_attempt_rows(loop_rows: list[dict]) -> list[dict]:
+    """One authoritative full-benchmark row per ``attempt_no`` (B1).
+
+    Filters to the full-benchmark scopes (``full``/``enrichment``) so non-full
+    probe rows never become a phantom attempt, and collapses any duplicates of
+    the same ``attempt_no`` to the most recent row (so accuracy/decision reflect
+    the final committed eval). Returned ordered by ``attempt_no`` ascending, so
+    ``len()`` is the DISTINCT attempt count.
+    """
+    by_attempt: dict[int, dict] = {}
+    for r in loop_rows:
+        attempt_no = _safe_int(r.get("attempt_no"))
+        if attempt_no is None:
+            continue
+        if str(r.get("eval_scope") or "").lower() not in _FULL_BENCHMARK_SCOPES:
+            continue
+        existing = by_attempt.get(attempt_no)
+        if existing is None or _attempt_row_sort_key(r) > _attempt_row_sort_key(existing):
+            by_attempt[attempt_no] = r
+    return [by_attempt[k] for k in sorted(by_attempt)]
+
+
 def _build_attempt(lr: dict) -> dict:
     """Map a loop-state iteration row → a GSOAttempt (camelCase) dict.
 
     ``accuracy`` / ``bestAccuracy`` stay on the 0–100 scale (as everywhere in
-    the app); JSON-string columns (hypothesis) are parsed to objects.
+    the app); JSON-string columns (hypotheses, do_not_repeat) are parsed to
+    objects/lists. Per-attempt ledger fields (``bestConfigVersionId``,
+    ``nextHypothesis``, ``doNotRepeat``) are surfaced here in addition to the
+    run-level aggregate on ``loopState`` (B2).
     """
+    dnr = _safe_json_parse(lr.get("do_not_repeat"))
     return {
         "attemptNo": _safe_int(lr.get("attempt_no")),
         "attemptMode": lr.get("attempt_mode") or None,
@@ -1896,6 +2009,11 @@ def _build_attempt(lr: dict) -> dict:
         "rollbackReason": lr.get("rollback_reason") or None,
         "isChampion": bool(lr.get("is_champion")),
         "currentHypothesis": _safe_json_parse(lr.get("current_hypothesis")),
+        # Per-attempt ledger fields (B2) — surfaced in addition to the run-level
+        # aggregate on loopState, parsed the same way as the aggregate.
+        "bestConfigVersionId": lr.get("best_config_version_id") or None,
+        "nextHypothesis": _safe_json_parse(lr.get("next_hypothesis")),
+        "doNotRepeat": dnr if isinstance(dnr, list) else [],
         "terminalReason": (
             lr.get("terminal_reason")
             if lr.get("terminal_reason") in _TYPED_TERMINAL_REASONS else None
@@ -1930,7 +2048,8 @@ def _build_loop_state(attempt_rows: list[dict]) -> dict | None:
     return {
         "bestAccuracy": best_acc,
         "bestConfigVersionId": head.get("best_config_version_id") or None,
-        "targetAccuracy": _target_accuracy_to_request_scale(head.get("target_accuracy")),
+        # The loop-state column is 0–100; normalize to the 0–1 request scale.
+        "targetAccuracy": _delta_accuracy_to_unit_scale(head.get("target_accuracy")),
         "maxAttempts": _safe_int(head.get("max_attempts")),
         "surgicalAttemptsUsed": _safe_int(head.get("surgical_attempts_used")),
         "terminalReason": terminal_reason,
@@ -1957,14 +2076,12 @@ async def get_loop_state(run_id: RunId):
     fall back to the classic iteration view without error.
     """
     loop_rows = _select_loop_state_delta(run_id) if _is_configured() else []
-    # Attempts = rows the controller stamped with an attempt_no (1=coverage,
-    # 2..N=surgical). The baseline (iter 0, no attempt_no) is the ladder floor,
-    # served by /iterations — it is not itself an attempt.
-    attempt_rows = [r for r in loop_rows if _safe_int(r.get("attempt_no")) is not None]
-    attempts = sorted(
-        (_build_attempt(r) for r in attempt_rows),
-        key=lambda a: a["attemptNo"] if a["attemptNo"] is not None else 0,
-    )
+    # Attempts = ONE authoritative full-benchmark row per attempt_no
+    # (1=coverage, 2..N=surgical), de-duped so multiple/non-full rows never
+    # render as phantom attempts (B1). The baseline (iter 0, no attempt_no) is
+    # the ladder floor served by /iterations — it is not itself an attempt.
+    attempt_rows = _dedup_attempt_rows(loop_rows)
+    attempts = [_build_attempt(r) for r in attempt_rows]  # already ordered by attempt_no
     return {
         "runId": run_id,
         "loopState": _build_loop_state(attempt_rows),
@@ -1975,10 +2092,11 @@ async def get_loop_state(run_id: RunId):
 def _build_publish_record(payload: dict) -> dict:
     """Map a ``publish_record`` artifact payload → a camelCase GSOPublishRecord.
 
-    The publish_record stores ``target_accuracy`` on the 0–1 scale already
-    (publish_and_audit receives the 0–1 job param); ``improvement_trajectory``
-    entries are camelCased explicitly (their structural shape is bounded — no
-    leaky free-text, per the §3.6 firewall).
+    The publish_record stores ``target_accuracy`` on the 0–100 scale (run_publish_
+    and_audit normalizes the ≤1 job param to 0–100), so it is converted to the
+    0–1 echo scale; ``improvement_trajectory`` entries are camelCased explicitly
+    (their structural shape is bounded — no leaky free-text, per the §3.6
+    firewall).
     """
     trajectory: list[dict] = []
     raw_traj = payload.get("improvement_trajectory")
@@ -2010,7 +2128,9 @@ def _build_publish_record(payload: dict) -> dict:
         "championIteration": _safe_int(payload.get("champion_iteration")),
         "championAccuracy": _safe_float(payload.get("champion_accuracy")),
         "championConfigVersionId": payload.get("champion_config_version_id") or None,
-        "targetAccuracy": _target_accuracy_to_request_scale(payload.get("target_accuracy")),
+        # publish_record stores target_accuracy on the 0–100 scale (run_publish_
+        # and_audit normalizes ≤1 to 0–100, like run_03); convert to 0–1.
+        "targetAccuracy": _delta_accuracy_to_unit_scale(payload.get("target_accuracy")),
         "maxAttempts": _safe_int(payload.get("max_attempts")),
         "auditSummary": payload.get("audit_summary") or None,
         "improvementTrajectory": trajectory,

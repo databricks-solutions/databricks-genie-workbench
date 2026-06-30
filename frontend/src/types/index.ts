@@ -536,6 +536,11 @@ export interface GSOAttempt {
   rollbackReason: string | null
   isChampion: boolean
   currentHypothesis: Record<string, unknown> | string | null
+  // Per-attempt ledger fields (B2) — also present as run-level aggregates on
+  // GSOLoopState. Optional/nullable; absent on legacy runs.
+  bestConfigVersionId?: string | null
+  nextHypothesis?: Record<string, unknown> | string | null
+  doNotRepeat?: unknown[]
   terminalReason: GSOTerminalReason | null
 }
 
