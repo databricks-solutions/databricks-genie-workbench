@@ -39,6 +39,7 @@ guards against on the config-write side.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -50,7 +51,7 @@ from genie_space_optimizer.common.config import (
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.models import promote_best_model
 from genie_space_optimizer.optimization.state import (
-    load_all_full_iterations,
+    load_all_scored_iterations,
     load_patches,
     load_provenance,
     load_run,
@@ -166,89 +167,161 @@ def _is_champion_flag(row: dict) -> bool:
     return bool(row.get("is_champion"))
 
 
-def resolve_champion_row(full_iters: list[dict]) -> dict | None:
-    """Pick the champion among ``eval_scope='full'`` rows (arch §7.4 / Phase 4).
+def _is_baseline_row(row: dict) -> bool:
+    """Iteration-0 ``eval_scope='full'`` row — the floor (never rolled back)."""
+    return _as_int(row.get("iteration")) == 0 and str(row.get("eval_scope")) == "full"
 
+
+def resolve_champion_row(scored_iters: list[dict]) -> dict | None:
+    """Pick the champion over the PROMOTION candidate universe (arch §7.4 / Phase 4).
+
+    Mirrors ``promote_best_model`` exactly so an accepted attempt-1 *coverage* rung
+    (persisted with ``eval_scope='enrichment'``) can be the champion:
     ``is_champion`` (set by ``promote_best_model``) is authoritative when present;
-    otherwise the champion is the highest-accuracy NON-rolled-back full row, which
-    is exactly the selection ``promote_best_model`` performs — and the row the
-    Phase-8 controller stamped ``terminal_reason`` onto.
+    otherwise the champion is the highest-accuracy candidate, where candidates are
+    the non-rolled-back rows PLUS the baseline (kept as the floor even if flagged).
+    ``scored_iters`` must already be the ``full`` + ``enrichment`` set.
     """
-    if not full_iters:
+    if not scored_iters:
         return None
 
-    flagged = [r for r in full_iters if _is_champion_flag(r)]
+    flagged = [r for r in scored_iters if _is_champion_flag(r)]
     if flagged:
         # If multiple are flagged (shouldn't happen), take the highest accuracy.
         return max(flagged, key=lambda r: _as_float(r.get("overall_accuracy")) or 0.0)
 
-    candidates = [r for r in full_iters if not _is_rolled_back(r)]
+    candidates = [
+        r for r in scored_iters if (not _is_rolled_back(r)) or _is_baseline_row(r)
+    ]
     if not candidates:
-        candidates = list(full_iters)
+        candidates = list(scored_iters)
     return max(candidates, key=lambda r: _as_float(r.get("overall_accuracy")) or 0.0)
 
 
-def resolve_terminal_reason(
-    champion_row: dict | None, full_iters: list[dict]
-) -> str | None:
-    """Read the STAMPED terminal reason — never re-derive it from accuracy.
+def resolve_terminal_reason(champion_row: dict | None) -> str | None:
+    """Read the STAMPED terminal reason off the CHAMPION row ONLY (arch §5.1).
 
-    Preference order (arch §5.1, progress Phase 9 spec A):
-      1. the champion row's ``terminal_reason`` (the controller stamps it there);
-      2. the highest-iteration full row that carries any ``terminal_reason``
-         (covers the case where the final attempt row ≠ the champion row);
-      3. ``None`` — genuinely absent ⇒ treated as a non-publishing, fail-closed
-         outcome by the caller (NO accuracy-based re-derivation).
+    The champion row is the single authoritative source. A ``terminal_reason``
+    stamped on a NON-champion row is NEVER used for gating (using it could publish
+    from a non-champion MAX_ATTEMPTS/TARGET_REACHED row). Returns ``None`` when the
+    champion is missing or unstamped ⇒ the caller takes the fail-closed no-publish
+    path (status STALLED). There is NO accuracy-based re-derivation.
     """
     if champion_row:
         reason = champion_row.get("terminal_reason")
         if reason:
             return str(reason)
+    return None
 
-    stamped = [
-        r for r in full_iters if r.get("terminal_reason")
-    ]
-    if stamped:
-        latest = max(stamped, key=lambda r: _as_int(r.get("iteration")) or 0)
-        return str(latest.get("terminal_reason"))
 
+def unstamped_champion_diagnostic(
+    champion_row: dict | None, scored_iters: list[dict]
+) -> str | None:
+    """Diagnostic-only concern when the champion is unstamped but a NON-champion
+    row carries a reason. Surfaced in concerns for visibility — NEVER used to
+    gate the publish (B1)."""
+    if champion_row and champion_row.get("terminal_reason"):
+        return None
+    champ_iter = _as_int(champion_row.get("iteration")) if champion_row else None
+    champ_scope = str(champion_row.get("eval_scope")) if champion_row else None
+    others = {
+        str(r.get("terminal_reason"))
+        for r in scored_iters
+        if r.get("terminal_reason")
+        and not (
+            _as_int(r.get("iteration")) == champ_iter
+            and str(r.get("eval_scope")) == champ_scope
+        )
+    }
+    if not others:
+        return None
+    return (
+        "Champion row carries no stamped terminal_reason; non-champion row(s) "
+        f"carry {sorted(others)} but that is NOT used for gating (fail-closed)."
+    )
+
+
+def _champion_config_version_id(champion_row: dict | None) -> str | None:
+    """Stable champion config pointer.
+
+    Prefers the loop-state ``best_config_version_id`` column; when that is absent /
+    empty (base Phase 8 does not reliably populate it on real writes), derives a
+    deterministic short hash of the champion's ``config_json`` so the publish_record
+    pointer is still complete. Returns ``None`` only when neither is available.
+    """
+    if not champion_row:
+        return None
+    vid = champion_row.get("best_config_version_id")
+    if vid:
+        return str(vid)
+    config_json = champion_row.get("config_json")
+    if config_json:
+        if not isinstance(config_json, str):
+            try:
+                config_json = json.dumps(config_json, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                config_json = str(config_json)
+        digest = hashlib.sha256(config_json.encode("utf-8")).hexdigest()[:12]
+        return f"cfgsha:{digest}"
     return None
 
 
 # ── Improvement trajectory + audit context (leak-free) ──────────────────────
 
 
-def build_improvement_trajectory(full_iters: list[dict]) -> list[dict]:
+def _trajectory_sort_key(row: dict) -> tuple:
+    """Order: baseline (no attempt_no) first, then by attempt_no, then timestamp.
+
+    The coverage rung (``eval_scope='enrichment'``, ``attempt_no=1``) and surgical
+    rungs (``attempt_no=2..N``) sort after the baseline regardless of their raw
+    iteration number; timestamp/iteration break ties for legacy unstamped rows.
+    """
+    attempt_no = _as_int(row.get("attempt_no"))
+    primary = attempt_no if attempt_no is not None else -1
+    return (primary, str(row.get("timestamp") or ""), _as_int(row.get("iteration")) or 0)
+
+
+def build_improvement_trajectory(scored_iters: list[dict]) -> list[dict]:
     """Structured per-attempt staircase: baseline → coverage → surgical.
 
-    Only structural/aggregate fields. ``delta_vs_baseline`` is the accuracy lift
-    of each attempt over the iteration-0 baseline.
+    Only STRUCTURAL / bounded fields (B3 §3.6 firewall): the free-text
+    ``decision_reason`` is deliberately EXCLUDED — only the bounded ``decision``
+    value (accept/reject/continue) is carried. ``delta_vs_baseline`` is the
+    accuracy lift over the iteration-0 ``eval_scope='full'`` baseline. Includes
+    the accepted attempt-1 coverage rung (``eval_scope='enrichment'``).
     """
-    ordered = sorted(full_iters, key=lambda r: _as_int(r.get("iteration")) or 0)
-    baseline_acc: float | None = None
+    ordered = sorted(scored_iters, key=_trajectory_sort_key)
+    # Baseline is the iteration-0 full row (matches report.py / promote_best_model);
+    # never the coverage enrichment row that may also live at iteration 0.
+    baseline_acc: float | None = next(
+        (
+            _as_float(r.get("overall_accuracy"))
+            for r in scored_iters
+            if _is_baseline_row(r)
+        ),
+        None,
+    )
     trajectory: list[dict] = []
     for row in ordered:
         iteration = _as_int(row.get("iteration"))
         acc = _as_float(row.get("overall_accuracy"))
-        if iteration == 0 and baseline_acc is None:
-            baseline_acc = acc
         delta = (
             round(acc - baseline_acc, 2)
             if (acc is not None and baseline_acc is not None)
             else None
         )
         mode = row.get("attempt_mode")
-        if not mode and iteration == 0:
+        if not mode and _is_baseline_row(row):
             mode = "baseline"
         trajectory.append({
             "iteration": iteration,
             "attempt_no": _as_int(row.get("attempt_no")),
             "attempt_mode": mode,
+            "eval_scope": row.get("eval_scope"),
             "accuracy": acc,
             "delta_vs_baseline": delta,
             "best_accuracy": _as_float(row.get("best_accuracy")),
             "decision": row.get("decision"),
-            "decision_reason": row.get("decision_reason"),
             "rolled_back": _is_rolled_back(row),
             "is_champion": _is_champion_flag(row),
         })
@@ -328,18 +401,26 @@ def _residual_failing_clusters(
     return residual_count, clusters
 
 
-def _assert_leak_free(context: dict) -> None:
-    """Defensive: a built audit context must never carry answer-key fields."""
-    leaked = _LEAKY_FIELDS & set(context.keys())
-    if leaked:  # pragma: no cover - guardrail
-        raise ValueError(
-            f"audit context leaks benchmark answer-key fields: {sorted(leaked)}"
-        )
+def _assert_leak_free(obj: Any) -> None:
+    """Defensive: the audit context must never carry answer-key fields — at ANY
+    depth (B3). Walks nested dicts/lists so a benchmark question / expected_sql
+    buried in a nested structure is caught, not just a top-level key."""
+    if isinstance(obj, dict):
+        leaked = _LEAKY_FIELDS & set(obj.keys())
+        if leaked:  # pragma: no cover - guardrail
+            raise ValueError(
+                f"audit context leaks benchmark answer-key fields: {sorted(leaked)}"
+            )
+        for value in obj.values():
+            _assert_leak_free(value)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            _assert_leak_free(item)
 
 
 def as_audit_context(
     run_row: dict,
-    full_iters: list[dict],
+    scored_iters: list[dict],
     patches_df: "pd.DataFrame | None",
     provenance_df: "pd.DataFrame | None",
     *,
@@ -350,20 +431,27 @@ def as_audit_context(
 ) -> dict:
     """Build the LEAK-FREE structural prompt context for the audit summary.
 
-    ONLY structural / aggregate fields are included (D8 / §3.6): per-attempt
-    accuracy + deltas, attempt mode, decisions, lever/patch counts and families,
-    root-cause label distribution, champion pointer, and the stop reason. NO
-    benchmark question text, NO ``expected_sql`` / ground-truth, NO judge
-    rationale — those are the leakage surface and are excluded by construction.
+    ONLY structural / aggregate / bounded fields are included (D8 / §3.6): per-attempt
+    accuracy + deltas, attempt mode, the bounded ``decision`` value (NOT the free-text
+    ``decision_reason``), lever/patch counts and families, root-cause label
+    distribution, champion pointer, and the stop reason. NO benchmark question text,
+    NO ``expected_sql`` / ground-truth, NO judge rationale — those are the leakage
+    surface and are excluded by construction; ``_assert_leak_free`` enforces it
+    recursively. ``scored_iters`` is the ``full`` + ``enrichment`` set.
     """
-    trajectory = build_improvement_trajectory(full_iters)
-    baseline_accuracy = trajectory[0]["accuracy"] if trajectory else None
+    trajectory = build_improvement_trajectory(scored_iters)
+    baseline_accuracy = next(
+        (
+            _as_float(r.get("overall_accuracy"))
+            for r in scored_iters
+            if _is_baseline_row(r)
+        ),
+        None,
+    )
 
     champion_iteration = _as_int(champion_row.get("iteration")) if champion_row else None
     champion_accuracy = _as_float(champion_row.get("overall_accuracy")) if champion_row else None
-    champion_config_version_id = (
-        champion_row.get("best_config_version_id") if champion_row else None
-    )
+    champion_config_version_id = _champion_config_version_id(champion_row)
     surgical_attempts_used = (
         _as_int(champion_row.get("surgical_attempts_used")) if champion_row else None
     )
@@ -496,10 +584,13 @@ def publish_and_audit(
     notebook's exit JSON.
     """
     run_row = load_run(spark, run_id, catalog, schema) or {}
-    full_iters = load_all_full_iterations(spark, run_id, catalog, schema)
+    # Mirror promote_best_model's candidate universe (full + enrichment) so an
+    # accepted attempt-1 coverage rung (eval_scope='enrichment') is in scope (B2).
+    scored_iters = load_all_scored_iterations(spark, run_id, catalog, schema)
 
-    champion_row = resolve_champion_row(full_iters)
-    terminal_reason = resolve_terminal_reason(champion_row, full_iters)
+    champion_row = resolve_champion_row(scored_iters)
+    # B1: gate ONLY on the champion row's stamped reason (fail-closed when absent).
+    terminal_reason = resolve_terminal_reason(champion_row)
 
     publish = should_publish(terminal_reason)
     run_status = run_status_for_terminal_reason(terminal_reason)
@@ -507,9 +598,7 @@ def publish_and_audit(
     concerns: list[str] = []
     champion_iteration = _as_int(champion_row.get("iteration")) if champion_row else None
     champion_accuracy = _as_float(champion_row.get("overall_accuracy")) if champion_row else None
-    champion_config_version_id = (
-        champion_row.get("best_config_version_id") if champion_row else None
-    )
+    champion_config_version_id = _champion_config_version_id(champion_row)
 
     if publish:
         # Idempotent Delta-only champion publish: re-stamps is_champion + the
@@ -528,10 +617,15 @@ def publish_and_audit(
         publish_outcome = f"not_published:{terminal_reason or 'UNKNOWN'}"
         if terminal_reason is None:
             concerns.append(
-                "No terminal_reason was stamped on any iteration row; treated as "
-                "a non-publishing, fail-closed outcome (no accuracy-based "
-                "re-derivation)."
+                "Champion row carries no stamped terminal_reason; treated as a "
+                "non-publishing, fail-closed outcome (no accuracy-based "
+                "re-derivation, no non-champion fallback)."
             )
+            # Diagnostic-only: surface a reason stamped on a NON-champion row
+            # WITHOUT using it to gate (B1).
+            diag = unstamped_champion_diagnostic(champion_row, scored_iters)
+            if diag:
+                concerns.append(diag)
         else:
             concerns.append(
                 _TERMINAL_REASON_CONCERN.get(
@@ -554,7 +648,7 @@ def publish_and_audit(
     provenance_df = load_provenance(spark, run_id, catalog, schema)
     audit_context = as_audit_context(
         run_row,
-        full_iters,
+        scored_iters,
         patches_df,
         provenance_df,
         terminal_reason=terminal_reason,
