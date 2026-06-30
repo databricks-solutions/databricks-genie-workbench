@@ -5,11 +5,11 @@ import type { GSOTriggerRequest } from "@/types"
 // (react-refresh/only-export-components).
 
 // Parse the target-accuracy percentage field into the 0–1 scale the backend
-// expects. Returns null when the input is outside (0, 100] or not a number so
-// callers can guard the Start button.
+// expects. Returns null when the input is outside [1, 100] or not a number so
+// the guard matches the input's min={1} attribute and the "between 1–100%" copy.
 export function parseTargetAccuracy(percentInput: string): number | null {
   const pct = Number(percentInput)
-  if (!Number.isFinite(pct) || pct <= 0 || pct > 100) return null
+  if (!Number.isFinite(pct) || pct < 1 || pct > 100) return null
   return pct / 100
 }
 
@@ -35,7 +35,9 @@ export function buildOptimizationTriggerRequest(args: {
   return {
     space_id: args.spaceId,
     apply_mode: args.applyMode,
-    levers: Array.from(args.selectedLevers).sort((a, b) => a - b),
+    levers: Array.from(args.selectedLevers)
+      .filter((id) => id >= 1 && id <= 6)
+      .sort((a, b) => a - b),
     llm_model: args.selectedModel,
     target_accuracy: args.targetAccuracy,
     max_attempts: args.maxAttempts,
