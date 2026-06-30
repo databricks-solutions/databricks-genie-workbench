@@ -143,6 +143,50 @@ def test_optimize_and_publish_receive_loop_params():
         assert "target_accuracy" in bp
 
 
+def test_submit_optimization_threads_loop_knobs_into_job_parameters():
+    """GSO v2 Phase 10 (item 4): an app-chosen target_accuracy / max_attempts
+    rides into the Jobs run_now job_parameters so a user override beats the
+    databricks.yml default."""
+    from unittest.mock import MagicMock
+
+    from genie_space_optimizer.backend.job_launcher import submit_optimization
+
+    ws = MagicMock()
+    ws.jobs.run_now.return_value = MagicMock(run_id=4242)
+    job_run_id, resolved_job_id = submit_optimization(
+        ws,
+        job_id=99,
+        run_id="r1",
+        space_id="s1",
+        domain="d",
+        catalog="c",
+        schema="sch",
+        target_accuracy="0.85",
+        max_attempts="5",
+    )
+    assert resolved_job_id == 99
+    params = ws.jobs.run_now.call_args.kwargs["job_parameters"]
+    assert params["target_accuracy"] == "0.85"
+    assert params["max_attempts"] == "5"
+
+
+def test_submit_optimization_loop_knobs_default_to_job_defaults():
+    """When the caller omits the knobs, submit_optimization passes the same
+    defaults the databricks.yml declares (0.90 / 3)."""
+    from unittest.mock import MagicMock
+
+    from genie_space_optimizer.backend.job_launcher import submit_optimization
+
+    ws = MagicMock()
+    ws.jobs.run_now.return_value = MagicMock(run_id=1)
+    submit_optimization(
+        ws, job_id=1, run_id="r", space_id="s", domain="d", catalog="c", schema="x",
+    )
+    params = ws.jobs.run_now.call_args.kwargs["job_parameters"]
+    assert params["target_accuracy"] == "0.90"
+    assert params["max_attempts"] == "3"
+
+
 def test_no_dbutils_notebook_run_or_task_values_in_new_notebooks():
     """D9: the new notebook entrypoints must not use dbutils.notebook.run or
     inter-task task values."""

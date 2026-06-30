@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { ApiError, extractDetailMessage, getModels, streamAgentChat, triggerAutoOptimize } from "./api"
+import {
+  ApiError,
+  extractDetailMessage,
+  getAutoOptimizeLoopState,
+  getAutoOptimizePublishRecord,
+  getModels,
+  streamAgentChat,
+  triggerAutoOptimize,
+} from "./api"
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -123,6 +131,62 @@ describe("model selection API payloads", () => {
       levers: [1, 2],
       llm_model: "selected-chat",
     })
+  })
+
+  it("round-trips the GSO loop knobs in the trigger request", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        runId: "run",
+        jobRunId: "job-run",
+        jobUrl: null,
+        status: "QUEUED",
+        targetAccuracy: 0.85,
+        maxAttempts: 5,
+      }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const resp = await triggerAutoOptimize({
+      space_id: "space",
+      target_accuracy: 0.85,
+      max_attempts: 5,
+    })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(JSON.parse(String(options.body))).toEqual({
+      space_id: "space",
+      target_accuracy: 0.85,
+      max_attempts: 5,
+    })
+    expect(resp.targetAccuracy).toBe(0.85)
+    expect(resp.maxAttempts).toBe(5)
+  })
+
+  it("fetches the loop-state read path", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ runId: "run", loopState: null, attempts: [] }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const out = await getAutoOptimizeLoopState("run")
+
+    expect(out).toEqual({ runId: "run", loopState: null, attempts: [] })
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auto-optimize/runs/run/loop-state")
+  })
+
+  it("fetches the publish-record read path and tolerates errors", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ runId: "run", publishRecord: null }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const out = await getAutoOptimizePublishRecord("run")
+
+    expect(out).toEqual({ runId: "run", publishRecord: null })
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auto-optimize/runs/run/publish")
   })
 
   it("sends model in Create Agent chat request", async () => {
