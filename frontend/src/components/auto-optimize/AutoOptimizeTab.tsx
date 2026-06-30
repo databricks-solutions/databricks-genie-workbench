@@ -29,7 +29,6 @@ import {
   getAutoOptimizeBenchmarkChanges,
 } from "@/lib/api"
 import { convergenceReasonText } from "@/lib/score-display"
-import { GSO_TOTAL_STEPS } from "@/types"
 import type {
   GSORunStatus,
   GSOPermissionCheck,
@@ -338,7 +337,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
     const assessedCount = questions.length
     const selectedQuestion = questions.find((q) => q.question_id === selectedQuestionId) ?? null
     const stepsCompleted = runStatus?.stepsCompleted ?? 0
-    const totalSteps = runStatus?.totalSteps ?? GSO_TOTAL_STEPS
     const currentStepName = runStatus?.currentStepName ?? null
 
     // GSO v2 Phase 12 — the controller attempts drive the live cockpit. Empty
@@ -395,7 +393,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         <TaskRail
           stepsCompleted={stepsCompleted}
           currentStepName={currentStepName}
-          totalSteps={totalSteps}
           status={runStatus?.status ?? null}
           terminalReason={terminalReason}
           benchmarkUnrepairable={benchmarkUnrepairable}

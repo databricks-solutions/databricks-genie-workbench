@@ -5,8 +5,6 @@ import { buildTaskRail, RAIL_STEP_PREFIXES, type RailNode } from "@/components/a
 interface TaskRailProps {
   stepsCompleted?: number | null
   currentStepName?: string | null
-  /** Run-status total-steps; defaults to the 5-task DAG (never 6). */
-  totalSteps?: number | null
   status?: string | null
   terminalReason?: GSOTerminalReason | null
   benchmarkUnrepairable?: boolean
@@ -19,7 +17,6 @@ interface TaskRailProps {
 export function TaskRail({
   stepsCompleted,
   currentStepName,
-  totalSteps,
   status,
   terminalReason,
   benchmarkUnrepairable,
@@ -33,8 +30,9 @@ export function TaskRail({
     benchmarkUnrepairable,
   })
   const completedCount = nodes.filter((n) => n.state === "completed").length
-  // The rail is the 5-task DAG; honor a run-status total but never fall back to 6.
-  const total = totalSteps ?? nodes.length
+  // Denominator is derived from the rendered node set (the 5-task DAG) — the
+  // "never 6" invariant is local here and can't regress on a stale backend total.
+  const total = nodes.length
 
   return (
     <div className="rounded-xl border border-default bg-surface p-4">

@@ -29,22 +29,24 @@ export const COVERAGE_COLOR = "#f59e0b" // amber-500
 export const SURGICAL_COLOR = "#06b6d4" // cyan-500
 
 /**
- * Normalize a per-attempt accuracy to the 0–100 chart scale.
+ * Normalize a per-attempt accuracy for the 0–100 chart scale — IDENTITY.
  *
- * Per the Phase-10 contract, ``GSOAttempt.accuracy``/``bestAccuracy`` and
- * ``GSORunStatus.baselineScore`` are already 0–100. The ``> 1`` guard is purely
- * defensive against a stray legacy 0–1 float so a single rogue value can't make
- * the ladder render "0.8%".
+ * Per the Phase-10 hard scale contract, ``GSOAttempt.accuracy``/``bestAccuracy``
+ * and ``GSORunStatus.baselineScore`` are ALREADY 0–100; only
+ * ``GSOLoopState.targetAccuracy`` is 0–1 (see {@link targetToPct}). This is a
+ * pure null/finite guard with NO ×100 rescale — a legitimately low accuracy
+ * (e.g. a real 0.85%) must stay 0.85, never be corrupted to 85.
  */
 export function toAccuracyPct(value: number | null | undefined): number | null {
   if (value == null || !Number.isFinite(value)) return null
-  return value > 1 ? value : value * 100
+  return value
 }
 
 /**
- * Convert the loop-state ``targetAccuracy`` (normalized to the 0–1 request
- * scale by the backend) to the 0–100 chart scale so the gold summit line sits
- * at the right height. The ``<= 1`` guard keeps a stray already-0–100 value sane.
+ * Convert the ``targetAccuracy`` (the 0–1 request scale, per the contract) to
+ * the 0–100 chart scale so the gold summit line / progress-to-target sit at the
+ * right height. This is the ONLY ×100 conversion path in the cockpit. The
+ * ``<= 1`` guard keeps a stray already-0–100 value sane (and maps 1.0 → 100).
  */
 export function targetToPct(unit: number | null | undefined): number | null {
   if (unit == null || !Number.isFinite(unit)) return null
