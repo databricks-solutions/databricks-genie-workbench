@@ -55,11 +55,12 @@ describe("stopping-criteria parsing", () => {
   it("converts the target-accuracy percentage to the 0–1 scale", () => {
     expect(parseTargetAccuracy("90")).toBeCloseTo(0.9)
     expect(parseTargetAccuracy("100")).toBe(1)
-    expect(parseTargetAccuracy("0.5")).toBeCloseTo(0.005)
+    expect(parseTargetAccuracy("1")).toBeCloseTo(0.01) // lower boundary
   })
 
   it("rejects out-of-range or non-numeric target accuracy", () => {
     expect(parseTargetAccuracy("0")).toBeNull()
+    expect(parseTargetAccuracy("0.5")).toBeNull() // below min={1}, matches the "1–100%" copy
     expect(parseTargetAccuracy("150")).toBeNull()
     expect(parseTargetAccuracy("")).toBeNull()
     expect(parseTargetAccuracy("abc")).toBeNull()
@@ -112,5 +113,18 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
 
     expect(req.levers).toEqual([1, 3]) // sorted subset of {1..6}
     expect(req.levers).not.toContain(0)
+  })
+
+  it("filters out-of-range lever ids (0 coverage, 7+) before sending", () => {
+    const req = buildOptimizationTriggerRequest({
+      spaceId: "space-1",
+      applyMode: "genie_config",
+      selectedLevers: new Set([0, 1, 7]),
+      selectedModel: null,
+      targetAccuracy: 0.9,
+      maxAttempts: 3,
+    })
+
+    expect(req.levers).toEqual([1]) // 0 (coverage) and 7 (out of range) dropped
   })
 })
