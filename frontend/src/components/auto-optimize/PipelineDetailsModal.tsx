@@ -10,11 +10,11 @@ import { StageTimeline } from "@/components/auto-optimize/StageTimeline"
 import { ResourceLinks } from "@/components/auto-optimize/ResourceLinks"
 import { QuestionJourney } from "@/components/auto-optimize/QuestionJourney"
 import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
-import { BenchmarkChangesPanel } from "@/components/auto-optimize/BenchmarkChangesPanel"
 import { ActivityLog } from "@/components/auto-optimize/ActivityLog"
 import { OptimizationNarrative } from "@/components/auto-optimize/OptimizationNarrative"
+import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
 import { SuggestionsPanel } from "@/components/auto-optimize/SuggestionsPanel"
-import { getAutoOptimizeRun, getAutoOptimizeIterations } from "@/lib/api"
+import { getAutoOptimizeRun, getAutoOptimizeIterations, getAutoOptimizePublishRecord } from "@/lib/api"
 import {
   convergenceReasonText,
   formatScorePct,
@@ -22,7 +22,7 @@ import {
   presentOptimizedScore,
 } from "@/lib/score-display"
 import { Tooltip } from "@/components/ui/tooltip"
-import type { GSOPipelineRun, GSOIterationResult } from "@/types"
+import type { GSOPipelineRun, GSOIterationResult, GSOPublishRecord } from "@/types"
 
 interface PipelineDetailsModalProps {
   runId: string
@@ -62,6 +62,7 @@ function formatDateTime(iso: string): string {
 export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetailsModalProps) {
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
   const [iterations, setIterations] = useState<GSOIterationResult[]>([])
+  const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -69,9 +70,13 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
     if (!isOpen) return
     setRun(null)
     setIterations([])
+    setPublishRecord(null)
 
     function fetchData() {
       getAutoOptimizeRun(runId).then(setRun).catch(() => {})
+      getAutoOptimizePublishRecord(runId)
+        .then((res) => setPublishRecord(res?.publishRecord ?? null))
+        .catch(() => {})
       getAutoOptimizeIterations(runId)
         .then((its) => setIterations(its.filter((it) =>
           String(it.eval_scope ?? "").toLowerCase() === "full" || it.iteration === 0
@@ -242,7 +247,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                   <TabsList>
                     <TabsTrigger value="summary">Summary</TabsTrigger>
                     <TabsTrigger value="iterations">Iteration Explorer</TabsTrigger>
-                    <TabsTrigger value="benchmark">Benchmark Changes</TabsTrigger>
                     <TabsTrigger value="suggestions">Suggestions</TabsTrigger>
                   </TabsList>
 
@@ -263,8 +267,12 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                             <IterationChart iterations={iterations} />
                             <StageTimeline stages={run.stages ?? []} />
                           </div>
-                          {/* Optimization Narrative — rich per-iteration reflections */}
-                          <OptimizationNarrative run={run} iterations={iterations} convergenceReason={run.convergenceReason} />
+                          {/* Publish/audit summary headline — LLM paragraph +
+                              concerns; the rich per-iteration narrative is
+                              demoted to a collapsed expandable detail beneath. */}
+                          <PublishAuditSummary publishRecord={publishRecord}>
+                            <OptimizationNarrative run={run} iterations={iterations} convergenceReason={run.convergenceReason} />
+                          </PublishAuditSummary>
                         </div>
                       </TabsContent>
 
@@ -347,11 +355,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                         </table>
                       </div>
                     </div>
-                  </TabsContent>
-
-                  {/* Benchmark Changes tab (GSO v2 Phase 6 §3.5) */}
-                  <TabsContent value="benchmark">
-                    <BenchmarkChangesPanel runId={runId} />
                   </TabsContent>
 
                   {/* Suggestions tab */}
