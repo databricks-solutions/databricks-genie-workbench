@@ -220,10 +220,17 @@ def test_trigger_proceeds_without_prompt_registry_gate(
         "jobRunId": 9999,
         "jobUrl": "https://example.com/jobs/12345/runs/9999",
         "status": "QUEUED",
+        # GSO v2 loop knobs default to the job defaults when the request omits
+        # them, and are echoed back so the UI can confirm what the run uses.
+        "targetAccuracy": 0.90,
+        "maxAttempts": 3,
     }
     trigger_mock.assert_called_once()
     config = trigger_mock.call_args.kwargs["config"]
     assert config.llm_model == "custom-trigger-model"
+    # Omitted knobs flow to trigger_optimization as None (it resolves defaults).
+    assert trigger_mock.call_args.kwargs["target_accuracy"] is None
+    assert trigger_mock.call_args.kwargs["max_attempts"] is None
 
 
 def test_trigger_uses_selected_llm_model(
@@ -875,3 +882,540 @@ def test_iterations_official_v2_reports_full_30_question_corpus(monkeypatch) -> 
     assert row["num_questions"] == 30
     assert row["num_done"] == 30
     assert row["overall_accuracy"] == 80.0
+
+
+# ── Phase 10 — app-backend loop contract ────────────────────────────────
+
+
+def _gso_client(monkeypatch) -> TestClient:
+    """A configured TestClient mounting just the auto_optimize router."""
+    monkeypatch.setenv("GSO_CATALOG", "main")
+    monkeypatch.setenv("GSO_SCHEMA", "gso_test")
+    monkeypatch.setenv("GSO_JOB_ID", "12345")
+    monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+    app = FastAPI()
+    app.include_router(auto_optimize.router)
+    return TestClient(app)
+
+
+_RUN = "12345678-1234-1234-1234-1234567890ab"
+
+
+# Item 1 — 5-task DAG re-map.
+
+
+def test_step_definitions_are_the_five_task_dag() -> None:
+    names = [s["name"] for s in auto_optimize._STEP_DEFINITIONS]
+    assert names == [
+        "Intake & Snapshot",
+        "Benchmark QC & Repair",
+        "Baseline Eval & Triage",
+        "Optimize",
+        "Publish & Audit",
+    ]
+    assert auto_optimize._TOTAL_STEPS == 5
+    # The standalone Deploy step is gone (D7).
+    assert "Deploy" not in names
+
+
+def test_map_stages_to_steps_new_dag_stage_names() -> None:
+    """The new orchestration stage names roll up into the 5 logical steps."""
+    stages = [
+        {"stage": "INTAKE_AND_SNAPSHOT", "status": "COMPLETE"},
+        {"stage": "BENCHMARK_QC_AND_REPAIR", "status": "COMPLETE"},
+        {"stage": "BASELINE_EVAL_AND_TRIAGE", "status": "COMPLETE"},
+        {"stage": "OPTIMIZE", "status": "COMPLETE"},
+        {"stage": "PUBLISH_AND_AUDIT", "status": "STARTED"},
+    ]
+    steps = auto_optimize._map_stages_to_steps(stages, {"status": "IN_PROGRESS"}, [])
+    by_num = {s["stepNumber"]: s for s in steps}
+    assert len(steps) == 5
+    assert by_num[1]["name"] == "Intake & Snapshot" and by_num[1]["status"] == "completed"
+    assert by_num[2]["status"] == "completed"
+    assert by_num[3]["status"] == "completed"
+    assert by_num[4]["name"] == "Optimize" and by_num[4]["status"] == "completed"
+    assert by_num[5]["name"] == "Publish & Audit" and by_num[5]["status"] == "running"
+
+
+def test_map_stages_to_steps_legacy_back_compat() -> None:
+    """Legacy 6-notebook stage names still render against the 5-task rail."""
+    stages = [
+        {"stage": "PREFLIGHT_DONE", "status": "COMPLETE"},
+        {"stage": "BASELINE_EVAL_DONE", "status": "COMPLETE"},
+        {"stage": "LEVER_2_EVAL_DONE", "status": "COMPLETE"},
+        {"stage": "FINALIZE_DONE", "status": "COMPLETE"},
+    ]
+    steps = auto_optimize._map_stages_to_steps(stages, {"status": "CONVERGED"}, [])
+    by_num = {s["stepNumber"]: s for s in steps}
+    # Legacy preflight satisfies both intake (1) and QC (2).
+    assert by_num[1]["status"] == "completed"
+    assert by_num[2]["status"] == "completed"
+    assert by_num[3]["status"] == "completed"  # baseline
+    assert by_num[4]["status"] == "completed"  # lever loop → Optimize
+    assert by_num[5]["status"] == "completed"  # finalize → Publish & Audit
+
+
+# Item 3 — typed terminal_reason.
+
+
+def test_typed_terminal_reason_validates_closed_set() -> None:
+    ttr = auto_optimize._typed_terminal_reason
+    assert ttr({"convergence_reason": "TARGET_REACHED"}) == "TARGET_REACHED"
+    assert ttr({"convergence_reason": "MAX_ATTEMPTS"}) == "MAX_ATTEMPTS"
+    assert ttr({"convergence_reason": "EVAL_BUDGET_EXHAUSTED"}) == "EVAL_BUDGET_EXHAUSTED"
+    # Legacy free-text / job-error reasons are NOT typed.
+    assert ttr({"convergence_reason": "threshold_met"}) is None
+    assert ttr({"convergence_reason": "job_submission_error: boom"}) is None
+    # In-progress runs / missing reason.
+    assert ttr({"convergence_reason": None}) is None
+    assert ttr({}) is None
+    assert ttr(None) is None
+
+
+def test_status_endpoint_is_five_steps_and_typed_terminal_reason(monkeypatch) -> None:
+    async def fake_run(_rid):
+        return {
+            "run_id": _RUN, "space_id": "space-1", "status": "CONVERGED",
+            "convergence_reason": "TARGET_REACHED",
+        }
+
+    async def empty(_rid):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", fake_run)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_stages", empty)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", empty)
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [])
+    monkeypatch.setattr(auto_optimize, "_resolve_run_knobs", lambda _run: (0.9, 3))
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/status")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["totalSteps"] == 5
+    assert body["terminalReason"] == "TARGET_REACHED"
+    assert body["targetAccuracy"] == 0.9
+    assert body["maxAttempts"] == 3
+    # convergenceReason is preserved for back-compat.
+    assert body["convergenceReason"] == "TARGET_REACHED"
+
+
+def test_run_summaries_enriched_with_typed_terminal_reason() -> None:
+    runs = [
+        {"run_id": "r1", "convergence_reason": "MAX_ATTEMPTS"},
+        {"run_id": "r2", "convergence_reason": "plateau"},  # legacy free-text
+    ]
+    out = auto_optimize._enrich_run_summaries(runs)
+    assert out[0]["terminal_reason"] == "MAX_ATTEMPTS"
+    assert out[1]["terminal_reason"] is None
+    # Raw convergence_reason untouched.
+    assert out[1]["convergence_reason"] == "plateau"
+
+
+# Item 4 — round-trip target_accuracy + max_attempts.
+
+
+def test_trigger_round_trips_loop_knobs(client, mock_sp_ws, mock_user_ws, monkeypatch) -> None:
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "validate_chat_model", lambda m, client=None: m)
+
+    fake_result = MagicMock(run_id="run-1", job_run_id=1, job_url=None, status="QUEUED")
+    with patch.object(auto_optimize, "trigger_optimization", return_value=fake_result) as tmock:
+        resp = client.post(
+            "/api/auto-optimize/trigger",
+            json={"space_id": "space-abc", "target_accuracy": 0.85, "max_attempts": 5},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Echoed back exactly as requested.
+    assert body["targetAccuracy"] == 0.85
+    assert body["maxAttempts"] == 5
+    # Threaded into trigger_optimization.
+    assert tmock.call_args.kwargs["target_accuracy"] == 0.85
+    assert tmock.call_args.kwargs["max_attempts"] == 5
+
+
+def test_trigger_rejects_out_of_range_target_accuracy(client) -> None:
+    """target_accuracy is bounded to [0, 1] by the Pydantic validator."""
+    resp = client.post(
+        "/api/auto-optimize/trigger",
+        json={"space_id": "space-abc", "target_accuracy": 90},  # 0-100 mistake
+    )
+    assert resp.status_code == 422
+
+
+# Item 5 — explicit is_champion / config_json on /iterations.
+
+
+def test_iterations_merge_is_champion_and_config_json(monkeypatch) -> None:
+    delta_rows = [
+        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 80.0,
+         "total_questions": 10, "correct_count": 8, "thresholds_met": False,
+         "rolled_back": False, "scores_json": "{}", "lever": None},
+        {"iteration": 2, "eval_scope": "full", "overall_accuracy": 90.0,
+         "total_questions": 10, "correct_count": 9, "thresholds_met": True,
+         "rolled_back": False, "scores_json": "{}", "lever": 1},
+    ]
+    loop_rows = [
+        {"iteration": 0, "eval_scope": "full", "is_champion": False,
+         "config_json": '{"v": 0}', "attempt_no": None, "attempt_mode": None,
+         "decision": None, "decision_reason": None},
+        {"iteration": 2, "eval_scope": "full", "is_champion": True,
+         "config_json": '{"v": 2}', "attempt_no": 2, "attempt_mode": "surgical",
+         "decision": "accept", "decision_reason": "improved"},
+    ]
+
+    async def empty(_rid):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", empty)
+    monkeypatch.setattr(auto_optimize, "_select_iterations_delta", lambda _rid: [dict(r) for r in delta_rows])
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [dict(r) for r in loop_rows])
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/iterations")
+    assert resp.status_code == 200, resp.text
+    out = {r["iteration"]: r for r in resp.json()}
+    assert out[2]["is_champion"] is True
+    assert out[2]["config_json"] == '{"v": 2}'
+    assert out[2]["attempt_no"] == 2
+    assert out[2]["attempt_mode"] == "surgical"
+    assert out[2]["decision"] == "accept"
+    assert out[0]["is_champion"] is False
+
+
+def test_iterations_no_loop_state_columns_degrade_gracefully(monkeypatch) -> None:
+    """A legacy table without loop-state columns ⇒ rows simply omit the new
+    fields (the UI keeps its idxmax fallback)."""
+    delta_rows = [
+        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 80.0,
+         "total_questions": 10, "correct_count": 8, "thresholds_met": True,
+         "rolled_back": False, "scores_json": "{}", "lever": None},
+    ]
+
+    async def empty(_rid):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", empty)
+    monkeypatch.setattr(auto_optimize, "_select_iterations_delta", lambda _rid: [dict(r) for r in delta_rows])
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [])
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/iterations")
+    assert resp.status_code == 200, resp.text
+    assert "is_champion" not in resp.json()[0]
+
+
+# Item 2 — loop-state / attempts read path.
+
+
+def test_loop_state_endpoint_builds_attempts_and_aggregate(monkeypatch) -> None:
+    loop_rows = [
+        # Baseline iter 0 — not an attempt (no attempt_no).
+        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 70.0,
+         "attempt_no": None, "is_champion": False},
+        # Coverage attempt 1 (rolled back).
+        {"iteration": 1, "eval_scope": "enrichment", "overall_accuracy": 68.0,
+         "attempt_no": 1, "attempt_mode": "coverage", "best_accuracy": 70.0,
+         "decision": "reject", "decision_reason": "rolled_back (Δacc<0)",
+         "rolled_back": True, "rollback_reason": "Δacc<0", "is_champion": False,
+         "current_hypothesis": '{"lever": 0}', "target_accuracy": 90.0,
+         "max_attempts": 3, "surgical_attempts_used": 0},
+        # Surgical attempt 2 (accepted, champion, terminal).
+        {"iteration": 2, "eval_scope": "full", "overall_accuracy": 92.0,
+         "attempt_no": 2, "attempt_mode": "surgical", "best_accuracy": 92.0,
+         "decision": "accept", "decision_reason": "improved", "rolled_back": False,
+         "is_champion": True, "best_config_version_id": "cfgsha:abc",
+         "terminal_reason": "TARGET_REACHED", "target_accuracy": 90.0,
+         "max_attempts": 3, "surgical_attempts_used": 1,
+         "do_not_repeat": '["lever5_example"]', "next_hypothesis": "null"},
+    ]
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [dict(r) for r in loop_rows])
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/loop-state")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Only the two attempts (coverage + surgical); baseline excluded.
+    assert [a["attemptNo"] for a in body["attempts"]] == [1, 2]
+    coverage = body["attempts"][0]
+    assert coverage["attemptMode"] == "coverage"
+    assert coverage["rolledBack"] is True
+    assert coverage["decisionReason"] == "rolled_back (Δacc<0)"
+    assert coverage["currentHypothesis"] == {"lever": 0}
+
+    surgical = body["attempts"][1]
+    assert surgical["isChampion"] is True
+    assert surgical["terminalReason"] == "TARGET_REACHED"
+    # B2 — per-attempt ledger fields surfaced (not only the run-level aggregate).
+    assert surgical["bestConfigVersionId"] == "cfgsha:abc"
+    assert surgical["doNotRepeat"] == ["lever5_example"]
+    assert surgical["nextHypothesis"] is None  # "null" JSON → None
+
+    ls = body["loopState"]
+    assert ls["bestAccuracy"] == 92.0
+    assert ls["bestConfigVersionId"] == "cfgsha:abc"
+    # target_accuracy normalized from the 0-100 column to the 0-1 request scale.
+    assert ls["targetAccuracy"] == 0.9
+    assert ls["maxAttempts"] == 3
+    assert ls["surgicalAttemptsUsed"] == 1
+    assert ls["terminalReason"] == "TARGET_REACHED"
+    assert ls["doNotRepeat"] == ["lever5_example"]
+    assert ls["attemptCount"] == 2
+
+
+def test_loop_state_endpoint_empty_for_legacy_run(monkeypatch) -> None:
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [])
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/loop-state")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["loopState"] is None
+    assert body["attempts"] == []
+
+
+# Item 6 — publish-record read path.
+
+
+def test_publish_record_endpoint_maps_artifact(monkeypatch) -> None:
+    payload = {
+        "run_id": _RUN, "space_id": "space-1", "final_status": "CONVERGED",
+        "terminal_reason": "TARGET_REACHED", "published": True,
+        "publish_outcome": "published", "champion_iteration": 2,
+        "champion_accuracy": 92.0, "champion_config_version_id": "cfgsha:abc",
+        "target_accuracy": 0.90, "max_attempts": 3,
+        "audit_summary": "Improved from 70 to 92.",
+        "improvement_trajectory": [
+            {"iteration": 0, "attempt_no": None, "attempt_mode": "baseline",
+             "eval_scope": "full", "accuracy": 70.0, "delta_vs_baseline": 0.0,
+             "best_accuracy": 70.0, "decision": None, "rolled_back": False,
+             "is_champion": False},
+            {"iteration": 2, "attempt_no": 2, "attempt_mode": "surgical",
+             "eval_scope": "full", "accuracy": 92.0, "delta_vs_baseline": 22.0,
+             "best_accuracy": 92.0, "decision": "accept", "rolled_back": False,
+             "is_champion": True},
+        ],
+        "concerns": ["Two questions still need review."],
+    }
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact",
+                        lambda _rid, kind: payload if kind == "publish_record" else None)
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/publish")
+    assert resp.status_code == 200, resp.text
+    pr = resp.json()["publishRecord"]
+    assert pr["published"] is True
+    assert pr["terminalReason"] == "TARGET_REACHED"
+    assert pr["championIteration"] == 2
+    assert pr["championAccuracy"] == 92.0
+    assert pr["championConfigVersionId"] == "cfgsha:abc"
+    assert pr["auditSummary"].startswith("Improved")
+    assert pr["concerns"] == ["Two questions still need review."]
+    assert len(pr["improvementTrajectory"]) == 2
+    assert pr["improvementTrajectory"][1]["attemptMode"] == "surgical"
+    assert pr["improvementTrajectory"][1]["deltaVsBaseline"] == 22.0
+
+
+def test_publish_record_null_when_absent(monkeypatch) -> None:
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda _rid, kind: None)
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/publish")
+    assert resp.status_code == 200
+    assert resp.json()["publishRecord"] is None
+
+
+# Item 7 — benchmark-QC metadata alongside benchmark-changes.
+
+
+def test_benchmark_changes_includes_qc(monkeypatch) -> None:
+    qc_payload = {
+        "run_id": _RUN, "valid_count": 32, "persisted_count": 32,
+        "repair_tries_used": 1, "benchmark_repair_max_tries": 3,
+        "repaired_ids": ["q5"], "repair_sweeps": 1, "final_validity": True,
+        "window": {"status": "in_window", "count": 32},
+        "window_target_min": 30, "window_target_max": 40,
+        "gt_correction_candidates": [],
+    }
+
+    async def empty(_rid):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_benchmark_mutations", empty)
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [])
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact",
+                        lambda _rid, kind: qc_payload if kind == "benchmark_qc" else None)
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/benchmark-changes")
+    assert resp.status_code == 200, resp.text
+    qc = resp.json()["qc"]
+    assert qc is not None
+    assert qc["validCount"] == 32
+    assert qc["repairTriesUsed"] == 1
+    assert qc["repairMaxTries"] == 3
+    assert qc["finalValidity"] is True
+    assert qc["window"] == {"status": "in_window", "count": 32}
+    assert qc["windowTargetMin"] == 30
+
+
+def test_benchmark_changes_qc_null_for_legacy_run(monkeypatch) -> None:
+    async def empty(_rid):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_benchmark_mutations", empty)
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [])
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda _rid, kind: None)
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/benchmark-changes")
+    assert resp.status_code == 200
+    assert resp.json()["qc"] is None
+
+
+# ── Phase 10 cross-review fixes (B1–B4) ─────────────────────────────────
+
+
+# B1 — attempts collapse to ONE full-benchmark row per attempt_no.
+
+
+def test_loop_state_dedups_to_one_full_row_per_attempt(monkeypatch) -> None:
+    """Duplicate rows and non-full-benchmark probe rows for the same attempt
+    must collapse to a single attempt carrying the latest full-benchmark
+    accuracy — never render as phantom/duplicate attempts."""
+    loop_rows = [
+        # baseline iter 0 — not an attempt.
+        {"iteration": 0, "eval_scope": "full", "attempt_no": None, "overall_accuracy": 70.0},
+        # coverage attempt 1 at eval_scope='enrichment' (full-benchmark scored).
+        {"iteration": 1, "eval_scope": "enrichment", "attempt_no": 1,
+         "overall_accuracy": 68.0, "attempt_mode": "coverage"},
+        # surgical attempt 2: a stale slice probe row (non-full) + the real full
+        # row + an earlier duplicate full row — must collapse to the latest full.
+        {"iteration": 2, "eval_scope": "slice", "attempt_no": 2, "overall_accuracy": 55.0,
+         "timestamp": "2026-06-30T00:00:00Z"},
+        {"iteration": 2, "eval_scope": "full", "attempt_no": 2, "overall_accuracy": 80.0,
+         "attempt_mode": "surgical", "timestamp": "2026-06-30T00:01:00Z"},
+        {"iteration": 3, "eval_scope": "full", "attempt_no": 2, "overall_accuracy": 88.0,
+         "attempt_mode": "surgical", "timestamp": "2026-06-30T00:02:00Z"},
+    ]
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [dict(r) for r in loop_rows])
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/loop-state")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Exactly two distinct attempts (coverage 1, surgical 2) — no duplicates,
+    # no phantom from the slice row.
+    assert [a["attemptNo"] for a in body["attempts"]] == [1, 2]
+    assert body["loopState"]["attemptCount"] == 2
+    surgical = body["attempts"][1]
+    # The authoritative row is the LATEST full-benchmark row (iter 3, 88.0) —
+    # not the slice probe (55.0) and not the earlier full row (80.0).
+    assert surgical["evalScope"] == "full"
+    assert surgical["accuracy"] == 88.0
+
+
+# B3 — small targets round-trip (source-specific 0–100 → 0–1).
+
+
+def test_delta_accuracy_scale_handles_small_targets() -> None:
+    conv = auto_optimize._delta_accuracy_to_unit_scale
+    assert conv(90.0) == 0.9
+    assert conv(50.0) == 0.5
+    # The footgun: a 0.01 request is stored as 1.0 on the 0–100 column; a
+    # magnitude heuristic would leave it at 1.0. Unconditional /100 → 0.01.
+    assert conv(1.0) == 0.01
+    assert conv(None) is None
+
+
+def test_loop_state_target_accuracy_small_value_round_trips(monkeypatch) -> None:
+    loop_rows = [
+        {"iteration": 1, "eval_scope": "full", "attempt_no": 1, "overall_accuracy": 5.0,
+         "best_accuracy": 5.0, "target_accuracy": 1.0, "max_attempts": 3},
+    ]
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [dict(r) for r in loop_rows])
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/loop-state")
+    assert resp.status_code == 200
+    # 0–100 column value 1.0 → 0.01 request scale (not 1.0).
+    assert resp.json()["loopState"]["targetAccuracy"] == 0.01
+
+
+# B4 — knobs echoed from durable run-level sources before the loop runs.
+
+
+def test_status_echoes_knobs_from_run_manifest_pre_loop(monkeypatch) -> None:
+    """A freshly-triggered run (00 wrote the manifest, loop hasn't committed an
+    attempt) still echoes the knobs from the run_manifest artifact (0–1)."""
+    async def fake_run(_rid):
+        return {"run_id": _RUN, "space_id": "s", "status": "IN_PROGRESS",
+                "convergence_reason": None, "job_run_id": "555"}
+
+    async def empty(_rid):
+        return []
+
+    manifest = {"run_id": _RUN, "target_accuracy": 0.85, "max_attempts": 5}
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", fake_run)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_stages", empty)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", empty)
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [])
+    # No loop-state rows yet; manifest is present.
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact",
+                        lambda _rid, kind: manifest if kind == "run_manifest" else None)
+    monkeypatch.setattr(auto_optimize, "_loop_state_knobs", lambda _rid: (None, None))
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/status")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["targetAccuracy"] == 0.85
+    assert body["maxAttempts"] == 5
+
+
+def test_resolve_run_knobs_falls_back_to_job_params_in_queued_window(monkeypatch) -> None:
+    """Before 00 writes the manifest (QUEUED/startup), the knobs come from the
+    Databricks job-run parameters the trigger set (0–1 scale)."""
+    from unittest.mock import MagicMock
+
+    # No manifest, no loop-state rows yet.
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda _rid, kind: None)
+    monkeypatch.setattr(auto_optimize, "_loop_state_knobs", lambda _rid: (None, None))
+
+    sp_ws = MagicMock()
+    job_run = MagicMock()
+    job_run.job_parameters = [
+        MagicMock(name="target_accuracy", value="0.7"),
+        MagicMock(name="max_attempts", value="4"),
+    ]
+    # MagicMock(name=...) sets the repr, not the .name attribute — set explicitly.
+    job_run.job_parameters[0].name = "target_accuracy"
+    job_run.job_parameters[1].name = "max_attempts"
+    sp_ws.jobs.get_run.return_value = job_run
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: sp_ws)
+
+    ta, ma = auto_optimize._resolve_run_knobs(
+        {"run_id": _RUN, "status": "IN_PROGRESS", "job_run_id": "999"}
+    )
+    assert ta == 0.7
+    assert ma == 4
+    sp_ws.jobs.get_run.assert_called_once()
+
+
+def test_resolve_run_knobs_null_for_legacy_terminal_run(monkeypatch) -> None:
+    """A true legacy run (no manifest, no loop-state, terminal) returns
+    (None, None) and never makes a Jobs API call."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda _rid, kind: None)
+    monkeypatch.setattr(auto_optimize, "_loop_state_knobs", lambda _rid: (None, None))
+    sp_ws = MagicMock()
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: sp_ws)
+
+    ta, ma = auto_optimize._resolve_run_knobs(
+        {"run_id": _RUN, "status": "CONVERGED", "job_run_id": "123"}
+    )
+    assert ta is None and ma is None
+    sp_ws.jobs.get_run.assert_not_called()

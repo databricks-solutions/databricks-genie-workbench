@@ -363,6 +363,8 @@ def submit_optimization(
     warehouse_id: str = "",
     target_benchmark_count: str = "",
     llm_model: str = "",
+    target_accuracy: str = "0.90",
+    max_attempts: str = "3",
 ) -> tuple[str, int]:
     """Trigger a run on the bundle-managed optimization job.
 
@@ -388,6 +390,12 @@ def submit_optimization(
                 "apply_mode": apply_mode,
                 "levers": levers,
                 "max_iterations": max_iterations,
+                # GSO v2 loop knobs (arch §13 / D9). The job declares these in
+                # databricks.yml; passing them here lets a user-chosen value
+                # override the job default. target_accuracy is the 0–1 stop
+                # target; max_attempts bounds the surgical hill-climb.
+                "target_accuracy": target_accuracy,
+                "max_attempts": max_attempts,
                 "triggered_by": triggered_by,
                 "deploy_target": deploy_target,
                 "warehouse_id": warehouse_id,

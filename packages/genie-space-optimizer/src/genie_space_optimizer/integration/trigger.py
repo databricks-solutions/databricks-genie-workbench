@@ -46,6 +46,8 @@ def trigger_optimization(
     apply_mode: str = "genie_config",
     levers: list[int] | None = None,
     deploy_target: str | None = None,
+    target_accuracy: float | None = None,
+    max_attempts: int | None = None,
 ) -> TriggerResult:
     """Trigger a GSO optimization run using SQL Warehouse for state management.
 
@@ -62,6 +64,10 @@ def trigger_optimization(
         apply_mode: One of ``"genie_config"``, ``"uc_artifact"``, ``"both"``.
         levers: Subset of levers to run (default ``[1,2,3,4,5]``).
         deploy_target: Optional cross-environment deployment target URL.
+        target_accuracy: Stop-early target accuracy on the 0–1 scale (default
+            ``0.90`` when None — matches the job's databricks.yml param).
+        max_attempts: SURGICAL hill-climb budget (default ``3`` when None); the
+            attempt-1 coverage pass is a free probe that never consumes a slot.
 
     Returns:
         :class:`TriggerResult` with run_id, job_run_id, job_url, and status.
@@ -191,6 +197,15 @@ def trigger_optimization(
     levers_resolved = levers if levers else list(DEFAULT_LEVER_ORDER)
     levers_str = json.dumps(levers_resolved)
 
+    # Resolve the loop knobs to the job's databricks.yml defaults when the caller
+    # omits them, and stringify for the Jobs run_now job_parameters (all job
+    # params are strings). target_accuracy stays on the 0–1 scale the loop
+    # expects (run_03_optimize normalizes ≤1 to the 0–100 internal scale).
+    target_accuracy_str = (
+        f"{float(target_accuracy):g}" if target_accuracy is not None else "0.90"
+    )
+    max_attempts_str = str(int(max_attempts)) if max_attempts is not None else "3"
+
     wh_create_run(
         ws,
         config.warehouse_id,
@@ -223,6 +238,8 @@ def trigger_optimization(
             deploy_target=deploy_target or "",
             warehouse_id=config.warehouse_id or "",
             llm_model=config.llm_model or "",
+            target_accuracy=target_accuracy_str,
+            max_attempts=max_attempts_str,
         )
 
         sql_warehouse_execute(
