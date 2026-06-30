@@ -13,6 +13,7 @@ import inspect
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 from genie_space_optimizer.optimization import applier as applier_mod
 from genie_space_optimizer.optimization import harness
@@ -187,6 +188,56 @@ def test_firewall_coverage_examples_strips_leak_from_instructions_path() -> None
     assert cfg["_parsed_space"]["instructions"]["example_question_sqls"][0]["question"] in ("leak?", "ok?")
 
 
+# ── D1: firewall is FAIL-CLOSED — strip/re-PATCH failure must NOT be swallowed ─
+def test_firewall_reraises_when_strip_repatch_fails() -> None:
+    # Leak detected, but the live strip/re-PATCH fails → the helper must RAISE so
+    # the caller hard-stops (proven rollback + LOOP_STATE_INVALID); coverage must
+    # NOT be evaluated against the still-leaked config.
+    def _fake_aps(w, space_id, patches, snapshot, **kwargs):  # noqa: ANN001
+        return {"dropped_patches": [
+            {"example_question": "leak?", "drop_reason": "benchmark_leak:qid"},
+        ]}
+
+    def _boom_patch(w, sid, c):  # noqa: ANN001
+        raise RuntimeError("genie API down")
+
+    cfg = {"_parsed_space": {"instructions": {"example_question_sqls": [
+        {"question": "leak?", "sql": "SELECT 1"},
+    ]}}}
+    with patch.object(applier_mod, "apply_patch_set", _fake_aps), \
+         patch("genie_space_optimizer.common.genie_client.patch_space_config", _boom_patch):
+        with pytest.raises(Exception):
+            harness._firewall_coverage_example_sqls(
+                w=MagicMock(), space_id="sp", config=cfg,
+                benchmarks=[{"id": "b1"}], apply_mode="genie_config",
+            )
+
+
+def test_firewall_reraises_when_apply_patch_set_raises() -> None:
+    def _boom_aps(*a, **k):  # noqa: ANN002, ANN003
+        raise RuntimeError("applier exploded")
+
+    cfg = {"_parsed_space": {"instructions": {"example_question_sqls": [
+        {"question": "q?", "sql": "SELECT 1"},
+    ]}}}
+    with patch.object(applier_mod, "apply_patch_set", _boom_aps):
+        with pytest.raises(Exception):
+            harness._firewall_coverage_example_sqls(
+                w=MagicMock(), space_id="sp", config=cfg,
+                benchmarks=[{"id": "b1"}], apply_mode="genie_config",
+            )
+
+
+def test_coverage_caller_does_not_swallow_firewall_failure() -> None:
+    # The coverage caller must NOT wrap the firewall in a 'non-fatal' try/except;
+    # a firewall failure propagates to the fail-closed handler (LOOP_STATE_INVALID).
+    src = inspect.getsource(harness._run_lever_loop)
+    assert "Coverage example-SQL firewall pass raised (non-fatal)" not in src
+    # The outer coverage handler is fail-closed (always LOOP_STATE_INVALID).
+    fw_block = src.split("_firewall_coverage_example_sqls(", 1)[1].split("\n\n", 1)[0]
+    assert "non-fatal" not in fw_block.lower()
+
+
 # ── C2: mutation detection via real pre/post config comparison ──────────────
 def test_coverage_candidate_detection_catches_instruction_only_mutation() -> None:
     # A coverage pass whose ONLY mutator touched instructions (e.g. the legacy
@@ -208,7 +259,7 @@ def test_coverage_block_uses_config_comparison_for_candidates() -> None:
     assert "_canon_cfg(_coverage_pre_snapshot) != _canon_cfg(metadata_snapshot)" in src
 
 
-# ── C3: standalone path hides the rejected enrichment row + resets best ─────
+# ── C3 / D3: scoped state correction, SQL-escaped, REQUIRED (fail-closed) ────
 def test_mark_iteration_rolled_back_is_scoped_by_eval_scope() -> None:
     captured: list[str] = []
     with patch.object(state_mod, "execute_delta_write_with_retry",
@@ -225,13 +276,81 @@ def test_mark_iteration_rolled_back_is_scoped_by_eval_scope() -> None:
     assert "iteration = 0" in sql
 
 
-def test_optimize_genie_space_rollback_hides_enrichment_row_and_resets_best() -> None:
+def test_mark_iteration_rolled_back_escapes_run_id_and_scope() -> None:
+    # D3: run_id / eval_scope are SQL-escaped (quote-doubled), not interpolated raw.
+    captured: list[str] = []
+    with patch.object(state_mod, "execute_delta_write_with_retry",
+                      lambda spark, sql, **k: captured.append(sql)):
+        state_mod.mark_iteration_rolled_back(
+            MagicMock(), "run' OR '1'='1", 0, catalog="c", schema="s",
+            eval_scope="enri'chment", reason="r'x",
+        )
+    sql = captured[-1]
+    assert "run'' OR ''1''=''1" in sql  # quote-doubled, no injection
+    assert "eval_scope = 'enri''chment'" in sql
+
+
+def test_mark_iteration_rolled_back_raises_on_failure() -> None:
+    # D3: REQUIRED, not best-effort — a failed UPDATE must raise so the caller
+    # can fail-closed rather than leaving the rejected row selectable.
+    def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise RuntimeError("delta down")
+
+    with patch.object(state_mod, "execute_delta_write_with_retry", _boom):
+        with pytest.raises(Exception):
+            state_mod.mark_iteration_rolled_back(
+                MagicMock(), "run1", 0, catalog="c", schema="s",
+                eval_scope="enrichment", reason="x",
+            )
+
+
+def test_standalone_rollback_correction_replaces_config_with_baseline() -> None:
+    # D2: after a coverage rollback, the surgical loop must start from the PROVEN
+    # baseline config, never the rejected post-enrichment one.
+    enrichment_out = {"config": {"_parsed_space": {"REJECTED": True}}}
+    baseline_cfg = {"_parsed_space": {"BASELINE": True}}
+    with patch.object(harness, "update_run_status"), \
+         patch("genie_space_optimizer.optimization.state.mark_iteration_rolled_back"), \
+         patch("genie_space_optimizer.common.genie_client.fetch_space_config",
+               return_value=baseline_cfg):
+        ok = harness._correct_state_after_standalone_coverage_rollback(
+            spark=MagicMock(), w=MagicMock(), run_id="r1", space_id="sp",
+            catalog="c", schema="s", enrichment_out=enrichment_out,
+            baseline_accuracy=80.0, delta_pp=-5.0,
+        )
+    assert ok is True
+    # The rejected config was replaced with the proven baseline.
+    assert enrichment_out["config"] == baseline_cfg
+
+
+def test_standalone_rollback_correction_fails_closed_on_state_error() -> None:
+    # D3: if the required state correction cannot commit, return False so the
+    # caller stops LOOP_STATE_INVALID instead of entering surgical mode.
+    enrichment_out = {"config": {"_parsed_space": {"REJECTED": True}}}
+
+    def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise RuntimeError("mark failed")
+
+    with patch.object(harness, "update_run_status"), \
+         patch("genie_space_optimizer.optimization.state.mark_iteration_rolled_back", _boom):
+        ok = harness._correct_state_after_standalone_coverage_rollback(
+            spark=MagicMock(), w=MagicMock(), run_id="r1", space_id="sp",
+            catalog="c", schema="s", enrichment_out=enrichment_out,
+            baseline_accuracy=80.0, delta_pp=-5.0,
+        )
+    assert ok is False
+    # The rejected config is NOT silently carried forward as "good"; the caller
+    # will hard-stop LOOP_STATE_INVALID (asserted via the source contract below).
+    assert enrichment_out["config"] == {"_parsed_space": {"REJECTED": True}}
+
+
+def test_optimize_genie_space_fail_closed_on_correction_failure() -> None:
+    # The standalone caller stops LOOP_STATE_INVALID when the correction returns False.
     src = inspect.getsource(harness.optimize_genie_space)
-    # On a post-enrichment regression the rejected enrichment row is marked
-    # rolled_back (scoped) and run best-iteration/best-accuracy reset to baseline.
-    assert "mark_iteration_rolled_back" in src
-    assert 'eval_scope="enrichment"' in src
-    assert "best_iteration=0" in src
+    assert "if not _correct_state_after_standalone_coverage_rollback(" in src
+    _tail = src.split("if not _correct_state_after_standalone_coverage_rollback(", 1)[1][:1300]
+    assert 'convergence_reason = "LOOP_STATE_INVALID"' in _tail
+    assert "return result" in _tail
 
 
 # ── NB1: no-candidate loader failure does NOT leave synthetic counts current ─
