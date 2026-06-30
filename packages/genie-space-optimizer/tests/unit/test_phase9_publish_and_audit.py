@@ -100,12 +100,19 @@ def _provenance_df() -> pd.DataFrame:
 
 def _run_publish_and_audit(
     *,
-    full_iters: list[dict],
+    scored_iters: list[dict],
     run_row: dict | None = None,
     llm_text: str | None = "Baseline 80.0% climbed to 91.0%; champion iter 2 published.",
     llm_raises: bool = False,
+    promoted_iteration: int = 2,
+    refreshed_best_accuracy: float | None = None,
 ):
     """Invoke ``publish_and_audit`` with all Delta/LLM deps patched.
+
+    ``scored_iters`` is the ``full`` + ``enrichment`` set the patched
+    ``load_all_scored_iterations`` returns. ``promoted_iteration`` /
+    ``refreshed_best_accuracy`` model what ``promote_best_model`` + the post-promote
+    run-row reread return on the publish path.
 
     Returns ``(result, artifact_calls, update_calls, promote_mock, llm_mock)``.
     """
@@ -121,16 +128,30 @@ def _run_publish_and_audit(
     def _fake_update_run_status(spark, run_id, catalog, schema, **kwargs):  # noqa: ANN001
         update_calls.append(kwargs)
 
-    promote_mock = MagicMock(return_value=2)
+    promote_mock = MagicMock(return_value=promoted_iteration)
 
     if llm_raises:
         llm_mock = MagicMock(side_effect=RuntimeError("endpoint 500"))
     else:
         llm_mock = MagicMock(return_value=(llm_text, MagicMock()))
 
+    # The publish path rereads the run row after promote; model a refreshed
+    # best_accuracy on the 2nd+ call when asked.
+    if refreshed_best_accuracy is not None:
+        refreshed = {**run_row, "best_accuracy": refreshed_best_accuracy}
+        _calls = {"n": 0}
+
+        def _load_run(*a, **k):  # noqa: ANN002, ANN003
+            _calls["n"] += 1
+            return run_row if _calls["n"] == 1 else refreshed
+
+        load_run_mock = MagicMock(side_effect=_load_run)
+    else:
+        load_run_mock = MagicMock(return_value=run_row)
+
     with (
-        patch.object(P, "load_run", return_value=run_row),
-        patch.object(P, "load_all_full_iterations", return_value=full_iters),
+        patch.object(P, "load_run", load_run_mock),
+        patch.object(P, "load_all_scored_iterations", return_value=scored_iters),
         patch.object(P, "load_patches", return_value=_patches_df()),
         patch.object(P, "load_provenance", return_value=_provenance_df()),
         patch.object(P, "promote_best_model", promote_mock),
@@ -151,7 +172,7 @@ def _run_publish_and_audit(
 
 def test_target_reached_publishes_and_writes_full_record():
     result, artifacts, updates, promote, _llm = _run_publish_and_audit(
-        full_iters=_full_iters(champion_reason="TARGET_REACHED"),
+        scored_iters=_full_iters(champion_reason="TARGET_REACHED"),
     )
     # promote_best_model called (idempotent Delta-only publish).
     promote.assert_called_once()
@@ -189,7 +210,7 @@ def test_target_reached_publishes_and_writes_full_record():
 
 def test_max_attempts_publishes_with_max_iterations_status():
     result, artifacts, updates, promote, _llm = _run_publish_and_audit(
-        full_iters=_full_iters(champion_reason="MAX_ATTEMPTS", champion_accuracy=88.0),
+        scored_iters=_full_iters(champion_reason="MAX_ATTEMPTS", champion_accuracy=88.0),
     )
     promote.assert_called_once()
     assert result["published"] is True
@@ -205,7 +226,7 @@ def test_max_attempts_publishes_with_max_iterations_status():
 
 def test_eval_invalid_does_not_publish_status_failed():
     result, artifacts, updates, promote, _llm = _run_publish_and_audit(
-        full_iters=_full_iters(champion_reason="EVAL_INVALID"),
+        scored_iters=_full_iters(champion_reason="EVAL_INVALID"),
     )
     promote.assert_not_called()
     assert result["published"] is False
@@ -223,7 +244,7 @@ def test_eval_invalid_does_not_publish_status_failed():
 
 def test_loop_state_invalid_does_not_publish_status_failed():
     result, artifacts, updates, promote, _llm = _run_publish_and_audit(
-        full_iters=_full_iters(champion_reason="LOOP_STATE_INVALID"),
+        scored_iters=_full_iters(champion_reason="LOOP_STATE_INVALID"),
     )
     promote.assert_not_called()
     assert result["published"] is False
@@ -234,7 +255,7 @@ def test_loop_state_invalid_does_not_publish_status_failed():
 
 def test_no_new_hypothesis_does_not_publish_status_stalled():
     result, artifacts, updates, promote, _llm = _run_publish_and_audit(
-        full_iters=_full_iters(champion_reason="NO_NEW_HYPOTHESIS"),
+        scored_iters=_full_iters(champion_reason="NO_NEW_HYPOTHESIS"),
     )
     promote.assert_not_called()
     assert result["published"] is False
@@ -248,7 +269,7 @@ def test_no_new_hypothesis_does_not_publish_status_stalled():
 
 def test_eval_budget_exhausted_does_not_publish_status_stalled():
     result, _artifacts, updates, promote, _llm = _run_publish_and_audit(
-        full_iters=_full_iters(champion_reason="EVAL_BUDGET_EXHAUSTED"),
+        scored_iters=_full_iters(champion_reason="EVAL_BUDGET_EXHAUSTED"),
     )
     promote.assert_not_called()
     assert result["published"] is False
@@ -263,7 +284,7 @@ def test_high_accuracy_but_eval_invalid_still_not_published():
     """A 95% champion would re-derive to TARGET_REACHED under the old shell.
     Reading the stamped EVAL_INVALID instead means it is NOT published."""
     result, artifacts, updates, promote, _llm = _run_publish_and_audit(
-        full_iters=_full_iters(champion_reason="EVAL_INVALID", champion_accuracy=95.0),
+        scored_iters=_full_iters(champion_reason="EVAL_INVALID", champion_accuracy=95.0),
     )
     promote.assert_not_called()
     assert result["published"] is False
@@ -274,9 +295,11 @@ def test_high_accuracy_but_eval_invalid_still_not_published():
     assert artifacts[0]["payload"]["terminal_reason"] == "EVAL_INVALID"
 
 
-def test_terminal_reason_falls_back_to_other_full_row_when_champion_unstamped():
-    """If the champion row has no terminal_reason, the highest-iteration full
-    row that carries one is used (the final-attempt row ≠ champion case)."""
+def test_unstamped_champion_does_not_publish_from_nonchampion_reason():
+    """B1: a reason stamped on a NON-champion row must NEVER gate the publish.
+    Champion (iter 2) is unstamped; a non-champion row carries MAX_ATTEMPTS — the
+    publish is fail-closed (no publish, STALLED), and the non-champion reason is
+    surfaced ONLY as a diagnostic concern."""
     iters = _full_iters(champion_reason=None, champion_accuracy=91.0)
     # champion (iter 2) unstamped; a later rolled-back surgical attempt carries it.
     iters.append({
@@ -285,19 +308,26 @@ def test_terminal_reason_falls_back_to_other_full_row_when_champion_unstamped():
         "decision": "reject", "is_champion": False, "terminal_reason": "MAX_ATTEMPTS",
         "remaining_failures": "[]",
     })
-    result, _artifacts, _updates, promote, _llm = _run_publish_and_audit(full_iters=iters)
-    assert result["terminal_reason"] == "MAX_ATTEMPTS"
-    # champion stays iter 2 (highest non-rolled-back / is_champion), and publishes.
+    result, artifacts, updates, promote, _llm = _run_publish_and_audit(scored_iters=iters)
+    # Fail-closed: NOT published, champion stays iter 2, status STALLED.
+    promote.assert_not_called()
+    assert result["published"] is False
+    assert result["terminal_reason"] is None
+    assert result["publish_outcome"] == "not_published:UNKNOWN"
+    assert result["final_status"] == "STALLED"
     assert result["champion_iteration"] == 2
-    assert result["published"] is True
-    promote.assert_called_once()
+    # MAX_ATTEMPTS is recorded ONLY as a diagnostic concern, never used to gate.
+    concerns = artifacts[0]["payload"]["concerns"]
+    assert any("MAX_ATTEMPTS" in c and "NOT used for gating" in c for c in concerns)
+    assert updates[0]["status"] == "STALLED"
+    assert updates[0]["convergence_reason"] is None
 
 
 def test_absent_terminal_reason_is_fail_closed_no_publish():
     """No stamped reason anywhere ⇒ fail-closed: do NOT publish, STALLED, concern.
     Never fabricate TARGET_REACHED from accuracy."""
     iters = _full_iters(champion_reason=None, champion_accuracy=99.0)
-    result, artifacts, updates, promote, _llm = _run_publish_and_audit(full_iters=iters)
+    result, artifacts, updates, promote, _llm = _run_publish_and_audit(scored_iters=iters)
     promote.assert_not_called()
     assert result["published"] is False
     assert result["terminal_reason"] is None
@@ -313,7 +343,7 @@ def test_absent_terminal_reason_is_fail_closed_no_publish():
 
 def test_audit_summary_failure_is_non_fatal_publish_still_succeeds():
     result, artifacts, updates, promote, llm = _run_publish_and_audit(
-        full_iters=_full_iters(champion_reason="TARGET_REACHED"),
+        scored_iters=_full_iters(champion_reason="TARGET_REACHED"),
         llm_raises=True,
     )
     llm.assert_called_once()
@@ -331,7 +361,7 @@ def test_audit_summary_failure_is_non_fatal_publish_still_succeeds():
 
 def test_audit_summary_empty_output_adds_concern_but_publishes():
     result, artifacts, _updates, promote, _llm = _run_publish_and_audit(
-        full_iters=_full_iters(champion_reason="TARGET_REACHED"),
+        scored_iters=_full_iters(champion_reason="TARGET_REACHED"),
         llm_text="   ",
     )
     promote.assert_called_once()
@@ -404,6 +434,142 @@ def test_build_audit_summary_passes_only_context_to_llm():
     assert json.loads(msgs[1]["content"]) == ctx
 
 
+# ── (B3) firewall: free-text decision_reason excluded + recursive guard ──────
+
+
+def test_decision_reason_free_text_is_excluded_from_audit_context():
+    """B3(a): the free-text ``decision_reason`` is NEVER in the LLM context, even
+    when it embeds benchmark answer-key material. Only the bounded ``decision``
+    value survives into the trajectory."""
+    run_row = _run_row()
+    iters = _full_iters(champion_reason="TARGET_REACHED")
+    # Inject leaky free text into decision_reason values on multiple rungs.
+    iters[2]["decision_reason"] = "rolled back; expected_sql was SELECT secret_q FROM t"
+    iters[1]["decision_reason"] = "coverage note quoting the benchmark question text"
+    champion = P.resolve_champion_row(iters)
+    ctx = P.as_audit_context(
+        run_row, iters, _patches_df(), _provenance_df(),
+        terminal_reason="TARGET_REACHED", champion_row=champion,
+        target_accuracy=90.0, max_attempts=3,
+    )
+    import json
+    blob = json.dumps(ctx, default=str)
+    assert "decision_reason" not in blob
+    assert "expected_sql" not in blob
+    assert "secret_q" not in blob
+    assert "benchmark question text" not in blob
+    # The bounded decision value IS retained on the trajectory rungs.
+    assert all("decision" in rung for rung in ctx["improvement_trajectory"])
+    assert all("decision_reason" not in rung for rung in ctx["improvement_trajectory"])
+
+
+def test_assert_leak_free_is_recursive_over_nested_structures():
+    """B3(b): the guard walks nested dicts/lists, not just top-level keys."""
+    import pytest
+    with pytest.raises(ValueError):
+        P._assert_leak_free({"a": {"b": [{"expected_sql": "SELECT secret"}]}})
+    with pytest.raises(ValueError):
+        P._assert_leak_free({"trajectory": [{"nested": {"question": "what is x?"}}]})
+    # A clean nested structure passes.
+    P._assert_leak_free({"a": {"b": [{"accuracy": 91.0, "decision": "accept"}]}})
+
+
+# ── (B2) accepted enrichment/coverage rung as champion ───────────────────────
+
+
+def _enrichment_champion_iters() -> list[dict]:
+    """baseline (0, full) + an ACCEPTED coverage rung (1, enrichment) that is the
+    highest-accuracy champion — mirrors how Phase 8 persists an accepted coverage
+    attempt (``eval_scope='enrichment'``)."""
+    return [
+        {
+            "iteration": 0, "eval_scope": "full", "rolled_back": False,
+            "overall_accuracy": 80.0, "attempt_no": None, "attempt_mode": None,
+            "decision": None, "is_champion": False, "terminal_reason": None,
+            "remaining_failures": "[]",
+        },
+        {
+            "iteration": 1, "eval_scope": "enrichment", "rolled_back": False,
+            "overall_accuracy": 92.0, "attempt_no": 1, "attempt_mode": "coverage",
+            "decision": "accept", "is_champion": True, "terminal_reason": "TARGET_REACHED",
+            "best_accuracy": 92.0, "best_config_version_id": "cfg-cov",
+            "surgical_attempts_used": 0, "target_accuracy": 90.0, "max_attempts": 3,
+            "remaining_failures": "[]",
+        },
+    ]
+
+
+def test_enrichment_coverage_row_resolves_as_champion():
+    """B2: an accepted ``eval_scope='enrichment'`` coverage rung is selectable as
+    the champion (promotion's candidate universe), with correct accuracy/reason."""
+    iters = _enrichment_champion_iters()
+    champ = P.resolve_champion_row(iters)
+    assert champ is not None
+    assert champ["eval_scope"] == "enrichment"
+    assert champ["overall_accuracy"] == 92.0
+    assert P.resolve_terminal_reason(champ) == "TARGET_REACHED"
+    # The coverage (enrichment) rung is present in the trajectory.
+    traj = P.build_improvement_trajectory(iters)
+    assert any(
+        t["eval_scope"] == "enrichment" and t["attempt_mode"] == "coverage"
+        for t in traj
+    )
+    # delta computed off the iter-0 FULL baseline (80.0), not the enrichment row.
+    cov = next(t for t in traj if t["eval_scope"] == "enrichment")
+    assert cov["delta_vs_baseline"] == 12.0
+
+
+def test_publish_resolves_enrichment_champion_end_to_end():
+    """B2 through the orchestrator: the publish_record champion pointer + accuracy
+    reflect the enrichment coverage champion, and its rung is in the trajectory."""
+    result, artifacts, _updates, promote, _llm = _run_publish_and_audit(
+        scored_iters=_enrichment_champion_iters(),
+        promoted_iteration=1, refreshed_best_accuracy=92.0,
+    )
+    promote.assert_called_once()
+    assert result["published"] is True
+    assert result["champion_iteration"] == 1
+    assert result["champion_accuracy"] == 92.0
+    traj = artifacts[0]["payload"]["improvement_trajectory"]
+    assert any(
+        t["eval_scope"] == "enrichment" and t["attempt_mode"] == "coverage"
+        for t in traj
+    )
+
+
+# ── (NB1) champion config pointer falls back to a stable config_json hash ─────
+
+
+def test_champion_config_version_id_falls_back_to_config_json_hash():
+    # No best_config_version_id, but config_json present ⇒ stable derived pointer.
+    row = {"iteration": 2, "config_json": '{"tables": ["t"], "k": "v"}'}
+    vid = P._champion_config_version_id(row)
+    assert vid and vid.startswith("cfgsha:")
+    # Deterministic for the same config_json.
+    assert vid == P._champion_config_version_id(
+        {"iteration": 2, "config_json": '{"tables": ["t"], "k": "v"}'}
+    )
+    # An explicit best_config_version_id is preferred when present.
+    assert P._champion_config_version_id(
+        {"best_config_version_id": "cfg-x", "config_json": "{}"}
+    ) == "cfg-x"
+    # None only when neither is available.
+    assert P._champion_config_version_id({"iteration": 2}) is None
+
+
+def test_publish_record_pointer_uses_config_json_hash_when_no_version_id():
+    """NB1 through the orchestrator: a real-shaped champion row (no
+    best_config_version_id, but config_json present) still yields a complete,
+    non-empty champion_config_version_id in the publish_record."""
+    iters = _full_iters(champion_reason="TARGET_REACHED")
+    champ = iters[2]
+    champ.pop("best_config_version_id", None)
+    champ["config_json"] = '{"tables": ["sales"], "instructions": "x"}'
+    result, artifacts, _updates, _promote, _llm = _run_publish_and_audit(scored_iters=iters)
+    pointer = artifacts[0]["payload"]["champion_config_version_id"]
+    assert pointer and pointer.startswith("cfgsha:")
+
+
 # ── improvement trajectory shape ─────────────────────────────────────────────
 
 
@@ -419,3 +585,5 @@ def test_improvement_trajectory_is_baseline_coverage_surgical_staircase():
     assert traj[1]["delta_vs_baseline"] == 4.0
     assert traj[2]["delta_vs_baseline"] == 11.0
     assert traj[2]["is_champion"] is True
+    # B3: free-text decision_reason is not present on trajectory rungs.
+    assert all("decision_reason" not in t for t in traj)
