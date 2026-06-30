@@ -32,6 +32,8 @@ import type {
   GSOPermissionCheck,
   GSOPatch,
   GSOBenchmarkChanges,
+  GSOLoopStateResponse,
+  GSOPublishRecordResponse,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -563,11 +565,37 @@ export async function getAutoOptimizeSuggestions(runId: string): Promise<import(
 }
 
 // GSO v2 Phase 6 (§3.5) — benchmark provenance ledger (added/removed/changed
-// questions GSO made in the live Genie Space).
+// questions GSO made in the live Genie Space). GSO v2 (item 7): the response
+// also carries `qc` (30–40 window status, repair tries, validity findings).
 export async function getAutoOptimizeBenchmarkChanges(runId: string): Promise<GSOBenchmarkChanges | null> {
   try {
     return await fetchWithTimeout<GSOBenchmarkChanges>(
       `${API_BASE}/auto-optimize/runs/${runId}/benchmark-changes`
+    )
+  } catch {
+    return null
+  }
+}
+
+// GSO v2 (arch §7.4) — 03_optimize controller loop-state + per-attempt ledger.
+// Returns loopState=null + attempts=[] for legacy 6-step runs.
+export async function getAutoOptimizeLoopState(runId: string): Promise<GSOLoopStateResponse | null> {
+  try {
+    return await fetchWithTimeout<GSOLoopStateResponse>(
+      `${API_BASE}/auto-optimize/runs/${runId}/loop-state`
+    )
+  } catch {
+    return null
+  }
+}
+
+// GSO v2 (arch §7.3) — publish_and_audit record (audit summary + improvement
+// trajectory + concerns + champion pointer). publishRecord is null before the
+// run reaches publish, or for legacy runs.
+export async function getAutoOptimizePublishRecord(runId: string): Promise<GSOPublishRecordResponse | null> {
+  try {
+    return await fetchWithTimeout<GSOPublishRecordResponse>(
+      `${API_BASE}/auto-optimize/runs/${runId}/publish`
     )
   } catch {
     return null

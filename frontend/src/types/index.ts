@@ -263,6 +263,38 @@ export interface AgentChatMessage {
 // Auto-Optimize (GSO) Types
 // ============================================================================
 
+// GSO v2 5-task DAG (arch §7 / Phases 7–9) — mirrors backend `_STEP_DEFINITIONS`.
+// The standalone Deploy task was dropped (D7). The whole hill-climb (coverage +
+// surgical loop) runs inside step 4 "Optimize". Components (Phases 11–14) consume
+// these instead of hardcoding a 6-step model.
+export const GSO_PIPELINE_STEPS = [
+  { stepNumber: 1, name: "Intake & Snapshot" },
+  { stepNumber: 2, name: "Benchmark QC & Repair" },
+  { stepNumber: 3, name: "Baseline Eval & Triage" },
+  { stepNumber: 4, name: "Optimize" },
+  { stepNumber: 5, name: "Publish & Audit" },
+] as const
+export const GSO_TOTAL_STEPS = GSO_PIPELINE_STEPS.length // 5
+export type GSOPipelineStepName = (typeof GSO_PIPELINE_STEPS)[number]["name"]
+
+// GSO v2 — typed loop terminal reason (arch §5.1 / §7.4), the closed set the
+// 03_optimize controller stamps. Mirrors backend `_TYPED_TERMINAL_REASONS`.
+// EVAL_BUDGET_EXHAUSTED is emitted by Phase 8's eval-budget cap. Legacy
+// free-text reasons / in-progress runs surface as null.
+export type GSOTerminalReason =
+  | "TARGET_REACHED"
+  | "MAX_ATTEMPTS"
+  | "NO_NEW_HYPOTHESIS"
+  | "EVAL_INVALID"
+  | "LOOP_STATE_INVALID"
+  | "EVAL_BUDGET_EXHAUSTED"
+
+// GSO v2 — per-attempt mode (arch §5.1): attempt 1 is the broad coverage probe,
+// attempts 2..N are surgical. Per-attempt aggregate decision (accept/reject/
+// continue) from the controller.
+export type GSOAttemptMode = "coverage" | "surgical"
+export type GSODecision = "accept" | "reject" | "continue"
+
 // apply_mode supports three values: "genie_config" (default),
 // "uc_artifact" (UC-level changes only), "both" (config + UC).
 // The UI currently only exposes "genie_config" and disables "both".
@@ -272,6 +304,11 @@ export interface GSOTriggerRequest {
   levers?: number[]
   deploy_target?: string
   llm_model?: string | null
+  // GSO v2 loop knobs (optional; omit ⇒ job defaults 0.90 / 3). target_accuracy
+  // is the 0–1 stop-early target; max_attempts bounds the surgical hill-climb.
+  // The run stops at whichever comes first.
+  target_accuracy?: number | null
+  max_attempts?: number | null
 }
 
 export interface GSOTriggerResponse {
@@ -279,6 +316,9 @@ export interface GSOTriggerResponse {
   jobRunId: string
   jobUrl: string | null
   status: string
+  // Resolved loop knobs the run will use (request value or job default).
+  targetAccuracy?: number | null
+  maxAttempts?: number | null
 }
 
 export interface GSOLeverInfo {
@@ -305,6 +345,13 @@ export interface GSORunStatus {
   // all yet.
   bestIteration: number | null
   convergenceReason: string | null
+  // GSO v2 — typed loop terminal reason (null for legacy free-text reasons /
+  // in-progress runs); supersedes parsing convergenceReason on the client. The
+  // round-tripped loop knobs (0–1 target; surgical max_attempts) echo what the
+  // run is using — null until the loop commits an attempt / for legacy runs.
+  terminalReason?: GSOTerminalReason | null
+  targetAccuracy?: number | null
+  maxAttempts?: number | null
   stepsCompleted?: number | null
   totalSteps?: number | null
   currentStepName?: string | null
@@ -319,6 +366,8 @@ export interface GSORunSummary {
   best_accuracy: number | null
   best_iteration: number | null
   convergence_reason: string | null
+  // GSO v2 — typed loop terminal reason derived from convergence_reason.
+  terminal_reason?: GSOTerminalReason | null
   triggered_by: string | null
   llm_model?: string | null
 }
@@ -414,6 +463,10 @@ export interface GSOPipelineRun {
   levers: GSOLeverStatus[]
   links: GSOResourceLink[]
   convergenceReason: string | null
+  // GSO v2 — typed loop terminal reason + round-tripped loop knobs.
+  terminalReason?: GSOTerminalReason | null
+  targetAccuracy?: number | null
+  maxAttempts?: number | null
   deploymentStatus: string | null
 }
 
@@ -451,6 +504,61 @@ export interface GSOIterationResult {
   eval_run_id?: string | null
   eval_run_status?: string | null
   reflection_json?: string | Record<string, any> | null
+  // GSO v2 (item 5 + Attempt Ledger) — the EXPLICIT champion flag + loop-state
+  // fields, merged from genie_opt_iterations. The UI reads is_champion as
+  // authoritative instead of re-deriving idxmax(accuracy). All optional: legacy
+  // runs / pre-migration tables omit them. config_json is the FULL effective
+  // Genie Space config for this iteration (raw JSON string).
+  is_champion?: boolean
+  config_json?: string | null
+  attempt_no?: number | null
+  attempt_mode?: GSOAttemptMode | string | null
+  decision?: GSODecision | string | null
+  decision_reason?: string | null
+}
+
+// GSO v2 (arch §7.4) — one row per 03_optimize controller attempt (1=coverage,
+// 2..N=surgical). Backed by genie_opt_iterations loop-state columns via
+// /runs/{id}/loop-state. accuracy/bestAccuracy are 0–100 (as elsewhere in the
+// app). decisionReason carries the rejection/rollback explanation so a
+// higher-accuracy-but-rolled-back attempt is explained, not hidden.
+export interface GSOAttempt {
+  attemptNo: number | null
+  attemptMode: GSOAttemptMode | string | null
+  iteration: number | null
+  evalScope: string | null
+  lever: number | null
+  accuracy: number | null
+  bestAccuracy: number | null
+  decision: GSODecision | string | null
+  decisionReason: string | null
+  rolledBack: boolean
+  rollbackReason: string | null
+  isChampion: boolean
+  currentHypothesis: Record<string, unknown> | string | null
+  terminalReason: GSOTerminalReason | null
+}
+
+// GSO v2 (arch §7.4) — run-level controller loop-state aggregate. targetAccuracy
+// is normalized to the 0–1 request scale (per-attempt accuracies stay 0–100).
+export interface GSOLoopState {
+  bestAccuracy: number | null
+  bestConfigVersionId: string | null
+  targetAccuracy: number | null
+  maxAttempts: number | null
+  surgicalAttemptsUsed: number | null
+  terminalReason: GSOTerminalReason | null
+  doNotRepeat: unknown[]
+  nextHypothesis: Record<string, unknown> | string | null
+  attemptCount: number
+}
+
+// Response of GET /runs/{id}/loop-state. loopState is null + attempts is empty
+// for legacy 6-step runs (no loop-state columns).
+export interface GSOLoopStateResponse {
+  runId: string
+  loopState: GSOLoopState | null
+  attempts: GSOAttempt[]
 }
 
 export interface GSOSuggestion {
@@ -537,6 +645,27 @@ export interface GSOBenchmarkMutation {
   loggedAt: string | null
 }
 
+// GSO v2 (item 7) — benchmark QC metadata from 01_benchmark_qc_and_repair
+// (benchmark_qc artifact): the 30–40 window recommendation, repair-try usage,
+// and validity findings. `window` is the raw recommendation payload (status +
+// counts). terminalReason is BENCHMARK_UNREPAIRABLE only when the bounded
+// repair loop gave up. Null on legacy runs.
+export interface GSOBenchmarkQC {
+  validCount: number | null
+  persistedCount: number | null
+  repairTriesUsed: number | null
+  repairMaxTries: number | null
+  repairedIds: string[]
+  repairSweeps: unknown
+  finalValidity: boolean | null
+  window: Record<string, unknown> | null
+  windowTargetMin: number | null
+  windowTargetMax: number | null
+  gtCorrectionCandidates: unknown[]
+  terminalReason: string | null
+  stillInvalidIds: string[] | null
+}
+
 export interface GSOBenchmarkChanges {
   runId: string
   added: GSOBenchmarkMutation[]
@@ -551,6 +680,51 @@ export interface GSOBenchmarkChanges {
     pruneRecommended: number
     total: number
   }
+  // GSO v2 (item 7) — benchmark QC metadata served alongside the ledger.
+  qc?: GSOBenchmarkQC | null
+}
+
+// GSO v2 (arch §7.3) — one improvement-trajectory rung in the publish record
+// (baseline → coverage → surgical). Bounded/structural fields only (§3.6
+// firewall): no benchmark Q/A or ground-truth SQL.
+export interface GSOPublishTrajectoryEntry {
+  iteration: number | null
+  attemptNo: number | null
+  attemptMode: GSOAttemptMode | string | null
+  evalScope: string | null
+  accuracy: number | null
+  deltaVsBaseline: number | null
+  bestAccuracy: number | null
+  decision: GSODecision | string | null
+  rolledBack: boolean
+  isChampion: boolean
+}
+
+// GSO v2 (arch §7.3) — the publish_and_audit record. The LLM audit summary +
+// structured trajectory + concerns + champion pointer + the published/outcome
+// verdict gated on the typed terminal reason. targetAccuracy is 0–1.
+export interface GSOPublishRecord {
+  runId: string | null
+  spaceId: string | null
+  finalStatus: string | null
+  terminalReason: GSOTerminalReason | null
+  published: boolean
+  publishOutcome: string | null
+  championIteration: number | null
+  championAccuracy: number | null
+  championConfigVersionId: string | null
+  targetAccuracy: number | null
+  maxAttempts: number | null
+  auditSummary: string | null
+  improvementTrajectory: GSOPublishTrajectoryEntry[]
+  concerns: string[]
+}
+
+// Response of GET /runs/{id}/publish. publishRecord is null before the run
+// reaches publish, or for legacy runs predating the artifact.
+export interface GSOPublishRecordResponse {
+  runId: string
+  publishRecord: GSOPublishRecord | null
 }
 
 // Bug #3 — pre-evaluation quarantine entry (SQL failed EXPLAIN, missing
