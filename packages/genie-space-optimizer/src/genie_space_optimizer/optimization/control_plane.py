@@ -1183,6 +1183,53 @@ LOOP_TERMINAL_REASONS: frozenset[str] = frozenset(
 )
 
 
+def resolve_coverage_rollback_anchor(
+    *,
+    dedicated_snapshot: Any,
+    baseline_config: Any,
+) -> dict:
+    """Pick a valid rollback anchor (parsed space) for the standalone coverage pass.
+
+    GSO v2 Phase 8 (E2a — FAIL-CLOSED): prefer the dedicated pre-enrichment snapshot;
+    if the dedicated fetch failed (empty), fall back to the already-loaded baseline
+    config's parsed space. Returns ``{}`` when NEITHER is usable — the caller MUST
+    then STOP (``LOOP_STATE_INVALID``) before mutating the space, because a later
+    rollback would have nothing to restore. Pure: no I/O.
+    """
+    if isinstance(dedicated_snapshot, dict) and dedicated_snapshot:
+        return dedicated_snapshot
+    if isinstance(baseline_config, dict) and baseline_config:
+        parsed = baseline_config.get("_parsed_space", baseline_config)
+        return parsed if isinstance(parsed, dict) and parsed else {}
+    return {}
+
+
+def decide_standalone_coverage_gate(
+    *,
+    enrichment_raised: bool,
+    post_accuracy: float | None,
+    live_may_be_mutated: bool,
+) -> str:
+    """Fail-closed gate decision for the standalone (``optimize_genie_space``) path.
+
+    GSO v2 Phase 8 (E2b/c). Pure — encodes the policy so it is unit-testable:
+
+      * ``"rollback_and_stop"`` — no measured post-enrichment accuracy AND the live
+        space may be mutated (enrichment raised, or its config differs from the
+        pre-enrichment snapshot). Roll back to the proven baseline + stop
+        ``LOOP_STATE_INVALID``; never enter surgical from unmeasured coverage.
+      * ``"measured"`` — a post-enrichment accuracy exists → run the measured
+        coverage protocol (accept / proven-rollback).
+      * ``"baseline"`` — no post-accuracy AND provably unmutated (true no-op) →
+        the frozen baseline is a safe surgical starting point.
+    """
+    if post_accuracy is None:
+        if enrichment_raised or live_may_be_mutated:
+            return "rollback_and_stop"
+        return "baseline"
+    return "measured"
+
+
 def decide_attempt_mode(attempt_no: int) -> str:
     """Return the controller attempt mode for ``attempt_no`` (arch §5.1).
 
