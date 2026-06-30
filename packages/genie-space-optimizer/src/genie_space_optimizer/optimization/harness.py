@@ -13182,6 +13182,81 @@ def _correct_state_after_standalone_coverage_rollback(
         return False
 
 
+def _standalone_coverage_fail_closed_stop(
+    *,
+    result: Any,
+    spark: SparkSession,
+    w: "WorkspaceClient | None",
+    run_id: str,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    enrichment_out: dict | None,
+    pre_snapshot: dict,
+    baseline_accuracy: float,
+    model_id: str,
+    prev_scores: dict,
+    reason_detail: str,
+) -> Any:
+    """Fail-closed stop for the standalone coverage path (E2b / F1).
+
+    Used when the live space may be mutated but UNMEASURED (``_run_enrichment``
+    raised or produced no post-eval accuracy). Does, in order:
+
+      1. a PROVEN rollback of the live config to the frozen-baseline snapshot;
+      2. the REQUIRED scoped state correction
+         (:func:`_correct_state_after_standalone_coverage_rollback`) — F1: a LATE
+         ``_run_enrichment`` raise can have ALREADY committed the
+         ``eval_scope='enrichment'`` iteration-0 row and updated run best-* before
+         raising, so the live-config rollback alone is not enough; this hides that
+         row and resets run best-* to baseline. It RUNS even when
+         ``enrichment_out is None`` (the late raise can lose the return object after
+         the side effects committed); a correction failure stays fail-closed; and
+      3. sets the run terminal ``LOOP_STATE_INVALID`` and returns ``result``.
+
+    The run NEVER proceeds to surgical mode from here.
+    """
+    logger.error(
+        "E2b/F1 FAIL-CLOSED: %s — rolling back to baseline + correcting persisted "
+        "state + stopping LOOP_STATE_INVALID (run %s)",
+        reason_detail, run_id,
+    )
+    try:
+        _finalize_coverage_decision(
+            w=w, space_id=space_id, pre_snapshot=pre_snapshot,
+            frozen_baseline_accuracy=float(baseline_accuracy),
+            post_coverage_accuracy=float(baseline_accuracy) - 1.0,  # force rollback
+            had_candidates=True,
+        )
+    except Exception:
+        logger.error(
+            "E2b/F1 rollback ALSO failed (live space state unknown)", exc_info=True,
+        )
+    if not _correct_state_after_standalone_coverage_rollback(
+        spark=spark, w=w, run_id=run_id, space_id=space_id,
+        catalog=catalog, schema=schema, enrichment_out=enrichment_out,
+        baseline_accuracy=float(baseline_accuracy), delta_pp=-1.0,
+    ):
+        logger.error(
+            "F1: post-rollback state correction FAILED — the rejected enrichment row "
+            "may remain persisted; staying LOOP_STATE_INVALID (run %s does not proceed)",
+            run_id,
+        )
+    result.status = "FAILED"
+    result.convergence_reason = "LOOP_STATE_INVALID"
+    result.best_accuracy = float(baseline_accuracy)
+    result.best_model_id = model_id
+    result.final_scores = prev_scores
+    try:
+        update_run_status(
+            spark, run_id, catalog, schema,
+            status="FAILED", convergence_reason="LOOP_STATE_INVALID",
+        )
+    except Exception:
+        logger.error("Terminal run-status write failed", exc_info=True)
+    return result
+
+
 def _run_lever_loop(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -25550,40 +25625,24 @@ def optimize_genie_space(
             live_may_be_mutated=_live_may_be_mutated,
         )
         if _std_gate == "rollback_and_stop":
-            # E2b/c FAIL-CLOSED: the live space may be mutated but is UNMEASURED
+            # E2b/c + F1 FAIL-CLOSED: the live space may be mutated but is UNMEASURED
             # (enrichment raised, or produced no post-eval accuracy). Roll back to the
-            # proven baseline and stop LOOP_STATE_INVALID — never enter surgical mode
-            # from un-rolled-back, unmeasured coverage state, and never let
-            # _accuracy_source='baseline_eval' stand while the live space is post-enrichment.
-            logger.error(
-                "E2b/c FAIL-CLOSED: enrichment %s with a possibly-mutated live space "
-                "and no post-eval accuracy — rolling back to baseline + LOOP_STATE_INVALID",
-                "raised" if _enrichment_raised else "produced no post-accuracy",
+            # proven baseline, run the REQUIRED persisted-state correction (F1: a late
+            # _run_enrichment raise can have already committed the enrichment row +
+            # best-*), and stop LOOP_STATE_INVALID — never enter surgical mode and
+            # never let _accuracy_source='baseline_eval' stand while the live space is
+            # an unverified post-enrichment state.
+            return _standalone_coverage_fail_closed_stop(
+                result=result, spark=spark, w=w, run_id=run_id_str, space_id=space_id,
+                catalog=catalog, schema=schema, enrichment_out=_enrichment_out,
+                pre_snapshot=_pre_enrichment_snapshot,
+                baseline_accuracy=float(prev_accuracy),
+                model_id=model_id, prev_scores=prev_scores,
+                reason_detail=(
+                    "enrichment raised" if _enrichment_raised
+                    else "enrichment produced no post-eval accuracy"
+                ),
             )
-            try:
-                _finalize_coverage_decision(
-                    w=w, space_id=space_id, pre_snapshot=_pre_enrichment_snapshot,
-                    frozen_baseline_accuracy=float(prev_accuracy),
-                    post_coverage_accuracy=float(prev_accuracy) - 1.0,  # force rollback
-                    had_candidates=True,
-                )
-            except Exception:
-                logger.error(
-                    "E2b/c rollback ALSO failed (live space state unknown)", exc_info=True,
-                )
-            result.status = "FAILED"
-            result.convergence_reason = "LOOP_STATE_INVALID"
-            result.best_accuracy = float(prev_accuracy)
-            result.best_model_id = model_id
-            result.final_scores = prev_scores
-            try:
-                update_run_status(
-                    spark, run_id_str, catalog, schema,
-                    status="FAILED", convergence_reason="LOOP_STATE_INVALID",
-                )
-            except Exception:
-                logger.error("Terminal run-status write failed", exc_info=True)
-            return result
 
         if _std_gate == "measured" and _post_acc is not None:
             _cov_std = _finalize_coverage_decision(
