@@ -39,14 +39,18 @@ function attempt(overrides: Partial<GSOAttempt>): GSOAttempt {
 }
 
 describe("accuracy scale helpers", () => {
-  it("keeps 0–100 accuracy and rescales a defensive 0–1 float", () => {
+  it("treats per-attempt / baseline / best accuracy as identity on 0–100", () => {
+    // Hard scale contract: these are ALREADY 0–100 — NO ×100 rescale, so a
+    // legitimately low accuracy (a real ~1%) is preserved, never corrupted.
     expect(toAccuracyPct(85)).toBe(85)
-    expect(toAccuracyPct(0.85)).toBeCloseTo(85)
+    expect(toAccuracyPct(0.85)).toBe(0.85) // a real ~0.85% accuracy stays put
+    expect(toAccuracyPct(0)).toBe(0)
+    expect(toAccuracyPct(100)).toBe(100)
     expect(toAccuracyPct(null)).toBeNull()
     expect(toAccuracyPct(undefined)).toBeNull()
   })
 
-  it("converts the 0–1 target accuracy to the 0–100 chart scale (×100)", () => {
+  it("is the ONLY ×100 path: converts the 0–1 target accuracy to 0–100", () => {
     expect(targetToPct(0.9)).toBeCloseTo(90)
     expect(targetToPct(1)).toBeCloseTo(100)
     expect(targetToPct(90)).toBe(90) // defensive: already 0–100
