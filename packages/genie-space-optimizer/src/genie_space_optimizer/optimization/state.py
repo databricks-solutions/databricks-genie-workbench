@@ -1143,6 +1143,47 @@ def write_patch(
     )
 
 
+def mark_iteration_rolled_back(
+    spark: SparkSession,
+    run_id: str,
+    iteration: int,
+    *,
+    catalog: str,
+    schema: str,
+    eval_scope: str | None = None,
+    reason: str = "",
+) -> None:
+    """Set ``rolled_back=true`` on a SPECIFIC ``genie_opt_iterations`` row.
+
+    GSO v2 Phase 8 (C3): unlike :func:`mark_patches_rolled_back` (which marks
+    every row at ``iteration``), this is scoped by ``eval_scope`` so the standalone
+    ``optimize_genie_space`` path can mark ONLY the rejected ``eval_scope='enrichment'``
+    coverage row rolled-back on a post-enrichment regression — WITHOUT touching the
+    sibling ``eval_scope='full'`` baseline row at the same iteration (which must
+    remain the current state). Best-effort; a failed UPDATE is logged, not raised.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    iters_fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+    safe_reason = (reason or "").replace("'", "''")
+    where = f"run_id = '{run_id}' AND iteration = {int(iteration)}"
+    if eval_scope:
+        where += f" AND eval_scope = '{eval_scope}'"
+    try:
+        execute_delta_write_with_retry(
+            spark,
+            f"UPDATE {iters_fqn} SET rolled_back = true, "
+            f"rolled_back_at = TIMESTAMP '{now}', "
+            f"rollback_reason = '{safe_reason}' WHERE {where}",
+            operation_name="mark_iteration_rolled_back",
+            table_name=iters_fqn,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to mark iteration %s (scope=%s) rolled_back for run %s (non-fatal)",
+            iteration, eval_scope, run_id, exc_info=True,
+        )
+
+
 def mark_patches_rolled_back(
     spark: SparkSession,
     run_id: str,
