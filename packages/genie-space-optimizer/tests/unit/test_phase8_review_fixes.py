@@ -368,6 +368,78 @@ def test_optimize_genie_space_fail_closed_on_correction_failure() -> None:
     assert "return result" in _tail
 
 
+# ── F1: rollback_and_stop also corrects already-committed enrichment state ───
+def _run_fail_closed_stop(enrichment_out):
+    """Drive _standalone_coverage_fail_closed_stop with the leaf I/O mocked so we
+    can assert the behavior (proven rollback + scoped row-hide + best reset +
+    LOOP_STATE_INVALID) for both a present and a missing _enrichment_out."""
+    result = MagicMock()
+    rb_calls = []
+    with patch.object(harness, "_finalize_coverage_decision",
+                      side_effect=lambda **k: rb_calls.append(k) or {
+                          "should_rollback": True, "rollback_proven": True,
+                          "terminal_reason": None, "decision": "reject",
+                          "decision_reason": "x", "delta_pp": -1.0,
+                      }), \
+         patch.object(harness, "update_run_status") as urs, \
+         patch("genie_space_optimizer.optimization.state.mark_iteration_rolled_back") as mirb, \
+         patch("genie_space_optimizer.common.genie_client.fetch_space_config",
+               return_value={"_parsed_space": {"BASELINE": True}}):
+        out = harness._standalone_coverage_fail_closed_stop(
+            result=result, spark=MagicMock(), w=MagicMock(),
+            run_id="r1", space_id="sp", catalog="c", schema="s",
+            enrichment_out=enrichment_out, pre_snapshot={"a": 1},
+            baseline_accuracy=80.0, model_id="m0", prev_scores={"s": 1.0},
+            reason_detail="enrichment raised",
+        )
+    return out, result, rb_calls, urs, mirb
+
+
+def test_f1_rollback_and_stop_corrects_committed_state_late_raise() -> None:
+    # LATE _run_enrichment raise loses the return object, but the row + best-* were
+    # already committed. The fail-closed stop must still proven-rollback, hide the
+    # scoped enrichment row, reset best-*, and end LOOP_STATE_INVALID.
+    out, result, rb_calls, urs, mirb = _run_fail_closed_stop(enrichment_out=None)
+    # 1. proven rollback to the frozen baseline ran.
+    assert rb_calls, "no proven rollback attempted"
+    assert rb_calls[0]["pre_snapshot"] == {"a": 1}
+    # 2. scoped enrichment row hidden (rolled_back) BEFORE returning — even with
+    #    _enrichment_out is None (the late-raise case).
+    mirb.assert_called_once()
+    _args, _kwargs = mirb.call_args
+    assert _kwargs.get("eval_scope") == "enrichment"
+    assert _args[2] == 0  # iteration 0
+    # 3. run best-* reset to baseline.
+    assert any(
+        c.kwargs.get("best_iteration") == 0 and c.kwargs.get("best_accuracy") == 80.0
+        for c in urs.call_args_list
+    ), "run best-* not reset to baseline"
+    # 4. terminal LOOP_STATE_INVALID.
+    assert result.convergence_reason == "LOOP_STATE_INVALID"
+    assert result.status == "FAILED"
+    assert out is result
+
+
+def test_f1_rollback_and_stop_with_present_enrichment_out() -> None:
+    # Same correction runs when _enrichment_out is a dict (early raise / no-post-acc).
+    enr = {"config": {"_parsed_space": {"REJECTED": True}}}
+    _out, result, rb_calls, urs, mirb = _run_fail_closed_stop(enrichment_out=enr)
+    assert rb_calls  # proven rollback
+    mirb.assert_called_once()  # scoped row hide
+    assert result.convergence_reason == "LOOP_STATE_INVALID"
+    # config replaced with the proven baseline (so even if it were carried on, it's clean).
+    assert enr["config"] == {"_parsed_space": {"BASELINE": True}}
+
+
+def test_rollback_and_stop_branch_uses_fail_closed_stop_before_return() -> None:
+    # The standalone rollback_and_stop branch delegates to the fail-closed stop
+    # (which runs the correction) and returns its result — no bare return that
+    # skips the persisted-state correction.
+    src = inspect.getsource(harness.optimize_genie_space)
+    branch = src.split('if _std_gate == "rollback_and_stop":', 1)[1][:900]
+    assert "return _standalone_coverage_fail_closed_stop(" in branch
+
+
 # ── NB1: no-candidate loader failure does NOT leave synthetic counts current ─
 def test_no_candidate_loader_failure_marks_rung_excluded() -> None:
     src = inspect.getsource(harness._run_lever_loop)
