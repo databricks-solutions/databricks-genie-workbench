@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Info, Play, Cog, BarChart2 } from "lucide-react"
+import { Info, Play, BarChart2 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { OptimizationConfig } from "@/components/auto-optimize/OptimizationConfig"
@@ -10,6 +10,12 @@ import { QuestionList } from "@/components/auto-optimize/QuestionList"
 import { QuestionDetail } from "@/components/auto-optimize/QuestionDetail"
 import { RunDetailView } from "@/components/auto-optimize/RunDetailView"
 import { PipelineDetailsModal } from "@/components/auto-optimize/PipelineDetailsModal"
+import { TaskRail } from "@/components/auto-optimize/TaskRail"
+import { AttemptLadder } from "@/components/auto-optimize/AttemptLadder"
+import { AttemptLedger } from "@/components/auto-optimize/AttemptLedger"
+import { ChampionHero } from "@/components/auto-optimize/ChampionHero"
+import { CurrentAttemptStrip } from "@/components/auto-optimize/CurrentAttemptStrip"
+import { TerminalBanner } from "@/components/auto-optimize/TerminalBanner"
 import {
   getAutoOptimizeHealth,
   getAutoOptimizeStatus,
@@ -18,9 +24,19 @@ import {
   getAutoOptimizeIterations,
   getAutoOptimizeEvalResults,
   getAutoOptimizeQuestionResults,
+  getAutoOptimizeLoopState,
+  getAutoOptimizePublishRecord,
+  getAutoOptimizeBenchmarkChanges,
 } from "@/lib/api"
 import { convergenceReasonText } from "@/lib/score-display"
-import type { GSORunStatus, GSOPermissionCheck, GSOQuestionDetail } from "@/types"
+import type {
+  GSORunStatus,
+  GSOPermissionCheck,
+  GSOQuestionDetail,
+  GSOLoopStateResponse,
+  GSOPublishRecord,
+  GSOBenchmarkQC,
+} from "@/types"
 
 interface AutoOptimizeTabProps {
   spaceId: string
@@ -68,6 +84,14 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   const [totalQuestions, setTotalQuestions] = useState<number>(0)
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null)
   const [showPipeline, setShowPipeline] = useState(false)
+  // GSO v2 Phase 12 — live cockpit state (loop-state attempts + publish record
+  // + benchmark QC for the 01 hard-fail chip + a client-side loop-state
+  // heartbeat). All optional/nullable — legacy 6-step runs degrade gracefully.
+  const [loopState, setLoopState] = useState<GSOLoopStateResponse | null>(null)
+  const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
+  const [benchmarkQc, setBenchmarkQc] = useState<GSOBenchmarkQC | null>(null)
+  const [lastCommitAt, setLastCommitAt] = useState<number | null>(null)
+  const attemptSigRef = useRef<string>("")
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const latestIterRef = useRef<number>(-1)
 
@@ -108,6 +132,11 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   // Polling for active run status + ASI results
   useEffect(() => {
     if (view !== "monitoring" || !activeRunId) return
+
+    // Reset the heartbeat signature so a switched/new run re-stamps its first
+    // commit (lastCommitAt itself is reset inside the poll handler when the run
+    // has no attempts yet — keeps setState out of the effect body).
+    attemptSigRef.current = ""
 
     function poll() {
       // Poll status
@@ -165,6 +194,40 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
             )
           }
         })
+        .catch(() => {})
+
+      // GSO v2 Phase 12 — controller loop-state (per-attempt rows + run-level
+      // aggregate) drives the Attempt Ladder/Ledger + Champion hero. The
+      // attempt-signature diff feeds the client-side loop-state heartbeat.
+      getAutoOptimizeLoopState(activeRunId!)
+        .then((ls) => {
+          setLoopState(ls)
+          const attempts = ls?.attempts ?? []
+          if (attempts.length === 0) {
+            setLastCommitAt(null)
+            return
+          }
+          const sig = attempts
+            .map(
+              (a) =>
+                `${a.attemptNo}:${a.accuracy}:${a.bestAccuracy}:${a.decision}:${a.rolledBack}:${a.isChampion}`,
+            )
+            .join("|")
+          if (sig !== attemptSigRef.current) {
+            attemptSigRef.current = sig
+            setLastCommitAt(Date.now())
+          }
+        })
+        .catch(() => {})
+
+      // Publish record (terminal banner published vs not) — null until publish.
+      getAutoOptimizePublishRecord(activeRunId!)
+        .then((res) => setPublishRecord(res?.publishRecord ?? null))
+        .catch(() => {})
+
+      // Benchmark QC — drives the 01 BENCHMARK_UNREPAIRABLE rail hard-fail chip.
+      getAutoOptimizeBenchmarkChanges(activeRunId!)
+        .then((res) => setBenchmarkQc(res?.qc ?? null))
         .catch(() => {})
     }
 
@@ -274,10 +337,30 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
     const assessedCount = questions.length
     const selectedQuestion = questions.find((q) => q.question_id === selectedQuestionId) ?? null
     const stepsCompleted = runStatus?.stepsCompleted ?? 0
-    const totalSteps = runStatus?.totalSteps ?? 6
-    const progressPct = Math.round((stepsCompleted / totalSteps) * 100)
-    const allComplete = stepsCompleted === totalSteps
     const currentStepName = runStatus?.currentStepName ?? null
+
+    // GSO v2 Phase 12 — the controller attempts drive the live cockpit. Empty
+    // for legacy 6-step runs or before the loop commits its first attempt; the
+    // view degrades to the classic ScoreSummary in that case.
+    const attempts = loopState?.attempts ?? []
+    const hasAttempts = attempts.length > 0
+    const loop = loopState?.loopState ?? null
+    const terminalReason = runStatus?.terminalReason ?? null
+    const benchmarkUnrepairable = benchmarkQc?.terminalReason === "BENCHMARK_UNREPAIRABLE"
+    const showTypedBanner = (isTerminal && Boolean(terminalReason)) || benchmarkUnrepairable
+
+    const baselineAccuracy = runStatus?.baselineScore ?? null
+    // targetAccuracy is normalized to 0–1; prefer the loop-state value.
+    const targetUnit = loop?.targetAccuracy ?? runStatus?.targetAccuracy ?? null
+    const bestAccuracy =
+      loop?.bestAccuracy ?? publishRecord?.championAccuracy ?? runStatus?.optimizedScore ?? null
+    // Baseline is champion only when terminal AND no attempt was flagged
+    // champion (nothing beat it) — derived from explicit flags, never idxmax.
+    const baselineIsChampion = isTerminal && hasAttempts && !attempts.some((a) => a.isChampion)
+    // Residual failures = still-failing questions in the latest full eval.
+    const residualFailureCount =
+      questions.length > 0 ? questions.filter((q) => q.passed === false).length : null
+    const latestAttempt = hasAttempts ? attempts[attempts.length - 1] : null
 
     return (
       <div className="space-y-4">
@@ -299,55 +382,77 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
               </Badge>
             )}
           </div>
-          <div className="flex items-center gap-4">
-            {totalQuestions > 0 && (
-              <span className="text-sm text-muted">
-                {assessedCount} of {totalQuestions} assessed
-              </span>
-            )}
-            {runStatus && (
-              <ScoreSummary
-                baselineScore={runStatus.baselineScore}
-                optimizedScore={runStatus.optimizedScore}
-                bestIteration={runStatus.bestIteration}
-                status={runStatus.status}
+          {totalQuestions > 0 && (
+            <span className="text-sm text-muted">
+              {assessedCount} of {totalQuestions} assessed
+            </span>
+          )}
+        </div>
+
+        {/* 5-task rail (replaces the 6-step progress bar) */}
+        <TaskRail
+          stepsCompleted={stepsCompleted}
+          currentStepName={currentStepName}
+          status={runStatus?.status ?? null}
+          terminalReason={terminalReason}
+          benchmarkUnrepairable={benchmarkUnrepairable}
+          onShowDetails={() => setShowPipeline(true)}
+        />
+
+        {/* Terminal banner — published vs nothing-published, keyed on reason */}
+        {(isTerminal || benchmarkUnrepairable) && (
+          <TerminalBanner
+            status={runStatus?.status ?? null}
+            terminalReason={terminalReason}
+            published={publishRecord ? publishRecord.published : null}
+            publishOutcome={publishRecord?.publishOutcome ?? null}
+            benchmarkUnrepairable={benchmarkUnrepairable}
+            championAccuracy={publishRecord?.championAccuracy ?? bestAccuracy}
+            concerns={publishRecord?.concerns ?? []}
+          />
+        )}
+
+        {hasAttempts ? (
+          <>
+            <ChampionHero
+              baselineAccuracy={baselineAccuracy}
+              bestAccuracy={bestAccuracy}
+              targetUnit={targetUnit}
+            />
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <AttemptLadder
+                baselineAccuracy={baselineAccuracy}
+                attempts={attempts}
+                targetUnit={targetUnit}
+              />
+              <AttemptLedger
+                baselineAccuracy={baselineAccuracy}
+                attempts={attempts}
+                baselineIsChampion={baselineIsChampion}
+              />
+            </div>
+            {!isTerminal && (
+              <CurrentAttemptStrip
+                attempt={latestAttempt}
+                residualFailureCount={residualFailureCount}
+                lastCommitAt={lastCommitAt}
+                isLive={!isTerminal}
               />
             )}
-          </div>
-        </div>
-
-        {/* Progress bar */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted">
-              {currentStepName && !allComplete ? (
-                <>{currentStepName}{!isTerminal && <span className="animate-pulse">...</span>}</>
-              ) : allComplete ? (
-                "All steps complete"
-              ) : (
-                "Starting optimization..."
-              )}
-            </span>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted">{stepsCompleted}/{totalSteps} steps</span>
-              <button
-                onClick={() => setShowPipeline(true)}
-                className="p-1.5 rounded-lg border border-default hover:bg-elevated text-muted hover:text-primary transition-colors"
-                title="Pipeline Details"
-              >
-                <Cog className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-          <div className="h-1.5 rounded-full bg-elevated overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-500 ${allComplete ? "bg-emerald-500" : "bg-accent"}`}
-              style={{ width: `${progressPct}%` }}
+          </>
+        ) : (
+          runStatus && (
+            <ScoreSummary
+              baselineScore={runStatus.baselineScore}
+              optimizedScore={runStatus.optimizedScore}
+              bestIteration={runStatus.bestIteration}
+              status={runStatus.status}
             />
-          </div>
-        </div>
+          )
+        )}
 
-        {runStatus && (() => {
+        {/* Legacy / free-text convergence reason — only when no typed banner */}
+        {!showTypedBanner && runStatus && (() => {
           const reason = convergenceReasonText({
             baselineScore: runStatus.baselineScore,
             optimizedScore: runStatus.optimizedScore,
