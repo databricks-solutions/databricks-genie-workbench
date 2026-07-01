@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 import type {
   GSOIterationResult,
+  GSOQuestionDetail,
   GSOBenchmarkChanges,
   GSOBenchmarkQC,
   GSOPublishRecord,
@@ -10,12 +11,16 @@ import type {
 // Mock the API module before importing anything that pulls it in (resolution.ts
 // and BenchmarkChangesPanel both import from @/lib/api).
 vi.mock("@/lib/api", () => {
+  // Mirror the real ApiError shape (message, status, structured detail) so the
+  // 409 tests can exercise both the message-text and structured-detail paths.
   class ApiError extends Error {
     status: number
-    constructor(message: string, status: number) {
+    detail: Record<string, unknown> | null
+    constructor(message: string, status: number, detail: Record<string, unknown> | null = null) {
       super(message)
       this.name = "ApiError"
       this.status = status
+      this.detail = detail
     }
   }
   return {
@@ -28,7 +33,12 @@ vi.mock("@/lib/api", () => {
 
 import { applyAutoOptimize, discardAutoOptimize, ApiError } from "@/lib/api"
 import { performResolution } from "./resolution"
-import { buildAttemptOptions, attemptColumnLabel } from "./runDetail"
+import {
+  buildAttemptOptions,
+  attemptColumnLabel,
+  questionCacheKey,
+  selectCachedQuestions,
+} from "./runDetail"
 import { PublishAuditSummary } from "./PublishAuditSummary"
 import { ResolutionActions } from "./ResolutionActions"
 import { BenchmarkChangesPanel } from "./BenchmarkChangesPanel"
@@ -81,6 +91,43 @@ describe("buildAttemptOptions — v2 runs (Baseline · Coverage · Surgical N ·
     expect(champ.label).toBe("Surgical 2")
     expect(champ.isChampion).toBe(true)
     expect(defaultKey).toBe(champ.key)
+  })
+
+  it("defaults to the EXPLICIT champion even when another attempt scored higher (never idxmax)", () => {
+    // Adversarial: the flagged champion (Coverage, iter 1) has LOWER accuracy
+    // than the Surgical attempt (iter 2), and bestIteration points at the
+    // higher-accuracy row. An accidental idxmax / bestIteration impl would
+    // star Surgical; the selector must honor the explicit is_champion flag.
+    const championIsNotBest = [
+      iter({ iteration: 0, overall_accuracy: 70, correct_count: 21, attempt_no: 0 }),
+      iter({
+        iteration: 1,
+        overall_accuracy: 78,
+        correct_count: 23,
+        attempt_no: 1,
+        attempt_mode: "coverage",
+        is_champion: true,
+      }),
+      iter({
+        iteration: 2,
+        overall_accuracy: 88,
+        correct_count: 26,
+        attempt_no: 2,
+        attempt_mode: "surgical",
+      }),
+    ]
+    const { options, defaultKey } = buildAttemptOptions({
+      iterations: championIsNotBest,
+      baselineIteration: 0,
+      bestIteration: 2,
+    })
+    const champ = options.find((o) => o.starred)!
+    expect(champ.label).toBe("Coverage")
+    expect(champ.iteration).toBe(1)
+    expect(champ.isChampion).toBe(true)
+    expect(defaultKey).toBe(champ.key)
+    // The higher-accuracy Surgical attempt is NOT starred/defaulted.
+    expect(options.find((o) => o.iteration === 2)!.starred).toBe(false)
   })
 
   it("falls back to bestIteration for the star when no row is flagged champion", () => {
@@ -193,10 +240,91 @@ describe("performResolution — Keep / Discard wiring", () => {
     expect(res).toEqual({ kind: "resolved", status: "DISCARDED" })
   })
 
-  it("surfaces a generic failure as an error result", async () => {
+  it("maps a generic 409 body (no applied/discarded text) on Keep to APPLIED, not an error", async () => {
+    // Contract: a 409 is always a resolved state, never a hard error — even
+    // when the body carries no "applied"/"discarded" hint. Falls back to the
+    // attempted action (Keep → APPLIED).
+    vi.mocked(applyAutoOptimize).mockRejectedValueOnce(new ApiError("Conflict.", 409))
+    const res = await performResolution("apply", "run-1")
+    expect(res).toEqual({ kind: "resolved", status: "APPLIED" })
+  })
+
+  it("maps a generic 409 body (no applied/discarded text) on Discard to DISCARDED, not an error", async () => {
+    vi.mocked(discardAutoOptimize).mockRejectedValueOnce(new ApiError("Run not found: run-1", 409))
+    const res = await performResolution("discard", "run-1")
+    expect(res).toEqual({ kind: "resolved", status: "DISCARDED" })
+  })
+
+  it("cross-action: Keep on an already-discarded run reflects DISCARDED (not the Keep banner)", async () => {
+    // The backend's apply-path 409 names the current state. The list it
+    // enumerates (CONVERGED/MAX_ITERATIONS/STALLED) has no "applied" substring,
+    // so the message unambiguously reads as DISCARDED.
+    vi.mocked(applyAutoOptimize).mockRejectedValueOnce(
+      new ApiError(
+        "Cannot apply run in status DISCARDED. Must be one of: ['CONVERGED', 'MAX_ITERATIONS', 'STALLED']",
+        409,
+      ),
+    )
+    const res = await performResolution("apply", "run-1")
+    expect(res).toEqual({ kind: "resolved", status: "DISCARDED" })
+  })
+
+  it("cross-action: Discard on an already-applied run reflects APPLIED", async () => {
+    vi.mocked(discardAutoOptimize).mockRejectedValueOnce(new ApiError("Run already applied.", 409))
+    const res = await performResolution("discard", "run-1")
+    expect(res).toEqual({ kind: "resolved", status: "APPLIED" })
+  })
+
+  it("prefers the structured 409 detail over the attempted action", async () => {
+    vi.mocked(applyAutoOptimize).mockRejectedValueOnce(
+      new ApiError("Conflict.", 409, { current_status: "DISCARDED" }),
+    )
+    const res = await performResolution("apply", "run-1")
+    expect(res).toEqual({ kind: "resolved", status: "DISCARDED" })
+  })
+
+  it("surfaces a generic non-409 failure as an error result", async () => {
     vi.mocked(discardAutoOptimize).mockRejectedValueOnce(new Error("network down"))
     const res = await performResolution("discard", "run-1")
     expect(res).toEqual({ kind: "error", message: "network down" })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 2 (cross-run reset) — RunDetailView reuses one instance across runIds.
+// The per-attempt question cache must be run-scoped so run A's iter-2 never
+// leaks into run B (both runs commonly share an iter-2).
+// ---------------------------------------------------------------------------
+
+describe("selectCachedQuestions — run-scoped question cache (no cross-run leakage)", () => {
+  function q(id: string): GSOQuestionDetail {
+    return {
+      question_id: id,
+      question: id,
+      generated_sql: null,
+      expected_sql: null,
+      passed: true,
+      match_type: null,
+    }
+  }
+
+  it("keys questions by runId+iteration so run A's iter-2 never shows for run B", () => {
+    const cache = new Map<string, GSOQuestionDetail[]>()
+    // The view is used for run A first and fetches its iter-2.
+    cache.set(questionCacheKey("run-A", 2), [q("a1"), q("a2")])
+
+    // Reused for run B, SAME iteration number — must not surface run A's rows.
+    expect(selectCachedQuestions(cache, "run-B", 2)).toEqual([])
+    expect(selectCachedQuestions(cache, "run-A", 2).map((x) => x.question_id)).toEqual(["a1", "a2"])
+
+    // Once run B fetches its own iter-2, both coexist under distinct keys.
+    cache.set(questionCacheKey("run-B", 2), [q("b1")])
+    expect(selectCachedQuestions(cache, "run-B", 2).map((x) => x.question_id)).toEqual(["b1"])
+    expect(selectCachedQuestions(cache, "run-A", 2).map((x) => x.question_id)).toEqual(["a1", "a2"])
+  })
+
+  it("returns [] for a null iteration (nothing selected yet)", () => {
+    expect(selectCachedQuestions(new Map(), "run-A", null)).toEqual([])
   })
 })
 
