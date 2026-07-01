@@ -20,14 +20,79 @@ from .workspace_source import (
 )
 
 
+# GSO v2 linear 5-task DAG. This MIRRORS the package bundle job at
+# packages/genie-space-optimizer/databricks.yml (the validated source of truth,
+# guarded by tests/unit/test_phase7_job_dag.py): same task keys, order,
+# entrypoints, linear dependencies, and per-task base_parameters. There is NO
+# condition task and NO `deploy` task (deploy is out of scope — D7). Each entry
+# is (task_key, notebook_stem, depends_on, base_param_keys). `base_param_keys`
+# lists the job parameters passed to that task as base_parameters (every task
+# reads job params + durable Delta state by run_id — no task-value plumbing, D9).
+#
+# `llm_model` is a Workbench-specific extra beyond the package bundle's params:
+# the local-terminal deploy passes it via `--var llm_model` (deploy.sh) and the
+# notebook installer defaults it to cfg.llm_model, so the operator-selected
+# serving endpoint reaches each task (every v2 entrypoint honors the llm_model
+# widget). See build_job_settings for the parameter declarations.
 TASKS = [
-    ("preflight", "run_preflight", None),
-    ("baseline_eval", "run_baseline", "preflight"),
-    ("enrichment", "run_enrichment", "baseline_eval"),
-    ("lever_loop", "run_lever_loop", "enrichment"),
-    ("finalize", "run_finalize", "lever_loop"),
+    (
+        "00_intake_and_snapshot",
+        "run_00_intake_and_snapshot",
+        None,
+        [
+            "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
+            "levers", "max_attempts", "target_accuracy",
+            "benchmark_repair_max_tries", "max_iterations", "triggered_by",
+            "warehouse_id", "llm_model",
+        ],
+    ),
+    (
+        "01_benchmark_qc_and_repair",
+        "run_01_benchmark_qc_and_repair",
+        "00_intake_and_snapshot",
+        [
+            "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
+            "benchmark_repair_max_tries", "warehouse_id", "llm_model",
+        ],
+    ),
+    (
+        "02_baseline_eval_and_triage",
+        "run_02_baseline_eval_and_triage",
+        "01_benchmark_qc_and_repair",
+        [
+            "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
+            "max_attempts", "target_accuracy", "warehouse_id", "llm_model",
+        ],
+    ),
+    (
+        "03_optimize",
+        "run_03_optimize",
+        "02_baseline_eval_and_triage",
+        [
+            "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
+            "levers", "max_attempts", "target_accuracy", "max_iterations",
+            "triggered_by", "warehouse_id", "llm_model",
+        ],
+    ),
+    (
+        "publish_and_audit",
+        "run_publish_and_audit",
+        "03_optimize",
+        [
+            "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
+            "target_accuracy", "max_attempts", "warehouse_id", "llm_model",
+        ],
+    ),
 ]
 
+# Declared job parameters + defaults. Mirrors the package bundle's 5-task param
+# set (arch §12): surgical hill-climb budget (max_attempts), stop-early
+# target (target_accuracy), and 01's inline repair bound
+# (benchmark_repair_max_tries). `max_iterations` is retained (still consumed by
+# the lever loop that 03_optimize delegates to). `experiment_name` (MLflow
+# decommissioned — Phase 5) and `deploy_target` (deploy out of scope — D7) are
+# dropped. `llm_model` is the Workbench-specific extra (see TASKS above);
+# its default is overridden with cfg.llm_model in build_job_settings.
 JOB_PARAMETERS = {
     "run_id": "",
     "space_id": "",
@@ -36,10 +101,11 @@ JOB_PARAMETERS = {
     "schema": "",
     "apply_mode": "genie_config",
     "levers": "[1,2,3,4,5,6]",
+    "max_attempts": "3",
+    "target_accuracy": "0.90",
+    "benchmark_repair_max_tries": "3",
     "max_iterations": "5",
     "triggered_by": "",
-    "experiment_name": "",
-    "deploy_target": "",
     "warehouse_id": "",
     "llm_model": "",
 }
@@ -61,7 +127,7 @@ def upload_job_notebooks(w, cfg: InstallConfig, deployer_user: str) -> str:
 
     notebooks_path = f"{default_gso_path(deployer_user, cfg.app_name)}/jobs"
     mkdirs(w, notebooks_path)
-    for _, notebook_stem, _ in TASKS:
+    for _task_key, notebook_stem, _depends_on, _base_param_keys in TASKS:
         upload_source_notebook(w, jobs_dir / f"{notebook_stem}.py", f"{notebooks_path}/{notebook_stem}")
     return notebooks_path
 
@@ -122,55 +188,42 @@ def upload_gso_wheel(w, cfg: InstallConfig) -> str:
     return wheel_path
 
 
-def _task_payload(task_key: str, notebook_stem: str, depends_on: str | None, notebooks_path: str) -> dict[str, Any]:
+def _task_payload(
+    task_key: str,
+    notebook_stem: str,
+    depends_on: str | None,
+    base_param_keys: list[str],
+    notebooks_path: str,
+) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_key": task_key,
         "notebook_task": {
             "notebook_path": f"{notebooks_path}/{notebook_stem}",
             "source": "WORKSPACE",
             "base_parameters": {
-                "llm_model": "{{job.parameters.llm_model}}",
+                key: f"{{{{job.parameters.{key}}}}}" for key in base_param_keys
             },
         },
         "environment_key": "default",
-        "timeout_seconds": 7200,
+        "timeout_seconds": 14400,
         "max_retries": 0,
     }
     if depends_on:
         task["depends_on"] = [{"task_key": depends_on}]
-    if task_key == "preflight":
-        task["notebook_task"]["base_parameters"].update({
-            "run_id": "{{job.parameters.run_id}}",
-            "space_id": "{{job.parameters.space_id}}",
-            "domain": "{{job.parameters.domain}}",
-            "catalog": "{{job.parameters.catalog}}",
-            "schema": "{{job.parameters.schema}}",
-            "apply_mode": "{{job.parameters.apply_mode}}",
-            "levers": "{{job.parameters.levers}}",
-            "max_iterations": "{{job.parameters.max_iterations}}",
-            "experiment_name": "{{job.parameters.experiment_name}}",
-            "deploy_target": "{{job.parameters.deploy_target}}",
-            "warehouse_id": "{{job.parameters.warehouse_id}}",
-            "llm_model": "{{job.parameters.llm_model}}",
-        })
     return task
 
 
 def build_job_settings(cfg: InstallConfig, notebooks_path: str, wheel_path: str) -> dict[str, Any]:
     cfg = cfg.normalized()
     tasks = [_task_payload(*task, notebooks_path) for task in TASKS]
-    tasks.append(
-        {
-            "task_key": "deploy",
-            "depends_on": [{"task_key": "finalize"}],
-            "condition_task": {"op": "EQUAL_TO", "left": "deploy", "right": "disabled"},
-        }
-    )
     return {
         "name": cfg.gso_job_name,
         "description": (
-            "Persistent DAG optimization runner managed by Genie Workbench "
-            "(preflight -> baseline_eval -> enrichment -> lever_loop -> finalize -> deploy)."
+            "GSO v2 bounded hill-climbing runner managed by Genie Workbench "
+            "(00_intake_and_snapshot -> 01_benchmark_qc_and_repair -> "
+            "02_baseline_eval_and_triage -> 03_optimize -> publish_and_audit). "
+            "Linear 5-task serverless DAG; the whole hill-climb runs in-process "
+            "inside 03_optimize."
         ),
         "max_concurrent_runs": 20,
         "queue": {"enabled": True},

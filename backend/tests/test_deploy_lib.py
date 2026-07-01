@@ -12,7 +12,13 @@ from scripts.deploy_lib.apps import (
 )
 from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
 from scripts.deploy_lib.genie_spaces import optionally_grant_genie_spaces
-from scripts.deploy_lib.gso_job import build_job_settings, find_existing_job, upsert_job
+from scripts.deploy_lib.gso_job import (
+    TASKS,
+    build_job_settings,
+    find_existing_job,
+    upload_job_notebooks,
+    upsert_job,
+)
 from scripts.deploy_lib.lakebase import ensure_lakebase, get_database_resource
 from scripts.deploy_lib.uc import update_grants
 from scripts.deploy_lib.workspace_source import mkdirs, should_copy, upload_source_notebook, workspace_api_path
@@ -363,7 +369,26 @@ def test_get_app_service_principal_waits_for_async_app_create(monkeypatch):
     assert len(get_calls) == 2
 
 
-def test_gso_job_settings_match_persistent_dag_shape():
+# GSO v2 linear 5-task DAG (mirrors packages/genie-space-optimizer/databricks.yml,
+# validated by tests/unit/test_phase7_job_dag.py).
+_EXPECTED_5TASK_KEYS = [
+    "00_intake_and_snapshot",
+    "01_benchmark_qc_and_repair",
+    "02_baseline_eval_and_triage",
+    "03_optimize",
+    "publish_and_audit",
+]
+
+_EXPECTED_5TASK_NOTEBOOKS = {
+    "00_intake_and_snapshot": "run_00_intake_and_snapshot",
+    "01_benchmark_qc_and_repair": "run_01_benchmark_qc_and_repair",
+    "02_baseline_eval_and_triage": "run_02_baseline_eval_and_triage",
+    "03_optimize": "run_03_optimize",
+    "publish_and_audit": "run_publish_and_audit",
+}
+
+
+def test_gso_job_settings_match_5task_dag_shape():
     cfg = InstallConfig(
         app_name="genie-workbench",
         catalog="main",
@@ -377,19 +402,121 @@ def test_gso_job_settings_match_persistent_dag_shape():
         "/Volumes/main/genie_space_optimizer/app_artifacts/genie_space_optimizer-0.0.0-py3-none-any.whl",
     )
 
+    # Unchanged job identity: name + tags stay stable so find_existing_job can
+    # re-discover and upsert prior notebook installs across the cutover.
     assert settings["name"] == "genie-workbench-gso-optimization-job"
     assert settings["queue"]["enabled"] is True
     assert settings["tags"]["app"] == "genie-workbench"
     assert settings["tags"]["managed-by"] == "notebook-installer"
+    assert settings["tags"]["pattern"] == "persistent-dag"
     assert settings["environments"][0]["spec"]["environment_version"] == "4"
+
+    # 5-task linear DAG — no condition task, no deploy task, correct entrypoints.
+    tasks = settings["tasks"]
+    assert [t["task_key"] for t in tasks] == _EXPECTED_5TASK_KEYS
+    assert all("condition_task" not in t for t in tasks)
+    for t in tasks:
+        stem = t["notebook_task"]["notebook_path"].rsplit("/", 1)[-1]
+        assert stem == _EXPECTED_5TASK_NOTEBOOKS[t["task_key"]]
+    by_key = {t["task_key"]: t for t in tasks}
+    assert "depends_on" not in by_key["00_intake_and_snapshot"]
+    for prev, cur in zip(_EXPECTED_5TASK_KEYS, _EXPECTED_5TASK_KEYS[1:]):
+        assert by_key[cur]["depends_on"] == [{"task_key": prev}]
+
+    # New v2 loop params present with defaults; retired params gone.
     params = {p["name"]: p["default"] for p in settings["parameters"]}
+    assert params["max_attempts"] == "3"
+    assert params["target_accuracy"] == "0.90"
+    assert params["benchmark_repair_max_tries"] == "3"
+    assert "experiment_name" not in params
+    assert "deploy_target" not in params
+    # llm_model stays a Workbench-specific param defaulted to cfg.llm_model.
     assert params["llm_model"] == "custom-gso-model"
-    task_keys = [task["task_key"] for task in settings["tasks"]]
-    assert task_keys == ["preflight", "baseline_eval", "enrichment", "lever_loop", "finalize", "deploy"]
-    assert settings["tasks"][0]["notebook_task"]["base_parameters"]["llm_model"] == "{{job.parameters.llm_model}}"
-    assert settings["tasks"][1]["notebook_task"]["base_parameters"]["llm_model"] == "{{job.parameters.llm_model}}"
-    assert settings["tasks"][1]["depends_on"] == [{"task_key": "preflight"}]
-    assert settings["tasks"][-1]["condition_task"]["right"] == "disabled"
+
+    # Every task carries run_id/catalog/schema (D9 — bootstrap from job params,
+    # no task-value plumbing) and the operator llm_model.
+    for t in tasks:
+        bp = t["notebook_task"]["base_parameters"]
+        assert bp["llm_model"] == "{{job.parameters.llm_model}}"
+        for required in ("run_id", "catalog", "schema"):
+            assert bp[required] == f"{{{{job.parameters.{required}}}}}"
+
+
+def test_gso_job_settings_mirror_package_bundle_5task():
+    """The notebook-installer job (gso_job.py) and the package bundle
+    (packages/genie-space-optimizer/databricks.yml, validated by
+    test_phase7_job_dag.py) must not silently drift: identical task keys/order,
+    entrypoints, per-task base_parameters and declared params, EXCEPT for the
+    Workbench-specific ``llm_model`` extra."""
+    yaml = pytest.importorskip("yaml")
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle_path = repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
+    bundle = yaml.safe_load(bundle_path.read_text())
+    (pkg_job,) = bundle["resources"]["jobs"].values()
+
+    cfg = InstallConfig(app_name="genie-workbench", catalog="main", warehouse_id="wh", repo_root="/tmp")
+    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+
+    def _stem(path: str) -> str:
+        return path.rsplit("/", 1)[-1].removesuffix(".py")
+
+    # Same task keys + order.
+    assert [t["task_key"] for t in settings["tasks"]] == [t["task_key"] for t in pkg_job["tasks"]]
+    # Same entrypoint stems.
+    assert [_stem(t["notebook_task"]["notebook_path"]) for t in settings["tasks"]] == [
+        _stem(t["notebook_task"]["notebook_path"]) for t in pkg_job["tasks"]
+    ]
+
+    # Declared params identical except llm_model.
+    gso_params = {p["name"] for p in settings["parameters"]}
+    pkg_params = {p["name"] for p in pkg_job["parameters"]}
+    assert gso_params - pkg_params == {"llm_model"}
+    assert pkg_params - gso_params == set()
+
+    # Per-task base_parameters identical except llm_model.
+    gso_bp = {t["task_key"]: set(t["notebook_task"]["base_parameters"]) for t in settings["tasks"]}
+    pkg_bp = {t["task_key"]: set(t["notebook_task"].get("base_parameters", {})) for t in pkg_job["tasks"]}
+    for key in gso_bp:
+        assert gso_bp[key] - pkg_bp[key] == {"llm_model"}, key
+        assert pkg_bp[key] - gso_bp[key] == set(), key
+
+
+def test_upload_job_notebooks_uploads_all_five_task_notebooks(tmp_path):
+    """Exercise the TASKS upload loop end-to-end. Guards against the 4-tuple
+    arity regression: upload_job_notebooks must iterate every TASKS entry and
+    import exactly the 5 v2 entrypoints (this loop is what the install.py path
+    runs before creating the job)."""
+    jobs_dir = tmp_path / "packages" / "genie-space-optimizer" / "src" / "genie_space_optimizer" / "jobs"
+    jobs_dir.mkdir(parents=True)
+    expected_stems = [notebook_stem for _key, notebook_stem, _dep, _bp in TASKS]
+    for stem in expected_stems:
+        (jobs_dir / f"{stem}.py").write_text(f"# {stem}\n")
+
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root=str(tmp_path),
+    )
+    w = FakeWorkspaceClient()
+
+    notebooks_path = upload_job_notebooks(w, cfg, "me@example.com")
+
+    assert notebooks_path.endswith("/genie-workbench/gso/jobs")
+    import_paths = [
+        body["path"]
+        for method, path, body in w.api_client.calls
+        if method == "POST" and path == "/api/2.0/workspace/import"
+    ]
+    # Every task notebook imported, in DAG order, with no arity error.
+    assert [p.rsplit("/", 1)[-1] for p in import_paths] == expected_stems
+    assert expected_stems == [
+        "run_00_intake_and_snapshot",
+        "run_01_benchmark_qc_and_repair",
+        "run_02_baseline_eval_and_triage",
+        "run_03_optimize",
+        "run_publish_and_audit",
+    ]
 
 
 def test_gso_job_settings_tag_with_actual_app_name():
