@@ -16,6 +16,9 @@ import { AttemptLedger } from "@/components/auto-optimize/AttemptLedger"
 import { ChampionHero } from "@/components/auto-optimize/ChampionHero"
 import { CurrentAttemptStrip } from "@/components/auto-optimize/CurrentAttemptStrip"
 import { TerminalBanner } from "@/components/auto-optimize/TerminalBanner"
+import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
+import { ResolutionActions } from "@/components/auto-optimize/ResolutionActions"
+import { BenchmarkChangesPanel } from "@/components/auto-optimize/BenchmarkChangesPanel"
 import {
   getAutoOptimizeHealth,
   getAutoOptimizeStatus,
@@ -35,7 +38,7 @@ import type {
   GSOQuestionDetail,
   GSOLoopStateResponse,
   GSOPublishRecord,
-  GSOBenchmarkQC,
+  GSOBenchmarkChanges,
 } from "@/types"
 
 interface AutoOptimizeTabProps {
@@ -89,7 +92,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   // heartbeat). All optional/nullable — legacy 6-step runs degrade gracefully.
   const [loopState, setLoopState] = useState<GSOLoopStateResponse | null>(null)
   const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
-  const [benchmarkQc, setBenchmarkQc] = useState<GSOBenchmarkQC | null>(null)
+  const [benchmarkChanges, setBenchmarkChanges] = useState<GSOBenchmarkChanges | null>(null)
   const [lastCommitAt, setLastCommitAt] = useState<number | null>(null)
   const attemptSigRef = useRef<string>("")
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -225,9 +228,10 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         .then((res) => setPublishRecord(res?.publishRecord ?? null))
         .catch(() => {})
 
-      // Benchmark QC — drives the 01 BENCHMARK_UNREPAIRABLE rail hard-fail chip.
+      // Benchmark changes + QC — drives the 01 BENCHMARK_UNREPAIRABLE rail
+      // hard-fail chip and the first-class benchmark QC surface.
       getAutoOptimizeBenchmarkChanges(activeRunId!)
-        .then((res) => setBenchmarkQc(res?.qc ?? null))
+        .then((res) => setBenchmarkChanges(res))
         .catch(() => {})
     }
 
@@ -346,8 +350,10 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
     const hasAttempts = attempts.length > 0
     const loop = loopState?.loopState ?? null
     const terminalReason = runStatus?.terminalReason ?? null
-    const benchmarkUnrepairable = benchmarkQc?.terminalReason === "BENCHMARK_UNREPAIRABLE"
+    const benchmarkUnrepairable = benchmarkChanges?.qc?.terminalReason === "BENCHMARK_UNREPAIRABLE"
     const showTypedBanner = (isTerminal && Boolean(terminalReason)) || benchmarkUnrepairable
+    const hasBenchmarkSurface =
+      benchmarkChanges != null && (benchmarkChanges.qc != null || benchmarkChanges.counts.total > 0)
 
     const baselineAccuracy = runStatus?.baselineScore ?? null
     // targetAccuracy is normalized to 0–1; prefer the loop-state value.
@@ -361,6 +367,19 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
     const residualFailureCount =
       questions.length > 0 ? questions.filter((q) => q.passed === false).length : null
     const latestAttempt = hasAttempts ? attempts[attempts.length - 1] : null
+
+    // Keep / Discard-rollback is available once a champion was published to the
+    // live space (or the run is already resolved). Published comes from the
+    // publish record; fall back to the published-terminal statuses for runs
+    // that predate the artifact.
+    const resolutionPublished = publishRecord ? publishRecord.published : null
+    const showResolution =
+      isTerminal &&
+      (runStatus?.status === "APPLIED" ||
+        runStatus?.status === "DISCARDED" ||
+        resolutionPublished === true ||
+        (resolutionPublished == null &&
+          (runStatus?.status === "CONVERGED" || runStatus?.status === "MAX_ITERATIONS")))
 
     return (
       <div className="space-y-4">
@@ -399,7 +418,13 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
           onShowDetails={() => setShowPipeline(true)}
         />
 
-        {/* Terminal banner — published vs nothing-published, keyed on reason */}
+        {/* Benchmark QC & changes — first-class surface under task 01. */}
+        {hasBenchmarkSurface && (
+          <BenchmarkChangesPanel runId={activeRunId} changes={benchmarkChanges} />
+        )}
+
+        {/* Terminal banner — published vs nothing-published, keyed on reason.
+            Concerns are owned by the publish/audit summary below. */}
         {(isTerminal || benchmarkUnrepairable) && (
           <TerminalBanner
             status={runStatus?.status ?? null}
@@ -408,7 +433,22 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
             publishOutcome={publishRecord?.publishOutcome ?? null}
             benchmarkUnrepairable={benchmarkUnrepairable}
             championAccuracy={publishRecord?.championAccuracy ?? bestAccuracy}
-            concerns={publishRecord?.concerns ?? []}
+          />
+        )}
+
+        {/* Publish/audit summary headline — LLM paragraph + concerns callout. */}
+        {isTerminal && <PublishAuditSummary publishRecord={publishRecord} />}
+
+        {/* Keep / Discard-rollback affordance (auto-publish model). */}
+        {showResolution && (
+          <ResolutionActions
+            key={activeRunId}
+            runId={activeRunId}
+            status={runStatus?.status ?? ""}
+            published={resolutionPublished}
+            onResolved={(s) =>
+              setRunStatus((prev) => (prev ? { ...prev, status: s } : prev))
+            }
           />
         )}
 
@@ -530,7 +570,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   if (view === "detail" && selectedRunId) {
     return (
       <div className="space-y-4">
-        <RunDetailView runId={selectedRunId} onBack={() => setView("configure")} />
+        <RunDetailView key={selectedRunId} runId={selectedRunId} onBack={() => setView("configure")} />
       </div>
     )
   }

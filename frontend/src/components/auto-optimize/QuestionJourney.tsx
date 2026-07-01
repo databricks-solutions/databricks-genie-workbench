@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { CheckCircle, XCircle, AlertCircle, Filter } from "lucide-react"
 import { getAutoOptimizeQuestionResults } from "@/lib/api"
 import { questionState, type QuestionState } from "@/lib/assessment"
+import { attemptColumnLabel } from "@/components/auto-optimize/runDetail"
 import type { GSOIterationResult, GSOQuestionDetail } from "@/types"
 
 interface QuestionJourneyProps {
@@ -150,9 +151,9 @@ export function QuestionJourney({ runId, iterations }: QuestionJourneyProps) {
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-default">
                 <th className="text-left px-3 py-2 text-xs font-medium text-muted">Question</th>
-                {iterNums.map((iter) => (
-                  <th key={iter} className="text-center px-3 py-2 text-xs font-medium text-muted whitespace-nowrap">
-                    {iter === 0 ? "Baseline" : `Iter ${iter}`}
+                {fullIterations.map((it) => (
+                  <th key={it.iteration} className="text-center px-3 py-2 text-xs font-medium text-muted whitespace-nowrap">
+                    {attemptColumnLabel(it)}
                   </th>
                 ))}
                 <th className="text-center px-3 py-2 text-xs font-medium text-muted">Status</th>
