@@ -1,4 +1,4 @@
-import type { GSOIterationResult } from "@/types"
+import type { GSOIterationResult, GSOQuestionDetail } from "@/types"
 import { evalCountsFromIteration } from "@/lib/eval-counts"
 
 // ---------------------------------------------------------------------------
@@ -147,6 +147,33 @@ export function buildAttemptOptions(args: {
   const defaultKey = championKey ?? options[options.length - 1]?.key ?? options[0]?.key ?? ""
 
   return { options, defaultKey }
+}
+
+// ---------------------------------------------------------------------------
+// Per-attempt question-result cache keying (Phase 13). The RunDetailView lazily
+// fetches question results per attempt and caches them; keying by iteration
+// number ALONE leaks across runs when the view is reused for a different runId
+// and both runs share an iteration number (e.g. both have iter-2). Compose the
+// runId into the key so entries from run A can never satisfy a lookup for run B.
+// ---------------------------------------------------------------------------
+
+/** Composite cache key: an iteration number is only meaningful within a run. */
+export function questionCacheKey(runId: string, iteration: number): string {
+  return `${runId}:${iteration}`
+}
+
+/**
+ * Read the cached question results for a run+iteration. Returns ``[]`` when the
+ * attempt hasn't been fetched — and, critically, when a stale cache from a
+ * *different* run holds the same iteration number, so no cross-run leakage.
+ */
+export function selectCachedQuestions(
+  cache: Map<string, GSOQuestionDetail[]>,
+  runId: string,
+  iteration: number | null,
+): GSOQuestionDetail[] {
+  if (iteration == null) return []
+  return cache.get(questionCacheKey(runId, iteration)) ?? []
 }
 
 /**

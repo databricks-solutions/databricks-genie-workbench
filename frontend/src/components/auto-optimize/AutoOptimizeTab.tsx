@@ -570,7 +570,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   if (view === "detail" && selectedRunId) {
     return (
       <div className="space-y-4">
-        <RunDetailView runId={selectedRunId} onBack={() => setView("configure")} />
+        <RunDetailView key={selectedRunId} runId={selectedRunId} onBack={() => setView("configure")} />
       </div>
     )
   }

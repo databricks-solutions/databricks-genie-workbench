@@ -8,9 +8,51 @@ import { applyAutoOptimize, discardAutoOptimize, ApiError } from "@/lib/api"
 
 export type ResolutionAction = "apply" | "discard"
 
+export type ResolvedStatus = "APPLIED" | "DISCARDED"
+
 export type ResolutionResult =
-  | { kind: "resolved"; status: "APPLIED" | "DISCARDED" }
+  | { kind: "resolved"; status: ResolvedStatus }
   | { kind: "error"; message: string }
+
+/**
+ * Read an unambiguous resolved state out of a free-text field. The backend's
+ * 409 messages describe the run's *current* terminal state — e.g.
+ * "Run already discarded." or "Cannot apply run in status DISCARDED. Must be
+ * one of: [...]" — and the terminal set they enumerate (CONVERGED /
+ * MAX_ITERATIONS / STALLED) contains neither substring, so a single keyword
+ * match is safe. Returns ``null`` when the text names both states or neither.
+ */
+function statusFromText(text: unknown): ResolvedStatus | null {
+  const s = (typeof text === "string" ? text : "").toLowerCase()
+  const hasApplied = s.includes("applied")
+  const hasDiscarded = s.includes("discarded")
+  if (hasApplied && !hasDiscarded) return "APPLIED"
+  if (hasDiscarded && !hasApplied) return "DISCARDED"
+  return null
+}
+
+/**
+ * Map a 409 (run already resolved elsewhere) to the run's *current* resolved
+ * state — never a hard error (acceptance contract: a 409 is a resolved state).
+ *
+ * Precedence, so the banner reflects reality rather than the attempted action:
+ *   1. structured ``detail`` payload from the backend, if one is present;
+ *   2. the error message text (covers the cross-action case — e.g. Keep on an
+ *      already-discarded run reports DISCARDED, not the Keep banner);
+ *   3. fall back to the attempted action's resolved state.
+ */
+function resolvedStatusFrom409(e: ApiError, action: ResolutionAction): ResolvedStatus {
+  const detail = e.detail
+  if (detail) {
+    for (const field of ["status", "current_status", "final_status", "reason_code", "message"]) {
+      const derived = statusFromText(detail[field])
+      if (derived) return derived
+    }
+  }
+  const fromMsg = statusFromText(e.message)
+  if (fromMsg) return fromMsg
+  return action === "apply" ? "APPLIED" : "DISCARDED"
+}
 
 /**
  * Keep (``apply``) marks the run APPLIED; Discard (``discard``) re-PATCHes the
@@ -31,10 +73,7 @@ export async function performResolution(
     return { kind: "resolved", status: "DISCARDED" }
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
-      const msg = (e.message || "").toLowerCase()
-      if (msg.includes("applied")) return { kind: "resolved", status: "APPLIED" }
-      if (msg.includes("discarded")) return { kind: "resolved", status: "DISCARDED" }
-      return { kind: "error", message: e.message || "This run was already resolved." }
+      return { kind: "resolved", status: resolvedStatusFrom409(e, action) }
     }
     return {
       kind: "error",

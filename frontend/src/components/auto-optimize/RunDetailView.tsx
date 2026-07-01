@@ -18,7 +18,7 @@ import {
 } from "@/lib/api"
 import type { GSOPipelineRun, GSOQuestionDetail, GSOIterationResult, GSOPublishRecord } from "@/types"
 import { evalCountsFromIteration } from "@/lib/eval-counts"
-import { buildAttemptOptions } from "@/components/auto-optimize/runDetail"
+import { buildAttemptOptions, questionCacheKey, selectCachedQuestions } from "@/components/auto-optimize/runDetail"
 
 interface RunDetailViewProps {
   runId: string
@@ -52,12 +52,18 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
   const [iterations, setIterations] = useState<GSOIterationResult[]>([])
   const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
-  // Per-attempt question results, keyed by iteration number, lazy-loaded.
-  const [questionsByIter, setQuestionsByIter] = useState<Map<number, GSOQuestionDetail[]>>(new Map())
+  // Per-attempt question results, keyed by `${runId}:${iteration}` (composite so
+  // the same iteration number in two runs can't collide), lazy-loaded.
+  const [questionsByIter, setQuestionsByIter] = useState<Map<string, GSOQuestionDetail[]>>(new Map())
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null)
   const [showPipeline, setShowPipeline] = useState(false)
 
+  // Reset on runId change is handled by remount: the parent keys this view by
+  // runId (<RunDetailView key={runId} …/>), so every runId gets a fresh
+  // instance with fresh state — no run-scoped slice survives across runs. The
+  // composite question-cache key below is belt-and-suspenders for the same
+  // invariant. This effect therefore only fetches for the current runId.
   useEffect(() => {
     getAutoOptimizeRun(runId).then(setRun).catch(() => {})
     getAutoOptimizeIterations(runId).then(setIterations).catch(() => {})
@@ -85,14 +91,17 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
   const activeOption = options.find((o) => o.key === activeKey) ?? null
   const activeIteration = activeOption?.iteration ?? null
 
-  // Lazy-load + cache question results for the selected attempt's iteration.
+  // Lazy-load + cache question results for the selected attempt's iteration,
+  // under a run-scoped composite key so a cached iter-N from another run can't
+  // satisfy this run's lookup.
   useEffect(() => {
     if (activeIteration == null) return
-    if (questionsByIter.has(activeIteration)) return
+    const cacheKey = questionCacheKey(runId, activeIteration)
+    if (questionsByIter.has(cacheKey)) return
     let active = true
     getAutoOptimizeQuestionResults(runId, activeIteration)
       .then((qs) => {
-        if (active) setQuestionsByIter((prev) => new Map(prev).set(activeIteration, qs))
+        if (active) setQuestionsByIter((prev) => new Map(prev).set(cacheKey, qs))
       })
       .catch(() => {})
     return () => {
@@ -100,7 +109,7 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
     }
   }, [runId, activeIteration, questionsByIter])
 
-  const questions = activeIteration != null ? questionsByIter.get(activeIteration) ?? [] : []
+  const questions = selectCachedQuestions(questionsByIter, runId, activeIteration)
   const selectedQuestion = questions.find((q) => q.question_id === selectedQuestionId) ?? null
 
   const fullIterations = iterations.filter(
