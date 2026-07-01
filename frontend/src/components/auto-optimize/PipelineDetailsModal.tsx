@@ -2,8 +2,9 @@ import { useEffect, useState, useRef } from "react"
 import { X, TrendingUp, Pen } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { PipelineStepCard } from "@/components/auto-optimize/PipelineStepCard"
-import { StepDetailContent } from "@/components/auto-optimize/StepDetailContent"
+import { TaskRail } from "@/components/auto-optimize/TaskRail"
+import { AttemptLadder } from "@/components/auto-optimize/AttemptLadder"
+import { AttemptLedger } from "@/components/auto-optimize/AttemptLedger"
 import { OptimizationLevers } from "@/components/auto-optimize/OptimizationLevers"
 import { IterationChart } from "@/components/auto-optimize/IterationChart"
 import { StageTimeline } from "@/components/auto-optimize/StageTimeline"
@@ -14,29 +15,28 @@ import { ActivityLog } from "@/components/auto-optimize/ActivityLog"
 import { OptimizationNarrative } from "@/components/auto-optimize/OptimizationNarrative"
 import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
 import { SuggestionsPanel } from "@/components/auto-optimize/SuggestionsPanel"
-import { getAutoOptimizeRun, getAutoOptimizeIterations, getAutoOptimizePublishRecord } from "@/lib/api"
+import {
+  getAutoOptimizeRun,
+  getAutoOptimizeIterations,
+  getAutoOptimizePublishRecord,
+  getAutoOptimizeLoopState,
+} from "@/lib/api"
 import {
   convergenceReasonText,
   formatScorePct,
   presentBaselineScore,
   presentOptimizedScore,
 } from "@/lib/score-display"
+import { attemptModeLabel, decisionLabel } from "@/components/auto-optimize/cockpit"
+import { attemptColumnLabel } from "@/components/auto-optimize/runDetail"
+import { deriveRailProgress } from "@/components/auto-optimize/pipelineDetail"
 import { Tooltip } from "@/components/ui/tooltip"
-import type { GSOPipelineRun, GSOIterationResult, GSOPublishRecord } from "@/types"
+import type { GSOPipelineRun, GSOIterationResult, GSOPublishRecord, GSOAttempt } from "@/types"
 
 interface PipelineDetailsModalProps {
   runId: string
   isOpen: boolean
   onClose: () => void
-}
-
-const STEP_DESCRIPTIONS: Record<number, { name: string; description: string }> = {
-  1: { name: "Preflight",             description: "Reads config and queries Unity Catalog for metadata" },
-  2: { name: "Baseline Evaluation",   description: "Scores benchmarks with the native Genie evaluation API" },
-  3: { name: "Proactive Enrichment",  description: "Enriches descriptions, joins, and instructions" },
-  4: { name: "Adaptive Optimization", description: "Applies optimization levers with 3-gate eval" },
-  5: { name: "Finalization",          description: "Repeatability checks and model promotion" },
-  6: { name: "Deploy",                description: "Deploys optimized config to target" },
 }
 
 const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger" | "info" | "secondary"> = {
@@ -63,6 +63,10 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
   const [iterations, setIterations] = useState<GSOIterationResult[]>([])
   const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
+  // GSO v2 (Phase 14) — the 03_optimize controller attempts drive the Attempt
+  // Ladder/Ledger. Empty for legacy 6-step runs / before the first attempt; the
+  // Attempt Explorer then degrades to the re-keyed iteration table.
+  const [attempts, setAttempts] = useState<GSOAttempt[]>([])
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -71,11 +75,15 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
     setRun(null)
     setIterations([])
     setPublishRecord(null)
+    setAttempts([])
 
     function fetchData() {
       getAutoOptimizeRun(runId).then(setRun).catch(() => {})
       getAutoOptimizePublishRecord(runId)
         .then((res) => setPublishRecord(res?.publishRecord ?? null))
+        .catch(() => {})
+      getAutoOptimizeLoopState(runId)
+        .then((res) => setAttempts(res?.attempts ?? []))
         .catch(() => {})
       getAutoOptimizeIterations(runId)
         .then((its) => setIterations(its.filter((it) =>
@@ -108,6 +116,9 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
     }
     pollRef.current = setInterval(() => {
       getAutoOptimizeRun(runId).then(setRun).catch(() => {})
+      getAutoOptimizeLoopState(runId)
+        .then((res) => setAttempts(res?.attempts ?? []))
+        .catch(() => {})
       getAutoOptimizeIterations(runId)
         .then((its) => setIterations(its.filter((it) =>
           String(it.eval_scope ?? "").toLowerCase() === "full" || it.iteration === 0
@@ -124,10 +135,10 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
 
   if (!isOpen) return null
 
-  const stepsCompleted = run?.steps?.filter((s) => s.status === "completed" || s.status === "skipped").length ?? 0
-  const totalSteps = 6
-  const progressPct = Math.round((stepsCompleted / totalSteps) * 100)
-  const allComplete = stepsCompleted === totalSteps
+  // 5-task rail progress derived from the run's steps (the modal reads a
+  // GSOPipelineRun, not the status endpoint). Tolerant of the legacy 6-step
+  // shape — TaskRail clamps against GSO_TOTAL_STEPS.
+  const { stepsCompleted, currentStepName } = deriveRailProgress(run?.steps)
 
   const baselinePresentation = presentBaselineScore(run?.baselineScore ?? null)
   const optimizedPresentation = run
@@ -153,6 +164,13 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
       : null
   const hasAnyScore =
     baselinePresentation.pct != null || optimizedPresentation.pct != null
+
+  const hasAttempts = attempts.length > 0
+  const targetUnit = run?.targetAccuracy ?? null
+  // Baseline is champion only when terminal and no attempt was flagged champion
+  // (nothing beat it) — from explicit flags, never idxmax (§5).
+  const baselineIsChampion = runIsTerminal && hasAttempts && !attempts.some((a) => a.isChampion)
+  const hasLevers = (run?.levers?.length ?? 0) > 0
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-surface">
@@ -187,26 +205,20 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
             <p className="text-sm text-muted text-center py-12 animate-pulse">Loading pipeline details...</p>
           ) : (
             <>
-              {/* Run metadata + progress bar */}
-              <div className="space-y-3">
-                <p className="text-sm text-muted">
-                  Run <span className="font-mono text-primary">{run.runId.slice(0, 7)}</span>
-                  {" \u00B7 "}
-                  Started {formatDateTime(run.startedAt)}
-                </p>
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-xs text-muted">
-                    <span>{allComplete ? "All steps complete" : `${stepsCompleted} of ${totalSteps} steps complete`}</span>
-                    <span>{stepsCompleted}/{totalSteps} steps</span>
-                  </div>
-                  <div className="h-2 rounded-full bg-elevated overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${allComplete ? "bg-emerald-500" : "bg-accent"}`}
-                      style={{ width: `${progressPct}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
+              {/* Run metadata */}
+              <p className="text-sm text-muted">
+                Run <span className="font-mono text-primary">{run.runId.slice(0, 7)}</span>
+                {" · "}
+                Started {formatDateTime(run.startedAt)}
+              </p>
+
+              {/* 5-task rail (replaces the 6-step progress bar + step cards) */}
+              <TaskRail
+                stepsCompleted={stepsCompleted}
+                currentStepName={currentStepName}
+                status={run.status}
+                terminalReason={run.terminalReason ?? null}
+              />
 
               {hasAnyScore && (
                 <div className="space-y-2">
@@ -231,7 +243,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                         Improvement
                       </p>
                       <p className={`text-3xl font-bold ${improvement != null && improvement > 0 ? "text-emerald-500" : "text-primary"}`}>
-                        {improvement != null ? `${improvement > 0 ? "+" : ""}${improvement.toFixed(1)}%` : "\u2014"}
+                        {improvement != null ? `${improvement > 0 ? "+" : ""}${improvement.toFixed(1)}%` : "—"}
                       </p>
                     </div>
                   </div>
@@ -241,12 +253,13 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                 </div>
               )}
 
-              {/* Main tabs: Summary / Iteration Explorer / Suggestions */}
+              {/* Main tabs: Summary / Attempts / Levers / Suggestions */}
               {runIsTerminal && iterations.length > 0 && (
                 <Tabs defaultValue="summary">
                   <TabsList>
                     <TabsTrigger value="summary">Summary</TabsTrigger>
-                    <TabsTrigger value="iterations">Iteration Explorer</TabsTrigger>
+                    <TabsTrigger value="attempts">Attempt Explorer</TabsTrigger>
+                    <TabsTrigger value="levers">Levers</TabsTrigger>
                     <TabsTrigger value="suggestions">Suggestions</TabsTrigger>
                   </TabsList>
 
@@ -277,11 +290,15 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                       </TabsContent>
 
                       <TabsContent value="questions">
+                        {/* Attempt-grouped journey — columns relabeled Baseline ·
+                            Coverage · Surgical N (attemptColumnLabel). */}
                         <QuestionJourney runId={runId} iterations={iterations} />
                       </TabsContent>
 
                       <TabsContent value="patches">
-                        <PatchesTable runId={runId} />
+                        {/* Attempt-grouped patches — the "Iter" column is re-keyed
+                            onto the coverage/surgical attempt vocabulary. */}
+                        <PatchesTable runId={runId} iterations={iterations} />
                       </TabsContent>
 
                       <TabsContent value="activity">
@@ -290,71 +307,36 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                     </Tabs>
                   </TabsContent>
 
-                  {/* Iteration Explorer tab */}
-                  <TabsContent value="iterations">
-                    <div className="rounded-xl border border-default p-6">
-                      <h3 className="text-sm font-semibold text-primary mb-4">Iteration Accuracy Progression</h3>
-                      <div className="overflow-hidden rounded-lg border border-default">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="bg-elevated border-b border-default">
-                              <th className="text-left px-4 py-2.5 text-xs font-medium text-muted">Iteration</th>
-                              <th className="text-left px-4 py-2.5 text-xs font-medium text-muted">Lever</th>
-                              <th className="text-right px-4 py-2.5 text-xs font-medium text-muted">Accuracy</th>
-                              <th className="text-right px-4 py-2.5 text-xs font-medium text-muted">Questions</th>
-                              <th className="text-center px-4 py-2.5 text-xs font-medium text-muted">API Accuracy Gate</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {iterations.map((it) => {
-                              const isBaseline = it.iteration === 0
-                              const bestAccuracy = Math.max(...iterations.filter(i => i.iteration > 0).map(i => i.overall_accuracy))
-                              const isBest = !isBaseline && it.overall_accuracy === bestAccuracy
-                              const LEVER_NAMES: Record<number, string> = {
-                                1: "Tables & Columns", 2: "Metric Views", 3: "SQL Queries", 4: "Joins", 5: "Text Instructions", 6: "SQL Expressions",
-                              }
-                              return (
-                                <tr
-                                  key={it.iteration}
-                                  className={`border-b border-default last:border-0 ${
-                                    isBest ? "bg-emerald-50 dark:bg-emerald-950/30" : isBaseline ? "bg-elevated/50" : ""
-                                  }`}
-                                >
-                                  <td className="px-4 py-2.5">
-                                    {isBaseline ? (
-                                      <span className="font-medium text-primary">0 (Baseline)</span>
-                                    ) : (
-                                      <span className="text-muted">{it.iteration}</span>
-                                    )}
-                                  </td>
-                                  <td className="px-4 py-2.5 text-muted">
-                                    {it.lever != null ? (LEVER_NAMES[it.lever] ?? `Lever ${it.lever}`) : "\u2014"}
-                                  </td>
-                                  <td className="px-4 py-2.5 text-right font-mono">
-                                    <span className={isBest ? "text-emerald-600 dark:text-emerald-400 font-semibold" : "text-primary"}>
-                                      {formatScorePct(it.overall_accuracy)}
-                                    </span>
-                                    {isBest && <span className="ml-1.5 text-xs text-emerald-600 dark:text-emerald-400">\u2190 best</span>}
-                                  </td>
-                                  <td className="px-4 py-2.5 text-right text-muted font-mono">
-                                    {it.correct_count}/{it.total_questions}
-                                  </td>
-                                  <td className="px-4 py-2.5 text-center">
-                                    {it.api_accuracy_gate_met ? (
-                                      <span className="text-emerald-500 text-xs font-medium">Met</span>
-                                    ) : it.eval_gate_status === "rolled_back" ? (
-                                      <span className="text-red-400 text-xs">Rolled back</span>
-                                    ) : (
-                                      <span className="text-muted text-xs">\u2014</span>
-                                    )}
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
+                  {/* Attempt Explorer tab — re-keyed from iteration+lever to
+                      attempt+attempt_mode+decision. The rich ladder+ledger render
+                      off the loop-state attempts; when those are absent we degrade
+                      to the re-keyed iteration table (still attempt-centric). */}
+                  <TabsContent value="attempts">
+                    {hasAttempts ? (
+                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                        <AttemptLadder
+                          baselineAccuracy={run.baselineScore}
+                          attempts={attempts}
+                          targetUnit={targetUnit}
+                        />
+                        <AttemptLedger
+                          baselineAccuracy={run.baselineScore}
+                          attempts={attempts}
+                          baselineIsChampion={baselineIsChampion}
+                        />
                       </div>
-                    </div>
+                    ) : (
+                      <AttemptExplorerTable iterations={iterations} />
+                    )}
+                  </TabsContent>
+
+                  {/* Levers tab — coverage (lever 0) + surgical levers 1–6. */}
+                  <TabsContent value="levers">
+                    {hasLevers ? (
+                      <OptimizationLevers levers={run.levers} />
+                    ) : (
+                      <p className="text-sm text-muted text-center py-8">No lever activity recorded for this run.</p>
+                    )}
                   </TabsContent>
 
                   {/* Suggestions tab */}
@@ -364,43 +346,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                 </Tabs>
               )}
 
-              {/* Pipeline Steps */}
-              <div>
-                <h3 className="text-sm font-semibold text-primary mb-3">Pipeline Steps</h3>
-                <div className="space-y-3">
-                  {Array.from({ length: 6 }, (_, i) => {
-                    const stepNum = i + 1
-                    const step = run.steps?.find((s) => s.stepNumber === stepNum)
-                    const meta = STEP_DESCRIPTIONS[stepNum]
-
-                    // Filter levers for this step
-                    const stepLevers = stepNum === 3
-                      ? run.levers?.filter(l => l.lever === 0) ?? []
-                      : stepNum === 4
-                      ? run.levers?.filter(l => l.lever >= 1) ?? []
-                      : []
-
-                    return (
-                      <div key={stepNum}>
-                        <PipelineStepCard
-                          stepNumber={stepNum}
-                          name={step?.name ?? meta?.name ?? `Step ${stepNum}`}
-                          status={stepNum === 6 ? "skipped" : (step?.status ?? "pending")}
-                          durationSeconds={step?.durationSeconds ?? null}
-                          description={meta?.description ?? ""}
-                          summary={step?.summary ?? null}
-                        >
-                          {step?.outputs && <StepDetailContent step={step} />}
-                        </PipelineStepCard>
-                        {stepLevers.length > 0 && (
-                          <OptimizationLevers levers={stepLevers} />
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-
               {/* Databricks Resources */}
               {run.links && run.links.length > 0 && (
                 <ResourceLinks links={run.links} />
@@ -408,6 +353,70 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
             </>
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+// Re-keyed fallback for the Attempt Explorer when loop-state attempts are absent
+// (legacy 6-step runs, or v2 iterations merged without loop-state). Columns move
+// from iteration+lever to attempt+attempt_mode+decision, reading the explicit
+// is_champion flag (never idxmax). Legacy rows with no attempt metadata degrade
+// to "Attempt N" / "—" and simply carry no champion star.
+export function AttemptExplorerTable({ iterations }: { iterations: GSOIterationResult[] }) {
+  return (
+    <div className="rounded-xl border border-default p-6">
+      <h3 className="text-sm font-semibold text-primary mb-4">Attempt Accuracy Progression</h3>
+      <div className="overflow-hidden rounded-lg border border-default">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-elevated border-b border-default">
+              <th className="text-left px-4 py-2.5 text-xs font-medium text-muted">Attempt</th>
+              <th className="text-left px-4 py-2.5 text-xs font-medium text-muted">Mode</th>
+              <th className="text-left px-4 py-2.5 text-xs font-medium text-muted">Decision</th>
+              <th className="text-right px-4 py-2.5 text-xs font-medium text-muted">Accuracy</th>
+              <th className="text-right px-4 py-2.5 text-xs font-medium text-muted">Questions</th>
+              <th className="text-center px-4 py-2.5 text-xs font-medium text-muted">Champion</th>
+            </tr>
+          </thead>
+          <tbody>
+            {iterations.map((it) => {
+              const isBaseline = it.iteration === 0
+              const rolledBack = it.rolled_back === true
+              return (
+                <tr
+                  key={it.iteration}
+                  className={`border-b border-default last:border-0 ${
+                    it.is_champion ? "bg-emerald-50 dark:bg-emerald-950/30" : isBaseline ? "bg-elevated/50" : ""
+                  }`}
+                >
+                  <td className="px-4 py-2.5 font-medium text-primary">{attemptColumnLabel(it)}</td>
+                  <td className="px-4 py-2.5 text-muted">
+                    {isBaseline ? "—" : attemptModeLabel(it.attempt_mode)}
+                  </td>
+                  <td className="px-4 py-2.5 text-muted">
+                    {isBaseline ? "—" : decisionLabel(it.decision, rolledBack)}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-primary">
+                    {formatScorePct(it.overall_accuracy)}
+                  </td>
+                  <td className="px-4 py-2.5 text-right text-muted font-mono">
+                    {it.correct_count}/{it.total_questions}
+                  </td>
+                  <td className="px-4 py-2.5 text-center">
+                    {it.is_champion ? (
+                      <span title="Champion configuration" className="text-base text-indigo-500">
+                        {"★"}
+                      </span>
+                    ) : (
+                      <span className="text-muted">{"—"}</span>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   )

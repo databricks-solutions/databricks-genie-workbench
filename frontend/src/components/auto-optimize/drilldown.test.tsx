@@ -1,0 +1,226 @@
+import { describe, expect, it, vi } from "vitest"
+import { renderToStaticMarkup } from "react-dom/server"
+import type { GSOIterationResult, GSOPipelineStep } from "@/types"
+
+// Mock the API module before importing PipelineDetailsModal (which — and whose
+// child components — pull in @/lib/api). We only render prop-driven pieces, so
+// none of these are actually invoked; the mock just keeps import-time clean and
+// deterministic.
+vi.mock("@/lib/api", () => ({
+  getAutoOptimizeRun: vi.fn(() => Promise.resolve(null)),
+  getAutoOptimizeIterations: vi.fn(() => Promise.resolve([])),
+  getAutoOptimizePublishRecord: vi.fn(() => Promise.resolve(null)),
+  getAutoOptimizeLoopState: vi.fn(() => Promise.resolve(null)),
+  getAutoOptimizeQuestionResults: vi.fn(() => Promise.resolve([])),
+  getAutoOptimizePatches: vi.fn(() => Promise.resolve([])),
+  getAutoOptimizeBenchmarkChanges: vi.fn(() => Promise.resolve(null)),
+  getAutoOptimizeSuggestions: vi.fn(() => Promise.resolve([])),
+  ApiError: class ApiError extends Error {},
+}))
+
+import { deriveRailProgress, patchAttemptLabel } from "./pipelineDetail"
+import { humanizeTerminalReason, championAccuracyText } from "./runHistory"
+import { AttemptExplorerTable } from "./PipelineDetailsModal"
+import { AutoOptimizeContent } from "@/pages/HowItWorks"
+
+// Minimal builders — override just the fields under test.
+function step(overrides: Partial<GSOPipelineStep>): GSOPipelineStep {
+  return {
+    stepNumber: 1,
+    name: "Intake & Snapshot",
+    status: "pending",
+    durationSeconds: null,
+    summary: null,
+    inputs: null,
+    outputs: null,
+    ...overrides,
+  }
+}
+
+function iter(overrides: Partial<GSOIterationResult>): GSOIterationResult {
+  return {
+    iteration: 0,
+    lever: null,
+    eval_scope: "full",
+    overall_accuracy: 70,
+    total_questions: 30,
+    correct_count: 21,
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Item 1 — deriveRailProgress (5-task rail inputs from a run's steps)
+// ---------------------------------------------------------------------------
+
+describe("deriveRailProgress — 5-task rail inputs from run.steps", () => {
+  it("counts completed/skipped as done and reports the first running step", () => {
+    const steps = [
+      step({ stepNumber: 1, name: "Intake & Snapshot", status: "completed" }),
+      step({ stepNumber: 2, name: "Benchmark QC & Repair", status: "skipped" }),
+      step({ stepNumber: 3, name: "Baseline Eval & Triage", status: "running" }),
+      step({ stepNumber: 4, name: "Optimize", status: "pending" }),
+      step({ stepNumber: 5, name: "Publish & Audit", status: "pending" }),
+    ]
+    expect(deriveRailProgress(steps)).toEqual({
+      stepsCompleted: 2,
+      currentStepName: "Baseline Eval & Triage",
+    })
+  })
+
+  it("treats a terminal all-done run as fully complete with no current step", () => {
+    const steps = [
+      step({ stepNumber: 1, status: "completed" }),
+      step({ stepNumber: 2, status: "completed" }),
+      step({ stepNumber: 3, status: "success" }),
+      step({ stepNumber: 4, status: "completed" }),
+      step({ stepNumber: 5, status: "skipped" }),
+    ]
+    expect(deriveRailProgress(steps)).toEqual({ stepsCompleted: 5, currentStepName: null })
+  })
+
+  it("degrades to zero for empty / missing steps (legacy runs)", () => {
+    expect(deriveRailProgress([])).toEqual({ stepsCompleted: 0, currentStepName: null })
+    expect(deriveRailProgress(null)).toEqual({ stepsCompleted: 0, currentStepName: null })
+    expect(deriveRailProgress(undefined)).toEqual({ stepsCompleted: 0, currentStepName: null })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 1 — patchAttemptLabel (attempt-grouped patches re-key)
+// ---------------------------------------------------------------------------
+
+describe("patchAttemptLabel — Iter → attempt re-key", () => {
+  const iterations = [
+    iter({ iteration: 0 }),
+    iter({ iteration: 1, attempt_no: 1, attempt_mode: "coverage" }),
+    iter({ iteration: 2, attempt_no: 2, attempt_mode: "surgical" }),
+  ]
+
+  it("maps iterations onto the coverage/surgical attempt vocabulary", () => {
+    expect(patchAttemptLabel(0, iterations)).toBe("Baseline")
+    expect(patchAttemptLabel(1, iterations)).toBe("Coverage")
+    expect(patchAttemptLabel(2, iterations)).toBe("Surgical 2")
+  })
+
+  it("falls back for unknown iterations and null (legacy / orphan patches)", () => {
+    expect(patchAttemptLabel(7, iterations)).toBe("Iteration 7")
+    expect(patchAttemptLabel(3, [])).toBe("Iteration 3")
+    expect(patchAttemptLabel(0, [])).toBe("Baseline")
+    expect(patchAttemptLabel(null, iterations)).toBe("—")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 3 — humanizeTerminalReason + championAccuracyText (history columns)
+// ---------------------------------------------------------------------------
+
+describe("humanizeTerminalReason — typed reason → compact Outcome label", () => {
+  it("maps each typed reason to a terse label", () => {
+    expect(humanizeTerminalReason("TARGET_REACHED")).toBe("Target reached")
+    expect(humanizeTerminalReason("MAX_ATTEMPTS")).toBe("Max attempts")
+    expect(humanizeTerminalReason("NO_NEW_HYPOTHESIS")).toBe("No new hypothesis")
+    expect(humanizeTerminalReason("EVAL_INVALID")).toBe("Eval invalid")
+    expect(humanizeTerminalReason("LOOP_STATE_INVALID")).toBe("Loop state invalid")
+    expect(humanizeTerminalReason("EVAL_BUDGET_EXHAUSTED")).toBe("Budget exhausted")
+  })
+
+  it("degrades to the free-text convergence reason, then an em dash", () => {
+    expect(humanizeTerminalReason(null, "converged early")).toBe("converged early")
+    expect(humanizeTerminalReason(null, "  ")).toBe("—")
+    expect(humanizeTerminalReason(null)).toBe("—")
+    expect(humanizeTerminalReason(undefined, null)).toBe("—")
+  })
+})
+
+describe("championAccuracyText — champion accuracy formatting", () => {
+  it("normalizes 0–1 and 0–100 scales to an integer percent", () => {
+    expect(championAccuracyText(0.85)).toBe("85%")
+    expect(championAccuracyText(85)).toBe("85%")
+    expect(championAccuracyText(1)).toBe("100%")
+    expect(championAccuracyText(100)).toBe("100%")
+    expect(championAccuracyText(0)).toBe("0%")
+  })
+
+  it("renders an em dash for null / non-finite", () => {
+    expect(championAccuracyText(null)).toBe("—")
+    expect(championAccuracyText(undefined)).toBe("—")
+    expect(championAccuracyText(Number.NaN)).toBe("—")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 1 — AttemptExplorerTable (re-keyed iteration+lever → attempt+mode+decision)
+// ---------------------------------------------------------------------------
+
+describe("AttemptExplorerTable — re-keyed Attempt Explorer (fallback)", () => {
+  it("renders attempt-mode/decision columns and stars the explicit champion", () => {
+    const iterations = [
+      iter({ iteration: 0, overall_accuracy: 70, correct_count: 21 }),
+      iter({
+        iteration: 1,
+        attempt_no: 1,
+        attempt_mode: "coverage",
+        decision: "reject",
+        rolled_back: true,
+        overall_accuracy: 70,
+        correct_count: 21,
+      }),
+      iter({
+        iteration: 2,
+        attempt_no: 2,
+        attempt_mode: "surgical",
+        decision: "accept",
+        is_champion: true,
+        overall_accuracy: 84,
+        correct_count: 25,
+      }),
+    ]
+    const markup = renderToStaticMarkup(<AttemptExplorerTable iterations={iterations} />)
+    expect(markup).toContain("Attempt Accuracy Progression")
+    expect(markup).toContain("Baseline")
+    expect(markup).toContain("Coverage")
+    expect(markup).toContain("Surgical 2")
+    expect(markup).toContain("Accepted")
+    // Coverage was rolled back → decision reads "Rolled back" regardless of token.
+    expect(markup).toContain("Rolled back")
+    // Champion star present (explicit is_champion flag, never idxmax).
+    expect(markup).toContain("★")
+  })
+
+  it("degrades gracefully for legacy iterations with no attempt metadata", () => {
+    const iterations = [
+      iter({ iteration: 0, overall_accuracy: 70, correct_count: 21 }),
+      iter({ iteration: 1, overall_accuracy: 74, correct_count: 22 }),
+    ]
+    const markup = renderToStaticMarkup(<AttemptExplorerTable iterations={iterations} />)
+    // No attempt metadata → "Attempt N" label, no champion star.
+    expect(markup).toContain("Attempt 1")
+    expect(markup).not.toContain("★")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 2 — HowItWorks Auto-Optimize prose (5-task DAG + two-mode loop)
+// ---------------------------------------------------------------------------
+
+describe("AutoOptimizeContent — 5-task DAG + coverage/surgical loop prose", () => {
+  const markup = renderToStaticMarkup(<AutoOptimizeContent />)
+
+  it("describes the 5-task pipeline (Deploy dropped)", () => {
+    expect(markup).toContain("5-Task Pipeline")
+    expect(markup).toContain("Intake &amp; Snapshot")
+    expect(markup).toContain("Benchmark QC &amp; Repair")
+    expect(markup).toContain("Baseline Eval &amp; Triage")
+    expect(markup).toContain("03 Optimize")
+    expect(markup).toContain("Publish &amp; Audit")
+    expect(markup).not.toContain("6-Task Pipeline")
+  })
+
+  it("explains the coverage → surgical two-mode loop and the stop conditions", () => {
+    expect(markup).toContain("Coverage")
+    expect(markup).toContain("Surgical")
+    expect(markup).toContain("target accuracy")
+    expect(markup).toContain("max attempts")
+  })
+})

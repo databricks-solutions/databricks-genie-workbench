@@ -10,6 +10,7 @@ import {
   TableCell,
 } from "@/components/ui/table"
 import { getAutoOptimizeRunsForSpace } from "@/lib/api"
+import { championAccuracyText, humanizeTerminalReason } from "@/components/auto-optimize/runHistory"
 import type { GSORunSummary } from "@/types"
 
 interface RunHistoryTableProps {
@@ -28,12 +29,6 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   IN_PROGRESS: "info",
   RUNNING: "info",
   QUEUED: "secondary",
-}
-
-function fmtAccuracy(v: number | null): string {
-  if (v == null) return "—"
-  const n = Number(v)
-  return `${(n > 1 ? n : n * 100).toFixed(0)}%`
 }
 
 export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) {
@@ -63,7 +58,8 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
               <TableRow>
                 <TableHead>Date</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Accuracy</TableHead>
+                <TableHead>Outcome</TableHead>
+                <TableHead>Champion accuracy</TableHead>
                 <TableHead>Model</TableHead>
                 <TableHead>Triggered By</TableHead>
                 <TableHead></TableHead>
@@ -88,8 +84,14 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                       {run.status}
                     </Badge>
                   </TableCell>
+                  <TableCell
+                    className="text-sm text-muted max-w-[14rem] truncate"
+                    title={humanizeTerminalReason(run.terminal_reason, run.convergence_reason)}
+                  >
+                    {humanizeTerminalReason(run.terminal_reason, run.convergence_reason)}
+                  </TableCell>
                   <TableCell className="text-sm">
-                    {fmtAccuracy(run.best_accuracy)}
+                    {championAccuracyText(run.best_accuracy)}
                   </TableCell>
                   <TableCell className="text-sm text-muted max-w-[12rem] truncate" title={run.llm_model ?? undefined}>
                     {run.llm_model ?? "—"}
