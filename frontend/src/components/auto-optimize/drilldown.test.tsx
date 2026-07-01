@@ -321,8 +321,8 @@ describe("OptimizationLevers — attempt-labeled provenance vs legacy Iteration 
     rollbackReason: null,
     patches: [],
     iterations: [
-      { iteration: 1, status: "rolled_back", patchCount: 1, patchTypes: [], scoreBefore: null, scoreAfter: null, scoreDelta: null, mlflowRunId: null, rollbackReason: null, patches: [patch] },
-      { iteration: 2, status: "accepted", patchCount: 1, patchTypes: [], scoreBefore: null, scoreAfter: null, scoreDelta: null, mlflowRunId: null, rollbackReason: null, patches: [patch] },
+      { iteration: 1, status: "rolled_back", patchCount: 1, patchTypes: [], scoreBefore: null, scoreAfter: null, scoreDelta: null, rollbackReason: null, patches: [patch] },
+      { iteration: 2, status: "accepted", patchCount: 1, patchTypes: [], scoreBefore: null, scoreAfter: null, scoreDelta: null, rollbackReason: null, patches: [patch] },
     ],
   }
   const iterations = [

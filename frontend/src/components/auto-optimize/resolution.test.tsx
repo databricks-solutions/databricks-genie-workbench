@@ -451,7 +451,6 @@ describe("PublishAuditSummary — LLM headline + concerns callout (§7.3)", () =
       levers: [],
       links: [],
       convergenceReason: null,
-      deploymentStatus: null,
     }
     expect(() =>
       renderToStaticMarkup(
