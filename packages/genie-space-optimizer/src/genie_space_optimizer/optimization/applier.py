@@ -4241,6 +4241,7 @@ def apply_patch_set(
         count_sql_snippets,
         MAX_INSTRUCTION_SLOTS,
         MAX_SQL_SNIPPETS,
+        normalize_array_fields,
         validate_serialized_space,
     )
 
@@ -4308,6 +4309,12 @@ def apply_patch_set(
     # it guarantees we cannot regress by adding a future runtime key
     # that `is_runtime_key` misses.
     validation_target = strip_non_exportable_fields(copy.deepcopy(config))
+    # Validate the payload we ACTUALLY send: patch_space_config coerces
+    # array-typed fields (description / synonyms / content …) to list[str]
+    # before serializing, so normalize here too. Otherwise a legacy bare
+    # string on the fetched snapshot would trip strict validation here and
+    # block a PATCH that patch_space_config would have sent successfully.
+    normalize_array_fields(validation_target)
     config_ok, validation_errors = validate_serialized_space(
         validation_target, strict=True,
     )
