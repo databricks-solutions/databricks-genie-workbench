@@ -199,6 +199,20 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
     _try_enable_column_defaults(spark, _fqn(catalog, schema, TABLE_ITERATIONS))
 
     for table, col, col_def in ADDITIVE_COLUMN_MIGRATIONS:
+        # GSO v2 (Phase 7): several ADDITIVE_COLUMN_MIGRATIONS entries still
+        # target tables that v2 RETIRED (removed from ``_ALL_DDL`` — see
+        # ``ddl.RETIRED_TABLES``). On a fresh v2 install those tables are never
+        # created, so ``ALTER TABLE`` would fail with TABLE_OR_VIEW_NOT_FOUND,
+        # get swallowed, and spam ``[MIGRATION FAILED]`` ERROR logs. Skip any
+        # entry whose target table is not in the active DDL set — there is no
+        # table to migrate.
+        if table not in _ALL_DDL:
+            logger.debug(
+                "  [SKIP] %s (retired / not in active DDL set) — no migration for %s",
+                _fqn(catalog, schema, table), col,
+            )
+            continue
+
         fqn = _fqn(catalog, schema, table)
         try:
             existing = {
