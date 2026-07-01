@@ -377,14 +377,16 @@ function IQScannerContent() {
 /* ================================================================
    STAGE 3 — Auto-Optimize (GSO)
    ================================================================ */
-function AutoOptimizeContent() {
+export function AutoOptimizeContent() {
+  // The 5-task linear DAG (arch §7 / GSO v2). The whole hill-climb — the
+  // coverage + surgical loop — runs inside a single `03 Optimize` task; the
+  // standalone enrichment/lever-loop/deploy tasks are gone.
   const pipelineSteps: PipelineStep[] = [
-    { icon: <ShieldCheck className="h-5 w-5" />, label: "Preflight", description: "Validate space readiness", color: INFO },
-    { icon: <BarChart3 className="h-5 w-5" />, label: "Baseline", description: "Run benchmark questions", color: ACCENT },
-    { icon: <Database className="h-5 w-5" />, label: "Enrich", description: "Gather metadata context", color: CYAN },
-    { icon: <RefreshCw className="h-5 w-5" />, label: "Lever Loop", description: "Apply & evaluate levers", color: WARNING },
-    { icon: <Target className="h-5 w-5" />, label: "Finalize", description: "Select best combination", color: SUCCESS },
-    { icon: <CheckCircle2 className="h-5 w-5" />, label: "Deploy", description: "Apply winning config", color: SUCCESS },
+    { icon: <Database className="h-5 w-5" />, label: "00 Intake & Snapshot", description: "Read config; snapshot the live space for rollback", color: INFO },
+    { icon: <ShieldCheck className="h-5 w-5" />, label: "01 Benchmark QC & Repair", description: "Validate, repair & prune the 30–40-question set", color: CYAN },
+    { icon: <BarChart3 className="h-5 w-5" />, label: "02 Baseline Eval & Triage", description: "Score the baseline; triage failing clusters", color: ACCENT },
+    { icon: <RefreshCw className="h-5 w-5" />, label: "03 Optimize", description: "Coverage → surgical hill-climb (one task)", color: WARNING },
+    { icon: <CheckCircle2 className="h-5 w-5" />, label: "Publish & Audit", description: "Publish the champion; write the audit record", color: SUCCESS },
   ]
 
   const levers = [
@@ -403,12 +405,45 @@ function AutoOptimizeContent() {
         <p className="text-sm text-muted mt-1">Benchmark-driven optimization for failed checks and measured accuracy — tests real questions and keeps what works</p>
       </div>
 
-      <StageCard title="6-Task Pipeline" icon={<Zap className="h-4 w-4" />}>
+      <StageCard title="5-Task Pipeline" subtitle="00 intake → 01 QC & repair → 02 baseline & triage → 03 optimize → publish & audit" icon={<Zap className="h-4 w-4" />}>
         <PipelineDiagram steps={pipelineSteps} />
       </StageCard>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <StageCard title="6 Lever Categories" subtitle="What gets tuned" icon={<Settings className="h-4 w-4" />}>
+        <StageCard title="Inside 03 Optimize" subtitle="A two-mode hill-climb, all in one task" icon={<ArrowRightLeft className="h-4 w-4" />}>
+          <div className="space-y-3">
+            <div className="rounded-lg border p-3" style={{ borderColor: `${WARNING}30`, background: `${WARNING}08` }}>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: WARNING }} />
+                <h4 className="text-sm font-semibold" style={{ color: WARNING }}>Attempt 1 — Coverage (automatic)</h4>
+              </div>
+              <p className="text-xs text-muted">
+                A broad, automatic enrichment pass measured against the frozen baseline. If it doesn't lift
+                accuracy it is rolled back — a free probe that never consumes a surgical attempt.
+              </p>
+            </div>
+            <div className="rounded-lg border p-3" style={{ borderColor: `${CYAN}30`, background: `${CYAN}08` }}>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: CYAN }} />
+                <h4 className="text-sm font-semibold" style={{ color: CYAN }}>Attempts 2..N — Surgical</h4>
+              </div>
+              <p className="text-xs text-muted">
+                A strategist targets the failing clusters with focused lever patches, re-scored on the full
+                benchmark each attempt and kept only when accuracy improves (best-so-far champion).
+              </p>
+            </div>
+            <div className="flex items-start gap-2 pt-1 text-xs text-muted border-t border-default">
+              <Target className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>
+                Stops at <span className="font-medium text-primary">target accuracy</span> or{" "}
+                <span className="font-medium text-primary">max attempts</span> — whichever comes first
+                (max_attempts counts surgical attempts only).
+              </span>
+            </div>
+          </div>
+        </StageCard>
+
+        <StageCard title="Optimization Levers" subtitle="Coverage is automatic; levers scope the surgical attempts" icon={<Settings className="h-4 w-4" />}>
           <div className="space-y-3">
             {levers.map((l) => (
               <div key={l.name} className="flex items-center gap-3">
@@ -424,25 +459,6 @@ function AutoOptimizeContent() {
                 </div>
               </div>
             ))}
-          </div>
-        </StageCard>
-
-        <StageCard title="3-Gate Evaluation" subtitle="How quality is measured" icon={<BarChart3 className="h-4 w-4" />}>
-          <div className="space-y-4">
-            {[
-              { gate: "Gate 1 — SQL Validity", desc: "Does the generated SQL parse and execute?", color: INFO },
-              { gate: "Gate 2 — Schema Match", desc: "Do columns and tables match the expected output?", color: WARNING },
-              { gate: "Gate 3 — Semantic Accuracy", desc: "Do results match ground-truth answers? (native Genie benchmark assessment)", color: SUCCESS },
-            ].map((g) => (
-              <div key={g.gate} className="rounded-lg border p-3" style={{ borderColor: `${g.color}30`, background: `${g.color}05` }}>
-                <h4 className="text-sm font-semibold" style={{ color: g.color }}>{g.gate}</h4>
-                <p className="text-xs text-muted mt-0.5">{g.desc}</p>
-              </div>
-            ))}
-            <div className="flex items-center gap-2 pt-2 text-xs text-muted border-t border-default">
-              <RefreshCw className="h-3.5 w-3.5" />
-              Iterates until accuracy converges or max rounds reached
-            </div>
           </div>
         </StageCard>
       </div>
