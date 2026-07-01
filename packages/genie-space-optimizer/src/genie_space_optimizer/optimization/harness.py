@@ -5134,6 +5134,7 @@ def _run_space_metadata_enrichment(
     from genie_space_optimizer.common.genie_client import (
         fetch_space_config,
         patch_space_config,
+        space_config_has_data_sources,
         update_space_description,
     )
     from genie_space_optimizer.optimization.optimizer import (
@@ -5153,6 +5154,7 @@ def _run_space_metadata_enrichment(
         "questions_generated": False,
         "questions_count": 0,
         "questions_skipped_empty_base": False,
+        "metadata_skipped_stale_empty_snapshot": False,
     }
 
     if not needs_description and not needs_questions:
@@ -5163,6 +5165,41 @@ def _run_space_metadata_enrichment(
         _sm_lines.append(_bar("-"))
         print("\n".join(_sm_lines))
         return result
+
+    working_has_data_sources = (
+        space_config_has_data_sources(config)
+        or space_config_has_data_sources({"_parsed_space": metadata_snapshot})
+    )
+    live_config_for_questions: dict | None = None
+    if not working_has_data_sources:
+        try:
+            live_config_for_questions = fetch_space_config(w, space_id)
+        except Exception:
+            logger.warning(
+                "Space metadata enrichment: could not verify live config for "
+                "%s while working snapshot had no data sources; skipping to "
+                "avoid writing empty-space metadata",
+                space_id,
+                exc_info=True,
+            )
+            result["metadata_skipped_stale_empty_snapshot"] = True
+            return result
+
+        if space_config_has_data_sources(live_config_for_questions):
+            result["metadata_skipped_stale_empty_snapshot"] = True
+            logger.warning(
+                "Space metadata enrichment: working snapshot for %s has no "
+                "data sources but live space is populated; skipping "
+                "description and sample-question generation to avoid "
+                "publishing stale empty-space metadata",
+                space_id,
+            )
+            _sm_lines = [_section("SPACE METADATA ENRICHMENT", "-")]
+            _sm_lines.append(_kv("Description", "skipped (stale empty snapshot)"))
+            _sm_lines.append(_kv("Sample questions", "skipped (stale empty snapshot)"))
+            _sm_lines.append(_bar("-"))
+            print("\n".join(_sm_lines))
+            return result
 
     write_stage(
         spark, run_id, "SPACE_METADATA_ENRICHMENT", "STARTED",
@@ -5214,8 +5251,12 @@ def _run_space_metadata_enrichment(
                 # mutating it fabricated a partial ``{"config": {...}}`` object
                 # missing top-level ``version``/``data_sources`` that the strict
                 # validator (correctly) rejected before any HTTP call.
-                current = fetch_space_config(w, space_id).get("_parsed_space") or {}
-                if not current.get("data_sources") or current.get("version") is None:
+                current_config = live_config_for_questions or fetch_space_config(w, space_id)
+                current = current_config.get("_parsed_space") or {}
+                if (
+                    current.get("version") is None
+                    or not space_config_has_data_sources({"_parsed_space": current})
+                ):
                     result["questions_skipped_empty_base"] = True
                     logger.info(
                         "Space metadata enrichment: base config has no "
@@ -7801,7 +7842,11 @@ def _prepare_lever_loop(
 
     Returns the fully prepared config dict with ``_uc_columns`` populated.
     """
-    from genie_space_optimizer.common.genie_client import fetch_space_config
+    from genie_space_optimizer.common.genie_client import (
+        fetch_space_config,
+        space_config_data_source_counts,
+        space_config_has_tables,
+    )
     from genie_space_optimizer.common.uc_metadata import (
         extract_genie_space_table_refs,
         get_columns_for_tables_rest,
@@ -7812,8 +7857,22 @@ def _prepare_lever_loop(
     snapshot = run_data.get("config_snapshot", {})
     config: dict
     if isinstance(snapshot, dict) and snapshot:
-        config = snapshot
-        logger.info("Lever loop: using config snapshot from run row for %s", run_id)
+        if space_config_has_tables(snapshot):
+            config = snapshot
+            logger.info("Lever loop: using config snapshot from run row for %s", run_id)
+        else:
+            counts = space_config_data_source_counts(snapshot)
+            logger.warning(
+                "Lever loop: run-row config snapshot for %s has no tables "
+                "(tables=%d, metric_views=%d, functions=%d) — fetching live "
+                "config via job client before enrichment.",
+                run_id,
+                counts["tables"],
+                counts["metric_views"],
+                counts["functions"],
+            )
+            config = fetch_space_config(w, space_id)
+            logger.info("Lever loop: fetched live config for space %s", space_id)
     else:
         logger.warning(
             "No config snapshot found in run row for %s — fetching from API.",
