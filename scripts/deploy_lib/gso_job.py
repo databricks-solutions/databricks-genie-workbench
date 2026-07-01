@@ -127,7 +127,7 @@ def upload_job_notebooks(w, cfg: InstallConfig, deployer_user: str) -> str:
 
     notebooks_path = f"{default_gso_path(deployer_user, cfg.app_name)}/jobs"
     mkdirs(w, notebooks_path)
-    for _, notebook_stem, _ in TASKS:
+    for _task_key, notebook_stem, _depends_on, _base_param_keys in TASKS:
         upload_source_notebook(w, jobs_dir / f"{notebook_stem}.py", f"{notebooks_path}/{notebook_stem}")
     return notebooks_path
 
