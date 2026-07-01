@@ -381,6 +381,17 @@ def submit_optimization(
                 space_id=space_id,
                 triggered_by=triggered_by,
             ),
+            # Only send parameters the 5-task job declares. Every key here must
+            # be a job parameter on the runner (run_now rejects undeclared
+            # keys), so this set MUST stay a subset of the declared params in
+            # BOTH job definitions: the root bundle
+            # (databricks.yml resources.jobs.gso-optimization-runner) and the
+            # notebook installer (scripts/deploy_lib/gso_job.py) — which in turn
+            # mirror the package bundle. `deploy_target` (deploy out of scope —
+            # D7) and `target_benchmark_count` (a code constant, not a v2 job
+            # param) are intentionally NOT sent; the kwargs remain for caller
+            # signature compatibility. `benchmark_repair_max_tries` is declared
+            # by the job but not overridden here, so it uses the job default.
             job_parameters={
                 "run_id": run_id,
                 "space_id": space_id,
@@ -397,9 +408,7 @@ def submit_optimization(
                 "target_accuracy": target_accuracy,
                 "max_attempts": max_attempts,
                 "triggered_by": triggered_by,
-                "deploy_target": deploy_target,
                 "warehouse_id": warehouse_id,
-                "target_benchmark_count": target_benchmark_count,
                 "llm_model": llm_model or os.getenv("LLM_MODEL", ""),
             },
         )
