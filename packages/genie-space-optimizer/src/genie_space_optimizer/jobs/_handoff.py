@@ -1,22 +1,24 @@
-"""Cross-task state resilience helpers for the GSO 6-task DAG.
+"""Cross-task state helpers for the GSO v2 5-task DAG (Delta-only handoff).
 
-Every notebook task in the optimization DAG reads upstream state via
-``dbutils.jobs.taskValues.get(...)``. On a Repair Run, taskValues from
-prior runs are NOT propagated, so each call returns the empty default
-and the task silently runs on degenerate inputs.
+Design note D9 (Delta-only): the v2 DAG
+(``00_intake_and_snapshot`` -> ``01_benchmark_qc_and_repair`` ->
+``02_baseline_eval_and_triage`` -> ``03_optimize`` -> ``publish_and_audit``)
+publishes NO Databricks task values. Every cross-task read is served from the
+durable Delta state persisted in ``genie_opt_runs`` and ``genie_opt_iterations``.
+This is both simpler and Repair-Run safe: Databricks does not propagate task
+values to repaired downstream tasks, but Delta rows survive, so reading straight
+from Delta is the single source of truth.
 
-This module wraps every cross-task read with a 3-step lookup:
+Each read returns a ``HandoffValue`` carrying the ``HandoffSource`` it came from
+so log readers can distinguish a value reconstructed from Delta
+(``DELTA_FALLBACK``) from a value that was never persisted (``MISSING``).
 
-  1. taskValues first (the happy path).
-  2. Delta fallback against the durable state already persisted in
-     ``genie_opt_runs`` and ``genie_opt_iterations``.
-  3. Loud failure (or documented default) if neither exists.
-
-Each value carries the ``HandoffSource`` it came from so log readers can
-distinguish "the run resumed correctly" from "the run silently fell
-back to Delta state". See the cross-task state resilience plan
-(``docs/2026-05-01-cross-task-state-resilience-plan.md``) for the
-problem statement and design.
+Historical note: an earlier design probed the Databricks job task-value store
+first and fell back to Delta. Under the v2 DAG those probes targeted task keys
+from the retired 6-task DAG (``preflight``, ``baseline_eval``, ``enrichment``,
+``lever_loop``) that no longer exist in a run, and the probe raised
+``ValueError: Task key does not exist in run`` before the Delta fallback could
+run. The task-value probe has been removed; Delta is now the ONLY source.
 """
 from __future__ import annotations
 
@@ -26,12 +28,20 @@ from typing import Any
 
 
 class HandoffSource(str, Enum):
-    """Where a HandoffValue was sourced from."""
+    """Where a HandoffValue was sourced from.
 
-    TASK_VALUES = "task_values"       # taskValues returned a real value
-    DELTA_FALLBACK = "delta_fallback"  # taskValues empty; Delta filled in
-    DEFAULT = "default"               # both empty; documented default applied
-    MISSING = "missing"               # both empty; no default — caller decides
+    Under D9 (Delta-only handoff) the helpers in this module only ever emit
+    ``DELTA_FALLBACK`` or ``MISSING``. ``TASK_VALUES`` is retained for direct /
+    authoritative reads that never pass through Delta — the ``catalog`` /
+    ``schema`` job-widget bootstrap keys in ``get_run_context`` and the
+    published-scorecard check in ``resolve_finalize_skip_scores`` — and for the
+    ``DEFAULT`` documented-default case.
+    """
+
+    TASK_VALUES = "task_values"        # direct/authoritative read (e.g. job widget)
+    DELTA_FALLBACK = "delta_fallback"  # reconstructed from durable Delta state
+    DEFAULT = "default"                # documented default applied
+    MISSING = "missing"                # not found anywhere — caller decides
 
 
 @dataclass(frozen=True)
@@ -67,33 +77,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _tv_get(dbutils, taskKey: str, key: str, default: str = "") -> str:
-    """Tiny wrapper so tests can swap in a mock and the prod call site
-    does not duplicate ``dbutils.jobs.taskValues.get`` boilerplate."""
-    return dbutils.jobs.taskValues.get(taskKey=taskKey, key=key, default=default)
-
-
 def _resolve(
-    raw_tv: str,
     *,
-    delta_value,
-    parser=lambda s: s,
+    delta_value: Any,
     key: str,
     delta_query: Optional[str] = None,
 ) -> HandoffValue:
-    """Pick taskValues if non-empty, else Delta if non-None, else MISSING.
+    """Delta-only cross-task resolution (D9).
 
-    ``parser`` converts the raw string to its typed value; on parse error
-    the string is treated as empty so Delta wins.
+    A non-``None`` ``delta_value`` is the resolved value (source
+    ``DELTA_FALLBACK``); ``None`` means the upstream task never persisted it
+    (source ``MISSING`` — the caller decides whether that is fatal). Callers pass
+    ``delta_value`` already typed (e.g. ``overall_accuracy`` as a float,
+    ``scores_json`` parsed to a dict by the ``_load_*`` helpers), so this function
+    does no parsing of its own.
     """
-    if raw_tv not in ("", None):
-        try:
-            return HandoffValue(
-                key=key, value=parser(raw_tv),
-                source=HandoffSource.TASK_VALUES,
-            )
-        except (ValueError, json.JSONDecodeError, TypeError):
-            pass  # fall through to Delta
     if delta_value is not None:
         return HandoffValue(
             key=key, value=delta_value,
@@ -111,103 +109,82 @@ def get_run_context(
     run_id_widget: str,
     catalog_widget: str,
     schema_widget: str,
-    dbutils,
+    dbutils: Any = None,
 ) -> dict[str, HandoffValue]:
-    """Read all preflight-published values, with Delta fallback to genie_opt_runs.
+    """Read all run-level context from ``genie_opt_runs`` (Delta-only, D9).
 
-    The widgets ``run_id_widget``, ``catalog_widget``, ``schema_widget``
-    are required because they are the only values we can rely on at the
-    very start of any task — Databricks Jobs widgets DO survive Repair
-    Run, while taskValues do not.
+    The widgets ``run_id_widget``, ``catalog_widget``, ``schema_widget`` are the
+    only bootstrap inputs every task can rely on — Databricks Jobs widgets /
+    parameters survive Repair Run. ``run_id_widget`` locates the durable run row;
+    ``catalog`` / ``schema`` are echoed straight back as the bootstrap keys.
+
+    ``dbutils`` is accepted for call-site compatibility but is no longer used: v2
+    tasks publish NO Databricks task values (D9), so every field is read from Delta.
 
     Returns a dict of ``HandoffValue`` keyed by logical name.
 
     Raises:
-        RuntimeError: if ``run_id_widget`` is empty AND no taskValue ran_id
-            is available — there is nothing to look up in Delta.
+        RuntimeError: if ``run_id_widget`` is empty (nothing to look up), or if
+            there is no ``genie_opt_runs`` row for it (the run was never created).
     """
-    # Cycle 5 T6 — Repair-Run widget context preservation. Widgets
-    # SHOULD survive Repair Run, but tests confirm there are paths
-    # where the widget arrives empty even on Repair Runs (e.g., when
-    # the operator triggers Repair via the API before the notebook
-    # widget DOM has finished bootstrapping). Defer the
-    # widget-required raise to AFTER the taskValues fallback so a
-    # Repair Run with non-empty taskValues survives a transient
-    # empty widget. The "both empty" path below still raises with a
-    # clear message.
-    tv_run_id = _tv_get(dbutils, "preflight", "run_id")
-    bootstrap_run_id = tv_run_id or run_id_widget
-    if not bootstrap_run_id:
+    del dbutils  # D9: Delta-only handoff — no task values are consulted.
+
+    if not run_id_widget:
         raise RuntimeError(
-            "get_run_context: run_id is required. Both "
-            "run_id_widget and dbutils.jobs.taskValues "
-            "preflight.run_id are empty — Repair Run cannot "
-            "proceed."
+            "get_run_context: run_id_widget is required — there is no run_id to "
+            "look up in Delta."
         )
 
     delta_query = (
         f"SELECT * FROM {catalog_widget}.{schema_widget}.genie_opt_runs "
-        f"WHERE run_id = '{bootstrap_run_id}' LIMIT 1"
+        f"WHERE run_id = '{run_id_widget}' LIMIT 1"
     )
-    run_row = load_run(spark, bootstrap_run_id, catalog_widget, schema_widget)
+    run_row = load_run(spark, run_id_widget, catalog_widget, schema_widget)
 
-    if run_row is None and not tv_run_id:
-        # Both taskValues and Delta empty — we know nothing about this run.
+    if run_row is None:
+        # No durable run row — we know nothing about this run.
         raise RuntimeError(
             f"get_run_context: no run context available for run_id="
-            f"{bootstrap_run_id!r}. taskValues are empty AND no row in "
-            f"{catalog_widget}.{schema_widget}.genie_opt_runs. Repair "
-            f"Run cannot proceed."
+            f"{run_id_widget!r}. No row in "
+            f"{catalog_widget}.{schema_widget}.genie_opt_runs — the intake task "
+            f"(00_intake_and_snapshot) must create the run row first."
         )
 
-    # Per-key resolution. Each entry: (logical_key, taskValues_key,
-    # delta_row_key, parser).
+    # Per-key resolution. Each entry: (logical_key, genie_opt_runs column).
     spec = [
-        ("run_id", "run_id", "run_id", str),
-        ("space_id", "space_id", "space_id", str),
-        ("domain", "domain", "domain", str),
-        ("experiment_name", "experiment_name", "experiment_name", str),
-        ("apply_mode", "apply_mode", "apply_mode", str),
-        ("triggered_by", "triggered_by", "triggered_by", str),
-        ("warehouse_id", "warehouse_id", "warehouse_id", str),
-        ("max_iterations", "max_iterations", "max_iterations", int),
-        ("levers", "levers", "levers", json.loads),
-        (
-            "max_benchmark_count",
-            "max_benchmark_count",
-            "max_benchmark_count",
-            int,
-        ),
-        (
-            "human_corrections",
-            "human_corrections",
-            "human_corrections_json",
-            json.loads,
-        ),
+        ("run_id", "run_id"),
+        ("space_id", "space_id"),
+        ("domain", "domain"),
+        ("experiment_name", "experiment_name"),
+        ("apply_mode", "apply_mode"),
+        ("triggered_by", "triggered_by"),
+        ("warehouse_id", "warehouse_id"),
+        ("max_iterations", "max_iterations"),
+        ("levers", "levers"),
+        ("max_benchmark_count", "max_benchmark_count"),
+        ("human_corrections", "human_corrections_json"),
     ]
 
     out: dict[str, HandoffValue] = {}
-    for logical, tv_key, delta_key, parser in spec:
-        raw = _tv_get(dbutils, "preflight", tv_key)
-        delta_val = (run_row or {}).get(delta_key)
+    for logical, delta_key in spec:
+        delta_val = run_row.get(delta_key)
         # JSON columns (levers, human_corrections_json) come back from
         # load_run as strings. Parse them here so callers always see a
-        # typed value regardless of source.
+        # typed value.
         if logical in ("levers", "human_corrections") and isinstance(delta_val, str):
             try:
                 delta_val = json.loads(delta_val)
             except (ValueError, TypeError):
                 delta_val = None
         out[logical] = _resolve(
-            raw,
             delta_value=delta_val,
-            parser=parser,
             key=logical,
             delta_query=delta_query,
         )
 
-    # ``catalog`` and ``schema`` are passed in as widgets, never read from
-    # taskValues — they ARE the bootstrap keys.
+    # ``catalog`` and ``schema`` come straight from the job widgets — they ARE
+    # the bootstrap keys, not fields stored in the run row, so they are marked
+    # as a direct/authoritative read (TASK_VALUES) rather than DELTA_FALLBACK.
     out["catalog"] = HandoffValue(
         key="catalog", value=catalog_widget,
         source=HandoffSource.TASK_VALUES,
@@ -255,79 +232,58 @@ def get_baseline_eval_state(
     run_id: str,
     catalog: str,
     schema: str,
-    dbutils,
+    dbutils: Any = None,
 ) -> dict[str, HandoffValue]:
-    """Read baseline_eval task values, falling back to genie_opt_iterations.
+    """Read baseline eval state from ``genie_opt_iterations`` (Delta-only, D9).
 
-    Returns ``HandoffValue`` for: ``scores``, ``overall_accuracy``,
-    ``thresholds_met``, ``model_id``, ``mlflow_run_id``.
+    Reads the iteration=0 / ``eval_scope='full'`` row written by the baseline eval
+    task (``02_baseline_eval_and_triage``). Returns ``HandoffValue`` for:
+    ``scores``, ``overall_accuracy``, ``thresholds_met``, ``model_id``,
+    ``mlflow_run_id``. ``dbutils`` is accepted for call-site compatibility but
+    unused (D9 — no task values).
 
     Raises:
-        RuntimeError: if neither taskValues nor a Delta iteration=0 row
-            is available — the baseline never ran.
+        RuntimeError: if there is no Delta iteration=0 baseline row — the baseline
+            eval never completed.
     """
+    del dbutils  # D9: Delta-only handoff — no task values are consulted.
+
     delta_query = (
         f"SELECT * FROM {catalog}.{schema}.genie_opt_iterations "
         f"WHERE run_id = '{run_id}' AND iteration = 0 "
         f"AND eval_scope = 'full' LIMIT 1"
     )
 
-    raw_scores = _tv_get(dbutils, "baseline_eval", "scores")
-    raw_acc = _tv_get(dbutils, "baseline_eval", "overall_accuracy")
-    raw_thr = _tv_get(dbutils, "baseline_eval", "thresholds_met")
-    raw_mid = _tv_get(dbutils, "baseline_eval", "model_id")
-    raw_mlid = _tv_get(dbutils, "baseline_eval", "mlflow_run_id")
+    delta_row = _load_baseline_iteration_row(spark, run_id, catalog, schema)
 
-    delta_row = None
-    if raw_scores in ("", None) or raw_acc in ("", None):
-        delta_row = _load_baseline_iteration_row(
-            spark, run_id, catalog, schema,
-        )
-
-    if (
-        raw_scores in ("", None)
-        and raw_acc in ("", None)
-        and delta_row is None
-    ):
+    if delta_row is None:
         raise RuntimeError(
             f"get_baseline_eval_state: no baseline state available for "
-            f"run_id={run_id!r}. taskValues empty AND no row in "
-            f"{catalog}.{schema}.genie_opt_iterations at iteration=0. "
-            f"baseline_eval task must complete before lever_loop / finalize."
+            f"run_id={run_id!r}. No row in "
+            f"{catalog}.{schema}.genie_opt_iterations at iteration=0 "
+            f"(eval_scope='full') — the baseline eval task "
+            f"(02_baseline_eval_and_triage) must complete before optimize / publish."
         )
-
-    def _bool(s: str) -> bool:
-        return str(s).lower() in ("true", "1")
 
     out = {
         "scores": _resolve(
-            raw_scores,
-            delta_value=(delta_row or {}).get("scores_json"),
-            parser=json.loads,
+            delta_value=delta_row.get("scores_json"),
             key="scores", delta_query=delta_query,
         ),
         "overall_accuracy": _resolve(
-            raw_acc,
-            delta_value=(delta_row or {}).get("overall_accuracy"),
-            parser=float,
+            delta_value=delta_row.get("overall_accuracy"),
             key="overall_accuracy", delta_query=delta_query,
         ),
         "thresholds_met": _resolve(
-            raw_thr,
-            delta_value=(delta_row or {}).get("thresholds_met"),
-            parser=_bool,
+            delta_value=delta_row.get("thresholds_met"),
             key="thresholds_met", delta_query=delta_query,
         ),
         "model_id": _resolve(
-            raw_mid,
-            delta_value=(delta_row or {}).get("model_id"),
-            parser=str,
+            delta_value=delta_row.get("model_id"),
             key="model_id", delta_query=delta_query,
         ),
         "mlflow_run_id": _resolve(
-            raw_mlid,
-            delta_value=(delta_row or {}).get("mlflow_run_id"),
-            parser=str,
+            delta_value=delta_row.get("mlflow_run_id"),
             key="mlflow_run_id", delta_query=delta_query,
         ),
     }
@@ -366,77 +322,55 @@ def get_enrichment_state(
     run_id: str,
     catalog: str,
     schema: str,
-    dbutils,
+    dbutils: Any = None,
 ) -> dict[str, HandoffValue]:
-    """Read enrichment task values, falling back to genie_opt_iterations.
+    """Read enrichment state from ``genie_opt_iterations`` (Delta-only, D9).
 
     Returns ``HandoffValue`` for: ``enrichment_model_id``,
     ``enrichment_skipped``, ``post_enrichment_accuracy``,
     ``post_enrichment_scores``, ``post_enrichment_model_id``,
-    ``post_enrichment_thresholds_met``.
+    ``post_enrichment_thresholds_met``. ``dbutils`` is accepted for call-site
+    compatibility but unused (D9 — no task values).
 
     Absence of a Delta enrichment row -> ``enrichment_skipped=True`` with
     source=DELTA_FALLBACK; all post_* values are MISSING. This is a valid
     state and does NOT raise.
     """
+    del dbutils  # D9: Delta-only handoff — no task values are consulted.
+
     delta_query = (
         f"SELECT * FROM {catalog}.{schema}.genie_opt_iterations "
         f"WHERE run_id = '{run_id}' AND eval_scope = 'enrichment' LIMIT 1"
     )
 
-    raw_skipped = _tv_get(dbutils, "enrichment", "enrichment_skipped")
-    if raw_skipped not in ("", None):
-        # Operator-supplied skip signal -- trust it.
-        skipped_val = str(raw_skipped).lower() in ("true", "1")
-        skipped_hv = HandoffValue(
-            key="enrichment_skipped", value=skipped_val,
-            source=HandoffSource.TASK_VALUES,
-        )
-        delta_row = None
-    else:
-        delta_row = _load_enrichment_iteration_row(
-            spark, run_id, catalog, schema,
-        )
-        skipped_val = delta_row is None
-        skipped_hv = HandoffValue(
-            key="enrichment_skipped", value=skipped_val,
-            source=HandoffSource.DELTA_FALLBACK,
-            delta_query=delta_query,
-        )
-
-    def _bool(s: str) -> bool:
-        return str(s).lower() in ("true", "1")
+    delta_row = _load_enrichment_iteration_row(spark, run_id, catalog, schema)
+    skipped_val = delta_row is None
+    skipped_hv = HandoffValue(
+        key="enrichment_skipped", value=skipped_val,
+        source=HandoffSource.DELTA_FALLBACK,
+        delta_query=delta_query,
+    )
 
     out: dict[str, HandoffValue] = {"enrichment_skipped": skipped_hv}
 
     out["enrichment_model_id"] = _resolve(
-        _tv_get(dbutils, "enrichment", "enrichment_model_id"),
         delta_value=(delta_row or {}).get("model_id"),
-        parser=str,
         key="enrichment_model_id", delta_query=delta_query,
     )
     out["post_enrichment_accuracy"] = _resolve(
-        _tv_get(dbutils, "enrichment", "post_enrichment_accuracy"),
         delta_value=(delta_row or {}).get("overall_accuracy"),
-        parser=float,
         key="post_enrichment_accuracy", delta_query=delta_query,
     )
     out["post_enrichment_scores"] = _resolve(
-        _tv_get(dbutils, "enrichment", "post_enrichment_scores"),
         delta_value=(delta_row or {}).get("scores_json"),
-        parser=json.loads,
         key="post_enrichment_scores", delta_query=delta_query,
     )
     out["post_enrichment_model_id"] = _resolve(
-        _tv_get(dbutils, "enrichment", "post_enrichment_model_id"),
         delta_value=(delta_row or {}).get("model_id"),
-        parser=str,
         key="post_enrichment_model_id", delta_query=delta_query,
     )
     out["post_enrichment_thresholds_met"] = _resolve(
-        _tv_get(dbutils, "enrichment", "post_enrichment_thresholds_met"),
         delta_value=(delta_row or {}).get("thresholds_met"),
-        parser=_bool,
         key="post_enrichment_thresholds_met", delta_query=delta_query,
     )
     return out
@@ -455,47 +389,36 @@ def get_lever_loop_outputs(
     run_id: str,
     catalog: str,
     schema: str,
-    dbutils,
+    dbutils: Any = None,
 ) -> dict[str, HandoffValue]:
-    """Read lever_loop task values, falling back to Delta state."""
+    """Read lever-loop / optimize outputs from Delta state (Delta-only, D9).
+
+    Reconstructs the loop outputs from ``genie_opt_runs`` (best-* columns) and the
+    latest ``eval_scope='full'`` ``genie_opt_iterations`` row. ``dbutils`` is
+    accepted for call-site compatibility but unused (D9 — no task values).
+
+    Raises:
+        RuntimeError: if there is no run row AND no full-scope iteration row — the
+            optimize task never completed.
+    """
+    del dbutils  # D9: Delta-only handoff — no task values are consulted.
+
     delta_query = (
         f"SELECT * FROM {catalog}.{schema}.genie_opt_iterations "
         f"WHERE run_id = '{run_id}' AND eval_scope = 'full' "
         f"ORDER BY iteration DESC LIMIT 1"
     )
 
-    _run_row = None
-    _latest_iter = None
-    _iters_df = None
-
-    def _need_delta() -> bool:
-        return any(
-            _tv_get(dbutils, "lever_loop", k) in ("", None)
-            for k in (
-                "scores", "accuracy", "model_id", "iteration_counter",
-                "best_iteration", "skipped",
-                "all_eval_mlflow_run_ids", "all_failure_question_ids",
-            )
+    _run_row = load_run(spark, run_id, catalog, schema)
+    _latest_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
+    if _run_row is None and _latest_iter is None:
+        raise RuntimeError(
+            f"get_lever_loop_outputs: no state available for run_id="
+            f"{run_id!r}. No rows in "
+            f"{catalog}.{schema}.genie_opt_runs / genie_opt_iterations — the "
+            f"optimize task (03_optimize) must complete before publish / deploy."
         )
-
-    if _need_delta():
-        _run_row = load_run(spark, run_id, catalog, schema)
-        _latest_iter = load_latest_full_iteration(
-            spark, run_id, catalog, schema,
-        )
-        if _run_row is None and _latest_iter is None and not any(
-            _tv_get(dbutils, "lever_loop", k) for k in ("scores", "model_id")
-        ):
-            raise RuntimeError(
-                f"get_lever_loop_outputs: no state available for run_id="
-                f"{run_id!r}. taskValues empty AND no rows in "
-                f"{catalog}.{schema}.genie_opt_runs / genie_opt_iterations. "
-                f"lever_loop task must complete before finalize / deploy."
-            )
-        _iters_df = load_iterations(spark, run_id, catalog, schema)
-
-    def _bool(s: str) -> bool:
-        return str(s).lower() in ("true", "1")
+    _iters_df = load_iterations(spark, run_id, catalog, schema)
 
     delta_skipped = (
         _latest_iter is not None and int(_latest_iter.get("iteration", 0)) == 0
@@ -511,52 +434,36 @@ def get_lever_loop_outputs(
 
     out = {
         "scores": _resolve(
-            _tv_get(dbutils, "lever_loop", "scores"),
             delta_value=(_latest_iter or {}).get("scores_json"),
-            parser=json.loads,
             key="scores", delta_query=delta_query,
         ),
         "accuracy": _resolve(
-            _tv_get(dbutils, "lever_loop", "accuracy"),
             delta_value=(_latest_iter or {}).get("overall_accuracy"),
-            parser=float,
             key="accuracy", delta_query=delta_query,
         ),
         "model_id": _resolve(
-            _tv_get(dbutils, "lever_loop", "model_id"),
             delta_value=(_latest_iter or {}).get("model_id")
             or (_run_row or {}).get("best_model_id"),
-            parser=str,
             key="model_id", delta_query=delta_query,
         ),
         "iteration_counter": _resolve(
-            _tv_get(dbutils, "lever_loop", "iteration_counter"),
             delta_value=(_latest_iter or {}).get("iteration"),
-            parser=int,
             key="iteration_counter", delta_query=delta_query,
         ),
         "best_iteration": _resolve(
-            _tv_get(dbutils, "lever_loop", "best_iteration"),
             delta_value=(_run_row or {}).get("best_iteration"),
-            parser=int,
             key="best_iteration", delta_query=delta_query,
         ),
         "skipped": _resolve(
-            _tv_get(dbutils, "lever_loop", "skipped"),
             delta_value=delta_skipped if _latest_iter is not None else None,
-            parser=_bool,
             key="skipped", delta_query=delta_query,
         ),
         "all_eval_mlflow_run_ids": _resolve(
-            _tv_get(dbutils, "lever_loop", "all_eval_mlflow_run_ids"),
             delta_value=delta_eval_ids,
-            parser=json.loads,
             key="all_eval_mlflow_run_ids", delta_query=delta_query,
         ),
         "all_failure_question_ids": _resolve(
-            _tv_get(dbutils, "lever_loop", "all_failure_question_ids"),
             delta_value=(_latest_iter or {}).get("failures_json"),
-            parser=json.loads,
             key="all_failure_question_ids", delta_query=delta_query,
         ),
     }
@@ -657,7 +564,7 @@ def resolve_finalize_skip_scores(
 def assert_lever_loop_inputs_sane(state: dict[str, HandoffValue]) -> None:
     """Refuse to run the lever loop with degenerate baseline inputs.
 
-    The fingerprint of a Repair Run that lost taskValues is:
+    The fingerprint of a Repair Run whose baseline state never persisted is:
     ``overall_accuracy`` is 0.0/None AND ``scores`` is empty AND both
     are sourced from MISSING (Delta also empty). When this happens, the
     loop will silently terminate as ``plateau_no_open_failures`` and
@@ -671,7 +578,7 @@ def assert_lever_loop_inputs_sane(state: dict[str, HandoffValue]) -> None:
             ``overall_accuracy`` and ``scores``.
 
     Raises:
-        RuntimeError: if inputs are degenerate AND not from taskValues.
+        RuntimeError: if inputs are degenerate AND not a direct/authoritative read.
     """
     acc_hv = state["overall_accuracy"]
     scores_hv = state["scores"]
@@ -698,8 +605,8 @@ def assert_lever_loop_inputs_sane(state: dict[str, HandoffValue]) -> None:
         f"assert_lever_loop_inputs_sane: degenerate baseline state "
         f"detected (overall_accuracy={acc_val!r} from {acc_hv.source.value}, "
         f"scores={scores_val!r} from {scores_hv.source.value}). "
-        f"This is the Repair Run silent-success fingerprint: taskValues "
-        f"did not propagate AND Delta has no row to fall back to. "
+        f"This is the Repair Run silent-success fingerprint: no baseline state "
+        f"was persisted AND Delta has no row to fall back to. "
         f"Re-run the full DAG, or pass --override-baseline-from-delta "
         f"with a known-good run_id."
     )
