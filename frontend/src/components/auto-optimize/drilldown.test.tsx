@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
-import type { GSOIterationResult, GSOPipelineStep } from "@/types"
+import type { GSOIterationResult, GSOPipelineStep, GSOLeverStatus, GSOTerminalReason } from "@/types"
 
 // Mock the API module before importing PipelineDetailsModal (which — and whose
 // child components — pull in @/lib/api). We only render prop-driven pieces, so
@@ -18,9 +18,10 @@ vi.mock("@/lib/api", () => ({
   ApiError: class ApiError extends Error {},
 }))
 
-import { deriveRailProgress, patchAttemptLabel } from "./pipelineDetail"
+import { deriveRailProgress, patchAttemptLabel, buildLeverIterationLabels } from "./pipelineDetail"
 import { humanizeTerminalReason, championAccuracyText } from "./runHistory"
 import { AttemptExplorerTable } from "./PipelineDetailsModal"
+import { OptimizationLevers } from "./OptimizationLevers"
 import { AutoOptimizeContent } from "@/pages/HowItWorks"
 
 // Minimal builders — override just the fields under test.
@@ -125,6 +126,15 @@ describe("humanizeTerminalReason — typed reason → compact Outcome label", ()
     expect(humanizeTerminalReason("EVAL_BUDGET_EXHAUSTED")).toBe("Budget exhausted")
   })
 
+  it("humanizes the QC-side BENCHMARK_UNREPAIRABLE hard-stop from either field", () => {
+    // Not a GSOTerminalReason member — the 01 hard-stop lands on the run
+    // summary as free-text convergence_reason (or, defensively, on `reason`).
+    expect(humanizeTerminalReason(null, "BENCHMARK_UNREPAIRABLE")).toBe("Benchmark unrepairable")
+    expect(
+      humanizeTerminalReason("BENCHMARK_UNREPAIRABLE" as unknown as GSOTerminalReason, null),
+    ).toBe("Benchmark unrepairable")
+  })
+
   it("degrades to the free-text convergence reason, then an em dash", () => {
     expect(humanizeTerminalReason(null, "converged early")).toBe("converged early")
     expect(humanizeTerminalReason(null, "  ")).toBe("—")
@@ -133,13 +143,16 @@ describe("humanizeTerminalReason — typed reason → compact Outcome label", ()
   })
 })
 
-describe("championAccuracyText — champion accuracy formatting", () => {
-  it("normalizes 0–1 and 0–100 scales to an integer percent", () => {
-    expect(championAccuracyText(0.85)).toBe("85%")
+describe("championAccuracyText — identity on 0–100 (no ×100 heuristic)", () => {
+  it("renders a 0–100 accuracy as an integer percent", () => {
     expect(championAccuracyText(85)).toBe("85%")
-    expect(championAccuracyText(1)).toBe("100%")
     expect(championAccuracyText(100)).toBe("100%")
     expect(championAccuracyText(0)).toBe("0%")
+  })
+
+  it("does NOT ×100 a true sub-1% champion (the Phase-12 corruption class)", () => {
+    expect(championAccuracyText(0.9)).toBe("1%")
+    expect(championAccuracyText(0.9)).not.toBe("90%")
   })
 
   it("renders an em dash for null / non-finite", () => {
@@ -198,6 +211,41 @@ describe("AttemptExplorerTable — re-keyed Attempt Explorer (fallback)", () => 
     expect(markup).toContain("Attempt 1")
     expect(markup).not.toContain("★")
   })
+
+  it("surfaces the highest-vs-champion reason inline (champion = explicit flag, not idxmax)", () => {
+    // The highest-accuracy row (iter 2, 88%) was rolled back and is NOT the
+    // champion; a lower row (iter 3, 80%) carries the explicit is_champion flag.
+    // An idxmax impl would star iter 2 and hide the reason — this asserts the
+    // opposite.
+    const iterations = [
+      iter({ iteration: 0, overall_accuracy: 70, correct_count: 21 }),
+      iter({
+        iteration: 2,
+        attempt_no: 2,
+        attempt_mode: "surgical",
+        decision: "reject",
+        rolled_back: true,
+        decision_reason: "regressed on the priority cluster",
+        overall_accuracy: 88,
+        correct_count: 26,
+      }),
+      iter({
+        iteration: 3,
+        attempt_no: 3,
+        attempt_mode: "surgical",
+        decision: "accept",
+        is_champion: true,
+        overall_accuracy: 80,
+        correct_count: 24,
+      }),
+    ]
+    const markup = renderToStaticMarkup(<AttemptExplorerTable iterations={iterations} />)
+    // Exactly one champion star, and it is on the lower (80%) row — assert the
+    // star renders and the divergence explanation is surfaced inline.
+    expect(markup).toContain("★")
+    expect(markup).toContain("Highest accuracy, but not the champion")
+    expect(markup).toContain("regressed on the priority cluster")
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -222,5 +270,76 @@ describe("AutoOptimizeContent — 5-task DAG + coverage/surgical loop prose", ()
     expect(markup).toContain("Surgical")
     expect(markup).toContain("target accuracy")
     expect(markup).toContain("max attempts")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 1 (B1) — attempt-grouped Levers provenance labels
+// ---------------------------------------------------------------------------
+
+describe("buildLeverIterationLabels — attempt-grouped lever provenance", () => {
+  it("maps iterations to Coverage / Surgical N (+ decision) when attempt metadata is present", () => {
+    const iterations = [
+      iter({ iteration: 0 }),
+      iter({ iteration: 1, attempt_no: 1, attempt_mode: "coverage", decision: "reject", rolled_back: true }),
+      iter({ iteration: 2, attempt_no: 2, attempt_mode: "surgical", decision: "accept" }),
+    ]
+    const labels = buildLeverIterationLabels(iterations)
+    expect(labels.get(1)).toBe("Coverage · Rolled back")
+    expect(labels.get(2)).toBe("Surgical 2 · Accepted")
+  })
+
+  it("returns an empty map (⇒ 'Iteration N' fallback) for legacy runs with no attempt metadata", () => {
+    const labels = buildLeverIterationLabels([iter({ iteration: 1 }), iter({ iteration: 2 })])
+    expect(labels.size).toBe(0)
+    expect(buildLeverIterationLabels(undefined).size).toBe(0)
+  })
+})
+
+describe("OptimizationLevers — attempt-labeled provenance vs legacy Iteration N", () => {
+  // A lever with two patched iterations so the multi-iteration branch (which
+  // renders the per-iteration provenance sub-labels) is exercised.
+  const patch = {
+    patchType: "update_instruction",
+    scope: "",
+    riskLevel: "",
+    targetObject: null,
+    rolledBack: false,
+    rollbackReason: null,
+    command: null,
+    patch: null,
+    appliedAt: null,
+  }
+  const lever: GSOLeverStatus = {
+    lever: 5,
+    name: "Text Instructions",
+    status: "accepted",
+    patchCount: 2,
+    scoreBefore: null,
+    scoreAfter: null,
+    scoreDelta: null,
+    rollbackReason: null,
+    patches: [],
+    iterations: [
+      { iteration: 1, status: "rolled_back", patchCount: 1, patchTypes: [], scoreBefore: null, scoreAfter: null, scoreDelta: null, mlflowRunId: null, rollbackReason: null, patches: [patch] },
+      { iteration: 2, status: "accepted", patchCount: 1, patchTypes: [], scoreBefore: null, scoreAfter: null, scoreDelta: null, mlflowRunId: null, rollbackReason: null, patches: [patch] },
+    ],
+  }
+  const iterations = [
+    iter({ iteration: 1, attempt_no: 1, attempt_mode: "coverage", decision: "reject", rolled_back: true }),
+    iter({ iteration: 2, attempt_no: 2, attempt_mode: "surgical", decision: "accept" }),
+  ]
+
+  it("re-keys provenance sub-labels to Coverage / Surgical N when attempt metadata is present", () => {
+    const markup = renderToStaticMarkup(<OptimizationLevers levers={[lever]} iterations={iterations} />)
+    expect(markup).toContain("Coverage")
+    expect(markup).toContain("Surgical 2")
+    expect(markup).not.toContain("Iteration 2")
+  })
+
+  it("degrades to 'Iteration N' when no iterations prop / attempt metadata is provided", () => {
+    const markup = renderToStaticMarkup(<OptimizationLevers levers={[lever]} />)
+    expect(markup).toContain("Iteration 2")
+    expect(markup).not.toContain("Surgical 2")
   })
 })

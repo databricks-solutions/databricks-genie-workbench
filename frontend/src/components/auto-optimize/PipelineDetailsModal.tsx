@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from "react"
-import { X, TrendingUp, Pen } from "lucide-react"
+import { Fragment, useEffect, useState, useRef } from "react"
+import { X, TrendingUp, Pen, Info } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { TaskRail } from "@/components/auto-optimize/TaskRail"
@@ -20,6 +20,7 @@ import {
   getAutoOptimizeIterations,
   getAutoOptimizePublishRecord,
   getAutoOptimizeLoopState,
+  getAutoOptimizeBenchmarkChanges,
 } from "@/lib/api"
 import {
   convergenceReasonText,
@@ -67,6 +68,10 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
   // Ladder/Ledger. Empty for legacy 6-step runs / before the first attempt; the
   // Attempt Explorer then degrades to the re-keyed iteration table.
   const [attempts, setAttempts] = useState<GSOAttempt[]>([])
+  // GSO v2 (Phase 14) — benchmark-QC terminal reason drives the 01 rail chip.
+  // A BENCHMARK_UNREPAIRABLE hard-stop lives on the QC artifact (not the loop
+  // GSOTerminalReason union), mirroring the Phase-12 cockpit derivation.
+  const [benchmarkUnrepairable, setBenchmarkUnrepairable] = useState(false)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -76,6 +81,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
     setIterations([])
     setPublishRecord(null)
     setAttempts([])
+    setBenchmarkUnrepairable(false)
 
     function fetchData() {
       getAutoOptimizeRun(runId).then(setRun).catch(() => {})
@@ -84,6 +90,9 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
         .catch(() => {})
       getAutoOptimizeLoopState(runId)
         .then((res) => setAttempts(res?.attempts ?? []))
+        .catch(() => {})
+      getAutoOptimizeBenchmarkChanges(runId)
+        .then((res) => setBenchmarkUnrepairable(res?.qc?.terminalReason === "BENCHMARK_UNREPAIRABLE"))
         .catch(() => {})
       getAutoOptimizeIterations(runId)
         .then((its) => setIterations(its.filter((it) =>
@@ -118,6 +127,9 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
       getAutoOptimizeRun(runId).then(setRun).catch(() => {})
       getAutoOptimizeLoopState(runId)
         .then((res) => setAttempts(res?.attempts ?? []))
+        .catch(() => {})
+      getAutoOptimizeBenchmarkChanges(runId)
+        .then((res) => setBenchmarkUnrepairable(res?.qc?.terminalReason === "BENCHMARK_UNREPAIRABLE"))
         .catch(() => {})
       getAutoOptimizeIterations(runId)
         .then((its) => setIterations(its.filter((it) =>
@@ -218,6 +230,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                 currentStepName={currentStepName}
                 status={run.status}
                 terminalReason={run.terminalReason ?? null}
+                benchmarkUnrepairable={benchmarkUnrepairable}
               />
 
               {hasAnyScore && (
@@ -333,7 +346,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                   {/* Levers tab — coverage (lever 0) + surgical levers 1–6. */}
                   <TabsContent value="levers">
                     {hasLevers ? (
-                      <OptimizationLevers levers={run.levers} />
+                      <OptimizationLevers levers={run.levers} iterations={iterations} />
                     ) : (
                       <p className="text-sm text-muted text-center py-8">No lever activity recorded for this run.</p>
                     )}
@@ -364,6 +377,26 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
 // is_champion flag (never idxmax). Legacy rows with no attempt metadata degrade
 // to "Attempt N" / "—" and simply carry no champion star.
 export function AttemptExplorerTable({ iterations }: { iterations: GSOIterationResult[] }) {
+  // Highest-accuracy row (first wins on ties) + explicit champion row. When the
+  // highest ≠ champion we surface the highest row's rollback/decision reason
+  // inline, mirroring AttemptLedger, so a higher-but-not-adopted attempt is
+  // explained rather than hidden (champion truth = the explicit flag, §5).
+  let highestIdx = -1
+  let highestVal = -Infinity
+  iterations.forEach((it, i) => {
+    if (it.overall_accuracy != null && it.overall_accuracy > highestVal) {
+      highestVal = it.overall_accuracy
+      highestIdx = i
+    }
+  })
+  const championIdx = iterations.findIndex((it) => it.is_champion === true)
+  const divergentIdx =
+    championIdx >= 0 && highestIdx >= 0 && championIdx !== highestIdx ? highestIdx : -1
+  const divergenceReason =
+    divergentIdx >= 0
+      ? iterations[divergentIdx].decision_reason ?? "Higher accuracy but not adopted as champion"
+      : null
+
   return (
     <div className="rounded-xl border border-default p-6">
       <h3 className="text-sm font-semibold text-primary mb-4">Attempt Accuracy Progression</h3>
@@ -380,39 +413,57 @@ export function AttemptExplorerTable({ iterations }: { iterations: GSOIterationR
             </tr>
           </thead>
           <tbody>
-            {iterations.map((it) => {
+            {iterations.map((it, i) => {
               const isBaseline = it.iteration === 0
               const rolledBack = it.rolled_back === true
+              const isDivergent = i === divergentIdx
               return (
-                <tr
-                  key={it.iteration}
-                  className={`border-b border-default last:border-0 ${
-                    it.is_champion ? "bg-emerald-50 dark:bg-emerald-950/30" : isBaseline ? "bg-elevated/50" : ""
-                  }`}
-                >
-                  <td className="px-4 py-2.5 font-medium text-primary">{attemptColumnLabel(it)}</td>
-                  <td className="px-4 py-2.5 text-muted">
-                    {isBaseline ? "—" : attemptModeLabel(it.attempt_mode)}
-                  </td>
-                  <td className="px-4 py-2.5 text-muted">
-                    {isBaseline ? "—" : decisionLabel(it.decision, rolledBack)}
-                  </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-primary">
-                    {formatScorePct(it.overall_accuracy)}
-                  </td>
-                  <td className="px-4 py-2.5 text-right text-muted font-mono">
-                    {it.correct_count}/{it.total_questions}
-                  </td>
-                  <td className="px-4 py-2.5 text-center">
-                    {it.is_champion ? (
-                      <span title="Champion configuration" className="text-base text-indigo-500">
-                        {"★"}
-                      </span>
-                    ) : (
-                      <span className="text-muted">{"—"}</span>
-                    )}
-                  </td>
-                </tr>
+                <Fragment key={it.iteration}>
+                  <tr
+                    className={`border-b border-default last:border-0 ${
+                      it.is_champion
+                        ? "bg-emerald-50 dark:bg-emerald-950/30"
+                        : isDivergent
+                          ? "bg-amber-50 dark:bg-amber-950/20"
+                          : isBaseline
+                            ? "bg-elevated/50"
+                            : ""
+                    }`}
+                  >
+                    <td className="px-4 py-2.5 font-medium text-primary">{attemptColumnLabel(it)}</td>
+                    <td className="px-4 py-2.5 text-muted">
+                      {isBaseline ? "—" : attemptModeLabel(it.attempt_mode)}
+                    </td>
+                    <td className="px-4 py-2.5 text-muted">
+                      {isBaseline ? "—" : decisionLabel(it.decision, rolledBack)}
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono text-primary">
+                      {formatScorePct(it.overall_accuracy)}
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-muted font-mono">
+                      {it.correct_count}/{it.total_questions}
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      {it.is_champion ? (
+                        <span title="Champion configuration" className="text-base text-indigo-500">
+                          {"★"}
+                        </span>
+                      ) : (
+                        <span className="text-muted">{"—"}</span>
+                      )}
+                    </td>
+                  </tr>
+                  {isDivergent && divergenceReason && (
+                    <tr>
+                      <td colSpan={6} className="px-4 pb-2.5 pt-0">
+                        <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span>Highest accuracy, but not the champion: {divergenceReason}</span>
+                        </p>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               )
             })}
           </tbody>

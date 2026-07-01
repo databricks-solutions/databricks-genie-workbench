@@ -24,6 +24,11 @@ const TERMINAL_REASON_LABELS: Record<GSOTerminalReason, string> = {
  * the reason is one of the closed set it maps to a compact label; otherwise
  * (legacy runs / in-progress rows with no typed reason) it degrades to the
  * free-text ``convergence_reason`` (trimmed) or an em dash.
+ *
+ * ``BENCHMARK_UNREPAIRABLE`` is a QC-side (task 01) hard-stop, NOT a loop
+ * ``GSOTerminalReason`` member (it lives on the benchmark-QC artifact), so it
+ * arrives here as raw text on either field — handle it defensively rather than
+ * letting the raw token leak into the column.
  */
 export function humanizeTerminalReason(
   reason: GSOTerminalReason | null | undefined,
@@ -32,19 +37,20 @@ export function humanizeTerminalReason(
   if (reason && reason in TERMINAL_REASON_LABELS) {
     return TERMINAL_REASON_LABELS[reason]
   }
+  const raw = String(reason ?? convergenceReason ?? "").trim()
+  if (raw.toUpperCase() === "BENCHMARK_UNREPAIRABLE") return "Benchmark unrepairable"
   const fallback = (convergenceReason ?? "").trim()
   return fallback.length > 0 ? fallback : "—"
 }
 
 /**
  * Format the champion (best-so-far) accuracy for the history table. The run
- * summary's ``best_accuracy`` is the champion's full-benchmark accuracy; it may
- * arrive on either the 0–1 or 0–100 scale depending on the writer, so normalize
- * defensively (values ≤ 1 are treated as fractions) and render as an integer
- * percent. Null (no champion / no baseline yet) renders as an em dash.
+ * summary's ``best_accuracy`` is the champion's full-benchmark accuracy on the
+ * 0–100 scale (Phase 12 scale contract), so render it identity-on-0–100 as an
+ * integer percent — NO ``≤ 1 ⇒ ×100`` heuristic, which would corrupt a true
+ * sub-1% champion (0.9 → wrongly 90%). Null / non-finite renders as an em dash.
  */
 export function championAccuracyText(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—"
-  const n = Number(v)
-  return `${(n > 1 ? n : n * 100).toFixed(0)}%`
+  return `${Number(v).toFixed(0)}%`
 }

@@ -1,5 +1,6 @@
 import type { GSOPipelineStep, GSOIterationResult } from "@/types"
 import { attemptColumnLabel } from "@/components/auto-optimize/runDetail"
+import { decisionLabel } from "@/components/auto-optimize/cockpit"
 
 // ---------------------------------------------------------------------------
 // Pure helpers for the GSO v2 Pipeline Details drill-down (Phase 14, item 1).
@@ -60,4 +61,34 @@ export function patchAttemptLabel(
   const row = iterations?.find((it) => it.iteration === iteration)
   if (row) return attemptColumnLabel(row)
   return iteration === 0 ? "Baseline" : `Iteration ${iteration}`
+}
+
+/**
+ * Attempt-centric labels for the OptimizationLevers provenance sub-labels
+ * (Phase 14, item 1 — attempt-grouped levers). Builds a ``Map<iterationNo,
+ * label>`` where each label re-keys the raw "Iteration N" onto the coverage/
+ * surgical attempt vocabulary (reusing {@link patchAttemptLabel}) and appends
+ * the per-attempt decision (e.g. "Surgical 2 · Accepted", "Coverage · Rolled
+ * back"), read from the merged ``attempt_mode``/``attempt_no``/``decision``/
+ * ``rolled_back`` iteration columns.
+ *
+ * When the run carries NO attempt metadata (legacy 6-step runs) the map is
+ * EMPTY, so callers degrade to the existing "Iteration N" labels — nothing to
+ * override.
+ */
+export function buildLeverIterationLabels(
+  iterations: GSOIterationResult[] | null | undefined,
+): Map<number, string> {
+  const labels = new Map<number, string>()
+  const rows = iterations ?? []
+  const hasAttemptInfo = rows.some(
+    (it) => it.iteration > 0 && (it.attempt_mode != null || it.attempt_no != null),
+  )
+  if (!hasAttemptInfo) return labels
+  for (const it of rows) {
+    const base = patchAttemptLabel(it.iteration, rows)
+    const dec = decisionLabel(it.decision, it.rolled_back === true)
+    labels.set(it.iteration, dec !== "—" ? `${base} · ${dec}` : base)
+  }
+  return labels
 }
