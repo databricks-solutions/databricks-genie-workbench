@@ -2,10 +2,14 @@ import { useEffect, useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { getAutoOptimizePatches } from "@/lib/api"
-import type { GSOPatch } from "@/types"
+import { patchAttemptLabel } from "@/components/auto-optimize/pipelineDetail"
+import type { GSOPatch, GSOIterationResult } from "@/types"
 
 interface PatchesTableProps {
   runId: string
+  // GSO v2 (Phase 14) — when provided, the "Iter" column is re-keyed onto the
+  // coverage/surgical attempt vocabulary (Baseline · Coverage · Surgical N).
+  iterations?: GSOIterationResult[]
 }
 
 const LEVER_NAMES: Record<number, string> = {
@@ -26,7 +30,7 @@ const STATUS_COLORS: Record<string, "success" | "danger" | "warning" | "secondar
   pending: "secondary",
 }
 
-export function PatchesTable({ runId }: PatchesTableProps) {
+export function PatchesTable({ runId, iterations }: PatchesTableProps) {
   const [patches, setPatches] = useState<GSOPatch[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
@@ -68,7 +72,7 @@ export function PatchesTable({ runId }: PatchesTableProps) {
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-default">
                 <th className="w-8 px-2 py-2" />
-                <th className="text-left px-3 py-2 text-xs font-medium text-muted">Iter</th>
+                <th className="text-left px-3 py-2 text-xs font-medium text-muted">{iterations ? "Attempt" : "Iter"}</th>
                 <th className="text-left px-3 py-2 text-xs font-medium text-muted">Lever</th>
                 <th className="text-left px-3 py-2 text-xs font-medium text-muted">Type</th>
                 <th className="text-left px-3 py-2 text-xs font-medium text-muted">Target</th>
@@ -96,7 +100,9 @@ export function PatchesTable({ runId }: PatchesTableProps) {
                                 : <ChevronRight className="h-3.5 w-3.5 text-muted" />
                             )}
                           </div>
-                          <div className="px-3 py-2 text-muted">{patch.iteration}</div>
+                          <div className="px-3 py-2 text-muted">
+                            {iterations ? patchAttemptLabel(patch.iteration, iterations) : patch.iteration}
+                          </div>
                           <div className="px-3 py-2 text-muted">{LEVER_NAMES[patch.lever ?? 0] ?? `Lever ${patch.lever}`}</div>
                           <div className="px-3 py-2 text-primary">{patch.patch_type}</div>
                           <div className="px-3 py-2 text-primary font-mono text-xs flex-1 truncate max-w-[200px]" title={patch.target_object}>
