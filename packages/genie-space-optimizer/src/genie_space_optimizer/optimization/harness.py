@@ -6758,10 +6758,17 @@ def _apply_instruction_table_descriptions(
         existing_text = _desc_as_text(existing_value)
         if desc_append.lower() in existing_text.lower():
             continue  # idempotent — already present
-        # Preserve the input shape: list-shaped descriptions stay
-        # ``list[str]`` (the Genie API contract), string-shaped stay str.
-        # Writing back a Python ``repr`` of a list (the prior bug) caused
-        # PATCH to reject with "Expected an array for description".
+        # The Genie API stores table / metric-view ``description`` as
+        # ``list[str]`` and rejects a bare string with "Expected an array
+        # for description". ALWAYS write back ``list[str]``:
+        #   * list-shaped existing → append the span as a new element;
+        #   * string-shaped or EMPTY existing → merge into one string
+        #     (preserving the append/merge semantics) and wrap it in a
+        #     single-element list.
+        # The empty-base branch is the origin of the #260 follow-up bug:
+        # a table/MV with no prior description took the ``else`` path and
+        # assigned the bare ``new_desc`` string, poisoning the shared
+        # ``metadata_snapshot`` that the two later PATCHes re-serialize.
         if isinstance(existing_value, list):
             tbl["description"] = list(existing_value) + [desc_append]
         else:
@@ -6770,7 +6777,7 @@ def _apply_instruction_table_descriptions(
                 + ("\n" if existing_text and not existing_text.endswith("\n") else "")
                 + desc_append
             ).strip()
-            tbl["description"] = new_desc
+            tbl["description"] = [new_desc]
         updated_ids.append(tbl.get("identifier", tbl.get("name", "?")))
         applied += 1
 
