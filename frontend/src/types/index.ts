@@ -302,7 +302,6 @@ export interface GSOTriggerRequest {
   space_id: string
   apply_mode?: "genie_config" | "uc_artifact" | "both"
   levers?: number[]
-  deploy_target?: string
   llm_model?: string | null
   // GSO v2 loop knobs (optional; omit ⇒ job defaults 0.90 / 3). target_accuracy
   // is the 0–1 stop-early target; max_attempts bounds the surgical hill-climb.
@@ -428,7 +427,6 @@ export interface GSOLeverIteration {
   scoreBefore: number | null
   scoreAfter: number | null
   scoreDelta: number | null
-  mlflowRunId: string | null
   rollbackReason: string | null
   patches: GSOPatchDetail[]
 }
@@ -467,7 +465,6 @@ export interface GSOPipelineRun {
   terminalReason?: GSOTerminalReason | null
   targetAccuracy?: number | null
   maxAttempts?: number | null
-  deploymentStatus: string | null
 }
 
 export interface GSOIterationResult {
