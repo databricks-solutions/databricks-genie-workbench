@@ -5132,6 +5132,7 @@ def _run_space_metadata_enrichment(
     the top-level ``description`` or ``config.sample_questions`` are absent.
     """
     from genie_space_optimizer.common.genie_client import (
+        fetch_space_config,
         patch_space_config,
         update_space_description,
     )
@@ -5151,6 +5152,7 @@ def _run_space_metadata_enrichment(
         "description_generated": False,
         "questions_generated": False,
         "questions_count": 0,
+        "questions_skipped_empty_base": False,
     }
 
     if not needs_description and not needs_questions:
@@ -5201,33 +5203,54 @@ def _run_space_metadata_enrichment(
         if needs_questions:
             new_sqs = _generate_sample_questions(metadata_snapshot, effective_desc, w)
             if new_sqs:
-                cfg_block = parsed.setdefault("config", {})
-                cfg_block["sample_questions"] = new_sqs
-                try:
-                    patch_space_config(w, space_id, parsed)
-                    result["questions_generated"] = True
-                    result["questions_count"] = len(new_sqs)
-                    for idx, sq in enumerate(new_sqs):
-                        q_text = sq.get("question", [""])[0] if sq.get("question") else ""
-                        write_patch(
-                            spark, run_id, 0, 0, idx + 1,
-                            {
-                                "patch_type": "proactive_sample_question",
-                                "scope": "genie_config",
-                                "risk_level": "low",
-                                "target_object": f"config.sample_questions[{idx}]",
-                                "patch": {"question": q_text[:100]},
-                                "command": None,
-                                "rollback": None,
-                                "proposal_id": "space_metadata_enrichment",
-                            },
-                            catalog, schema,
-                        )
-                except Exception:
-                    logger.warning(
-                        "Space metadata enrichment: sample_questions PATCH failed",
-                        exc_info=True,
+                # A Genie ``serialized_space`` update is FULL-REPLACEMENT: to
+                # change only ``config.sample_questions`` we must GET the whole
+                # current object, mutate it in place, and PATCH it back —
+                # echoing the existing top-level ``version`` and preserving
+                # ``data_sources`` (see the Update Genie Space API validation
+                # rules and ``validate_serialized_space``). Build the PATCH from
+                # the AUTHORITATIVE re-fetched config rather than the passed-in
+                # ``_parsed_space``: the latter can be empty/degenerate, and
+                # mutating it fabricated a partial ``{"config": {...}}`` object
+                # missing top-level ``version``/``data_sources`` that the strict
+                # validator (correctly) rejected before any HTTP call.
+                current = fetch_space_config(w, space_id).get("_parsed_space") or {}
+                if not current.get("data_sources") or current.get("version") is None:
+                    result["questions_skipped_empty_base"] = True
+                    logger.info(
+                        "Space metadata enrichment: base config has no "
+                        "data_sources/version (empty space) — skipping "
+                        "sample_questions PATCH for %s",
+                        space_id,
                     )
+                else:
+                    target = copy.deepcopy(current)
+                    target.setdefault("config", {})["sample_questions"] = new_sqs
+                    try:
+                        patch_space_config(w, space_id, target)
+                        result["questions_generated"] = True
+                        result["questions_count"] = len(new_sqs)
+                        for idx, sq in enumerate(new_sqs):
+                            q_text = sq.get("question", [""])[0] if sq.get("question") else ""
+                            write_patch(
+                                spark, run_id, 0, 0, idx + 1,
+                                {
+                                    "patch_type": "proactive_sample_question",
+                                    "scope": "genie_config",
+                                    "risk_level": "low",
+                                    "target_object": f"config.sample_questions[{idx}]",
+                                    "patch": {"question": q_text[:100]},
+                                    "command": None,
+                                    "rollback": None,
+                                    "proposal_id": "space_metadata_enrichment",
+                                },
+                                catalog, schema,
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Space metadata enrichment: sample_questions PATCH failed",
+                            exc_info=True,
+                        )
 
         _desc_status = (
             f"generated ({len(desc_text)} chars)"
@@ -5237,7 +5260,14 @@ def _run_space_metadata_enrichment(
         _sq_status = (
             f"generated ({len(new_sqs)} questions)"
             if result['questions_generated']
-            else ("already present" if not needs_questions else "FAILED")
+            else (
+                "already present" if not needs_questions
+                else (
+                    "skipped (empty space — no data_sources/version)"
+                    if result['questions_skipped_empty_base']
+                    else "FAILED"
+                )
+            )
         )
         _sm_lines = [_section("SPACE METADATA ENRICHMENT", "-")]
         _sm_lines.append(_kv("Description", _desc_status))
