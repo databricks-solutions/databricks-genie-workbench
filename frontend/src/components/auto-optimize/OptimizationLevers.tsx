@@ -3,10 +3,22 @@ import { Badge } from "@/components/ui/badge"
 import { ChevronDown, Wrench, CheckCircle2, XCircle, GitBranch } from "lucide-react"
 import { ProactiveEnrichmentView } from "@/components/auto-optimize/ProactiveEnrichmentView"
 import { SmartPatchCard } from "@/components/auto-optimize/SmartPatchCard"
-import type { GSOLeverStatus, GSOPatchDetail, GSOLeverIteration } from "@/types"
+import { buildLeverIterationLabels } from "@/components/auto-optimize/pipelineDetail"
+import type { GSOLeverStatus, GSOPatchDetail, GSOLeverIteration, GSOIterationResult } from "@/types"
 
 interface OptimizationLeversProps {
   levers: GSOLeverStatus[]
+  // GSO v2 (Phase 14) — when provided, the per-iteration provenance sub-labels
+  // are re-keyed onto the coverage/surgical attempt vocabulary (Coverage ·
+  // Surgical N, with decision). Absent / no attempt metadata ⇒ "Iteration N".
+  iterations?: GSOIterationResult[]
+}
+
+// Attempt-centric label for a lever's per-iteration row (Phase 14). Falls back
+// to the classic "Iteration N" when there's no attempt label for that iteration
+// (legacy runs, or a lever iteration not present in the run's iteration rows).
+function iterationBadgeLabel(labels: Map<number, string>, iteration: number): string {
+  return labels.get(iteration) ?? `Iteration ${iteration}`
 }
 
 const STATUS_BADGE: Record<string, { variant: "success" | "danger" | "warning" | "secondary" | "info"; label: string }> = {
@@ -268,7 +280,15 @@ function renderClassifiedPatches(patches: GSOPatchDetail[]) {
   return sections
 }
 
-function LeverPatchContent({ lever, allPatches }: { lever: GSOLeverStatus; allPatches: GSOPatchDetail[] }) {
+function LeverPatchContent({
+  lever,
+  allPatches,
+  iterationLabels,
+}: {
+  lever: GSOLeverStatus
+  allPatches: GSOPatchDetail[]
+  iterationLabels: Map<number, string>
+}) {
   if (allPatches.length === 0) return null
 
   if (lever.lever === 0) {
@@ -287,7 +307,7 @@ function LeverPatchContent({ lever, allPatches }: { lever: GSOLeverStatus; allPa
             <div key={it.iteration} className="space-y-2">
               <div className="flex items-center gap-2">
                 <span className="inline-flex items-center rounded-md border border-default bg-elevated px-2 py-0.5 text-xs font-medium text-primary">
-                  Iteration {it.iteration}
+                  {iterationBadgeLabel(iterationLabels, it.iteration)}
                 </span>
                 <Badge variant={badge.variant} className="text-[10px] py-0 px-1.5">
                   {badge.variant === "success" && <CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />}
@@ -316,7 +336,15 @@ function LeverPatchContent({ lever, allPatches }: { lever: GSOLeverStatus; allPa
   )
 }
 
-function IterationRow({ iteration, lever }: { iteration: GSOLeverIteration; lever: number }) {
+function IterationRow({
+  iteration,
+  lever,
+  iterationLabels,
+}: {
+  iteration: GSOLeverIteration
+  lever: number
+  iterationLabels: Map<number, string>
+}) {
   const badge = STATUS_BADGE[iteration.status] ?? STATUS_BADGE.pending
   // Exclude example SQL patches from displayed count
   const filteredCount = iteration.patches.length > 0
@@ -334,7 +362,7 @@ function IterationRow({ iteration, lever }: { iteration: GSOLeverIteration; leve
     <div className="space-y-1">
       <div className="flex items-center gap-2 text-xs">
         <span className="inline-flex items-center rounded-md border border-default bg-elevated px-2 py-0.5 font-medium text-primary">
-          Iteration {iteration.iteration}
+          {iterationBadgeLabel(iterationLabels, iteration.iteration)}
         </span>
         <Badge variant={badge.variant} className="text-[10px] py-0 px-1.5">
           {badge.variant === "success" && <CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />}
@@ -353,7 +381,7 @@ function IterationRow({ iteration, lever }: { iteration: GSOLeverIteration; leve
   )
 }
 
-function LeverCard({ lever }: { lever: GSOLeverStatus }) {
+function LeverCard({ lever, iterationLabels }: { lever: GSOLeverStatus; iterationLabels: Map<number, string> }) {
   const [open, setOpen] = useState(lever.status === "accepted")
   const [showProvenance, setShowProvenance] = useState(false)
   const badge = STATUS_BADGE[lever.status] ?? STATUS_BADGE.pending
@@ -384,14 +412,14 @@ function LeverCard({ lever }: { lever: GSOLeverStatus }) {
 
       {open && (
         <div className="border-t border-dashed border-default px-4 py-3 space-y-3">
-          <LeverPatchContent lever={lever} allPatches={allPatches} />
+          <LeverPatchContent lever={lever} allPatches={allPatches} iterationLabels={iterationLabels} />
 
           {lever.iterations.length > 0 && lever.iterations.filter((it) => (it.patches?.length ?? 0) > 0).length <= 1 && (
             <div className="space-y-1.5">
               <p className="text-xs font-medium text-muted">Iteration history</p>
               <div className="space-y-1">
                 {lever.iterations.map((it) => (
-                  <IterationRow key={it.iteration} iteration={it} lever={lever.lever} />
+                  <IterationRow key={it.iteration} iteration={it} lever={lever.lever} iterationLabels={iterationLabels} />
                 ))}
               </div>
             </div>
@@ -426,7 +454,7 @@ function LeverCard({ lever }: { lever: GSOLeverStatus }) {
                     const uniqueTargets = [...new Set(targets)]
                     return (
                       <tr key={it.iteration} className="border-b border-default last:border-0">
-                        <td className="px-3 py-1.5 text-primary font-medium">Iteration {it.iteration}</td>
+                        <td className="px-3 py-1.5 text-primary font-medium">{iterationBadgeLabel(iterationLabels, it.iteration)}</td>
                         <td className="px-3 py-1.5">
                           <Badge variant={itBadge.variant} className="text-[10px] py-0 px-1.5">
                             {itBadge.label}
@@ -548,8 +576,11 @@ function regroupLevers(levers: GSOLeverStatus[]): GSOLeverStatus[] {
   return full
 }
 
-export function OptimizationLevers({ levers }: OptimizationLeversProps) {
+export function OptimizationLevers({ levers, iterations }: OptimizationLeversProps) {
   const regrouped = useMemo(() => regroupLevers(levers), [levers])
+  // Attempt-centric provenance labels (Coverage · Surgical N, with decision),
+  // re-keyed from the merged iteration rows. Empty map ⇒ "Iteration N" (legacy).
+  const iterationLabels = useMemo(() => buildLeverIterationLabels(iterations), [iterations])
 
   if (levers.length === 0) return null
 
@@ -569,7 +600,7 @@ export function OptimizationLevers({ levers }: OptimizationLeversProps) {
       </div>
       <div className="space-y-2">
         {regrouped.map((lever) => (
-          <LeverCard key={lever.lever} lever={lever} />
+          <LeverCard key={lever.lever} lever={lever} iterationLabels={iterationLabels} />
         ))}
       </div>
     </div>
