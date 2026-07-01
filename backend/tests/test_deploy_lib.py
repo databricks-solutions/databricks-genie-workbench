@@ -12,7 +12,13 @@ from scripts.deploy_lib.apps import (
 )
 from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
 from scripts.deploy_lib.genie_spaces import optionally_grant_genie_spaces
-from scripts.deploy_lib.gso_job import build_job_settings, find_existing_job, upsert_job
+from scripts.deploy_lib.gso_job import (
+    TASKS,
+    build_job_settings,
+    find_existing_job,
+    upload_job_notebooks,
+    upsert_job,
+)
 from scripts.deploy_lib.lakebase import ensure_lakebase, get_database_resource
 from scripts.deploy_lib.uc import update_grants
 from scripts.deploy_lib.workspace_source import mkdirs, should_copy, upload_source_notebook, workspace_api_path
@@ -473,6 +479,44 @@ def test_gso_job_settings_mirror_package_bundle_5task():
     for key in gso_bp:
         assert gso_bp[key] - pkg_bp[key] == {"llm_model"}, key
         assert pkg_bp[key] - gso_bp[key] == set(), key
+
+
+def test_upload_job_notebooks_uploads_all_five_task_notebooks(tmp_path):
+    """Exercise the TASKS upload loop end-to-end. Guards against the 4-tuple
+    arity regression: upload_job_notebooks must iterate every TASKS entry and
+    import exactly the 5 v2 entrypoints (this loop is what the install.py path
+    runs before creating the job)."""
+    jobs_dir = tmp_path / "packages" / "genie-space-optimizer" / "src" / "genie_space_optimizer" / "jobs"
+    jobs_dir.mkdir(parents=True)
+    expected_stems = [notebook_stem for _key, notebook_stem, _dep, _bp in TASKS]
+    for stem in expected_stems:
+        (jobs_dir / f"{stem}.py").write_text(f"# {stem}\n")
+
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root=str(tmp_path),
+    )
+    w = FakeWorkspaceClient()
+
+    notebooks_path = upload_job_notebooks(w, cfg, "me@example.com")
+
+    assert notebooks_path.endswith("/genie-workbench/gso/jobs")
+    import_paths = [
+        body["path"]
+        for method, path, body in w.api_client.calls
+        if method == "POST" and path == "/api/2.0/workspace/import"
+    ]
+    # Every task notebook imported, in DAG order, with no arity error.
+    assert [p.rsplit("/", 1)[-1] for p in import_paths] == expected_stems
+    assert expected_stems == [
+        "run_00_intake_and_snapshot",
+        "run_01_benchmark_qc_and_repair",
+        "run_02_baseline_eval_and_triage",
+        "run_03_optimize",
+        "run_publish_and_audit",
+    ]
 
 
 def test_gso_job_settings_tag_with_actual_app_name():
