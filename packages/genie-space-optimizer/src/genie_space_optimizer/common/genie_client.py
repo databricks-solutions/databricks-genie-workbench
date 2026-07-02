@@ -358,6 +358,10 @@ def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
     Returns the raw API response augmented with convenience keys:
     ``_parsed_space``, ``_tables``, ``_metric_views``, ``_functions``,
     ``_instructions``.
+
+    Raises:
+        MissingSerializedSpaceError: if Genie returns a 200 response without
+            the requested ``serialized_space`` export, or with an empty export.
     """
     raw_config = w.api_client.do(
         "GET",
@@ -383,6 +387,14 @@ def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
             "the caller must retry with a client that can export the space config."
         )
     if isinstance(ss, str):
+        if not ss.strip():
+            logger.error(
+                "Genie Space %s response returned empty serialized_space string",
+                space_id,
+            )
+            raise MissingSerializedSpaceError(
+                f"Genie Space {space_id} response returned empty serialized_space"
+            )
         ss = json.loads(ss)
     if not isinstance(ss, dict) or not ss:
         logger.error(
