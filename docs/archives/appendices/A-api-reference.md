@@ -73,7 +73,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 | GET | `/api/auto-optimize/spaces/{space_id}/runs` | SP | List optimization runs for a space |
 | GET | `/api/auto-optimize/runs/{run_id}/iterations` | SP | Per-iteration evaluation rows |
 | GET | `/api/auto-optimize/runs/{run_id}/debug-data` | SP | Diagnostics for Lakebase vs Delta data |
-| GET | `/api/auto-optimize/runs/{run_id}/asi-results` | SP | ASI judge results (requires `iteration` param) |
+| GET | `/api/auto-optimize/runs/{run_id}/eval-results` | SP | Official eval results (requires `iteration` param) |
 | GET | `/api/auto-optimize/runs/{run_id}/question-results` | SP | Per-question results (requires `iteration` param) |
 | GET | `/api/auto-optimize/runs/{run_id}/patches` | SP | All patches for the run |
 | GET | `/api/auto-optimize/runs/{run_id}/suggestions` | SP | Strategist suggestions for the run |

@@ -231,6 +231,7 @@ def test_trigger_proceeds_without_prompt_registry_gate(
     # Omitted knobs flow to trigger_optimization as None (it resolves defaults).
     assert trigger_mock.call_args.kwargs["target_accuracy"] is None
     assert trigger_mock.call_args.kwargs["max_attempts"] is None
+    assert "deploy_target" not in trigger_mock.call_args.kwargs
 
 
 def test_trigger_uses_selected_llm_model(
@@ -449,7 +450,6 @@ def test_select_iterations_delta_falls_back_to_legacy_cols(monkeypatch) -> None:
         "lever": None,
         "repeatability_pct": None,
         "reflection_json": None,
-        "mlflow_run_id": None,
     }
     calls: list[str] = []
 
@@ -665,6 +665,28 @@ def test_parse_official_eval_results_empty() -> None:
     assert _parse_official_eval_results("") == []
 
 
+def test_eval_results_route_kept_asi_alias_removed(client, monkeypatch) -> None:
+    """The official eval-results route remains, but the retired ASI alias is gone."""
+    import json
+
+    async def fake_rows_json(_run_id, _iteration):
+        return json.dumps([
+            {"question_id": "q1", "assessment": "GOOD", "assessment_reasons": []},
+        ])
+
+    monkeypatch.setattr(auto_optimize, "_load_iteration_rows_json", fake_rows_json)
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+
+    eval_resp = client.get(f"/api/auto-optimize/runs/{run_id}/eval-results?iteration=0")
+    assert eval_resp.status_code == 200
+    assert eval_resp.json() == [
+        {"question_id": "q1", "assessment": "GOOD", "assessment_reasons": []},
+    ]
+
+    asi_resp = client.get(f"/api/auto-optimize/runs/{run_id}/asi-results?iteration=0")
+    assert asi_resp.status_code == 404
+
+
 def test_iterations_endpoint_emits_phase6_counts_and_gate(monkeypatch) -> None:
     """/iterations adds num_done / num_correct / num_needs_review and replaces
     thresholds_met with api_accuracy_gate_met + eval_gate_status."""
@@ -789,6 +811,81 @@ def test_baseline_step_summary_is_assessment_centric_no_judges() -> None:
     assert "80.0%" in summary
     assert "8/10 correct" in summary
     assert "2 need review" in summary
+
+
+def test_publish_step_io_omits_retired_uc_model_fields() -> None:
+    """Publish output no longer carries the retired UC model deployment fields."""
+    import json
+
+    from backend.routers.auto_optimize import _build_step_io
+
+    _inputs, outputs = _build_step_io(
+        {"name": "Publish & Audit"},
+        [{
+            "stage": "PUBLISH_AND_AUDIT",
+            "status": "COMPLETE",
+            "detail_json": json.dumps({
+                "uc_model_name": "main.gso.model",
+                "uc_model_version": "7",
+                "uc_champion_promoted": True,
+            }),
+        }],
+        [],
+        {
+            "best_iteration": 2,
+            "best_accuracy": 91.0,
+            "best_repeatability": 88.0,
+            "convergence_reason": "TARGET_REACHED",
+        },
+    )
+
+    assert outputs is not None
+    assert "ucModelName" not in outputs
+    assert "ucModelVersion" not in outputs
+    assert "ucChampionPromoted" not in outputs
+
+
+def test_deploy_step_branches_are_removed() -> None:
+    """The retired Deploy step has no special summary or deploy output payload."""
+    import json
+
+    from backend.routers.auto_optimize import _build_step_io, _build_step_summary
+
+    matching = [{
+        "stage": "DEPLOY",
+        "status": "COMPLETE",
+        "detail_json": json.dumps({"status": "DEPLOYED"}),
+    }]
+
+    assert _build_step_summary({"name": "Deploy"}, matching, [], {}) is None
+    inputs, outputs = _build_step_io({"name": "Deploy"}, matching, [], {})
+
+    assert inputs is None
+    assert outputs is not None
+    assert "deployTarget" not in outputs
+    assert "deployStatus" not in outputs
+
+
+def test_lever_iterations_omit_mlflow_run_id() -> None:
+    """Lever iteration output no longer leaks retired MLflow run pointers."""
+    from backend.routers.auto_optimize import _build_lever_iterations
+
+    rows = _build_lever_iterations(
+        lever_num=1,
+        lever_stages=[{"stage": "LEVER_1_EVAL", "status": "COMPLETE", "iteration": 2}],
+        iterations_rows=[{
+            "iteration": 2,
+            "lever": 1,
+            "eval_scope": "full",
+            "overall_accuracy": 90.0,
+            "mlflow_run_id": "mlflow-run-1",
+        }],
+        patches_rows=[],
+        run_status="CONVERGED",
+    )
+
+    assert rows
+    assert "mlflowRunId" not in rows[0]
 
 
 def test_iterations_official_accuracy_uses_num_questions_not_evaluated_count(monkeypatch) -> None:
