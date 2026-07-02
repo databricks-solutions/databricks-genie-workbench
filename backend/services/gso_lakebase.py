@@ -161,26 +161,6 @@ async def load_gso_patches(run_id: str) -> list[dict]:
         return []
 
 
-async def load_gso_asi_results(run_id: str, iteration: int) -> list[dict]:
-    """Load ASI (per-judge) evaluation results for a specific iteration."""
-    pool = _get_pool()
-    if pool is None:
-        return []
-
-    try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"""SELECT * FROM {_tbl('genie_eval_asi_results')}
-                   WHERE run_id = $1 AND iteration = $2""",
-                run_id,
-                iteration,
-            )
-            return [dict(r) for r in rows]
-    except Exception:
-        logger.warning("Lakebase query failed for genie_eval_asi_results", exc_info=True)
-        return []
-
-
 async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str | None = "full") -> str | None:
     """Load the rows_json column for a specific iteration and eval scope.
 

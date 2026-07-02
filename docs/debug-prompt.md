@@ -138,7 +138,6 @@ WHERE run_id = '<RUN_ID>'
 ```
 
 Tables to check (all have `run_id` column):
-- `genie_eval_asi_results`
 - `genie_eval_gt_correction_candidates`
 - `genie_eval_human_required`
 - `genie_eval_lever_loop_decisions`
