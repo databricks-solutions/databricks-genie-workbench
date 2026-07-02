@@ -804,10 +804,18 @@ def patch_space_config(
     structure before sending.  Retries on transient HTTP errors (429, 5xx).
     Returns the raw API response.
     """
-    from .genie_schema import validate_serialized_space
+    from .genie_schema import normalize_array_fields, validate_serialized_space
 
     clean = strip_non_exportable_fields(config)
     clean = sort_genie_config(clean)
+    # Coerce every array-typed leaf field (description / synonyms / content /
+    # …) to ``list[str]`` IN PLACE before validation AND serialization. The
+    # Genie API rejects a bare string here with "Expected an array for
+    # <field>"; the schema's model-level coercion never reaches this dict
+    # (see normalize_array_fields). This is the single choke point every
+    # PATCH flows through, so it also neutralizes a bare string left on a
+    # shared metadata_snapshot by an upstream enrichment step.
+    clean = normalize_array_fields(clean)
 
     ok, errors = validate_serialized_space(clean, strict=True)
     if not ok:
