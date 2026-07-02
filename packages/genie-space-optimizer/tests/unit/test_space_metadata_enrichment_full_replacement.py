@@ -65,7 +65,30 @@ def _authoritative_full_config() -> dict:
     }
 
 
-def _run(config: dict, *, fetch_return: dict, generate_return=_NEW_SQS):
+def _working_full_config() -> dict:
+    """Shape passed into ``_run_space_metadata_enrichment`` after the
+    lever-loop preparation path has a populated working snapshot."""
+    return {
+        "description": "x" * 20,
+        "_parsed_space": {
+            "version": 1,
+            "data_sources": {
+                "tables": [{"identifier": "cat.sch.stale_name"}],
+                "metric_views": [],
+            },
+            "config": {"sample_questions": []},
+            "instructions": {"text_instructions": []},
+        },
+    }
+
+
+def _run(
+    config: dict,
+    *,
+    fetch_return: dict,
+    generate_return=_NEW_SQS,
+    metadata_snapshot: dict | None = None,
+):
     """Invoke ``_run_space_metadata_enrichment`` with all I/O mocked out.
 
     Returns ``(result, patch_mock, fetch_mock, logger_mock)``.
@@ -74,6 +97,8 @@ def _run(config: dict, *, fetch_return: dict, generate_return=_NEW_SQS):
     fetch_mock = MagicMock(name="fetch_space_config", return_value=fetch_return)
     gen_mock = MagicMock(name="_generate_sample_questions", return_value=generate_return)
     logger_mock = MagicMock(name="logger")
+    if metadata_snapshot is None:
+        metadata_snapshot = config.get("_parsed_space", config)
 
     with (
         patch.object(_genie_client_mod, "patch_space_config", patch_mock),
@@ -89,7 +114,7 @@ def _run(config: dict, *, fetch_return: dict, generate_return=_NEW_SQS):
             "run-1",
             _SPACE_ID,
             config,
-            {"data_sources": {"tables": []}},
+            metadata_snapshot,
             "cat",
             "sch",
         )
@@ -103,14 +128,11 @@ def _run(config: dict, *, fetch_return: dict, generate_return=_NEW_SQS):
 
 class TestPopulatedBase:
     def test_patches_full_object_from_authoritative_fetch(self):
-        """Even when the PASSED-IN ``_parsed_space`` is degenerate, the
-        PATCH is built from the authoritative re-fetched config and carries
-        top-level ``version`` + ``data_sources`` with sample_questions
-        updated in place."""
-        passed_in = {
-            "description": "x" * 20,   # present → no description work
-            "_parsed_space": _authoritative_full_config()["_parsed_space"],
-        }
+        """When the working snapshot is populated, the PATCH is built from
+        the authoritative re-fetched config and carries top-level
+        ``version`` + ``data_sources`` with sample_questions updated in
+        place."""
+        passed_in = _working_full_config()
         fetch_return = _authoritative_full_config()
 
         result, patch_mock, fetch_mock, _ = _run(passed_in, fetch_return=fetch_return)
@@ -147,10 +169,7 @@ class TestPopulatedBase:
             validate_serialized_space,
         )
 
-        passed_in = {
-            "description": "x" * 20,
-            "_parsed_space": _authoritative_full_config()["_parsed_space"],
-        }
+        passed_in = _working_full_config()
         _, patch_mock, _, _ = _run(
             passed_in, fetch_return=_authoritative_full_config()
         )
