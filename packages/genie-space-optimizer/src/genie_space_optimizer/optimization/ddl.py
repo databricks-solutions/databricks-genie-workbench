@@ -210,34 +210,6 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
-_GENIE_EVAL_ASI_RESULTS_DDL = """\
-CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_eval_asi_results (
-    run_id              STRING        NOT NULL COMMENT 'Optimization run ID',
-    mlflow_run_id       STRING                 COMMENT 'MLflow evaluation run ID (for trace linking)',
-    iteration           INT           NOT NULL COMMENT 'Evaluation iteration number',
-    question_id         STRING        NOT NULL COMMENT 'Benchmark question ID',
-    judge               STRING        NOT NULL COMMENT 'Judge name',
-    value               STRING        NOT NULL COMMENT 'Judge verdict (yes|no|skipped|genie_correct|...)',
-    failure_type        STRING                 COMMENT 'From FAILURE_TAXONOMY',
-    severity            STRING                 COMMENT 'critical|major|minor|info',
-    confidence          DOUBLE                 COMMENT 'Judge confidence (0.0-1.0)',
-    blame_set           STRING                 COMMENT 'JSON: array of metadata fields blamed',
-    counterfactual_fix  STRING                 COMMENT 'Suggested metadata change to fix the issue',
-    wrong_clause        STRING                 COMMENT 'SQL clause that is wrong',
-    expected_value      STRING                 COMMENT 'What the correct value should be',
-    actual_value        STRING                 COMMENT 'What Genie actually produced',
-    missing_metadata    STRING                 COMMENT 'What metadata should exist but does not',
-    ambiguity_detected  BOOLEAN                COMMENT 'True if the question is ambiguous',
-    logged_at           TIMESTAMP     NOT NULL COMMENT 'When this ASI row was written'
-)
-USING DELTA
-COMMENT 'Actionable Side Information from evaluation judges'
-TBLPROPERTIES (
-    'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true',
-    'delta.enableChangeDataFeed' = 'true'
-)"""
-
 _GENIE_OPT_DATA_ACCESS_GRANTS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_data_access_grants (
     grant_id            STRING        NOT NULL COMMENT 'UUID for this grant record',
@@ -365,39 +337,6 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_eval_lever_loop_decisions (
 USING DELTA
 PARTITIONED BY (run_id)
 COMMENT 'Lever-loop decision audit trail — every gate decision lands here for queryable attribution'
-TBLPROPERTIES (
-    'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true',
-    'delta.enableChangeDataFeed' = 'true'
-)"""
-
-# Task 4: per-question pass/fail transitions on full eval.
-# ``transition`` is one of: hold_pass | hold_fail | pass_to_fail |
-# fail_to_pass. ``suppressed`` is True when the qid was in the
-# GT-correction queue or quarantined; non-suppressed pass_to_fail
-# blocks acceptance.
-_GENIE_EVAL_QUESTION_REGRESSIONS_DDL = """\
-CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_eval_question_regressions (
-    run_id                       STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
-    iteration                    INT           NOT NULL COMMENT 'Iteration index',
-    ag_id                        STRING        NOT NULL COMMENT 'Action group id',
-    question_id                  STRING        NOT NULL COMMENT 'Benchmark question id',
-    was_passing                  BOOLEAN                COMMENT 'Pass state on the previous-best eval',
-    is_passing                   BOOLEAN                COMMENT 'Pass state on the post-AG eval',
-    transition                   STRING                 COMMENT 'hold_pass | hold_fail | pass_to_fail | fail_to_pass',
-    pre_arbiter_before           BOOLEAN                COMMENT 'Pre-arbiter pass on previous-best',
-    pre_arbiter_after            BOOLEAN                COMMENT 'Pre-arbiter pass post-AG',
-    post_arbiter_before          BOOLEAN                COMMENT 'Post-arbiter pass on previous-best',
-    post_arbiter_after           BOOLEAN                COMMENT 'Post-arbiter pass post-AG',
-    source_cluster_ids_json      STRING                 COMMENT 'Clusters this qid contributed to in the current iteration',
-    source_proposal_ids_json     STRING                 COMMENT 'Proposals targeted at those clusters',
-    applied_patch_ids_json       STRING                 COMMENT 'Patches applied this iteration',
-    suppressed                   BOOLEAN                COMMENT 'True if qid was in GT-correction queue or quarantined',
-    created_at                   TIMESTAMP     NOT NULL COMMENT 'When the transition was recorded'
-)
-USING DELTA
-PARTITIONED BY (run_id)
-COMMENT 'Per-question pass/fail transition tracker — a non-suppressed pass_to_fail rolls back the AG'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
     'delta.autoOptimize.autoCompact' = 'true',
@@ -610,7 +549,6 @@ RETIRED_TABLES: tuple[str, ...] = (
 ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_RUNS, "job_id", "STRING COMMENT 'Databricks Job definition ID'"),
     (TABLE_PATCHES, "provenance_json", "STRING COMMENT 'JSON: full provenance chain from judge verdicts to this patch'"),
-    (TABLE_ASI, "mlflow_run_id", "STRING COMMENT 'MLflow run ID from the evaluation that produced this ASI row'"),
     (TABLE_RUNS, "llm_model", "STRING COMMENT 'Databricks Model Serving endpoint selected for this optimization run'"),
     (TABLE_ITERATIONS, "reflection_json", "STRING COMMENT 'JSON: adaptive loop reflection entry for this iteration'"),
     (TABLE_DATA_ACCESS_GRANTS, "grant_type", "STRING DEFAULT 'read' COMMENT 'read|write - read grants SELECT/EXECUTE, write adds MODIFY'"),
