@@ -19,32 +19,6 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 // ── Types ────────────────────────────────────────────────────────────
 
-export interface AsiResult {
-  questionId: string;
-  judge: string;
-  value: string;
-  failureType: string | null;
-  severity: string | null;
-  confidence: number | null;
-  blameSet: string[];
-  counterfactualFix: string | null;
-  wrongClause: string | null;
-  expectedValue: string | null;
-  actualValue: string | null;
-}
-
-export interface AsiSummary {
-  runId: string;
-  iteration: number;
-  totalResults: number;
-  passCount: number;
-  failCount: number;
-  failureTypeDistribution: Record<string, number>;
-  blameDistribution: Record<string, number>;
-  judgePassRates: Record<string, number>;
-  results: AsiResult[];
-}
-
 export interface ProvenanceRecord {
   questionId: string;
   signalType: string;
@@ -263,11 +237,6 @@ export const getIterationDetail = (runId: string) =>
 export const getIterations = (runId: string) =>
   fetchJson<IterationSummary[]>(`/api/genie/runs/${runId}/iterations`);
 
-export const getAsiResults = (runId: string, iteration?: number) => {
-  const params = iteration != null ? `?iteration=${iteration}` : "";
-  return fetchJson<AsiSummary>(`/api/genie/runs/${runId}/asi-results${params}`);
-};
-
 export const getProvenance = (runId: string, iteration?: number, lever?: number) => {
   const parts: string[] = [];
   if (iteration != null) parts.push(`iteration=${iteration}`);
@@ -283,9 +252,6 @@ export const iterationDetailKey = (runId: string) =>
 
 export const iterationsKey = (runId: string) =>
   ["/api/genie/runs/iterations", runId] as const;
-
-export const asiResultsKey = (runId: string, iteration?: number) =>
-  ["/api/genie/runs/asi-results", runId, iteration] as const;
 
 export const provenanceKey = (runId: string, iteration?: number, lever?: number) =>
   ["/api/genie/runs/provenance", runId, iteration, lever] as const;
@@ -336,29 +302,6 @@ export function useIterationsSuspense(
   });
 }
 
-export function useAsiResults(
-  runId: string,
-  iteration?: number,
-  queryOpts?: Partial<UseQueryOptions<AsiSummary, ApiError>>,
-) {
-  return useQuery({
-    queryKey: asiResultsKey(runId, iteration),
-    queryFn: () => getAsiResults(runId, iteration),
-    ...queryOpts,
-  });
-}
-
-export function useAsiResultsSuspense(
-  runId: string,
-  iteration?: number,
-  queryOpts?: Partial<UseSuspenseQueryOptions<AsiSummary, ApiError>>,
-) {
-  return useSuspenseQuery({
-    queryKey: asiResultsKey(runId, iteration),
-    queryFn: () => getAsiResults(runId, iteration),
-    ...queryOpts,
-  });
-}
 
 export function useProvenance(
   runId: string,

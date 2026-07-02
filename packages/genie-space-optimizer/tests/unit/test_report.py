@@ -51,7 +51,6 @@ def _patch_report_loaders(monkeypatch, iterations_df: pd.DataFrame) -> None:
     monkeypatch.setattr(report_mod, "load_stages", lambda *args, **kwargs: pd.DataFrame())
     monkeypatch.setattr(report_mod, "load_iterations", lambda *args, **kwargs: iterations_df)
     monkeypatch.setattr(report_mod, "load_patches", lambda *args, **kwargs: pd.DataFrame())
-    monkeypatch.setattr(report_mod, "_load_asi", lambda *args, **kwargs: pd.DataFrame())
 
 
 def test_generate_report_tolerates_iterations_without_mlflow_pointer_columns(

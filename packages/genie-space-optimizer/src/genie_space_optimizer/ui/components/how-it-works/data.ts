@@ -613,14 +613,6 @@ export const DATA_FLOW_NODES: DataFlowNode[] = [
     type: "storage",
   },
   {
-    id: "asi-results",
-    label: "ASI Results",
-    deltaTable: "genie_eval_asi_results",
-    keyColumns: ["question_id", "judge", "failure_type", "severity", "blame_set", "counterfactual_fix"],
-    description: "Actionable Side Information — structured judge feedback per question",
-    type: "storage",
-  },
-  {
     id: "provenance",
     label: "Provenance",
     deltaTable: "genie_opt_provenance",
