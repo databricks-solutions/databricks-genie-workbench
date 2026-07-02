@@ -702,7 +702,11 @@ def do_start_optimization(
     optimization job.  Uses OBO for Genie domain inference, SP for job
     submission.  User identity comes from forwarded headers.
     """
-    from genie_space_optimizer.common.genie_client import fetch_space_config
+    from genie_space_optimizer.common.genie_client import (
+        fetch_space_config,
+        space_config_data_source_counts,
+        space_config_has_data_sources,
+    )
     from genie_space_optimizer.optimization.state import (
         create_run,
         ensure_optimization_tables,
@@ -833,10 +837,29 @@ def do_start_optimization(
 
     space_snapshot: dict = {}
     _snap_errors: list[str] = []
-    for label, cli in [("OBO/user", ws), ("SP", sp_ws)]:
+    for label, cli in [("SP", sp_ws), ("OBO/user", ws)]:
         try:
-            space_snapshot = fetch_space_config(cli, space_id)
-            logger.info("Captured space snapshot via %s client for %s", label, space_id)
+            candidate_snapshot = fetch_space_config(cli, space_id)
+            counts = space_config_data_source_counts(candidate_snapshot)
+            if not space_config_has_data_sources(candidate_snapshot):
+                msg = (
+                    f"{label}: exported serialized_space has no data sources "
+                    f"(tables={counts['tables']}, metric_views={counts['metric_views']}, "
+                    f"functions={counts['functions']})"
+                )
+                _snap_errors.append(msg)
+                logger.error("Rejecting empty Genie space snapshot for %s: %s", space_id, msg)
+                continue
+            space_snapshot = candidate_snapshot
+            logger.info(
+                "Captured space snapshot via %s client for %s "
+                "(tables=%d, metric_views=%d, functions=%d)",
+                label,
+                space_id,
+                counts["tables"],
+                counts["metric_views"],
+                counts["functions"],
+            )
             break
         except PermissionDenied as exc:
             _snap_errors.append(f"{label}: {exc}")

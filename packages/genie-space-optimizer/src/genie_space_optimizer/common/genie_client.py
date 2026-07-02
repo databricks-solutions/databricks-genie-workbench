@@ -39,6 +39,60 @@ logger = logging.getLogger(__name__)
 # ── Space Discovery & Config ───────────────────────────────────────────
 
 
+class MissingSerializedSpaceError(RuntimeError):
+    """Raised when Genie returns a space without an exportable config."""
+
+
+_MISSING = object()
+
+
+def _space_from_config(config: dict | None) -> dict:
+    """Return the parsed serialized space from a fetch result or snapshot."""
+    if not isinstance(config, dict):
+        return {}
+
+    parsed = config.get("_parsed_space")
+    if isinstance(parsed, dict):
+        return parsed
+
+    ss = config.get("serialized_space")
+    if isinstance(ss, str):
+        try:
+            loaded = json.loads(ss)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+    if isinstance(ss, dict):
+        return ss
+
+    if any(key in config for key in ("data_sources", "instructions", "config")):
+        return config
+    return {}
+
+
+def space_config_data_source_counts(config: dict | None) -> dict[str, int]:
+    """Return counts for exported Genie data-source collections."""
+    parsed = _space_from_config(config)
+    ds = parsed.get("data_sources") if isinstance(parsed, dict) else None
+    if not isinstance(ds, dict):
+        return {"tables": 0, "metric_views": 0, "functions": 0}
+    counts: dict[str, int] = {}
+    for key in ("tables", "metric_views", "functions"):
+        values = ds.get(key)
+        counts[key] = len(values) if isinstance(values, list) else 0
+    return counts
+
+
+def space_config_has_data_sources(config: dict | None) -> bool:
+    """Return True when a config has at least one table, MV, or TVF."""
+    return any(space_config_data_source_counts(config).values())
+
+
+def space_config_has_tables(config: dict | None) -> bool:
+    """Return True when a config snapshot has at least one table entry."""
+    return space_config_data_source_counts(config).get("tables", 0) > 0
+
+
 def list_spaces(w: WorkspaceClient) -> list[dict[str, str]]:
     """List available Genie Spaces via SDK, paginating through all pages.
 
@@ -316,9 +370,31 @@ def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
         )
     config = cast(dict[str, Any], raw_config)
 
-    ss = config.get("serialized_space", {})
+    ss = config.get("serialized_space", _MISSING)
+    if ss is _MISSING or ss is None or ss == "":
+        logger.error(
+            "Genie space %s response omitted serialized_space despite "
+            "include_serialized_space=true; response keys=%s",
+            space_id,
+            sorted(config.keys()),
+        )
+        raise MissingSerializedSpaceError(
+            f"Genie Space {space_id} response omitted serialized_space; "
+            "the caller must retry with a client that can export the space config."
+        )
     if isinstance(ss, str):
         ss = json.loads(ss)
+    if not isinstance(ss, dict) or not ss:
+        logger.error(
+            "Genie space %s response had empty/invalid serialized_space "
+            "despite include_serialized_space=true; type=%s",
+            space_id,
+            type(ss).__name__,
+        )
+        raise MissingSerializedSpaceError(
+            f"Genie Space {space_id} response had empty serialized_space; "
+            "the caller must reject this snapshot."
+        )
     config["_parsed_space"] = ss
 
     ds = ss.get("data_sources", {})

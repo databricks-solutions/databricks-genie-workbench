@@ -35,6 +35,61 @@ _ACTIVE_RUN_STATUSES = frozenset({"QUEUED", "IN_PROGRESS"})
 _SUPPORTED_APPLY_MODES = {"genie_config", "uc_artifact", "both"}
 
 
+def _capture_config_snapshot(
+    *,
+    space_id: str,
+    ws: WorkspaceClient,
+    sp_ws: WorkspaceClient,
+) -> dict:
+    """Capture a non-empty Genie serialized_space snapshot, SP first."""
+    from genie_space_optimizer.common.genie_client import (
+        fetch_space_config,
+        space_config_data_source_counts,
+        space_config_has_data_sources,
+    )
+
+    space_snapshot: dict = {}
+    snap_errors: list[str] = []
+    for label, cli in [("SP", sp_ws), ("OBO/user", ws)]:
+        try:
+            candidate = fetch_space_config(cli, space_id)
+        except Exception as exc:
+            snap_errors.append(f"{label}: {exc}")
+            logger.info("Snapshot via %s failed for %s: %s", label, space_id, exc)
+            continue
+
+        counts = space_config_data_source_counts(candidate)
+        if not space_config_has_data_sources(candidate):
+            msg = (
+                f"{label}: exported serialized_space has no data sources "
+                f"(tables={counts['tables']}, metric_views={counts['metric_views']}, "
+                f"functions={counts['functions']})"
+            )
+            snap_errors.append(msg)
+            logger.error("Rejecting empty Genie space snapshot for %s: %s", space_id, msg)
+            continue
+
+        space_snapshot = candidate
+        logger.info(
+            "Captured space snapshot via %s client for %s "
+            "(tables=%d, metric_views=%d, functions=%d)",
+            label,
+            space_id,
+            counts["tables"],
+            counts["metric_views"],
+            counts["functions"],
+        )
+        break
+
+    if not space_snapshot:
+        combined = "; ".join(snap_errors)
+        raise RuntimeError(
+            f"Cannot export non-empty Genie Space config for {space_id}. "
+            f"Errors: {combined}"
+        )
+    return space_snapshot
+
+
 def trigger_optimization(
     space_id: str,
     ws: WorkspaceClient,
@@ -74,7 +129,6 @@ def trigger_optimization(
     """
     from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER
     from genie_space_optimizer.common.genie_client import (
-        fetch_space_config,
         sp_can_manage_space,
         user_can_edit_space,
     )
@@ -140,23 +194,7 @@ def trigger_optimization(
 
     run_id = str(uuid.uuid4())
 
-    space_snapshot: dict = {}
-    snap_errors: list[str] = []
-    for label, cli in [("OBO/user", ws), ("SP", sp_ws)]:
-        try:
-            space_snapshot = fetch_space_config(cli, space_id)
-            logger.info("Captured space snapshot via %s client for %s", label, space_id)
-            break
-        except Exception as exc:
-            snap_errors.append(f"{label}: {exc}")
-            logger.info("Snapshot via %s failed for %s: %s", label, space_id, exc)
-
-    if not space_snapshot:
-        combined = "; ".join(snap_errors)
-        raise RuntimeError(
-            f"Cannot export Genie Space config for {space_id}. "
-            f"Errors: {combined}"
-        )
+    space_snapshot = _capture_config_snapshot(space_id=space_id, ws=ws, sp_ws=sp_ws)
 
     title = str(space_snapshot.get("title", "") or "")
     domain = (
