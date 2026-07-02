@@ -469,25 +469,3 @@ class TestLever6FirewallNoOp:
             proposal, proposal["patch_type"], corpus,
         )
         assert is_leak, "example_sql firewall must still catch fingerprint matches"
-
-
-# ─────────────────────────────────────────────────────────────────────
-# 6. _run_enrichment signature accepts held_out_benchmarks
-# ─────────────────────────────────────────────────────────────────────
-
-
-class TestRunEnrichmentSignature:
-    """The widened ``_run_enrichment`` signature accepts ``held_out_benchmarks``
-    as a keyword-only parameter; callers that don't pass it still work."""
-
-    def test_signature_has_held_out_benchmarks_kwonly(self):
-        import inspect
-
-        from genie_space_optimizer.optimization.harness import _run_enrichment
-
-        sig = inspect.signature(_run_enrichment)
-        params = sig.parameters
-        assert "held_out_benchmarks" in params
-        ho = params["held_out_benchmarks"]
-        assert ho.kind == inspect.Parameter.KEYWORD_ONLY
-        assert ho.default is None

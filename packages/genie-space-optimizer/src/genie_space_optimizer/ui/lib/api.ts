@@ -22,8 +22,6 @@ export interface ActionResponse {
     status: string;
 }
 export type ActivityItem = Record<string, unknown>;
-export type AsiResult = Record<string, unknown>;
-export type AsiSummary = Record<string, unknown>;
 export interface CheckAccessRequest {
     spaceIds: string[];
 }
@@ -697,69 +695,6 @@ export function useApplyOptimization(options?: {
     return useMutation({
         mutationFn: (vars)=>applyOptimization(vars.params),
         ...options?.mutation
-    });
-}
-export interface GetAsiResultsParams {
-    run_id: string;
-    iteration?: number | null;
-}
-export const getAsiResults = async (params: GetAsiResultsParams, options?: RequestInit): Promise<{
-    data: AsiSummary;
-}> =>{
-    const searchParams = new URLSearchParams();
-    if (params?.iteration != null) searchParams.set("iteration", String(params?.iteration));
-    const queryString = searchParams.toString();
-    const url = queryString ? `/api/genie/runs/${params.run_id}/asi-results?${queryString}` : `/api/genie/runs/${params.run_id}/asi-results`;
-    const res = await fetch(url, {
-        ...options,
-        method: "GET"
-    });
-    if (!res.ok) {
-        const body = await res.text();
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(body);
-        } catch  {
-            parsed = body;
-        }
-        throw new ApiError(res.status, res.statusText, parsed);
-    }
-    return {
-        data: await res.json()
-    };
-};
-export const getAsiResultsKey = (params?: GetAsiResultsParams)=>{
-    return [
-        "/api/genie/runs/{run_id}/asi-results",
-        params
-    ] as const;
-};
-export function useGetAsiResults<TData = {
-    data: AsiSummary;
-}>(options: {
-    params: GetAsiResultsParams;
-    query?: Omit<UseQueryOptions<{
-        data: AsiSummary;
-    }, ApiError, TData>, "queryKey" | "queryFn">;
-}) {
-    return useQuery({
-        queryKey: getAsiResultsKey(options.params),
-        queryFn: ()=>getAsiResults(options.params),
-        ...options?.query
-    });
-}
-export function useGetAsiResultsSuspense<TData = {
-    data: AsiSummary;
-}>(options: {
-    params: GetAsiResultsParams;
-    query?: Omit<UseSuspenseQueryOptions<{
-        data: AsiSummary;
-    }, ApiError, TData>, "queryKey" | "queryFn">;
-}) {
-    return useSuspenseQuery({
-        queryKey: getAsiResultsKey(options.params),
-        queryFn: ()=>getAsiResults(options.params),
-        ...options?.query
     });
 }
 export interface GetComparisonParams {

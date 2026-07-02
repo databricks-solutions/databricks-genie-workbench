@@ -11,7 +11,6 @@ import { PipelineStepCard } from "@/components/PipelineStepCard";
 import { LeverProgress } from "@/components/LeverProgress";
 import { ResourceLinks } from "@/components/ResourceLinks";
 import { IterationChart } from "@/components/IterationChart";
-import { AsiResultsPanel } from "@/components/AsiResultsPanel";
 import { StageTimeline, type StageEvent } from "@/components/StageTimeline";
 import { InsightTabs } from "@/components/InsightTabs";
 import { IterationExplorer } from "@/components/IterationExplorer";
@@ -389,17 +388,6 @@ function PipelineView() {
     return events;
   }, [run]);
 
-  const availableIterations: number[] = useMemo(() => {
-    if (!run) return [0];
-    const iters = new Set<number>([0]);
-    for (const lever of run.levers) {
-      for (const iter of lever.iterations ?? []) {
-        iters.add(iter.iteration);
-      }
-    }
-    return Array.from(iters).sort((a, b) => a - b);
-  }, [run]);
-
   if (!run) return null;
 
   const completedSteps = run.steps.filter(
@@ -577,7 +565,6 @@ function PipelineView() {
         <TransparencyPane
           runId={run.runId}
           stageEvents={allStageEvents}
-          availableIterations={availableIterations}
           links={run.links ?? []}
         />
       )}
@@ -684,12 +671,10 @@ function PipelineView() {
 function TransparencyPane({
   runId,
   stageEvents,
-  availableIterations,
   links,
 }: {
   runId: string;
   stageEvents: StageEvent[];
-  availableIterations: number[];
   links: { label: string; url: string; category: string }[];
 }) {
   const { data: iterDetail, isLoading, isError } = useIterationDetail(runId);
@@ -719,7 +704,6 @@ function TransparencyPane({
           <IterationChart runId={runId} />
           <StageTimeline stageEvents={stageEvents} />
         </div>
-        <AsiResultsPanel runId={runId} availableIterations={availableIterations} />
       </div>
     );
   }
@@ -1003,9 +987,6 @@ function StepInsights({
     const bestAccuracy = outputs.bestAccuracy as number | undefined;
     const repeatability = outputs.repeatability as number | undefined;
     const convergenceReason = outputs.convergenceReason as string | undefined;
-    const ucModelName = outputs.ucModelName as string | undefined;
-    const ucModelVersion = outputs.ucModelVersion as string | undefined;
-    const ucChampionPromoted = outputs.ucChampionPromoted as boolean | undefined;
 
     return (
       <div className="space-y-2 text-xs">
@@ -1014,16 +995,6 @@ function StepInsights({
           {repeatability != null && <Badge variant="secondary">Repeatability: {repeatability.toFixed(1)}%</Badge>}
           {convergenceReason && <Badge variant="secondary">Convergence: {convergenceReason}</Badge>}
         </div>
-        {ucModelName && ucModelVersion && (
-          <div className={`mt-1 rounded border px-2 py-1.5 ${ucChampionPromoted ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
-            <p className={`font-medium ${ucChampionPromoted ? "text-emerald-800" : "text-amber-800"}`}>
-              UC Model: {ucModelName} v{ucModelVersion}
-              {ucChampionPromoted
-                ? " — promoted to @champion"
-                : " — registered (existing champion retained)"}
-            </p>
-          </div>
-        )}
       </div>
     );
   }

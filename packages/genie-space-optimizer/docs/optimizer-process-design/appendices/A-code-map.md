@@ -15,16 +15,15 @@ This appendix lists the source-of-truth files behind every concept in the docume
 
 ## Orchestration
 
+The job entrypoints live under [`jobs/`](../../../src/genie_space_optimizer/jobs/):
+`run_00_intake_and_snapshot`, `run_01_benchmark_qc_and_repair`,
+`run_02_baseline_eval_and_triage`, `run_03_optimize`, `run_publish_and_audit`.
+
 | Concept | Function | File |
 |---------|----------|------|
-| Pipeline orchestrator | `optimize_genie_space` | [`optimization/harness.py`](../../../src/genie_space_optimizer/optimization/harness.py) |
-| Preflight | `_run_preflight` | `optimization/harness.py` |
-| Baseline | `_run_baseline` | `optimization/harness.py` |
-| Enrichment | `_run_enrichment` | `optimization/harness.py` |
-| Lever loop | `_run_lever_loop`, `_resume_lever_loop` | `optimization/harness.py` |
-| Finalize | `_run_finalize` | `optimization/harness.py` |
-| Deploy validate | `deploy_check` | `optimization/harness.py` |
-| Deploy apply | `deploy_execute` | `optimization/harness.py` |
+| Preflight / intake | `preflight_collect_uc_metadata` | [`optimization/preflight.py`](../../../src/genie_space_optimizer/optimization/preflight.py) |
+| Baseline | `baseline_setup_scorers`, `baseline_run_evaluation`, `baseline_display_scorecard`, `baseline_persist_state` | `optimization/harness.py` |
+| Lever loop (enrichment runs inline as attempt-1 coverage) | `_run_lever_loop`, `_resume_lever_loop` | `optimization/harness.py` |
 | Reflection entry | `_build_reflection_entry` | `optimization/harness.py` |
 
 ## Process Spine
@@ -102,8 +101,8 @@ This appendix lists the source-of-truth files behind every concept in the docume
 
 If you are new to GSO and want a hands-on tour:
 
-1. [`databricks.yml`](../../../databricks.yml) — see the six tasks and their `depends_on` chain.
-2. [`optimization/harness.py`](../../../src/genie_space_optimizer/optimization/harness.py) — read `optimize_genie_space` then each `_run_*` helper top-to-bottom.
+1. [`databricks.yml`](../../../databricks.yml) — see the five tasks and their `depends_on` chain.
+2. [`optimization/harness.py`](../../../src/genie_space_optimizer/optimization/harness.py) — read `_run_lever_loop` and the `baseline_*` helpers top-to-bottom.
 3. [`optimization/run_output_contract.py`](../../../src/genie_space_optimizer/optimization/run_output_contract.py) — see the `PROCESS_STAGE_ORDER` and bundle paths.
 4. [`optimization/stages/_registry.py`](../../../src/genie_space_optimizer/optimization/stages/_registry.py) — see the in-process stage tuple and the artifact contract per stage.
 5. [`optimization/evaluation.py`](../../../src/genie_space_optimizer/optimization/evaluation.py) — see how evaluation is called.

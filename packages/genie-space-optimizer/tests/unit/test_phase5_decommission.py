@@ -73,9 +73,10 @@ def test_cross_env_deploy_removed():
     from genie_space_optimizer.backend import job_launcher
 
     assert not hasattr(job_launcher, "ensure_deployment_job")
-    assert "run_cross_env_deploy" not in job_launcher._NOTEBOOK_SOURCES
-    assert "run_deploy_approval" not in job_launcher._NOTEBOOK_SOURCES
 
+    # Phase 15: the runtime notebook-upload registry (``_NOTEBOOK_SOURCES``)
+    # was removed alongside the retired 6-task entrypoints, so assert the
+    # cross-env-deploy notebooks are gone from disk directly.
     jobs_dir = Path(job_launcher.__file__).resolve().parent.parent / "jobs"
     assert not (jobs_dir / "run_cross_env_deploy.py").exists()
     assert not (jobs_dir / "run_deploy_approval.py").exists()
@@ -219,18 +220,12 @@ def test_databricks_yml_has_no_experiment_name_param():
 
 
 # ── Cross-review regression guards (codex review of PR #238) ──
-# Three parallel dangling-reference spots missed in the first pass: a notebook
-# entrypoint importing the removed preflight probe (ImportError at runtime —
-# unit suite never imports job notebooks), the iteration ORM mirror, and the
-# app-backend Lakebase reader still SELECTing the scrubbed columns.
-
-def test_run_preflight_notebook_has_no_prompt_probe_reference():
-    from genie_space_optimizer.optimization import preflight
-
-    jobs_dir = Path(preflight.__file__).resolve().parent.parent / "jobs"
-    src = (jobs_dir / "run_preflight.py").read_text(encoding="utf-8")
-    assert "preflight_probe_prompt_registry" not in src
-
+# Two parallel dangling-reference spots missed in the first pass: the iteration
+# ORM mirror, and the app-backend Lakebase reader still SELECTing the scrubbed
+# columns. (The third — a retired ``run_preflight.py`` notebook importing the
+# removed preflight probe — is moot as of Phase 15: the 6-task entrypoints,
+# ``run_preflight.py`` included, were deleted, so the dangling import cannot
+# exist.)
 
 def test_iteration_orm_mirror_has_no_mlflow_pointer_fields():
     from genie_space_optimizer.backend.models_db import GSOIterationRecord

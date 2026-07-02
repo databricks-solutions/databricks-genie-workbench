@@ -371,35 +371,6 @@ class HealthStatus(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-# ── ASI (Judge Feedback) Models ───────────────────────────────────────
-
-
-class AsiResult(SafeModel):
-    questionId: str
-    judge: str
-    value: str
-    failureType: str | None = None
-    severity: str | None = None
-    confidence: float | None = None
-    blameSet: list[str] = []
-    counterfactualFix: str | None = None
-    wrongClause: str | None = None
-    expectedValue: str | None = None
-    actualValue: str | None = None
-
-
-class AsiSummary(SafeModel):
-    runId: str
-    iteration: int
-    totalResults: int
-    passCount: int
-    failCount: int
-    failureTypeDistribution: dict[str, int] = {}
-    blameDistribution: dict[str, int] = {}
-    judgePassRates: dict[str, float] = {}
-    results: list[AsiResult] = []
-
-
 # ── Provenance Models ─────────────────────────────────────────────────
 
 

@@ -632,37 +632,6 @@ class TestPreflightWrapperEquivalence:
         assert mock_val.call_args.kwargs["warehouse_id"] == "wh-test"
 
 
-class TestHarnessPreflightWarehouseID:
-    @patch("genie_space_optimizer.optimization.harness.update_run_status")
-    @patch("genie_space_optimizer.optimization.harness.resolve_warehouse_id", return_value="wh-env")
-    @patch("genie_space_optimizer.optimization.harness._safe_stage")
-    def test_run_preflight_resolves_and_forwards_warehouse_id(
-        self, mock_safe_stage, mock_resolve, mock_update, mock_spark
-    ):
-        from genie_space_optimizer.optimization import harness
-
-        mock_safe_stage.return_value = (
-            {"_gso_iq_scan_recommended_levers": [], "_gso_iq_scan_summary": None},
-            [],
-            "model-1",
-            "/exp",
-            [],
-        )
-
-        with patch.object(harness, "mlflow", create=True) as mock_mlflow:
-            mock_mlflow.get_experiment_by_name.return_value = MagicMock(
-                experiment_id="exp-1",
-            )
-            out = harness._run_preflight(
-                MagicMock(), mock_spark, "run-1", "space-1",
-                "cat", "gold", "revenue",
-            )
-
-        mock_resolve.assert_called_once_with("")
-        assert mock_safe_stage.call_args.args[-1] == "wh-env"
-        assert out["model_id"] == "model-1"
-
-
 def test_update_run_status_retries_delta_concurrent_append(monkeypatch) -> None:
     from genie_space_optimizer.optimization import state
 

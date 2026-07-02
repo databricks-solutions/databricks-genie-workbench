@@ -1,9 +1,9 @@
 """
 Comprehensive report generation for Genie Space optimization runs.
 
-Reads all 5 Delta tables and produces a structured Markdown report with
-executive summary, per-iteration details, patch inventory, ASI summary,
-repeatability, and MLflow links.
+Reads the optimization Delta tables and produces a structured Markdown report
+with executive summary, per-iteration details, patch inventory, repeatability,
+and MLflow links.
 """
 
 from __future__ import annotations
@@ -16,8 +16,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from genie_space_optimizer.common.config import LEVER_NAMES, TABLE_ASI
-from genie_space_optimizer.common.delta_helpers import _fqn, run_query
+from genie_space_optimizer.common.config import LEVER_NAMES
 from genie_space_optimizer.optimization.state import (
     load_iterations,
     load_patches,
@@ -52,15 +51,13 @@ def generate_report(
     stages_df = load_stages(spark, run_id, catalog, schema)
     iterations_df = load_iterations(spark, run_id, catalog, schema)
     patches_df = load_patches(spark, run_id, catalog, schema)
-    asi_df = _load_asi(spark, run_id, catalog, schema)
 
     sections = [
         _build_header(run_row),
         _build_executive_summary(run_row, iterations_df),
         _build_iteration_table(iterations_df),
-        _build_lever_detail(iterations_df, patches_df, asi_df),
+        _build_lever_detail(iterations_df, patches_df),
         _build_patch_inventory(patches_df),
-        _build_asi_summary(asi_df),
         _build_repeatability_report(iterations_df),
         _build_generalization_section(iterations_df),
         _build_mlflow_links(run_row, iterations_df),
@@ -199,7 +196,6 @@ def _build_iteration_table(iterations_df: pd.DataFrame) -> str:
 def _build_lever_detail(
     iterations_df: pd.DataFrame,
     patches_df: pd.DataFrame,
-    asi_df: pd.DataFrame,
 ) -> str:
     if iterations_df.empty:
         return ""
@@ -222,10 +218,6 @@ def _build_lever_detail(
             (patches_df["iteration"] == iteration) & (patches_df["lever"] == lever)
         ] if not patches_df.empty else pd.DataFrame()
 
-        lever_asi = asi_df[
-            asi_df["iteration"] == iteration
-        ] if not asi_df.empty else pd.DataFrame()
-
         section = f"### Lever {lever}: {lever_name} (Iteration {iteration})\n\n"
         section += f"- **Accuracy:** {accuracy:.1f}%\n"
         section += f"- **Patches Applied:** {len(lever_patches)}\n"
@@ -242,13 +234,6 @@ def _build_lever_detail(
                     f"| {p.get('risk_level', '')} "
                     f"| {rb} |\n"
                 )
-
-        if not lever_asi.empty:
-            failure_types = lever_asi["failure_type"].value_counts()
-            if not failure_types.empty:
-                section += "\n**Top Failure Types:**\n"
-                for ft, count in failure_types.head(5).items():
-                    section += f"- {ft}: {count}\n"
 
         sections.append(section)
 
@@ -280,48 +265,6 @@ def _build_patch_inventory(patches_df: pd.DataFrame) -> str:
         )
 
     return header + table
-
-
-def _build_asi_summary(asi_df: pd.DataFrame) -> str:
-    if asi_df.empty:
-        return "## ASI Summary\n\n_No ASI data recorded._"
-
-    header = "## ASI Summary\n\n"
-
-    failure_counts = asi_df["failure_type"].value_counts()
-    section = "### Top Failure Types\n\n"
-    for ft, count in failure_counts.head(10).items():
-        section += f"- **{ft}**: {count} occurrences\n"
-
-    if "blame_set" in asi_df.columns:
-        blame_values = asi_df["blame_set"].dropna()
-        blame_flat: list[str] = []
-        for bs in blame_values:
-            if isinstance(bs, str):
-                try:
-                    parsed = json.loads(bs)
-                    if isinstance(parsed, list):
-                        blame_flat.extend(parsed)
-                    else:
-                        blame_flat.append(str(parsed))
-                except (json.JSONDecodeError, TypeError):
-                    blame_flat.append(bs)
-            elif isinstance(bs, list):
-                blame_flat.extend(bs)
-
-        if blame_flat:
-            blame_counter = pd.Series(blame_flat).value_counts()
-            section += "\n### Most-Blamed Objects\n\n"
-            for obj, count in blame_counter.head(10).items():
-                section += f"- **{obj}**: {count}\n"
-
-    cf_col = "counterfactual_fix"
-    if cf_col in asi_df.columns:
-        fixes = asi_df[cf_col].dropna()
-        if not fixes.empty:
-            section += f"\n### Counterfactual Fixes Suggested: {len(fixes)}\n"
-
-    return header + section
 
 
 def _build_repeatability_report(iterations_df: pd.DataFrame) -> str:
@@ -400,23 +343,3 @@ def _build_mlflow_links(run_row: dict, iterations_df: pd.DataFrame) -> str:
 
     return header + section
 
-
-# ── Helpers ───────────────────────────────────────────────────────────
-
-
-def _load_asi(
-    spark: SparkSession,
-    run_id: str,
-    catalog: str,
-    schema: str,
-) -> pd.DataFrame:
-    """Load ASI results for a run from Delta."""
-    fqn = _fqn(catalog, schema, TABLE_ASI)
-    try:
-        return run_query(
-            spark,
-            f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' ORDER BY logged_at ASC",
-        )
-    except Exception:
-        logger.warning("Could not load ASI table for run %s", run_id)
-        return pd.DataFrame()

@@ -99,14 +99,3 @@ def test_patch_selection_proposal_id_falls_back_to_proposal_id() -> None:
     )
     patch = {"proposal_id": "P001#2"}
     assert _proposal_id(patch, index=0) == "P001#2"
-
-
-def test_static_judge_replay_proposal_id_prefers_expanded() -> None:
-    from genie_space_optimizer.optimization.static_judge_replay import (
-        _proposal_id,
-    )
-    item = {
-        "proposal_id": "P001#2",
-        "expanded_patch_id": "L1:P001#2",
-    }
-    assert _proposal_id(item) == "L1:P001#2"
