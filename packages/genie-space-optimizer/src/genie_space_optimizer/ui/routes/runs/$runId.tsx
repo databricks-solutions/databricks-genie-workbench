@@ -1003,9 +1003,6 @@ function StepInsights({
     const bestAccuracy = outputs.bestAccuracy as number | undefined;
     const repeatability = outputs.repeatability as number | undefined;
     const convergenceReason = outputs.convergenceReason as string | undefined;
-    const ucModelName = outputs.ucModelName as string | undefined;
-    const ucModelVersion = outputs.ucModelVersion as string | undefined;
-    const ucChampionPromoted = outputs.ucChampionPromoted as boolean | undefined;
 
     return (
       <div className="space-y-2 text-xs">
@@ -1014,16 +1011,6 @@ function StepInsights({
           {repeatability != null && <Badge variant="secondary">Repeatability: {repeatability.toFixed(1)}%</Badge>}
           {convergenceReason && <Badge variant="secondary">Convergence: {convergenceReason}</Badge>}
         </div>
-        {ucModelName && ucModelVersion && (
-          <div className={`mt-1 rounded border px-2 py-1.5 ${ucChampionPromoted ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
-            <p className={`font-medium ${ucChampionPromoted ? "text-emerald-800" : "text-amber-800"}`}>
-              UC Model: {ucModelName} v{ucModelVersion}
-              {ucChampionPromoted
-                ? " — promoted to @champion"
-                : " — registered (existing champion retained)"}
-            </p>
-          </div>
-        )}
       </div>
     );
   }

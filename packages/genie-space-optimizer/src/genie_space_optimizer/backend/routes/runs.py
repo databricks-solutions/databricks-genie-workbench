@@ -748,9 +748,6 @@ def _build_step_io(
                 "bestAccuracy": _safe_float(run_data.get("best_accuracy")),
                 "repeatability": _safe_float(run_data.get("best_repeatability")),
                 "convergenceReason": run_data.get("convergence_reason"),
-                "ucModelName": detail.get("uc_model_name") or None,
-                "ucModelVersion": detail.get("uc_model_version") or None,
-                "ucChampionPromoted": detail.get("uc_champion_promoted", False),
                 "stageEvents": timeline,
             },
         )
