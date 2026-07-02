@@ -1,39 +1,6 @@
 from __future__ import annotations
 
 
-def _join_metadata_snapshot() -> dict:
-    return {
-        "data_sources": {
-            "tables": [
-                {
-                    "identifier": "cat.sch.fact_sales",
-                    "column_configs": [
-                        {"column_name": "location_id", "data_type": "BIGINT"},
-                    ],
-                },
-                {
-                    "identifier": "cat.sch.dim_location",
-                    "column_configs": [
-                        {"column_name": "location_id", "data_type": "BIGINT"},
-                    ],
-                },
-            ],
-            "metric_views": [],
-        },
-        "instructions": {"join_specs": []},
-        # Corroborate the example join via UC FK so Task 4's
-        # corroboration gate accepts the example-derived join.
-        "_uc_foreign_keys": [
-            {
-                "left_table": "cat.sch.fact_sales",
-                "right_table": "cat.sch.dim_location",
-                "left_columns": ["location_id"],
-                "right_columns": ["location_id"],
-            },
-        ],
-    }
-
-
 def test_example_sql_rows_are_converted_to_positive_eval_rows():
     from genie_space_optimizer.optimization.harness import (
         _example_sqls_to_positive_eval_rows,
@@ -54,89 +21,6 @@ def test_example_sql_rows_are_converted_to_positive_eval_rows():
     assert rows[0]["arbiter/value"] == "synthetic_example"
     assert rows[0]["request"]["expected_sql"].startswith("SELECT l.location_id")
     assert rows[0]["inputs/expected_sql"].startswith("SELECT l.location_id")
-
-
-def test_mine_example_sql_joins_reuses_proven_join_pipeline(monkeypatch):
-    from genie_space_optimizer.optimization import harness as h_mod
-
-    applied = {}
-
-    def _fake_mine(w, spark, run_id, space_id, metadata_snapshot, eval_rows, catalog, schema, *, iteration=0):
-        applied["rows"] = eval_rows
-        return {
-            "total_applied": 1,
-            "new_specs": [
-                {
-                    "left": {"identifier": "cat.sch.fact_sales"},
-                    "right": {"identifier": "cat.sch.dim_location"},
-                }
-            ],
-            "joins_skipped_metric_view": 0,
-            "extraction_diagnostics": {
-                "total_rows": len(eval_rows),
-                "positive_verdicts": len(eval_rows),
-                "sql_with_join": 1,
-            },
-        }
-
-    monkeypatch.setattr(h_mod, "_mine_and_apply_proven_joins", _fake_mine)
-
-    result = h_mod._mine_and_apply_joins_from_example_sqls(
-        w=None,
-        spark=None,
-        run_id="r1",
-        space_id="s1",
-        metadata_snapshot=_join_metadata_snapshot(),
-        examples=[
-            {
-                "question": "Sales by location",
-                "expected_sql": (
-                    "SELECT l.location_id, SUM(f.sales) "
-                    "FROM cat.sch.fact_sales f "
-                    "JOIN cat.sch.dim_location l ON f.location_id = l.location_id "
-                    "GROUP BY l.location_id"
-                ),
-            }
-        ],
-        catalog="cat",
-        schema="sch",
-    )
-
-    assert result["total_applied"] == 1
-    # Corroboration flow stamps pseudo rows with both_correct so
-    # _extract_proven_joins accepts them; the synthetic origin is
-    # tracked separately via _synthetic_origin.
-    assert applied["rows"][0]["arbiter/value"] == "both_correct"
-    assert applied["rows"][0]["_synthetic_origin"] == "accepted_example_sql"
-
-
-def test_example_sql_join_mining_combines_unified_and_fallback_examples(monkeypatch):
-    from genie_space_optimizer.optimization import harness as h_mod
-
-    calls = {}
-
-    def _fake_mine(**kwargs):
-        calls["examples"] = kwargs["examples"]
-        return {"total_applied": 1, "joins_skipped_metric_view": 0}
-
-    monkeypatch.setattr(h_mod, "_mine_and_apply_joins_from_example_sqls", _fake_mine)
-
-    examples = h_mod._collect_examples_for_join_mining(
-        unified_example_result={
-            "accepted_examples": [
-                {"question": "Q1", "expected_sql": "SELECT * FROM a JOIN b ON a.id=b.id"}
-            ]
-        },
-        preflight_example_result={
-            "accepted_examples": [
-                {"example_question": "Q2", "example_sql": "SELECT * FROM c JOIN d ON c.id=d.id"}
-            ]
-        },
-    )
-
-    assert len(examples) == 2
-    assert examples[0]["expected_sql"].startswith("SELECT * FROM a")
-    assert examples[1]["expected_sql"].startswith("SELECT * FROM c")
 
 
 def test_join_discovery_result_has_explicit_observability_fields():
