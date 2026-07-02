@@ -109,7 +109,7 @@ class TestPopulatedBase:
         updated in place."""
         passed_in = {
             "description": "x" * 20,   # present → no description work
-            "_parsed_space": {},        # DEGENERATE — must NOT drive the PATCH
+            "_parsed_space": _authoritative_full_config()["_parsed_space"],
         }
         fetch_return = _authoritative_full_config()
 
@@ -147,7 +147,10 @@ class TestPopulatedBase:
             validate_serialized_space,
         )
 
-        passed_in = {"description": "x" * 20, "_parsed_space": {}}
+        passed_in = {
+            "description": "x" * 20,
+            "_parsed_space": _authoritative_full_config()["_parsed_space"],
+        }
         _, patch_mock, _, _ = _run(
             passed_in, fetch_return=_authoritative_full_config()
         )
@@ -164,12 +167,20 @@ class TestPopulatedBase:
 class TestEmptyBase:
     def test_skips_patch_logs_clean_info_never_raises(self):
         passed_in = {"description": "x" * 20, "_parsed_space": {}}
-        # Genuinely empty space: fetch returns no serialized_space content.
+        # Genuinely empty space: the API exports a serialized_space, but it has
+        # no data sources to ground sample questions.
         result, patch_mock, fetch_mock, logger_mock = _run(
-            passed_in, fetch_return={"_parsed_space": {}}
+            passed_in,
+            fetch_return={
+                "_parsed_space": {
+                    "version": 2,
+                    "data_sources": {"tables": [], "metric_views": [], "functions": []},
+                },
+            },
         )
 
-        # Re-fetched but did NOT PATCH — no partial object constructed.
+        # Re-fetched for the stale-snapshot guard and reused for the empty-base
+        # questions guard, but did NOT PATCH.
         assert fetch_mock.call_count == 1
         patch_mock.assert_not_called()
 
@@ -192,7 +203,7 @@ class TestEmptyBase:
         """A base with a ``version`` but no ``data_sources`` is still an
         empty/degenerate space and must be skipped, not PATCHed with a
         payload the API would reject."""
-        passed_in = {"description": "x" * 20, "_parsed_space": {}}
+        passed_in = {"description": "x" * 20, "_parsed_space": {"version": 2}}
         result, patch_mock, _, _ = _run(
             passed_in, fetch_return={"_parsed_space": {"version": 2}}
         )
@@ -202,7 +213,10 @@ class TestEmptyBase:
     def test_missing_version_is_treated_as_empty(self):
         """A base with ``data_sources`` but no ``version`` is skipped —
         PATCHing without echoing ``version`` would trip the validator."""
-        passed_in = {"description": "x" * 20, "_parsed_space": {}}
+        passed_in = {
+            "description": "x" * 20,
+            "_parsed_space": {"data_sources": {"tables": []}},
+        }
         result, patch_mock, _, _ = _run(
             passed_in,
             fetch_return={
@@ -211,6 +225,53 @@ class TestEmptyBase:
         )
         patch_mock.assert_not_called()
         assert result["questions_skipped_empty_base"] is True
+
+
+class TestStaleEmptyWorkingSnapshot:
+    def test_populated_live_space_skips_empty_snapshot_metadata_writes(self):
+        """If the working snapshot is empty but live is populated, do not
+        generate from the empty context or PATCH either metadata field."""
+        passed_in = {"description": "", "_parsed_space": {}}
+        fetch_mock = MagicMock(
+            name="fetch_space_config",
+            return_value=_authoritative_full_config(),
+        )
+        gen_desc = MagicMock(name="_generate_space_description", return_value="empty space")
+        gen_questions = MagicMock(
+            name="_generate_sample_questions",
+            return_value=[{"id": _SQ_ID, "question": ["What data is available?"]}],
+        )
+        update_desc = MagicMock(name="update_space_description")
+        patch_config = MagicMock(name="patch_space_config")
+
+        with (
+            patch.object(_genie_client_mod, "fetch_space_config", fetch_mock),
+            patch.object(_genie_client_mod, "update_space_description", update_desc),
+            patch.object(_genie_client_mod, "patch_space_config", patch_config),
+            patch.object(_optimizer_mod, "_generate_space_description", gen_desc),
+            patch.object(_optimizer_mod, "_generate_sample_questions", gen_questions),
+            patch.object(harness, "write_stage", MagicMock()),
+            patch.object(harness, "write_patch", MagicMock()),
+        ):
+            result = harness._run_space_metadata_enrichment(
+                MagicMock(name="w"),
+                MagicMock(name="spark"),
+                "run-1",
+                _SPACE_ID,
+                passed_in,
+                {"data_sources": {"tables": []}},
+                "cat",
+                "sch",
+            )
+
+        assert result["metadata_skipped_stale_empty_snapshot"] is True
+        assert result["description_generated"] is False
+        assert result["questions_generated"] is False
+        fetch_mock.assert_called_once()
+        gen_desc.assert_not_called()
+        gen_questions.assert_not_called()
+        update_desc.assert_not_called()
+        patch_config.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -222,13 +283,15 @@ class TestSourceWiring:
     def test_builds_patch_from_authoritative_fetch_not_passed_in_parsed(self):
         src = inspect.getsource(harness._run_space_metadata_enrichment)
         # Re-fetches the authoritative serialized_space.
-        assert 'fetch_space_config(w, space_id).get("_parsed_space")' in src
+        assert "fetch_space_config(w, space_id)" in src
         # Deep-copies before mutating (no aliasing of the fetched object).
         assert "copy.deepcopy(current)" in src
-        # Empty-base guard present on BOTH required top-level fields.
-        assert 'current.get("data_sources")' in src
+        # Empty-base guard present on BOTH required top-level fields, and it
+        # treats data_sources with no assets as empty.
+        assert "space_config_has_data_sources" in src
         assert 'current.get("version") is None' in src
         assert "questions_skipped_empty_base" in src
+        assert "metadata_skipped_stale_empty_snapshot" in src
         # The old antipattern — mutating and PATCHing the passed-in parsed
         # object — must be gone.
         assert "patch_space_config(w, space_id, parsed)" not in src
