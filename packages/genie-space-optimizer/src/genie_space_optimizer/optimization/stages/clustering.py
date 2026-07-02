@@ -10,10 +10,7 @@ surface.
 F3 wires the harness's hard + soft ``cluster_failures`` pair into a
 single typed call (Phase F+H Commit A1). ``form(ctx, inp)`` calls
 ``optimizer.cluster_failures`` internally for both branches with
-identical args except ``spark`` (form passes ``spark=None``; replay-
-fixture mode is unaffected because spark is None everywhere there,
-but production runs skip the spark-conditional ``read_asi_from_uc``
-UC enrichment at ``optimizer.py:1913-1915``). The harness inline
+identical args except ``spark`` (form passes ``spark=None``). The harness inline
 ``cluster_failures(...)`` calls (formerly at ``harness.py:9158``
 hard, ``9171`` soft) are deleted by A1. The ``cluster_records`` /
 ``rca_formed_records`` emissions at ``harness.py:12318+`` /

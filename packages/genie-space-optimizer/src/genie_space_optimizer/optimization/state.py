@@ -21,7 +21,6 @@ import pandas as pd
 
 from genie_space_optimizer.common.config import (
     TABLE_ARTIFACTS,
-    TABLE_ASI,
     TABLE_BENCHMARK_MUTATIONS,
     TABLE_FINALIZE_ATTESTATION,
     TABLE_ITERATIONS,
@@ -1318,52 +1317,7 @@ def mark_champion_iteration(
         )
 
 
-# ── ASI & Provenance Write Functions ─────────────────────────────────────
-
-
-def write_asi_results(
-    spark: SparkSession,
-    run_id: str,
-    iteration: int,
-    asi_rows: list[dict],
-    catalog: str,
-    schema: str,
-    *,
-    mlflow_run_id: str = "",
-) -> None:
-    """Write per-question per-judge ASI feedback to ``genie_eval_asi_results``."""
-    if not asi_rows:
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    for a in asi_rows:
-        blame = a.get("blame_set")
-        if isinstance(blame, list):
-            blame = json.dumps(blame)
-        row: dict[str, Any] = {
-            "run_id": run_id,
-            "mlflow_run_id": mlflow_run_id or a.get("mlflow_run_id", ""),
-            "iteration": iteration,
-            "question_id": a.get("question_id", ""),
-            "judge": a.get("judge", ""),
-            "value": a.get("value", "no"),
-            "failure_type": a.get("failure_type"),
-            "severity": a.get("severity"),
-            "confidence": a.get("confidence"),
-            "blame_set": blame,
-            "counterfactual_fix": a.get("counterfactual_fix"),
-            "wrong_clause": a.get("wrong_clause"),
-            "expected_value": a.get("expected_value"),
-            "actual_value": a.get("actual_value"),
-            "missing_metadata": a.get("missing_metadata"),
-            "ambiguity_detected": a.get("ambiguity_detected", False),
-            "logged_at": now,
-        }
-        row = {k: v for k, v in row.items() if v is not None}
-        try:
-            insert_row(spark, catalog, schema, TABLE_ASI, row)
-        except Exception:
-            logger.debug("Failed to write ASI row for %s/%s", a.get("question_id"), a.get("judge"), exc_info=True)
-    logger.info("Wrote %d ASI results for run %s iter %d", len(asi_rows), run_id, iteration)
+# ── Provenance Write Functions ───────────────────────────────────────────
 
 
 def write_provenance(
@@ -2219,25 +2173,6 @@ def load_recent_activity(
     return run_query(
         spark,
         f"SELECT * FROM {fqn} {where} ORDER BY started_at DESC LIMIT {limit}",
-    )
-
-
-def load_asi_results(
-    spark: SparkSession,
-    run_id: str,
-    catalog: str,
-    schema: str,
-    *,
-    iteration: int | None = None,
-) -> pd.DataFrame:
-    """All ASI judge results for a run, optionally filtered by iteration."""
-    fqn = _fqn(catalog, schema, TABLE_ASI)
-    where = f"WHERE run_id = '{run_id}'"
-    if iteration is not None:
-        where += f" AND iteration = {iteration}"
-    return run_query(
-        spark,
-        f"SELECT * FROM {fqn} {where} ORDER BY question_id, judge",
     )
 
 

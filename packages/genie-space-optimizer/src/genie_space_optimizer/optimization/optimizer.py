@@ -1938,17 +1938,6 @@ def cluster_failures(
     Callers that pass ``held_out_qids=None`` get the legacy "train+held-
     out mixed" behaviour but SHOULD be updated.
     """
-    uc_asi_map: dict[tuple[str, str], dict] = {}
-    if spark and run_id and catalog and schema:
-        try:
-            uc_asi = read_asi_from_uc(spark, run_id, catalog, schema)
-            for a in uc_asi:
-                key = (a.get("question_id", ""), a.get("judge", ""))
-                uc_asi_map[key] = a
-            if uc_asi_map:
-                logger.info("Enriched clustering with %d UC ASI records", len(uc_asi_map))
-        except Exception:
-            logger.debug("UC ASI enrichment failed", exc_info=True)
 
     failures: list[dict] = []
     table = None
@@ -2164,16 +2153,6 @@ def cluster_failures(
                 )
 
                 asi_join_assessment = judge_meta.get("join_assessment")
-
-                if not asi_failure_type and uc_asi_map:
-                    uc_asi_entry = uc_asi_map.get((question_id, judge))
-                    if uc_asi_entry:
-                        asi_failure_type = asi_failure_type or uc_asi_entry.get("failure_type")
-                        asi_blame_set = asi_blame_set or uc_asi_entry.get("blame_set")
-                        asi_counterfactual = asi_counterfactual or uc_asi_entry.get("counterfactual_fix")
-                        asi_wrong_clause = asi_wrong_clause or uc_asi_entry.get("wrong_clause")
-                        if not asi_join_assessment:
-                            asi_join_assessment = uc_asi_entry.get("join_assessment")
 
                 # Tier 2.13 / 2.14 (narrowed by Task 7): fall back to the
                 # Genie-behaviour-pattern classifier ONLY when ASI carries
@@ -5409,41 +5388,6 @@ def _build_join_specs_from_proven(
 # ═══════════════════════════════════════════════════════════════════════
 # 3. ASI Extraction
 # ═══════════════════════════════════════════════════════════════════════
-
-
-def read_asi_from_uc(
-    spark: Any,
-    mlflow_run_id: str,
-    catalog: str,
-    schema: str,
-) -> list[dict]:
-    """Query ``genie_eval_asi_results`` Delta table via Spark."""
-    table = f"{catalog}.{schema}.genie_eval_asi_results"
-    try:
-        df = spark.sql(
-            f"""
-            SELECT run_id, iteration, question_id, judge, value,
-                   failure_type, severity, confidence, blame_set,
-                   counterfactual_fix, wrong_clause, expected_value,
-                   actual_value, missing_metadata, ambiguity_detected
-            FROM {table}
-            WHERE run_id = '{mlflow_run_id}'
-            ORDER BY question_id, judge
-            """
-        )
-        rows: list[dict] = []
-        for r in df.collect():
-            row_dict = r.asDict()
-            if row_dict.get("blame_set"):
-                try:
-                    row_dict["blame_set"] = json.loads(row_dict["blame_set"])
-                except (json.JSONDecodeError, TypeError):
-                    row_dict["blame_set"] = [row_dict["blame_set"]]
-            rows.append(row_dict)
-        return rows
-    except Exception:
-        logger.exception("read_asi_from_uc failed")
-        return []
 
 
 def _extract_asi_from_assessments(assessments: list) -> list[dict]:

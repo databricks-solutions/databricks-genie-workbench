@@ -167,7 +167,6 @@ from genie_space_optimizer.optimization.state import (
     update_provenance_gate,
     update_provenance_proposals,
     update_run_status,
-    write_asi_results,
     write_gt_correction_candidates,
     write_iteration,
     write_patch,
@@ -9047,12 +9046,6 @@ def _analyze_and_distribute(
     # optimizer.cluster_failures hard+soft pair. ``stages.clustering.
     # form()`` calls ``cluster_failures`` internally for both branches.
     #
-    # Production-mode caveat: ``form()`` passes ``spark=None``; replay-
-    # fixture mode is unaffected because spark is None everywhere there,
-    # but real-Genie runs SKIP the spark-conditional ``read_asi_from_uc``
-    # UC enrichment at ``optimizer.py:1913-1915``. Verify in the next
-    # production pilot.
-    #
     # Demoted-cluster invariant: ``cluster_failures`` does not stamp
     # ``demoted_reason`` on its returns (verified at audit time by
     # ``grep "demoted_reason" optimizer.py`` returning zero hits inside
@@ -13860,10 +13853,6 @@ def _run_lever_loop(
             except Exception:
                 logger.debug("RCA terminal-state classification failed", exc_info=True)
 
-            try:
-                write_asi_results(spark, run_id, iteration_counter - 1, _analysis["asi_rows"], catalog, schema, mlflow_run_id=_last_full_mlflow_run_id)
-            except Exception:
-                logger.debug("Failed to write ASI results", exc_info=True)
             try:
                 write_provenance(spark, run_id, iteration_counter - 1, 0, _analysis["prov_rows"], catalog, schema)
             except Exception:
