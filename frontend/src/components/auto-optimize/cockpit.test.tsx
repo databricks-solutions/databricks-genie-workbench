@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
-import { GSO_PIPELINE_STEPS, type GSOAttempt } from "@/types"
+import { GSO_PIPELINE_STEPS, GSO_TOTAL_STEPS, type GSOAttempt } from "@/types"
 import {
   buildLadderModel,
   buildLedgerModel,
@@ -121,6 +121,29 @@ describe("Attempt Ladder — coverage rung always renders at zero lift (§5)", (
       expect(best[i]!).toBeGreaterThanOrEqual(best[i - 1]!)
     }
   })
+
+  it("labels attempts defensively when attempt_no is missing", () => {
+    const attempts = [
+      attempt({
+        attemptNo: null,
+        attemptMode: "coverage",
+        accuracy: 74,
+        bestAccuracy: 74,
+        decision: "continue",
+      }),
+      attempt({
+        attemptNo: null,
+        attemptMode: "surgical",
+        accuracy: 79,
+        bestAccuracy: 79,
+        decision: "accept",
+        isChampion: true,
+      }),
+    ]
+    const model = buildLadderModel({ baselineAccuracy: 70, attempts, targetUnit: 0.9 })
+    expect(model.rungs.map((r) => r.key)).toEqual(["baseline", "attempt-1", "attempt-2"])
+    expect(model.rungs.map((r) => r.shortLabel)).toEqual(["Base", "Cov", "S2"])
+  })
 })
 
 describe("Attempt Ledger — highest-accuracy highlight + champion from is_champion (§5)", () => {
@@ -183,6 +206,21 @@ describe("Attempt Ledger — highest-accuracy highlight + champion from is_champ
     expect(rows[0].key).toBe("baseline")
     expect(rows[0].isChampion).toBe(true)
   })
+
+  it("does not invent a divergence note when no row is explicit champion", () => {
+    const rows = buildLedgerModel({
+      baselineAccuracy: 70,
+      attempts: [
+        attempt({ attemptNo: 1, attemptMode: "coverage", accuracy: 78, bestAccuracy: 78, decision: "continue" }),
+        attempt({ attemptNo: 2, attemptMode: "surgical", accuracy: 82, bestAccuracy: 82, decision: "continue" }),
+      ],
+    })
+    expect(rows.find((r) => r.isHighest)?.label).toBe("Surgical")
+    expect(rows.every((r) => r.divergenceReason == null)).toBe(true)
+    expect(renderToStaticMarkup(<AttemptLedger baselineAccuracy={70} attempts={[]} />)).not.toContain(
+      "Highest accuracy, but not the champion",
+    )
+  })
 })
 
 describe("Task Rail — 5 nodes, default fallback 5, 01 hard-fail chip", () => {
@@ -218,6 +256,16 @@ describe("Task Rail — 5 nodes, default fallback 5, 01 hard-fail chip", () => {
   it("marks the Optimize node failed on a loop hard-fail terminal reason", () => {
     const nodes = buildTaskRail({ status: "FAILED", terminalReason: "LOOP_STATE_INVALID" })
     expect(nodes.find((n) => n.stepNumber === 4)!.state).toBe("failed")
+  })
+
+  it("clamps stale legacy six-step progress to the 5-task rail", () => {
+    const nodes = buildTaskRail({ stepsCompleted: 6, status: "CONVERGED" })
+    expect(nodes).toHaveLength(GSO_TOTAL_STEPS)
+    expect(nodes.every((n) => n.state === "completed")).toBe(true)
+
+    const markup = renderToStaticMarkup(<TaskRail stepsCompleted={6} status="CONVERGED" />)
+    expect(markup).toContain("5/5 tasks")
+    expect(markup).not.toMatch(/deploy/i)
   })
 })
 
@@ -256,6 +304,15 @@ describe("Terminal Banner — published vs nothing-published", () => {
     )
     expect(markup).toContain("Not published")
     expect(markup).toContain("evaluation invalid")
+  })
+
+  it("honors a publish-record false override for MAX_ATTEMPTS", () => {
+    const markup = renderToStaticMarkup(
+      <TerminalBanner status="MAX_ITERATIONS" terminalReason="MAX_ATTEMPTS" published={false} />,
+    )
+    expect(markup).toContain("Stopped")
+    expect(markup).toContain("Not published")
+    expect(markup).toContain("without a publishable champion")
   })
 })
 

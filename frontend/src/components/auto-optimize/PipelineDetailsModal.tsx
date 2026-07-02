@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState, useRef } from "react"
-import { X, TrendingUp, Pen, Info } from "lucide-react"
+import { X, TrendingUp, Info } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { TaskRail } from "@/components/auto-optimize/TaskRail"
@@ -193,12 +193,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
           {run && (
             <>
               <Badge variant={STATUS_VARIANT[run.status] ?? "secondary"}>{run.status}</Badge>
-              {run.deploymentStatus && (
-                <Badge variant="secondary">
-                  <Pen className="h-3 w-3 mr-1" />
-                  {run.deploymentStatus === "skipped" ? "Deploy skipped" : `Deploy: ${run.deploymentStatus}`}
-                </Badge>
-              )}
             </>
           )}
         </div>
