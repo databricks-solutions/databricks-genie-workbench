@@ -23,7 +23,6 @@ from genie_space_optimizer.optimization.per_question_regression import (
     HOLD_PASS,
     PASS_TO_FAIL,
     RegressionVerdict,
-    build_question_regression_rows,
     compute_question_transitions,
 )
 
@@ -122,92 +121,3 @@ def test_verdict_is_a_frozen_dataclass():
     except Exception:
         return
     raise AssertionError("RegressionVerdict must be frozen")
-
-
-# ── build_question_regression_rows ─────────────────────────────────
-
-
-def test_persisted_rows_exclude_hold_pass_noise():
-    verdict = compute_question_transitions(
-        pass_map_before={"a": True, "b": True, "c": False},
-        pass_map_after={"a": True, "b": False, "c": True},
-    )
-
-    rows = build_question_regression_rows(
-        run_id="r-1",
-        iteration=2,
-        ag_id="AG2",
-        verdict=verdict,
-    )
-
-    qids = {r["question_id"] for r in rows}
-    transitions = {r["question_id"]: r["transition"] for r in rows}
-    # ``a`` was a hold_pass — excluded.
-    assert qids == {"b", "c"}
-    assert transitions == {"b": PASS_TO_FAIL, "c": FAIL_TO_PASS}
-
-
-def test_persisted_rows_carry_cluster_proposal_patch_chain():
-    """The plan's attribution chain: a rollback row in the decision
-    audit must be joinable back via these fields to the patch that
-    broke the qid."""
-    verdict = compute_question_transitions(
-        pass_map_before={"q19": True}, pass_map_after={"q19": False},
-    )
-
-    rows = build_question_regression_rows(
-        run_id="r-1",
-        iteration=2,
-        ag_id="AG2",
-        verdict=verdict,
-        cluster_ids_by_qid={"q19": ["H001"]},
-        proposal_ids_by_qid={"q19": ["p1"]},
-        applied_patch_ids=["applied_xyz"],
-    )
-
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["transition"] == PASS_TO_FAIL
-    assert row["was_passing"] is True
-    assert row["is_passing"] is False
-    assert row["source_cluster_ids"] == ["H001"]
-    assert row["source_proposal_ids"] == ["p1"]
-    assert row["applied_patch_ids"] == ["applied_xyz"]
-    assert row["suppressed"] is False
-
-
-def test_persisted_rows_mark_suppression():
-    verdict = compute_question_transitions(
-        pass_map_before={"q11": True, "q19": True},
-        pass_map_after={"q11": False, "q19": False},
-        suppressed_qids={"q11"},
-    )
-
-    rows = build_question_regression_rows(
-        run_id="r", iteration=1, ag_id="AG1",
-        verdict=verdict, suppressed_qids={"q11"},
-    )
-
-    by_qid = {r["question_id"]: r for r in rows}
-    assert by_qid["q11"]["suppressed"] is True
-    assert by_qid["q19"]["suppressed"] is False
-
-
-def test_carries_pre_and_post_arbiter_pass_states():
-    verdict = compute_question_transitions(
-        pass_map_before={"q1": True}, pass_map_after={"q1": False},
-    )
-
-    rows = build_question_regression_rows(
-        run_id="r", iteration=1, ag_id="AG1", verdict=verdict,
-        pre_arbiter_before={"q1": False},  # arbiter rescued it before
-        pre_arbiter_after={"q1": False},
-        post_arbiter_before={"q1": True},
-        post_arbiter_after={"q1": False},
-    )
-
-    row = rows[0]
-    assert row["pre_arbiter_before"] is False
-    assert row["pre_arbiter_after"] is False
-    assert row["post_arbiter_before"] is True
-    assert row["post_arbiter_after"] is False

@@ -10332,7 +10332,6 @@ def _run_gate_checks(
         row_is_hard_failure as _row_is_hard_failure,
     )
     from genie_space_optimizer.optimization.per_question_regression import (
-        build_question_regression_rows,
         compute_question_transitions,
     )
 

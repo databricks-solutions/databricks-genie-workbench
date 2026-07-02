@@ -49,7 +49,6 @@ from genie_space_optimizer.optimization.ddl import (
     TABLE_LEVER_LOOP_DECISIONS,
     TABLE_PROACTIVE_CORPUS_PROFILE,
     TABLE_PROACTIVE_PATCHES,
-    TABLE_QUESTION_REGRESSIONS,
     _ALL_DDL,
 )
 
@@ -1490,81 +1489,6 @@ def write_lever_loop_decisions(
     if written:
         logger.info(
             "Wrote %d lever-loop decision row(s) for run %s",
-            written,
-            rows[0].get("run_id", "?"),
-        )
-
-
-def write_question_regressions(
-    spark: SparkSession,
-    rows: list[dict],
-    *,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist Task 4 per-question pass/fail transitions.
-
-    Empty list is a no-op. JSON columns are serialized here so callers
-    can pass plain Python lists.
-    """
-    if not rows:
-        return
-
-    def _as_json(val: Any) -> Any:
-        if val is None:
-            return None
-        if isinstance(val, str):
-            return val
-        try:
-            return json.dumps(val, sort_keys=True, default=str)
-        except (TypeError, ValueError):
-            return None
-
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        payload: dict[str, Any] = {
-            "run_id": r.get("run_id", ""),
-            "iteration": int(r.get("iteration") or 0),
-            "ag_id": r.get("ag_id", ""),
-            "question_id": r.get("question_id", ""),
-            "was_passing": bool(r.get("was_passing")) if r.get("was_passing") is not None else None,
-            "is_passing": bool(r.get("is_passing")) if r.get("is_passing") is not None else None,
-            "transition": r.get("transition"),
-            "pre_arbiter_before": r.get("pre_arbiter_before"),
-            "pre_arbiter_after": r.get("pre_arbiter_after"),
-            "post_arbiter_before": r.get("post_arbiter_before"),
-            "post_arbiter_after": r.get("post_arbiter_after"),
-            "source_cluster_ids_json": _as_json(
-                r.get("source_cluster_ids_json", r.get("source_cluster_ids")),
-            ),
-            "source_proposal_ids_json": _as_json(
-                r.get(
-                    "source_proposal_ids_json", r.get("source_proposal_ids"),
-                ),
-            ),
-            "applied_patch_ids_json": _as_json(
-                r.get("applied_patch_ids_json", r.get("applied_patch_ids")),
-            ),
-            "suppressed": bool(r.get("suppressed", False)),
-            "created_at": now,
-        }
-        if not payload["run_id"] or not payload["question_id"]:
-            continue
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_QUESTION_REGRESSIONS, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write question regression row %s",
-                payload["question_id"],
-                exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d question regression row(s) for run %s",
             written,
             rows[0].get("run_id", "?"),
         )
