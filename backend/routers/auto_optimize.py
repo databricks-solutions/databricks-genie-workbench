@@ -127,7 +127,6 @@ class TriggerRequest(BaseModel):
     space_id: str = Field(..., pattern=r"^[0-9a-zA-Z_-]{1,128}$")
     apply_mode: str = "genie_config"
     levers: list[int] | None = None
-    deploy_target: str | None = None
     llm_model: str | None = Field(None, max_length=256)
     # GSO v2 loop knobs (arch §13 / D9). Both optional/nullable; when omitted the
     # job's databricks.yml defaults apply (target_accuracy "0.90", max_attempts
@@ -686,8 +685,6 @@ def _build_step_summary(
         score = f"{_finite(run_data.get('best_accuracy', 0)):.1f}" if run_data.get("best_accuracy") else "?"
         rep = f"{_finite(run_data.get('best_repeatability', 0)):.1f}" if run_data.get("best_repeatability") else "?"
         return f"Final evaluation complete. Optimized score: {score}%. Repeatability: {rep}%"
-    if step_name == "Deploy":
-        return f"Deployment {detail.get('status', 'pending')}"
     return None
 
 
@@ -877,13 +874,7 @@ def _build_step_io(
     if step_name in _PUBLISH_STEP_NAMES:
         return (
             {"bestIteration": run_data.get("best_iteration")},
-            {"bestAccuracy": _safe_float(run_data.get("best_accuracy")), "repeatability": _safe_float(run_data.get("best_repeatability")), "convergenceReason": run_data.get("convergence_reason"), "terminalReason": _typed_terminal_reason(run_data), "ucModelName": detail.get("uc_model_name") or None, "ucModelVersion": detail.get("uc_model_version") or None, "ucChampionPromoted": detail.get("uc_champion_promoted", False), "stageEvents": timeline},
-        )
-
-    if step_name == "Deploy":
-        return (
-            {"deployTarget": run_data.get("deploy_target")},
-            {"deployStatus": detail.get("status"), "stageEvents": timeline},
+            {"bestAccuracy": _safe_float(run_data.get("best_accuracy")), "repeatability": _safe_float(run_data.get("best_repeatability")), "convergenceReason": run_data.get("convergence_reason"), "terminalReason": _typed_terminal_reason(run_data), "stageEvents": timeline},
         )
 
     return None, {"stageEvents": timeline}
@@ -1014,7 +1005,6 @@ def _build_lever_iterations(
             "iteration": iteration, "status": status, "patchCount": len(entry["patches"]),
             "patchTypes": [str(p.get("patchType") or "") for p in entry["patches"] if p.get("patchType")],
             "scoreBefore": score_before, "scoreAfter": score_after, "scoreDelta": score_delta,
-            "mlflowRunId": full_row.get("mlflow_run_id") if full_row else None,
             "rollbackReason": rollback_reason, "patches": entry["patches"],
         })
     return payloads
@@ -1285,7 +1275,6 @@ async def trigger(body: TriggerRequest, request: Request):
             user_name=request.headers.get("x-forwarded-preferred-username"),
             apply_mode=body.apply_mode,
             levers=body.levers,
-            deploy_target=body.deploy_target,
             target_accuracy=body.target_accuracy,
             max_attempts=body.max_attempts,
         )
@@ -1616,7 +1605,6 @@ async def get_run(run_id: RunId):
         "terminalReason": _typed_terminal_reason(run),
         "targetAccuracy": target_accuracy,
         "maxAttempts": max_attempts,
-        "deploymentStatus": run.get("deploy_status"),
     }
 
 
@@ -2312,16 +2300,13 @@ async def _load_iteration_rows_json(run_id: str, iteration: int) -> str | None:
 
 
 @router.get("/runs/{run_id}/eval-results")
-@router.get("/runs/{run_id}/asi-results")
 async def list_eval_results(run_id: RunId, iteration: int = Query(..., description="Iteration number")):
     """Lightweight official eval-results for an iteration.
 
     GSO v2 Phase 6: replaces the retired per-judge ASI rows. Returns one row
     per benchmark question carrying the native ``assessment`` (GOOD / BAD /
     NEEDS_REVIEW) and ``assessment_reasons[]`` (the ``failure_type``
-    successor) — sourced from the iteration's rows_json, with no dependency on
-    the legacy ``genie_eval_asi_results`` judge table. The ``/asi-results``
-    path is kept as an alias for older clients.
+    successor) — sourced from the iteration's rows_json.
     """
     rows_json_str = await _load_iteration_rows_json(run_id, iteration)
     return _parse_official_eval_results(rows_json_str)
