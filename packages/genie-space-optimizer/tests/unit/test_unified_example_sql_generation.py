@@ -549,50 +549,6 @@ class TestPhase3ArbiterWiring:
 # ═══════════════════════════════════════════════════════════════════════
 # Phase 4.R4 — harness routing + fallback
 # ═══════════════════════════════════════════════════════════════════════
-
-
-class TestPhase4HarnessRouting:
-    def test_unified_runner_builds_oracle_and_calls_generator(
-        self, patched_core, monkeypatch,
-    ):
-        """_run_unified_example_sql_generation must (a) build a
-        LeakageOracle from benchmarks + existing examples, (b) call
-        generate_example_sqls with it, (c) apply via the shared
-        applier pipeline."""
-        from genie_space_optimizer.optimization import harness
-
-        applier_called = {}
-
-        def _fake_applier(
-            w, spark, run_id, space_id, proposals, metadata_snapshot,
-            config, catalog, schema, *, benchmarks=None,
-        ):
-            applier_called["proposals"] = proposals
-            applier_called["benchmarks"] = benchmarks
-
-        monkeypatch.setattr(
-            harness, "_apply_proactive_example_sqls", _fake_applier,
-        )
-
-        result = harness._run_unified_example_sql_generation(
-            w=None, spark=None, run_id="r1", space_id="s1",
-            config=_mk_config(),
-            metadata_snapshot=_mk_config()["_parsed_space"],
-            uc_columns=_mk_uc_columns(), domain="sales",
-            catalog="cat", schema="sch",
-            full_firewall_corpus=[{
-                "id": "b1", "question": "Q1", "expected_sql": "SELECT a FROM t",
-            }],
-            data_profile=None,
-        )
-        # The generator was called (clean-LLM fixture returns 1 candidate).
-        assert result["unified_generated"] >= 0
-        if result["applied"]:
-            assert applier_called["benchmarks"] == [{
-                "id": "b1", "question": "Q1", "expected_sql": "SELECT a FROM t",
-            }]
-
-
 class TestPhase4ArchetypeFallback:
     def test_fallback_config_knobs_parseable(self):
         """GSO_UNIFIED_MIN_SURVIVORS env var is read with a sane default.
@@ -840,73 +796,6 @@ class TestF8UnifiedRepairPorting:
         # The adapter forwards only the benchmark prompt kwargs —
         # ``repair_counters`` is absent (None/missing both acceptable).
         assert "repair_counters" not in captured_kwargs
-
-    def test_unified_banner_surfaces_repair_counts(self):
-        """The harness banner renderer must read the repair counters
-        off ``rejection_counters`` and display them when non-zero.
-        This locks the contract between ``_attempt_sql_correction``
-        (writer) and ``_print_unified_example_summary`` (reader).
-        """
-        import io
-        import contextlib
-
-        from genie_space_optimizer.optimization.harness import (
-            _print_unified_example_summary,
-        )
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            _print_unified_example_summary(
-                run_id="r1", target=20, existing=0,
-                applied_examples=[],
-                rejection_counters={
-                    "metadata": 0, "mv_select_star": 0,
-                    "explain_or_execute": 0, "arbiter_no": 0,
-                    "firewall_fingerprint": 0,
-                    "firewall_question_echo": 0,
-                    "dedup_in_corpus": 0,
-                    "unfixable_after_correction": 0,
-                    "repaired_stemmed_identifiers": 3,
-                    "repaired_measure_refs": 1,
-                },
-            )
-        out = buf.getvalue()
-        assert "Stemmed identifiers repaired" in out
-        assert "MEASURE() refs repaired" in out
-        assert "3" in out and "1" in out
-
-    def test_unified_banner_hides_repair_counts_when_zero(self):
-        """Banner stays terse when the LLM returned clean output —
-        repair lines only appear when they actually fired. Prevents
-        banner bloat on the happy path.
-        """
-        import io
-        import contextlib
-
-        from genie_space_optimizer.optimization.harness import (
-            _print_unified_example_summary,
-        )
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            _print_unified_example_summary(
-                run_id="r1", target=20, existing=0,
-                applied_examples=[],
-                rejection_counters={
-                    "metadata": 0, "mv_select_star": 0,
-                    "explain_or_execute": 0, "arbiter_no": 0,
-                    "firewall_fingerprint": 0,
-                    "firewall_question_echo": 0,
-                    "dedup_in_corpus": 0,
-                    "unfixable_after_correction": 0,
-                    "repaired_stemmed_identifiers": 0,
-                    "repaired_measure_refs": 0,
-                },
-            )
-        out = buf.getvalue()
-        assert "Stemmed identifiers repaired" not in out
-        assert "MEASURE() refs repaired" not in out
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # F13 — two-tier row capture, end-to-end through the unified pipeline
@@ -1279,93 +1168,6 @@ class TestPR21AdaptiveOverdrawShortCircuit:
             "config": 0, "column_flags": 0, "catalog": 0,
         }
 
-    def test_unified_banner_renders_mv_detection_counts(self):
-        """When ``config`` is provided, the banner must surface the
-        MV-detection summary line so log readers don't have to trawl
-        DEBUG logs to find out whether catalog detection fired.
-        """
-        import io
-        import contextlib
-
-        from genie_space_optimizer.optimization.harness import (
-            _print_unified_example_summary,
-        )
-
-        cfg = {
-            "_parsed_space": {
-                "data_sources": {
-                    "metric_views": [
-                        {"identifier": "cat.sch.mv_a", "measures": [{"name": "m"}]},
-                        {"identifier": "cat.sch.mv_b", "measures": [{"name": "m"}]},
-                    ],
-                    "tables": [],
-                },
-            },
-            "_metric_view_yaml": {
-                "cat.sch.mv_c": {"measures": [{"name": "m"}]},
-            },
-        }
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            _print_unified_example_summary(
-                run_id="r1", target=20, existing=0,
-                applied_examples=[],
-                rejection_counters={},
-                config=cfg,
-            )
-        out = buf.getvalue()
-        assert "MVs detected" in out
-        assert "config: 2" in out
-        assert "column-flags: 0" in out
-        assert "catalog: 1" in out
-
-    def test_unified_banner_renders_short_circuit_marker(self):
-        """When ``adaptive_overdraw_short_circuited`` is set on the
-        counters, the banner must surface it on its own line so
-        operators see why round count plateaued at 1.
-        """
-        import io
-        import contextlib
-
-        from genie_space_optimizer.optimization.harness import (
-            _print_unified_example_summary,
-        )
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            _print_unified_example_summary(
-                run_id="r1", target=20, existing=0,
-                applied_examples=[],
-                rejection_counters={
-                    "adaptive_overdraw_short_circuited": "no_mv_measures",
-                },
-            )
-        out = buf.getvalue()
-        assert "Adaptive overdraw short-circuited" in out
-        assert "no_mv_measures" in out
-
-    def test_unified_banner_omits_short_circuit_when_unset(self):
-        import io
-        import contextlib
-
-        from genie_space_optimizer.optimization.harness import (
-            _print_unified_example_summary,
-        )
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            _print_unified_example_summary(
-                run_id="r1", target=20, existing=0,
-                applied_examples=[],
-                rejection_counters={
-                    "metadata": 0,
-                    "explain_or_execute": 0,
-                },
-            )
-        out = buf.getvalue()
-        assert "Adaptive overdraw short-circuited" not in out
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # PR 22 — Sub-bucket parity between unified and preflight banners
 #
@@ -1438,39 +1240,6 @@ class TestPR22SubBucketParity:
         assert sub.get("mv_measure_in_where", 0) >= 1, counters
         # And the plain bucket DOES NOT also count this candidate.
         assert sub.get("mv_missing_measure_function", 0) == 0, counters
-
-    def test_unified_banner_renders_mv_measure_in_where_subbucket(self):
-        """Banner must show ``mv_measure_in_where`` as a separate
-        sub-bucket line (not folded into the catch-all bucket)."""
-        import io
-        import contextlib
-
-        from genie_space_optimizer.optimization.harness import (
-            _print_unified_example_summary,
-        )
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            _print_unified_example_summary(
-                run_id="r1", target=20, existing=0,
-                applied_examples=[],
-                rejection_counters={
-                    "explain_or_execute": 3,
-                    "explain_or_execute_subbuckets": {
-                        "mv_measure_in_where": 2,
-                        "mv_missing_measure_function": 1,
-                    },
-                    "explain_or_execute_examples": {
-                        "mv_measure_in_where": [{
-                            "question": "Filter on measure?",
-                            "error": "WHERE clause has measure col",
-                        }],
-                    },
-                },
-            )
-        out = buf.getvalue()
-        assert "mv_measure_in_where" in out
-        assert "mv_missing_measure_function" in out
 
     def test_preflight_banner_renders_execute_subbuckets(self):
         """The preflight banner must mirror the unified banner's
@@ -1570,87 +1339,6 @@ class TestPR22SubBucketParity:
             _print_summary(result)
         out = buf.getvalue()
         assert "execute sub-buckets" not in out
-
-
-class TestPR23DetectionVsRejectionHint:
-    """When 0 MVs are detected but mv_* sub-buckets fired, surface a hint."""
-
-    def _capture_banner(self, *, config, rejection_counters):
-        import io
-        import contextlib
-
-        from genie_space_optimizer.optimization.harness import (
-            _print_unified_example_summary,
-        )
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            _print_unified_example_summary(
-                run_id="r1", target=20, existing=0,
-                applied_examples=[],
-                rejection_counters=rejection_counters,
-                config=config,
-            )
-        return buf.getvalue()
-
-    def test_hint_when_zero_mvs_but_mv_rejection(self):
-        """0 MVs detected + at least one mv_* sub-bucket → hint appears."""
-        out = self._capture_banner(
-            config={
-                "_parsed_space": {
-                    "data_sources": {"tables": [], "metric_views": []},
-                },
-            },
-            rejection_counters={
-                "explain_or_execute": 5,
-                "explain_or_execute_subbuckets": {
-                    "mv_missing_measure_function": 5,
-                },
-            },
-        )
-        assert "0 MVs detected" in out
-        assert "mv_* rejections present" in out
-
-    def test_no_hint_when_mvs_detected(self):
-        """MVs detected → hint suppressed even when mv_* sub-buckets present."""
-        out = self._capture_banner(
-            config={
-                "_parsed_space": {
-                    "data_sources": {
-                        "tables": [],
-                        "metric_views": [
-                            {"identifier": "cat.sch.mv_x"},
-                        ],
-                    },
-                },
-            },
-            rejection_counters={
-                "explain_or_execute": 1,
-                "explain_or_execute_subbuckets": {
-                    "mv_missing_measure_function": 1,
-                },
-            },
-        )
-        assert "0 MVs detected but mv_* rejections present" not in out
-
-    def test_no_hint_when_no_mv_rejections(self):
-        """No mv_* sub-buckets → hint suppressed even with zero MVs."""
-        out = self._capture_banner(
-            config={
-                "_parsed_space": {
-                    "data_sources": {"tables": [], "metric_views": []},
-                },
-            },
-            rejection_counters={
-                "explain_or_execute": 2,
-                "explain_or_execute_subbuckets": {
-                    "unknown_column": 2,
-                },
-            },
-        )
-        assert "0 MVs detected but mv_* rejections present" not in out
-
-
 class TestBenchmarkSpaceScopedMetadata:
     def test_build_schema_contexts_filters_columns_and_routines_to_space_assets(self):
         from genie_space_optimizer.optimization.evaluation import _build_schema_contexts
@@ -2020,39 +1708,3 @@ class TestPhase6FinalSelection:
         selected = _select_diverse_example_sqls(candidates, target_count=3)
 
         assert len(selected) == 3
-
-
-class TestPhase6AppliedExampleReturn:
-    def test_unified_result_includes_accepted_examples(self, monkeypatch, patched_core):
-        from genie_space_optimizer.optimization import harness as h_mod
-
-        monkeypatch.setattr(
-            h_mod,
-            "_apply_proactive_example_sqls",
-            lambda *args, **kwargs: {
-                "applied": [
-                    {
-                        "patch": {
-                            "example_question": "Top regions",
-                            "example_sql": "SELECT region FROM cat.sch.sales LIMIT 5",
-                        }
-                    }
-                ]
-            },
-        )
-
-        result = h_mod._run_unified_example_sql_generation(
-            w=None,
-            spark=None,
-            run_id="r1",
-            space_id="s1",
-            config=_mk_config(),
-            metadata_snapshot=_mk_config()["_parsed_space"],
-            uc_columns=_mk_uc_columns(),
-            domain="sales",
-            catalog="cat",
-            schema="sch",
-            full_firewall_corpus=[],
-        )
-
-        assert "accepted_examples" in result

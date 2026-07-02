@@ -2,8 +2,7 @@
 All configurable constants for the Genie Space Optimizer.
 
 Module-level constants with sensible defaults. Can be overridden via
-environment variables, job parameters, or the `thresholds` argument
-to `optimize_genie_space()`.
+environment variables or job parameters.
 """
 
 from __future__ import annotations

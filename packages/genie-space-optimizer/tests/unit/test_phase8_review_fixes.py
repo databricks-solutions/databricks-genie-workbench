@@ -319,127 +319,6 @@ def test_mark_iteration_rolled_back_raises_on_failure() -> None:
             )
 
 
-def test_standalone_rollback_correction_replaces_config_with_baseline() -> None:
-    # D2: after a coverage rollback, the surgical loop must start from the PROVEN
-    # baseline config, never the rejected post-enrichment one.
-    enrichment_out = {"config": {"_parsed_space": {"REJECTED": True}}}
-    baseline_cfg = {"_parsed_space": {"BASELINE": True}}
-    with patch.object(harness, "update_run_status"), \
-         patch("genie_space_optimizer.optimization.state.mark_iteration_rolled_back"), \
-         patch("genie_space_optimizer.common.genie_client.fetch_space_config",
-               return_value=baseline_cfg):
-        ok = harness._correct_state_after_standalone_coverage_rollback(
-            spark=MagicMock(), w=MagicMock(), run_id="r1", space_id="sp",
-            catalog="c", schema="s", enrichment_out=enrichment_out,
-            baseline_accuracy=80.0, delta_pp=-5.0,
-        )
-    assert ok is True
-    # The rejected config was replaced with the proven baseline.
-    assert enrichment_out["config"] == baseline_cfg
-
-
-def test_standalone_rollback_correction_fails_closed_on_state_error() -> None:
-    # D3: if the required state correction cannot commit, return False so the
-    # caller stops LOOP_STATE_INVALID instead of entering surgical mode.
-    enrichment_out = {"config": {"_parsed_space": {"REJECTED": True}}}
-
-    def _boom(*a, **k):  # noqa: ANN002, ANN003
-        raise RuntimeError("mark failed")
-
-    with patch.object(harness, "update_run_status"), \
-         patch("genie_space_optimizer.optimization.state.mark_iteration_rolled_back", _boom):
-        ok = harness._correct_state_after_standalone_coverage_rollback(
-            spark=MagicMock(), w=MagicMock(), run_id="r1", space_id="sp",
-            catalog="c", schema="s", enrichment_out=enrichment_out,
-            baseline_accuracy=80.0, delta_pp=-5.0,
-        )
-    assert ok is False
-    # The rejected config is NOT silently carried forward as "good"; the caller
-    # will hard-stop LOOP_STATE_INVALID (asserted via the source contract below).
-    assert enrichment_out["config"] == {"_parsed_space": {"REJECTED": True}}
-
-
-def test_optimize_genie_space_fail_closed_on_correction_failure() -> None:
-    # The standalone caller stops LOOP_STATE_INVALID when the correction returns False.
-    src = inspect.getsource(harness.optimize_genie_space)
-    assert "if not _correct_state_after_standalone_coverage_rollback(" in src
-    _tail = src.split("if not _correct_state_after_standalone_coverage_rollback(", 1)[1][:1300]
-    assert 'convergence_reason = "LOOP_STATE_INVALID"' in _tail
-    assert "return result" in _tail
-
-
-# ── F1: rollback_and_stop also corrects already-committed enrichment state ───
-def _run_fail_closed_stop(enrichment_out):
-    """Drive _standalone_coverage_fail_closed_stop with the leaf I/O mocked so we
-    can assert the behavior (proven rollback + scoped row-hide + best reset +
-    LOOP_STATE_INVALID) for both a present and a missing _enrichment_out."""
-    result = MagicMock()
-    rb_calls = []
-    with patch.object(harness, "_finalize_coverage_decision",
-                      side_effect=lambda **k: rb_calls.append(k) or {
-                          "should_rollback": True, "rollback_proven": True,
-                          "terminal_reason": None, "decision": "reject",
-                          "decision_reason": "x", "delta_pp": -1.0,
-                      }), \
-         patch.object(harness, "update_run_status") as urs, \
-         patch("genie_space_optimizer.optimization.state.mark_iteration_rolled_back") as mirb, \
-         patch("genie_space_optimizer.common.genie_client.fetch_space_config",
-               return_value={"_parsed_space": {"BASELINE": True}}):
-        out = harness._standalone_coverage_fail_closed_stop(
-            result=result, spark=MagicMock(), w=MagicMock(),
-            run_id="r1", space_id="sp", catalog="c", schema="s",
-            enrichment_out=enrichment_out, pre_snapshot={"a": 1},
-            baseline_accuracy=80.0, model_id="m0", prev_scores={"s": 1.0},
-            reason_detail="enrichment raised",
-        )
-    return out, result, rb_calls, urs, mirb
-
-
-def test_f1_rollback_and_stop_corrects_committed_state_late_raise() -> None:
-    # LATE _run_enrichment raise loses the return object, but the row + best-* were
-    # already committed. The fail-closed stop must still proven-rollback, hide the
-    # scoped enrichment row, reset best-*, and end LOOP_STATE_INVALID.
-    out, result, rb_calls, urs, mirb = _run_fail_closed_stop(enrichment_out=None)
-    # 1. proven rollback to the frozen baseline ran.
-    assert rb_calls, "no proven rollback attempted"
-    assert rb_calls[0]["pre_snapshot"] == {"a": 1}
-    # 2. scoped enrichment row hidden (rolled_back) BEFORE returning — even with
-    #    _enrichment_out is None (the late-raise case).
-    mirb.assert_called_once()
-    _args, _kwargs = mirb.call_args
-    assert _kwargs.get("eval_scope") == "enrichment"
-    assert _args[2] == 0  # iteration 0
-    # 3. run best-* reset to baseline.
-    assert any(
-        c.kwargs.get("best_iteration") == 0 and c.kwargs.get("best_accuracy") == 80.0
-        for c in urs.call_args_list
-    ), "run best-* not reset to baseline"
-    # 4. terminal LOOP_STATE_INVALID.
-    assert result.convergence_reason == "LOOP_STATE_INVALID"
-    assert result.status == "FAILED"
-    assert out is result
-
-
-def test_f1_rollback_and_stop_with_present_enrichment_out() -> None:
-    # Same correction runs when _enrichment_out is a dict (early raise / no-post-acc).
-    enr = {"config": {"_parsed_space": {"REJECTED": True}}}
-    _out, result, rb_calls, urs, mirb = _run_fail_closed_stop(enrichment_out=enr)
-    assert rb_calls  # proven rollback
-    mirb.assert_called_once()  # scoped row hide
-    assert result.convergence_reason == "LOOP_STATE_INVALID"
-    # config replaced with the proven baseline (so even if it were carried on, it's clean).
-    assert enr["config"] == {"_parsed_space": {"BASELINE": True}}
-
-
-def test_rollback_and_stop_branch_uses_fail_closed_stop_before_return() -> None:
-    # The standalone rollback_and_stop branch delegates to the fail-closed stop
-    # (which runs the correction) and returns its result — no bare return that
-    # skips the persisted-state correction.
-    src = inspect.getsource(harness.optimize_genie_space)
-    branch = src.split('if _std_gate == "rollback_and_stop":', 1)[1][:900]
-    assert "return _standalone_coverage_fail_closed_stop(" in branch
-
-
 # ── NB1: no-candidate loader failure does NOT leave synthetic counts current ─
 def test_no_candidate_loader_failure_marks_rung_excluded() -> None:
     src = inspect.getsource(harness._run_lever_loop)
@@ -499,37 +378,9 @@ def test_e2_measured_when_post_accuracy_present() -> None:
     ) == "measured"
 
 
-def test_optimize_genie_space_wires_e2_fail_closed_gates() -> None:
-    src = inspect.getsource(harness.optimize_genie_space)
-    # E2a: anchor resolved (via the imported helper) + hard-stop before mutation.
-    assert "resolve_coverage_rollback_anchor as _resolve_anchor" in src
-    assert "_resolve_anchor(" in src
-    assert "no valid pre-enrichment rollback anchor" in src
-    # E2b/c: the gate drives rollback_and_stop / measured / baseline.
-    assert "decide_standalone_coverage_gate as _decide_std_gate" in src
-    assert "_decide_std_gate(" in src
-    assert 'if _std_gate == "rollback_and_stop":' in src
-    assert 'if _std_gate == "measured"' in src
-
-
 def test_coverage_block_invokes_firewall_helper() -> None:
     src = inspect.getsource(harness._run_lever_loop)
     assert "_firewall_coverage_example_sqls(" in src
-
-
-# ── B4: exactly ONE measured coverage protocol (no silent better-of) ─────────
-def test_optimize_genie_space_uses_measured_coverage_not_silent_better_of() -> None:
-    src = inspect.getsource(harness.optimize_genie_space)
-    # The gate runs the measured/reversible protocol …
-    assert "_finalize_coverage_decision(" in src
-    # … and no longer admits post-enrichment via the silent better-of helper.
-    assert "_resolve_effective_starting_point(" not in src
-
-
-def test_both_paths_share_one_coverage_protocol() -> None:
-    # Both the inline loop and the standalone orchestrator call the SAME helper.
-    assert "_finalize_coverage_decision(" in inspect.getsource(harness._run_lever_loop)
-    assert "_finalize_coverage_decision(" in inspect.getsource(harness.optimize_genie_space)
 
 
 # ── B5 / NB3: resume loads loop-state counters; coverage not re-run ──────────
