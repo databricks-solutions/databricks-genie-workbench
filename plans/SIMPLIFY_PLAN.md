@@ -633,6 +633,35 @@ loop (Change K) lands, the prompt should say "iterations 1..N" instead.
 dedicated change needed — update the prompt text when the two-mode
 controller is removed.
 
+## Finding 23 — Redundant non-`src/` files: orphaned bundle, broken ledgers, one-shot notebooks
+
+**Where:** `packages/genie-space-optimizer/` (files outside `src/`)
+
+A sweep of the package root turned up files that are orphaned, one-shot, or
+broken — none imported by runtime code or referenced by the active
+deployment path:
+
+- **`databricks.yml` + `deploy.sh`** — an orphaned standalone bundle defining
+  a *separate* `genie-space-optimizer` Databricks App (built via `apx build`).
+  The active path is the root `databricks.yml`, which includes the package's
+  `jobs/**` directly. Nothing references the package `deploy.sh`.
+- **`docs/2026-05-05-optimizer-iteration-ledger.md`** — a behavioral-hardening
+  cycle ledger whose 18 sibling planning-doc links are all missing
+  (gitignored under `docs/*`).
+- **`docs/runid_analysis/cycle_11_falsification_probe.md`** — an incomplete
+  one-off probe (result table is `<fill>` placeholders).
+- **`docs/optimizer-process-design/burn-down-ledger.md`** — unreferenced by
+  `00-index.md` or any other doc.
+- **`notebooks/reconstruct_cycle7_fixture.py`** — a self-described one-shot
+  operator notebook; the module it calls is tested separately.
+- **`scripts/create_instruction_quality_dataset.py` +
+  `scripts/run_instruction_quality_eval.py`** — zero references anywhere.
+- **Tier 2 (judgment call):** `08-slide-outline.md`, `appendices/B-visual-prompts.md`,
+  `interactive-optimizer-visualization.html` — SA pitch material referenced by
+  `00-index.md` but not engineering docs.
+
+See Change P for the deletion list and the explicitly-preserved set.
+
 ---
 
 ## Proposed Changes
@@ -998,19 +1027,67 @@ unchanged. Can be done independently of the structural changes.
 M/K and need no dedicated change — they simplify themselves when the
 two-mode controller is removed.
 
+### Change P — Delete redundant non-`src/` files (package-level cleanup)
+
+**Where:** `packages/genie-space-optimizer/` (files outside `src/`)
+
+A sweep of the package root turned up several files that are orphaned,
+one-shot, or broken. None are imported by runtime code or referenced by the
+active deployment path. Split into two tiers:
+
+**Tier 1 — clearly redundant (delete):**
+
+| File | Why it's redundant |
+|---|---|
+| `databricks.yml` + `deploy.sh` | Orphaned standalone bundle — defines a *separate* `genie-space-optimizer` Databricks App built via `apx build`. The active path is the root `databricks.yml`, which includes `packages/genie-space-optimizer/src/genie_space_optimizer/jobs/**` directly and deploys the GSO job as part of the workbench bundle. The package `deploy.sh` is referenced by nothing (not root `install.sh`, not root `deploy.sh`, not CI). Vestige from when GSO shipped as a standalone app. |
+| `docs/2026-05-05-optimizer-iteration-ledger.md` | Behavioral-hardening cycle ledger for completed Phase-A burn-down work. References **18 sibling planning docs** (`2026-05-01-…`, `2026-05-04-cycle-*-plan.md`, …) — all 18 are **missing** (gitignored under `docs/*`). Broken links, pure historical record. |
+| `docs/runid_analysis/cycle_11_falsification_probe.md` | One-off Cycle 11 falsification probe whose result table is filled with `<fill>` placeholders — the investigation was never completed/recorded. |
+| `docs/optimizer-process-design/burn-down-ledger.md` | Cycle-11-specific burn-down content. **Not referenced** by `00-index.md` or any other doc. Unreferenced historical artifact. |
+| `notebooks/reconstruct_cycle7_fixture.py` | Self-described "one-shot — Not part of the 6-task DAG" operator notebook repairing a *specific* Cycle 7 replay fixture (run ID `78557321-…`). The module it imports (`scripts.reconstruct_airline_real_v1_fixture`) is tested separately in `tests/unit/test_reconstruct_fixture.py`; the notebook wrapper is the redundant artifact. |
+| `scripts/create_instruction_quality_dataset.py` + `scripts/run_instruction_quality_eval.py` | **Zero references** anywhere in `src/`, `tests/`, `backend/`, or `frontend/`. Orphaned MLflow `genai.datasets`/scorer scripts. |
+
+**Tier 2 — judgment call (marketing/sales enablement, not engineering):**
+
+These *are* referenced by `docs/optimizer-process-design/00-index.md`, so
+they're not orphaned — but they're SA pitch material, not engineering docs.
+Move to a separate sales-enablement location or delete if unmaintained:
+
+- `docs/optimizer-process-design/08-slide-outline.md` — 20-slide SA deep-dive storyboard.
+- `docs/optimizer-process-design/appendices/B-visual-prompts.md` — designer/LLM image-generation prompts.
+- `docs/optimizer-process-design/interactive-optimizer-visualization.html` — 3,757-line standalone interactive microsite.
+
+If Tier 2 is deleted, also prune the corresponding rows from `00-index.md`'s
+table of contents and audience-routing matrix.
+
+**Explicitly NOT touched** (verified consumers exist):
+
+`scripts/dedupe_benchmark_qids.py`, `scripts/lint_example_sql_isolation.py`,
+`scripts/refresh_dim_date_flags.sql`, `scripts/migrate_expected_asset.py`,
+`scripts/record_replay_baseline.py`, `scripts/extract_replay_fixture_from_log.py`
+(all referenced by runtime/test code); `vitest.config.ts`, `.npmrc`, `AGENTS.md`,
+`CHANGELOG.md` (active config/docs); `docs/optimizer-process-design/00–07 +
+appendices/A,C` (active design docs).
+
+**Risk:** Zero for Tier 1 — no runtime/test/CI consumer. Low for Tier 2 —
+only the `00-index.md` cross-references need pruning. Independent of all
+other changes; can be done first as a repo-hygiene pass.
+
 ---
 
 ## Recommended Sequencing
 
 **Quick wins (do immediately):**
 
-1. **Change B** (drop `data_access_grants`) — zero-risk.
-2. **Change I** (delete `triage` artifact) — zero-risk, second write-only
+1. **Change P** (delete redundant non-`src/` files) — zero-risk repo-hygiene
+   pass; independent of all other changes. Do first so the structural work
+   starts from a clean tree.
+2. **Change B** (drop `data_access_grants`) — zero-risk.
+3. **Change I** (delete `triage` artifact) — zero-risk, second write-only
    artifact (alongside `space_snapshot`). (Subsumed by Change J once J
    lands, but safe to do now.)
-3. **Change O** (unify champion selection + drop `run_row` load) — zero-risk,
+4. **Change O** (unify champion selection + drop `run_row` load) — zero-risk,
    pure cleanup in the publish task.
-4. **Change F** (LLM triage for benchmark reuse) — consolidates an existing
+5. **Change F** (LLM triage for benchmark reuse) — consolidates an existing
    LLM call, so net cost-neutral and strictly better judgment.
 
 **Structural (sequence for dependency order):**
