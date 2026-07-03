@@ -52,9 +52,12 @@ The payload carries both:
 Since nothing reads either field back (see Finding 1), the distinction is
 unused. The `config_hash` field is also write-only — every reference in the
 codebase is a write site in `run_00_intake_and_snapshot.py`; there are zero
-readers. (Task 01's benchmark-reuse gate 2 compares `asset_fingerprint` read
-from benchmark *rows* in `genie_benchmarks_<domain>`, not `config_hash` from
-any artifact.)
+readers. (Task 01's benchmark-reuse gate 2 is intended to compare
+`asset_fingerprint` read from benchmark *rows* in `genie_benchmarks_<domain>`,
+not `config_hash` from any artifact. See Finding 8 for the current loader bug:
+persisted rows carry the fingerprint in `expectations`, but the loader does not
+copy it back into the benchmark dict, so the gate is currently ineffective on
+loaded rows.)
 
 ## Finding 3 — `data_access_grants: []` is a dead vestige
 
@@ -83,8 +86,10 @@ So for any run launched through `trigger_optimization`, `config_snapshot` is
 guaranteed to be non-null on the run row before the job starts. The
 `fetch_space_config` fallback inside `preflight_fetch_config` only fires for
 out-of-band run-row inserts (manual/test) or pre-v2 rows that predate the
-column. It's defensive code, not a normal path — but it's also cheap to keep,
-so this finding is informational, not a removal target.
+column. `preflight_fetch_config` is also called by both Task 00 and Task 01, so
+the fallback is not scoped to the intake task alone. It's defensive code, not a
+normal path — but it's also cheap to keep, so this finding is informational, not
+a removal target.
 
 ## Finding 5 — `run_manifest` duplicates run-row columns
 
@@ -166,7 +171,8 @@ itself is fine.
 The reuse path is a cascade of five gates:
 
 1. ≥5 valid existing benchmarks? (count gate)
-2. Schema fingerprint matches? (asset set changed?) — *deterministic, O(1)*
+2. Schema fingerprint matches? (asset set changed?) — *intended*
+   deterministic O(1) gate
 3. Question-SQL alignment still holds? (LLM-based, expensive)
 4. All curated questions present? (set difference)
 5. Count ≥ 30? (count gate)
@@ -177,16 +183,25 @@ Gates 1, 2, and 4 are cheap and deterministic and catch decay modes an LLM
 can't reliably see: schema drift (fingerprint), broken SQL (EXPLAIN),
 missing curated questions (set difference). These should stay.
 
+**Current bug:** gate 2 is not reliably active today. `create_evaluation_dataset`
+writes `asset_fingerprint` into each row's `expectations`, but
+`load_benchmarks_from_dataset` reconstructs benchmark dicts from
+`inputs`/`expectations` without copying `expectations["asset_fingerprint"]`
+back into the returned benchmark dict. `_load_or_generate_benchmarks` then
+checks `_bm.get("asset_fingerprint")`, which is usually empty for loaded rows.
+Fix the loader before treating fingerprint reuse as a real deterministic gate.
+
 Gates 3 and 5, plus the implicit assumption that quantity ⇒ quality, are
 where the design falls down. The code never assesses **diversity or
 difficulty** — semantic properties no deterministic check can measure. A
 space with 35 near-identical single-filter benchmarks would pass all five
 gates and be reused indefinitely.
 
-**Conclusion:** replace gates 3 + 5 (and the missing diversity/difficulty
-assessment) with a single LLM triage call. The LLM receives the current
-schema + candidate benchmark set + a rubric (diversity, quantity 30–40,
-difficulty spread, schema alignment) and returns either
+**Conclusion:** first restore gate 2 by preserving `asset_fingerprint` when
+loading benchmark rows. Then replace gates 3 + 5 (and the missing
+diversity/difficulty assessment) with a single LLM triage call. The LLM
+receives the current schema + candidate benchmark set + a rubric (diversity,
+quantity 30–40, difficulty spread, schema alignment) and returns either
 `{verdict: "good_enough"}` or `{verdict: "regenerate", reason: ...}`.
 
 **Tradeoff:** adds one LLM call to every run (even the reuse path) and the
@@ -295,16 +310,20 @@ optimization started" — which is iteration 0 of the loop by definition.
 
 **The simplification:** Task 03 should start by running the baseline eval
 itself (iteration 0). The trigger-time `config_snapshot` is already the
-rollback anchor. The loop becomes:
+rollback anchor. This is an intentional behavior change: the optimization loop
+always begins with a native Genie Benchmark API run, and the result decides
+whether any LLM repair work is needed. The loop becomes:
 
 ```
 iteration 0:  run eval → accuracy = X
-              if X >= target → CONVERGED, skip optimization
-              if X <  target → enter analyze-patch loop
+              persist iteration-0 eval row
+              if X >= target → CONVERGED, move to publish/audit
+              if X <  target → enter LLM analyze-patch loop
 
 iteration N:  LLM analyzes failures from iteration N-1
               LLM suggests a patch (lever selection + rationale)
               apply patch → run eval
+              persist iteration-N eval row
               if accuracy improved and >= target → CONVERGED
               if accuracy improved and <  target → continue
               if accuracy regressed → rollback to iteration N-1 config
@@ -335,8 +354,14 @@ hypothesis-test loop.
   application must still capture a pre-snapshot for in-loop rollback.
 - The `genie_opt_iterations` Delta table — iteration 0 is still written, just
   by the loop prologue instead of a separate task.
+- The iteration-0 row shape that publish/UI/history code already consume. The
+  producer moves from Task 02 to the Task 03 prologue, but the durable Delta
+  contract should not change.
+- A single internal accuracy scale. `run_03_optimize.py` currently normalizes
+  `0.90` to `90.0`; the new prologue and loop must compare against the user
+  target on one consistent scale.
 
-**Caveat:** folding reduces Repair-Run granularity. Today an operator can
+**Accepted tradeoff:** folding reduces Repair-Run granularity. Today an operator can
 re-run Task 02 alone (cheap — one eval) without re-running the whole loop.
 After folding, a Repair Run of the merged task re-runs the baseline eval +
 loop together. This is acceptable: the baseline eval is a single
@@ -382,11 +407,15 @@ Each surgical attempt runs up to **three** evals in sequence:
 2. **P0 gate** — runs a priority-0 subset. Another fast early-warning.
 3. **Full eval** — runs all benchmarks. The authoritative gate.
 
-This tiered design was built for the **in-process evaluator** where a slice
-run was cheap (fewer questions = less LLM compute locally) and a full run
-was expensive. With the native Genie Benchmark API (`genie_create_eval_run`),
-a slice eval and a full eval cost the **same** — one server-side run. The
-server runs all submitted questions; there's no "subset is cheaper" win.
+This tiered design was built for the earlier evaluator path where a subset run
+was a cheap early warning and a full run was the expensive authoritative check.
+With the native Genie Benchmark API (`genie_create_eval_run`), slice/P0 gates
+are still separate eval-run submissions when opted in; they submit fewer
+questions, but they also add extra server-side runs before the authoritative
+full eval. The cleanup argument is not "subset and full cost exactly the same";
+it is that the subset gates are now a legacy, default-disabled control path
+that adds branching, tolerance tuning, and extra round-trips around a full-eval
+acceptance policy.
 
 The `GSO_FULL_BENCHMARK_ONLY_EVAL` flag already defaults to `true`, which
 disables the slice/P0 gates. But the code paths, config flags, tolerance
@@ -394,9 +423,10 @@ tuning (`SLICE_GATE_MIN_REDUCTION`, `SLICE_GATE_SMALL_CORPUS_ROWS`,
 `SLICE_GATE_TOLERANCE_SMALL_CORPUS`), and the `_run_gate_checks` function
 (~600 lines) are all still present.
 
-**Conclusion:** delete the slice/P0 gate code paths entirely. Each surgical
-attempt runs exactly one full eval. This eliminates `_run_gate_checks` and
-its associated tolerance/bypass/broadness logic.
+**Conclusion:** delete the slice/P0 gate code paths entirely once operators no
+longer need the opt-in legacy path. Each surgical attempt runs exactly one full
+eval. This eliminates `_run_gate_checks` and its associated
+tolerance/bypass/broadness logic.
 
 ## Finding 14 — The proactive enrichment pass is a separate "coverage mode" that doesn't fit the unified loop
 
@@ -560,12 +590,16 @@ The publish task calls both:
 
 Both functions independently implement the candidate universe filter
 (`eval_scope IN ('full', 'enrichment')`), the rolled-back exclusion (with
-baseline-as-floor), and the max-accuracy selection. `promote_best_model`
-should delegate to `resolve_champion_row` for the selection, then do only
-the stamping.
+baseline-as-floor), and the max-accuracy selection. The selection should be
+extracted into a small shared helper that both modules can call, or
+`publish_and_audit` should pass the selected champion row into the stamping
+path. Do **not** make `models.py` import `publish.py` directly: `publish.py`
+already imports `promote_best_model`, so that direction would create an import
+cycle.
 
-**Conclusion:** unify the selection logic. `promote_best_model` should call
-`resolve_champion_row` and then stamp. Low-risk cleanup.
+**Conclusion:** unify the selection logic, but do it cycle-aware. Low-risk
+cleanup if the shared selector lives outside `publish.py`/`models.py` or the
+call direction is adjusted deliberately.
 
 ## Finding 19 — `publish_and_audit` loads `run_row` but barely uses it
 
@@ -578,7 +612,8 @@ available as function parameters to `publish_and_audit`. The `load_run` call
 is a Delta query with no real consumer.
 
 **Conclusion:** drop the `load_run` call; pass `run_id` and `space_id`
-directly to `as_audit_context`. Zero-risk cleanup.
+directly to `as_audit_context`. Keep the later post-`promote_best_model`
+`load_run` refresh, which is used to read the stamped `best_accuracy`.
 
 ## Finding 20 — Champion selection's `enrichment` scope is a two-mode-controller vestige
 
@@ -638,13 +673,23 @@ controller is removed.
 **Where:** `packages/genie-space-optimizer/` (files outside `src/`)
 
 A sweep of the package root turned up files that are orphaned, one-shot, or
-broken — none imported by runtime code or referenced by the active
-deployment path:
+broken. One initial candidate was a false positive:
+`packages/genie-space-optimizer/databricks.yml` is still an active validated
+source of truth for the 5-task job shape. The root `databricks.yml`,
+`scripts/deploy_lib/gso_job.py`, docs, and `tests/unit/test_phase7_job_dag.py`
+explicitly reference or mirror it. Do **not** delete the package
+`databricks.yml` unless that source-of-truth contract is intentionally moved.
 
-- **`databricks.yml` + `deploy.sh`** — an orphaned standalone bundle defining
-  a *separate* `genie-space-optimizer` Databricks App (built via `apx build`).
-  The active path is the root `databricks.yml`, which includes the package's
-  `jobs/**` directly. Nothing references the package `deploy.sh`.
+The remaining candidates:
+
+- **`deploy.sh`** — package-local standalone deploy wrapper for the old
+  standalone `genie-space-optimizer` Databricks App path. It is not called by
+  the root `install.sh`, root `deploy.sh`, or active notebook install path. If
+  deleted, update package backend error messages/docs that still say "run
+  deploy.sh" in the standalone context.
+- **`databricks.yml`** — explicitly preserved, not a deletion candidate. It is
+  the package bundle source mirrored by the Workbench root bundle and deploy
+  library tests.
 - **`docs/2026-05-05-optimizer-iteration-ledger.md`** — a behavioral-hardening
   cycle ledger whose 18 sibling planning-doc links are all missing
   (gitignored under `docs/*`).
@@ -700,8 +745,8 @@ v1 vestige with no reader.
 If Change A is rejected, collapse the payload to a single `serialized_space`
 field (drop `config`). The enriched projections (`_parsed_space`, etc.) are
 regenerable from `serialized_space` and are not read back from the artifact
-anyway. Keep `config_hash` since it's the only field with a plausible
-downstream consumer.
+anyway. Drop `config_hash` too unless it is intentionally being reserved for a
+new consumer; current code has no reader.
 
 **Risk:** Low. No reader distinguishes the two fields today.
 
@@ -711,10 +756,12 @@ downstream consumer.
 reader that needed migrating before the `space_snapshot` artifact could be
 deleted. But verification shows `config_hash` / `baseline_config_hash` has
 **zero readers** anywhere — every reference is a write site in
-`run_00_intake_and_snapshot.py`. Task 01's benchmark-reuse gate 2 compares
-`asset_fingerprint` read from benchmark *rows* in `genie_benchmarks_<domain>`,
-not `config_hash` from any artifact. Since there is nothing to migrate,
-Change A can proceed directly without this change.
+`run_00_intake_and_snapshot.py`. Task 01's benchmark-reuse gate 2 is intended
+to compare `asset_fingerprint` read from benchmark *rows* in
+`genie_benchmarks_<domain>`, not `config_hash` from any artifact. That
+fingerprint gate has its own loader bug (Finding 8), but there is still no
+`config_hash` migration needed. Change A can proceed directly without this
+change.
 
 ### Change E — Collapse UC metadata merge into a single source-of-truth read
 
@@ -736,18 +783,22 @@ Defer until the lever loop is otherwise stabilized.
 
 **Files:** `optimization/preflight.py` (`_load_or_generate_benchmarks`)
 
-Keep deterministic gates 1 (count ≥5), 2 (fingerprint match), and 4 (curated
-coverage) as-is — they're cheap and catch decay the LLM can't see. Replace
-gate 3 (alignment LLM call) + gate 5 (count ≥30) + the missing
-diversity/difficulty assessment with a single LLM triage call invoked only
-after gates 1, 2, 4 pass. The LLM returns a structured verdict; regenerate
-only on `{verdict: "regenerate"}`.
+First fix the persisted-row loader so `load_benchmarks_from_dataset` copies
+`expectations["asset_fingerprint"]` back into each benchmark dict. Then keep
+deterministic gates 1 (count ≥5), 2 (fingerprint match), and 4 (curated
+coverage) as-is — they're cheap and catch decay the LLM can't see. Replace gate
+3 (alignment LLM call) + gate 5 (count ≥30) + the missing diversity/difficulty
+assessment with a single LLM triage call invoked only after gates 1, 2, 4 pass.
+The LLM returns a structured verdict; regenerate only on
+`{verdict: "regenerate"}`.
 
-**Risk:** Medium. Adds one LLM call per run on the reuse path. Verdict is
-not replay-safe — mitigate by logging the prompt + response + model id to
-the `benchmark_qc` artifact so the audit trail records *why* reuse was
+**Risk:** Medium. Adds one LLM call per run on the reuse path. Verdict is not
+replay-safe — mitigate by logging the prompt + response + model id to the
+`benchmark_qc` artifact so the audit trail records *why* reuse was
 accepted/rejected. Net cost should be *lower* than today because the current
-gate 3 already makes an LLM alignment call; this consolidates it.
+gate 3 already makes an LLM alignment call; this consolidates it. The
+fingerprint-loader fix is a prerequisite, not part of the LLM-triage behavior
+change.
 
 ### Change G — Rip out the legacy in-process eval scaffolding from Task 02
 
@@ -824,13 +875,14 @@ loop, then enter the analyze-patch cycle:
 Task 03 (new shape):
   1. Load benchmarks from genie_benchmarks_<domain>
   2. Run native eval (genie_create_eval_run) → iteration 0
-  3. If accuracy >= target_accuracy → CONVERGED, write run status, exit
-  4. If accuracy <  target_accuracy → enter loop:
+  3. Persist iteration 0 in genie_opt_iterations
+  4. If accuracy >= target_accuracy → CONVERGED, write terminal state, exit
+  5. If accuracy <  target_accuracy → enter loop:
        a. LLM analyzes iteration N-1 failures (which benchmarks failed, why)
        b. LLM suggests a patch (selects a lever, writes the patch JSON,
           provides rationale)
        c. apply_patch_set (captures pre_snapshot for in-loop rollback)
-       d. Run native eval → iteration N
+       d. Run native eval → iteration N and persist the eval row
        e. If accuracy >= target → CONVERGED
           If accuracy improved but < target → continue to N+1
           If accuracy regressed → rollback to pre_snapshot, continue
@@ -846,7 +898,8 @@ user-discard rollback anchor (unchanged). Per-iteration `pre_snapshot` in
 - `get_baseline_eval_state` cross-task handoff (baseline is in-memory iter 0).
 - The `triage` artifact (Change I, now subsumed).
 - `baseline_setup_scorers` / `baseline_run_evaluation` / `baseline_persist_state`
-  (the loop writes iteration 0 directly).
+  as a separate Task-02 call path (the loop prologue writes the same iteration-0
+  durable contract directly or through a renamed helper).
 - The double config fetch + UC re-collection (Finding 10 — the loop has the
   config in memory from its own setup).
 - The `_frozen_baseline_accuracy` / `best_accuracy` stamping dance — the
@@ -856,6 +909,10 @@ user-discard rollback anchor (unchanged). Per-iteration `pre_snapshot` in
 **Prerequisites:**
 - Change G must land first (rip out legacy eval scaffolding) so the loop's
   eval call is the slim native path, not `baseline_run_evaluation`.
+- The Task 03 prologue must preserve the iteration-0 Delta shape that
+  publish/UI/history already consume.
+- The target-accuracy comparison must use one internal scale throughout the
+  prologue and loop.
 - The 11-stage RCA spine / coverage-surgical two-mode controller is the
   current implementation of "analyze → suggest patch." This change does not
   require rewriting that spine in the same PR — the spine can be preserved
@@ -940,8 +997,10 @@ the slice/P0 tolerance tuning (`SLICE_GATE_MIN_REDUCTION`,
 
 **Risk:** Low-medium. `GSO_FULL_BENCHMARK_ONLY_EVAL` already defaults to
 `true`, so the slice/P0 gates are already disabled in production. This
-change just deletes the dead code paths. Can be done independently of
-Change K as a precursor.
+change removes a legacy opt-in path, not an active default path. Confirm no
+operator still depends on `GSO_FULL_BENCHMARK_ONLY_EVAL=false` /
+`GSO_ENABLE_LEGACY_SLICE_P0_GATES=true`. Can be done independently of Change K
+as a precursor.
 
 ### Change M — Absorb the coverage/enrichment pass into the unified loop
 
@@ -1009,18 +1068,20 @@ Two cleanups in the publish task:
 
 1. **Unify champion selection.** `promote_best_model` re-implements the same
    candidate filter + max-accuracy selection as `resolve_champion_row`.
-   Make `promote_best_model` call `resolve_champion_row` for the selection,
-   then do only the `mark_champion_iteration` + `update_run_status` stamping.
-   Eliminates the duplicated candidate-universe / rolled-back / baseline-floor
-   logic.
+   Extract a shared selector (or pass the selected champion row into the
+   stamping path) so `promote_best_model` does only the
+   `mark_champion_iteration` + `update_run_status` stamping. Do not make
+   `models.py` import `publish.py` directly, because `publish.py` already
+   imports `promote_best_model`.
 2. **Drop the unnecessary `load_run`.** `publish_and_audit` loads `run_row`
    but `as_audit_context` only reads `run_id` and `space_id` from it — both
    already available as function parameters. Pass them directly; drop the
-   `load_run` call.
+   initial `load_run` call. Keep the later post-promote `load_run` refresh
+   that reads stamped `best_accuracy`.
 
-**Risk:** Zero-low. Pure cleanup in the publish task, which is already the
-best-structured module in the package. The publish_record artifact's shape is
-unchanged. Can be done independently of the structural changes.
+**Risk:** Low. Pure cleanup in the publish task, but the implementation must be
+import-cycle-aware. The publish_record artifact's shape is unchanged. Can be
+done independently of the structural changes.
 
 **Downstream note:** Findings 20–22 (enrichment scope special-casing,
 `LOOP_STATE_INVALID`, audit prompt terminology) are downstream of Changes
@@ -1032,14 +1093,13 @@ two-mode controller is removed.
 **Where:** `packages/genie-space-optimizer/` (files outside `src/`)
 
 A sweep of the package root turned up several files that are orphaned,
-one-shot, or broken. None are imported by runtime code or referenced by the
-active deployment path. Split into two tiers:
+one-shot, or broken. Split into two tiers:
 
-**Tier 1 — clearly redundant (delete):**
+**Tier 1 — clearly redundant or narrowly redundant:**
 
 | File | Why it's redundant |
 |---|---|
-| `databricks.yml` + `deploy.sh` | Orphaned standalone bundle — defines a *separate* `genie-space-optimizer` Databricks App built via `apx build`. The active path is the root `databricks.yml`, which includes `packages/genie-space-optimizer/src/genie_space_optimizer/jobs/**` directly and deploys the GSO job as part of the workbench bundle. The package `deploy.sh` is referenced by nothing (not root `install.sh`, not root `deploy.sh`, not CI). Vestige from when GSO shipped as a standalone app. |
+| `deploy.sh` | Package-local standalone deploy wrapper for the old standalone `genie-space-optimizer` app path. Not called by root `install.sh`, root `deploy.sh`, CI, or the active notebook install path. Before deleting, update package-local backend messages/docs that still refer to "run deploy.sh" for the standalone path. |
 | `docs/2026-05-05-optimizer-iteration-ledger.md` | Behavioral-hardening cycle ledger for completed Phase-A burn-down work. References **18 sibling planning docs** (`2026-05-01-…`, `2026-05-04-cycle-*-plan.md`, …) — all 18 are **missing** (gitignored under `docs/*`). Broken links, pure historical record. |
 | `docs/runid_analysis/cycle_11_falsification_probe.md` | One-off Cycle 11 falsification probe whose result table is filled with `<fill>` placeholders — the investigation was never completed/recorded. |
 | `docs/optimizer-process-design/burn-down-ledger.md` | Cycle-11-specific burn-down content. **Not referenced** by `00-index.md` or any other doc. Unreferenced historical artifact. |
@@ -1061,6 +1121,8 @@ table of contents and audience-routing matrix.
 
 **Explicitly NOT touched** (verified consumers exist):
 
+`databricks.yml` (package bundle source mirrored by root `databricks.yml`,
+`scripts/deploy_lib/gso_job.py`, docs, and `tests/unit/test_phase7_job_dag.py`);
 `scripts/dedupe_benchmark_qids.py`, `scripts/lint_example_sql_isolation.py`,
 `scripts/refresh_dim_date_flags.sql`, `scripts/migrate_expected_asset.py`,
 `scripts/record_replay_baseline.py`, `scripts/extract_replay_fixture_from_log.py`
@@ -1068,9 +1130,11 @@ table of contents and audience-routing matrix.
 `CHANGELOG.md` (active config/docs); `docs/optimizer-process-design/00–07 +
 appendices/A,C` (active design docs).
 
-**Risk:** Zero for Tier 1 — no runtime/test/CI consumer. Low for Tier 2 —
-only the `00-index.md` cross-references need pruning. Independent of all
-other changes; can be done first as a repo-hygiene pass.
+**Risk:** Low for the verified one-shot docs/scripts. Low-medium for package
+`deploy.sh` because stale docs/error messages need cleanup. Low for Tier 2 if
+the sales-enablement material is intentionally retired — only the `00-index.md`
+cross-references need pruning. Independent of all other changes, but no longer
+a blanket zero-risk deletion pass.
 
 ---
 
@@ -1078,32 +1142,42 @@ other changes; can be done first as a repo-hygiene pass.
 
 **Quick wins (do immediately):**
 
-1. **Change P** (delete redundant non-`src/` files) — zero-risk repo-hygiene
-   pass; independent of all other changes. Do first so the structural work
-   starts from a clean tree.
-2. **Change B** (drop `data_access_grants`) — zero-risk.
-3. **Change I** (delete `triage` artifact) — zero-risk, second write-only
+1. **Change B** (drop `data_access_grants`) — zero-risk.
+2. **Change I** (delete `triage` artifact) — zero-risk, second write-only
    artifact (alongside `space_snapshot`). (Subsumed by Change J once J
    lands, but safe to do now.)
-4. **Change O** (unify champion selection + drop `run_row` load) — zero-risk,
-   pure cleanup in the publish task.
-5. **Change F** (LLM triage for benchmark reuse) — consolidates an existing
-   LLM call, so net cost-neutral and strictly better judgment.
+3. **Change O** (unify champion selection + drop `run_row` load) — low-risk,
+   pure cleanup in the publish task if implemented with a shared selector and
+   no import cycle.
+4. **Change P** (delete redundant non-`src/` files) — do only after splitting
+   false positives from real candidates. Do **not** delete
+   `packages/genie-space-optimizer/databricks.yml`; treat package `deploy.sh`
+   as low-medium because docs/error messages need cleanup.
+5. **Benchmark fingerprint loader fix** — before Change F, copy persisted
+   `expectations["asset_fingerprint"]` back into loaded benchmark dicts so gate
+   2 actually works.
+6. **Change F** (LLM triage for benchmark reuse) — consolidates an existing
+   LLM call after deterministic gates are actually enforced.
 
 **Structural (sequence for dependency order):**
 
-5. **Change H** (collapse Task 02 double config fetch) — low-risk plumbing.
-6. **Change G** (rip out legacy eval scaffolding from Task 02) — medium
-   risk; unblocks J.
-7. **Change L** (delete slice/P0 eval gate code paths) — low-medium; the
+7. **Change H** (collapse Task 02 double config fetch) — low-risk plumbing if
+   done before J; otherwise it is subsumed by J.
+8. **Change G** (rip out legacy eval scaffolding from Task 02) — medium
+   risk if done before J; otherwise it is subsumed by the Task 03 native-eval
+   prologue.
+9. **Change L** (delete slice/P0 eval gate code paths) — low-medium; the
    gates are already disabled via `GSO_FULL_BENCHMARK_ONLY_EVAL=true`.
-8. **Change A** (delete `space_snapshot` artifact write) — safe to do
+10. **Change A** (delete `space_snapshot` artifact write) — safe to do
    directly; `config_hash` has no reader to migrate (Change D withdrawn).
-9. **Change C** — moot if A is done; apply only if A is rejected.
-10. **Change J** (eliminate Task 02, fold baseline eval into Task 03 prologue)
-    — only after G + H land; the merged prologue must be the slim native
-    path. This is the core restructure: 5-task DAG → 4-task DAG.
-11. **Change K** (rewrite lever loop as clean eval → analyze → patch → eval)
+11. **Change C** — moot if A is done; apply only if A is rejected.
+12. **Change J** (eliminate Task 02, fold baseline eval into Task 03 prologue)
+    — core accepted restructure: 5-task DAG → 4-task DAG. Task 03 starts by
+    running the native Benchmark API, writes iteration 0, moves to publish if
+    the user-defined target is already met, otherwise enters the LLM
+    analyze-patch-eval loop. The merged prologue must preserve the iteration-0
+    Delta contract and use one target-accuracy scale.
+13. **Change K** (rewrite lever loop as clean eval → analyze → patch → eval)
     — the big rewrite. Subsumes Changes M and N. Must be done behind a
     feature flag (`GSO_UNIFIED_LOOP`) with the old path retained until
     validated end-to-end.
@@ -1111,7 +1185,7 @@ other changes; can be done first as a repo-hygiene pass.
     - **Change N** (simplify strategist context) — part of K.
     - Findings 20–22 (enrichment scope, `LOOP_STATE_INVALID`, prompt
       terminology) simplify themselves after K/M land — no dedicated change.
-12. **Change E** (UC single-source-of-truth) — defer; high-risk lever-loop
+14. **Change E** (UC single-source-of-truth) — defer; high-risk lever-loop
     refactor. Plan after the lever loop stabilizes (post-K).
 
 ## Out of Scope
