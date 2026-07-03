@@ -62,6 +62,47 @@ def test_list_backed_benchmark_loader_normalizes_legacy_split_labels() -> None:
     assert {row["split"] for row in loaded} == {"full"}
 
 
+def test_eval_dataset_loader_preserves_asset_fingerprint(monkeypatch) -> None:
+    import pandas as pd
+
+    from genie_space_optimizer.common import delta_helpers
+    from genie_space_optimizer.optimization import evaluation as eval_mod
+
+    monkeypatch.setattr(delta_helpers, "_safe_refresh", lambda *a, **k: None)
+
+    class _ShowTables:
+        @staticmethod
+        def count() -> int:
+            return 1
+
+    class _BenchmarkRows:
+        @staticmethod
+        def toPandas() -> pd.DataFrame:
+            return pd.DataFrame([
+                {
+                    "inputs": {
+                        "question_id": "q1",
+                        "question": "How many orders?",
+                        "expected_sql": "SELECT count(*) FROM orders",
+                    },
+                    "expectations": {
+                        "expected_asset": "TABLE",
+                        "asset_fingerprint": "fp-current",
+                    },
+                }
+            ])
+
+    class _Spark:
+        def sql(self, query: str):  # noqa: ANN001
+            if query.startswith("SHOW TABLES"):
+                return _ShowTables()
+            return _BenchmarkRows()
+
+    loaded = eval_mod.load_benchmarks_from_dataset(_Spark(), "cat.sch", "sales")
+
+    assert loaded[0]["asset_fingerprint"] == "fp-current"
+
+
 def test_assign_splits_small_corpus_still_uses_full_scope() -> None:
     rows = assign_splits(_rows(10), seed=42)
 

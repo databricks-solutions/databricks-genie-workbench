@@ -1743,15 +1743,13 @@ def write_benchmark_mutations(
     return written
 
 
-# GSO v2 orchestration (Phase 7, arch §7.1–7.3): the 5 stage-level handoff
+# GSO v2 orchestration (Phase 7, arch §7.1–7.3): the stage-level handoff
 # blob kinds carried by genie_opt_artifacts. Per-attempt scored truth
 # (scores, loop-state, patches, decisions) is NOT an artifact — it lives in
 # genie_opt_iterations / genie_opt_patches / genie_eval_lever_loop_decisions.
 ARTIFACT_KINDS: tuple[str, ...] = (
     "run_manifest",
-    "space_snapshot",
     "benchmark_qc",
-    "triage",
     "publish_record",
 )
 
@@ -1772,7 +1770,7 @@ def write_artifact(
     """Append one stage-level handoff blob to ``genie_opt_artifacts`` (arch §7.1).
 
     ``artifact_kind`` must be one of ``ARTIFACT_KINDS`` (run_manifest,
-    space_snapshot, benchmark_qc, triage, publish_record). ``payload`` is
+    benchmark_qc, publish_record). ``payload`` is
     JSON-serialized into ``artifact_json``; a ``content_hash`` is computed for
     dedupe / replay safety. Returns the generated ``artifact_id`` (or ``None``
     on a swallowed write failure — best-effort, never aborts the notebook).

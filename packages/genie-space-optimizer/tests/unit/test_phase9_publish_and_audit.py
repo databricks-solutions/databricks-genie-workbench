@@ -135,17 +135,11 @@ def _run_publish_and_audit(
     else:
         llm_mock = MagicMock(return_value=(llm_text, MagicMock()))
 
-    # The publish path rereads the run row after promote; model a refreshed
-    # best_accuracy on the 2nd+ call when asked.
+    # The publish path only rereads the run row after promote; model a refreshed
+    # best_accuracy on that call when asked.
     if refreshed_best_accuracy is not None:
         refreshed = {**run_row, "best_accuracy": refreshed_best_accuracy}
-        _calls = {"n": 0}
-
-        def _load_run(*a, **k):  # noqa: ANN002, ANN003
-            _calls["n"] += 1
-            return run_row if _calls["n"] == 1 else refreshed
-
-        load_run_mock = MagicMock(side_effect=_load_run)
+        load_run_mock = MagicMock(return_value=refreshed)
     else:
         load_run_mock = MagicMock(return_value=run_row)
 
@@ -375,11 +369,10 @@ def test_audit_summary_empty_output_adds_concern_but_publishes():
 
 
 def test_audit_context_excludes_benchmark_qa_fields():
-    run_row = _run_row()
     iters = _full_iters(champion_reason="TARGET_REACHED")
     champion = P.resolve_champion_row(iters)
     ctx = P.as_audit_context(
-        run_row, iters, _patches_df(), _provenance_df(),
+        "run1", "space-abc", iters, _patches_df(), _provenance_df(),
         terminal_reason="TARGET_REACHED", champion_row=champion,
         target_accuracy=90.0, max_attempts=3,
     )
@@ -441,14 +434,13 @@ def test_decision_reason_free_text_is_excluded_from_audit_context():
     """B3(a): the free-text ``decision_reason`` is NEVER in the LLM context, even
     when it embeds benchmark answer-key material. Only the bounded ``decision``
     value survives into the trajectory."""
-    run_row = _run_row()
     iters = _full_iters(champion_reason="TARGET_REACHED")
     # Inject leaky free text into decision_reason values on multiple rungs.
     iters[2]["decision_reason"] = "rolled back; expected_sql was SELECT secret_q FROM t"
     iters[1]["decision_reason"] = "coverage note quoting the benchmark question text"
     champion = P.resolve_champion_row(iters)
     ctx = P.as_audit_context(
-        run_row, iters, _patches_df(), _provenance_df(),
+        "run1", "space-abc", iters, _patches_df(), _provenance_df(),
         terminal_reason="TARGET_REACHED", champion_row=champion,
         target_accuracy=90.0, max_attempts=3,
     )
@@ -517,6 +509,24 @@ def test_enrichment_coverage_row_resolves_as_champion():
     # delta computed off the iter-0 FULL baseline (80.0), not the enrichment row.
     cov = next(t for t in traj if t["eval_scope"] == "enrichment")
     assert cov["delta_vs_baseline"] == 12.0
+
+
+def test_champion_selection_treats_nan_flags_as_missing():
+    iters = [
+        {
+            "iteration": 0, "eval_scope": "full", "rolled_back": False,
+            "overall_accuracy": 80.0, "is_champion": False,
+        },
+        {
+            "iteration": 1, "eval_scope": "full", "rolled_back": float("nan"),
+            "overall_accuracy": 92.0, "is_champion": float("nan"),
+        },
+    ]
+
+    champ = P.resolve_champion_row(iters)
+
+    assert champ is not None
+    assert champ["iteration"] == 1
 
 
 def test_publish_resolves_enrichment_champion_end_to_end():

@@ -48,6 +48,7 @@ from genie_space_optimizer.common.config import (
     AUDIT_SUMMARY_PROMPT,
     LEVER_NAMES,
 )
+from genie_space_optimizer.optimization.champion import select_champion_row
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.models import promote_best_model
 from genie_space_optimizer.optimization.state import (
@@ -175,27 +176,10 @@ def _is_baseline_row(row: dict) -> bool:
 def resolve_champion_row(scored_iters: list[dict]) -> dict | None:
     """Pick the champion over the PROMOTION candidate universe (arch §7.4 / Phase 4).
 
-    Mirrors ``promote_best_model`` exactly so an accepted attempt-1 *coverage* rung
-    (persisted with ``eval_scope='enrichment'``) can be the champion:
-    ``is_champion`` (set by ``promote_best_model``) is authoritative when present;
-    otherwise the champion is the highest-accuracy candidate, where candidates are
-    the non-rolled-back rows PLUS the baseline (kept as the floor even if flagged).
-    ``scored_iters`` must already be the ``full`` + ``enrichment`` set.
+    Delegates to the same selector used by ``promote_best_model`` so publish/audit
+    and champion stamping cannot drift.
     """
-    if not scored_iters:
-        return None
-
-    flagged = [r for r in scored_iters if _is_champion_flag(r)]
-    if flagged:
-        # If multiple are flagged (shouldn't happen), take the highest accuracy.
-        return max(flagged, key=lambda r: _as_float(r.get("overall_accuracy")) or 0.0)
-
-    candidates = [
-        r for r in scored_iters if (not _is_rolled_back(r)) or _is_baseline_row(r)
-    ]
-    if not candidates:
-        candidates = list(scored_iters)
-    return max(candidates, key=lambda r: _as_float(r.get("overall_accuracy")) or 0.0)
+    return select_champion_row(scored_iters)
 
 
 def resolve_terminal_reason(champion_row: dict | None) -> str | None:
@@ -419,7 +403,8 @@ def _assert_leak_free(obj: Any) -> None:
 
 
 def as_audit_context(
-    run_row: dict,
+    run_id: str,
+    space_id: str,
     scored_iters: list[dict],
     patches_df: "pd.DataFrame | None",
     provenance_df: "pd.DataFrame | None",
@@ -465,8 +450,8 @@ def as_audit_context(
     )
 
     context = {
-        "run_id": run_row.get("run_id"),
-        "space_id": run_row.get("space_id"),
+        "run_id": run_id,
+        "space_id": space_id,
         "terminal_reason": terminal_reason,
         "published": should_publish(terminal_reason),
         "target_accuracy": target_accuracy,
@@ -583,7 +568,6 @@ def publish_and_audit(
     stamps the run's terminal status. Returns a small result dict for the
     notebook's exit JSON.
     """
-    run_row = load_run(spark, run_id, catalog, schema) or {}
     # Mirror promote_best_model's candidate universe (full + enrichment) so an
     # accepted attempt-1 coverage rung (eval_scope='enrichment') is in scope (B2).
     scored_iters = load_all_scored_iterations(spark, run_id, catalog, schema)
@@ -647,7 +631,8 @@ def publish_and_audit(
     patches_df = load_patches(spark, run_id, catalog, schema)
     provenance_df = load_provenance(spark, run_id, catalog, schema)
     audit_context = as_audit_context(
-        run_row,
+        run_id,
+        space_id,
         scored_iters,
         patches_df,
         provenance_df,

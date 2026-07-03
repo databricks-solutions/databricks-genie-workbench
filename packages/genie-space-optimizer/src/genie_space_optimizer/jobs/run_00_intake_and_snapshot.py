@@ -6,7 +6,7 @@
 # MAGIC |---|---|
 # MAGIC | **Task** | 1 of 5 — `00_intake_and_snapshot` |
 # MAGIC | **Reads** | job parameters, request metadata, current space config (run-row snapshot) |
-# MAGIC | **Writes** | `genie_opt_runs`, `genie_opt_artifacts` (`run_manifest`, `space_snapshot`), `genie_opt_stages` |
+# MAGIC | **Writes** | `genie_opt_runs`, `genie_opt_artifacts` (`run_manifest`), `genie_opt_stages` |
 # MAGIC | **Hard stop** | abort if snapshot capture fails |
 # MAGIC | **Log label** | `[TASK-00 INTAKE]` |
 # MAGIC
@@ -186,26 +186,9 @@ except Exception as exc:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 00b — Write the space_snapshot + run_manifest artifacts (arch §7.3)
+# MAGIC ## Step 00b — Write the run_manifest artifact (arch §7.3)
 
 # COMMAND ----------
-
-# space_snapshot: the rollback anchor. Folds the (writer-less) UC
-# data-access-grant state in here per the §7 reconciliation rather than a
-# dedicated table.
-write_artifact(
-    spark, run_id, "space_snapshot",
-    {
-        "serialized_space": _snapshot if isinstance(_snapshot, dict) else {},
-        "config": _config,
-        "config_hash": _config_hash,
-        "space_id": space_id,
-        "captured_at": ctx_config.get("captured_at"),
-        "data_access_grants": [],  # folded here (no runtime grant writer in v2)
-    },
-    catalog=catalog, schema=schema,
-    stage_name=_TASK_KEY, source_notebook="run_00_intake_and_snapshot.py",
-)
 
 # run_manifest: the run's parameter envelope (arch §7.3).
 write_artifact(

@@ -1,7 +1,11 @@
 # GSO Simplification Plan
 
-**Status:** Proposed
+**Status:** Partially implemented
 **Scope:** `packages/genie-space-optimizer/` — dead code, duplicated state, and over-specified contracts surfaced during code review.
+
+**Implemented in this pass:** Changes A/B, I, O, P, plus the benchmark
+`asset_fingerprint` loader prerequisite for Change F. The larger structural
+loop changes remain sequenced below.
 
 ## Context
 
@@ -385,8 +389,8 @@ placeholders that Task 03 populates internally (`selected_cluster`,
 `root_cause`, `allowed_patch_family`). The `regression_questions` field is
 always `[]` at baseline time by definition.
 
-The Task 03 notebook header claims `**Reads** | triage artifact` but the code
-makes no `load_artifacts` call — the comment is stale.
+The Task 03 notebook header previously claimed `**Reads** | triage artifact`,
+but the code made no `load_artifacts` call. That stale header has been fixed.
 
 **Conclusion:** `triage` is the second write-only artifact (alongside
 `space_snapshot`). Safe to delete the write; the iteration-0 Delta row is the

@@ -5,7 +5,7 @@
 # MAGIC | Quick Reference | |
 # MAGIC |---|---|
 # MAGIC | **Task** | 4 of 5 — `03_optimize` |
-# MAGIC | **Reads** | triage artifact, snapshot artifact, baseline iter 0, benchmarks |
+# MAGIC | **Reads** | baseline iter 0, benchmarks |
 # MAGIC | **Writes** | `genie_opt_iterations`, `genie_opt_patches`, `genie_eval_lever_loop_decisions`, `genie_opt_provenance`, `genie_opt_stages` |
 # MAGIC | **Log label** | `[TASK-03 OPTIMIZE]` |
 # MAGIC

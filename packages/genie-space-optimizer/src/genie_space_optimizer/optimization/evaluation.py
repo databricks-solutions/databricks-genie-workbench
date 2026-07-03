@@ -12397,6 +12397,7 @@ def load_benchmarks_from_dataset(
                     "expected_facts": expectations.get("expected_facts", []),
                     "source": expectations.get("source") or "",
                     "provenance": expectations.get("provenance") or "",
+                    "asset_fingerprint": expectations.get("asset_fingerprint", ""),
                     "validation_status": expectations.get("validation_status", ""),
                     "validation_reason_code": expectations.get("validation_reason_code", ""),
                     "validation_error": expectations.get("validation_error"),

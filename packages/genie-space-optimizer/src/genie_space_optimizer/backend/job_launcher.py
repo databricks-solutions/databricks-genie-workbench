@@ -57,7 +57,7 @@ def _resolve_job_id(ws: WorkspaceClient, job_id: int | None) -> int:
             logger.info("Resolved runner job by tag: id=%s", j.job_id)
             return j.job_id
     raise RuntimeError(
-        "Runner job not found. Set GENIE_SPACE_OPTIMIZER_JOB_ID or run deploy.sh."
+        "Runner job not found. Set GENIE_SPACE_OPTIMIZER_JOB_ID or rerun the Workbench deploy flow."
     )
 
 
@@ -164,7 +164,7 @@ def get_job_url(ws: WorkspaceClient, job_id: int | None = None) -> str | None:
 def check_job_health(ws: WorkspaceClient, sp_client_id: str, job_id: int | None = None) -> tuple[bool, str]:
     """Check if the optimization job exists and is accessible.
 
-    For a bundle-managed job, ownership is set by ``deploy.sh`` and
+    For a bundle-managed job, ownership is set by the Workbench deploy flow and
     verified/repaired by ``_JobRunAsBootstrap`` at startup.  This check
     is lighter than the old orphan-detection logic.
     """
@@ -176,7 +176,7 @@ def check_job_health(ws: WorkspaceClient, sp_client_id: str, job_id: int | None 
                 return False, (
                     f"Runner job {job_id} run_as is '{run_as_name}' but the "
                     f"current app SP is '{sp_client_id}'. Restart the app "
-                    f"to auto-repair, or re-run deploy.sh."
+                    f"to auto-repair, or rerun the Workbench deploy flow."
                 )
             return True, ""
 
@@ -185,7 +185,7 @@ def check_job_health(ws: WorkspaceClient, sp_client_id: str, job_id: int | None 
             if tags.get("managed-by") == "databricks-bundle" and job.job_id is not None:
                 return True, ""
         return False, (
-            "Runner job not found. Run deploy.sh to create it, "
+            "Runner job not found. Rerun the Workbench deploy flow to create it, "
             "or check the GENIE_SPACE_OPTIMIZER_JOB_ID env var."
         )
     except Exception:
@@ -200,7 +200,7 @@ def ensure_job_run_as(ws: WorkspaceClient, job_id: int, sp_client_id: str) -> No
     """Verify the bundle-managed job's ``run_as`` matches the current SP.
 
     If not, update it.  This provides self-healing after fresh deploys
-    where ``deploy.sh`` may not have been run yet.
+    where the Workbench deploy flow may not have run yet.
     """
     try:
         detail = ws.jobs.get(job_id)
@@ -223,7 +223,7 @@ def ensure_job_run_as(ws: WorkspaceClient, job_id: int, sp_client_id: str) -> No
     except Exception:
         logger.warning(
             "Could not verify/update run_as on job %s — "
-            "run deploy.sh to set permissions manually",
+            "rerun the Workbench deploy flow to set permissions manually",
             job_id,
             exc_info=True,
         )

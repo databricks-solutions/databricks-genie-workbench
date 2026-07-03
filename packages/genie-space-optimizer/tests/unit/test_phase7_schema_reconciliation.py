@@ -1,7 +1,7 @@
 """Tests for the GSO v2 Phase 7 Delta schema reconciliation (progress §5).
 
 Covers the locked schema decisions:
-  * ADD ``genie_opt_artifacts`` scoped to the 5 fat-blob kinds.
+  * ADD ``genie_opt_artifacts`` scoped to the active fat-blob kinds.
   * EXTEND ``genie_opt_iterations`` with the 9 loop-state columns (DDL +
     additive migration).
   * KEEP ``genie_opt_patches`` + ``genie_eval_lever_loop_decisions``.
@@ -43,9 +43,7 @@ _LOOP_STATE_COLUMNS = (
 
 _ARTIFACT_KINDS = (
     "run_manifest",
-    "space_snapshot",
     "benchmark_qc",
-    "triage",
     "publish_record",
 )
 
@@ -86,7 +84,7 @@ def test_artifacts_ddl_has_required_columns_and_kinds():
         "created_at",
     ):
         assert f" {col} " in ddl or f" {col}\n" in ddl, col
-    # The 5 scoped kinds are documented in the artifact_kind comment.
+    # The scoped kinds are documented in the artifact_kind comment.
     for kind in _ARTIFACT_KINDS:
         assert kind in _GENIE_OPT_ARTIFACTS_DDL
 
@@ -294,7 +292,7 @@ def test_write_artifact_inserts_row_with_kind_and_hash(monkeypatch):
     spark = MagicMock()
 
     artifact_id = state_mod.write_artifact(
-        spark, "run-1", "space_snapshot", {"config_hash": "abc"},
+        spark, "run-1", "run_manifest", {"config_hash": "abc"},
         catalog="cat", schema="sch", stage_name="00_intake_and_snapshot",
         source_notebook="run_00_intake_and_snapshot.py",
     )
@@ -303,7 +301,7 @@ def test_write_artifact_inserts_row_with_kind_and_hash(monkeypatch):
     assert captured["table"] == TABLE_ARTIFACTS
     p = captured["payload"]
     assert p["run_id"] == "run-1"
-    assert p["artifact_kind"] == "space_snapshot"
+    assert p["artifact_kind"] == "run_manifest"
     assert p["content_hash"]  # hash computed for non-null payload
     assert '"config_hash": "abc"' in p["artifact_json"]
     assert p["stage_name"] == "00_intake_and_snapshot"
@@ -316,7 +314,7 @@ def test_write_artifact_swallows_write_failure(monkeypatch):
     monkeypatch.setattr(state_mod, "insert_row", boom)
     # Best-effort: returns None rather than raising.
     assert state_mod.write_artifact(
-        MagicMock(), "run-1", "triage", {"x": 1}, catalog="c", schema="s",
+        MagicMock(), "run-1", "benchmark_qc", {"x": 1}, catalog="c", schema="s",
     ) is None
 
 

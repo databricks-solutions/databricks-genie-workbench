@@ -134,8 +134,8 @@ class _UCGrantBootstrap(LifespanDependency):
 class _JobRunAsBootstrap(LifespanDependency):
     """Verify the bundle-managed runner job's run_as matches the current SP.
 
-    This provides self-healing after fresh deploys where deploy.sh may not
-    have been run, or when the app's SP rotates.
+    This provides self-healing after fresh deploys where the job setup may not
+    have run, or when the app's SP rotates.
     """
 
     @asynccontextmanager
@@ -160,7 +160,7 @@ class _JobRunAsBootstrap(LifespanDependency):
                 )
         except Exception:
             logger.warning(
-                "Job run_as check failed at startup — run deploy.sh to set permissions",
+                "Job run_as check failed at startup — rerun the Workbench deploy flow to set permissions",
                 exc_info=True,
             )
         yield

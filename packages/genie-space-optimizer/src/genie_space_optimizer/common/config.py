@@ -1626,7 +1626,7 @@ Regression policy awareness:
   collateral risk.
 
 Leakage boundary:
-- Do not copy benchmark expected SQL into Genie-visible examples.
+- Do not copy held-out benchmark expected SQL into Genie-visible examples.
 - Use failure evidence and generated SQL to understand behavior, but output
   reusable guidance, scoped metadata, SQL expressions, or safe example patterns.
 
@@ -1647,7 +1647,7 @@ This prompt creates one reusable Genie-visible example question/SQL pair.
 
 Rules:
 - Return exactly one single JSON object matching the requested schema.
-- Do not copy benchmark expected SQL into Genie-visible examples.
+- Do not copy held-out benchmark expected SQL into Genie-visible examples.
 - Use schema metadata and the supplied failure pattern to create a reusable
   example; remove benchmark-specific literals, aliases, row limits, and wording.
 - Keep the generated SQL narrow to the requested tables, joins, filters, and
@@ -3874,8 +3874,8 @@ UI 'Benchmark changes' view that consume it are Phase 6."""
 TABLE_ARTIFACTS = "genie_opt_artifacts"
 """GSO v2 orchestration (Phase 7, arch §7.1) — generic Delta handoff table
 for the fat JSON stage-level blobs that don't fit a per-attempt scored row:
-``run_manifest``, ``space_snapshot``, ``benchmark_qc``, ``triage``, and
-``publish_record`` (the 5 ``artifact_kind`` values). Per-attempt truth
+``run_manifest``, ``benchmark_qc``, and ``publish_record`` (the 3
+``artifact_kind`` values). Per-attempt truth
 (scores, loop-state, patches, decisions) lives in ``genie_opt_iterations`` /
 ``genie_opt_patches`` / ``genie_eval_lever_loop_decisions`` — NOT here.
 Backed by ``ddl._GENIE_OPT_ARTIFACTS_DDL`` and written via

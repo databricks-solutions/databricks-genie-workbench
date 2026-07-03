@@ -481,8 +481,8 @@ TBLPROPERTIES (
 
 # GSO v2 orchestration (Phase 7, arch §7.1): generic Delta handoff table for
 # the stage-level fat JSON blobs that don't fit a per-attempt scored row.
-# Scoped to 5 artifact_kind values — run_manifest, space_snapshot,
-# benchmark_qc, triage, publish_record. Per-attempt truth (scores, loop-state,
+# Scoped to 3 artifact_kind values — run_manifest, benchmark_qc,
+# publish_record. Per-attempt truth (scores, loop-state,
 # patches, decisions) lives in genie_opt_iterations / genie_opt_patches /
 # genie_eval_lever_loop_decisions, NOT here (see arch §7 reconciliation).
 _GENIE_OPT_ARTIFACTS_DDL = """\
@@ -491,7 +491,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_artifacts (
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
     stage_name          STRING                 COMMENT 'Notebook or stage that wrote the artifact (00_intake_and_snapshot, 01_benchmark_qc_and_repair, ...)',
     iteration           INT                    COMMENT 'Iteration number, when applicable (NULL for run-level artifacts)',
-    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | space_snapshot | benchmark_qc | triage | publish_record',
+    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | benchmark_qc | publish_record',
     artifact_json       STRING                 COMMENT 'JSON payload for the artifact (enough to reconstruct the pass without notebook-local state)',
     content_hash        STRING                 COMMENT 'Hash of artifact_json for dedupe / idempotency / replay safety',
     parent_artifact_id  STRING                 COMMENT 'Lineage pointer to the artifact this one derives from',
@@ -500,7 +500,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_artifacts (
 )
 USING DELTA
 PARTITIONED BY (run_id)
-COMMENT 'GSO v2 (arch §7.1) generic Delta handoff table for stage-level JSON blobs (run_manifest, space_snapshot, benchmark_qc, triage, publish_record)'
+COMMENT 'GSO v2 (arch §7.1) generic Delta handoff table for stage-level JSON blobs (run_manifest, benchmark_qc, publish_record)'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
     'delta.autoOptimize.autoCompact' = 'true',
@@ -542,7 +542,7 @@ RETIRED_TABLES: tuple[str, ...] = (
     TABLE_SUGGESTIONS,               # old suggestions output — superseded by artifacts
     TABLE_QUESTION_REGRESSIONS,      # subset-gate regression tracking — subset-first 3-gate retired for the loop
     TABLE_GT_CORRECTION_CANDIDATES,  # bespoke GT-correction — folded into the benchmark_qc artifact
-    TABLE_DATA_ACCESS_GRANTS,        # no runtime writer (markdown-only refs) — folded into space_snapshot / dropped
+    TABLE_DATA_ACCESS_GRANTS,        # no runtime writer (markdown-only refs) — dropped
 )
 
 

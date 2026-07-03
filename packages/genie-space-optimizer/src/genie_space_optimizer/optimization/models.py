@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from genie_space_optimizer.optimization.champion import select_champion_row
 from genie_space_optimizer.optimization.state import (
     load_iterations,
     load_run,
@@ -57,42 +58,14 @@ def promote_best_model(
         logger.warning("No iterations found for run %s", run_id)
         return None
 
-    # Allow the post-enrichment iter-0 row (``eval_scope == "enrichment"``)
-    # to be a candidate for champion alongside lever-loop iterations.
-    # ``compute_run_scores`` already treats both as candidates for the UI
-    # headline; selecting the matching iteration keeps the marked champion
-    # consistent with the displayed ``optimizedScore``.
-    full_evals = iterations_df[
-        iterations_df["eval_scope"].isin(["full", "enrichment"])
-    ]
-    if full_evals.empty:
-        full_evals = iterations_df
-
-    # Tier 1.2: exclude rolled-back iterations from champion selection so the
-    # run's stored ``best_accuracy`` reflects accepted state only. Baseline
-    # (iteration 0 full) is never rolled back and remains the floor.
-    if "rolled_back" in full_evals.columns:
-        _rb_mask = full_evals["rolled_back"].fillna(False).astype(bool)
-        _is_baseline = (
-            (full_evals["iteration"].astype(int) == 0)
-            & (full_evals["eval_scope"] == "full")
-        )
-        full_evals = full_evals[(~_rb_mask) | _is_baseline]
-
-    if full_evals.empty:
+    best_row = select_champion_row(iterations_df.to_dict("records"))
+    if best_row is None:
         logger.warning(
-            "No non-rolled-back full/enrichment iterations for run %s — "
-            "falling back to all full/enrichment iterations",
+            "No promotable full/enrichment iterations for run %s",
             run_id,
         )
-        full_evals = iterations_df[
-            iterations_df["eval_scope"].isin(["full", "enrichment"])
-        ]
-        if full_evals.empty:
-            full_evals = iterations_df
+        return None
 
-    best_idx = full_evals["overall_accuracy"].idxmax()
-    best_row = full_evals.loc[best_idx]
     best_iteration = int(best_row.get("iteration", 0))
     best_accuracy = float(best_row.get("overall_accuracy", 0.0))
     best_eval_scope = str(best_row.get("eval_scope") or "full")

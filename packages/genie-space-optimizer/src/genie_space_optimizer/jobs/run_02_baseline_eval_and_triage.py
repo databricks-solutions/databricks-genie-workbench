@@ -5,8 +5,8 @@
 # MAGIC | Quick Reference | |
 # MAGIC |---|---|
 # MAGIC | **Task** | 3 of 5 — `02_baseline_eval_and_triage` |
-# MAGIC | **Reads** | snapshot artifact, repaired/validated benchmark, attempt budget |
-# MAGIC | **Writes** | `genie_opt_iterations` (iter 0), `genie_opt_artifacts` (`triage`), `genie_opt_stages` |
+# MAGIC | **Reads** | repaired/validated benchmark, attempt budget |
+# MAGIC | **Writes** | `genie_opt_iterations` (iter 0), `genie_opt_stages` |
 # MAGIC | **Hard stop** | none — the loop always runs at least the attempt-1 coverage pass |
 # MAGIC | **Log label** | `[TASK-02 BASELINE]` |
 # MAGIC
@@ -15,9 +15,8 @@
 # MAGIC Freeze the baseline (iteration 0) before any repair choice is made and
 # MAGIC seed the loop state for `03_optimize`. The eval/RCA logic is unchanged
 # MAGIC from Phases 1–3 — this is a **rename + rewire** of the old `baseline_eval`
-# MAGIC task into the new DAG, plus a `triage` artifact seed (the full triage /
-# MAGIC cluster selection happens inside the `03` loop). Bootstraps from job
-# MAGIC parameters + Delta (no taskValues — D9).
+# MAGIC task into the new DAG. Bootstraps from job parameters + Delta
+# MAGIC (no taskValues — D9).
 
 # COMMAND ----------
 
@@ -53,7 +52,6 @@ from genie_space_optimizer.optimization.preflight import (
 )
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
-    write_artifact,
     write_stage,
 )
 
@@ -180,7 +178,7 @@ except Exception as exc:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 02c — Persist iteration 0 + write the triage artifact
+# MAGIC ## Step 02c — Persist iteration 0
 
 # COMMAND ----------
 
@@ -200,28 +198,6 @@ except Exception as exc:
         task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
     )
     raise
-
-# triage artifact (arch §7.3): seeds the loop with the baseline failure
-# evidence + loop budget. The full cluster/root-cause selection happens inside
-# the 03 loop (Phase 8) — Phase 7 records the baseline failures and counters.
-_failures = eval_result.get("failures") or eval_result.get("failure_question_ids") or []
-write_artifact(
-    spark, run_id, "triage",
-    {
-        "run_id": run_id,
-        "baseline_accuracy": _baseline_accuracy,
-        "thresholds_met": scorecard.get("thresholds_met"),
-        "baseline_failures": _failures,
-        "target_accuracy": target_accuracy,
-        "max_attempts": max_attempts,
-        "selected_cluster": None,     # chosen per surgical attempt inside 03
-        "root_cause": None,
-        "allowed_patch_family": None,
-        "regression_questions": [],
-    },
-    catalog=catalog, schema=schema,
-    stage_name=_TASK_KEY, source_notebook="run_02_baseline_eval_and_triage.py",
-)
 
 write_stage(
     spark, run_id, "BASELINE_EVAL_AND_TRIAGE", "COMPLETE",
