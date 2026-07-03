@@ -151,24 +151,24 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     rollback_reason     STRING                 COMMENT 'Tier 1.1: human-readable rollback reason (mirrors genie_opt_patches.rollback_reason)',
     both_correct_count  INT                    COMMENT 'Tier 1.7: count of rows with arbiter verdict == both_correct. Used to anchor best_accuracy to both_correct_rate when rc=yes overrides inflate overall_accuracy.',
     both_correct_rate   DOUBLE                 COMMENT 'Tier 1.7: both_correct_count / evaluated_count * 100. Stricter than overall_accuracy (which counts arbiter override rows as correct). Lever loop anchors acceptance to this to avoid ghost-ceiling rejections.',
-    config_json         STRING                 COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Space config in force for THIS iteration (baseline iter 0, enrichment iter 1, lever loop iters 2..N). Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.',
+    config_json         STRING                 COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Space config in force for THIS iteration (baseline iter 0, patch/eval iterations 1..N). Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.',
     is_champion         BOOLEAN       DEFAULT false COMMENT 'GSO v2 Phase 4 (D3): true on the single champion iteration row (the best iteration as chosen by the existing Delta-driven selection in promote_best_model). Marked in Delta only — NO UC model registration.',
     num_needs_review    INT                    COMMENT 'GSO v2 Phase 6: count of per-question rows whose official assessment is NEEDS_REVIEW (neither GOOD nor BAD). Surfaced by the Workbench /iterations endpoint so the UI can distinguish review-pending from failing questions. Sourced from build_eval_output_from_official; NULL on legacy/repeatability-only rows.',
     eval_run_id         STRING                 COMMENT 'GSO v2 Phase 6: native Genie benchmark eval-run id for this iteration (from the official EvalRunner). Surfaced so the UI can reference the underlying eval run. NULL on the legacy in-process path.',
     eval_run_status     STRING                 COMMENT 'GSO v2 Phase 6: native eval-run terminal status (e.g. DONE / EVALUATION_FAILED / CANCELLED) for this iteration. NULL on the legacy in-process path.',
-    attempt_no          INT                    COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): monotonic display counter for the 03_optimize controller loop — 1=coverage attempt, 2..N=surgical attempts. NULL on baseline iter 0 / legacy rows.',
-    attempt_mode        STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): coverage (broad attempt 1) or surgical (attempts 2..N). NULL on baseline / legacy rows.',
+    attempt_no          INT                    COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): monotonic display counter for the optimize loop — 0=baseline, 1..N=LLM patch/eval attempts.',
+    attempt_mode        STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): baseline or llm_patch.',
     best_accuracy       DOUBLE                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): best full-benchmark accuracy seen so far at the end of this attempt (the champion staircase value).',
     best_config_version_id STRING              COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): serialized config snapshot reference for the current champion.',
     current_hypothesis  STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): JSON of the active patch hypothesis tested in this attempt.',
     do_not_repeat       STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): JSON ARRAY of rejected lever families / strategies the controller will not retry.',
-    terminal_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | LOOP_STATE_INVALID | EVAL_BUDGET_EXHAUSTED (Phase 8). Set on the final attempt row only.',
+    terminal_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | EVAL_BUDGET_EXHAUSTED. Set on the champion row only.',
     decision            STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): per-attempt aggregate decision — accept | reject | continue.',
     decision_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): human-readable reason for the decision (e.g. rolled_back (Δacc<0), no_enrichment_candidates).',
-    surgical_attempts_used INT                 COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): SURGICAL attempt budget consumed so far (distinct from the monotonic attempt_no — the coverage pass never increments it).',
+    surgical_attempts_used INT                 COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): patch/eval attempt budget consumed so far.',
     next_hypothesis     STRING                 COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): JSON of the next patch idea the controller chose from the residual failures.',
     target_accuracy     DOUBLE                 COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): stop-early target accuracy in force for this run (0-100 scale; default 90.0).',
-    max_attempts        INT                    COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): SURGICAL hill-climb budget in force for this run (default 3); the attempt-1 coverage pass is a free probe.'
+    max_attempts        INT                    COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): patch/eval attempt budget in force for this run (default 3).'
 )
 USING DELTA
 PARTITIONED BY (run_id)
@@ -489,7 +489,7 @@ _GENIE_OPT_ARTIFACTS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_artifacts (
     artifact_id         STRING        NOT NULL COMMENT 'UUID for this artifact row',
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
-    stage_name          STRING                 COMMENT 'Notebook or stage that wrote the artifact (00_intake_and_snapshot, 01_benchmark_qc_and_repair, ...)',
+    stage_name          STRING                 COMMENT 'Notebook or stage that wrote the artifact (intake_and_snapshot, benchmark_qc_and_repair, ...)',
     iteration           INT                    COMMENT 'Iteration number, when applicable (NULL for run-level artifacts)',
     artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | benchmark_qc | publish_record',
     artifact_json       STRING                 COMMENT 'JSON payload for the artifact (enough to reconstruct the pass without notebook-local state)',
@@ -579,23 +579,23 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_ITERATIONS, "eval_run_status", "STRING COMMENT 'GSO v2 Phase 6: native eval-run terminal status (DONE / EVALUATION_FAILED / CANCELLED). NULL on the legacy in-process path.'"),
     # GSO v2 Phase 7 (loop-state, arch §7.4): genie_opt_iterations is the
     # single per-attempt truth — extend it with the controller loop-state
-    # columns alongside the Phase-4 config_json/is_champion. The 03_optimize
-    # two-mode controller (Phase 8) writes these; Phase 7 only adds them.
-    (TABLE_ITERATIONS, "attempt_no", "INT COMMENT 'GSO v2 Phase 7 (loop-state): monotonic display counter — 1=coverage, 2..N=surgical. NULL on baseline / legacy rows.'"),
-    (TABLE_ITERATIONS, "attempt_mode", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): coverage (attempt 1, broad) or surgical (attempts 2..N).'"),
+    # columns alongside the Phase-4 config_json/is_champion. The unified
+    # optimize loop writes these for baseline + each LLM patch/eval attempt.
+    (TABLE_ITERATIONS, "attempt_no", "INT COMMENT 'GSO v2 Phase 7 (loop-state): monotonic display counter — 0=baseline, 1..N=LLM patch/eval attempts.'"),
+    (TABLE_ITERATIONS, "attempt_mode", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): baseline or llm_patch.'"),
     (TABLE_ITERATIONS, "best_accuracy", "DOUBLE COMMENT 'GSO v2 Phase 7 (loop-state): best full-benchmark accuracy so far (champion staircase value).'"),
     (TABLE_ITERATIONS, "best_config_version_id", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): serialized config snapshot reference for the current champion.'"),
     (TABLE_ITERATIONS, "current_hypothesis", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): JSON of the active patch hypothesis tested in this attempt.'"),
     (TABLE_ITERATIONS, "do_not_repeat", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): JSON ARRAY of rejected lever families / strategies.'"),
-    (TABLE_ITERATIONS, "terminal_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | LOOP_STATE_INVALID | EVAL_BUDGET_EXHAUSTED (Phase 8).'"),
+    (TABLE_ITERATIONS, "terminal_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | EVAL_BUDGET_EXHAUSTED.'"),
     (TABLE_ITERATIONS, "decision", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): per-attempt aggregate decision — accept | reject | continue.'"),
     (TABLE_ITERATIONS, "decision_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): human-readable reason for the decision.'"),
-    # GSO v2 Phase 8 (loop-state, arch §7.4): the two-mode 03_optimize controller
-    # adds the surgical-budget counter, the next-hypothesis pointer, and the two
-    # run-level stop knobs (target_accuracy / max_attempts) as per-attempt columns
-    # so the Attempt Ladder/Ledger and resume read one self-describing row.
-    (TABLE_ITERATIONS, "surgical_attempts_used", "INT COMMENT 'GSO v2 Phase 8 (loop-state): SURGICAL attempt budget consumed so far (distinct from attempt_no; coverage never increments it).'"),
+    # GSO v2 Phase 8 (loop-state, arch §7.4): the unified optimize loop adds
+    # the consumed-attempt counter, next-hypothesis pointer, and the two run-level
+    # stop knobs (target_accuracy / max_attempts) as per-attempt columns so the
+    # Attempt Ladder/Ledger and resume read one self-describing row.
+    (TABLE_ITERATIONS, "surgical_attempts_used", "INT COMMENT 'GSO v2 Phase 8 (loop-state): patch/eval attempt budget consumed so far.'"),
     (TABLE_ITERATIONS, "next_hypothesis", "STRING COMMENT 'GSO v2 Phase 8 (loop-state): JSON of the next patch idea chosen by the controller from residual failures.'"),
     (TABLE_ITERATIONS, "target_accuracy", "DOUBLE COMMENT 'GSO v2 Phase 8 (loop-state): stop-early target accuracy in force (0-100 scale; default 90.0).'"),
-    (TABLE_ITERATIONS, "max_attempts", "INT COMMENT 'GSO v2 Phase 8 (loop-state): SURGICAL hill-climb budget in force (default 3); coverage is a free probe.'"),
+    (TABLE_ITERATIONS, "max_attempts", "INT COMMENT 'GSO v2 Phase 8 (loop-state): patch/eval attempt budget in force (default 3).'"),
 )

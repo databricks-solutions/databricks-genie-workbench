@@ -237,8 +237,8 @@ def trigger_optimization(
 
     # Resolve the loop knobs to the job's databricks.yml defaults when the caller
     # omits them, and stringify for the Jobs run_now job_parameters (all job
-    # params are strings). target_accuracy stays on the 0–1 scale the loop
-    # expects (run_03_optimize normalizes ≤1 to the 0–100 internal scale).
+    # params are strings). target_accuracy stays on the 0-1 scale the loop
+    # expects (run_optimize normalizes <=1 to the 0-100 internal scale).
     target_accuracy_str = (
         f"{float(target_accuracy):g}" if target_accuracy is not None else "0.90"
     )

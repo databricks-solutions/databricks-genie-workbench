@@ -1,30 +1,30 @@
 """GSO v2 — ``publish_and_audit`` core logic (Phase 9, arch §6 / §7.3 / §13.3).
 
-The fifth and final task of the reshaped 5-task DAG. Once ``03_optimize`` has
-produced a champion, this module:
+The final task of the reshaped 4-task DAG. Once ``optimize`` has produced a
+champion, this module:
 
 1. **Reads the STAMPED terminal reason** off the champion iteration row
    (``genie_opt_iterations.terminal_reason``, written by the Phase-8 controller
    via ``state.update_iteration_loop_state``). It does **NOT** re-derive the
    reason from accuracy vs. target — that re-derivation silently collapses
-   ``NO_NEW_HYPOTHESIS`` / ``EVAL_INVALID`` / ``LOOP_STATE_INVALID`` /
+   ``NO_NEW_HYPOTHESIS`` / ``EVAL_INVALID`` /
    ``EVAL_BUDGET_EXHAUSTED`` into ``TARGET_REACHED`` / ``MAX_ATTEMPTS`` and is the
    correctness bug Phase 9 fixes.
 2. **Gates on the terminal reason** (arch §5.1 vocabulary):
-   * ``{TARGET_REACHED, MAX_ATTEMPTS}`` → publish the champion (idempotent
-     Delta-only ``models.promote_best_model`` — re-stamps ``is_champion`` + the
+   * ``{TARGET_REACHED, MAX_ATTEMPTS}`` -> publish the champion (idempotent
+     Delta-only ``models.promote_best_model`` - re-stamps ``is_champion`` + the
      run's ``best_*``; NO live-space mutation: the accepted patches were already
      applied in-place by the loop).
-   * anything else → do **not** publish; still write a ``publish_record`` (it is
+   * anything else -> do **not** publish; still write a ``publish_record`` (it is
      the surface where concerns are raised, arch §7.3) carrying the stop reason
      and residual failures.
 3. **Writes an LLM-generated audit summary** into the canonical ``publish_record``
-   artifact. The summary call is **best-effort / non-fatal** — a failure never
+   artifact. The summary call is **best-effort / non-fatal** - a failure never
    aborts the publish; the record is written with ``audit_summary=None`` plus a
    concern.
 4. **Stamps the run's terminal status** by reusing the existing terminal statuses
    (``CONVERGED`` / ``MAX_ITERATIONS`` / ``FAILED`` / ``STALLED``). A dedicated
-   ``PUBLISHED_AUDITED`` status (arch §13.3) is intentionally NOT introduced —
+   ``PUBLISHED_AUDITED`` status (arch §13.3) is intentionally NOT introduced -
    it is not in ``update_run_status``'s terminal set, would leave ``completed_at``
    NULL, and needs a DDL/migration. That decision is deferred to the human.
 
@@ -82,7 +82,6 @@ _TERMINAL_REASON_TO_RUN_STATUS: dict[str, str] = {
     "TARGET_REACHED": "CONVERGED",
     "MAX_ATTEMPTS": "MAX_ITERATIONS",
     "EVAL_INVALID": "FAILED",
-    "LOOP_STATE_INVALID": "FAILED",
     "NO_NEW_HYPOTHESIS": "STALLED",
     "EVAL_BUDGET_EXHAUSTED": "STALLED",
 }
@@ -92,10 +91,6 @@ _TERMINAL_REASON_CONCERN: dict[str, str] = {
     "EVAL_INVALID": (
         "Run stopped because evaluation became invalid (EVAL_INVALID); the "
         "champion was NOT published."
-    ),
-    "LOOP_STATE_INVALID": (
-        "Run stopped because the loop state was inconsistent "
-        "(LOOP_STATE_INVALID); the champion was NOT published."
     ),
     "NO_NEW_HYPOTHESIS": (
         "Run stalled: the strategist produced no new hypothesis to try "
@@ -254,25 +249,19 @@ def _champion_config_version_id(champion_row: dict | None) -> str | None:
 
 
 def _trajectory_sort_key(row: dict) -> tuple:
-    """Order: baseline (no attempt_no) first, then by attempt_no, then timestamp.
-
-    The coverage rung (``eval_scope='enrichment'``, ``attempt_no=1``) and surgical
-    rungs (``attempt_no=2..N``) sort after the baseline regardless of their raw
-    iteration number; timestamp/iteration break ties for legacy unstamped rows.
-    """
+    """Order: baseline first, then by attempt_no, then timestamp."""
     attempt_no = _as_int(row.get("attempt_no"))
     primary = attempt_no if attempt_no is not None else -1
     return (primary, str(row.get("timestamp") or ""), _as_int(row.get("iteration")) or 0)
 
 
 def build_improvement_trajectory(scored_iters: list[dict]) -> list[dict]:
-    """Structured per-attempt staircase: baseline → coverage → surgical.
+    """Structured per-attempt staircase: baseline -> patch/eval iterations.
 
     Only STRUCTURAL / bounded fields (B3 §3.6 firewall): the free-text
     ``decision_reason`` is deliberately EXCLUDED — only the bounded ``decision``
     value (accept/reject/continue) is carried. ``delta_vs_baseline`` is the
-    accuracy lift over the iteration-0 ``eval_scope='full'`` baseline. Includes
-    the accepted attempt-1 coverage rung (``eval_scope='enrichment'``).
+    accuracy lift over the iteration-0 ``eval_scope='full'`` baseline.
     """
     ordered = sorted(scored_iters, key=_trajectory_sort_key)
     # Baseline is the iteration-0 full row (matches report.py / promote_best_model);
@@ -568,8 +557,9 @@ def publish_and_audit(
     stamps the run's terminal status. Returns a small result dict for the
     notebook's exit JSON.
     """
-    # Mirror promote_best_model's candidate universe (full + enrichment) so an
-    # accepted attempt-1 coverage rung (eval_scope='enrichment') is in scope (B2).
+    # load_all_scored_iterations still includes historical enrichment rows so
+    # old runs render a complete trajectory; select_champion_row restricts
+    # promotion to full-scope rows for the unified loop.
     scored_iters = load_all_scored_iterations(spark, run_id, catalog, schema)
 
     champion_row = resolve_champion_row(scored_iters)

@@ -1,20 +1,12 @@
 """
-Optimization Harness — stage functions for the Databricks Job.
+Optimization Harness — legacy optimizer implementation.
 
-The canonical execution path is the set of ``jobs/run_0*.py`` /
-``jobs/run_publish_and_audit.py`` entrypoints.  Each entrypoint is a thin
-wrapper that deserializes task values / widgets, calls the relevant harness
-functions, and publishes outputs.
+The active Databricks Job path now runs through ``jobs/run_optimize.py`` and
+``optimization.unified_loop``. This module remains for compatibility with older
+tests and replay fixtures that still exercise the retired harness internals.
 
-The live harness surface exposed to those entrypoints is:
-- ``baseline_setup_scorers`` / ``baseline_run_evaluation`` /
-  ``baseline_display_scorecard`` / ``baseline_persist_state`` — the baseline
-  eval + triage stage (``run_02_baseline_eval_and_triage``).
-- ``_run_lever_loop`` — the optimization loop (``run_03_optimize``); the
-  proactive enrichment pass runs inline as the loop's attempt-1 coverage pass.
-
-Inter-task data flows via ``dbutils.jobs.taskValues``.  Detailed state goes
-to Delta.
+Historical inter-task data flowed through ``dbutils.jobs.taskValues``. The
+active job path uses Delta state only.
 
 Lever loop ordering: each iteration drains the per-run
 ``diagnostic_action_queue`` (coverage-gap AGs from

@@ -64,9 +64,9 @@ resources:
       name: "genie-space-optimizer-job"
       description: >-
         GSO v2 bounded hill-climbing runner managed by the Genie Space Optimizer app
-        (00_intake_and_snapshot -> 01_benchmark_qc_and_repair -> 02_baseline_eval_and_triage
-        -> 03_optimize -> publish_and_audit). Linear 5-task serverless DAG; the whole
-        hill-climb runs as an in-process while-loop inside 03_optimize. No condition
+        (intake_and_snapshot -> benchmark_qc_and_repair -> optimize
+        -> publish_and_audit). Linear 4-task serverless DAG; the baseline eval and
+        hill-climb run as an in-process native Benchmark API loop inside optimize. No condition
         tasks, no dbutils.notebook.run, no inter-task task-value plumbing — every task
         reads job parameters + durable Delta state by run_id (D9). SP executes with
         granted privileges on user schemas.
@@ -76,7 +76,7 @@ resources:
       tags:
         app: "genie-space-optimizer"
         managed-by: "databricks-bundle"
-        pattern: "linear-5task"
+        pattern: "linear-4task"
       parameters:
         - name: run_id
           default: ""
@@ -92,21 +92,15 @@ resources:
           default: "genie_config"
         - name: levers
           default: "[1,2,3,4,5,6]"
-        # Surgical hill-climb budget (counts surgical attempts only; the
-        # attempt-1 coverage pass is a free probe — arch §12 / §13.5).
+        # Bounded LLM patch/eval attempt budget.
         - name: max_attempts
           default: "3"
-        # Stop-early target accuracy (arch §12).
+        # Stop-early target accuracy.
         - name: target_accuracy
           default: "0.90"
-        # Bound on 01's inline benchmark repair/prune loop (arch §12).
+        # Bound on benchmark_qc_and_repair's inline repair/prune loop.
         - name: benchmark_repair_max_tries
           default: "3"
-        # Retained: still consumed by the existing _run_lever_loop that
-        # 03_optimize temporarily delegates to (superseded by max_attempts
-        # once the two-mode controller lands in Phase 8).
-        - name: max_iterations
-          default: "5"
         - name: triggered_by
           default: ""
         - name: warehouse_id
@@ -116,9 +110,9 @@ resources:
         # there is NO inter-task task-value plumbing (D9). run_id/catalog/schema
         # bootstrap each notebook; all other handoff state is read from Delta by
         # run_id via the existing Delta-fallback handoff helpers.
-        - task_key: 00_intake_and_snapshot
+        - task_key: intake_and_snapshot
           notebook_task:
-            notebook_path: ./src/genie_space_optimizer/jobs/run_00_intake_and_snapshot.py
+            notebook_path: ./src/genie_space_optimizer/jobs/run_intake_and_snapshot.py
             base_parameters:
               run_id: "{{job.parameters.run_id}}"
               space_id: "{{job.parameters.space_id}}"
@@ -130,17 +124,16 @@ resources:
               max_attempts: "{{job.parameters.max_attempts}}"
               target_accuracy: "{{job.parameters.target_accuracy}}"
               benchmark_repair_max_tries: "{{job.parameters.benchmark_repair_max_tries}}"
-              max_iterations: "{{job.parameters.max_iterations}}"
               triggered_by: "{{job.parameters.triggered_by}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0
-        - task_key: 01_benchmark_qc_and_repair
+        - task_key: benchmark_qc_and_repair
           depends_on:
-            - task_key: 00_intake_and_snapshot
+            - task_key: intake_and_snapshot
           notebook_task:
-            notebook_path: ./src/genie_space_optimizer/jobs/run_01_benchmark_qc_and_repair.py
+            notebook_path: ./src/genie_space_optimizer/jobs/run_benchmark_qc_and_repair.py
             base_parameters:
               run_id: "{{job.parameters.run_id}}"
               space_id: "{{job.parameters.space_id}}"
@@ -153,29 +146,11 @@ resources:
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0
-        - task_key: 02_baseline_eval_and_triage
+        - task_key: optimize
           depends_on:
-            - task_key: 01_benchmark_qc_and_repair
+            - task_key: benchmark_qc_and_repair
           notebook_task:
-            notebook_path: ./src/genie_space_optimizer/jobs/run_02_baseline_eval_and_triage.py
-            base_parameters:
-              run_id: "{{job.parameters.run_id}}"
-              space_id: "{{job.parameters.space_id}}"
-              domain: "{{job.parameters.domain}}"
-              catalog: "{{job.parameters.catalog}}"
-              schema: "{{job.parameters.schema}}"
-              apply_mode: "{{job.parameters.apply_mode}}"
-              max_attempts: "{{job.parameters.max_attempts}}"
-              target_accuracy: "{{job.parameters.target_accuracy}}"
-              warehouse_id: "{{job.parameters.warehouse_id}}"
-          environment_key: default
-          timeout_seconds: 14400
-          max_retries: 0
-        - task_key: 03_optimize
-          depends_on:
-            - task_key: 02_baseline_eval_and_triage
-          notebook_task:
-            notebook_path: ./src/genie_space_optimizer/jobs/run_03_optimize.py
+            notebook_path: ./src/genie_space_optimizer/jobs/run_optimize.py
             base_parameters:
               run_id: "{{job.parameters.run_id}}"
               space_id: "{{job.parameters.space_id}}"
@@ -186,7 +161,6 @@ resources:
               levers: "{{job.parameters.levers}}"
               max_attempts: "{{job.parameters.max_attempts}}"
               target_accuracy: "{{job.parameters.target_accuracy}}"
-              max_iterations: "{{job.parameters.max_iterations}}"
               triggered_by: "{{job.parameters.triggered_by}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
           environment_key: default
@@ -194,7 +168,7 @@ resources:
           max_retries: 0
         - task_key: publish_and_audit
           depends_on:
-            - task_key: 03_optimize
+            - task_key: optimize
           notebook_task:
             notebook_path: ./src/genie_space_optimizer/jobs/run_publish_and_audit.py
             base_parameters:

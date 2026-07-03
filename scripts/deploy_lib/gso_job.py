@@ -20,7 +20,7 @@ from .workspace_source import (
 )
 
 
-# GSO v2 linear 5-task DAG. This MIRRORS the package bundle job at
+# GSO v2 linear 4-task DAG. This MIRRORS the package bundle job at
 # packages/genie-space-optimizer/databricks.yml (the validated source of truth,
 # guarded by tests/unit/test_phase7_job_dag.py): same task keys, order,
 # entrypoints, linear dependencies, and per-task base_parameters. There is NO
@@ -36,48 +36,39 @@ from .workspace_source import (
 # widget). See build_job_settings for the parameter declarations.
 TASKS = [
     (
-        "00_intake_and_snapshot",
-        "run_00_intake_and_snapshot",
+        "intake_and_snapshot",
+        "run_intake_and_snapshot",
         None,
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "levers", "max_attempts", "target_accuracy",
-            "benchmark_repair_max_tries", "max_iterations", "triggered_by",
+            "benchmark_repair_max_tries", "triggered_by",
             "warehouse_id", "llm_model",
         ],
     ),
     (
-        "01_benchmark_qc_and_repair",
-        "run_01_benchmark_qc_and_repair",
-        "00_intake_and_snapshot",
+        "benchmark_qc_and_repair",
+        "run_benchmark_qc_and_repair",
+        "intake_and_snapshot",
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "benchmark_repair_max_tries", "warehouse_id", "llm_model",
         ],
     ),
     (
-        "02_baseline_eval_and_triage",
-        "run_02_baseline_eval_and_triage",
-        "01_benchmark_qc_and_repair",
+        "optimize",
+        "run_optimize",
+        "benchmark_qc_and_repair",
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
-            "max_attempts", "target_accuracy", "warehouse_id", "llm_model",
-        ],
-    ),
-    (
-        "03_optimize",
-        "run_03_optimize",
-        "02_baseline_eval_and_triage",
-        [
-            "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
-            "levers", "max_attempts", "target_accuracy", "max_iterations",
+            "levers", "max_attempts", "target_accuracy",
             "triggered_by", "warehouse_id", "llm_model",
         ],
     ),
     (
         "publish_and_audit",
         "run_publish_and_audit",
-        "03_optimize",
+        "optimize",
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "target_accuracy", "max_attempts", "warehouse_id", "llm_model",
@@ -85,13 +76,11 @@ TASKS = [
     ),
 ]
 
-# Declared job parameters + defaults. Mirrors the package bundle's 5-task param
-# set (arch §12): surgical hill-climb budget (max_attempts), stop-early
-# target (target_accuracy), and 01's inline repair bound
-# (benchmark_repair_max_tries). `max_iterations` is retained (still consumed by
-# the lever loop that 03_optimize delegates to). `experiment_name` (MLflow
-# decommissioned — Phase 5) and `deploy_target` (deploy out of scope — D7) are
-# dropped. `llm_model` is the Workbench-specific extra (see TASKS above);
+# Declared job parameters + defaults. Mirrors the package bundle's 4-task param
+# set: bounded patch/eval budget (max_attempts), stop-early target
+# (target_accuracy), and benchmark repair bound (benchmark_repair_max_tries).
+# `experiment_name` (MLflow decommissioned — Phase 5) and `deploy_target`
+# (deploy out of scope — D7) are dropped. `llm_model` is the Workbench-specific extra (see TASKS above);
 # its default is overridden with cfg.llm_model in build_job_settings.
 JOB_PARAMETERS = {
     "run_id": "",
@@ -104,7 +93,6 @@ JOB_PARAMETERS = {
     "max_attempts": "3",
     "target_accuracy": "0.90",
     "benchmark_repair_max_tries": "3",
-    "max_iterations": "5",
     "triggered_by": "",
     "warehouse_id": "",
     "llm_model": "",
@@ -220,10 +208,10 @@ def build_job_settings(cfg: InstallConfig, notebooks_path: str, wheel_path: str)
         "name": cfg.gso_job_name,
         "description": (
             "GSO v2 bounded hill-climbing runner managed by Genie Workbench "
-            "(00_intake_and_snapshot -> 01_benchmark_qc_and_repair -> "
-            "02_baseline_eval_and_triage -> 03_optimize -> publish_and_audit). "
-            "Linear 5-task serverless DAG; the whole hill-climb runs in-process "
-            "inside 03_optimize."
+            "(intake_and_snapshot -> benchmark_qc_and_repair -> "
+            "optimize -> publish_and_audit). "
+            "Linear 4-task serverless DAG; baseline eval and the hill-climb run "
+            "in-process inside optimize through the native Benchmark API."
         ),
         "max_concurrent_runs": 20,
         "queue": {"enabled": True},

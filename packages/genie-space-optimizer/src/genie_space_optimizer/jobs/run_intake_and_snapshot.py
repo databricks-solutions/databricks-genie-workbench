@@ -1,21 +1,21 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Task 00: Intake & Snapshot (GSO v2 — 5-task DAG)
+# MAGIC # Intake & Snapshot (GSO v2 — 4-task DAG)
 # MAGIC
 # MAGIC | Quick Reference | |
 # MAGIC |---|---|
-# MAGIC | **Task** | 1 of 5 — `00_intake_and_snapshot` |
+# MAGIC | **Task** | `intake_and_snapshot` |
 # MAGIC | **Reads** | job parameters, request metadata, current space config (run-row snapshot) |
 # MAGIC | **Writes** | `genie_opt_runs`, `genie_opt_artifacts` (`run_manifest`), `genie_opt_stages` |
 # MAGIC | **Hard stop** | abort if snapshot capture fails |
-# MAGIC | **Log label** | `[TASK-00 INTAKE]` |
+# MAGIC | **Log label** | `[TASK INTAKE]` |
 # MAGIC
 # MAGIC ## 🎯 Purpose (arch §6)
 # MAGIC
-# MAGIC The first task of the GSO v2 linear 5-task DAG splits the old `preflight`
-# MAGIC stage in two. `00_intake_and_snapshot` captures the **rollback snapshot**
+# MAGIC The first task of the GSO v2 linear 4-task DAG splits the old `preflight`
+# MAGIC stage in two. `intake_and_snapshot` captures the **rollback snapshot**
 # MAGIC (the ORIGINAL `serialized_space`, the discard revert anchor) and writes the
-# MAGIC **run manifest**. Benchmark QC + repair moves to `01_benchmark_qc_and_repair`.
+# MAGIC **run manifest**. Benchmark QC + repair moves to `benchmark_qc_and_repair`.
 # MAGIC
 # MAGIC State handoff is via Delta only (D9): every task reads job parameters +
 # MAGIC durable state by `run_id`. There is no `dbutils.jobs.taskValues` plumbing.
@@ -53,8 +53,8 @@ from genie_space_optimizer.optimization.state import (
 
 dbutils = cast(Any, globals().get("dbutils"))
 
-_TASK_LABEL = "TASK-00 INTAKE"
-_TASK_KEY = "00_intake_and_snapshot"
+_TASK_LABEL = "TASK INTAKE"
+_TASK_KEY = "intake_and_snapshot"
 _banner = partial(_banner_base, _TASK_LABEL)
 _log = partial(_log_base, _TASK_LABEL)
 
@@ -72,7 +72,6 @@ dbutils.widgets.text("levers", "[1,2,3,4,5,6]")
 dbutils.widgets.text("max_attempts", "3")
 dbutils.widgets.text("target_accuracy", "0.90")
 dbutils.widgets.text("benchmark_repair_max_tries", "3")
-dbutils.widgets.text("max_iterations", "5")
 dbutils.widgets.text("triggered_by", "")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
@@ -87,14 +86,13 @@ levers = json.loads(dbutils.widgets.get("levers") or "[1,2,3,4,5,6]")
 max_attempts = int(dbutils.widgets.get("max_attempts") or "3")
 target_accuracy = float(dbutils.widgets.get("target_accuracy") or "0.90")
 benchmark_repair_max_tries = int(dbutils.widgets.get("benchmark_repair_max_tries") or "3")
-max_iterations = int(dbutils.widgets.get("max_iterations") or "5")
 triggered_by = dbutils.widgets.get("triggered_by").strip()
 llm_model = dbutils.widgets.get("llm_model").strip()
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
 
 if not run_id:
-    raise RuntimeError("00_intake_and_snapshot: run_id parameter is required")
+    raise RuntimeError("intake_and_snapshot: run_id parameter is required")
 
 _banner("Resolved Job Parameters")
 _log(
@@ -204,7 +202,6 @@ write_artifact(
         "target_accuracy": target_accuracy,
         "max_attempts": max_attempts,
         "benchmark_repair_max_tries": benchmark_repair_max_tries,
-        "max_iterations": max_iterations,
         "benchmark_target": TARGET_BENCHMARK_COUNT,
         "benchmark_max": MAX_BENCHMARK_COUNT,
         "baseline_config_hash": _config_hash,
@@ -212,7 +209,7 @@ write_artifact(
         "warehouse_id": warehouse_id,
     },
     catalog=catalog, schema=schema,
-    stage_name=_TASK_KEY, source_notebook="run_00_intake_and_snapshot.py",
+    stage_name=_TASK_KEY, source_notebook="run_intake_and_snapshot.py",
 )
 
 # Persist run-level handoff columns + mark IN_PROGRESS. The run row itself is
@@ -230,5 +227,5 @@ write_stage(
     detail={"config_hash": _config_hash, "table_refs": len(_genie_table_refs)},
 )
 
-_banner("Task 00 Completed")
+_banner("Intake and snapshot completed")
 dbutils.notebook.exit(json.dumps({"run_id": run_id, "config_hash": _config_hash}, default=str))

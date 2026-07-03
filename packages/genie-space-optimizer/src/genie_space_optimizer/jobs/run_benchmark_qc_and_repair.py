@@ -1,21 +1,21 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Task 01: Benchmark QC & Repair (GSO v2 — 5-task DAG)
+# MAGIC # Benchmark QC & Repair (GSO v2 — 4-task DAG)
 # MAGIC
 # MAGIC | Quick Reference | |
 # MAGIC |---|---|
-# MAGIC | **Task** | 2 of 5 — `01_benchmark_qc_and_repair` |
+# MAGIC | **Task** | `benchmark_qc_and_repair` |
 # MAGIC | **Reads** | space metadata, run-row snapshot, benchmark set |
 # MAGIC | **Writes** | `genie_opt_artifacts` (`benchmark_qc`), `genie_opt_benchmark_mutations`, `genie_opt_stages` |
 # MAGIC | **Hard stop** | `BENCHMARK_UNREPAIRABLE` if still invalid after `benchmark_repair_max_tries` |
-# MAGIC | **Log label** | `[TASK-01 BENCH_QC]` |
+# MAGIC | **Log label** | `[TASK BENCH_QC]` |
 # MAGIC
 # MAGIC ## 🎯 Purpose (arch §5 / §6 / progress §5 K=3)
 # MAGIC
 # MAGIC Validate the benchmark set → **bounded inline repair/prune** (≤
 # MAGIC `benchmark_repair_max_tries`, default 3) → re-validate → push the
 # MAGIC EXPLAIN-validated set into the LIVE space (additive/merge-only) → flow
-# MAGIC **unconditionally** into `02`. Only a benchmark still invalid after K
+# MAGIC **unconditionally** into `optimize`. Only a benchmark still invalid after K
 # MAGIC tries hard-fails with `BENCHMARK_UNREPAIRABLE`.
 # MAGIC
 # MAGIC The bounded try-counting control loop lives in
@@ -73,8 +73,8 @@ from genie_space_optimizer.optimization.state import (
 
 dbutils = cast(Any, globals().get("dbutils"))
 
-_TASK_LABEL = "TASK-01 BENCH_QC"
-_TASK_KEY = "01_benchmark_qc_and_repair"
+_TASK_LABEL = "TASK BENCH_QC"
+_TASK_KEY = "benchmark_qc_and_repair"
 _banner = partial(_banner_base, _TASK_LABEL)
 _log = partial(_log_base, _TASK_LABEL)
 
@@ -102,7 +102,7 @@ if llm_model:
     os.environ["LLM_MODEL"] = llm_model
 
 if not run_id:
-    raise RuntimeError("01_benchmark_qc_and_repair: run_id parameter is required")
+    raise RuntimeError("benchmark_qc_and_repair: run_id parameter is required")
 
 effective_target = TARGET_BENCHMARK_COUNT
 effective_max = MAX_BENCHMARK_COUNT
@@ -118,7 +118,7 @@ warehouse_id = resolve_warehouse_id(dbutils.widgets.get("warehouse_id").strip())
 if warehouse_id:
     export_warehouse_id(warehouse_id)
 
-# Idempotent — 00 already created the tables; safe to re-assert on Repair Run.
+# Idempotent — intake already created the tables; safe to re-assert on Repair Run.
 ensure_optimization_tables(spark, catalog, schema)
 if catalog:
     spark.sql(f"USE CATALOG `{catalog}`")
@@ -133,7 +133,7 @@ write_stage(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 01a — Config + UC metadata + initial benchmark generation
+# MAGIC ## Config + UC metadata + initial benchmark generation
 
 # COMMAND ----------
 
@@ -177,7 +177,7 @@ except Exception as exc:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 01b — Bounded inline repair/prune (≤ benchmark_repair_max_tries)
+# MAGIC ## Bounded inline repair/prune (≤ benchmark_repair_max_tries)
 # MAGIC
 # MAGIC EXPLAIN-validate the set, regenerate/prune the invalid subset, and
 # MAGIC re-validate — bounded by `benchmark_repair_max_tries`. A try is consumed
@@ -254,7 +254,7 @@ except BenchmarkUnrepairableError as exc:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 01c — Push validated set to the LIVE space (additive/merge-only)
+# MAGIC ## Push validated set to the LIVE space (additive/merge-only)
 # MAGIC
 # MAGIC Reuses the Phase-2 publisher: additive push of the EXPLAIN-validated set,
 # MAGIC 30–40 window recommendation, the §3.6 leakage firewall (in the applier),
@@ -290,7 +290,7 @@ if not _repair_failed and _benchmarks:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 01d — Persist the evaluation dataset + experiment
+# MAGIC ## Persist the evaluation dataset + experiment
 
 # COMMAND ----------
 
@@ -319,7 +319,7 @@ if not _repair_failed and _benchmarks:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 01e — Write the benchmark_qc artifact + flow into 02 (or hard-fail)
+# MAGIC ## Write the benchmark_qc artifact + flow into optimize (or hard-fail)
 
 # COMMAND ----------
 
@@ -348,7 +348,7 @@ if _repair_failed and _repair_error is not None:
 write_artifact(
     spark, run_id, "benchmark_qc", _qc_payload,
     catalog=catalog, schema=schema,
-    stage_name=_TASK_KEY, source_notebook="run_01_benchmark_qc_and_repair.py",
+    stage_name=_TASK_KEY, source_notebook="run_benchmark_qc_and_repair.py",
 )
 
 if _repair_failed and _repair_error is not None:
@@ -371,7 +371,7 @@ write_stage(
     },
 )
 
-_banner("Task 01 Completed")
+_banner("Benchmark QC and repair completed")
 dbutils.notebook.exit(json.dumps({
     "run_id": run_id,
     "valid_count": len(_benchmarks),

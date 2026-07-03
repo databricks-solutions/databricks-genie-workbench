@@ -1,10 +1,10 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Task publish_and_audit (GSO v2 — 5-task DAG)
+# MAGIC # Publish & Audit (GSO v2 — 4-task DAG)
 # MAGIC
 # MAGIC | Quick Reference | |
 # MAGIC |---|---|
-# MAGIC | **Task** | 5 of 5 — `publish_and_audit` |
+# MAGIC | **Task** | `publish_and_audit` |
 # MAGIC | **Reads** | champion state, loop-state, patch history, attempt budget |
 # MAGIC | **Writes** | `genie_opt_runs`, `genie_opt_artifacts` (`publish_record`), `genie_opt_stages` |
 # MAGIC | **Log label** | `[TASK-PUBLISH]` |
@@ -17,7 +17,7 @@
 # MAGIC
 # MAGIC - `TARGET_REACHED` / `MAX_ATTEMPTS` ⇒ publish (idempotent Delta-only
 # MAGIC   `promote_best_model`; NO live-space mutation) + write the full `publish_record`.
-# MAGIC - anything else (`EVAL_INVALID`, `LOOP_STATE_INVALID`, `NO_NEW_HYPOTHESIS`,
+# MAGIC - anything else (`EVAL_INVALID`, `NO_NEW_HYPOTHESIS`,
 # MAGIC   `EVAL_BUDGET_EXHAUSTED`) ⇒ do NOT publish, but still write a `publish_record`
 # MAGIC   carrying the stop reason + residual failures as concerns (arch §7.3).
 # MAGIC
@@ -74,7 +74,7 @@ schema = dbutils.widgets.get("schema").strip()
 target_accuracy = float(dbutils.widgets.get("target_accuracy") or "0.90")
 max_attempts = int(dbutils.widgets.get("max_attempts") or "3")
 
-# Normalize to the 0-100 accuracy scale (mirrors run_03_optimize.py) so the
+# Normalize to the 0-100 accuracy scale (mirrors run_optimize.py) so the
 # publish_record's target_accuracy lines up with the per-attempt accuracies.
 if target_accuracy <= 1.0:
     target_accuracy *= 100.0

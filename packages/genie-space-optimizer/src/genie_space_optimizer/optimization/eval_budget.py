@@ -51,9 +51,9 @@ def estimate_full_benchmark_seconds(
 ) -> float:
     """Estimate the wall-clock of ONE full-benchmark eval-run (GSO v2 Phase 8).
 
-    The 03_optimize loop scores every attempt (coverage + surgical) on the full
-    30–40-question benchmark (arch §7.3), so the per-attempt eval cost is a single
-    full run — there is no subset-first slice/P0 prelude inside the loop anymore.
+    The optimize loop scores every baseline/patch attempt on the full
+    30–40-question benchmark, so the per-attempt eval cost is a single full run
+    — there is no subset-first slice/P0 prelude inside the loop.
     This supersedes :func:`estimate_three_gate_seconds` as the loop's budget
     estimate; the ``EvalBudget`` cap (``can_afford`` / ``remaining_after_reserve``)
     becomes the PRIMARY stop, and may end the loop before ``max_attempts``.

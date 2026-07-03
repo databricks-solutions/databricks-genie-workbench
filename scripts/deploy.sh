@@ -11,9 +11,9 @@ set -euo pipefail
 #     3. Create app (if not exists)
 #     4. Full-sync files to workspace
 #     5. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
-#     6. Deploy optimization job via bundle — GSO v2 linear 5-task DAG:
-#        00_intake_and_snapshot -> 01_benchmark_qc_and_repair ->
-#        02_baseline_eval_and_triage -> 03_optimize -> publish_and_audit
+#     6. Deploy optimization job via bundle — GSO v2 linear 4-task DAG:
+#        intake_and_snapshot -> benchmark_qc_and_repair ->
+#        optimize -> publish_and_audit
 #        (databricks bundle deploy -t app)
 #     7. Redeploy app (apps deploy --source-code-path)
 #     8. Verify deployment
@@ -356,9 +356,9 @@ fi
 # Verify critical job notebooks actually landed on the workspace.
 # The bundle's incremental sync can silently skip files if the local snapshot
 # diverges from workspace reality. This catches that failure at deploy time
-# rather than at job runtime. Probe the first task of the 5-task DAG
-# (00_intake_and_snapshot) as the sync canary.
-_INTAKE_NB="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/app/files/packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_00_intake_and_snapshot"
+# rather than at job runtime. Probe the first task of the 4-task DAG
+# (intake_and_snapshot) as the sync canary.
+_INTAKE_NB="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/app/files/packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_intake_and_snapshot"
 if ! databricks workspace get-status "$_INTAKE_NB" --profile "$PROFILE" -o json >/dev/null 2>&1; then
     echo ""
     echo "  ✗ FATAL: Bundle file sync failed — job notebook not found at:"

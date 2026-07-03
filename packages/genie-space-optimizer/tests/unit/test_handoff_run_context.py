@@ -33,7 +33,6 @@ def test_run_context_reads_from_delta():
         "catalog": "cat",
         "uc_schema": "cat.sch",
         "experiment_name": "/exp",
-        "max_iterations": 10,
         "levers": [1, 2, 3],
         "apply_mode": "genie_config",
         "triggered_by": "user@x.com",
@@ -55,7 +54,6 @@ def test_run_context_reads_from_delta():
     assert ctx["run_id"].value == "run-001"
     assert ctx["run_id"].source is HandoffSource.DELTA_FALLBACK
     assert ctx["levers"].value == [1, 2, 3]
-    assert ctx["max_iterations"].value == 10
     assert ctx["catalog"].value == "cat"
     assert ctx["schema"].value == "sch"
     assert ctx["human_corrections"].value == [{"qid": "q1"}]

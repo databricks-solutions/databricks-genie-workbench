@@ -1,8 +1,8 @@
-"""Cross-task state helpers for the GSO v2 5-task DAG (Delta-only handoff).
+"""Compatibility helpers for Delta-only GSO job state handoff.
 
 Design note D9 (Delta-only): the v2 DAG
-(``00_intake_and_snapshot`` -> ``01_benchmark_qc_and_repair`` ->
-``02_baseline_eval_and_triage`` -> ``03_optimize`` -> ``publish_and_audit``)
+(``intake_and_snapshot`` -> ``benchmark_qc_and_repair`` ->
+``optimize`` -> ``publish_and_audit``)
 publishes NO Databricks task values. Every cross-task read is served from the
 durable Delta state persisted in ``genie_opt_runs`` and ``genie_opt_iterations``.
 This is both simpler and Repair-Run safe: Databricks does not propagate task
@@ -14,7 +14,7 @@ so log readers can distinguish a value reconstructed from Delta
 (``DELTA_FALLBACK``) from a value that was never persisted (``MISSING``).
 
 Historical note: an earlier design probed the Databricks job task-value store
-first and fell back to Delta. Under the v2 DAG those probes targeted task keys
+first and fell back to Delta. Under earlier v2 DAGs those probes targeted task keys
 from the retired 6-task DAG (``preflight``, ``baseline_eval``, ``enrichment``,
 ``lever_loop``) that no longer exist in a run, and the probe raised
 ``ValueError: Task key does not exist in run`` before the Delta fallback could
@@ -147,7 +147,7 @@ def get_run_context(
             f"get_run_context: no run context available for run_id="
             f"{run_id_widget!r}. No row in "
             f"{catalog_widget}.{schema_widget}.genie_opt_runs — the intake task "
-            f"(00_intake_and_snapshot) must create the run row first."
+            f"(intake_and_snapshot) must create the run row first."
         )
 
     # Per-key resolution. Each entry: (logical_key, genie_opt_runs column).
@@ -159,7 +159,6 @@ def get_run_context(
         ("apply_mode", "apply_mode"),
         ("triggered_by", "triggered_by"),
         ("warehouse_id", "warehouse_id"),
-        ("max_iterations", "max_iterations"),
         ("levers", "levers"),
         ("max_benchmark_count", "max_benchmark_count"),
         ("human_corrections", "human_corrections_json"),
@@ -236,15 +235,15 @@ def get_baseline_eval_state(
 ) -> dict[str, HandoffValue]:
     """Read baseline eval state from ``genie_opt_iterations`` (Delta-only, D9).
 
-    Reads the iteration=0 / ``eval_scope='full'`` row written by the baseline eval
-    task (``02_baseline_eval_and_triage``). Returns ``HandoffValue`` for:
+    Reads the iteration=0 / ``eval_scope='full'`` row written by the optimize
+    task prologue. Returns ``HandoffValue`` for:
     ``scores``, ``overall_accuracy``, ``thresholds_met``, ``model_id``,
     ``mlflow_run_id``. ``dbutils`` is accepted for call-site compatibility but
     unused (D9 — no task values).
 
     Raises:
-        RuntimeError: if there is no Delta iteration=0 baseline row — the baseline
-            eval never completed.
+        RuntimeError: if there is no Delta iteration=0 baseline row — the optimize
+            task baseline eval never completed.
     """
     del dbutils  # D9: Delta-only handoff — no task values are consulted.
 
@@ -261,8 +260,8 @@ def get_baseline_eval_state(
             f"get_baseline_eval_state: no baseline state available for "
             f"run_id={run_id!r}. No row in "
             f"{catalog}.{schema}.genie_opt_iterations at iteration=0 "
-            f"(eval_scope='full') — the baseline eval task "
-            f"(02_baseline_eval_and_triage) must complete before optimize / publish."
+            f"(eval_scope='full') — the optimize task must complete its "
+            f"baseline eval before publish."
         )
 
     out = {
@@ -293,9 +292,10 @@ def get_baseline_eval_state(
 def _load_enrichment_iteration_row(
     spark: "SparkSession", run_id: str, catalog: str, schema: str,
 ) -> dict | None:
-    """Latest eval_scope='enrichment' row for ``run_id``.
+    """Latest historical eval_scope='enrichment' row for ``run_id``.
 
-    Returns ``None`` if enrichment was skipped (no row written).
+    The active unified loop writes only full-scope rows. This reader remains for
+    old runs and compatibility tests.
     """
     fqn = _fqn(catalog, schema, "genie_opt_iterations")
     df = run_query(
@@ -416,7 +416,7 @@ def get_lever_loop_outputs(
             f"get_lever_loop_outputs: no state available for run_id="
             f"{run_id!r}. No rows in "
             f"{catalog}.{schema}.genie_opt_runs / genie_opt_iterations — the "
-            f"optimize task (03_optimize) must complete before publish / deploy."
+            f"optimize task must complete before publish / deploy."
         )
     _iters_df = load_iterations(spark, run_id, catalog, schema)
 

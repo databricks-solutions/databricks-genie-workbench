@@ -1,4 +1,4 @@
-"""Bounded inline benchmark repair loop for ``01_benchmark_qc_and_repair``.
+"""Bounded inline benchmark repair loop for ``benchmark_qc_and_repair``.
 
 GSO v2 orchestration (Phase 7, arch §5 / progress §5 RESOLVED K=3). The old
 6-notebook shape dead-ended a failed benchmark QC into a separate

@@ -72,7 +72,6 @@ def submit_optimization(
     schema: str,
     apply_mode: str = "genie_config",
     levers: str = "[1,2,3,4,5]",
-    max_iterations: str = "5",
     triggered_by: str = "",
     deploy_target: str = "",
     warehouse_id: str = "",
@@ -96,7 +95,7 @@ def submit_optimization(
                 space_id=space_id,
                 triggered_by=triggered_by,
             ),
-            # Only send parameters the 5-task job declares. Every key here must
+            # Only send parameters the 4-task job declares. Every key here must
             # be a job parameter on the runner (run_now rejects undeclared
             # keys), so this set MUST stay a subset of the declared params in
             # BOTH job definitions: the root bundle
@@ -115,11 +114,10 @@ def submit_optimization(
                 "schema": schema,
                 "apply_mode": apply_mode,
                 "levers": levers,
-                "max_iterations": max_iterations,
-                # GSO v2 loop knobs (arch §13 / D9). The job declares these in
+                # GSO v2 loop knobs. The job declares these in
                 # databricks.yml; passing them here lets a user-chosen value
                 # override the job default. target_accuracy is the 0–1 stop
-                # target; max_attempts bounds the surgical hill-climb.
+                # target; max_attempts bounds the patch/eval loop.
                 "target_accuracy": target_accuracy,
                 "max_attempts": max_attempts,
                 "triggered_by": triggered_by,

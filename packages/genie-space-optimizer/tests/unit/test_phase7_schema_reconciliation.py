@@ -293,8 +293,8 @@ def test_write_artifact_inserts_row_with_kind_and_hash(monkeypatch):
 
     artifact_id = state_mod.write_artifact(
         spark, "run-1", "run_manifest", {"config_hash": "abc"},
-        catalog="cat", schema="sch", stage_name="00_intake_and_snapshot",
-        source_notebook="run_00_intake_and_snapshot.py",
+        catalog="cat", schema="sch", stage_name="intake_and_snapshot",
+        source_notebook="run_intake_and_snapshot.py",
     )
 
     assert artifact_id is not None
@@ -304,7 +304,7 @@ def test_write_artifact_inserts_row_with_kind_and_hash(monkeypatch):
     assert p["artifact_kind"] == "run_manifest"
     assert p["content_hash"]  # hash computed for non-null payload
     assert '"config_hash": "abc"' in p["artifact_json"]
-    assert p["stage_name"] == "00_intake_and_snapshot"
+    assert p["stage_name"] == "intake_and_snapshot"
 
 
 def test_write_artifact_swallows_write_failure(monkeypatch):

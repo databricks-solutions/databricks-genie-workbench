@@ -1167,17 +1167,14 @@ def mark_iteration_rolled_back(
 ) -> None:
     """Set ``rolled_back=true`` on a SPECIFIC ``genie_opt_iterations`` row.
 
-    GSO v2 Phase 8 (C3): unlike :func:`mark_patches_rolled_back` (which marks
-    every row at ``iteration``), this is scoped by ``eval_scope`` so the standalone
-    ``optimize_genie_space`` path can mark ONLY the rejected ``eval_scope='enrichment'``
-    coverage row rolled-back on a post-enrichment regression — WITHOUT touching the
-    sibling ``eval_scope='full'`` baseline row at the same iteration (which must
-    remain the current state).
+    Unlike :func:`mark_patches_rolled_back` (which marks every row at
+    ``iteration``), this is scoped by ``eval_scope`` for compatibility with older
+    runs that wrote multiple scopes for one iteration. The active unified loop
+    writes one full-scope row per baseline/patch attempt.
 
-    D3 (FAIL-CLOSED): this is REQUIRED, not best-effort — it RAISES on failure so
-    the caller can stop the run ``LOOP_STATE_INVALID`` rather than leaving the
-    rejected row selectable. ``run_id`` / ``eval_scope`` are escaped the same way
-    as the rest of the per-row writers (SQL-literal quote-doubling).
+    This is REQUIRED, not best-effort: callers need a rejected row to be
+    unselectable before continuing. ``run_id`` / ``eval_scope`` are escaped the
+    same way as the rest of the per-row writers (SQL-literal quote-doubling).
     """
     now = datetime.now(timezone.utc).isoformat()
     iters_fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
@@ -2111,15 +2108,13 @@ def load_all_full_iterations(
 def load_all_scored_iterations(
     spark: SparkSession, run_id: str, catalog: str, schema: str
 ) -> list[dict]:
-    """All iterations with ``eval_scope IN ('full', 'enrichment')``.
+    """All full-scope iterations plus historical enrichment rows.
 
-    GSO v2 Phase 9: this mirrors the candidate universe ``promote_best_model``
-    selects over — the accepted attempt-1 *coverage* rung is persisted with
-    ``eval_scope='enrichment'`` (harness ``_run_lever_loop``), so a publish/audit
-    pass that read only ``eval_scope='full'`` would miss a coverage champion and
-    drop the coverage rung from the improvement trajectory. Ordered by
-    ``iteration ASC, timestamp ASC``; JSON columns parsed like
-    ``load_all_full_iterations``.
+    The unified loop writes only ``eval_scope='full'``. Historical runs may have
+    ``eval_scope='enrichment'`` rows; publish/audit keeps reading them so old
+    trajectories remain explainable, while champion selection restricts
+    promotion to full-scope rows. Ordered by ``iteration ASC, timestamp ASC``;
+    JSON columns parsed like ``load_all_full_iterations``.
     """
     fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
     df = run_query(

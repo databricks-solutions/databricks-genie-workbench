@@ -236,15 +236,15 @@ def test_eval_invalid_does_not_publish_status_failed():
     assert updates[0]["convergence_reason"] == "EVAL_INVALID"
 
 
-def test_loop_state_invalid_does_not_publish_status_failed():
+def test_unknown_terminal_reason_does_not_publish_status_stalled():
     result, artifacts, updates, promote, _llm = _run_publish_and_audit(
-        scored_iters=_full_iters(champion_reason="LOOP_STATE_INVALID"),
+        scored_iters=_full_iters(champion_reason="UNKNOWN_STOP"),
     )
     promote.assert_not_called()
     assert result["published"] is False
-    assert result["final_status"] == "FAILED"
+    assert result["final_status"] == "STALLED"
     assert artifacts[0]["payload"]["concerns"]
-    assert updates[0]["convergence_reason"] == "LOOP_STATE_INVALID"
+    assert updates[0]["convergence_reason"] == "UNKNOWN_STOP"
 
 
 def test_no_new_hypothesis_does_not_publish_status_stalled():
@@ -466,18 +466,18 @@ def test_assert_leak_free_is_recursive_over_nested_structures():
     P._assert_leak_free({"a": {"b": [{"accuracy": 91.0, "decision": "accept"}]}})
 
 
-# ── (B2) accepted enrichment/coverage rung as champion ───────────────────────
+# ── (B2) champion selection is full-eval only ────────────────────────────────
 
 
-def _enrichment_champion_iters() -> list[dict]:
-    """baseline (0, full) + an ACCEPTED coverage rung (1, enrichment) that is the
-    highest-accuracy champion — mirrors how Phase 8 persists an accepted coverage
-    attempt (``eval_scope='enrichment'``)."""
+def _retired_enrichment_champion_iters() -> list[dict]:
+    """Baseline plus a retired enrichment rung. The unified loop no longer writes
+    coverage/enrichment eval scopes, so promotion ignores this historical row and
+    keeps the full-eval baseline as the champion."""
     return [
         {
             "iteration": 0, "eval_scope": "full", "rolled_back": False,
-            "overall_accuracy": 80.0, "attempt_no": None, "attempt_mode": None,
-            "decision": None, "is_champion": False, "terminal_reason": None,
+            "overall_accuracy": 80.0, "attempt_no": 0, "attempt_mode": "baseline",
+            "decision": "accept", "is_champion": False, "terminal_reason": None,
             "remaining_failures": "[]",
         },
         {
@@ -491,22 +491,21 @@ def _enrichment_champion_iters() -> list[dict]:
     ]
 
 
-def test_enrichment_coverage_row_resolves_as_champion():
-    """B2: an accepted ``eval_scope='enrichment'`` coverage rung is selectable as
-    the champion (promotion's candidate universe), with correct accuracy/reason."""
-    iters = _enrichment_champion_iters()
+def test_historical_enrichment_row_is_not_a_champion():
+    iters = _retired_enrichment_champion_iters()
     champ = P.resolve_champion_row(iters)
     assert champ is not None
-    assert champ["eval_scope"] == "enrichment"
-    assert champ["overall_accuracy"] == 92.0
-    assert P.resolve_terminal_reason(champ) == "TARGET_REACHED"
-    # The coverage (enrichment) rung is present in the trajectory.
+    assert champ["eval_scope"] == "full"
+    assert champ["iteration"] == 0
+    assert champ["overall_accuracy"] == 80.0
+    assert P.resolve_terminal_reason(champ) is None
+
+    # Historical rows can still be displayed in the trajectory for old runs.
     traj = P.build_improvement_trajectory(iters)
     assert any(
         t["eval_scope"] == "enrichment" and t["attempt_mode"] == "coverage"
         for t in traj
     )
-    # delta computed off the iter-0 FULL baseline (80.0), not the enrichment row.
     cov = next(t for t in traj if t["eval_scope"] == "enrichment")
     assert cov["delta_vs_baseline"] == 12.0
 
@@ -529,17 +528,15 @@ def test_champion_selection_treats_nan_flags_as_missing():
     assert champ["iteration"] == 1
 
 
-def test_publish_resolves_enrichment_champion_end_to_end():
-    """B2 through the orchestrator: the publish_record champion pointer + accuracy
-    reflect the enrichment coverage champion, and its rung is in the trajectory."""
+def test_publish_ignores_historical_enrichment_champion_end_to_end():
     result, artifacts, _updates, promote, _llm = _run_publish_and_audit(
-        scored_iters=_enrichment_champion_iters(),
-        promoted_iteration=1, refreshed_best_accuracy=92.0,
+        scored_iters=_retired_enrichment_champion_iters(),
+        promoted_iteration=0, refreshed_best_accuracy=80.0,
     )
-    promote.assert_called_once()
-    assert result["published"] is True
-    assert result["champion_iteration"] == 1
-    assert result["champion_accuracy"] == 92.0
+    promote.assert_not_called()
+    assert result["published"] is False
+    assert result["champion_iteration"] == 0
+    assert result["champion_accuracy"] == 80.0
     traj = artifacts[0]["payload"]["improvement_trajectory"]
     assert any(
         t["eval_scope"] == "enrichment" and t["attempt_mode"] == "coverage"

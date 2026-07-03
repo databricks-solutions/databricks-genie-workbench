@@ -203,10 +203,10 @@ EVAL_PER_QUESTION_SECONDS: float = float(
 """Per-question eval-run cost estimate (§3.4: ~17 min / 30 Qs ⇒ ~34 s/Q)."""
 
 SLICE_GATE_MAX_QUESTIONS: int = int(os.getenv("GSO_SLICE_GATE_MAX_QUESTIONS", "10"))
-"""Cap on the slice gate's question subset (~5–10 failing-cluster Qs)."""
+"""Retired harness compatibility: former slice-gate subset cap."""
 
 P0_GATE_MAX_QUESTIONS: int = int(os.getenv("GSO_P0_GATE_MAX_QUESTIONS", "15"))
-"""Cap on the P0 gate's question subset (~10–15 priority Qs)."""
+"""Retired harness compatibility: former P0-gate subset cap."""
 
 WORKING_SET_MIN: int = int(os.getenv("GSO_WORKING_SET_MIN", "30"))
 WORKING_SET_MAX: int = int(os.getenv("GSO_WORKING_SET_MAX", "40"))
@@ -218,19 +218,20 @@ prune/top-up — GSO never silently deletes user-authored rows."""
 MAX_ITERATIONS = 5
 MAX_ITERATIONS_PER_CLUSTER = 1
 MAX_ITERATIONS_HARD_CEILING = 15
-# GSO v2 Phase 8 (arch §5 / §12): the two-mode 03_optimize controller stops at
-# whichever comes first — ``TARGET_ACCURACY`` or ``MAX_ATTEMPTS``. ``MAX_ATTEMPTS``
-# counts SURGICAL attempts only (attempts 2..N); the attempt-1 coverage pass is a
-# free probe that never consumes a slot (§13.5). ``TARGET_ACCURACY`` is expressed
-# on the 0–100 accuracy scale the lever loop carries (90% target = 90.0).
+# The active unified loop stops at whichever comes first: ``TARGET_ACCURACY``
+# or ``MAX_ATTEMPTS``. ``MAX_ATTEMPTS`` counts patch/eval attempts after the
+# baseline eval. ``TARGET_ACCURACY`` is expressed on the 0-100 accuracy scale
+# carried by iteration rows (90% target = 90.0).
 MAX_ATTEMPTS = 3
 TARGET_ACCURACY = 90.0
 SLICE_GATE_TOLERANCE = 15.0
-ENABLE_SLICE_GATE: bool = True
-"""T2.15: re-enabled after iteration-1 log showed a 3-patch / 3-lever AG
-applied with zero intermediate regression checks. Combined with
-``SLICE_GATE_TOLERANCE_SMALL_CORPUS`` below, small-corpus noise is
-absorbed without suppressing the gate."""
+ENABLE_SLICE_GATE: bool = False
+"""Retired harness compatibility only.
+
+The active unified loop evaluates the full benchmark set once per iteration
+through the native Genie Benchmark API. Slice/P0 gates are no longer a supported
+runtime path.
+"""
 SLICE_GATE_MIN_REDUCTION = 0.5
 REGRESSION_THRESHOLD = 5.0
 MAX_NOISE_FLOOR = 5.0
@@ -289,23 +290,14 @@ Replaced by ``MIN_POST_ARBITER_GAIN_PP`` (the gain floor itself acts
 as the guardrail — any drop or sub-threshold gain rejects). Kept for
 one release for back-compat."""
 
-# ── Task 2: strict acceptance ────────────────────────────────────────
+# ── Retired harness: strict acceptance ───────────────────────────────
 
-ENABLE_LEGACY_SLICE_P0_GATES: bool = (
-    os.getenv("GSO_ENABLE_LEGACY_SLICE_P0_GATES", "false").lower()
-    in {"1", "true", "yes", "on"}
-)
-"""When True, ``harness._run_gate_checks`` runs the slice and P0
-evaluation gates before the full eval. When False (the default after
-Task 2 of the lever-loop improvement plan), only the single full eval
-runs and acceptance is decided by
-``acceptance_policy.decide_acceptance``.
+ENABLE_LEGACY_SLICE_P0_GATES: bool = False
+"""Retired. The old slice/P0 gate opt-in is intentionally disabled.
 
-The decoded retail run showed both gates passing on AG2 while the
-full-eval rejection was the only honest signal; both gates also each
-add a Genie round-trip per AG. Keep the flag for one release so any
-operator who wants the old behaviour can opt in via
-``GSO_ENABLE_LEGACY_SLICE_P0_GATES=true``."""
+The active optimizer has no slice/P0 fallback: every candidate is evaluated by
+one full native Genie Benchmark API run.
+"""
 
 OPTIMIZATION_TARGET_POST_ARBITER_ACCURACY: float = float(
     os.getenv("GSO_OPTIMIZATION_TARGET_POST_ARBITER_ACCURACY", "100.0")
@@ -3254,16 +3246,15 @@ AUDIT_SUMMARY_PROMPT = (
     '## Cover all of the following\n'
     '1. The changes made: how many patches were applied, across which lever '
     'families (use ``patch_families``), and how many were rolled back.\n'
-    '2. The improvement trajectory as a staircase: the baseline accuracy, what '
-    'the broad COVERAGE attempt (attempt 1) did, then the SURGICAL attempts '
-    '(2..N), referencing ``improvement_trajectory`` (per-attempt accuracy, '
-    'delta vs. baseline, decision, and any rollbacks).\n'
+    '2. The improvement trajectory as a staircase: the baseline accuracy, then '
+    'each patch/eval iteration, referencing ``improvement_trajectory`` '
+    '(per-iteration accuracy, delta vs. baseline, decision, and any rollbacks).\n'
     '3. The champion pointer: the champion iteration number and its accuracy, and '
     'whether it was published (see ``published`` / ``terminal_reason``).\n'
     '4. Any concerns: e.g. the run stopped on the evaluation budget '
     '(EVAL_BUDGET_EXHAUSTED) or with no new hypothesis (NO_NEW_HYPOTHESIS) while '
-    'clusters were still failing; the coverage pass regressed and was rolled '
-    'back; the champion still has residual failing questions/clusters '
+    'clusters were still failing; an iteration regressed and was rolled back; '
+    'the champion still has residual failing questions/clusters '
     '(``residual_failure_count`` / ``residual_failing_clusters``); or the run '
     'did not publish at all. Be explicit and honest about why publishing did or '
     'did not happen.\n'
@@ -5472,15 +5463,12 @@ def regression_debt_invariant_enabled() -> bool:
 
 
 def full_benchmark_only_eval_enabled() -> bool:
-    """GSO v2 Phase 8 (arch §7.3): the 03_optimize loop scores every attempt
-    (coverage + surgical) on the FULL 30–40-question benchmark, so the Attempt
-    Ladder/Ledger plots one consistent per-attempt accuracy. This supersedes the
-    Phase-1 subset-first 3-gate (slice → P0 → full) inside the loop: ``_run_gate_checks``
-    runs ONLY the full block, and the ``EvalBudget`` cap becomes the primary stop.
+    """Legacy harness compatibility flag.
 
-    Default ON. Operators can opt back into the legacy subset gates for the loop by
-    setting ``GSO_FULL_BENCHMARK_ONLY_EVAL=false`` (alongside
-    ``GSO_ENABLE_LEGACY_SLICE_P0_GATES=true``)."""
+    The active unified loop always runs full native benchmark evals and does not
+    call slice/P0 gates. This function remains only for old harness tests and
+    replay fixtures.
+    """
     return _flag_default_on("GSO_FULL_BENCHMARK_ONLY_EVAL")
 
 

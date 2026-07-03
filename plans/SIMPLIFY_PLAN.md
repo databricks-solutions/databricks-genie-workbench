@@ -1,11 +1,30 @@
 # GSO Simplification Plan
 
-**Status:** Partially implemented
+**Status:** Structural loop rewrite implemented on `gso/optimizer-v2`
 **Scope:** `packages/genie-space-optimizer/` — dead code, duplicated state, and over-specified contracts surfaced during code review.
 
-**Implemented in this pass:** Changes A/B, I, O, P, plus the benchmark
-`asset_fingerprint` loader prerequisite for Change F. The larger structural
-loop changes remain sequenced below.
+**Implemented before the structural cutover:** Changes A/B, I, O, P, plus the
+benchmark `asset_fingerprint` loader prerequisite for Change F.
+
+**Implemented in the structural cutover:** Changes J/K/L/M/N, with the user's
+confirmed decisions:
+
+- Task 02 was removed and folded into the optimize task.
+- Job task keys and notebook filenames are unnumbered:
+  `intake_and_snapshot -> benchmark_qc_and_repair -> optimize -> publish_and_audit`.
+- The active optimize path is `optimization/unified_loop.py`; it starts with
+  baseline iteration 0, then repeats `LLM proposes patch -> apply -> native
+  full benchmark eval -> accept or rollback`.
+- The native Genie Benchmark API is the only active evaluation path. There is
+  no legacy eval fallback in the job path.
+- Slice/P0 gates and the coverage/enrichment phase are removed from the active
+  path. Enrichment is just another LLM-proposed patch in the unified loop.
+- No `GSO_UNIFIED_LOOP` flag was added; the new workflow is the only active
+  job workflow.
+
+Historical findings below still reference the old numbered files where they
+describe the pre-cutover state. The Proposed Changes and Recommended
+Sequencing sections record which items have now landed.
 
 ## Context
 
@@ -679,7 +698,7 @@ controller is removed.
 A sweep of the package root turned up files that are orphaned, one-shot, or
 broken. One initial candidate was a false positive:
 `packages/genie-space-optimizer/databricks.yml` is still an active validated
-source of truth for the 5-task job shape. The root `databricks.yml`,
+source of truth for the 4-task job shape. The root `databricks.yml`,
 `scripts/deploy_lib/gso_job.py`, docs, and `tests/unit/test_phase7_job_dag.py`
 explicitly reference or mirror it. Do **not** delete the package
 `databricks.yml` unless that source-of-truth contract is intentionally moved.
@@ -865,18 +884,20 @@ reader exists (Finding 12); Task 03 reads baseline state from
 
 **Risk:** Zero. Same pattern as Change A / Change B.
 
-### Change J — Eliminate Task 02; fold the baseline eval into Task 03's loop prologue
+### Change J — Eliminate Task 02; fold the baseline eval into `optimize`'s loop prologue
+
+**Status: Implemented in structural cutover.**
 
 **Files:** `jobs/run_02_baseline_eval_and_triage.py` (delete),
-`jobs/run_03_optimize.py`, `optimization/harness.py` (`_run_lever_loop`),
-the Databricks Job DAG definition, `jobs/_handoff.py`
+`jobs/run_optimize.py`, `optimization/unified_loop.py`, the Databricks Job DAG
+definition, `jobs/_handoff.py`
 (`get_baseline_eval_state` — delete or inline)
 
-Restructure Task 03 to start with the baseline eval as iteration 0 of the
-loop, then enter the analyze-patch cycle:
+`optimize` now starts with the baseline eval as iteration 0 of the loop, then
+enters the analyze-patch cycle:
 
 ```
-Task 03 (new shape):
+optimize (new shape):
   1. Load benchmarks from genie_benchmarks_<domain>
   2. Run native eval (genie_create_eval_run) → iteration 0
   3. Persist iteration 0 in genie_opt_iterations
@@ -923,17 +944,17 @@ user-discard rollback anchor (unchanged). Per-iteration `pre_snapshot` in
   as the analyze-patch implementation behind the new prologue. A follow-up
   change (Change K, below) can simplify the spine itself.
 
-**Risk:** Medium-high. Structural change to the 5-task DAG (becomes 4 tasks).
-The Repair-Run granularity tradeoff is acceptable: the baseline eval is one
-`genie_create_eval_run` call, and the config_snapshot rollback anchor is in
-Delta regardless. The main risk is the DAG definition + widget plumbing +
-stage bookkeeping changes.
+**Result:** the DAG is now four unnumbered tasks:
+`intake_and_snapshot -> benchmark_qc_and_repair -> optimize -> publish_and_audit`.
+Repair-run granularity changes as expected: rerunning optimize reruns the
+baseline eval plus loop together.
 
 ### Change K — Rewrite the lever loop as a clean eval → analyze → patch → eval cycle
 
-**Files:** `optimization/harness.py` (`_run_lever_loop` — rewrite),
-`optimization/optimizer.py` (`_call_llm_for_adaptive_strategy` — simplify),
-`common/config.py` (remove obsolete flags)
+**Status: Implemented in structural cutover.**
+
+**Files:** `optimization/unified_loop.py`, `jobs/run_optimize.py`,
+`common/config.py`
 
 Rewrite `_run_lever_loop` as the unified loop the user envisions:
 
@@ -952,7 +973,7 @@ iteration N:  LLM analyzes iteration N-1 failures
               if max_attempts reached → MAX_ITERATIONS
 ```
 
-This is a large rewrite that subsumes several other changes:
+This rewrite subsumes several other changes:
 - **Change L** (delete slice/P0 gate) — the unified loop runs one full eval
   per attempt.
 - **Change M** (absorb coverage mode) — enrichment becomes a patch type the
@@ -982,13 +1003,13 @@ This is a large rewrite that subsumes several other changes:
   the loop is working correctly).
 - The tolerance tuning / small-corpus bypass logic.
 
-**Risk:** High. This is a full rewrite of the optimization core. Must be
-done behind a feature flag (`GSO_UNIFIED_LOOP`) with the old path retained
-until the new path is validated end-to-end on real Genie Spaces. Sequence
-after Changes G + H + J land so the eval and task structure are already
-simplified.
+**Result:** the active job path imports `run_unified_optimization_loop`.
+No `GSO_UNIFIED_LOOP` feature flag was added per user decision; the old
+`harness._run_lever_loop` is not in the active job path.
 
 ### Change L — Delete the slice/P0 eval gate code paths
+
+**Status: Implemented for the active path.**
 
 **Files:** `optimization/harness.py` (`_run_gate_checks`),
 `common/config.py` (`ENABLE_SLICE_GATE`, `SLICE_GATE_*` flags)
@@ -999,14 +1020,13 @@ the slice/P0 tolerance tuning (`SLICE_GATE_MIN_REDUCTION`,
 `SLICE_GATE_SMALL_CORPUS_ROWS`, `SLICE_GATE_TOLERANCE_SMALL_CORPUS`,
 `SLICE_GATE_TOLERANCE`), and the small-corpus bypass logic.
 
-**Risk:** Low-medium. `GSO_FULL_BENCHMARK_ONLY_EVAL` already defaults to
-`true`, so the slice/P0 gates are already disabled in production. This
-change removes a legacy opt-in path, not an active default path. Confirm no
-operator still depends on `GSO_FULL_BENCHMARK_ONLY_EVAL=false` /
-`GSO_ENABLE_LEGACY_SLICE_P0_GATES=true`. Can be done independently of Change K
-as a precursor.
+**Result:** the unified loop runs one full native Benchmark API eval per
+candidate. `GSO_ENABLE_LEGACY_SLICE_P0_GATES` no longer enables a runtime
+fallback.
 
 ### Change M — Absorb the coverage/enrichment pass into the unified loop
+
+**Status: Implemented in structural cutover.**
 
 **Files:** `optimization/harness.py` (`_run_lever_loop` Phase 1,
 `_finalize_coverage_decision`, `_run_description_enrichment`,
@@ -1033,13 +1053,13 @@ like any other patch.
 - Phase 1.5 (instruction restructuring) and Phase 1.6 (instruction
   snapshot) — these become part of the LLM's analysis, not separate phases.
 
-**Risk:** Medium-high. The enrichment functions contain real logic (UC
-metadata fetch, LLM description generation, join discovery). They must be
-preserved as patch types before deleting the Phase 1 orchestration. Depends
-on Change K landing first (the unified loop must exist before absorbing
-coverage into it).
+**Result:** there is no separate coverage/enrichment phase in the active
+workflow, and `LOOP_STATE_INVALID` is no longer a terminal reason emitted by
+the active path.
 
 ### Change N — Simplify the strategist context payload to failing benchmarks + config + short reflection
+
+**Status: Implemented in structural cutover.**
 
 **Files:** `optimization/optimizer.py` (`_call_llm_for_adaptive_strategy`,
 `_build_context_data`, `_truncate_context_to_budget`)
@@ -1058,9 +1078,8 @@ proven patterns, intent collisions, RCA themes, and human suggestions. The
 LLM's job is to analyze failures and propose a patch — it doesn't need
 15 context fields or unbounded history.
 
-**Risk:** Medium. The strategist's quality may regress initially without the
-rich context. Mitigate by A/B testing against the current path on real Genie
-Spaces before removing the old context fields. Depends on Change K.
+**Result:** `optimization/unified_loop.py` builds a compact prompt from the
+last eval failures, a projected current config, and the last two reflections.
 
 ### Change O — Unify champion selection + drop unnecessary `run_row` load in publish
 
@@ -1088,9 +1107,10 @@ import-cycle-aware. The publish_record artifact's shape is unchanged. Can be
 done independently of the structural changes.
 
 **Downstream note:** Findings 20–22 (enrichment scope special-casing,
-`LOOP_STATE_INVALID`, audit prompt terminology) are downstream of Changes
-M/K and need no dedicated change — they simplify themselves when the
-two-mode controller is removed.
+`LOOP_STATE_INVALID`, audit prompt terminology) were handled as part of the
+structural cutover: promotion is full-scope only, the active path no longer
+emits `LOOP_STATE_INVALID`, and the audit prompt describes baseline +
+patch/eval iterations.
 
 ### Change P — Delete redundant non-`src/` files (package-level cleanup)
 
@@ -1144,53 +1164,31 @@ a blanket zero-risk deletion pass.
 
 ## Recommended Sequencing
 
-**Quick wins (do immediately):**
+**Implemented / closed:**
 
-1. **Change B** (drop `data_access_grants`) — zero-risk.
-2. **Change I** (delete `triage` artifact) — zero-risk, second write-only
-   artifact (alongside `space_snapshot`). (Subsumed by Change J once J
-   lands, but safe to do now.)
-3. **Change O** (unify champion selection + drop `run_row` load) — low-risk,
-   pure cleanup in the publish task if implemented with a shared selector and
-   no import cycle.
-4. **Change P** (delete redundant non-`src/` files) — do only after splitting
-   false positives from real candidates. Do **not** delete
-   `packages/genie-space-optimizer/databricks.yml`; treat package `deploy.sh`
-   as low-medium because docs/error messages need cleanup.
-5. **Benchmark fingerprint loader fix** — before Change F, copy persisted
-   `expectations["asset_fingerprint"]` back into loaded benchmark dicts so gate
-   2 actually works.
-6. **Change F** (LLM triage for benchmark reuse) — consolidates an existing
-   LLM call after deterministic gates are actually enforced.
+1. **Changes A/B/I/O/P** and the benchmark fingerprint loader prerequisite for
+   Change F were completed before this structural cutover.
+2. **Changes G/H** are subsumed by removing Task 02 entirely.
+3. **Change J** is complete: Task 02 is gone, baseline eval is iteration 0
+   inside `optimize`, and the DAG is four unnumbered tasks.
+4. **Change K** is complete for the active job path:
+   `optimization/unified_loop.py` owns the eval → analyze → patch → eval loop.
+5. **Change L** is complete for the active path: each candidate runs one full
+   native Benchmark API eval, and the legacy slice/P0 opt-in is disabled.
+6. **Change M** is complete for the active path: enrichment is an LLM-proposed
+   patch, not a separate coverage phase.
+7. **Change N** is complete for the active path: the strategist prompt is
+   reduced to last-eval failures, current config projection, and short
+   reflection.
 
-**Structural (sequence for dependency order):**
+**Remaining candidates:**
 
-7. **Change H** (collapse Task 02 double config fetch) — low-risk plumbing if
-   done before J; otherwise it is subsumed by J.
-8. **Change G** (rip out legacy eval scaffolding from Task 02) — medium
-   risk if done before J; otherwise it is subsumed by the Task 03 native-eval
-   prologue.
-9. **Change L** (delete slice/P0 eval gate code paths) — low-medium; the
-   gates are already disabled via `GSO_FULL_BENCHMARK_ONLY_EVAL=true`.
-10. **Change A** (delete `space_snapshot` artifact write) — safe to do
-   directly; `config_hash` has no reader to migrate (Change D withdrawn).
-11. **Change C** — moot if A is done; apply only if A is rejected.
-12. **Change J** (eliminate Task 02, fold baseline eval into Task 03 prologue)
-    — core accepted restructure: 5-task DAG → 4-task DAG. Task 03 starts by
-    running the native Benchmark API, writes iteration 0, moves to publish if
-    the user-defined target is already met, otherwise enters the LLM
-    analyze-patch-eval loop. The merged prologue must preserve the iteration-0
-    Delta contract and use one target-accuracy scale.
-13. **Change K** (rewrite lever loop as clean eval → analyze → patch → eval)
-    — the big rewrite. Subsumes Changes M and N. Must be done behind a
-    feature flag (`GSO_UNIFIED_LOOP`) with the old path retained until
-    validated end-to-end.
-    - **Change M** (absorb coverage/enrichment into unified loop) — part of K.
-    - **Change N** (simplify strategist context) — part of K.
-    - Findings 20–22 (enrichment scope, `LOOP_STATE_INVALID`, prompt
-      terminology) simplify themselves after K/M land — no dedicated change.
-14. **Change E** (UC single-source-of-truth) — defer; high-risk lever-loop
-    refactor. Plan after the lever loop stabilizes (post-K).
+1. **Change F** (LLM triage for benchmark reuse) remains open.
+2. **Change E** (UC single-source-of-truth) remains deferred; it is still a
+   high-risk applier/rendering refactor.
+3. Retired `harness.py` / `control_plane.py` compatibility code can be deleted
+   in a follow-up once the historical harness tests and replay fixtures are
+   intentionally retired. It is no longer in the active Databricks Job path.
 
 ## Out of Scope
 

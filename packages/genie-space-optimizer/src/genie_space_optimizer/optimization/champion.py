@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-PROMOTION_EVAL_SCOPES: frozenset[str] = frozenset({"full", "enrichment"})
+PROMOTION_EVAL_SCOPES: frozenset[str] = frozenset({"full"})
 
 
 def _as_int(value: Any) -> int | None:
@@ -71,7 +71,7 @@ def select_champion_row(rows: Iterable[Mapping[str, Any]]) -> dict | None:
     """Return the champion row using the promotion/audit candidate rules.
 
     Candidate universe:
-    - Prefer ``eval_scope in {'full', 'enrichment'}``; fall back to all rows only
+    - Prefer ``eval_scope='full'``; fall back to all rows only
       when no such rows exist.
     - Existing ``is_champion`` flags are authoritative inside that universe.
     - Otherwise choose the highest-accuracy non-rolled-back row, keeping the
