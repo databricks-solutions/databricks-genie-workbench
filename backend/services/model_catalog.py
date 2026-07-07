@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from databricks.sdk import WorkspaceClient
 
@@ -23,6 +24,15 @@ _CURATED_COMPATIBLE_CHAT_MODELS: tuple[tuple[str, str], ...] = (
 _CURATED_COMPATIBLE_CHAT_MODEL_NAMES = {
     name for name, _display_name in _CURATED_COMPATIBLE_CHAT_MODELS
 }
+
+
+def _optimizer_prompt_budget_chars() -> int:
+    raw = os.getenv("GSO_OPTIMIZER_PROMPT_MAX_CHARS", "60000").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("Invalid GSO_OPTIMIZER_PROMPT_MAX_CHARS=%r; using 60000", raw)
+        return 60_000
 
 
 class ModelCatalogError(RuntimeError):
@@ -46,6 +56,8 @@ def _curated_model_infos(default_model: str) -> list[LLMModelInfo]:
             name=name,
             displayName=display_name,
             isDefault=name == default_model,
+            optimizerPromptBudgetChars=_optimizer_prompt_budget_chars(),
+            contextTier="long",
         )
         for name, display_name in _CURATED_COMPATIBLE_CHAT_MODELS
     ]

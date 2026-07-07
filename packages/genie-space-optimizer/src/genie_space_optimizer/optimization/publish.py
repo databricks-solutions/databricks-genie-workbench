@@ -42,13 +42,20 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
 from genie_space_optimizer.common.config import (
     AUDIT_SUMMARY_PROMPT,
     LEVER_NAMES,
+    PROMPT_NAME_TEMPLATE,
+    format_mlflow_template,
 )
 from genie_space_optimizer.optimization.champion import select_champion_row
+from genie_space_optimizer.optimization.evaluation import (
+    _link_prompt_to_trace,
+    get_registered_prompt_name,
+)
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.models import promote_best_model
 from genie_space_optimizer.optimization.state import (
@@ -465,8 +472,35 @@ def as_audit_context(
 # ── LLM audit summary (best-effort / non-fatal) ─────────────────────────────
 
 
+def _prompt_name_for_key(prompt_key: str, *, catalog: str = "", schema: str = "") -> str:
+    registered = get_registered_prompt_name(prompt_key)
+    if registered:
+        return registered
+    uc_schema = ".".join(part for part in (catalog, schema) if part)
+    if uc_schema and "." in uc_schema:
+        return format_mlflow_template(
+            PROMPT_NAME_TEMPLATE,
+            uc_schema=uc_schema,
+            judge_name=prompt_key,
+        )
+    return prompt_key
+
+
+def _start_chain_span(name: str) -> Any:
+    try:
+        import mlflow
+        from mlflow.entities import SpanType
+
+        return mlflow.start_span(name=name, span_type=SpanType.CHAIN)
+    except Exception:
+        return nullcontext(None)
+
+
 def build_audit_summary(
-    w: "WorkspaceClient | None", audit_context: dict
+    w: "WorkspaceClient | None",
+    audit_context: dict,
+    *,
+    prompt_name: str = "",
 ) -> tuple[str | None, str | None]:
     """Generate the 1–2 paragraph human-readable audit summary via the LLM.
 
@@ -481,7 +515,37 @@ def build_audit_summary(
             {"role": "system", "content": AUDIT_SUMMARY_PROMPT},
             {"role": "user", "content": user_payload},
         ]
-        text, _response = call_llm(w, messages=messages)
+        context_hash = hashlib.sha256(user_payload.encode("utf-8")).hexdigest()
+        prompt_name = prompt_name or _prompt_name_for_key("audit_summary")
+        with _start_chain_span("audit_summary") as span:
+            _link_prompt_to_trace(prompt_name)
+            try:
+                if span is not None:
+                    span.set_inputs(
+                        {
+                            "prompt_name": prompt_name,
+                            "audit_context_hash": context_hash,
+                            "audit_context_chars": len(user_payload),
+                            "audit_context_field_count": len(audit_context),
+                            "improvement_trajectory_count": len(
+                                audit_context.get("improvement_trajectory") or []
+                            ),
+                            "patch_family_count": len(
+                                audit_context.get("patch_families") or {}
+                            ),
+                            "root_cause_field_count": len(
+                                audit_context.get("root_cause_distribution") or {}
+                            ),
+                        }
+                    )
+            except Exception:
+                pass
+            text, _response = call_llm(w, messages=messages)
+            try:
+                if span is not None:
+                    span.set_outputs({"summary_chars": len(text or "")})
+            except Exception:
+                pass
         text = (text or "").strip()
         if not text:
             return None, "Audit summary generation returned empty output."
@@ -631,7 +695,15 @@ def publish_and_audit(
         target_accuracy=target_accuracy,
         max_attempts=max_attempts,
     )
-    audit_summary, summary_concern = build_audit_summary(w, audit_context)
+    audit_summary, summary_concern = build_audit_summary(
+        w,
+        audit_context,
+        prompt_name=_prompt_name_for_key(
+            "audit_summary",
+            catalog=catalog,
+            schema=schema,
+        ),
+    )
     if summary_concern:
         concerns.append(summary_concern)
 

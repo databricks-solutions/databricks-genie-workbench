@@ -57,6 +57,8 @@ def test_list_chat_models_returns_curated_compatible_models(monkeypatch):
         name="databricks-claude-sonnet-4-6",
         displayName="Claude Sonnet 4.6",
         isDefault=True,
+        optimizerPromptBudgetChars=60_000,
+        contextTier="long",
     )
     assert "databricks-gpt-5-4" in names
     assert "databricks-gpt-5-4-mini" not in names
@@ -94,6 +96,8 @@ def test_list_chat_models_uses_default_when_curated(monkeypatch):
         name="databricks-claude-sonnet-4-6",
         displayName="Claude Sonnet 4.6",
         isDefault=True,
+        optimizerPromptBudgetChars=60_000,
+        contextTier="long",
     )
     assert any(m.name == "databricks-gpt-5-4" for m in models)
 
@@ -146,5 +150,21 @@ def test_models_route_returns_bare_array(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json() == [
-        {"name": "chat", "displayName": "Chat", "isDefault": True},
+        {
+            "name": "chat",
+            "displayName": "Chat",
+            "isDefault": True,
+            "optimizerPromptBudgetChars": None,
+            "contextTier": None,
+        },
     ]
+
+
+def test_models_include_optimizer_prompt_budget_metadata(monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "databricks-claude-sonnet-4-6")
+    monkeypatch.setenv("GSO_OPTIMIZER_PROMPT_MAX_CHARS", "75000")
+
+    models = model_catalog.list_chat_models(client=MagicMock())
+
+    assert models[0].optimizerPromptBudgetChars == 75_000
+    assert models[0].contextTier == "long"

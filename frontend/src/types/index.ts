@@ -29,6 +29,8 @@ export interface LLMModelInfo {
   name: string
   displayName: string
   isDefault: boolean
+  optimizerPromptBudgetChars?: number | null
+  contextTier?: "standard" | "long" | null
 }
 
 // Space fetch/detail response types

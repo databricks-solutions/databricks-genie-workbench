@@ -12,6 +12,17 @@ import re
 from typing import Any
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(1, value)
+
+
 def format_mlflow_template(template: str, **kwargs: Any) -> str:
     """Format a template that uses MLflow's ``{ variable }`` syntax.
 
@@ -3903,6 +3914,65 @@ The default endpoint supports large contexts; keep prompts around 70k tokens to
 leave response headroom and remain inside the quality sweet spot.
 """
 
+OPTIMIZER_PROMPT_MAX_CHARS = _int_env("GSO_OPTIMIZER_PROMPT_MAX_CHARS", 60_000)
+"""Hard character budget for the unified optimizer patch prompt's JSON context."""
+
+UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT = (
+    "You are optimizing a Databricks Genie Space. Return only JSON. "
+    "You may propose ordinary Patch DSL entries; enrichment is not a separate mode. "
+    "Use expected_sql and generated_sql only as diagnostic evidence. Do not copy "
+    "benchmark question text, expected SQL, or generated SQL into Genie-visible "
+    "instructions, examples, descriptions, or snippets. Prefer the smallest patch "
+    "that can improve the failing benchmark pattern."
+)
+
+UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
+    "lever": "integer lever id",
+    "rationale": "short reason",
+    "patches": [
+        {
+            "type": (
+                "update_description | update_column_description | add_instruction | "
+                "update_instruction_section | add_join_spec | update_join_spec | "
+                "add_sql_snippet_measure | add_sql_snippet_filter | "
+                "add_sql_snippet_expression | ..."
+            ),
+            "lever": "same integer lever id",
+            "target": "table identifier for table-level patches",
+            "table": "table identifier for column patches",
+            "column": "column name for column patches",
+            "new_text": "natural-language patch text",
+            "structured_sections": "optional dict for description patches",
+            "join_spec": "optional Genie join spec object for join patches",
+            "sql": "required for add_sql_snippet_* patches",
+            "display_name": "required for add_sql_snippet_* patches",
+            "instruction": "required for add_sql_snippet_* patches",
+            "synonyms": "required list for add_sql_snippet_* patches",
+            "target_table": "required for add_sql_snippet_* patches",
+            "snippet_type": "measure | filter | expression for add_sql_snippet_* patches",
+        }
+    ],
+}
+
+UNIFIED_OPTIMIZER_PATCH_RULES = [
+    "Use update_description for table descriptions.",
+    "Use update_column_description with table and column for column descriptions.",
+    "Use update_instruction_section for narrow instruction changes; use Markdown ## sections when adding text.",
+    "Use add_join_spec only when the relationship is clear and include a relationship annotation.",
+    "Do not propose add_example_sql or update_example_sql from benchmark SQL.",
+    "Do not include raw SELECT statements in text instructions.",
+    "For add_sql_snippet_measure/add_sql_snippet_filter/add_sql_snippet_expression, include sql, display_name, instruction, synonyms, target_table, and snippet_type.",
+    "Never set validation_passed; the optimizer validates SQL snippets before apply.",
+]
+
+UNIFIED_OPTIMIZER_PATCH_PROMPT = (
+    UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT
+    + "\n\nResponse schema:\n"
+    + str(UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA)
+    + "\n\nPatch rules:\n"
+    + "\n".join(f"- {rule}" for rule in UNIFIED_OPTIMIZER_PATCH_RULES)
+)
+
 RISK_LEVEL_SCORE = {
     "low": 1,
     "medium": 2,
@@ -4634,6 +4704,8 @@ LEVER_PROMPTS: dict[str, str] = {
 # ── 20c. Benchmark Prompts (registered in MLflow for traceability) ─────
 
 BENCHMARK_PROMPTS: dict[str, str] = {
+    "unified_optimizer_patch": UNIFIED_OPTIMIZER_PATCH_PROMPT,
+    "audit_summary": AUDIT_SUMMARY_PROMPT,
     "benchmark_generation": BENCHMARK_GENERATION_PROMPT,
     "benchmark_correction": BENCHMARK_CORRECTION_PROMPT,
     "benchmark_alignment_check": BENCHMARK_ALIGNMENT_CHECK_PROMPT,

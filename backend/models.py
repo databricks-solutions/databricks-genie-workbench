@@ -112,6 +112,8 @@ class LLMModelInfo(BaseModel):
     name: str
     displayName: str
     isDefault: bool = False
+    optimizerPromptBudgetChars: int | None = None
+    contextTier: Literal["standard", "long"] | None = None
 
 
 # ── Auto-Optimize preflight permissions ──────────────────────────────────

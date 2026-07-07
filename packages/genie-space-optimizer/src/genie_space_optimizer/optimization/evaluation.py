@@ -8896,8 +8896,8 @@ def extract_genie_space_benchmarks(
     from genie_space_optimizer.optimization.benchmarks import validate_ground_truth_sql
 
     parsed_space = config.get("_parsed_space", {})
-    if not isinstance(parsed_space, dict):
-        parsed_space = {}
+    if not isinstance(parsed_space, dict) or not parsed_space:
+        parsed_space = config if isinstance(config, dict) else {}
 
     benchmarks: list[dict] = []
     seen_questions: set[str] = set()
@@ -9143,8 +9143,8 @@ def _build_schema_contexts(
     # the MEASURE() worked example, and the execute gate rejects every
     # candidate against the MV.
     parsed_space = config.get("_parsed_space", {})
-    if not isinstance(parsed_space, dict):
-        parsed_space = {}
+    if not isinstance(parsed_space, dict) or not parsed_space:
+        parsed_space = config if isinstance(config, dict) else {}
 
     mv_lines: list[str] = []
     for mv in _iter_effective_metric_view_entries(config):
@@ -9391,8 +9391,12 @@ def _attempt_sql_correction(
         column_allowlist=ctx.get("column_allowlist", "(no columns)"),
         metric_views_context=ctx.get("metric_views_context", "None"),
         tvfs_context=ctx.get("tvfs_context", "None"),
+        join_specs_context=ctx.get("join_specs_context", "None"),
         data_profile_context=ctx.get("data_profile_context", "(no data profile available)"),
         benchmarks_to_fix=benchmarks_to_fix,
+    )
+    assert "{{ join_specs_context }}" not in prompt, (
+        "SQL correction prompt rendered with unresolved join_specs_context"
     )
 
     try:
