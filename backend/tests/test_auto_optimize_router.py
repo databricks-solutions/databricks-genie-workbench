@@ -1149,11 +1149,11 @@ def test_trigger_rejects_out_of_range_target_accuracy(client) -> None:
 def test_iterations_merge_is_champion_and_config_json(monkeypatch) -> None:
     delta_rows = [
         {"iteration": 0, "eval_scope": "full", "overall_accuracy": 80.0,
-         "total_questions": 10, "correct_count": 8, "thresholds_met": False,
-         "rolled_back": False, "scores_json": "{}", "lever": None},
+         "total_questions": 10, "correct_count": 8, "thresholds_met": "false",
+         "rolled_back": "false", "scores_json": "{}", "lever": None},
         {"iteration": 2, "eval_scope": "full", "overall_accuracy": 90.0,
-         "total_questions": 10, "correct_count": 9, "thresholds_met": True,
-         "rolled_back": False, "scores_json": "{}", "lever": 1},
+         "total_questions": 10, "correct_count": 9, "thresholds_met": "true",
+         "rolled_back": "false", "scores_json": "{}", "lever": 1},
     ]
     loop_rows = [
         {"iteration": 0, "eval_scope": "full", "is_champion": False,
@@ -1180,7 +1180,11 @@ def test_iterations_merge_is_champion_and_config_json(monkeypatch) -> None:
     assert out[2]["attempt_no"] == 2
     assert out[2]["attempt_mode"] == "surgical"
     assert out[2]["decision"] == "accept"
+    assert out[2]["api_accuracy_gate_met"] is True
+    assert out[2]["eval_gate_status"] == "passed"
     assert out[0]["is_champion"] is False
+    assert out[0]["api_accuracy_gate_met"] is False
+    assert out[0]["eval_gate_status"] == "failed"
 
 
 def test_iterations_no_loop_state_columns_degrade_gracefully(monkeypatch) -> None:
@@ -1264,6 +1268,27 @@ def test_loop_state_endpoint_builds_attempts_and_aggregate(monkeypatch) -> None:
     assert ls["attemptCount"] == 2
 
 
+def test_loop_state_endpoint_does_not_treat_false_string_as_rolled_back(monkeypatch) -> None:
+    loop_rows = [
+        {"iteration": 1, "eval_scope": "full", "overall_accuracy": 67.0,
+         "attempt_no": 1, "attempt_mode": "llm_patch", "best_accuracy": 67.0,
+         "decision": "accept", "rolled_back": "false", "is_champion": "true"},
+        {"iteration": 2, "eval_scope": "full", "overall_accuracy": 60.0,
+         "attempt_no": 2, "attempt_mode": "llm_patch", "best_accuracy": 67.0,
+         "decision": "reject", "rolled_back": "true", "is_champion": "false"},
+    ]
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [dict(r) for r in loop_rows])
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/loop-state")
+    assert resp.status_code == 200, resp.text
+    attempts = resp.json()["attempts"]
+    assert attempts[0]["rolledBack"] is False
+    assert attempts[0]["isChampion"] is True
+    assert attempts[1]["rolledBack"] is True
+    assert attempts[1]["isChampion"] is False
+
+
 def test_loop_state_endpoint_empty_for_legacy_run(monkeypatch) -> None:
     monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [])
     client = _gso_client(monkeypatch)
@@ -1280,7 +1305,7 @@ def test_loop_state_endpoint_empty_for_legacy_run(monkeypatch) -> None:
 def test_publish_record_endpoint_maps_artifact(monkeypatch) -> None:
     payload = {
         "run_id": _RUN, "space_id": "space-1", "final_status": "CONVERGED",
-        "terminal_reason": "TARGET_REACHED", "published": True,
+        "terminal_reason": "TARGET_REACHED", "published": "true",
         "publish_outcome": "published", "champion_iteration": 2,
         "champion_accuracy": 92.0, "champion_config_version_id": "cfgsha:abc",
         "target_accuracy": 0.90, "max_attempts": 3,
@@ -1288,12 +1313,12 @@ def test_publish_record_endpoint_maps_artifact(monkeypatch) -> None:
         "improvement_trajectory": [
             {"iteration": 0, "attempt_no": None, "attempt_mode": "baseline",
              "eval_scope": "full", "accuracy": 70.0, "delta_vs_baseline": 0.0,
-             "best_accuracy": 70.0, "decision": None, "rolled_back": False,
-             "is_champion": False},
+             "best_accuracy": 70.0, "decision": None, "rolled_back": "false",
+             "is_champion": "false"},
             {"iteration": 2, "attempt_no": 2, "attempt_mode": "surgical",
              "eval_scope": "full", "accuracy": 92.0, "delta_vs_baseline": 22.0,
-             "best_accuracy": 92.0, "decision": "accept", "rolled_back": False,
-             "is_champion": True},
+             "best_accuracy": 92.0, "decision": "accept", "rolled_back": "false",
+             "is_champion": "true"},
         ],
         "concerns": ["Two questions still need review."],
     }
@@ -1312,8 +1337,12 @@ def test_publish_record_endpoint_maps_artifact(monkeypatch) -> None:
     assert pr["auditSummary"].startswith("Improved")
     assert pr["concerns"] == ["Two questions still need review."]
     assert len(pr["improvementTrajectory"]) == 2
+    assert pr["improvementTrajectory"][0]["rolledBack"] is False
+    assert pr["improvementTrajectory"][0]["isChampion"] is False
     assert pr["improvementTrajectory"][1]["attemptMode"] == "surgical"
     assert pr["improvementTrajectory"][1]["deltaVsBaseline"] == 22.0
+    assert pr["improvementTrajectory"][1]["rolledBack"] is False
+    assert pr["improvementTrajectory"][1]["isChampion"] is True
 
 
 def test_publish_record_null_when_absent(monkeypatch) -> None:

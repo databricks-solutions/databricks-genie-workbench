@@ -5,28 +5,25 @@ import { Badge } from "@/components/ui/badge"
 import { OptimizationConfig } from "@/components/auto-optimize/OptimizationConfig"
 import { OptimizationLoadingStepper } from "@/components/auto-optimize/OptimizationLoadingStepper"
 import { RunHistoryTable } from "@/components/auto-optimize/RunHistoryTable"
-import { ScoreSummary } from "@/components/auto-optimize/ScoreSummary"
-import { QuestionList } from "@/components/auto-optimize/QuestionList"
-import { QuestionDetail } from "@/components/auto-optimize/QuestionDetail"
 import { RunDetailView } from "@/components/auto-optimize/RunDetailView"
-import { PipelineDetailsModal } from "@/components/auto-optimize/PipelineDetailsModal"
 import { TaskRail } from "@/components/auto-optimize/TaskRail"
 import { AttemptLadder } from "@/components/auto-optimize/AttemptLadder"
 import { AttemptLedger } from "@/components/auto-optimize/AttemptLedger"
-import { ChampionHero } from "@/components/auto-optimize/ChampionHero"
 import { CurrentAttemptStrip } from "@/components/auto-optimize/CurrentAttemptStrip"
 import { TerminalBanner } from "@/components/auto-optimize/TerminalBanner"
 import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
 import { ResolutionActions } from "@/components/auto-optimize/ResolutionActions"
 import { BenchmarkChangesPanel } from "@/components/auto-optimize/BenchmarkChangesPanel"
+import { OptimizationNarrative } from "@/components/auto-optimize/OptimizationNarrative"
+import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
+import { ResourceLinks } from "@/components/auto-optimize/ResourceLinks"
 import {
   getAutoOptimizeHealth,
   getAutoOptimizeStatus,
   getActiveRunForSpace,
   getAutoOptimizePermissions,
   getAutoOptimizeIterations,
-  getAutoOptimizeEvalResults,
-  getAutoOptimizeQuestionResults,
+  getAutoOptimizeRun,
   getAutoOptimizeLoopState,
   getAutoOptimizePublishRecord,
   getAutoOptimizeBenchmarkChanges,
@@ -35,10 +32,11 @@ import { convergenceReasonText } from "@/lib/score-display"
 import type {
   GSORunStatus,
   GSOPermissionCheck,
-  GSOQuestionDetail,
   GSOLoopStateResponse,
   GSOPublishRecord,
   GSOBenchmarkChanges,
+  GSOPipelineRun,
+  GSOIterationResult,
 } from "@/types"
 
 interface AutoOptimizeTabProps {
@@ -71,6 +69,57 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   QUEUED: "secondary",
 }
 
+function hasBenchmarkChangesSurface(changes: GSOBenchmarkChanges | null | undefined): boolean {
+  return Boolean(changes && (changes.qc != null || changes.counts.total > 0))
+}
+
+function formatPct(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? "—" : `${value.toFixed(1)}%`
+}
+
+function ScoreComparisonCards({
+  baselineAccuracy,
+  optimizedAccuracy,
+}: {
+  baselineAccuracy: number | null | undefined
+  optimizedAccuracy: number | null | undefined
+}) {
+  const improvement =
+    baselineAccuracy != null && optimizedAccuracy != null
+      ? optimizedAccuracy - baselineAccuracy
+      : null
+  const improvementClass =
+    improvement == null || improvement === 0
+      ? "text-primary"
+      : improvement > 0
+        ? "text-emerald-600 dark:text-emerald-400"
+        : "text-red-500"
+  const improvementText =
+    improvement == null ? "—" : `${improvement > 0 ? "+" : ""}${improvement.toFixed(1)}%`
+
+  return (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+      <div className="rounded-xl border border-default bg-surface p-4">
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted">Baseline</p>
+        <p className="mt-1 text-2xl font-bold text-primary">{formatPct(baselineAccuracy)}</p>
+      </div>
+      <div className="rounded-xl border border-indigo-300 bg-indigo-50 p-4 dark:border-indigo-900/50 dark:bg-indigo-950/20">
+        <p className="text-xs font-semibold uppercase tracking-widest text-indigo-600 dark:text-indigo-400">
+          Optimized
+        </p>
+        <p className="mt-1 text-2xl font-bold text-indigo-600 dark:text-indigo-400">
+          {formatPct(optimizedAccuracy)}
+        </p>
+        <p className="mt-0.5 text-xs text-muted">Champion accuracy</p>
+      </div>
+      <div className="rounded-xl border border-default bg-surface p-4">
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted">Improvement</p>
+        <p className={`mt-1 text-2xl font-bold ${improvementClass}`}>{improvementText}</p>
+      </div>
+    </div>
+  )
+}
+
 export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [healthIssues, setHealthIssues] = useState<string[]>([])
@@ -81,12 +130,10 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   const [stepperError, setStepperError] = useState<string | null>(null)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [runStatus, setRunStatus] = useState<GSORunStatus | null>(null)
+  const [runDetail, setRunDetail] = useState<GSOPipelineRun | null>(null)
+  const [iterations, setIterations] = useState<GSOIterationResult[]>([])
   const [permissions, setPermissions] = useState<GSOPermissionCheck | null>(null)
   const [permsLoading, setPermsLoading] = useState(true)
-  const [questions, setQuestions] = useState<GSOQuestionDetail[]>([])
-  const [totalQuestions, setTotalQuestions] = useState<number>(0)
-  const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null)
-  const [showPipeline, setShowPipeline] = useState(false)
   // GSO v2 Phase 12 — live cockpit state (loop-state attempts + publish record
   // + benchmark QC for the 01 hard-fail chip + a client-side loop-state
   // heartbeat). All optional/nullable — legacy 6-step runs degrade gracefully.
@@ -96,7 +143,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   const [lastCommitAt, setLastCommitAt] = useState<number | null>(null)
   const attemptSigRef = useRef<string>("")
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const latestIterRef = useRef<number>(-1)
 
   // Health check on mount
   useEffect(() => {
@@ -117,7 +163,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         // Stay on "configure" view — the banner there lets users click into monitoring
       }
     })
-    setPermsLoading(true)
     getAutoOptimizePermissions(spaceId)
       .then(setPermissions)
       .catch(() => setPermissions(null))
@@ -136,15 +181,17 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   useEffect(() => {
     if (view !== "monitoring" || !activeRunId) return
 
-    // Reset the heartbeat signature so a switched/new run re-stamps its first
-    // commit (lastCommitAt itself is reset inside the poll handler when the run
-    // has no attempts yet — keeps setState out of the effect body).
+    // Reset the heartbeat signature so a switched/new run stamps the first
+    // non-empty attempt commit it sees.
     attemptSigRef.current = ""
+    const runId = activeRunId
+    let cancelled = false
 
     function poll() {
       // Poll status
-      getAutoOptimizeStatus(activeRunId!)
+      getAutoOptimizeStatus(runId)
         .then((status) => {
+          if (cancelled) return
           setRunStatus(status)
           if (TERMINAL_STATUSES.has(status.status)) {
             if (intervalRef.current) {
@@ -155,59 +202,42 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         })
         .catch(() => {})
 
-      // Poll iterations + question results
-      getAutoOptimizeIterations(activeRunId!)
-        .then(async (iterations) => {
-          if (iterations.length === 0) return
-          // Get total questions from the first iteration that has it
-          const withTotal = iterations.find((it) => it.total_questions > 0)
-          if (withTotal) setTotalQuestions(withTotal.total_questions)
-          // Filter to full-scope evaluations only (skip slice/p0 probes)
-          const fullIters = iterations.filter((it) => it.eval_scope === "full")
-          if (fullIters.length === 0) return
-          const maxIter = Math.max(...fullIters.map((it) => it.iteration))
-          latestIterRef.current = maxIter
+      // Full run detail is the source of Databricks resource links and the
+      // terminal summary narrative. It has a Delta fallback and is lightweight
+      // enough for the monitoring poll.
+      getAutoOptimizeRun(runId)
+        .then((next) => {
+          if (!cancelled) setRunDetail(next)
+        })
+        .catch(() => {})
 
-          // Prefer question-results (rows_json) — has full question text, SQL, and arbiter-adjusted pass/fail
-          const questionResults = await getAutoOptimizeQuestionResults(activeRunId!, maxIter)
-          if (questionResults && questionResults.length > 0) {
-            setQuestions(questionResults)
-            return
-          }
-
-          // Fallback: lightweight official eval-results (assessment +
-          // assessment_reasons per question). One row per question on the
-          // official path, so no per-judge dedup is needed.
-          const evalResults = await getAutoOptimizeEvalResults(activeRunId!, maxIter)
-          if (evalResults && evalResults.length > 0) {
-            setQuestions(
-              evalResults.map((r) => {
-                const assessment = (r.assessment ?? "").toString().toUpperCase()
-                return {
-                  question_id: r.question_id,
-                  question: "",
-                  generated_sql: null,
-                  expected_sql: null,
-                  passed: assessment === "GOOD" ? true : assessment === "BAD" ? false : null,
-                  assessment: r.assessment ?? null,
-                  assessment_reasons: r.assessment_reasons ?? [],
-                  match_type: null,
-                }
-              })
-            )
-          }
+      // Poll iterations. Preserve the last non-empty set so a transient empty
+      // Lakebase/Delta read never blanks the live cockpit while the notebook is
+      // between eval-run commits.
+      getAutoOptimizeIterations(runId)
+        .then((next) => {
+          if (cancelled) return
+          if (next.length > 0) setIterations(next)
         })
         .catch(() => {})
 
       // GSO v2 Phase 12 — controller loop-state (per-attempt rows + run-level
       // aggregate) drives the Attempt Ladder/Ledger + Champion hero. The
       // attempt-signature diff feeds the client-side loop-state heartbeat.
-      getAutoOptimizeLoopState(activeRunId!)
+      getAutoOptimizeLoopState(runId)
         .then((ls) => {
-          setLoopState(ls)
+          if (cancelled) return
+          setLoopState((prev) => {
+            if (!ls) return prev
+            if (ls.runId !== runId) return prev
+            if (prev?.runId && prev.runId !== runId) return ls
+            if ((ls.attempts?.length ?? 0) === 0 && (prev?.attempts?.length ?? 0) > 0) {
+              return prev
+            }
+            return ls
+          })
           const attempts = ls?.attempts ?? []
           if (attempts.length === 0) {
-            setLastCommitAt(null)
             return
           }
           const sig = attempts
@@ -224,14 +254,29 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         .catch(() => {})
 
       // Publish record (terminal banner published vs not) — null until publish.
-      getAutoOptimizePublishRecord(activeRunId!)
-        .then((res) => setPublishRecord(res?.publishRecord ?? null))
+      getAutoOptimizePublishRecord(runId)
+        .then((res) => {
+          if (cancelled) return
+          const next = res?.publishRecord ?? null
+          if (next) setPublishRecord(next)
+        })
         .catch(() => {})
 
       // Benchmark changes + QC — drives the 01 BENCHMARK_UNREPAIRABLE rail
       // hard-fail chip and the first-class benchmark QC surface.
-      getAutoOptimizeBenchmarkChanges(activeRunId!)
-        .then((res) => setBenchmarkChanges(res))
+      getAutoOptimizeBenchmarkChanges(runId)
+        .then((res) => {
+          if (cancelled) return
+          setBenchmarkChanges((prev) => {
+            if (!res) return prev
+            if (res.runId !== runId) return prev
+            if (prev?.runId && prev.runId !== runId) return res
+            if (!hasBenchmarkChangesSurface(res) && hasBenchmarkChangesSurface(prev)) {
+              return prev
+            }
+            return res
+          })
+        })
         .catch(() => {})
     }
 
@@ -239,6 +284,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
     intervalRef.current = setInterval(poll, 5000)
 
     return () => {
+      cancelled = true
       if (intervalRef.current) {
         clearInterval(intervalRef.current)
         intervalRef.current = null
@@ -337,49 +383,51 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
 
   // Monitoring view
   if (view === "monitoring" && activeRunId) {
-    const isTerminal = runStatus ? TERMINAL_STATUSES.has(runStatus.status) : false
-    const assessedCount = questions.length
-    const selectedQuestion = questions.find((q) => q.question_id === selectedQuestionId) ?? null
-    const stepsCompleted = runStatus?.stepsCompleted ?? 0
-    const currentStepName = runStatus?.currentStepName ?? null
+    const statusForRun = runStatus?.runId === activeRunId ? runStatus : null
+    const runDetailForRun = runDetail?.runId === activeRunId ? runDetail : null
+    const loopStateForRun = loopState?.runId === activeRunId ? loopState : null
+    const publishRecordForRun = publishRecord?.runId === activeRunId ? publishRecord : null
+    const benchmarkChangesForRun = benchmarkChanges?.runId === activeRunId ? benchmarkChanges : null
+    const isTerminal = statusForRun ? TERMINAL_STATUSES.has(statusForRun.status) : false
+    const stepsCompleted = statusForRun?.stepsCompleted ?? 0
+    const currentStepName = statusForRun?.currentStepName ?? null
 
     // GSO v2 Phase 12 — the controller attempts drive the live cockpit. Empty
-    // for legacy 6-step runs or before the loop commits its first attempt; the
-    // view degrades to the classic ScoreSummary in that case.
-    const attempts = loopState?.attempts ?? []
+    // for legacy 6-step runs or before the loop commits its first attempt.
+    const attempts = loopStateForRun?.attempts ?? []
     const hasAttempts = attempts.length > 0
-    const loop = loopState?.loopState ?? null
-    const terminalReason = runStatus?.terminalReason ?? null
-    const benchmarkUnrepairable = benchmarkChanges?.qc?.terminalReason === "BENCHMARK_UNREPAIRABLE"
+    const loop = loopStateForRun?.loopState ?? null
+    const terminalReason = statusForRun?.terminalReason ?? null
+    const benchmarkUnrepairable = benchmarkChangesForRun?.qc?.terminalReason === "BENCHMARK_UNREPAIRABLE"
     const showTypedBanner = (isTerminal && Boolean(terminalReason)) || benchmarkUnrepairable
-    const hasBenchmarkSurface =
-      benchmarkChanges != null && (benchmarkChanges.qc != null || benchmarkChanges.counts.total > 0)
+    const hasBenchmarkSurface = hasBenchmarkChangesSurface(benchmarkChangesForRun)
 
-    const baselineAccuracy = runStatus?.baselineScore ?? null
+    const baselineAccuracy = statusForRun?.baselineScore ?? runDetailForRun?.baselineScore ?? null
     // targetAccuracy is normalized to 0–1; prefer the loop-state value.
-    const targetUnit = loop?.targetAccuracy ?? runStatus?.targetAccuracy ?? null
+    const targetUnit = loop?.targetAccuracy ?? statusForRun?.targetAccuracy ?? runDetailForRun?.targetAccuracy ?? null
     const bestAccuracy =
-      loop?.bestAccuracy ?? publishRecord?.championAccuracy ?? runStatus?.optimizedScore ?? null
+      loop?.bestAccuracy ??
+      publishRecordForRun?.championAccuracy ??
+      statusForRun?.optimizedScore ??
+      runDetailForRun?.optimizedScore ??
+      null
     // Baseline is champion only when terminal AND no attempt was flagged
     // champion (nothing beat it) — derived from explicit flags, never idxmax.
     const baselineIsChampion = isTerminal && hasAttempts && !attempts.some((a) => a.isChampion)
-    // Residual failures = still-failing questions in the latest full eval.
-    const residualFailureCount =
-      questions.length > 0 ? questions.filter((q) => q.passed === false).length : null
     const latestAttempt = hasAttempts ? attempts[attempts.length - 1] : null
 
     // Keep / Discard-rollback is available once a champion was published to the
     // live space (or the run is already resolved). Published comes from the
     // publish record; fall back to the published-terminal statuses for runs
     // that predate the artifact.
-    const resolutionPublished = publishRecord ? publishRecord.published : null
+    const resolutionPublished = publishRecordForRun ? publishRecordForRun.published : null
     const showResolution =
       isTerminal &&
-      (runStatus?.status === "APPLIED" ||
-        runStatus?.status === "DISCARDED" ||
+      (statusForRun?.status === "APPLIED" ||
+        statusForRun?.status === "DISCARDED" ||
         resolutionPublished === true ||
         (resolutionPublished == null &&
-          (runStatus?.status === "CONVERGED" || runStatus?.status === "MAX_ITERATIONS")))
+          (statusForRun?.status === "CONVERGED" || statusForRun?.status === "MAX_ITERATIONS")))
 
     return (
       <div className="space-y-4">
@@ -395,56 +443,60 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
             >
               &larr; Back to configuration
             </button>
-            {runStatus && (
-              <Badge variant={STATUS_VARIANT[runStatus.status] ?? "secondary"}>
-                {runStatus.status}
+            {statusForRun && (
+              <Badge variant={STATUS_VARIANT[statusForRun.status] ?? "secondary"}>
+                {statusForRun.status}
               </Badge>
             )}
           </div>
-          {totalQuestions > 0 && (
-            <span className="text-sm text-muted">
-              {assessedCount} of {totalQuestions} assessed
-            </span>
-          )}
         </div>
 
         {/* 4-task rail */}
         <TaskRail
           stepsCompleted={stepsCompleted}
           currentStepName={currentStepName}
-          status={runStatus?.status ?? null}
+          status={statusForRun?.status ?? null}
           terminalReason={terminalReason}
           benchmarkUnrepairable={benchmarkUnrepairable}
-          onShowDetails={() => setShowPipeline(true)}
         />
 
         {/* Benchmark QC & changes — first-class surface under task 01. */}
         {hasBenchmarkSurface && (
-          <BenchmarkChangesPanel runId={activeRunId} changes={benchmarkChanges} />
+          <BenchmarkChangesPanel runId={activeRunId} changes={benchmarkChangesForRun} />
         )}
 
         {/* Terminal banner — published vs nothing-published, keyed on reason.
             Concerns are owned by the publish/audit summary below. */}
         {(isTerminal || benchmarkUnrepairable) && (
           <TerminalBanner
-            status={runStatus?.status ?? null}
+            status={statusForRun?.status ?? null}
             terminalReason={terminalReason}
-            published={publishRecord ? publishRecord.published : null}
-            publishOutcome={publishRecord?.publishOutcome ?? null}
+            published={publishRecordForRun ? publishRecordForRun.published : null}
+            publishOutcome={publishRecordForRun?.publishOutcome ?? null}
             benchmarkUnrepairable={benchmarkUnrepairable}
-            championAccuracy={publishRecord?.championAccuracy ?? bestAccuracy}
+            championAccuracy={publishRecordForRun?.championAccuracy ?? bestAccuracy}
           />
         )}
 
         {/* Publish/audit summary headline — LLM paragraph + concerns callout. */}
-        {isTerminal && <PublishAuditSummary publishRecord={publishRecord} />}
+        {isTerminal && (
+          <PublishAuditSummary publishRecord={publishRecordForRun}>
+            {runDetailForRun && (
+              <OptimizationNarrative
+                run={runDetailForRun}
+                iterations={iterations}
+                convergenceReason={runDetailForRun.convergenceReason}
+              />
+            )}
+          </PublishAuditSummary>
+        )}
 
         {/* Keep / Discard-rollback affordance (auto-publish model). */}
         {showResolution && (
           <ResolutionActions
             key={activeRunId}
             runId={activeRunId}
-            status={runStatus?.status ?? ""}
+            status={statusForRun?.status ?? ""}
             published={resolutionPublished}
             onResolved={(s) =>
               setRunStatus((prev) => (prev ? { ...prev, status: s } : prev))
@@ -452,13 +504,15 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
           />
         )}
 
+        {(baselineAccuracy != null || bestAccuracy != null) && (
+          <ScoreComparisonCards
+            baselineAccuracy={baselineAccuracy}
+            optimizedAccuracy={bestAccuracy}
+          />
+        )}
+
         {hasAttempts ? (
           <>
-            <ChampionHero
-              baselineAccuracy={baselineAccuracy}
-              bestAccuracy={bestAccuracy}
-              targetUnit={targetUnit}
-            />
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <AttemptLadder
                 baselineAccuracy={baselineAccuracy}
@@ -474,65 +528,36 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
             {!isTerminal && (
               <CurrentAttemptStrip
                 attempt={latestAttempt}
-                residualFailureCount={residualFailureCount}
+                residualFailureCount={null}
                 lastCommitAt={lastCommitAt}
                 isLive={!isTerminal}
               />
             )}
-          </>
-        ) : (
-          runStatus && (
-            <ScoreSummary
-              baselineScore={runStatus.baselineScore}
-              optimizedScore={runStatus.optimizedScore}
-              bestIteration={runStatus.bestIteration}
-              status={runStatus.status}
+            <PatchesTable
+              key={`${activeRunId}:${attempts.length}`}
+              runId={activeRunId}
+              iterations={iterations}
             />
-          )
+          </>
+        ) : null}
+
+        {runDetailForRun?.links && runDetailForRun.links.length > 0 && (
+          <ResourceLinks links={runDetailForRun.links} />
         )}
 
         {/* Legacy / free-text convergence reason — only when no typed banner */}
-        {!showTypedBanner && runStatus && (() => {
+        {!showTypedBanner && statusForRun && (() => {
           const reason = convergenceReasonText({
-            baselineScore: runStatus.baselineScore,
-            optimizedScore: runStatus.optimizedScore,
-            bestIteration: runStatus.bestIteration,
-            status: runStatus.status,
-            convergenceReason: runStatus.convergenceReason,
+            baselineScore: statusForRun.baselineScore,
+            optimizedScore: statusForRun.optimizedScore,
+            bestIteration: statusForRun.bestIteration,
+            status: statusForRun.status,
+            convergenceReason: statusForRun.convergenceReason,
           })
           return reason ? (
             <p className="text-sm text-muted">Reason: {reason}</p>
           ) : null
         })()}
-
-        {/* Two-column question layout */}
-        <div className="grid grid-cols-3 gap-4 min-h-[450px]">
-          <Card className="col-span-1">
-            <CardContent className="p-4 h-full">
-              {assessedCount === 0 ? (
-                <div className="flex items-center justify-center h-full text-muted text-sm">
-                  {!isTerminal ? (
-                    <span className="animate-pulse">Waiting for evaluation results...</span>
-                  ) : (
-                    "No evaluation results available"
-                  )}
-                </div>
-              ) : (
-                <QuestionList
-                  questions={questions}
-                  selectedId={selectedQuestionId}
-                  onSelect={setSelectedQuestionId}
-                />
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="col-span-2">
-            <CardContent className="p-6">
-              <QuestionDetail question={selectedQuestion} />
-            </CardContent>
-          </Card>
-        </div>
 
         {/* Footer */}
         {!isTerminal && (
@@ -559,9 +584,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
             </button>
           </div>
         )}
-
-        {/* Pipeline Details Modal */}
-        <PipelineDetailsModal runId={activeRunId} isOpen={showPipeline} onClose={() => setShowPipeline(false)} />
       </div>
     )
   }

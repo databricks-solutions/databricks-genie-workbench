@@ -119,6 +119,19 @@ def _typed_terminal_reason(run: dict | None) -> str | None:
     return None
 
 
+def _safe_bool(value: Any) -> bool:
+    """Coerce Delta/Lakebase bool-ish values without treating "false" as true."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+    return bool(value)
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -891,7 +904,7 @@ def _patch_for_ui(row: dict) -> dict[str, Any]:
         "scope": row.get("scope"),
         "riskLevel": row.get("risk_level"),
         "targetObject": row.get("target_object"),
-        "rolledBack": bool(row.get("rolled_back")) if row.get("rolled_back") is not None else False,
+        "rolledBack": _safe_bool(row.get("rolled_back")),
         "rollbackReason": row.get("rollback_reason"),
         "command": _safe_json_parse(row.get("command_json")),
         "patch": _safe_json_parse(row.get("patch_json")),
@@ -1545,7 +1558,7 @@ async def get_run(run_id: RunId):
     links = []
 
     if host and space_id:
-        links.append({"label": "Genie Space", "url": f"{host}/genie/rooms/{space_id}", "category": "genie"})
+        links.append({"label": "Genie Benchmark UI", "url": f"{host}/genie/rooms/{space_id}", "category": "genie"})
 
     # Resolve workspace_id once for ?o= parameter on deep links
     workspace_id = None
@@ -1562,17 +1575,15 @@ async def get_run(run_id: RunId):
         job_url = f"{host}/jobs/{job_id}/runs/{job_run_id}"
         if workspace_id:
             job_url += f"?o={workspace_id}"
-        links.append({"label": "Optimization Job Run", "url": job_url, "category": "job"})
+        links.append({"label": "Workflow Job Run", "url": job_url, "category": "job"})
     elif host and job_id:
-        links.append({"label": "Optimization Job", "url": f"{host}/jobs/{job_id}", "category": "job"})
+        links.append({"label": "Workflow Job", "url": f"{host}/jobs/{job_id}", "category": "job"})
 
     # GSO v2 Phase 5 (D3/D7): MLflow experiment / per-iteration eval-run resource
     # links were removed (tracking is Delta-only; the experiment_* and
     # genie_opt_iterations.mlflow_run_id pointer columns were scrubbed).
-
-    if host and config.catalog and config.schema_name:
-        links.append({"label": "Runs Table", "url": f"{host}/explore/data/{config.catalog}/{config.schema_name}/genie_opt_runs", "category": "data"})
-        links.append({"label": "Iterations Table", "url": f"{host}/explore/data/{config.catalog}/{config.schema_name}/genie_opt_iterations", "category": "data"})
+    # Keep the app-facing resource list focused on operator actions: inspect
+    # benchmark runs in Genie, or inspect the workflow job/run in Databricks.
 
     # Echo the loop knobs in force (0–1 target, surgical max_attempts), resolved
     # from the durable run-level sources (manifest / loop-state / job params).
@@ -1888,11 +1899,9 @@ async def list_iterations(run_id: RunId):
         # collapsed acceptance to one API-accuracy gate, so `thresholds_met`
         # IS the API-accuracy gate verdict.
         gate_met = it.get("thresholds_met")
-        if isinstance(gate_met, (int, float)) and not isinstance(gate_met, bool):
-            gate_met = gate_met == 1
-        api_accuracy_gate_met = bool(gate_met)
+        api_accuracy_gate_met = _safe_bool(gate_met)
         it["api_accuracy_gate_met"] = api_accuracy_gate_met
-        if it.get("rolled_back"):
+        if _safe_bool(it.get("rolled_back")):
             it["eval_gate_status"] = "rolled_back"
         elif api_accuracy_gate_met:
             it["eval_gate_status"] = "passed"
@@ -1923,7 +1932,7 @@ async def list_iterations(run_id: RunId):
                 )
                 if not lr:
                     continue
-                it["is_champion"] = bool(lr.get("is_champion"))
+                it["is_champion"] = _safe_bool(lr.get("is_champion"))
                 it["config_json"] = lr.get("config_json") or None
                 it["attempt_no"] = _safe_int(lr.get("attempt_no"))
                 it["attempt_mode"] = lr.get("attempt_mode") or None
@@ -1990,9 +1999,9 @@ def _build_attempt(lr: dict) -> dict:
         # rejection/rollback explanation so a higher-accuracy-but-rolled-back
         # attempt can be explained (progress §5 resolution).
         "decisionReason": lr.get("decision_reason") or None,
-        "rolledBack": bool(lr.get("rolled_back")),
+        "rolledBack": _safe_bool(lr.get("rolled_back")),
         "rollbackReason": lr.get("rollback_reason") or None,
-        "isChampion": bool(lr.get("is_champion")),
+        "isChampion": _safe_bool(lr.get("is_champion")),
         "currentHypothesis": _safe_json_parse(lr.get("current_hypothesis")),
         # Per-attempt ledger fields (B2) — surfaced in addition to the run-level
         # aggregate on loopState, parsed the same way as the aggregate.
@@ -2100,8 +2109,8 @@ def _build_publish_record(payload: dict) -> dict:
                 "deltaVsBaseline": _safe_float(t.get("delta_vs_baseline")),
                 "bestAccuracy": _safe_float(t.get("best_accuracy")),
                 "decision": t.get("decision") or None,
-                "rolledBack": bool(t.get("rolled_back")),
-                "isChampion": bool(t.get("is_champion")),
+                "rolledBack": _safe_bool(t.get("rolled_back")),
+                "isChampion": _safe_bool(t.get("is_champion")),
             })
     concerns = payload.get("concerns")
     reason = payload.get("terminal_reason")
@@ -2110,7 +2119,7 @@ def _build_publish_record(payload: dict) -> dict:
         "spaceId": payload.get("space_id"),
         "finalStatus": payload.get("final_status") or None,
         "terminalReason": reason if reason in _TYPED_TERMINAL_REASONS else None,
-        "published": bool(payload.get("published")),
+        "published": _safe_bool(payload.get("published")),
         "publishOutcome": payload.get("publish_outcome") or None,
         "championIteration": _safe_int(payload.get("champion_iteration")),
         "championAccuracy": _safe_float(payload.get("champion_accuracy")),
@@ -2162,7 +2171,7 @@ def _build_benchmark_qc(payload: dict) -> dict:
         "repairMaxTries": _safe_int(payload.get("benchmark_repair_max_tries")),
         "repairedIds": repaired if isinstance(repaired, list) else [],
         "repairSweeps": payload.get("repair_sweeps"),
-        "finalValidity": bool(final_validity) if final_validity is not None else None,
+        "finalValidity": _safe_bool(final_validity) if final_validity is not None else None,
         "window": window if isinstance(window, dict) else None,
         "windowTargetMin": _safe_int(payload.get("window_target_min")),
         "windowTargetMax": _safe_int(payload.get("window_target_max")),

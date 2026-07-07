@@ -2463,7 +2463,7 @@ def _build_links(
     space_id = run_data.get("space_id")
     if space_id:
         links.append(PipelineLink(
-            label="Genie Space",
+            label="Genie Benchmark UI",
             url=f"{host}/genie/rooms/{space_id}",
             category="genie",
         ))
@@ -2488,7 +2488,7 @@ def _build_links(
                 f"?o={workspace_id}"
             )
             links.append(PipelineLink(
-                label="Optimization Job Run",
+                label="Workflow Job Run",
                 url=job_url,
                 category="job",
             ))
@@ -2497,20 +2497,8 @@ def _build_links(
     # links and the MLflow Review App "Human Review" link were removed. Tracking
     # is Delta-only; human review surfaces via the official Benchmark API
     # ``manual_assessment`` / ``NEEDS_REVIEW`` signal + Delta-backed flagging.
-
-    catalog = config.catalog
-    schema = config.schema_name
-    if catalog and schema:
-        links.append(PipelineLink(
-            label="Runs Table",
-            url=f"{host}/explore/data/{catalog}/{schema}/genie_opt_runs",
-            category="data",
-        ))
-        links.append(PipelineLink(
-            label="Iterations Table",
-            url=f"{host}/explore/data/{catalog}/{schema}/genie_opt_iterations",
-            category="data",
-        ))
+    # Keep the app-facing resource list focused on operator actions: inspect
+    # benchmark runs in Genie, or inspect the workflow job/run in Databricks.
 
     return links
 
