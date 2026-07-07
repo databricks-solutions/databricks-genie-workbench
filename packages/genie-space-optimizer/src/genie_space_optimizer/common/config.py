@@ -3922,8 +3922,9 @@ UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT = (
     "You may propose ordinary Patch DSL entries; enrichment is not a separate mode. "
     "Use expected_sql and generated_sql only as diagnostic evidence. Do not copy "
     "benchmark question text, expected SQL, or generated SQL into Genie-visible "
-    "instructions, examples, descriptions, or snippets. Prefer the smallest patch "
-    "that can improve the failing benchmark pattern."
+    "instructions, examples, descriptions, or snippets. Choose the narrowest "
+    "configuration surface that fixes the failure pattern without overfitting "
+    "the benchmark."
 )
 
 UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
@@ -3934,6 +3935,7 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
             "type": (
                 "update_description | update_column_description | add_instruction | "
                 "update_instruction_section | add_join_spec | update_join_spec | "
+                "add_example_sql | "
                 "add_sql_snippet_measure | add_sql_snippet_filter | "
                 "add_sql_snippet_expression | ..."
             ),
@@ -3944,23 +3946,41 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
             "new_text": "natural-language patch text",
             "structured_sections": "optional dict for description patches",
             "join_spec": "optional Genie join spec object for join patches",
+            "example_question": "required for add_example_sql patches",
+            "example_sql": "required for add_example_sql patches",
+            "usage_guidance": "required for add_example_sql patches",
+            "source_failure_pattern": "required for add_example_sql patches",
+            "affected_qids": "required list of question ids for add_example_sql patches",
+            "semantic_delta_from_benchmark": "required for add_example_sql patches",
+            "why_not_benchmark_copy": "required for add_example_sql patches",
             "sql": "required for add_sql_snippet_* patches",
             "display_name": "required for add_sql_snippet_* patches",
             "instruction": "required for add_sql_snippet_* patches",
             "synonyms": "required list for add_sql_snippet_* patches",
             "target_table": "required for add_sql_snippet_* patches",
             "snippet_type": "measure | filter | expression for add_sql_snippet_* patches",
+            "rejected_patch_types": (
+                "required for add_instruction/update_instruction_section; "
+                "array of {type, reason} explaining why metadata, joins, "
+                "SQL snippets/expressions, or example SQL cannot solve it"
+            ),
         }
     ],
 }
 
 UNIFIED_OPTIMIZER_PATCH_RULES = [
+    "Patch selection has three tiers. Tier 1: use metadata/synonym patches for table choice, column meaning, value/entity matching, or ambiguous terminology.",
+    "Tier 2: use the best matching structured behavioral patch. add_join_spec/update_join_spec are for wrong or missing joins; add_sql_snippet_* is for reusable metrics, filters, dimensions, or formulas; add_example_sql is for multi-step SQL patterns, output shape, ranking/windowing, or ambiguous SQL construction.",
+    "Tier 3: use add_instruction/update_instruction_section only as a last resort for cross-cutting guidance that cannot be represented by metadata, joins, SQL snippets/expressions, or example SQL.",
+    "For add_instruction/update_instruction_section, include non-empty rejected_patch_types with reasons for every applicable structured alternative you rejected.",
     "Use update_description for table descriptions.",
     "Use update_column_description with table and column for column descriptions.",
-    "Use update_instruction_section for narrow instruction changes; use Markdown ## sections when adding text.",
+    "Use update_instruction_section only for narrow last-resort instruction changes; use Markdown ## sections when adding text.",
     "Use add_join_spec only when the relationship is clear and include a relationship annotation.",
-    "Do not propose add_example_sql or update_example_sql from benchmark SQL.",
+    "Use add_example_sql only for generalized adjacent examples. Do not copy benchmark question text, expected SQL, generated SQL, aliases, output column names, or exact output shape.",
+    "Do not propose update_example_sql from benchmark SQL.",
     "Do not include raw SELECT statements in text instructions.",
+    "Do not put metric formulas, reusable filters, join routing, or output-shape examples into text instructions when a structured patch can represent them.",
     "For add_sql_snippet_measure/add_sql_snippet_filter/add_sql_snippet_expression, include sql, display_name, instruction, synonyms, target_table, and snippet_type.",
     "Never set validation_passed; the optimizer validates SQL snippets before apply.",
 ]

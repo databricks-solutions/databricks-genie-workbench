@@ -41,7 +41,11 @@ from genie_space_optimizer.optimization.evaluation import (
     _link_prompt_to_trace,
     get_registered_prompt_name,
 )
-from genie_space_optimizer.optimization.leakage import BenchmarkCorpus, canonicalize_sql
+from genie_space_optimizer.optimization.leakage import (
+    BenchmarkCorpus,
+    canonicalize_sql,
+    is_benchmark_leak,
+)
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.state import (
     mark_champion_iteration,
@@ -62,6 +66,7 @@ _ALLOWED_PATCH_TYPES: frozenset[str] = frozenset(
         "add_column_synonym",
         "add_instruction",
         "update_instruction_section",
+        "add_example_sql",
         "add_join_spec",
         "update_join_spec",
         "add_sql_snippet_measure",
@@ -69,6 +74,26 @@ _ALLOWED_PATCH_TYPES: frozenset[str] = frozenset(
         "add_sql_snippet_expression",
     }
 )
+
+_PATCH_TYPE_CANONICAL_LEVER: dict[str, int] = {
+    "update_description": 1,
+    "update_column_description": 1,
+    "add_column_synonym": 1,
+    "add_join_spec": 4,
+    "update_join_spec": 4,
+    "add_instruction": 5,
+    "update_instruction_section": 5,
+    "add_example_sql": 5,
+    "add_sql_snippet_measure": 6,
+    "add_sql_snippet_filter": 6,
+    "add_sql_snippet_expression": 6,
+}
+
+_TEXT_INSTRUCTION_PATCH_TYPES: frozenset[str] = frozenset(
+    {"add_instruction", "update_instruction_section"}
+)
+
+_EXAMPLE_SQL_PATCH_TYPES: frozenset[str] = frozenset({"add_example_sql"})
 
 
 def target_accuracy_percent(value: float) -> float:
@@ -721,6 +746,9 @@ def _normalize_llm_patches(raw: Any, *, allowed_levers: list[int]) -> tuple[int 
             patch_lever = proposal_lever
         if patch_lever not in allowed_levers:
             patch_lever = proposal_lever
+        canonical_lever = _PATCH_TYPE_CANONICAL_LEVER.get(ptype)
+        if canonical_lever in allowed_levers:
+            patch_lever = canonical_lever
         if patch_lever is not None:
             patch["lever"] = patch_lever
         patch.setdefault("risk_level", classify_risk(ptype))
@@ -809,7 +837,7 @@ def _benchmark_forbidden_strings(
         _add_prose(row.get("question") or row.get("inputs/question"))
         _add_sql(row.get("expected_sql") or row.get("expected_response") or row.get("inputs/expected_response"))
 
-    rows = eval_result.get("rows")
+    rows = eval_result.get("rows") if isinstance(eval_result, dict) else None
     if isinstance(rows, list):
         for row in rows:
             if not isinstance(row, dict):
@@ -818,6 +846,55 @@ def _benchmark_forbidden_strings(
             _add_sql(row.get("expected_sql") or row.get("inputs/expected_response"))
             _add_sql(row.get("generated_sql") or row.get("outputs/response"))
     return prose, sql
+
+
+def _benchmark_corpus_for_example_sql(
+    *,
+    benchmarks: list[dict[str, Any]],
+    eval_result: dict[str, Any],
+) -> BenchmarkCorpus:
+    """Build a leakage corpus from benchmark prompts and answer-shaped SQL."""
+    rows: list[dict[str, Any]] = []
+
+    def add_row(*, question: Any, sql: Any, qid: Any = "") -> None:
+        q = str(question or "").strip()
+        s = str(sql or "").strip()
+        if not q and not s:
+            return
+        rows.append({"id": str(qid or ""), "question": q, "expected_sql": s})
+
+    for row in benchmarks or []:
+        if not isinstance(row, dict):
+            continue
+        add_row(
+            qid=row.get("id") or row.get("benchmark_id") or row.get("question_id"),
+            question=row.get("question") or row.get("inputs/question"),
+            sql=row.get("expected_sql")
+            or row.get("expected_response")
+            or row.get("inputs/expected_response"),
+        )
+
+    rows_raw = eval_result.get("rows") if isinstance(eval_result, dict) else None
+    if isinstance(rows_raw, list):
+        for row in rows_raw:
+            if not isinstance(row, dict):
+                continue
+            qid = row.get("question_id") or row.get("inputs/question_id")
+            question = row.get("question") or row.get("inputs/question")
+            add_row(
+                qid=qid,
+                question=question,
+                sql=row.get("expected_sql")
+                or row.get("expected_response")
+                or row.get("inputs/expected_response"),
+            )
+            add_row(
+                qid=f"{qid}:generated" if qid else "",
+                question=question,
+                sql=row.get("generated_sql") or row.get("outputs/response"),
+            )
+
+    return BenchmarkCorpus.from_benchmarks(rows)
 
 
 def _patch_has_benchmark_prose_leak(
@@ -840,6 +917,80 @@ def _patch_has_benchmark_prose_leak(
                 if fp and fp in sql_fingerprints:
                     return True, f"{patch_type}.{field}:benchmark_sql_copy"
     return False, ""
+
+
+def _validate_example_sql_patch(
+    patch: dict[str, Any],
+    *,
+    benchmark_corpus: BenchmarkCorpus,
+    w: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    patch_type = str(patch.get("type") or "")
+    if patch_type not in _EXAMPLE_SQL_PATCH_TYPES:
+        return patch, None
+
+    required = (
+        "example_question",
+        "example_sql",
+        "usage_guidance",
+        "source_failure_pattern",
+        "affected_qids",
+        "semantic_delta_from_benchmark",
+        "why_not_benchmark_copy",
+    )
+    missing = [field for field in required if patch.get(field) in (None, "", [])]
+    if missing:
+        dropped = dict(patch)
+        dropped["drop_reason"] = "example_sql_contract_failed"
+        dropped["drop_detail"] = f"missing required fields: {', '.join(missing)}"
+        return None, dropped
+
+    leak, reason = is_benchmark_leak(
+        patch,
+        patch_type,
+        benchmark_corpus,
+        w=w,
+    )
+    if leak:
+        dropped = dict(patch)
+        dropped["drop_reason"] = "benchmark_example_sql_leak"
+        dropped["drop_detail"] = reason
+        return None, dropped
+
+    return patch, None
+
+
+def _validate_text_instruction_fallback(
+    patch: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    patch_type = str(patch.get("type") or "")
+    if patch_type not in _TEXT_INSTRUCTION_PATCH_TYPES:
+        return patch, None
+
+    rejected = patch.get("rejected_patch_types")
+    if not isinstance(rejected, list) or not rejected:
+        dropped = dict(patch)
+        dropped["drop_reason"] = "instruction_fallback_unjustified"
+        dropped["drop_detail"] = "missing non-empty rejected_patch_types"
+        return None, dropped
+
+    invalid_indexes: list[str] = []
+    for idx, item in enumerate(rejected):
+        if (
+            not isinstance(item, dict)
+            or not str(item.get("type") or "").strip()
+            or not str(item.get("reason") or "").strip()
+        ):
+            invalid_indexes.append(str(idx))
+    if invalid_indexes:
+        dropped = dict(patch)
+        dropped["drop_reason"] = "instruction_fallback_unjustified"
+        dropped["drop_detail"] = (
+            "invalid rejected_patch_types entries: " + ", ".join(invalid_indexes)
+        )
+        return None, dropped
+
+    return patch, None
 
 
 def _validate_unified_sql_snippet_patch(
@@ -946,6 +1097,10 @@ def _preapply_safety_screen(
         benchmarks=benchmarks,
         eval_result=eval_result,
     )
+    example_sql_corpus = _benchmark_corpus_for_example_sql(
+        benchmarks=benchmarks,
+        eval_result=eval_result,
+    )
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     for patch in patches:
@@ -960,6 +1115,27 @@ def _preapply_safety_screen(
             dropped_patch["drop_detail"] = reason
             dropped.append(dropped_patch)
             continue
+
+        validated, validation_drop = _validate_text_instruction_fallback(patch)
+        if validation_drop is not None:
+            dropped.append(validation_drop)
+            continue
+        if validated is None:
+            continue
+        patch = validated
+
+        validated, validation_drop = _validate_example_sql_patch(
+            patch,
+            benchmark_corpus=example_sql_corpus,
+            w=w,
+        )
+        if validation_drop is not None:
+            dropped.append(validation_drop)
+            continue
+        if validated is None:
+            continue
+        patch = validated
+
         validated, validation_drop = _validate_unified_sql_snippet_patch(
             patch,
             current_config=current_config,
