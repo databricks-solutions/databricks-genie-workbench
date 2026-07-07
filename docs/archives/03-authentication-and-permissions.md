@@ -121,10 +121,9 @@ POST /api/auto-optimize/trigger
 └───────────┬───────────────────┘
             ▼
 ┌───────────────────────────────┐
-│ 7. 6-task DAG executes as SP  │
-│    (preflight → baseline →    │
-│     enrichment → lever_loop → │
-│     finalize → deploy)        │
+│ 7. 4-task DAG executes as SP  │
+│    (intake → benchmark QC →   │
+│     optimize → publish/audit) │
 └───────────────────────────────┘
 ```
 
@@ -251,7 +250,7 @@ If a step fails because of a missing permission, the installer reports the under
 | Trigger optimization — permission check | OBO (user) | `integration/trigger.py` `user_can_edit_space()` | Verify user has CAN_EDIT/CAN_MANAGE |
 | Trigger optimization — SP entitlement check | SP | `integration/trigger.py` `sp_can_manage_space()` | Verify SP can manage the space |
 | Optimization job submission | SP | `backend/job_launcher.py` `submit_optimization()` | `jobs.run_now()` requires SP |
-| Optimization job execution (6-task DAG) | SP (run_as) | `backend/job_launcher.py` `ensure_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
+| Optimization job execution (4-task DAG) | SP (run_as) | `backend/job_launcher.py` `ensure_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
 | GSO Delta table reads/writes | SP | `routers/auto_optimize.py` `_delta_query()` | Optimizer state tables owned by SP |
 | Lakebase persistence | SP | `services/lakebase.py` | App-level storage, not user-scoped |
 | IQ Scan | OBO (user) → SP for GSO data | `services/scanner.py` | Space fetch via OBO; GSO run data via SP |

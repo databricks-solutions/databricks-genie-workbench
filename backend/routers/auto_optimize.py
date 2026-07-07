@@ -1941,10 +1941,10 @@ async def list_iterations(run_id: RunId):
     return iterations
 
 
-# The 03_optimize loop scores every current attempt on the FULL benchmark.
-# Legacy enrichment rows also used eval_scope='enrichment'; both scopes belong
+# The optimize loop scores every current attempt on the FULL benchmark.
+# Pre-loop enrichment rows also use eval_scope='enrichment'; both scopes belong
 # to the candidate universe of state.load_all_scored_iterations. Any other scope
-# on an attempt row (e.g. a legacy slice/p0 probe) is NOT the authoritative
+# on an attempt row (e.g. an older slice/p0 probe) is NOT the authoritative
 # per-attempt accuracy.
 _FULL_BENCHMARK_SCOPES = frozenset({"full", "enrichment"})
 

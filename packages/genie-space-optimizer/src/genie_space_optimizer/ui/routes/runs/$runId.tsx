@@ -906,12 +906,12 @@ function StepInsights({
         )}
         <div className="border-t border-db-gray-border pt-3 space-y-2 text-xs">
         {enrichmentSkipped && (
-          <p className="text-muted">Legacy enrichment skipped (baseline already met thresholds)</p>
+          <p className="text-muted">Pre-loop enrichment skipped (baseline already met thresholds)</p>
         )}
         <div className="flex flex-wrap gap-1.5">
           {totalEnrichments != null && (
             <Badge variant="secondary">
-              Legacy enrichment changes: {totalEnrichments}
+              Pre-loop enrichment changes: {totalEnrichments}
               {totalConfigChanges != null && totalConfigChanges !== totalEnrichments && (
                 <span className="ml-1 font-normal text-muted">
                   ({totalConfigChanges} config changes)

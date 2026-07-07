@@ -191,7 +191,7 @@ describe("buildAttemptOptions — legacy runs degrade to Baseline · Final", () 
 describe("attemptColumnLabel — QuestionJourney 'Iter' → attempts relabel", () => {
   it("labels by mode when attempt metadata is present", () => {
     expect(attemptColumnLabel(iter({ iteration: 0 }))).toBe("Baseline")
-    expect(attemptColumnLabel(iter({ iteration: 1, attempt_mode: "coverage" }))).toBe("Legacy enrichment")
+    expect(attemptColumnLabel(iter({ iteration: 1, attempt_mode: "coverage" }))).toBe("Pre-loop enrichment")
     expect(attemptColumnLabel(iter({ iteration: 2, attempt_mode: "llm_patch", attempt_no: 2 }))).toBe(
       "Patch 2",
     )

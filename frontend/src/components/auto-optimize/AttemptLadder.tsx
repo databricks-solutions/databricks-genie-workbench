@@ -2,8 +2,8 @@ import { useMemo } from "react"
 import type { GSOAttempt } from "@/types"
 import {
   buildLadderModel,
-  LEGACY_ENRICHMENT_COLOR,
   PATCH_ATTEMPT_COLOR,
+  PRE_LOOP_ENRICHMENT_COLOR,
   type LadderRung,
 } from "@/components/auto-optimize/cockpit"
 
@@ -188,8 +188,8 @@ function Legend() {
         patch attempt
       </span>
       <span className="flex items-center gap-1">
-        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: LEGACY_ENRICHMENT_COLOR }} />
-        legacy enrichment
+        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: PRE_LOOP_ENRICHMENT_COLOR }} />
+        pre-loop enrichment
       </span>
       <span className="flex items-center gap-1">
         <span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-muted bg-transparent" />

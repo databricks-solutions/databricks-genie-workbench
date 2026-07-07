@@ -6,9 +6,8 @@ returns the *current* evaluated state of the Genie Space when gating the
 lever loop. The in-process orchestration previously gated on the stale
 baseline ``thresholds_met``, which made post-enrichment regressions
 silently converge as ``baseline_meets_thresholds`` and skip the lever
-loop. The notebook task path (``jobs/run_lever_loop.py``) already prefers
-the post-enrichment values when present; these tests bring the in-process
-helper into parity.
+loop. These tests keep the in-process helper aligned with the current
+post-enrichment state contract.
 """
 
 from __future__ import annotations

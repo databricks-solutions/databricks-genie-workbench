@@ -1,12 +1,8 @@
 """Shared MLflow Prompt Registry probe.
 
-Used by three layers of defense:
-- Workbench ``/permissions/{space_id}`` — fast UI-time feedback (read probe).
-- Workbench ``/trigger`` — server-side gate (read probe) before launching the job.
-- GSO preflight (``jobs/run_preflight.py`` + ``optimization/preflight.py``) —
-  write-path probe that exercises the exact ``mlflow.genai.register_prompt``
-  call the baseline eval will later make, failing the job fast rather than
-  half-way through baseline if the feature/permissions are missing.
+Used by Prompt Registry permission probes and tests. The old preflight
+write gate was removed with the retired multi-notebook workflow, but the
+probe remains the shared classifier for read/write availability checks.
 
 Design invariants (Bug #1 follow-up — "probe–workload parity"):
 

@@ -158,9 +158,7 @@ def test_harness_emits_end_marker_before_return() -> None:
 
 def test_harness_builds_phase_b_manifest_at_return() -> None:
     """The return dict must contain a ``phase_b`` key with the full
-    manifest schema. Fields aligned with
-    ``run_lever_loop.py:548-563`` allowlist + the postmortem analyzer's
-    expected shape."""
+    manifest schema expected by the postmortem analyzer."""
     src = _read_harness_source()
     assert '"phase_b": {' in src
     for field in (

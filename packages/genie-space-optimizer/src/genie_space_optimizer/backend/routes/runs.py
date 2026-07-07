@@ -870,7 +870,7 @@ def _build_step_summary(
             segments.append(baseline_summary)
         if total or parts:
             segments.append(
-                f"legacy enrichment: {', '.join(parts)}" if parts else f"legacy enrichment: {total} changes"
+                f"pre-loop enrichment: {', '.join(parts)}" if parts else f"pre-loop enrichment: {total} changes"
             )
         if patches:
             segments.append(f"{patches} surgical patch(es)")
@@ -2221,7 +2221,7 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
         by_iter[it]["p0"] = row
     # Post-enrichment row (always iter 0). Stored separately so the
     # iteration-card builder still renders the ``"full"`` baseline at iter
-    # 0 — this partition is read by the legacy enrichment detail builder
+    # 0 — this partition is read by the pre-loop enrichment detail builder
     # and is available for any future per-card "post-enrichment" surfacing.
     for row in enrichment_rows:
         it = _safe_int(row.get("iteration")) or 0

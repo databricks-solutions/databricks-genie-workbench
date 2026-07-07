@@ -225,7 +225,7 @@ def test_workspace_source_inclusion_rules(tmp_path):
         "notebooks/install.py",
         "frontend/package.json",
         "frontend/node_modules/pkg/index.js",
-        "packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_preflight.py",
+        "packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_intake_and_snapshot.py",
         "packages/genie-space-optimizer/tests/test_x.py",
     ]
     for rel in files:
@@ -237,7 +237,7 @@ def test_workspace_source_inclusion_rules(tmp_path):
     assert should_copy(repo / "backend/references/schema.md", repo)
     assert should_copy(repo / "frontend/package.json", repo)
     assert should_copy(
-        repo / "packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_preflight.py",
+        repo / "packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_intake_and_snapshot.py",
         repo,
     )
     assert not should_copy(repo / "README.md", repo)
@@ -258,18 +258,18 @@ def test_workspace_api_path_normalizes_workspace_prefix():
 
 
 def test_workspace_import_uses_object_path_for_workspace_prefixed_paths(tmp_path):
-    src = tmp_path / "run_preflight.py"
+    src = tmp_path / "run_intake_and_snapshot.py"
     src.write_text("print('ok')")
     w = FakeWorkspaceClient()
 
-    upload_source_notebook(w, src, "/Workspace/Users/me/app/gso/jobs/run_preflight")
+    upload_source_notebook(w, src, "/Workspace/Users/me/app/gso/jobs/run_intake_and_snapshot")
 
     assert w.api_client.calls[0] == (
         "POST",
         "/api/2.0/workspace/mkdirs",
         {"path": "/Users/me/app/gso/jobs"},
     )
-    assert w.api_client.calls[1][2]["path"] == "/Users/me/app/gso/jobs/run_preflight"
+    assert w.api_client.calls[1][2]["path"] == "/Users/me/app/gso/jobs/run_intake_and_snapshot"
 
 
 def test_mkdirs_uses_object_path_for_workspace_prefixed_paths():
@@ -369,26 +369,24 @@ def test_get_app_service_principal_waits_for_async_app_create(monkeypatch):
     assert len(get_calls) == 2
 
 
-# GSO v2 linear 5-task DAG (mirrors packages/genie-space-optimizer/databricks.yml,
+# GSO v2 linear 4-task DAG (mirrors packages/genie-space-optimizer/databricks.yml,
 # validated by tests/unit/test_phase7_job_dag.py).
-_EXPECTED_5TASK_KEYS = [
-    "00_intake_and_snapshot",
-    "01_benchmark_qc_and_repair",
-    "02_baseline_eval_and_triage",
-    "03_optimize",
+_EXPECTED_4TASK_KEYS = [
+    "intake_and_snapshot",
+    "benchmark_qc_and_repair",
+    "optimize",
     "publish_and_audit",
 ]
 
-_EXPECTED_5TASK_NOTEBOOKS = {
-    "00_intake_and_snapshot": "run_00_intake_and_snapshot",
-    "01_benchmark_qc_and_repair": "run_01_benchmark_qc_and_repair",
-    "02_baseline_eval_and_triage": "run_02_baseline_eval_and_triage",
-    "03_optimize": "run_03_optimize",
+_EXPECTED_4TASK_NOTEBOOKS = {
+    "intake_and_snapshot": "run_intake_and_snapshot",
+    "benchmark_qc_and_repair": "run_benchmark_qc_and_repair",
+    "optimize": "run_optimize",
     "publish_and_audit": "run_publish_and_audit",
 }
 
 
-def test_gso_job_settings_match_5task_dag_shape():
+def test_gso_job_settings_match_4task_dag_shape():
     cfg = InstallConfig(
         app_name="genie-workbench",
         catalog="main",
@@ -411,16 +409,16 @@ def test_gso_job_settings_match_5task_dag_shape():
     assert settings["tags"]["pattern"] == "persistent-dag"
     assert settings["environments"][0]["spec"]["environment_version"] == "4"
 
-    # 5-task linear DAG — no condition task, no deploy task, correct entrypoints.
+    # 4-task linear DAG — no condition task, no deploy task, correct entrypoints.
     tasks = settings["tasks"]
-    assert [t["task_key"] for t in tasks] == _EXPECTED_5TASK_KEYS
+    assert [t["task_key"] for t in tasks] == _EXPECTED_4TASK_KEYS
     assert all("condition_task" not in t for t in tasks)
     for t in tasks:
         stem = t["notebook_task"]["notebook_path"].rsplit("/", 1)[-1]
-        assert stem == _EXPECTED_5TASK_NOTEBOOKS[t["task_key"]]
+        assert stem == _EXPECTED_4TASK_NOTEBOOKS[t["task_key"]]
     by_key = {t["task_key"]: t for t in tasks}
-    assert "depends_on" not in by_key["00_intake_and_snapshot"]
-    for prev, cur in zip(_EXPECTED_5TASK_KEYS, _EXPECTED_5TASK_KEYS[1:]):
+    assert "depends_on" not in by_key["intake_and_snapshot"]
+    for prev, cur in zip(_EXPECTED_4TASK_KEYS, _EXPECTED_4TASK_KEYS[1:]):
         assert by_key[cur]["depends_on"] == [{"task_key": prev}]
 
     # New v2 loop params present with defaults; retired params gone.
@@ -442,7 +440,7 @@ def test_gso_job_settings_match_5task_dag_shape():
             assert bp[required] == f"{{{{job.parameters.{required}}}}}"
 
 
-def test_gso_job_settings_mirror_package_bundle_5task():
+def test_gso_job_settings_mirror_package_bundle_4task():
     """The notebook-installer job (gso_job.py) and the package bundle
     (packages/genie-space-optimizer/databricks.yml, validated by
     test_phase7_job_dag.py) must not silently drift: identical task keys/order,
@@ -481,10 +479,10 @@ def test_gso_job_settings_mirror_package_bundle_5task():
         assert pkg_bp[key] - gso_bp[key] == set(), key
 
 
-def test_upload_job_notebooks_uploads_all_five_task_notebooks(tmp_path):
+def test_upload_job_notebooks_uploads_all_four_task_notebooks(tmp_path):
     """Exercise the TASKS upload loop end-to-end. Guards against the 4-tuple
     arity regression: upload_job_notebooks must iterate every TASKS entry and
-    import exactly the 5 v2 entrypoints (this loop is what the install.py path
+    import exactly the 4 v2 entrypoints (this loop is what the install.py path
     runs before creating the job)."""
     jobs_dir = tmp_path / "packages" / "genie-space-optimizer" / "src" / "genie_space_optimizer" / "jobs"
     jobs_dir.mkdir(parents=True)
@@ -511,10 +509,9 @@ def test_upload_job_notebooks_uploads_all_five_task_notebooks(tmp_path):
     # Every task notebook imported, in DAG order, with no arity error.
     assert [p.rsplit("/", 1)[-1] for p in import_paths] == expected_stems
     assert expected_stems == [
-        "run_00_intake_and_snapshot",
-        "run_01_benchmark_qc_and_repair",
-        "run_02_baseline_eval_and_triage",
-        "run_03_optimize",
+        "run_intake_and_snapshot",
+        "run_benchmark_qc_and_repair",
+        "run_optimize",
         "run_publish_and_audit",
     ]
 

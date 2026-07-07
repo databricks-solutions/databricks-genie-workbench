@@ -41,7 +41,7 @@ function modeOf(it: GSOIterationResult): AttemptOptionMode {
 
 function labelFor(mode: AttemptOptionMode, it: GSOIterationResult): string {
   if (mode === "baseline") return "Baseline"
-  if (mode === "legacy") return "Legacy enrichment"
+  if (mode === "legacy") return "Pre-loop enrichment"
   const n = it.attempt_no ?? it.iteration
   return `Patch ${n}`
 }
@@ -54,7 +54,7 @@ function labelFor(mode: AttemptOptionMode, it: GSOIterationResult): string {
  *   full-scope iteration — Baseline · Patch N — with the champion
  *   read from the explicit ``is_champion`` flag (never idxmax), defaulting the
  *   selection to that champion.
- * - Legacy runs (no attempt metadata): degrades to the classic
+ * - Older runs (no attempt metadata): degrades to the classic
  *   Baseline · Final pair, defaulting to Final (the best iteration).
  *
  * Champion fallback: when no row carries ``is_champion`` we star ``bestIteration``
@@ -181,7 +181,7 @@ export function selectCachedQuestions(
 export function attemptColumnLabel(it: GSOIterationResult): string {
   if (it.iteration === 0) return "Baseline"
   const m = (it.attempt_mode ?? "").toString().toLowerCase()
-  if (m === "coverage" || m === "enrichment") return "Legacy enrichment"
+  if (m === "coverage" || m === "enrichment") return "Pre-loop enrichment"
   if (m === "surgical" || m === "llm_patch" || m === "patch") return `Patch ${it.attempt_no ?? it.iteration}`
   return `Attempt ${it.attempt_no ?? it.iteration}`
 }

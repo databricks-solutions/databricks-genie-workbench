@@ -75,7 +75,7 @@ def test_cross_env_deploy_removed():
     assert not hasattr(job_launcher, "ensure_deployment_job")
 
     # Phase 15: the runtime notebook-upload registry (``_NOTEBOOK_SOURCES``)
-    # was removed alongside the retired 6-task entrypoints, so assert the
+    # was removed alongside the retired multi-notebook entrypoints, so assert the
     # cross-env-deploy notebooks are gone from disk directly.
     jobs_dir = Path(job_launcher.__file__).resolve().parent.parent / "jobs"
     assert not (jobs_dir / "run_cross_env_deploy.py").exists()
@@ -222,10 +222,8 @@ def test_databricks_yml_has_no_experiment_name_param():
 # ── Cross-review regression guards (codex review of PR #238) ──
 # Two parallel dangling-reference spots missed in the first pass: the iteration
 # ORM mirror, and the app-backend Lakebase reader still SELECTing the scrubbed
-# columns. (The third — a retired ``run_preflight.py`` notebook importing the
-# removed preflight probe — is moot as of Phase 15: the 6-task entrypoints,
-# ``run_preflight.py`` included, were deleted, so the dangling import cannot
-# exist.)
+# columns. The old preflight notebook path is gone, so that dangling-import
+# class cannot return.
 
 def test_iteration_orm_mirror_has_no_mlflow_pointer_fields():
     from genie_space_optimizer.backend.models_db import GSOIterationRecord

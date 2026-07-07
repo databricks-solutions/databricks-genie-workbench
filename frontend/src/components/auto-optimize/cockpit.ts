@@ -23,9 +23,9 @@ export const LEVER_NAMES: Record<number, string> = {
   6: "SQL Expressions",
 }
 
-// Marker colors by attempt mode. Amber is reserved for legacy enrichment rows;
+// Marker colors by attempt mode. Amber is reserved for pre-loop enrichment rows;
 // cyan is the current native patch/eval loop.
-export const LEGACY_ENRICHMENT_COLOR = "#f59e0b" // amber-500
+export const PRE_LOOP_ENRICHMENT_COLOR = "#f59e0b" // amber-500
 export const PATCH_ATTEMPT_COLOR = "#06b6d4" // cyan-500
 
 /**
@@ -56,14 +56,14 @@ export function targetToPct(unit: number | null | undefined): number | null {
 export function attemptModeLabel(mode: string | null | undefined): string {
   if (!mode) return "—"
   const m = mode.toLowerCase()
-  if (m === "coverage" || m === "enrichment" || m === "legacy") return "Legacy enrichment"
+  if (m === "coverage" || m === "enrichment" || m === "legacy") return "Pre-loop enrichment"
   if (m === "surgical" || m === "llm_patch" || m === "patch") return "Patch"
   return mode.charAt(0).toUpperCase() + mode.slice(1)
 }
 
 export function attemptModeColor(mode: string | null | undefined): string {
   const m = (mode ?? "").toLowerCase()
-  return m === "coverage" || m === "enrichment" || m === "legacy" ? LEGACY_ENRICHMENT_COLOR : PATCH_ATTEMPT_COLOR
+  return m === "coverage" || m === "enrichment" || m === "legacy" ? PRE_LOOP_ENRICHMENT_COLOR : PATCH_ATTEMPT_COLOR
 }
 
 /**
@@ -214,14 +214,14 @@ export function buildLadderModel(args: {
     rungs.push({
       key: `attempt-${a.attemptNo ?? x}`,
       x,
-      label: `${mode === "patch" ? "Patch" : "Legacy enrichment"} ${a.attemptNo ?? x}`,
-      shortLabel: mode === "patch" ? `P${a.attemptNo ?? x}` : "Legacy",
+      label: `${mode === "patch" ? "Patch" : "Pre-loop enrichment"} ${a.attemptNo ?? x}`,
+      shortLabel: mode === "patch" ? `P${a.attemptNo ?? x}` : "Enrich",
       accuracy,
       // An unmeasured rung still renders — pin it to the baseline floor.
       markerY: accuracy ?? bestSoFar ?? baselineFloor,
       bestSoFar,
       mode,
-      color: mode === "patch" ? PATCH_ATTEMPT_COLOR : LEGACY_ENRICHMENT_COLOR,
+      color: mode === "patch" ? PATCH_ATTEMPT_COLOR : PRE_LOOP_ENRICHMENT_COLOR,
       accepted,
       rolledBack: a.rolledBack,
       isChampion: a.isChampion,

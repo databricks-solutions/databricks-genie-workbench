@@ -33,7 +33,7 @@ npm run build                     # Production build
 ```
 src/genie_space_optimizer/
   backend/              # FastAPI app for the GSO service
-  optimization/         # Benchmark-driven optimization pipeline (6 stages)
+  optimization/         # Benchmark-driven optimization engine
   jobs/                 # Databricks Job notebooks/tasks
   ui/                   # React frontend (Vite + npm)
   genie_optimizer_skills/ # Excluded from type-checking (see pyproject.toml)
@@ -115,7 +115,7 @@ Before touching any of these files, run the corresponding tests:
 
 | Contract | Implementation files | Tests |
 |---|---|---|
-| **Bug #1** — Prompt Registry gate | `common/prompt_registry.py`, `backend/routes/trigger.py`, `jobs/run_preflight.py`, `optimization/preflight.py` | `tests/unit/test_prompt_registry_probe.py` |
+| **Bug #1** — Prompt Registry probe | `common/prompt_registry.py` | `tests/unit/test_prompt_registry_probe.py` |
 | **Bug #2** — `evaluated_count` denominator | `optimization/evaluation.py` (`ArbiterAdjustedResult`), `optimization/ddl.py`, `optimization/state.py` (`write_iteration`), `backend/routes/runs.py` (`_resolve_eval_counts`) | `tests/unit/test_arbiter_adjusted_accuracy.py`, `tests/unit/test_iteration_api_contract.py`, `tests/unit/test_write_iteration_schema.py` |
 | **Bug #3** — Stable exclusion reason codes | `optimization/evaluation.py` (`EXCLUSION_*` constants + `RowExclusion`), `ui/lib/transparency-api.ts` (`ExclusionReasonCode`), `ui/lib/exclusions.ts` (`humanizeExclusionReason`) | `tests/unit/test_arbiter_adjusted_accuracy.py::test_exclusions_carry_stable_reason_codes`, `src/genie_space_optimizer/ui/lib/exclusions.test.ts` |
 | **Bug #4** — Benchmark leakage firewall | `optimization/leakage.py`, `optimization/afs.py` (P2), `optimization/optimizer.py` (`_DEPRECATED_mine_benchmark_example_sqls_verbatim`, `_resolve_lever5_llm_result`, `_BUG4_COUNTERS`), `optimization/harness.py` (`_apply_proactive_example_sqls`, `_seed_new_sql_snippets`, `_merge_bug4_counters`), `common/genie_client.py` (`publish_benchmarks_to_genie_space`) | `tests/unit/test_leakage_firewall.py` |
@@ -269,7 +269,7 @@ break the delta view.
 | `optimization/scan_snapshots.py` | UC Delta writer + postflight helper |
 | `optimization/preflight.py` | `preflight_run_iq_scan` sub-step |
 | `optimization/optimizer.py` | `_format_iq_scan_findings`, `_build_context_data` hook, `rank_clusters` tiebreaker |
-| `optimization/harness.py` | Plumbs `iq_scan_recommended_levers` + `iq_scan_summary` through `_run_preflight` → `_run_lever_loop`; fires postflight hook |
+| `optimization/unified_loop.py` | Consumes `iq_scan_recommended_levers` + `iq_scan_summary` in the active optimize loop |
 | `optimization/applier.py` | `_table_has_rls` / `_column_has_rls` — skips entity matching on RLS-governed tables so the scan's RLS warning matches the applier's actual behavior |
 
 ### Out of scope for this package (tracked by other teams)

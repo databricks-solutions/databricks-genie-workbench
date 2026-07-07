@@ -1,7 +1,7 @@
 """Shared logging helpers for DAG notebook tasks.
 
 Each notebook imports these and binds its own TASK_LABEL for consistent,
-structured output across all 6 tasks in the optimization DAG.
+structured output across the 4-task optimization DAG.
 """
 
 from __future__ import annotations
