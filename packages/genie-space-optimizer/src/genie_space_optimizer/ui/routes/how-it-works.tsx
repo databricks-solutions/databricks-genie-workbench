@@ -2,17 +2,16 @@ import type React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { WalkthroughShell } from "@/components/how-it-works/WalkthroughShell";
 import { OverviewStage } from "@/components/how-it-works/stages/OverviewStage";
-import { PreflightStage } from "@/components/how-it-works/stages/PreflightStage";
+import { IntakeSnapshotStage } from "@/components/how-it-works/stages/IntakeSnapshotStage";
 import { BenchmarksStage } from "@/components/how-it-works/stages/BenchmarksStage";
-import { BaselineStage } from "@/components/how-it-works/stages/BaselineStage";
+import { OptimizeBaselineStage } from "@/components/how-it-works/stages/OptimizeBaselineStage";
 import { JudgesStage } from "@/components/how-it-works/stages/JudgesStage";
-import { EnrichmentStage } from "@/components/how-it-works/stages/EnrichmentStage";
 import { LeverLoopStage } from "@/components/how-it-works/stages/LeverLoopStage";
 import { FailureAnalysisStage } from "@/components/how-it-works/stages/FailureAnalysisStage";
 import { LeversStage } from "@/components/how-it-works/stages/LeversStage";
-import { ThreeGatesStage } from "@/components/how-it-works/stages/ThreeGatesStage";
+import { AcceptanceRollbackStage } from "@/components/how-it-works/stages/AcceptanceRollbackStage";
 import { ConvergenceStage } from "@/components/how-it-works/stages/ConvergenceStage";
-import { FinalizeDeployStage } from "@/components/how-it-works/stages/FinalizeDeployStage";
+import { PublishAuditStage } from "@/components/how-it-works/stages/PublishAuditStage";
 
 export const Route = createFileRoute("/how-it-works")({
   component: HowItWorksPage,
@@ -20,17 +19,16 @@ export const Route = createFileRoute("/how-it-works")({
 
 const STAGE_COMPONENTS: Record<string, () => React.ReactNode> = {
   overview: OverviewStage,
-  preflight: PreflightStage,
+  intake: IntakeSnapshotStage,
   benchmarks: BenchmarksStage,
-  baseline: BaselineStage,
+  "optimize-baseline": OptimizeBaselineStage,
   judges: JudgesStage,
-  enrichment: EnrichmentStage,
   "lever-loop": LeverLoopStage,
   "failure-analysis": FailureAnalysisStage,
   levers: LeversStage,
-  "three-gates": ThreeGatesStage,
+  "acceptance-rollback": AcceptanceRollbackStage,
   convergence: ConvergenceStage,
-  finalize: FinalizeDeployStage,
+  "publish-audit": PublishAuditStage,
 };
 
 function HowItWorksPage() {

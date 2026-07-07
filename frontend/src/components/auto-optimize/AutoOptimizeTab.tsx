@@ -408,7 +408,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
           )}
         </div>
 
-        {/* 5-task rail (replaces the 6-step progress bar) */}
+        {/* 4-task rail */}
         <TaskRail
           stepsCompleted={stepsCompleted}
           currentStepName={currentStepName}

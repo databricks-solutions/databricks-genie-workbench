@@ -11,8 +11,8 @@ interface TaskRailProps {
   onShowDetails?: () => void
 }
 
-// The 5-task rail (arch §7 / Phase 12) — replaces the 6-step progress bar.
-// 00 intake · 01 QC+repair · 02 baseline+triage · 03 optimize · publish_and_audit.
+// The 4-task rail.
+// 00 intake · 01 QC+repair · 02 optimize · 03 publish_and_audit.
 // The 01 node branches to a BENCHMARK_UNREPAIRABLE hard-fail chip.
 export function TaskRail({
   stepsCompleted,
@@ -30,7 +30,7 @@ export function TaskRail({
     benchmarkUnrepairable,
   })
   const completedCount = nodes.filter((n) => n.state === "completed").length
-  // Denominator is derived from the rendered node set (the 5-task DAG) — the
+  // Denominator is derived from the rendered node set (the 4-task DAG) — the
   // "never 6" invariant is local here and can't regress on a stale backend total.
   const total = nodes.length
 

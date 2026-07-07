@@ -13,17 +13,17 @@ export function parseTargetAccuracy(percentInput: string): number | null {
   return pct / 100
 }
 
-// Parse the max-attempts field into a positive integer (the surgical hill-climb
-// budget). Returns null for non-integers or values < 1.
+// Parse the max-attempts field into a positive integer. Returns null for
+// non-integers or values < 1.
 export function parseMaxAttempts(input: string): number | null {
   const n = Number(input)
   if (!Number.isInteger(n) || n < 1) return null
   return n
 }
 
-// Assemble the trigger payload. `levers` is the selected subset of {1..6}; the
-// coverage pass (lever 0 / attempt 1) is automatic and is never included.
-// `target_accuracy` is sent on the 0–1 scale; `max_attempts` is the surgical budget.
+// Assemble the trigger payload. `levers` is the selected subset of {1..6};
+// lever 0 is not part of the 4-task runner's user-selectable contract.
+// `target_accuracy` is sent on the 0–1 scale; `max_attempts` bounds patch attempts.
 export function buildOptimizationTriggerRequest(args: {
   spaceId: string
   applyMode: "genie_config" | "both"

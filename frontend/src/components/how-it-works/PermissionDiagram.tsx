@@ -57,7 +57,7 @@ export function PermissionDiagram({ className }: { className?: string }) {
             </div>
           </div>
           <div className="space-y-2">
-            {["Run optimization Lakeflow Job", "Read/write Lakebase storage", "Fallback for Genie API scope gap", "Access benchmark results", "Write optimization state", "Deploy approved changes"].map(
+            {["Run optimization Lakeflow Job", "Read/write Lakebase storage", "Fallback for Genie API scope gap", "Access benchmark results", "Write optimizer state", "Write publish audit artifacts"].map(
               (item) => (
                 <div key={item} className="flex items-center gap-2 text-sm text-secondary">
                   <div className="h-1.5 w-1.5 rounded-full bg-cyan shrink-0" />

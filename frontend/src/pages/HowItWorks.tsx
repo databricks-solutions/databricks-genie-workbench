@@ -16,7 +16,6 @@ import {
   AlertTriangle,
   XCircle,
   Target,
-  BarChart3,
   GitBranch,
   RefreshCw,
   ArrowRightLeft,
@@ -378,15 +377,13 @@ function IQScannerContent() {
    STAGE 3 — Auto-Optimize (GSO)
    ================================================================ */
 export function AutoOptimizeContent() {
-  // The 5-task linear DAG (arch §7 / GSO v2). The whole hill-climb — the
-  // coverage + surgical loop — runs inside a single `03 Optimize` task; the
-  // standalone enrichment/lever-loop/deploy tasks are gone.
+  // The 4-task linear DAG. Baseline evaluation and bounded patch attempts run
+  // inside a single `02 Optimize` task.
   const pipelineSteps: PipelineStep[] = [
     { icon: <Database className="h-5 w-5" />, label: "00 Intake & Snapshot", description: "Read config; snapshot the live space for rollback", color: INFO },
     { icon: <ShieldCheck className="h-5 w-5" />, label: "01 Benchmark QC & Repair", description: "Validate, repair & prune the 30–40-question set", color: CYAN },
-    { icon: <BarChart3 className="h-5 w-5" />, label: "02 Baseline Eval & Triage", description: "Score the baseline; triage failing clusters", color: ACCENT },
-    { icon: <RefreshCw className="h-5 w-5" />, label: "03 Optimize", description: "Coverage → surgical hill-climb (one task)", color: WARNING },
-    { icon: <CheckCircle2 className="h-5 w-5" />, label: "Publish & Audit", description: "Publish the champion; write the audit record", color: SUCCESS },
+    { icon: <RefreshCw className="h-5 w-5" />, label: "02 Optimize", description: "Baseline eval and targeted patch attempts", color: WARNING },
+    { icon: <CheckCircle2 className="h-5 w-5" />, label: "03 Publish & Audit", description: "Publish the champion; write the audit record", color: SUCCESS },
   ]
 
   const levers = [
@@ -405,31 +402,31 @@ export function AutoOptimizeContent() {
         <p className="text-sm text-muted mt-1">Benchmark-driven optimization for failed checks and measured accuracy — tests real questions and keeps what works</p>
       </div>
 
-      <StageCard title="5-Task Pipeline" subtitle="00 intake → 01 QC & repair → 02 baseline & triage → 03 optimize → publish & audit" icon={<Zap className="h-4 w-4" />}>
+      <StageCard title="4-Task Pipeline" subtitle="00 intake -> 01 QC & repair -> 02 optimize -> 03 publish & audit" icon={<Zap className="h-4 w-4" />}>
         <PipelineDiagram steps={pipelineSteps} />
       </StageCard>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <StageCard title="Inside 03 Optimize" subtitle="A two-mode hill-climb, all in one task" icon={<ArrowRightLeft className="h-4 w-4" />}>
+        <StageCard title="Inside 02 Optimize" subtitle="Baseline evaluation plus bounded patch attempts" icon={<ArrowRightLeft className="h-4 w-4" />}>
           <div className="space-y-3">
             <div className="rounded-lg border p-3" style={{ borderColor: `${WARNING}30`, background: `${WARNING}08` }}>
               <div className="flex items-center gap-2 mb-1">
                 <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: WARNING }} />
-                <h4 className="text-sm font-semibold" style={{ color: WARNING }}>Attempt 1 — Coverage (automatic)</h4>
+                <h4 className="text-sm font-semibold" style={{ color: WARNING }}>Iteration 0 — Baseline</h4>
               </div>
               <p className="text-xs text-muted">
-                A broad, automatic enrichment pass measured against the frozen baseline. If it doesn't lift
-                accuracy it is rolled back — a free probe that never consumes a surgical attempt.
+                The current live space is scored with the native Genie Benchmark API and persisted as
+                the baseline. If it already meets the target, the run stops early.
               </p>
             </div>
             <div className="rounded-lg border p-3" style={{ borderColor: `${CYAN}30`, background: `${CYAN}08` }}>
               <div className="flex items-center gap-2 mb-1">
                 <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: CYAN }} />
-                <h4 className="text-sm font-semibold" style={{ color: CYAN }}>Attempts 2..N — Surgical</h4>
+                <h4 className="text-sm font-semibold" style={{ color: CYAN }}>Attempts 1..N — Patch/eval loop</h4>
               </div>
               <p className="text-xs text-muted">
-                A strategist targets the failing clusters with focused lever patches, re-scored on the full
-                benchmark each attempt and kept only when accuracy improves (best-so-far champion).
+                The optimizer proposes a targeted patch set, screens it, evaluates the full benchmark,
+                and keeps it only when accuracy improves the best-so-far champion.
               </p>
             </div>
             <div className="flex items-start gap-2 pt-1 text-xs text-muted border-t border-default">
@@ -437,13 +434,13 @@ export function AutoOptimizeContent() {
               <span>
                 Stops at <span className="font-medium text-primary">target accuracy</span> or{" "}
                 <span className="font-medium text-primary">max attempts</span> — whichever comes first
-                (max_attempts counts surgical attempts only).
+                (max_attempts bounds the patch/eval loop).
               </span>
             </div>
           </div>
         </StageCard>
 
-        <StageCard title="Optimization Levers" subtitle="Coverage is automatic; levers scope the surgical attempts" icon={<Settings className="h-4 w-4" />}>
+        <StageCard title="Optimization Levers" subtitle="Levers scope the targeted patch attempts" icon={<Settings className="h-4 w-4" />}>
           <div className="space-y-3">
             {levers.map((l) => (
               <div key={l.name} className="flex items-center gap-3">

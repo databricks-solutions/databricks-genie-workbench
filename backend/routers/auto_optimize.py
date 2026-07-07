@@ -63,7 +63,7 @@ _ITER_COLS_LEGACY = (
 
 # Lever names — matches GSO common/config.py
 LEVER_NAMES: dict[int, str] = {
-    0: "Proactive Enrichment",
+    0: "Legacy Enrichment",
     1: "Tables & Columns",
     2: "Metric Views",
     3: "SQL Queries & Functions",
@@ -96,8 +96,8 @@ _TYPED_TERMINAL_REASONS = (
 
 # Defaults for the round-tripped loop knobs (arch §13 / D9). target_accuracy is
 # on the 0–1 request scale (the job param + databricks.yml default is "0.90");
-# the loop normalizes ≤1 to the 0–100 internal/Delta scale. max_attempts counts
-# SURGICAL attempts only (coverage is a free probe).
+# the loop normalizes ≤1 to the 0–100 internal/Delta scale. max_attempts bounds
+# the native patch/eval loop.
 _DEFAULT_TARGET_ACCURACY = 0.90
 _DEFAULT_MAX_ATTEMPTS = 3
 
@@ -131,8 +131,7 @@ class TriggerRequest(BaseModel):
     # GSO v2 loop knobs (arch §13 / D9). Both optional/nullable; when omitted the
     # job's databricks.yml defaults apply (target_accuracy "0.90", max_attempts
     # "3"). target_accuracy is the 0–1 stop-early target; max_attempts bounds the
-    # SURGICAL hill-climb (the attempt-1 coverage pass is a free probe). The loop
-    # stops at whichever comes first.
+    # native patch/eval loop. The loop stops at whichever comes first.
     target_accuracy: float | None = Field(None, ge=0.0, le=1.0)
     max_attempts: int | None = Field(None, ge=1, le=20)
 
@@ -1075,8 +1074,8 @@ def _build_levers(
             lever_data[lever_num] = {"stages": [], "detail": {}, "patches": []}
         lever_data[lever_num]["patches"].append(_patch_for_ui(p))
 
-    # For lever 0 (Proactive Enrichment), match enrichment stages since they
-    # don't use LEVER_0_* naming — they use ENRICHMENT, DESCRIPTION_ENRICHMENT, etc.
+    # For legacy lever 0 coverage/enrichment records, match enrichment stages
+    # since they don't use LEVER_0_* naming.
     _ENRICHMENT_PREFIXES = ("ENRICHMENT", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY",
                             "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION",
                             "EXAMPLE_SQL", "PROMPT_MATCH")
@@ -1306,42 +1305,40 @@ async def trigger(body: TriggerRequest, request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Pipeline step definitions — group raw sub-stages into the GSO v2 5-task DAG
-# (arch §7 / Phases 7–9): 00_intake_and_snapshot → 01_benchmark_qc_and_repair →
-# 02_baseline_eval_and_triage → 03_optimize → publish_and_audit. The standalone
-# Deploy task was dropped (D7 — cross-env deploy out of scope).
+# Pipeline step definitions — group raw sub-stages into the GSO v2 4-task DAG:
+# 00_intake_and_snapshot → 01_benchmark_qc_and_repair → 02_optimize →
+# 03_publish_and_audit. Baseline evaluation now runs inside optimize through the
+# native Benchmark API; there is no separate baseline/triage task.
 #
 # Each task emits a top-level stage (INTAKE_AND_SNAPSHOT / BENCHMARK_QC_AND_REPAIR
-# / BASELINE_EVAL_AND_TRIAGE / OPTIMIZE / PUBLISH_AND_AUDIT). The 03_optimize
-# controller runs the whole hill-climb (enrichment coverage pass + surgical
-# lever loop) in-process, so its internal LEVER_/AG_/ENRICHMENT/… sub-stages all
-# roll up into step 4 "Optimize".
+# / OPTIMIZE / PUBLISH_AND_AUDIT). The optimize
+# controller runs the whole native patch/eval loop in-process, so baseline/eval
+# and any legacy internal LEVER_/AG_/ENRICHMENT/…
+# sub-stages all roll up into step 3 "Optimize".
 #
 # Backward compatibility: the prefixes ALSO cover the legacy 6-notebook stage
 # names so legacy runs still render — legacy PREFLIGHT folds into both intake (1)
-# and QC (2) since the old preflight did both jobs; legacy FINALIZE/REPEATABILITY/
-# COMPLETE fold into Publish & Audit (5). Legacy DEPLOY/UC_OBO_WRITE stages are
+# and QC (2) since the old preflight did both jobs; legacy BASELINE/ENRICHMENT/
+# LEVER fold into Optimize (3); legacy FINALIZE/REPEATABILITY/COMPLETE fold into
+# Publish & Audit (4). Legacy DEPLOY/UC_OBO_WRITE stages are
 # intentionally unmatched (the deploy step is gone) — they still appear in the
 # raw stage-event list. New optional fields keep legacy runs serializable.
 _STEP_DEFINITIONS = [
     {"stepNumber": 1, "name": "Intake & Snapshot",      "stage_prefixes": ["INTAKE", "PREFLIGHT"]},
     {"stepNumber": 2, "name": "Benchmark QC & Repair",  "stage_prefixes": ["BENCHMARK_QC", "PREFLIGHT"]},
-    {"stepNumber": 3, "name": "Baseline Eval & Triage", "stage_prefixes": ["BASELINE_EVAL"]},
-    {"stepNumber": 4, "name": "Optimize",               "stage_prefixes": ["OPTIMIZE", "LEVER_", "AG_", "ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL"]},
-    {"stepNumber": 5, "name": "Publish & Audit",        "stage_prefixes": ["PUBLISH", "FINALIZE", "REPEATABILITY", "COMPLETE"]},
+    {"stepNumber": 3, "name": "Optimize",               "stage_prefixes": ["OPTIMIZE", "BASELINE_EVAL", "LEVER_", "AG_", "ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL"]},
+    {"stepNumber": 4, "name": "Publish & Audit",        "stage_prefixes": ["PUBLISH", "FINALIZE", "REPEATABILITY", "COMPLETE"]},
 ]
 
-_TOTAL_STEPS = len(_STEP_DEFINITIONS)  # 5-task DAG (Deploy dropped, D7)
+_TOTAL_STEPS = len(_STEP_DEFINITIONS)  # 4-task DAG
 
-# Step-name → semantic builder kind. Both the GSO v2 5-task names and the legacy
-# 6-notebook names map onto the same summary/IO logic so `_build_step_summary` /
-# `_build_step_io` keep working for runs from either pipeline shape.
-_INTAKE_STEP_NAMES = {"Intake & Snapshot", "Preflight"}
+# Step-name → semantic builder kind for the current 4-task UI buckets.
+_INTAKE_STEP_NAMES = {"Intake & Snapshot"}
 _QC_STEP_NAMES = {"Benchmark QC & Repair"}
-_BASELINE_STEP_NAMES = {"Baseline Eval & Triage", "Baseline Evaluation"}
-_ENRICHMENT_STEP_NAMES = {"Proactive Enrichment"}  # legacy standalone step 3
-_OPTIMIZE_STEP_NAMES = {"Optimize", "Adaptive Optimization"}
-_PUBLISH_STEP_NAMES = {"Publish & Audit", "Finalization"}
+_BASELINE_STEP_NAMES: set[str] = set()
+_ENRICHMENT_STEP_NAMES: set[str] = set()
+_OPTIMIZE_STEP_NAMES = {"Optimize"}
+_PUBLISH_STEP_NAMES = {"Publish & Audit"}
 
 
 def _derive_step_status(matching_stages: list[dict]) -> str:
@@ -1398,7 +1395,7 @@ def _normalize_step_status_for_terminal_run(*, status: str, run_status: str) -> 
 def _map_stages_to_steps(
     stages: list[dict], run: dict, iterations: list[dict],
 ) -> list[dict]:
-    """Group raw stages by prefix into the 5-task DAG steps with rich IO."""
+    """Group raw stages by prefix into the 4-task DAG steps with rich IO."""
     run_status = str(run.get("status", "")).upper()
 
     steps = []
@@ -1492,7 +1489,7 @@ async def get_run(run_id: RunId):
 
     # Canonical baseline + optimized + best_iteration. See
     # ``genie_space_optimizer.common.accuracy.compute_run_scores`` for the
-    # contract — closes the "100% Optimized during Baseline Evaluation" UI
+    # contract — closes the "100% Optimized during baseline-only phase" UI
     # bug by enforcing full-scope-only filtering, rolled-back exclusion, and
     # the floor-at-baseline invariant.
     run_scores = compute_run_scores(iterations, run_id=run_id, logger=logger)
@@ -1935,11 +1932,11 @@ async def list_iterations(run_id: RunId):
     return iterations
 
 
-# The 03_optimize loop scores every attempt on the FULL benchmark: surgical
-# attempts land at eval_scope='full', the attempt-1 coverage pass at
-# eval_scope='enrichment' (both full-benchmark — exactly the candidate universe
-# of state.load_all_scored_iterations). Any other scope on an attempt row (e.g.
-# a legacy slice/p0 probe) is NOT the authoritative per-attempt accuracy.
+# The 03_optimize loop scores every current attempt on the FULL benchmark.
+# Legacy enrichment rows also used eval_scope='enrichment'; both scopes belong
+# to the candidate universe of state.load_all_scored_iterations. Any other scope
+# on an attempt row (e.g. a legacy slice/p0 probe) is NOT the authoritative
+# per-attempt accuracy.
 _FULL_BENCHMARK_SCOPES = frozenset({"full", "enrichment"})
 
 
@@ -1952,11 +1949,11 @@ def _attempt_row_sort_key(r: dict) -> tuple:
 def _dedup_attempt_rows(loop_rows: list[dict]) -> list[dict]:
     """One authoritative full-benchmark row per ``attempt_no`` (B1).
 
-    Filters to the full-benchmark scopes (``full``/``enrichment``) so non-full
-    probe rows never become a phantom attempt, and collapses any duplicates of
-    the same ``attempt_no`` to the most recent row (so accuracy/decision reflect
-    the final committed eval). Returned ordered by ``attempt_no`` ascending, so
-    ``len()`` is the DISTINCT attempt count.
+    Filters to full-benchmark and legacy-enrichment scopes so non-full probe
+    rows never become a phantom attempt, and collapses any duplicates of the same
+    ``attempt_no`` to the most recent row (so accuracy/decision reflect the final
+    committed eval). Returned ordered by ``attempt_no`` ascending, so ``len()`` is
+    the DISTINCT attempt count.
     """
     by_attempt: dict[int, dict] = {}
     for r in loop_rows:
@@ -2052,7 +2049,8 @@ async def get_loop_state(run_id: RunId):
     """GSO v2 03_optimize controller loop-state + per-attempt ledger (arch §7.4).
 
     Surfaces the Phase-7/8 loop-state columns on ``genie_opt_iterations``:
-    per attempt — ``attempt_no``, ``attempt_mode`` (coverage/surgical),
+    per attempt — ``attempt_no``, ``attempt_mode`` (current rows use
+    ``llm_patch``; legacy rows may use ``coverage`` / ``surgical``),
     full-benchmark accuracy, the ``best_accuracy`` staircase, ``decision`` plus
     its rejection/rollback reason, the rolled-back + champion flags, and the
     active hypothesis; run-level — ``best_accuracy``, ``best_config_version_id``,
@@ -2065,7 +2063,8 @@ async def get_loop_state(run_id: RunId):
     """
     loop_rows = _select_loop_state_delta(run_id) if _is_configured() else []
     # Attempts = ONE authoritative full-benchmark row per attempt_no
-    # (1=coverage, 2..N=surgical), de-duped so multiple/non-full rows never
+    # (current rows use llm_patch; legacy rows may use coverage/surgical),
+    # de-duped so multiple/non-full rows never
     # render as phantom attempts (B1). The baseline (iter 0, no attempt_no) is
     # the ladder floor served by /iterations — it is not itself an attempt.
     attempt_rows = _dedup_attempt_rows(loop_rows)

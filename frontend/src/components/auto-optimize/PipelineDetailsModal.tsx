@@ -147,7 +147,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
 
   if (!isOpen) return null
 
-  // 5-task rail progress derived from the run's steps (the modal reads a
+  // 4-task rail progress derived from the run's steps (the modal reads a
   // GSOPipelineRun, not the status endpoint). Tolerant of the legacy 6-step
   // shape — TaskRail clamps against GSO_TOTAL_STEPS.
   const { stepsCompleted, currentStepName } = deriveRailProgress(run?.steps)
@@ -218,7 +218,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                 Started {formatDateTime(run.startedAt)}
               </p>
 
-              {/* 5-task rail (replaces the 6-step progress bar + step cards) */}
+              {/* 4-task rail */}
               <TaskRail
                 stepsCompleted={stepsCompleted}
                 currentStepName={currentStepName}
@@ -298,13 +298,13 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
 
                       <TabsContent value="questions">
                         {/* Attempt-grouped journey — columns relabeled Baseline ·
-                            Coverage · Surgical N (attemptColumnLabel). */}
+                            Patch N (attemptColumnLabel). */}
                         <QuestionJourney runId={runId} iterations={iterations} />
                       </TabsContent>
 
                       <TabsContent value="patches">
                         {/* Attempt-grouped patches — the "Iter" column is re-keyed
-                            onto the coverage/surgical attempt vocabulary. */}
+                            onto patch-attempt vocabulary. */}
                         <PatchesTable runId={runId} iterations={iterations} />
                       </TabsContent>
 
@@ -337,7 +337,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                     )}
                   </TabsContent>
 
-                  {/* Levers tab — coverage (lever 0) + surgical levers 1–6. */}
+                  {/* Levers tab — optimization levers 1–6. */}
                   <TabsContent value="levers">
                     {hasLevers ? (
                       <OptimizationLevers levers={run.levers} iterations={iterations} />

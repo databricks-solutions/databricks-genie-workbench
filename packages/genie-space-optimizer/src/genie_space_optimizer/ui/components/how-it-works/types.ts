@@ -92,7 +92,7 @@ export interface EnrichmentSubstage {
   details: string[];
 }
 
-export interface PreflightStep {
+export interface IntakeStep {
   id: string;
   title: string;
   icon: LucideIcon;

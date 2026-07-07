@@ -265,18 +265,15 @@ export interface AgentChatMessage {
 // Auto-Optimize (GSO) Types
 // ============================================================================
 
-// GSO v2 5-task DAG (arch §7 / Phases 7–9) — mirrors backend `_STEP_DEFINITIONS`.
-// The standalone Deploy task was dropped (D7). The whole hill-climb (coverage +
-// surgical loop) runs inside step 4 "Optimize". Components (Phases 11–14) consume
-// these instead of hardcoding a 6-step model.
+// GSO v2 4-task DAG — mirrors backend `_STEP_DEFINITIONS`.
+// Baseline evaluation and bounded patch attempts run inside "Optimize".
 export const GSO_PIPELINE_STEPS = [
   { stepNumber: 1, name: "Intake & Snapshot" },
   { stepNumber: 2, name: "Benchmark QC & Repair" },
-  { stepNumber: 3, name: "Baseline Eval & Triage" },
-  { stepNumber: 4, name: "Optimize" },
-  { stepNumber: 5, name: "Publish & Audit" },
+  { stepNumber: 3, name: "Optimize" },
+  { stepNumber: 4, name: "Publish & Audit" },
 ] as const
-export const GSO_TOTAL_STEPS = GSO_PIPELINE_STEPS.length // 5
+export const GSO_TOTAL_STEPS = GSO_PIPELINE_STEPS.length // 4
 export type GSOPipelineStepName = (typeof GSO_PIPELINE_STEPS)[number]["name"]
 
 // GSO v2 — typed loop terminal reason (arch §5.1 / §7.4), the closed set the
@@ -291,10 +288,11 @@ export type GSOTerminalReason =
   | "LOOP_STATE_INVALID"
   | "EVAL_BUDGET_EXHAUSTED"
 
-// GSO v2 — per-attempt mode (arch §5.1): attempt 1 is the broad coverage probe,
-// attempts 2..N are surgical. Per-attempt aggregate decision (accept/reject/
-// continue) from the controller.
-export type GSOAttemptMode = "coverage" | "surgical"
+// GSO v2 — per-attempt mode. Current optimize attempts use "llm_patch";
+// legacy runs may still send "coverage" / "surgical", so wire fields accept
+// string fallbacks below. Per-attempt aggregate decision (accept/reject/
+// continue) comes from the controller.
+export type GSOAttemptMode = "llm_patch"
 export type GSODecision = "accept" | "reject" | "continue"
 
 // apply_mode supports three values: "genie_config" (default),
@@ -306,7 +304,7 @@ export interface GSOTriggerRequest {
   levers?: number[]
   llm_model?: string | null
   // GSO v2 loop knobs (optional; omit ⇒ job defaults 0.90 / 3). target_accuracy
-  // is the 0–1 stop-early target; max_attempts bounds the surgical hill-climb.
+  // is the 0–1 stop-early target; max_attempts bounds the patch/eval loop.
   // The run stops at whichever comes first.
   target_accuracy?: number | null
   max_attempts?: number | null
@@ -516,11 +514,11 @@ export interface GSOIterationResult {
   decision_reason?: string | null
 }
 
-// GSO v2 (arch §7.4) — one row per 03_optimize controller attempt (1=coverage,
-// 2..N=surgical). Backed by genie_opt_iterations loop-state columns via
-// /runs/{id}/loop-state. accuracy/bestAccuracy are 0–100 (as elsewhere in the
-// app). decisionReason carries the rejection/rollback explanation so a
-// higher-accuracy-but-rolled-back attempt is explained, not hidden.
+// GSO v2 (arch §7.4) — one row per 03_optimize patch attempt. Backed by
+// genie_opt_iterations loop-state columns via /runs/{id}/loop-state.
+// accuracy/bestAccuracy are 0–100 (as elsewhere in the app). decisionReason
+// carries the rejection/rollback explanation so a higher-accuracy-but-rolled-back
+// attempt is explained, not hidden.
 export interface GSOAttempt {
   attemptNo: number | null
   attemptMode: GSOAttemptMode | string | null
@@ -689,7 +687,7 @@ export interface GSOBenchmarkChanges {
 }
 
 // GSO v2 (arch §7.3) — one improvement-trajectory rung in the publish record
-// (baseline → coverage → surgical). Bounded/structural fields only (§3.6
+// (baseline -> patch attempts). Bounded/structural fields only (§3.6
 // firewall): no benchmark Q/A or ground-truth SQL.
 export interface GSOPublishTrajectoryEntry {
   iteration: number | null

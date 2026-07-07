@@ -7,12 +7,10 @@ import {
   parseTargetAccuracy,
 } from "./optimizationRequest"
 
-describe("OptimizationConfig coverage row", () => {
-  // (a) Coverage (attempt 1) is automatic — it must render as an always-on
-  // row, never a toggle. We assert the row text is present AND that the only
-  // checkboxes on the surface are the six surgical levers (1..6), proving the
-  // coverage row added no 7th checkbox.
-  it("renders coverage as an always-on row, not a checkbox", () => {
+describe("OptimizationConfig lever scope", () => {
+  // The current 4-task flow exposes only the six patch levers (1..6). Retired
+  // lever 0 is a legacy data concern, not a selectable control.
+  it("renders only the six patch levers", () => {
     const markup = renderToStaticMarkup(
       <OptimizationConfig
         spaceId="space-1"
@@ -23,12 +21,13 @@ describe("OptimizationConfig coverage row", () => {
       />,
     )
 
-    expect(markup).toContain("Coverage pass")
-    expect(markup).toContain("Automatic")
-    expect(markup).toContain("Surgical optimization scope (attempts 2+)")
+    expect(markup).toContain("Optimization scope")
+    expect(markup).toContain("targeted patch sets")
+    expect(markup).not.toContain("Coverage pass")
+    expect(markup).not.toContain("Surgical optimization scope")
 
     const checkboxCount = (markup.match(/type="checkbox"/g) ?? []).length
-    expect(checkboxCount).toBe(6) // exactly the six surgical levers, none for coverage
+    expect(checkboxCount).toBe(6)
   })
 
   it("surfaces the two stopping-criteria knobs with their default values", () => {
@@ -43,7 +42,7 @@ describe("OptimizationConfig coverage row", () => {
     )
 
     expect(markup).toContain("Target accuracy")
-    expect(markup).toContain("Max surgical attempts")
+    expect(markup).toContain("Max patch attempts")
     expect(markup).toContain("whichever comes first")
     // Defaults reflect the job defaults (0.90 -> 90%, 3 attempts).
     expect(markup).toContain('value="90"')
@@ -101,7 +100,7 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
     expect(req.target_accuracy).toBeLessThanOrEqual(1)
   })
 
-  it("never includes the coverage pass (lever 0) in the levers payload", () => {
+  it("never includes retired lever 0 in the levers payload", () => {
     const req = buildOptimizationTriggerRequest({
       spaceId: "space-1",
       applyMode: "genie_config",
@@ -115,7 +114,7 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
     expect(req.levers).not.toContain(0)
   })
 
-  it("filters out-of-range lever ids (0 coverage, 7+) before sending", () => {
+  it("filters out-of-range lever ids (retired 0, 7+) before sending", () => {
     const req = buildOptimizationTriggerRequest({
       spaceId: "space-1",
       applyMode: "genie_config",
@@ -125,6 +124,6 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
       maxAttempts: 3,
     })
 
-    expect(req.levers).toEqual([1]) // 0 (coverage) and 7 (out of range) dropped
+    expect(req.levers).toEqual([1]) // 0 (retired) and 7 (out of range) dropped
   })
 })

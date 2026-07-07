@@ -255,39 +255,27 @@ def _apply_deferred_uc_writes_obo(
 _STEP_DEFINITIONS: list[_StepDefinition] = [
     {
         "stepNumber": 1,
-        "name": "Preflight",
-        "stage_prefixes": ["PREFLIGHT"],
-        "summary_template": "Analyzed {tables} tables, {columns} columns, {instructions} instructions, {questions} sample questions",
+        "name": "Intake & Snapshot",
+        "stage_prefixes": ["INTAKE", "PREFLIGHT"],
+        "summary_template": "Captured the rollback snapshot for {tables} tables and {questions} benchmark questions",
     },
     {
         "stepNumber": 2,
-        "name": "Baseline Evaluation",
-        "stage_prefixes": ["BASELINE_EVAL"],
-        "summary_template": "Evaluated {questions} benchmark questions with 9 judges. Baseline score: {score}% ({correct}/{questions} correct)",
+        "name": "Benchmark QC & Repair",
+        "stage_prefixes": ["BENCHMARK_QC", "PREFLIGHT"],
+        "summary_template": "{valid} valid benchmark questions after {tries} repair sweep(s)",
     },
     {
         "stepNumber": 3,
-        "name": "Proactive Enrichment",
-        "stage_prefixes": ["ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL"],
-        "summary_template": "Applied {total} proactive enrichments: {descriptions} descriptions, {joins} joins, {instructions} instructions, {examples} example SQLs",
+        "name": "Optimize",
+        "stage_prefixes": ["OPTIMIZE", "BASELINE_EVAL", "ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL", "LEVER_", "AG_"],
+        "summary_template": "Baseline evaluated; applied {patches} optimization patches. Score improved from {before}% to {after}%",
     },
     {
         "stepNumber": 4,
-        "name": "Adaptive Optimization",
-        "stage_prefixes": ["LEVER_", "AG_"],
-        "summary_template": "Applied {patches} optimizations across {levers} categories. Score improved from {before}% to {after}%",
-    },
-    {
-        "stepNumber": 5,
-        "name": "Finalization",
-        "stage_prefixes": ["FINALIZE", "REPEATABILITY"],
-        "summary_template": "Final evaluation complete. Optimized score: {score}%. Repeatability: {repeatability}%",
-    },
-    {
-        "stepNumber": 6,
-        "name": "Deploy",
-        "stage_prefixes": ["DEPLOY", "COMPLETE", _UC_WRITE_STAGE],
-        "summary_template": "Deployment {status}",
+        "name": "Publish & Audit",
+        "stage_prefixes": ["PUBLISH", "FINALIZE", "REPEATABILITY", "COMPLETE"],
+        "summary_template": "Publish/audit complete. Champion score: {score}%",
     },
 ]
 
@@ -373,7 +361,7 @@ def map_stages_to_steps(
     *,
     patches_rows: list[dict] | None = None,
 ) -> list[PipelineStep]:
-    """Map internal harness stages to 6 user-facing pipeline steps."""
+    """Map internal harness stages to 4 user-facing pipeline tasks."""
     steps: list[PipelineStep] = []
 
     for defn in _STEP_DEFINITIONS:
@@ -476,7 +464,7 @@ def _build_step_io(
     else:
         config_snapshot = {}
 
-    if step_name == "Preflight":
+    if step_name == "Intake & Snapshot":
         all_pf = _collect_all_preflight_detail(stages_rows or [])
         parsed = _resolve_parsed_space(config_snapshot)
         ds = parsed.get("data_sources", {}) if isinstance(parsed, dict) else {}
@@ -594,7 +582,25 @@ def _build_step_io(
             },
         )
 
-    if step_name == "Baseline Evaluation":
+    if step_name == "Benchmark QC & Repair":
+        window = detail.get("window")
+        window_status = detail.get("window_status")
+        if window_status is None and isinstance(window, dict):
+            window_status = window.get("status")
+        return (
+            {"spaceId": run_data.get("space_id")},
+            {
+                "validCount": _safe_int(detail.get("valid_count")),
+                "repairTriesUsed": _safe_int(detail.get("repair_tries_used")),
+                "repairMaxTries": _safe_int(detail.get("benchmark_repair_max_tries")),
+                "windowStatus": window_status,
+                "finalValidity": detail.get("final_validity"),
+                "terminalReason": detail.get("terminal_reason"),
+                "stageEvents": timeline,
+            },
+        )
+
+    if step_name == "Optimize":
         baseline_iter = next(
             (
                 r for r in iterations_rows
@@ -603,113 +609,87 @@ def _build_step_io(
             ),
             None,
         )
-        if not baseline_iter:
-            return None, {"stageEvents": timeline}
-
-        scores = baseline_iter.get("scores_json", {})
-        if isinstance(scores, str):
-            try:
-                scores = json.loads(scores)
-            except (json.JSONDecodeError, TypeError):
+        baseline_io: tuple[dict | None, dict | None] = (None, None)
+        if baseline_iter:
+            scores = baseline_iter.get("scores_json", {})
+            if isinstance(scores, str):
+                try:
+                    scores = json.loads(scores)
+                except (json.JSONDecodeError, TypeError):
+                    scores = {}
+            if not isinstance(scores, dict):
                 scores = {}
-        if not isinstance(scores, dict):
-            scores = {}
 
-        rows_json = baseline_iter.get("rows_json", [])
-        if isinstance(rows_json, str):
-            try:
-                rows_json = json.loads(rows_json)
-            except (json.JSONDecodeError, TypeError):
+            rows_json = baseline_iter.get("rows_json", [])
+            if isinstance(rows_json, str):
+                try:
+                    rows_json = json.loads(rows_json)
+                except (json.JSONDecodeError, TypeError):
+                    rows_json = []
+            if not isinstance(rows_json, list):
                 rows_json = []
-        if not isinstance(rows_json, list):
-            rows_json = []
 
-        sample_rows: list[dict[str, Any]] = []
-        for row in rows_json[:5]:
-            if not isinstance(row, dict):
-                continue
-            question = ""
-            if isinstance(row.get("inputs"), dict):
-                question = str(row.get("inputs", {}).get("question") or "").strip()
-            if not question:
-                question = str(row.get("inputs/question") or "").strip()
-            sample_rows.append(
+            sample_rows: list[dict[str, Any]] = []
+            for row in rows_json[:5]:
+                if not isinstance(row, dict):
+                    continue
+                question = ""
+                if isinstance(row.get("inputs"), dict):
+                    question = str(row.get("inputs", {}).get("question") or "").strip()
+                if not question:
+                    question = str(row.get("inputs/question") or "").strip()
+                sample_rows.append(
+                    {
+                        "question": question,
+                        "resultCorrectness": row.get("result_correctness/value", row.get("result_correctness")),
+                        "syntaxValidity": row.get("syntax_validity/value", row.get("syntax_validity")),
+                        "assetRouting": row.get("asset_routing/value", row.get("asset_routing")),
+                        "matchType": (
+                            row.get("outputs", {}).get("comparison", {}).get("match_type")
+                            if isinstance(row.get("outputs"), dict)
+                            else None
+                        ),
+                        "error": (
+                            row.get("outputs", {}).get("comparison", {}).get("error")
+                            if isinstance(row.get("outputs"), dict)
+                            else None
+                        ),
+                    }
+                )
+
+            _counts = _resolve_eval_counts(baseline_iter)
+            baseline_io = (
                 {
-                    "question": question,
-                    "resultCorrectness": row.get("result_correctness/value", row.get("result_correctness")),
-                    "syntaxValidity": row.get("syntax_validity/value", row.get("syntax_validity")),
-                    "assetRouting": row.get("asset_routing/value", row.get("asset_routing")),
-                    "matchType": (
-                        row.get("outputs", {}).get("comparison", {}).get("match_type")
-                        if isinstance(row.get("outputs"), dict)
-                        else None
-                    ),
-                    "error": (
-                        row.get("outputs", {}).get("comparison", {}).get("error")
-                        if isinstance(row.get("outputs"), dict)
-                        else None
-                    ),
-                }
+                    "benchmarkCount": _counts["total"],
+                    "iteration": 0,
+                },
+                {
+                    "judgeScores": {k: _safe_float(v) for k, v in scores.items()},
+                    "totalQuestions": _counts["total"],
+                    "evaluatedCount": _counts["evaluated"],
+                    "correctCount": _counts["correct"],
+                    "excludedCount": _counts["excluded"],
+                    "quarantinedCount": _counts["quarantined"],
+                    # failedCount preserves "evaluated but wrong" semantics —
+                    # drives from evaluated, not total, so the quarantine/excluded
+                    # items don't masquerade as failures. See Bug #2 contract.
+                    "failedCount": max(_counts["evaluated"] - _counts["correct"], 0),
+                    "mlflowRunId": baseline_iter.get("mlflow_run_id"),
+                    "invalidBenchmarkCount": _safe_int(detail.get("invalid_benchmark_count")),
+                    "permissionBlockedCount": _safe_int(detail.get("permission_blocked_count")),
+                    "unresolvedColumnCount": _safe_int(detail.get("unresolved_column_count")),
+                    "harnessRetryCount": _safe_int(detail.get("harness_retry_count")),
+                    "sampleQuestions": sample_rows,
+                    "stageEvents": timeline,
+                },
             )
 
-        _counts = _resolve_eval_counts(baseline_iter)
-        return (
-            {
-                "benchmarkCount": _counts["total"],
-                "iteration": 0,
-            },
-            {
-                "judgeScores": {k: _safe_float(v) for k, v in scores.items()},
-                "totalQuestions": _counts["total"],
-                "evaluatedCount": _counts["evaluated"],
-                "correctCount": _counts["correct"],
-                "excludedCount": _counts["excluded"],
-                "quarantinedCount": _counts["quarantined"],
-                # failedCount preserves "evaluated but wrong" semantics —
-                # drives from evaluated, not total, so the quarantine/excluded
-                # items don't masquerade as failures. See Bug #2 contract.
-                "failedCount": max(_counts["evaluated"] - _counts["correct"], 0),
-                "mlflowRunId": baseline_iter.get("mlflow_run_id"),
-                "invalidBenchmarkCount": _safe_int(detail.get("invalid_benchmark_count")),
-                "permissionBlockedCount": _safe_int(detail.get("permission_blocked_count")),
-                "unresolvedColumnCount": _safe_int(detail.get("unresolved_column_count")),
-                "harnessRetryCount": _safe_int(detail.get("harness_retry_count")),
-                "sampleQuestions": sample_rows,
-                "stageEvents": timeline,
-            },
-        )
-
-    if step_name == "Proactive Enrichment":
         proactive = _extract_proactive_changes(matching)
         lever_0_count = sum(
             1 for p in (patches_rows or [])
             if _safe_int(p.get("lever")) == 0
         )
-        return (
-            {
-                "spaceId": run_data.get("space_id"),
-            },
-            {
-                "proactiveChanges": proactive if proactive else None,
-                "enrichmentModelId": detail.get("enrichment_model_id"),
-                "totalEnrichments": detail.get("total_enrichments", 0),
-                "totalConfigChanges": lever_0_count,
-                "enrichmentSkipped": detail.get("enrichment_skipped", False),
-                # Surface the post-enrichment eval delta on the Proactive
-                # Enrichment step card so the per-step view matches the
-                # headline tile when enrichment short-circuits the lever
-                # loop. ``None`` when post-enrichment eval was skipped.
-                "postEnrichmentAccuracy": _safe_float(
-                    detail.get("post_enrichment_accuracy"),
-                ),
-                "postEnrichmentThresholdsMet": detail.get(
-                    "post_enrichment_thresholds_met",
-                ),
-                "stageEvents": timeline,
-            },
-        )
 
-    if step_name == "Adaptive Optimization":
         patches_applied = detail.get("patches_applied")
         if patches_applied is None:
             patches_applied = detail.get("patches_count")
@@ -719,25 +699,37 @@ def _build_step_io(
         levers_accepted = detail.get("levers_accepted", [])
         levers_rolled_back = detail.get("levers_rolled_back", [])
 
-        return (
-            {
-                "leverCountConfigured": len(run_data.get("levers", []))
-                if isinstance(run_data.get("levers"), list)
-                else None,
-                "maxIterations": run_data.get("max_iterations"),
-            },
-            {
-                "patchesApplied": patches_applied,
-                "leversAccepted": levers_accepted,
-                "leversRolledBack": levers_rolled_back,
-                "iterationCounter": iteration_counter,
-                "baselineAccuracy": run_data.get("baseline_accuracy"),
-                "bestAccuracy": _safe_float(run_data.get("best_accuracy")),
-                "stageEvents": timeline,
-            },
-        )
+        inputs = {
+            "leverCountConfigured": len(run_data.get("levers", []))
+            if isinstance(run_data.get("levers"), list)
+            else None,
+            "maxAttempts": run_data.get("max_attempts") or run_data.get("max_iterations"),
+            "baseline": baseline_io[0],
+        }
+        outputs = {
+            "baseline": baseline_io[1],
+            "proactiveChanges": proactive if proactive else None,
+            "enrichmentModelId": detail.get("enrichment_model_id"),
+            "totalEnrichments": detail.get("total_enrichments", 0),
+            "totalConfigChanges": lever_0_count,
+            "enrichmentSkipped": detail.get("enrichment_skipped", False),
+            "postEnrichmentAccuracy": _safe_float(
+                detail.get("post_enrichment_accuracy"),
+            ),
+            "postEnrichmentThresholdsMet": detail.get(
+                "post_enrichment_thresholds_met",
+            ),
+            "patchesApplied": patches_applied,
+            "leversAccepted": levers_accepted,
+            "leversRolledBack": levers_rolled_back,
+            "iterationCounter": iteration_counter,
+            "baselineAccuracy": run_data.get("baseline_accuracy"),
+            "bestAccuracy": _safe_float(run_data.get("best_accuracy")),
+            "stageEvents": timeline,
+        }
+        return inputs, outputs
 
-    if step_name == "Finalization":
+    if step_name == "Publish & Audit":
         return (
             {
                 "bestIteration": run_data.get("best_iteration"),
@@ -746,17 +738,7 @@ def _build_step_io(
                 "bestAccuracy": _safe_float(run_data.get("best_accuracy")),
                 "repeatability": _safe_float(run_data.get("best_repeatability")),
                 "convergenceReason": run_data.get("convergence_reason"),
-                "stageEvents": timeline,
-            },
-        )
-
-    if step_name == "Deploy":
-        return (
-            {
-                "deployTarget": run_data.get("deploy_target"),
-            },
-            {
-                "deployStatus": detail.get("status"),
+                "terminalReason": run_data.get("terminal_reason"),
                 "stageEvents": timeline,
             },
         )
@@ -798,7 +780,7 @@ def _build_step_summary(
     for s in matching:
         detail.update(_parse_detail(s))
 
-    if step_name == "Preflight":
+    if step_name == "Intake & Snapshot":
         all_pf = _collect_all_preflight_detail(stages_rows or [])
         tables_val = (
             _safe_int(detail.get("table_count"))
@@ -825,36 +807,41 @@ def _build_step_summary(
             instructions=instr_val if instr_val else "?",
             questions=bench_val if bench_val else "?",
         )
-    if step_name == "Baseline Evaluation":
+    if step_name == "Benchmark QC & Repair":
+        valid = _safe_int(detail.get("valid_count"))
+        tries = _safe_int(detail.get("repair_tries_used"))
+        window = detail.get("window")
+        window_status = detail.get("window_status")
+        if window_status is None and isinstance(window, dict):
+            window_status = window.get("status")
+        if valid is not None:
+            parts = [f"{valid} valid benchmark questions"]
+        else:
+            parts = ["Benchmark QC complete"]
+        if tries:
+            parts.append(f"{tries} repair sweep(s)")
+        if window_status:
+            parts.append(f"window: {window_status}")
+        return ", ".join(parts)
+
+    if step_name == "Optimize":
         baseline_iter = next(
             (r for r in iterations_rows if r.get("iteration") == 0),
             None,
         )
-        score = "?"
-        questions = "?"
-        correct = "?"
-        suffix = ""
+        baseline_summary = ""
         if baseline_iter:
             score = f"{_finite(baseline_iter.get('overall_accuracy', 0)):.1f}"
             _counts = _resolve_eval_counts(baseline_iter)
-            # "questions" in the template now refers to the evaluated
-            # denominator (matches overall_accuracy math per Bug #2),
-            # not the pre-exclusion total.
             questions = str(_counts["evaluated"])
             correct = str(_counts["correct"])
+            baseline_summary = (
+                f"Baseline {score}% ({correct}/{questions} evaluated correct)"
+            )
             _excl = _counts["excluded"] + _counts["quarantined"]
             if _excl > 0:
-                suffix = (
-                    f" ({_excl} excluded from denominator — "
-                    f"see iteration drill-down for reasons)"
-                )
-        return (
-            defn["summary_template"].format(
-                questions=questions, score=score, correct=correct,
-            )
-            + suffix
-        )
-    if step_name == "Proactive Enrichment":
+                baseline_summary += f"; {_excl} excluded"
+
         descriptions = _safe_int(detail.get("descriptions_enriched")) or 0
         joins = _safe_int(detail.get("joins_discovered")) or 0
         examples = _safe_int(detail.get("examples_mined")) or 0
@@ -875,29 +862,25 @@ def _build_step_summary(
             parts.append(f"{sql_exprs} SQL expressions")
         if fa_enabled:
             parts.append(f"{fa_enabled} format assistance columns")
-        if parts:
-            return f"Applied {total} proactive enrichments: {', '.join(parts)}"
-        if total:
-            return f"Applied {total} proactive enrichments"
-        return "Proactive enrichment complete"
-    if step_name == "Adaptive Optimization":
         patches = detail.get("patches_applied", 0)
-        levers_accepted = detail.get("levers_accepted", [])
         before = f"{_finite(run_data.get('baseline_accuracy', 0)):.1f}" if run_data.get("baseline_accuracy") else "?"
         after = f"{_finite(run_data.get('best_accuracy', 0)):.1f}" if run_data.get("best_accuracy") else "?"
-        return defn["summary_template"].format(
-            patches=patches,
-            levers=len(levers_accepted) if isinstance(levers_accepted, list) else "?",
-            before=before,
-            after=after,
-        )
-    if step_name == "Finalization":
+        segments: list[str] = []
+        if baseline_summary:
+            segments.append(baseline_summary)
+        if total or parts:
+            segments.append(
+                f"legacy enrichment: {', '.join(parts)}" if parts else f"legacy enrichment: {total} changes"
+            )
+        if patches:
+            segments.append(f"{patches} surgical patch(es)")
+        if before != "?" or after != "?":
+            segments.append(f"{before}% -> {after}%")
+        return "; ".join(segments) if segments else "Optimization running"
+
+    if step_name == "Publish & Audit":
         score = f"{_finite(run_data.get('best_accuracy', 0)):.1f}" if run_data.get("best_accuracy") else "?"
-        rep = f"{_finite(run_data.get('best_repeatability', 0)):.1f}" if run_data.get("best_repeatability") else "?"
-        return defn["summary_template"].format(score=score, repeatability=rep)
-    if step_name == "Deploy":
-        status = detail.get("status", "pending")
-        return defn["summary_template"].format(status=status)
+        return defn["summary_template"].format(score=score)
 
     return None
 
@@ -1080,7 +1063,7 @@ def _build_lever_iterations(
             if it is not None:
                 lever_iterations.add(it)
 
-    # Guard: when building lever 0 (Proactive Enrichment), skip iterations
+    # Guard: when building legacy lever 0 coverage/enrichment detail, skip iterations
     # that are already assigned to a non-zero lever in the iterations table.
     # This handles old data where write_patch hardcoded lever=0 for all patches.
     _non_zero_lever_iters: set[int] = set()
@@ -1598,67 +1581,6 @@ def _reconcile_single_run(
         return run_data
 
 
-def _resolve_deployment_status(
-    stages_rows: list[dict],
-    run_data: dict,
-    host: str,
-) -> tuple[str | None, str | None]:
-    """Derive deployment status and URL from DEPLOY stages.
-
-    Returns (status, url) where status is one of:
-    None — no deploy configured, SKIPPED, RUNNING, DEPLOYED,
-    PENDING_APPROVAL, FAILED.
-    """
-    deploy_target = run_data.get("deploy_target")
-    deploy_stages = [
-        s for s in stages_rows
-        if str(s.get("stage", "")).startswith("DEPLOY")
-    ]
-    if not deploy_stages:
-        return (None, None) if not deploy_target else (None, None)
-
-    latest = deploy_stages[-1]
-    stage_name = str(latest.get("stage", ""))
-    stage_status = str(latest.get("status", "")).upper()
-
-    if "SKIPPED" in stage_name or stage_status == "SKIPPED":
-        return ("SKIPPED", None)
-    if stage_status == "FAILED":
-        return ("FAILED", None)
-
-    if "DELEGATED" in stage_name:
-        uc_model = ""
-        uc_version = ""
-        for s in stages_rows:
-            if str(s.get("stage", "")).startswith("FINALIZE") and str(s.get("status", "")).upper() == "COMPLETE":
-                fin_detail = safe_json_parse(s.get("detail_json"))
-                if isinstance(fin_detail, dict):
-                    uc_model = fin_detail.get("uc_model_name", "")
-                    uc_version = fin_detail.get("uc_model_version", "")
-                break
-        if uc_model and uc_version:
-            parts = uc_model.split(".")
-            if len(parts) == 3:
-                model_url = (
-                    f"{host.rstrip('/')}/explore/data/models/"
-                    f"{parts[0]}/{parts[1]}/{parts[2]}/version/{uc_version}"
-                )
-                return ("PENDING_APPROVAL", model_url)
-        return ("PENDING_APPROVAL", None)
-
-    if stage_status == "COMPLETE":
-        detail = safe_json_parse(latest.get("detail_json"))
-        target = (
-            detail.get("deploy_target") if isinstance(detail, dict) else None
-        ) or deploy_target
-        url = str(target).rstrip("/") if target else None
-        return ("DEPLOYED", url)
-    if stage_status == "STARTED":
-        return ("RUNNING", None)
-
-    return (None, None)
-
-
 @router.get("/runs/{run_id}", response_model=PipelineRun, operation_id="getRun")
 def get_run(
     run_id: str,
@@ -1667,7 +1589,7 @@ def get_run(
     config: Dependencies.Config,
     session: Dependencies.Session,
 ):
-    """Run status with 5 user-facing pipeline steps and lever detail."""
+    """Run status with 4 user-facing pipeline tasks and lever detail."""
     from genie_space_optimizer.optimization.state import load_run
     from ..gso_read_through import (
         load_iterations_with_fallback,
@@ -1703,7 +1625,7 @@ def get_run(
     # Canonical baseline + optimized + best_iteration. See
     # ``common.accuracy.compute_run_scores`` for the contract — in particular
     # the floor-at-baseline invariant that closes the "100% Optimized during
-    # Baseline Evaluation" UI bug.
+    # baseline-only phase" UI bug.
     run_scores = get_run_scores(iters_rows, run_id=run_id)
     baseline_accuracy = run_scores.baseline
     run_data["baseline_accuracy"] = baseline_accuracy
@@ -1739,12 +1661,10 @@ def get_run(
         None,
     )
     for step in steps:
-        if step.name == "Baseline Evaluation" and isinstance(step.outputs, dict) and baseline_eval_link:
-            step.outputs.setdefault("evaluationRunUrl", baseline_eval_link)
-
-    deploy_status, deploy_url = _resolve_deployment_status(
-        stages_rows, run_data, host,
-    )
+        if step.name == "Optimize" and isinstance(step.outputs, dict) and baseline_eval_link:
+            baseline_outputs = step.outputs.get("baseline")
+            if isinstance(baseline_outputs, dict):
+                baseline_outputs.setdefault("evaluationRunUrl", baseline_eval_link)
 
     optimized_score = run_scores.optimized
     best_iteration = run_scores.best_iteration
@@ -1765,8 +1685,6 @@ def get_run(
         levers=levers,
         convergenceReason=run_data.get("convergence_reason"),
         links=links,
-        deploymentJobStatus=deploy_status,
-        deploymentJobUrl=deploy_url,
     )
 
     try:
@@ -2303,7 +2221,7 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
         by_iter[it]["p0"] = row
     # Post-enrichment row (always iter 0). Stored separately so the
     # iteration-card builder still renders the ``"full"`` baseline at iter
-    # 0 — this partition is read by the Proactive Enrichment step builder
+    # 0 — this partition is read by the legacy enrichment detail builder
     # and is available for any future per-card "post-enrichment" surfacing.
     for row in enrichment_rows:
         it = _safe_int(row.get("iteration")) or 0

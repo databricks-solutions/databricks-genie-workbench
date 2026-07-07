@@ -61,23 +61,23 @@ function iter(overrides: Partial<GSOIterationResult>): GSOIterationResult {
 // Item 4 — Attempt selector logic
 // ---------------------------------------------------------------------------
 
-describe("buildAttemptOptions — v2 runs (Baseline · Coverage · Surgical N · best★)", () => {
+describe("buildAttemptOptions — v2 runs (Baseline · Patch N · best★)", () => {
   const iterations = [
     iter({ iteration: 0, overall_accuracy: 70, correct_count: 21, attempt_no: 0 }),
-    iter({ iteration: 1, overall_accuracy: 72, correct_count: 22, attempt_no: 1, attempt_mode: "coverage" }),
+    iter({ iteration: 1, overall_accuracy: 72, correct_count: 22, attempt_no: 1, attempt_mode: "llm_patch" }),
     iter({
       iteration: 2,
       overall_accuracy: 80,
       correct_count: 24,
       attempt_no: 2,
-      attempt_mode: "surgical",
+      attempt_mode: "llm_patch",
       is_champion: true,
     }),
   ]
 
   it("builds one option per full iteration, labeled by mode", () => {
     const { options } = buildAttemptOptions({ iterations, baselineIteration: 0, bestIteration: 2 })
-    expect(options.map((o) => o.label)).toEqual(["Baseline", "Coverage", "Surgical 2"])
+    expect(options.map((o) => o.label)).toEqual(["Baseline", "Patch 1", "Patch 2"])
     expect(options.map((o) => o.iteration)).toEqual([0, 1, 2])
   })
 
@@ -88,16 +88,16 @@ describe("buildAttemptOptions — v2 runs (Baseline · Coverage · Surgical N ·
       bestIteration: 2,
     })
     const champ = options.find((o) => o.starred)!
-    expect(champ.label).toBe("Surgical 2")
+    expect(champ.label).toBe("Patch 2")
     expect(champ.isChampion).toBe(true)
     expect(defaultKey).toBe(champ.key)
   })
 
   it("defaults to the EXPLICIT champion even when another attempt scored higher (never idxmax)", () => {
-    // Adversarial: the flagged champion (Coverage, iter 1) has LOWER accuracy
-    // than the Surgical attempt (iter 2), and bestIteration points at the
+    // Adversarial: the flagged champion (Patch 1) has LOWER accuracy
+    // than Patch 2, and bestIteration points at the
     // higher-accuracy row. An accidental idxmax / bestIteration impl would
-    // star Surgical; the selector must honor the explicit is_champion flag.
+    // star Patch 2; the selector must honor the explicit is_champion flag.
     const championIsNotBest = [
       iter({ iteration: 0, overall_accuracy: 70, correct_count: 21, attempt_no: 0 }),
       iter({
@@ -105,7 +105,7 @@ describe("buildAttemptOptions — v2 runs (Baseline · Coverage · Surgical N ·
         overall_accuracy: 78,
         correct_count: 23,
         attempt_no: 1,
-        attempt_mode: "coverage",
+        attempt_mode: "llm_patch",
         is_champion: true,
       }),
       iter({
@@ -113,7 +113,7 @@ describe("buildAttemptOptions — v2 runs (Baseline · Coverage · Surgical N ·
         overall_accuracy: 88,
         correct_count: 26,
         attempt_no: 2,
-        attempt_mode: "surgical",
+        attempt_mode: "llm_patch",
       }),
     ]
     const { options, defaultKey } = buildAttemptOptions({
@@ -122,11 +122,11 @@ describe("buildAttemptOptions — v2 runs (Baseline · Coverage · Surgical N ·
       bestIteration: 2,
     })
     const champ = options.find((o) => o.starred)!
-    expect(champ.label).toBe("Coverage")
+    expect(champ.label).toBe("Patch 1")
     expect(champ.iteration).toBe(1)
     expect(champ.isChampion).toBe(true)
     expect(defaultKey).toBe(champ.key)
-    // The higher-accuracy Surgical attempt is NOT starred/defaulted.
+    // The higher-accuracy Patch 2 attempt is NOT starred/defaulted.
     expect(options.find((o) => o.iteration === 2)!.starred).toBe(false)
   })
 
@@ -191,9 +191,9 @@ describe("buildAttemptOptions — legacy runs degrade to Baseline · Final", () 
 describe("attemptColumnLabel — QuestionJourney 'Iter' → attempts relabel", () => {
   it("labels by mode when attempt metadata is present", () => {
     expect(attemptColumnLabel(iter({ iteration: 0 }))).toBe("Baseline")
-    expect(attemptColumnLabel(iter({ iteration: 1, attempt_mode: "coverage" }))).toBe("Coverage")
-    expect(attemptColumnLabel(iter({ iteration: 2, attempt_mode: "surgical", attempt_no: 2 }))).toBe(
-      "Surgical 2",
+    expect(attemptColumnLabel(iter({ iteration: 1, attempt_mode: "coverage" }))).toBe("Legacy enrichment")
+    expect(attemptColumnLabel(iter({ iteration: 2, attempt_mode: "llm_patch", attempt_no: 2 }))).toBe(
+      "Patch 2",
     )
   })
 

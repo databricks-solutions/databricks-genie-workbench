@@ -2,8 +2,8 @@ import { useMemo } from "react"
 import type { GSOAttempt } from "@/types"
 import {
   buildLadderModel,
-  COVERAGE_COLOR,
-  SURGICAL_COLOR,
+  LEGACY_ENRICHMENT_COLOR,
+  PATCH_ATTEMPT_COLOR,
   type LadderRung,
 } from "@/components/auto-optimize/cockpit"
 
@@ -24,9 +24,7 @@ const INSET = 14
 // The Attempt Ladder (the signature element, arch §7.5 / Phase 12). Re-bases
 // the per-iteration score chart onto ATTEMPTS: a best-so-far champion staircase
 // climbing toward a gold target summit line, over a faint baseline floor.
-// Markers are colored by mode (amber=coverage, cyan=surgical), filled when
-// accepted / hollow when rolled back. Attempt 1 (coverage) ALWAYS renders — at
-// zero lift it is a flat amber rung at the baseline floor, never hidden (§5).
+// Markers are colored by mode, filled when accepted and hollow when rolled back.
 export function AttemptLadder({ baselineAccuracy, attempts, targetUnit }: AttemptLadderProps) {
   const model = useMemo(
     () => buildLadderModel({ baselineAccuracy, attempts, targetUnit }),
@@ -52,7 +50,6 @@ export function AttemptLadder({ baselineAccuracy, attempts, targetUnit }: Attemp
     }
   }
 
-  const coverageNote = rungs.find((r) => r.mode === "coverage")?.note ?? null
   const rolledBackCount = rungs.filter((r) => r.rolledBack).length
 
   return (
@@ -131,13 +128,8 @@ export function AttemptLadder({ baselineAccuracy, attempts, targetUnit }: Attemp
         ))}
       </svg>
 
-      {/* Coverage-rung annotation (the §5 always-render rung) + rollback note */}
+      {/* Rollback note */}
       <div className="mt-1 space-y-0.5">
-        {coverageNote && (
-          <p className="text-xs text-amber-600 dark:text-amber-400">
-            Coverage (attempt 1): {coverageNote}
-          </p>
-        )}
         {rolledBackCount > 0 && (
           <p className="text-[11px] text-muted">
             {rolledBackCount} attempt{rolledBackCount === 1 ? "" : "s"} rolled back (hollow markers
@@ -192,12 +184,12 @@ function Legend() {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted">
       <span className="flex items-center gap-1">
-        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: COVERAGE_COLOR }} />
-        coverage
+        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: PATCH_ATTEMPT_COLOR }} />
+        patch attempt
       </span>
       <span className="flex items-center gap-1">
-        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: SURGICAL_COLOR }} />
-        surgical
+        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: LEGACY_ENRICHMENT_COLOR }} />
+        legacy enrichment
       </span>
       <span className="flex items-center gap-1">
         <span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-muted bg-transparent" />

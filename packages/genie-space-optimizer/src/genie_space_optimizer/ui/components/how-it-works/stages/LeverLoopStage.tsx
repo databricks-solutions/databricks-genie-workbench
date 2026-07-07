@@ -3,9 +3,7 @@
 import {
   Search,
   Layers,
-  ArrowUpDown,
   BrainCircuit,
-  Lightbulb,
   Code,
   Wrench,
   ShieldCheck,
@@ -20,17 +18,15 @@ import { PIPELINE_GROUP_COLORS } from "../data";
 import { cn } from "@/lib/utils";
 
 const LOOP_STEPS = [
-  { label: "Extract Failures", icon: Search },
-  { label: "Cluster", icon: Layers },
-  { label: "Rank", icon: ArrowUpDown },
-  { label: "Strategize", icon: BrainCircuit },
-  { label: "Generate Proposals", icon: Lightbulb },
-  { label: "Convert to Patches", icon: Code },
+  { label: "Load Failures", icon: Search },
+  { label: "Pack Context", icon: Layers },
+  { label: "Propose Patch Set", icon: BrainCircuit },
+  { label: "Safety Screen", icon: ShieldCheck },
   { label: "Apply Patches", icon: Wrench },
-  { label: "3-Gate Eval", icon: ShieldCheck },
+  { label: "Full Benchmark Eval", icon: Code },
   { label: "Accept/Rollback", icon: RotateCcw },
   { label: "Reflect", icon: BookOpen },
-  { label: "Check Convergence", icon: CircleDot },
+  { label: "Stamp Stop Reason", icon: CircleDot },
 ];
 
 const colors = PIPELINE_GROUP_COLORS.leverLoop;
@@ -62,11 +58,11 @@ export function LeverLoopStage() {
                 colors.accent,
               )}
             >
-              Iteration 1 of up to 5
+              Attempt 1 of up to 3
             </Badge>
             <p className="max-w-md text-center text-xs text-slate-500">
-              Each step is detailed in the next stages — from failure extraction
-              through clustering, ranking, strategizing, and 3-gate validation.
+              Each attempt packs current failures, proposes one patch set, screens it,
+              evaluates the full corpus, and keeps only accuracy improvements.
             </p>
           </div>
         </div>
@@ -74,10 +70,10 @@ export function LeverLoopStage() {
       explanation={
         <>
           This is the heart of the optimizer. Each iteration analyzes
-          what&apos;s failing, clusters those failures by root cause,
-          generates targeted patches, and validates them through a rigorous
-          3-gate evaluation. If the patches help, they stick. If not,
-          they&apos;re rolled back and the system tries a different approach.
+          what&apos;s failing, generates a targeted patch set, evaluates the full
+          benchmark corpus, and keeps only candidates that improve accuracy. If
+          a candidate does not help, it is rolled back and the next attempt uses
+          the recorded reflection.
         </>
       }
     />

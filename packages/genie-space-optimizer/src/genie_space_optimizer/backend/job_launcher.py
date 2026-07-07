@@ -73,9 +73,7 @@ def submit_optimization(
     apply_mode: str = "genie_config",
     levers: str = "[1,2,3,4,5]",
     triggered_by: str = "",
-    deploy_target: str = "",
     warehouse_id: str = "",
-    target_benchmark_count: str = "",
     llm_model: str = "",
     target_accuracy: str = "0.90",
     max_attempts: str = "3",
@@ -101,10 +99,7 @@ def submit_optimization(
             # BOTH job definitions: the root bundle
             # (databricks.yml resources.jobs.gso-optimization-runner) and the
             # notebook installer (scripts/deploy_lib/gso_job.py) — which in turn
-            # mirror the package bundle. `deploy_target` (deploy out of scope —
-            # D7) and `target_benchmark_count` (a code constant, not a v2 job
-            # param) are intentionally NOT sent; the kwargs remain for caller
-            # signature compatibility. `benchmark_repair_max_tries` is declared
+            # mirror the package bundle. `benchmark_repair_max_tries` is declared
             # by the job but not overridden here, so it uses the job default.
             job_parameters={
                 "run_id": run_id,

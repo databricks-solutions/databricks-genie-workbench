@@ -9,8 +9,8 @@ import type { GSOLeverStatus, GSOPatchDetail, GSOLeverIteration, GSOIterationRes
 interface OptimizationLeversProps {
   levers: GSOLeverStatus[]
   // GSO v2 (Phase 14) — when provided, the per-iteration provenance sub-labels
-  // are re-keyed onto the coverage/surgical attempt vocabulary (Coverage ·
-  // Surgical N, with decision). Absent / no attempt metadata ⇒ "Iteration N".
+  // are re-keyed onto patch-attempt vocabulary (Patch N, with decision).
+  // Absent / no attempt metadata ⇒ "Iteration N".
   iterations?: GSOIterationResult[]
 }
 
@@ -578,8 +578,8 @@ function regroupLevers(levers: GSOLeverStatus[]): GSOLeverStatus[] {
 
 export function OptimizationLevers({ levers, iterations }: OptimizationLeversProps) {
   const regrouped = useMemo(() => regroupLevers(levers), [levers])
-  // Attempt-centric provenance labels (Coverage · Surgical N, with decision),
-  // re-keyed from the merged iteration rows. Empty map ⇒ "Iteration N" (legacy).
+  // Attempt-centric provenance labels (Patch N, with decision), re-keyed from
+  // the merged iteration rows. Empty map ⇒ "Iteration N" (legacy).
   const iterationLabels = useMemo(() => buildLeverIterationLabels(iterations), [iterations])
 
   if (levers.length === 0) return null

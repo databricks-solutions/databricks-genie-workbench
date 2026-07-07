@@ -21,7 +21,7 @@ import { ChampionHero } from "./ChampionHero"
 function attempt(overrides: Partial<GSOAttempt>): GSOAttempt {
   return {
     attemptNo: 1,
-    attemptMode: "coverage",
+    attemptMode: "llm_patch",
     iteration: 1,
     evalScope: "full",
     lever: null,
@@ -67,12 +67,12 @@ describe("progressToTarget", () => {
   })
 })
 
-describe("Attempt Ladder — coverage rung always renders at zero lift (§5)", () => {
-  it("renders the coverage rung as a flat amber rung at the baseline floor when rolled back", () => {
+describe("Attempt Ladder — patch rungs always render at zero lift (§5)", () => {
+  it("renders a rolled-back patch rung at the baseline floor", () => {
     const attempts = [
       attempt({
         attemptNo: 1,
-        attemptMode: "coverage",
+        attemptMode: "llm_patch",
         accuracy: 70, // below baseline → no lift
         bestAccuracy: 72,
         rolledBack: true,
@@ -81,38 +81,39 @@ describe("Attempt Ladder — coverage rung always renders at zero lift (§5)", (
     ]
     const model = buildLadderModel({ baselineAccuracy: 72, attempts, targetUnit: 0.9 })
 
-    // baseline + coverage rungs both present (coverage never hidden).
+    // baseline + patch rungs both present (rolled-back attempts are never hidden).
     expect(model.rungs).toHaveLength(2)
-    const cov = model.rungs[1]
-    expect(cov.mode).toBe("coverage")
-    expect(cov.bestSoFar).toBe(72) // champion staircase stayed at the baseline floor
-    expect(cov.note).toMatch(/no change|rolled back/)
+    const patch = model.rungs[1]
+    expect(patch.mode).toBe("patch")
+    expect(patch.bestSoFar).toBe(72) // champion staircase stayed at the baseline floor
+    expect(patch.note).toMatch(/no change|rolled back/)
     expect(model.summit).toBeCloseTo(90)
   })
 
-  it("pins an unmeasured coverage rung to the baseline floor (never hidden)", () => {
-    const attempts = [attempt({ attemptNo: 1, attemptMode: "coverage", accuracy: null, rolledBack: true })]
+  it("pins an unmeasured patch rung to the baseline floor (never hidden)", () => {
+    const attempts = [attempt({ attemptNo: 1, attemptMode: "llm_patch", accuracy: null, rolledBack: true })]
     const model = buildLadderModel({ baselineAccuracy: 80, attempts, targetUnit: 0.9 })
     expect(model.rungs[1].markerY).toBe(80)
   })
 
-  it("renders an SVG with the coverage 'no change / rolled back' annotation", () => {
+  it("renders an SVG with the patch 'no change / rolled back' annotation", () => {
     const attempts = [
-      attempt({ attemptNo: 1, attemptMode: "coverage", accuracy: 72, bestAccuracy: 72, rolledBack: true, decision: "reject" }),
+      attempt({ attemptNo: 1, attemptMode: "llm_patch", accuracy: 72, bestAccuracy: 72, rolledBack: true, decision: "reject" }),
     ]
     const markup = renderToStaticMarkup(
       <AttemptLadder baselineAccuracy={72} attempts={attempts} targetUnit={0.9} />,
     )
     expect(markup).toContain("<svg")
-    expect(markup).toContain("Coverage")
+    expect(markup).toContain("patch attempt")
+    expect(markup).toContain("P1")
     expect(markup).toContain("rolled back")
     expect(markup).toContain("target")
   })
 
   it("keeps the champion staircase monotone non-decreasing", () => {
     const attempts = [
-      attempt({ attemptNo: 1, attemptMode: "coverage", accuracy: 60, bestAccuracy: 70, rolledBack: true, decision: "reject" }),
-      attempt({ attemptNo: 2, attemptMode: "surgical", accuracy: 78, bestAccuracy: 78, decision: "accept", isChampion: true }),
+      attempt({ attemptNo: 1, attemptMode: "llm_patch", accuracy: 60, bestAccuracy: 70, rolledBack: true, decision: "reject" }),
+      attempt({ attemptNo: 2, attemptMode: "llm_patch", accuracy: 78, bestAccuracy: 78, decision: "accept", isChampion: true }),
     ]
     const model = buildLadderModel({ baselineAccuracy: 70, attempts, targetUnit: 0.9 })
     const best = model.rungs.map((r) => r.bestSoFar)
@@ -126,14 +127,14 @@ describe("Attempt Ladder — coverage rung always renders at zero lift (§5)", (
     const attempts = [
       attempt({
         attemptNo: null,
-        attemptMode: "coverage",
+        attemptMode: "llm_patch",
         accuracy: 74,
         bestAccuracy: 74,
         decision: "continue",
       }),
       attempt({
         attemptNo: null,
-        attemptMode: "surgical",
+        attemptMode: "llm_patch",
         accuracy: 79,
         bestAccuracy: 79,
         decision: "accept",
@@ -142,19 +143,19 @@ describe("Attempt Ladder — coverage rung always renders at zero lift (§5)", (
     ]
     const model = buildLadderModel({ baselineAccuracy: 70, attempts, targetUnit: 0.9 })
     expect(model.rungs.map((r) => r.key)).toEqual(["baseline", "attempt-1", "attempt-2"])
-    expect(model.rungs.map((r) => r.shortLabel)).toEqual(["Base", "Cov", "S2"])
+    expect(model.rungs.map((r) => r.shortLabel)).toEqual(["Base", "P1", "P2"])
   })
 })
 
 describe("Attempt Ledger — highest-accuracy highlight + champion from is_champion (§5)", () => {
-  // The coverage attempt has the HIGHEST accuracy but was rolled back; the
-  // surgical attempt is the explicit champion at a LOWER accuracy. The ledger
+  // The first patch attempt has the HIGHEST accuracy but was rolled back; the
+  // second patch attempt is the explicit champion at a LOWER accuracy. The ledger
   // must highlight the highest row, star the champion from is_champion (NOT
   // idxmax), and surface the rollback reason so the divergence is explained.
   const attempts = [
     attempt({
       attemptNo: 1,
-      attemptMode: "coverage",
+      attemptMode: "llm_patch",
       accuracy: 85,
       bestAccuracy: 70,
       rolledBack: true,
@@ -163,7 +164,7 @@ describe("Attempt Ledger — highest-accuracy highlight + champion from is_champ
     }),
     attempt({
       attemptNo: 2,
-      attemptMode: "surgical",
+      attemptMode: "llm_patch",
       accuracy: 80,
       bestAccuracy: 80,
       decision: "accept",
@@ -173,22 +174,22 @@ describe("Attempt Ledger — highest-accuracy highlight + champion from is_champ
 
   it("marks the highest-accuracy row and the champion separately", () => {
     const rows = buildLedgerModel({ baselineAccuracy: 70, attempts })
-    const cov = rows.find((r) => r.key === "attempt-1")!
-    const surg = rows.find((r) => r.key === "attempt-2")!
+    const high = rows.find((r) => r.key === "attempt-1")!
+    const champ = rows.find((r) => r.key === "attempt-2")!
 
-    expect(cov.isHighest).toBe(true) // 85% is the highest
-    expect(cov.isChampion).toBe(false)
-    expect(surg.isChampion).toBe(true) // champion is the explicit is_champion=true row
-    expect(surg.isHighest).toBe(false)
-    expect(cov.deltaVsBaseline).toBeCloseTo(15)
+    expect(high.isHighest).toBe(true) // 85% is the highest
+    expect(high.isChampion).toBe(false)
+    expect(champ.isChampion).toBe(true) // champion is the explicit is_champion=true row
+    expect(champ.isHighest).toBe(false)
+    expect(high.deltaVsBaseline).toBeCloseTo(15)
   })
 
   it("explains the divergence on the highest row, clears it on the champion", () => {
     const rows = buildLedgerModel({ baselineAccuracy: 70, attempts })
-    const cov = rows.find((r) => r.key === "attempt-1")!
-    const surg = rows.find((r) => r.key === "attempt-2")!
-    expect(cov.divergenceReason).toContain("regressed on cohort spend cluster")
-    expect(surg.divergenceReason).toBeNull()
+    const high = rows.find((r) => r.key === "attempt-1")!
+    const champ = rows.find((r) => r.key === "attempt-2")!
+    expect(high.divergenceReason).toContain("regressed on cohort spend cluster")
+    expect(champ.divergenceReason).toBeNull()
   })
 
   it("renders the champion star, the highest tag, and the divergence reason", () => {
@@ -200,7 +201,7 @@ describe("Attempt Ledger — highest-accuracy highlight + champion from is_champ
 
   it("marks baseline as champion only when explicitly nothing beat it", () => {
     const rolledOnly = [
-      attempt({ attemptNo: 1, attemptMode: "coverage", accuracy: 65, bestAccuracy: 70, rolledBack: true, decision: "reject" }),
+      attempt({ attemptNo: 1, attemptMode: "llm_patch", accuracy: 65, bestAccuracy: 70, rolledBack: true, decision: "reject" }),
     ]
     const rows = buildLedgerModel({ baselineAccuracy: 70, attempts: rolledOnly, baselineIsChampion: true })
     expect(rows[0].key).toBe("baseline")
@@ -211,11 +212,11 @@ describe("Attempt Ledger — highest-accuracy highlight + champion from is_champ
     const rows = buildLedgerModel({
       baselineAccuracy: 70,
       attempts: [
-        attempt({ attemptNo: 1, attemptMode: "coverage", accuracy: 78, bestAccuracy: 78, decision: "continue" }),
-        attempt({ attemptNo: 2, attemptMode: "surgical", accuracy: 82, bestAccuracy: 82, decision: "continue" }),
+        attempt({ attemptNo: 1, attemptMode: "llm_patch", accuracy: 78, bestAccuracy: 78, decision: "continue" }),
+        attempt({ attemptNo: 2, attemptMode: "llm_patch", accuracy: 82, bestAccuracy: 82, decision: "continue" }),
       ],
     })
-    expect(rows.find((r) => r.isHighest)?.label).toBe("Surgical")
+    expect(rows.find((r) => r.isHighest)?.label).toBe("Patch")
     expect(rows.every((r) => r.divergenceReason == null)).toBe(true)
     expect(renderToStaticMarkup(<AttemptLedger baselineAccuracy={70} attempts={[]} />)).not.toContain(
       "Highest accuracy, but not the champion",
@@ -223,20 +224,20 @@ describe("Attempt Ledger — highest-accuracy highlight + champion from is_champ
   })
 })
 
-describe("Task Rail — 5 nodes, default fallback 5, 01 hard-fail chip", () => {
-  it("always renders the 5 canonical DAG nodes", () => {
+describe("Task Rail — 4 nodes, default fallback 4, 01 hard-fail chip", () => {
+  it("always renders the 4 canonical DAG nodes", () => {
     const nodes = buildTaskRail({})
-    expect(nodes).toHaveLength(5)
+    expect(nodes).toHaveLength(4)
     expect(nodes.map((n) => n.name)).toEqual(GSO_PIPELINE_STEPS.map((s) => s.name))
   })
 
-  it("drives completed/current state off stepsCompleted (defaults to 5 tasks)", () => {
-    const nodes = buildTaskRail({ stepsCompleted: 3, status: "RUNNING" })
-    expect(nodes).toHaveLength(5)
+  it("drives completed/current state off stepsCompleted (defaults to 4 tasks)", () => {
+    const nodes = buildTaskRail({ stepsCompleted: 2, status: "RUNNING" })
+    expect(nodes).toHaveLength(4)
     expect(nodes[0].state).toBe("completed")
-    expect(nodes[2].state).toBe("completed")
-    expect(nodes[3].state).toBe("current")
-    expect(nodes[4].state).toBe("upcoming")
+    expect(nodes[1].state).toBe("completed")
+    expect(nodes[2].state).toBe("current")
+    expect(nodes[3].state).toBe("upcoming")
   })
 
   it("branches the 01 node to a BENCHMARK_UNREPAIRABLE hard-fail chip", () => {
@@ -255,17 +256,18 @@ describe("Task Rail — 5 nodes, default fallback 5, 01 hard-fail chip", () => {
 
   it("marks the Optimize node failed on a loop hard-fail terminal reason", () => {
     const nodes = buildTaskRail({ status: "FAILED", terminalReason: "LOOP_STATE_INVALID" })
-    expect(nodes.find((n) => n.stepNumber === 4)!.state).toBe("failed")
+    expect(nodes.find((n) => n.stepNumber === 3)!.state).toBe("failed")
   })
 
-  it("clamps stale legacy six-step progress to the 5-task rail", () => {
+  it("clamps stale legacy six-step progress to the 4-task rail", () => {
     const nodes = buildTaskRail({ stepsCompleted: 6, status: "CONVERGED" })
     expect(nodes).toHaveLength(GSO_TOTAL_STEPS)
     expect(nodes.every((n) => n.state === "completed")).toBe(true)
 
     const markup = renderToStaticMarkup(<TaskRail stepsCompleted={6} status="CONVERGED" />)
-    expect(markup).toContain("5/5 tasks")
+    expect(markup).toContain("4/4 tasks")
     expect(markup).not.toMatch(/deploy/i)
+    expect(markup).not.toMatch(/Baseline Eval/i)
   })
 })
 

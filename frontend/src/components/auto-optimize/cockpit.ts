@@ -12,8 +12,8 @@ import {
 // without a DOM.
 // ---------------------------------------------------------------------------
 
-// Surgical-lever display names (levers 1–6). Lever 0 (coverage) is attempt 1,
-// not a surgical lever, so it has no entry here. Mirrors OptimizationConfig.
+// Patch-lever display names (levers 1–6). Lever 0 is not user-selectable in the
+// 4-task runner, so it has no entry here. Mirrors OptimizationConfig.
 export const LEVER_NAMES: Record<number, string> = {
   1: "Tables & Columns",
   2: "Metric Views",
@@ -23,10 +23,10 @@ export const LEVER_NAMES: Record<number, string> = {
   6: "SQL Expressions",
 }
 
-// Marker colors by attempt mode (arch §7.5 / Phase 12): amber=coverage,
-// cyan=surgical. Exported so the SVG ladder and the legend agree.
-export const COVERAGE_COLOR = "#f59e0b" // amber-500
-export const SURGICAL_COLOR = "#06b6d4" // cyan-500
+// Marker colors by attempt mode. Amber is reserved for legacy enrichment rows;
+// cyan is the current native patch/eval loop.
+export const LEGACY_ENRICHMENT_COLOR = "#f59e0b" // amber-500
+export const PATCH_ATTEMPT_COLOR = "#06b6d4" // cyan-500
 
 /**
  * Normalize a per-attempt accuracy for the 0–100 chart scale — IDENTITY.
@@ -56,13 +56,14 @@ export function targetToPct(unit: number | null | undefined): number | null {
 export function attemptModeLabel(mode: string | null | undefined): string {
   if (!mode) return "—"
   const m = mode.toLowerCase()
-  if (m === "coverage") return "Coverage"
-  if (m === "surgical") return "Surgical"
+  if (m === "coverage" || m === "enrichment" || m === "legacy") return "Legacy enrichment"
+  if (m === "surgical" || m === "llm_patch" || m === "patch") return "Patch"
   return mode.charAt(0).toUpperCase() + mode.slice(1)
 }
 
 export function attemptModeColor(mode: string | null | undefined): string {
-  return (mode ?? "").toLowerCase() === "surgical" ? SURGICAL_COLOR : COVERAGE_COLOR
+  const m = (mode ?? "").toLowerCase()
+  return m === "coverage" || m === "enrichment" || m === "legacy" ? LEGACY_ENRICHMENT_COLOR : PATCH_ATTEMPT_COLOR
 }
 
 /**
@@ -128,11 +129,10 @@ export function leverFamilyLabels(levers: number[]): string[] {
 // ---------------------------------------------------------------------------
 // Attempt Ladder model (the signature element). Re-bases the old per-iteration
 // score chart onto ATTEMPTS: a best-so-far champion staircase, a gold target
-// summit line, and a faint baseline floor. Attempt 1 (coverage) ALWAYS renders
-// — even at zero lift it is a flat amber rung at the baseline floor (§5).
+// summit line, and a faint baseline floor.
 // ---------------------------------------------------------------------------
 
-export type RungMode = "baseline" | "coverage" | "surgical"
+export type RungMode = "baseline" | "legacy" | "patch"
 
 export interface LadderRung {
   key: string
@@ -152,7 +152,7 @@ export interface LadderRung {
   /** Hollow marker = rolled back / not adopted (drops below the staircase). */
   rolledBack: boolean
   isChampion: boolean
-  /** Annotation shown for a no-lift rung, e.g. coverage "no change · rolled back". */
+  /** Annotation shown for a rejected rung, e.g. "rolled back". */
   note: string | null
 }
 
@@ -194,7 +194,8 @@ export function buildLadderModel(args: {
 
   for (const a of args.attempts) {
     x += 1
-    const mode: RungMode = (a.attemptMode ?? "").toLowerCase() === "surgical" ? "surgical" : "coverage"
+    const rawMode = (a.attemptMode ?? "").toLowerCase()
+    const mode: RungMode = rawMode === "coverage" || rawMode === "enrichment" ? "legacy" : "patch"
     const accuracy = toAccuracyPct(a.accuracy)
     const reportedBest = toAccuracyPct(a.bestAccuracy)
     // Champion staircase is monotone non-decreasing: take the best of the
@@ -207,23 +208,20 @@ export function buildLadderModel(args: {
     )
     runningBest = bestSoFar
     const accepted = !a.rolledBack && (a.decision ?? "").toLowerCase() === "accept"
-    // Coverage always renders even with no lift: annotate the flat rung (§5).
     let note: string | null = null
-    if (a.rolledBack) note = mode === "coverage" ? "no change · rolled back" : "rolled back"
-    else if (mode === "coverage" && !accepted) note = "no change"
+    if (a.rolledBack) note = "rolled back"
 
     rungs.push({
       key: `attempt-${a.attemptNo ?? x}`,
       x,
-      label: `${mode === "surgical" ? "Surgical" : "Coverage"} ${a.attemptNo ?? x}`,
-      shortLabel: mode === "surgical" ? `S${a.attemptNo ?? x}` : "Cov",
+      label: `${mode === "patch" ? "Patch" : "Legacy enrichment"} ${a.attemptNo ?? x}`,
+      shortLabel: mode === "patch" ? `P${a.attemptNo ?? x}` : "Legacy",
       accuracy,
-      // A coverage rung with no measured accuracy still renders — pin it to the
-      // baseline floor so the amber rung is visible (never hidden).
+      // An unmeasured rung still renders — pin it to the baseline floor.
       markerY: accuracy ?? bestSoFar ?? baselineFloor,
       bestSoFar,
       mode,
-      color: attemptModeColor(a.attemptMode),
+      color: mode === "patch" ? PATCH_ATTEMPT_COLOR : LEGACY_ENRICHMENT_COLOR,
       accepted,
       rolledBack: a.rolledBack,
       isChampion: a.isChampion,
@@ -249,8 +247,8 @@ export function buildLadderModel(args: {
 }
 
 // ---------------------------------------------------------------------------
-// Attempt Ledger model (the tabular companion). One row per baseline /
-// coverage / surgical attempt. The champion is read from the explicit
+// Attempt Ledger model (the tabular companion). One row per baseline / patch
+// attempt. The champion is read from the explicit
 // ``isChampion`` flag — NEVER re-derived as idxmax (§5). The highest-accuracy
 // row is highlighted separately; when it diverges from the champion, the
 // rejection/rollback reason is surfaced so a higher-but-rolled-back attempt is
@@ -301,7 +299,8 @@ export function buildLedgerModel(args: {
   })
 
   for (const a of args.attempts) {
-    const mode: RungMode = (a.attemptMode ?? "").toLowerCase() === "surgical" ? "surgical" : "coverage"
+    const rawMode = (a.attemptMode ?? "").toLowerCase()
+    const mode: RungMode = rawMode === "coverage" || rawMode === "enrichment" ? "legacy" : "patch"
     const accuracy = toAccuracyPct(a.accuracy)
     rows.push({
       key: `attempt-${a.attemptNo ?? rows.length}`,
@@ -418,18 +417,18 @@ export function classifyTerminal(args: {
         tone: "success",
         title: "Champion published — target accuracy reached",
         detail:
-          "A candidate met the target accuracy. The champion configuration was published to the live Genie Space.",
+          "A candidate met the target accuracy. Publish & Audit promoted the champion and wrote the audit record.",
       }
     case "MAX_ATTEMPTS":
       return {
         published: published,
         tone: published ? "success" : "warning",
         title: published
-          ? "Champion published — max surgical attempts reached"
-          : "Stopped — max surgical attempts reached",
+          ? "Champion published — max patch attempts reached"
+          : "Stopped — max patch attempts reached",
         detail: published
-          ? "The surgical hill-climb hit its attempt budget. The best-so-far champion was published to the live Genie Space."
-          : "The surgical hill-climb hit its attempt budget without a publishable champion.",
+          ? "The patch/eval loop hit its attempt budget. Publish & Audit promoted the best-so-far champion."
+          : "The patch/eval loop hit its attempt budget without a publishable champion.",
       }
     case "EVAL_INVALID":
       return {
@@ -474,7 +473,7 @@ export function classifyTerminal(args: {
 }
 
 // ---------------------------------------------------------------------------
-// 5-task rail model (replaces the 6-step progress bar). State per node is
+// 4-task rail model. State per node is
 // driven off run-status stepsCompleted / currentStepName + the typed terminal
 // reason; the 01 node can branch to a BENCHMARK_UNREPAIRABLE hard-fail chip.
 // ---------------------------------------------------------------------------
@@ -501,7 +500,7 @@ export function buildTaskRail(args: {
   const failed = statusUpper === "FAILED"
   const allDone = completed >= GSO_TOTAL_STEPS
 
-  // Loop hard-fails land on the Optimize node (step 4); the benchmark hard-fail
+  // Loop hard-fails land on the Optimize node (step 3); the benchmark hard-fail
   // lands on the QC & Repair node (step 2).
   const optimizeFailed = failed && isHardFailReason(args.terminalReason)
 
@@ -509,7 +508,7 @@ export function buildTaskRail(args: {
     let state: RailNodeState
     if (args.benchmarkUnrepairable && step.stepNumber === 2) {
       state = "failed"
-    } else if (optimizeFailed && step.stepNumber === 4) {
+    } else if (optimizeFailed && step.stepNumber === 3) {
       state = "failed"
     } else if (step.stepNumber <= completed) {
       state = "completed"
@@ -534,7 +533,6 @@ export const RAIL_STEP_PREFIXES: Record<number, string> = {
   2: "01",
   3: "02",
   4: "03",
-  5: "—",
 }
 
 // Progress-to-target as a 0–1 fraction (how far best has climbed from baseline

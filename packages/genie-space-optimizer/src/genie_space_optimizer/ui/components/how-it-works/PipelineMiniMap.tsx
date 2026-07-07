@@ -4,11 +4,10 @@ import { cn } from "@/lib/utils";
 import { PIPELINE_GROUP_COLORS } from "./data";
 
 const PIPELINE_GROUPS = [
-  { id: "preflight", label: "Preflight" },
-  { id: "baseline", label: "Baseline" },
-  { id: "enrichment", label: "Enrichment" },
-  { id: "leverLoop", label: "Lever Loop" },
-  { id: "finalize", label: "Finalize" },
+  { id: "preflight", label: "Intake" },
+  { id: "baseline", label: "QC" },
+  { id: "leverLoop", label: "Optimize" },
+  { id: "finalize", label: "Publish" },
 ] as const;
 
 interface PipelineMiniMapProps {

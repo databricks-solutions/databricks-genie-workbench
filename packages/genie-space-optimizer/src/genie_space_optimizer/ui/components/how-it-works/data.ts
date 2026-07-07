@@ -4,7 +4,6 @@ import {
   Sparkles,
   RefreshCw,
   Award,
-  Rocket,
   Database,
   BrainCircuit,
   Settings2,
@@ -40,7 +39,7 @@ import type {
   GateDefinition,
   ConvergenceCondition,
   EnrichmentSubstage,
-  PreflightStep,
+  IntakeStep,
   PersistentFailureClassification,
   EscalationType,
   ReviewField,
@@ -55,52 +54,36 @@ import type {
 
 export const PIPELINE_STAGES: PipelineStage[] = [
   {
-    id: "preflight",
-    title: "Preflight",
-    icon: Shield,
-    summary: "Collect metadata, generate & validate benchmarks",
+    id: "intake",
+    title: "Intake & Snapshot",
+    icon: Database,
+    summary: "Capture the live space and rollback anchor",
     description:
-      "Fetches the Genie Space configuration, collects Unity Catalog metadata with data profiling, generates benchmark questions via LLM, validates them through EXPLAIN and execution, loads human feedback from prior sessions, and sets up the MLflow experiment.",
+      "Reads job parameters and the current Genie Space configuration, persists the original serialized_space as the rollback snapshot, and writes the run manifest.",
   },
   {
-    id: "baseline",
-    title: "Baseline Eval",
-    icon: BarChart3,
-    summary: "Establish quality baseline with 9 judges",
+    id: "benchmark-qc",
+    title: "Benchmark QC & Repair",
+    icon: ShieldCheck,
+    summary: "Validate and repair the benchmark working set",
     description:
-      "Runs every benchmark question through the Genie Space, then evaluates each response with 9 specialized judges. Produces per-judge scores, an overall accuracy figure, and Actionable Side Information (ASI) that pinpoints exactly why each failure occurred.",
+      "Generates or loads benchmark questions, EXPLAIN-validates them, repairs or prunes invalid rows within a bounded retry budget, and pushes the valid working set to the live space.",
   },
   {
-    id: "enrichment",
-    title: "Enrichment",
-    icon: Sparkles,
-    summary: "Proactively fill metadata gaps before optimization",
-    description:
-      "Applies non-destructive improvements: fills blank column/table descriptions using LLM, discovers join specifications from baseline queries and FK constraints, seeds routing instructions, mines example SQLs from benchmarks, and configures format assistance and entity matching.",
-  },
-  {
-    id: "lever-loop",
-    title: "Lever Loop",
+    id: "optimize",
+    title: "Optimize",
     icon: RefreshCw,
-    summary: "Iteratively optimize via failure analysis & targeted patches",
+    summary: "Baseline evaluation plus bounded patch attempts",
     description:
-      "The core optimization cycle. Extracts failures, clusters them by root cause, ranks by impact, generates targeted metadata patches via an LLM strategist, applies them, evaluates through a 3-gate pattern (Slice → P0 → Full), and accepts or rolls back. Repeats until convergence, stall, or max iterations.",
+      "Runs the native baseline evaluation, then spends the attempt budget on focused patch sets. Each candidate is evaluated on the full benchmark set and only improving candidates become champion.",
   },
   {
-    id: "finalize",
-    title: "Finalize",
+    id: "publish",
+    title: "Publish & Audit",
     icon: Award,
-    summary: "Validate repeatability, create review session, promote model",
+    summary: "Promote the champion and write audit evidence",
     description:
-      "Runs a 2-pass repeatability test comparing SQL hashes, creates an MLflow labeling session for human review, promotes the best iteration's model to 'champion', registers it in Unity Catalog, and sets the terminal run status.",
-  },
-  {
-    id: "deploy",
-    title: "Deploy",
-    icon: Rocket,
-    summary: "Optionally deploy to a target workspace",
-    description:
-      "If a deploy target was configured, loads the optimized config from the UC registered model, gates deployment on human approval via a model tag check, and patches the target workspace's Genie Space configuration.",
+      "Reads the stamped terminal reason, promotes the champion when eligible, records residual concerns, and writes the publish_record audit artifact. Cross-workspace deploy is out of scope.",
   },
 ];
 
@@ -671,10 +654,10 @@ export const DATA_FLOW_NODES: DataFlowNode[] = [
 ];
 
 /* ═══════════════════════════════════════════════════════════════════
-   PREFLIGHT STEPS
+   INTAKE STEPS
    ═══════════════════════════════════════════════════════════════════ */
 
-export const PREFLIGHT_STEPS: PreflightStep[] = [
+export const INTAKE_STEPS: IntakeStep[] = [
   {
     id: "fetch-config",
     title: "Fetch Space Config",
@@ -1099,7 +1082,7 @@ export const FEEDBACK_INGESTION_STEPS = [
     step: 1,
     title: "Load Prior Session",
     description:
-      "Preflight finds the latest completed run for the same space and loads its labeling session name.",
+      "Benchmark QC & Repair finds the latest completed run for the same space and loads its labeling session name.",
   },
   {
     step: 2,
@@ -1171,17 +1154,16 @@ export const PIPELINE_GROUP_COLORS: Record<
 
 export const WALKTHROUGH_STAGES: WalkthroughStage[] = [
   { id: "overview", title: "The Big Picture", subtitle: "How Genie Space Optimizer works end-to-end", pipelineGroup: "neutral", icon: Eye },
-  { id: "preflight", title: "Preflight", subtitle: "Collect metadata, profile data, prepare the run", pipelineGroup: "preflight", icon: Shield },
-  { id: "benchmarks", title: "Generating Benchmarks", subtitle: "Create and validate evaluation questions", pipelineGroup: "preflight", icon: Target },
-  { id: "baseline", title: "Baseline Evaluation", subtitle: "Establish quality with 9 judges", pipelineGroup: "baseline", icon: BarChart3 },
-  { id: "judges", title: "The 9 Judges", subtitle: "How each judge evaluates SQL quality", pipelineGroup: "baseline", icon: ShieldCheck },
-  { id: "enrichment", title: "Enrichment", subtitle: "Proactively fill metadata gaps", pipelineGroup: "enrichment", icon: Sparkles },
-  { id: "lever-loop", title: "The Optimization Loop", subtitle: "Iteratively improve via targeted patches", pipelineGroup: "leverLoop", icon: RefreshCw },
+  { id: "intake", title: "Intake & Snapshot", subtitle: "Capture config and rollback state", pipelineGroup: "preflight", icon: Shield },
+  { id: "benchmarks", title: "Benchmark QC & Repair", subtitle: "Create, validate, repair, and publish evaluation questions", pipelineGroup: "baseline", icon: Target },
+  { id: "optimize-baseline", title: "Baseline Inside Optimize", subtitle: "Establish quality before attempts", pipelineGroup: "leverLoop", icon: BarChart3 },
+  { id: "judges", title: "Native Evaluation", subtitle: "How responses are scored", pipelineGroup: "leverLoop", icon: ShieldCheck },
+  { id: "lever-loop", title: "Patch Attempts", subtitle: "Iteratively improve via targeted patches", pipelineGroup: "leverLoop", icon: RefreshCw },
   { id: "failure-analysis", title: "Failure Analysis", subtitle: "Diagnose and cluster root causes", pipelineGroup: "leverLoop", icon: Filter },
   { id: "levers", title: "The 6 Levers", subtitle: "Targeted tools for specific problem types", pipelineGroup: "leverLoop", icon: Layers },
-  { id: "three-gates", title: "The 3-Gate Pattern", subtitle: "Validate improvements, catch regressions", pipelineGroup: "leverLoop", icon: GitBranch },
+  { id: "acceptance-rollback", title: "Acceptance & Rollback", subtitle: "Keep only improvements", pipelineGroup: "leverLoop", icon: GitBranch },
   { id: "convergence", title: "Convergence & Safety", subtitle: "Know when to stop, prevent harm", pipelineGroup: "finalize", icon: TrendingUp },
-  { id: "finalize", title: "Finalize & Deploy", subtitle: "Test, promote, and optionally deploy", pipelineGroup: "finalize", icon: CheckCheck },
+  { id: "publish-audit", title: "Publish & Audit", subtitle: "Promote the champion and record concerns", pipelineGroup: "finalize", icon: CheckCheck },
 ];
 
 /* ═══════════════════════════════════════════════════════════════════

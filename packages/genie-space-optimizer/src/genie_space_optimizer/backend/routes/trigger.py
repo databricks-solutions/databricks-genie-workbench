@@ -47,8 +47,6 @@ def trigger_optimization(
         headers=headers,
         apply_mode=body.apply_mode,
         levers=body.levers,
-        deploy_target=body.deploy_target,
-        target_benchmark_count=body.target_benchmark_count,
     )
     return TriggerResponse(
         runId=result.runId,
@@ -128,7 +126,6 @@ def list_levers():
     from genie_space_optimizer.common.config import LEVER_NAMES
 
     descriptions = {
-        0: "Proactively enrich descriptions, discover joins, seed instructions, and mine example SQLs",
         1: "Update table descriptions, column descriptions, column visibility, and synonyms",
         2: "Update metric view column descriptions",
         3: "Remove underperforming TVFs",
@@ -139,4 +136,5 @@ def list_levers():
     return [
         LeverInfo(id=k, name=v, description=descriptions.get(k, ""))
         for k, v in sorted(LEVER_NAMES.items())
+        if 1 <= k <= 6
     ]

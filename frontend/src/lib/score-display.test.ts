@@ -44,7 +44,7 @@ describe("presentOptimizedScore", () => {
   })
 
   it("renders '—' with 'in progress' tooltip when bestIteration==0 and not terminal", () => {
-    // The exact screenshot bug: Baseline Evaluation finished, no iter > 0
+    // The exact screenshot bug: baseline finished, no iter > 0
     // yet. Pre-fix this rendered "100%". Post-fix: "—" + tooltip.
     const result = presentOptimizedScore({
       baselineScore: 80.0,

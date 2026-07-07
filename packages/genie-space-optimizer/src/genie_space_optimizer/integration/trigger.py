@@ -100,7 +100,6 @@ def trigger_optimization(
     user_name: str | None = None,
     apply_mode: str = "genie_config",
     levers: list[int] | None = None,
-    deploy_target: str | None = None,
     target_accuracy: float | None = None,
     max_attempts: int | None = None,
 ) -> TriggerResult:
@@ -118,7 +117,6 @@ def trigger_optimization(
         user_name: Display name fallback when email is unavailable.
         apply_mode: One of ``"genie_config"``, ``"uc_artifact"``, ``"both"``.
         levers: Subset of levers to run (default ``[1,2,3,4,5]``).
-        deploy_target: Optional cross-environment deployment target URL.
         target_accuracy: Stop-early target accuracy on the 0–1 scale (default
             ``0.90`` when None — matches the job's databricks.yml param).
         max_attempts: SURGICAL hill-climb budget (default ``3`` when None); the
@@ -273,7 +271,6 @@ def trigger_optimization(
             apply_mode=requested_apply_mode,
             levers=levers_str,
             triggered_by=caller_email,
-            deploy_target=deploy_target or "",
             warehouse_id=config.warehouse_id or "",
             llm_model=config.llm_model or "",
             target_accuracy=target_accuracy_str,

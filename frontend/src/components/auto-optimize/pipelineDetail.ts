@@ -13,7 +13,7 @@ const DONE_STATES = new Set(["completed", "skipped", "success"])
 const ACTIVE_STATES = new Set(["running", "in_progress", "in-progress", "active"])
 
 /**
- * Derive the 5-task rail inputs from a run's ``steps`` array. The modal reads a
+ * Derive the 4-task rail inputs from a run's ``steps`` array. The modal reads a
  * ``GSOPipelineRun`` (which carries ``steps`` but not the status endpoint's
  * ``stepsCompleted``/``currentStepName``), so we recompute them here:
  *
@@ -21,8 +21,7 @@ const ACTIVE_STATES = new Set(["running", "in_progress", "in-progress", "active"
  * - ``currentStepName`` = the name of the first running/in-progress step, so
  *   TaskRail can mark the live node (null when nothing is actively running).
  *
- * Tolerant of the legacy 6-step shape (Phase 10 remapped the backend
- * ``_STEP_DEFINITIONS`` to 5, but old runs may still report 6 rows) — the count
+ * Tolerant of older 5/6-step shapes; the count
  * is clamped by TaskRail against ``GSO_TOTAL_STEPS``.
  */
 export function deriveRailProgress(steps: GSOPipelineStep[] | null | undefined): {
@@ -48,9 +47,9 @@ export function deriveRailProgress(steps: GSOPipelineStep[] | null | undefined):
 /**
  * Attempt-centric label for a patch's iteration (Phase 14, item 1 — the
  * attempt-grouped Patches surface). Re-keys the raw "Iter N" column onto the
- * coverage/surgical attempt vocabulary by looking the iteration up in the
- * iteration rows (which carry ``attempt_mode``/``attempt_no``) and reusing the
- * shared {@link attemptColumnLabel} relabel. Falls back to "Baseline" for
+ * patch-attempt vocabulary by looking the iteration up in the iteration rows
+ * (which carry ``attempt_mode``/``attempt_no``) and reusing the shared
+ * {@link attemptColumnLabel} relabel. Falls back to "Baseline" for
  * iteration 0 and "Iteration N" when no matching row is present (legacy runs).
  */
 export function patchAttemptLabel(
@@ -66,10 +65,10 @@ export function patchAttemptLabel(
 /**
  * Attempt-centric labels for the OptimizationLevers provenance sub-labels
  * (Phase 14, item 1 — attempt-grouped levers). Builds a ``Map<iterationNo,
- * label>`` where each label re-keys the raw "Iteration N" onto the coverage/
- * surgical attempt vocabulary (reusing {@link patchAttemptLabel}) and appends
- * the per-attempt decision (e.g. "Surgical 2 · Accepted", "Coverage · Rolled
- * back"), read from the merged ``attempt_mode``/``attempt_no``/``decision``/
+ * label>`` where each label re-keys the raw "Iteration N" onto patch-attempt
+ * vocabulary (reusing {@link patchAttemptLabel}) and appends the per-attempt
+ * decision (e.g. "Patch 2 · Accepted"), read from the merged
+ * ``attempt_mode``/``attempt_no``/``decision``/
  * ``rolled_back`` iteration columns.
  *
  * When the run carries NO attempt metadata (legacy 6-step runs) the map is

@@ -8,7 +8,7 @@ import type { GSOPatch, GSOIterationResult } from "@/types"
 interface PatchesTableProps {
   runId: string
   // GSO v2 (Phase 14) — when provided, the "Iter" column is re-keyed onto the
-  // coverage/surgical attempt vocabulary (Baseline · Coverage · Surgical N).
+  // patch-attempt vocabulary (Baseline · Patch N).
   iterations?: GSOIterationResult[]
 }
 

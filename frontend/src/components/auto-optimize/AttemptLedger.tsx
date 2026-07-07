@@ -35,7 +35,7 @@ function fmtDelta(v: number | null): string {
 }
 
 // The Attempt Ledger (Phase 12) — the tabular companion to the ladder. One row
-// per baseline / coverage / surgical attempt. The champion ★ is read from the
+// per baseline / patch attempt. The champion ★ is read from the
 // explicit isChampion flag (never re-derived). The highest-accuracy row is
 // highlighted separately; when it diverges from the champion, the rollback/
 // rejection reason is shown inline so a higher-but-rolled-back attempt is

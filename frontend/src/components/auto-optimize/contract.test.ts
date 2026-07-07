@@ -14,16 +14,16 @@ import {
 import { buildOptimizationTriggerRequest } from "./optimizationRequest"
 
 describe("GSO v2 frontend contract", () => {
-  it("exposes the canonical 5-task DAG with no deploy task", () => {
-    expect(GSO_TOTAL_STEPS).toBe(5)
+  it("exposes the canonical 4-task DAG with no standalone baseline/deploy task", () => {
+    expect(GSO_TOTAL_STEPS).toBe(4)
     expect(GSO_PIPELINE_STEPS.map((s) => s.name)).toEqual([
       "Intake & Snapshot",
       "Benchmark QC & Repair",
-      "Baseline Eval & Triage",
       "Optimize",
       "Publish & Audit",
     ])
     expect(GSO_PIPELINE_STEPS.some((s) => /deploy/i.test(s.name))).toBe(false)
+    expect(GSO_PIPELINE_STEPS.some((s) => /baseline/i.test(s.name))).toBe(false)
   })
 
   it("builds the trigger request without retired deploy target fields", () => {
@@ -59,7 +59,7 @@ describe("GSO v2 frontend contract", () => {
 
     const attempt: GSOAttempt = {
       attemptNo: 1,
-      attemptMode: "coverage",
+      attemptMode: "llm_patch",
       iteration: 1,
       evalScope: "full",
       lever: null,
@@ -76,7 +76,7 @@ describe("GSO v2 frontend contract", () => {
       doNotRepeat: [],
       terminalReason: "TARGET_REACHED",
     }
-    expect(attempt.attemptMode).toBe("coverage")
+    expect(attempt.attemptMode).toBe("llm_patch")
     expect(attempt.isChampion).toBe(true)
   })
 

@@ -8,7 +8,7 @@ import { evalCountsFromIteration } from "@/lib/eval-counts"
 // column relabel (Iter → attempts).
 // ---------------------------------------------------------------------------
 
-export type AttemptOptionMode = "baseline" | "coverage" | "surgical"
+export type AttemptOptionMode = "baseline" | "legacy" | "patch"
 
 // One selectable attempt in the per-question Attempt Selector. ``iteration`` is
 // the genie_opt_iterations row id used to fetch that attempt's question
@@ -35,18 +35,15 @@ function isFullScope(it: GSOIterationResult): boolean {
 
 function modeOf(it: GSOIterationResult): AttemptOptionMode {
   const m = (it.attempt_mode ?? "").toString().toLowerCase()
-  if (m === "coverage") return "coverage"
-  if (m === "surgical") return "surgical"
-  // No explicit mode: infer from the attempt counter (1 = coverage probe).
-  if (it.attempt_no === 1) return "coverage"
-  return "surgical"
+  if (m === "coverage" || m === "enrichment") return "legacy"
+  return "patch"
 }
 
 function labelFor(mode: AttemptOptionMode, it: GSOIterationResult): string {
   if (mode === "baseline") return "Baseline"
-  if (mode === "coverage") return "Coverage"
+  if (mode === "legacy") return "Legacy enrichment"
   const n = it.attempt_no ?? it.iteration
-  return `Surgical ${n}`
+  return `Patch ${n}`
 }
 
 /**
@@ -54,7 +51,7 @@ function labelFor(mode: AttemptOptionMode, it: GSOIterationResult): string {
  * iteration rows.
  *
  * - v2 runs (iterations carry ``attempt_mode``/``attempt_no``): one option per
- *   full-scope iteration — Baseline · Coverage · Surgical N — with the champion
+ *   full-scope iteration — Baseline · Patch N — with the champion
  *   read from the explicit ``is_champion`` flag (never idxmax), defaulting the
  *   selection to that champion.
  * - Legacy runs (no attempt metadata): degrades to the classic
@@ -127,7 +124,7 @@ export function buildAttemptOptions(args: {
         key: `iter-${finalRow.iteration}`,
         label: "Final",
         iteration: finalRow.iteration,
-        mode: "surgical",
+        mode: "patch",
         accuracyPct,
         isChampion: finalRow.is_champion === true,
         starred: championIter != null && finalRow.iteration === championIter
@@ -178,13 +175,13 @@ export function selectCachedQuestions(
 
 /**
  * Column header label for the QuestionJourney attempt grid (Phase 13, item 4):
- * relabels the old "Iter N" to attempt-centric copy. Baseline · Coverage ·
- * Surgical N when attempt metadata is present, else "Attempt N".
+ * relabels the old "Iter N" to attempt-centric copy. Baseline · Patch N when
+ * attempt metadata is present, else "Attempt N".
  */
 export function attemptColumnLabel(it: GSOIterationResult): string {
   if (it.iteration === 0) return "Baseline"
   const m = (it.attempt_mode ?? "").toString().toLowerCase()
-  if (m === "coverage") return "Coverage"
-  if (m === "surgical") return `Surgical ${it.attempt_no ?? it.iteration}`
+  if (m === "coverage" || m === "enrichment") return "Legacy enrichment"
+  if (m === "surgical" || m === "llm_patch" || m === "patch") return `Patch ${it.attempt_no ?? it.iteration}`
   return `Attempt ${it.attempt_no ?? it.iteration}`
 }

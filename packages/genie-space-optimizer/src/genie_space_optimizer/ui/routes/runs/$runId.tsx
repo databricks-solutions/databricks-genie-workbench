@@ -27,7 +27,6 @@ import {
   Zap,
   TrendingUp,
   ExternalLink,
-  Rocket,
   UserCheck,
   Eye,
   Microscope,
@@ -76,12 +75,10 @@ const TERMINAL_STATUSES = [
 ];
 
 const STEP_DESCRIPTIONS: Record<number, string> = {
-  1: "Reads the Genie Space configuration and queries Unity Catalog for column metadata, tags, and descriptions.",
-  2: "Runs all benchmark questions through the Genie API with 9 evaluation judges to establish the current accuracy baseline.",
-  3: "Proactively enriches the Genie Space with descriptions, join paths, metadata, instructions, and example SQLs.",
-  4: "Applies 6 optimization levers (table/column metadata, metric views, TVFs, join specs, instructions, SQL expressions) and evaluates each change.",
-  5: "Final evaluation pass on the optimized configuration with repeatability checks to confirm stable improvements.",
-  6: "Deploys the optimized configuration to the target environment.",
+  1: "Captures the live Genie Space configuration and writes the rollback snapshot.",
+  2: "Generates, validates, repairs, and publishes the working benchmark set.",
+  3: "Runs the native baseline evaluation and bounded targeted optimization attempts.",
+  4: "Promotes the champion when eligible and writes the audit record.",
 };
 
 function useElapsedTime(startedAt: string | undefined, isActive: boolean) {
@@ -361,8 +358,6 @@ function PipelineView() {
     optimizedScore?: number | null;
     convergenceReason?: string | null;
     links?: { label: string; url: string; category: string }[];
-    deploymentJobStatus?: string | null;
-    deploymentJobUrl?: string | null;
   } | null;
 
   const isActive = run
@@ -438,12 +433,6 @@ function PipelineView() {
               {isActive && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
               {statusDisplayLabel(run.status)}
             </Badge>
-            {run.deploymentJobStatus && (
-              <DeploymentBadge
-                status={run.deploymentJobStatus}
-                url={run.deploymentJobUrl}
-              />
-            )}
           </div>
           <p className="text-sm text-muted">
             Run <code className="rounded bg-elevated px-1 py-0.5 font-mono text-xs">{run.runId.slice(0, 8)}</code>
@@ -585,13 +574,8 @@ function PipelineView() {
             summary={step.summary}
           >
             <StepInsights step={step} links={run.links ?? []} />
-            {step.name === "Proactive Enrichment" &&
-              run.levers.filter(l => l.lever === 0).length > 0 && (
-                <LeverProgress levers={run.levers.filter(l => l.lever === 0)} links={run.links ?? []} runId={run.runId} />
-              )}
-            {step.name === "Adaptive Optimization" &&
-              run.levers.filter(l => l.lever !== 0).length > 0 && (
-                <LeverProgress levers={run.levers.filter(l => l.lever !== 0)} links={run.links ?? []} runId={run.runId} />
+            {step.name === "Optimize" && run.levers.length > 0 && (
+                <LeverProgress levers={run.levers} links={run.links ?? []} runId={run.runId} />
               )}
           </PipelineStepCard>
         ))}
@@ -772,7 +756,7 @@ function StepInsights({
   const outputs = step.outputs ?? {};
   if (!Object.keys(outputs).length) return null;
 
-  if (step.name === "Preflight") {
+  if (step.name === "Intake & Snapshot") {
     const tableCount = outputs.tableCount as number | undefined;
     const tables = (outputs.tables as string[] | undefined) ?? [];
     const functionCount = outputs.functionCount as number | undefined;
@@ -811,18 +795,59 @@ function StepInsights({
     );
   }
 
-  if (step.name === "Baseline Evaluation") {
-    const judgeScores = (outputs.judgeScores as Record<string, number | null> | undefined) ?? {};
-    const sampleQuestions = (outputs.sampleQuestions as Record<string, unknown>[] | undefined) ?? [];
-    const invalidBenchmarkCount = outputs.invalidBenchmarkCount as number | undefined;
-    const permissionBlockedCount = outputs.permissionBlockedCount as number | undefined;
-    const unresolvedColumnCount = outputs.unresolvedColumnCount as number | undefined;
-    const harnessRetryCount = outputs.harnessRetryCount as number | undefined;
-    const evalUrlFromOutput = outputs.evaluationRunUrl as string | undefined;
+  if (step.name === "Benchmark QC & Repair") {
+    const validCount = outputs.validCount as number | undefined;
+    const repairTriesUsed = outputs.repairTriesUsed as number | undefined;
+    const repairMaxTries = outputs.repairMaxTries as number | undefined;
+    const windowStatus = outputs.windowStatus as string | undefined;
+    const finalValidity = outputs.finalValidity as boolean | undefined;
+    const terminalReason = outputs.terminalReason as string | undefined;
+
+    return (
+      <div className="space-y-2 text-xs">
+        <div className="flex flex-wrap gap-2">
+          {validCount != null && <Badge variant="secondary">Valid benchmarks: {validCount}</Badge>}
+          {repairTriesUsed != null && (
+            <Badge variant="secondary">
+              Repair sweeps: {repairTriesUsed}
+              {repairMaxTries != null ? `/${repairMaxTries}` : ""}
+            </Badge>
+          )}
+          {windowStatus && <Badge variant="secondary">Window: {windowStatus}</Badge>}
+          {finalValidity != null && (
+            <Badge variant={finalValidity ? "secondary" : "destructive"}>
+              {finalValidity ? "Benchmark valid" : "Benchmark invalid"}
+            </Badge>
+          )}
+          {terminalReason && <Badge variant="destructive">{terminalReason}</Badge>}
+        </div>
+      </div>
+    );
+  }
+
+  if (step.name === "Optimize") {
+    const baseline = (outputs.baseline as Record<string, unknown> | undefined) ?? {};
+    const judgeScores = (baseline.judgeScores as Record<string, number | null> | undefined) ?? {};
+    const sampleQuestions = (baseline.sampleQuestions as Record<string, unknown>[] | undefined) ?? [];
+    const invalidBenchmarkCount = baseline.invalidBenchmarkCount as number | undefined;
+    const permissionBlockedCount = baseline.permissionBlockedCount as number | undefined;
+    const unresolvedColumnCount = baseline.unresolvedColumnCount as number | undefined;
+    const harnessRetryCount = baseline.harnessRetryCount as number | undefined;
+    const evalUrlFromOutput = baseline.evaluationRunUrl as string | undefined;
     const evalUrlFromLinks = links.find(
       (l) => l.category === "mlflow" && l.label.toLowerCase().includes("baseline"),
     )?.url;
     const evalUrl = evalUrlFromOutput ?? evalUrlFromLinks;
+    const proactive = outputs.proactiveChanges as Record<string, unknown> | undefined;
+    const totalEnrichments = outputs.totalEnrichments as number | undefined;
+    const totalConfigChanges = outputs.totalConfigChanges as number | undefined;
+    const enrichmentSkipped = outputs.enrichmentSkipped as boolean | undefined;
+    const patchesApplied = outputs.patchesApplied as number | undefined;
+    const leversAccepted = (outputs.leversAccepted as unknown[] | undefined) ?? [];
+    const leversRolledBack = (outputs.leversRolledBack as unknown[] | undefined) ?? [];
+    const iterationCounter = outputs.iterationCounter as number | undefined;
+    const baselineAccuracy = outputs.baselineAccuracy as number | undefined;
+    const bestAccuracy = outputs.bestAccuracy as number | undefined;
 
     return (
       <div className="space-y-3">
@@ -874,30 +899,19 @@ function StepInsights({
         {evalUrl && (
           <Button variant="outline" size="sm" asChild>
             <a href={evalUrl} target="_blank" rel="noopener noreferrer">
-              Open baseline evaluation run
+              Open Genie Space
               <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
             </a>
           </Button>
         )}
-      </div>
-    );
-  }
-
-  if (step.name === "Proactive Enrichment") {
-    const proactive = outputs.proactiveChanges as Record<string, unknown> | undefined;
-    const totalEnrichments = outputs.totalEnrichments as number | undefined;
-    const totalConfigChanges = outputs.totalConfigChanges as number | undefined;
-    const enrichmentSkipped = outputs.enrichmentSkipped as boolean | undefined;
-
-    return (
-      <div className="space-y-2 text-xs">
+        <div className="border-t border-db-gray-border pt-3 space-y-2 text-xs">
         {enrichmentSkipped && (
-          <p className="text-muted">Enrichment skipped (baseline already meets thresholds)</p>
+          <p className="text-muted">Legacy enrichment skipped (baseline already met thresholds)</p>
         )}
         <div className="flex flex-wrap gap-1.5">
           {totalEnrichments != null && (
             <Badge variant="secondary">
-              {totalEnrichments} enrichments
+              Legacy enrichment changes: {totalEnrichments}
               {totalConfigChanges != null && totalConfigChanges !== totalEnrichments && (
                 <span className="ml-1 font-normal text-muted">
                   ({totalConfigChanges} config changes)
@@ -951,20 +965,8 @@ function StepInsights({
             )}
           </div>
         )}
-      </div>
-    );
-  }
-
-  if (step.name === "Adaptive Optimization") {
-    const patchesApplied = outputs.patchesApplied as number | undefined;
-    const leversAccepted = (outputs.leversAccepted as unknown[] | undefined) ?? [];
-    const leversRolledBack = (outputs.leversRolledBack as unknown[] | undefined) ?? [];
-    const iterationCounter = outputs.iterationCounter as number | undefined;
-    const baselineAccuracy = outputs.baselineAccuracy as number | undefined;
-    const bestAccuracy = outputs.bestAccuracy as number | undefined;
-
-    return (
-      <div className="space-y-2 text-xs">
+        </div>
+        <div className="border-t border-db-gray-border pt-3 space-y-2 text-xs">
         <div className="flex flex-wrap gap-2">
           {patchesApplied != null && <Badge variant="secondary">Patches applied: {patchesApplied}</Badge>}
           <Badge variant="secondary">Levers accepted: {leversAccepted.length}</Badge>
@@ -979,11 +981,12 @@ function StepInsights({
             </span>
           </p>
         )}
+        </div>
       </div>
     );
   }
 
-  if (step.name === "Finalization") {
+  if (step.name === "Publish & Audit") {
     const bestAccuracy = outputs.bestAccuracy as number | undefined;
     const repeatability = outputs.repeatability as number | undefined;
     const convergenceReason = outputs.convergenceReason as string | undefined;
@@ -999,69 +1002,5 @@ function StepInsights({
     );
   }
 
-  if (step.name === "Deploy") {
-    const deployStatus = outputs.deployStatus as string | undefined;
-
-    return (
-      <div className="space-y-2 text-xs">
-        <div className="flex flex-wrap gap-2">
-          {deployStatus && <Badge variant="secondary">Deploy: {deployStatus}</Badge>}
-        </div>
-      </div>
-    );
-  }
-
   return null;
-}
-
-function DeploymentBadge({
-  status,
-  url,
-}: {
-  status: string;
-  url?: string | null;
-}) {
-  const label =
-    status === "DEPLOYED"
-      ? "Deployed"
-      : status === "RUNNING"
-        ? "Deploying…"
-        : status === "FAILED"
-          ? "Deploy failed"
-          : status === "SKIPPED"
-            ? "Deploy skipped"
-            : status === "PENDING_APPROVAL"
-              ? "Awaiting approval"
-              : status;
-
-  const className =
-    status === "DEPLOYED"
-      ? "border-db-green/30 text-db-green"
-      : status === "RUNNING"
-        ? "border-db-blue/30 text-db-blue"
-        : status === "FAILED"
-          ? "border-db-red-error/30 text-db-red-error"
-          : status === "PENDING_APPROVAL"
-            ? "border-amber-500/30 text-amber-500"
-            : "text-muted";
-
-  const badge = (
-    <Badge variant="outline" className={className}>
-      {status === "RUNNING" && (
-        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-      )}
-      <Rocket className="mr-1 h-3 w-3" />
-      {label}
-      {url && <ExternalLink className="ml-1 h-3 w-3" />}
-    </Badge>
-  );
-
-  if (url) {
-    return (
-      <a href={url} target="_blank" rel="noopener noreferrer">
-        {badge}
-      </a>
-    );
-  }
-  return badge;
 }

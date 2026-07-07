@@ -72,9 +72,9 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
       .catch(() => {})
   }, [runId])
 
-  // The per-question Attempt Selector model (Baseline · Coverage · Surgical N ·
-  // best★), defaulting to the champion. Degrades to Baseline · Final for legacy
-  // runs with no attempt metadata.
+  // The per-question Attempt Selector model (Baseline · Patch N · best★),
+  // defaulting to the champion. Degrades to Baseline · Final for legacy runs
+  // with no attempt metadata.
   const { options, defaultKey } = useMemo(
     () =>
       buildAttemptOptions({
@@ -209,7 +209,7 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
       {/* Benchmark QC & changes — first-class surface under task 01. */}
       <BenchmarkChangesPanel runId={runId} />
 
-      {/* Per-question attempt selector (Baseline · Coverage · Surgical N · best★) */}
+      {/* Per-question attempt selector (Baseline · Patch N · best★) */}
       {options.length > 0 && (
         <div className="flex flex-wrap gap-1 border-b border-default">
           {options.map((opt) => {

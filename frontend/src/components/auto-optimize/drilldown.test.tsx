@@ -51,21 +51,20 @@ function iter(overrides: Partial<GSOIterationResult>): GSOIterationResult {
 }
 
 // ---------------------------------------------------------------------------
-// Item 1 — deriveRailProgress (5-task rail inputs from a run's steps)
+// Item 1 — deriveRailProgress (4-task rail inputs from a run's steps)
 // ---------------------------------------------------------------------------
 
-describe("deriveRailProgress — 5-task rail inputs from run.steps", () => {
+describe("deriveRailProgress — 4-task rail inputs from run.steps", () => {
   it("counts completed/skipped as done and reports the first running step", () => {
     const steps = [
       step({ stepNumber: 1, name: "Intake & Snapshot", status: "completed" }),
       step({ stepNumber: 2, name: "Benchmark QC & Repair", status: "skipped" }),
-      step({ stepNumber: 3, name: "Baseline Eval & Triage", status: "running" }),
-      step({ stepNumber: 4, name: "Optimize", status: "pending" }),
-      step({ stepNumber: 5, name: "Publish & Audit", status: "pending" }),
+      step({ stepNumber: 3, name: "Optimize", status: "running" }),
+      step({ stepNumber: 4, name: "Publish & Audit", status: "pending" }),
     ]
     expect(deriveRailProgress(steps)).toEqual({
       stepsCompleted: 2,
-      currentStepName: "Baseline Eval & Triage",
+      currentStepName: "Optimize",
     })
   })
 
@@ -75,9 +74,8 @@ describe("deriveRailProgress — 5-task rail inputs from run.steps", () => {
       step({ stepNumber: 2, status: "completed" }),
       step({ stepNumber: 3, status: "success" }),
       step({ stepNumber: 4, status: "completed" }),
-      step({ stepNumber: 5, status: "skipped" }),
     ]
-    expect(deriveRailProgress(steps)).toEqual({ stepsCompleted: 5, currentStepName: null })
+    expect(deriveRailProgress(steps)).toEqual({ stepsCompleted: 4, currentStepName: null })
   })
 
   it("degrades to zero for empty / missing steps (legacy runs)", () => {
@@ -94,14 +92,14 @@ describe("deriveRailProgress — 5-task rail inputs from run.steps", () => {
 describe("patchAttemptLabel — Iter → attempt re-key", () => {
   const iterations = [
     iter({ iteration: 0 }),
-    iter({ iteration: 1, attempt_no: 1, attempt_mode: "coverage" }),
-    iter({ iteration: 2, attempt_no: 2, attempt_mode: "surgical" }),
+    iter({ iteration: 1, attempt_no: 1, attempt_mode: "llm_patch" }),
+    iter({ iteration: 2, attempt_no: 2, attempt_mode: "llm_patch" }),
   ]
 
-  it("maps iterations onto the coverage/surgical attempt vocabulary", () => {
+  it("maps iterations onto the patch attempt vocabulary", () => {
     expect(patchAttemptLabel(0, iterations)).toBe("Baseline")
-    expect(patchAttemptLabel(1, iterations)).toBe("Coverage")
-    expect(patchAttemptLabel(2, iterations)).toBe("Surgical 2")
+    expect(patchAttemptLabel(1, iterations)).toBe("Patch 1")
+    expect(patchAttemptLabel(2, iterations)).toBe("Patch 2")
   })
 
   it("falls back for unknown iterations and null (legacy / orphan patches)", () => {
@@ -173,7 +171,7 @@ describe("AttemptExplorerTable — re-keyed Attempt Explorer (fallback)", () => 
       iter({
         iteration: 1,
         attempt_no: 1,
-        attempt_mode: "coverage",
+        attempt_mode: "llm_patch",
         decision: "reject",
         rolled_back: true,
         overall_accuracy: 70,
@@ -182,7 +180,7 @@ describe("AttemptExplorerTable — re-keyed Attempt Explorer (fallback)", () => 
       iter({
         iteration: 2,
         attempt_no: 2,
-        attempt_mode: "surgical",
+        attempt_mode: "llm_patch",
         decision: "accept",
         is_champion: true,
         overall_accuracy: 84,
@@ -192,10 +190,10 @@ describe("AttemptExplorerTable — re-keyed Attempt Explorer (fallback)", () => 
     const markup = renderToStaticMarkup(<AttemptExplorerTable iterations={iterations} />)
     expect(markup).toContain("Attempt Accuracy Progression")
     expect(markup).toContain("Baseline")
-    expect(markup).toContain("Coverage")
-    expect(markup).toContain("Surgical 2")
+    expect(markup).toContain("Patch 1")
+    expect(markup).toContain("Patch 2")
     expect(markup).toContain("Accepted")
-    // Coverage was rolled back → decision reads "Rolled back" regardless of token.
+    // Patch 1 was rolled back → decision reads "Rolled back" regardless of token.
     expect(markup).toContain("Rolled back")
     // Champion star present (explicit is_champion flag, never idxmax).
     expect(markup).toContain("★")
@@ -222,7 +220,7 @@ describe("AttemptExplorerTable — re-keyed Attempt Explorer (fallback)", () => 
       iter({
         iteration: 2,
         attempt_no: 2,
-        attempt_mode: "surgical",
+        attempt_mode: "llm_patch",
         decision: "reject",
         rolled_back: true,
         decision_reason: "regressed on the priority cluster",
@@ -232,7 +230,7 @@ describe("AttemptExplorerTable — re-keyed Attempt Explorer (fallback)", () => 
       iter({
         iteration: 3,
         attempt_no: 3,
-        attempt_mode: "surgical",
+        attempt_mode: "llm_patch",
         decision: "accept",
         is_champion: true,
         overall_accuracy: 80,
@@ -249,27 +247,30 @@ describe("AttemptExplorerTable — re-keyed Attempt Explorer (fallback)", () => 
 })
 
 // ---------------------------------------------------------------------------
-// Item 2 — HowItWorks Auto-Optimize prose (5-task DAG + two-mode loop)
+// Item 2 — HowItWorks Auto-Optimize prose (4-task DAG + patch/eval loop)
 // ---------------------------------------------------------------------------
 
-describe("AutoOptimizeContent — 5-task DAG + coverage/surgical loop prose", () => {
+describe("AutoOptimizeContent — 4-task DAG + patch/eval loop prose", () => {
   const markup = renderToStaticMarkup(<AutoOptimizeContent />)
 
-  it("describes the 5-task pipeline (Deploy dropped)", () => {
-    expect(markup).toContain("5-Task Pipeline")
+  it("describes the 4-task pipeline (standalone baseline/deploy dropped)", () => {
+    expect(markup).toContain("4-Task Pipeline")
     expect(markup).toContain("Intake &amp; Snapshot")
     expect(markup).toContain("Benchmark QC &amp; Repair")
-    expect(markup).toContain("Baseline Eval &amp; Triage")
-    expect(markup).toContain("03 Optimize")
+    expect(markup).toContain("02 Optimize")
     expect(markup).toContain("Publish &amp; Audit")
     expect(markup).not.toContain("6-Task Pipeline")
+    expect(markup).not.toContain("Baseline Eval &amp; Triage")
   })
 
-  it("explains the coverage → surgical two-mode loop and the stop conditions", () => {
-    expect(markup).toContain("Coverage")
-    expect(markup).toContain("Surgical")
+  it("explains the patch/eval loop and the stop conditions", () => {
+    expect(markup).toContain("Iteration 0")
+    expect(markup).toContain("Patch/eval loop")
     expect(markup).toContain("target accuracy")
     expect(markup).toContain("max attempts")
+    expect(markup).toContain("max_attempts bounds")
+    expect(markup).not.toContain("Coverage")
+    expect(markup).not.toContain("Surgical")
   })
 })
 
@@ -278,15 +279,15 @@ describe("AutoOptimizeContent — 5-task DAG + coverage/surgical loop prose", ()
 // ---------------------------------------------------------------------------
 
 describe("buildLeverIterationLabels — attempt-grouped lever provenance", () => {
-  it("maps iterations to Coverage / Surgical N (+ decision) when attempt metadata is present", () => {
+  it("maps iterations to Patch N (+ decision) when attempt metadata is present", () => {
     const iterations = [
       iter({ iteration: 0 }),
-      iter({ iteration: 1, attempt_no: 1, attempt_mode: "coverage", decision: "reject", rolled_back: true }),
-      iter({ iteration: 2, attempt_no: 2, attempt_mode: "surgical", decision: "accept" }),
+      iter({ iteration: 1, attempt_no: 1, attempt_mode: "llm_patch", decision: "reject", rolled_back: true }),
+      iter({ iteration: 2, attempt_no: 2, attempt_mode: "llm_patch", decision: "accept" }),
     ]
     const labels = buildLeverIterationLabels(iterations)
-    expect(labels.get(1)).toBe("Coverage · Rolled back")
-    expect(labels.get(2)).toBe("Surgical 2 · Accepted")
+    expect(labels.get(1)).toBe("Patch 1 · Rolled back")
+    expect(labels.get(2)).toBe("Patch 2 · Accepted")
   })
 
   it("returns an empty map (⇒ 'Iteration N' fallback) for legacy runs with no attempt metadata", () => {
@@ -326,20 +327,20 @@ describe("OptimizationLevers — attempt-labeled provenance vs legacy Iteration 
     ],
   }
   const iterations = [
-    iter({ iteration: 1, attempt_no: 1, attempt_mode: "coverage", decision: "reject", rolled_back: true }),
-    iter({ iteration: 2, attempt_no: 2, attempt_mode: "surgical", decision: "accept" }),
+    iter({ iteration: 1, attempt_no: 1, attempt_mode: "llm_patch", decision: "reject", rolled_back: true }),
+    iter({ iteration: 2, attempt_no: 2, attempt_mode: "llm_patch", decision: "accept" }),
   ]
 
-  it("re-keys provenance sub-labels to Coverage / Surgical N when attempt metadata is present", () => {
+  it("re-keys provenance sub-labels to Patch N when attempt metadata is present", () => {
     const markup = renderToStaticMarkup(<OptimizationLevers levers={[lever]} iterations={iterations} />)
-    expect(markup).toContain("Coverage")
-    expect(markup).toContain("Surgical 2")
+    expect(markup).toContain("Patch 1")
+    expect(markup).toContain("Patch 2")
     expect(markup).not.toContain("Iteration 2")
   })
 
   it("degrades to 'Iteration N' when no iterations prop / attempt metadata is provided", () => {
     const markup = renderToStaticMarkup(<OptimizationLevers levers={[lever]} />)
     expect(markup).toContain("Iteration 2")
-    expect(markup).not.toContain("Surgical 2")
+    expect(markup).not.toContain("Patch 2")
   })
 })

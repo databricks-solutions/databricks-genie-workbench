@@ -35,7 +35,7 @@ const STEPS: StepDef[] = [
   { icon: Shield, label: "Validating permissions", description: "Checking access to Genie Space and UC catalog" },
   { icon: FileText, label: "Preparing configuration", description: "Snapshotting current space config and benchmarks" },
   { icon: Upload, label: "Submitting job", description: "Creating Databricks workflow run" },
-  { icon: Rocket, label: "Launching pipeline", description: "Starting the 6-task optimization DAG" },
+  { icon: Rocket, label: "Launching pipeline", description: "Starting the 4-task optimization DAG" },
   { icon: CheckCircle, label: "Pipeline started", description: "Redirecting to run detail…" },
 ];
 

@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { AlertTriangle, Rocket, Sparkles } from "lucide-react"
+import { AlertTriangle, Rocket } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { triggerAutoOptimize } from "@/lib/api"
@@ -24,9 +24,8 @@ interface OptimizationConfigProps {
   onRefreshPermissions?: () => void
 }
 
-// Levers 1–6 scope ONLY the surgical attempts (2..N). Lever 0 (the broad
-// "coverage" pass) is attempt 1 — automatic and never user-selectable — so it
-// is intentionally absent here and never added to the `levers` payload.
+// Levers 1–6 scope the bounded native patch/eval attempts. There is no
+// user-selectable lever 0 in the 4-task runner.
 const LEVERS = [
   { id: 1, name: "Tables & Columns", description: "Update table descriptions, column descriptions, and synonyms" },
   { id: 2, name: "Metric Views", description: "Update metric view column descriptions" },
@@ -124,27 +123,11 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted">What will be optimized</p>
 
-          {/* Coverage — automatic attempt 1, not a toggle */}
-          <div className="flex items-start gap-2 rounded-lg border border-default bg-accent/5 px-3 py-2.5">
-            <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium text-primary">Coverage pass</span>
-                <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-                  Automatic · attempt 1
-                </span>
-              </div>
-              <p className="text-xs text-muted">
-                A broad first pass always runs automatically — measured against the frozen baseline and rolled back if it doesn&apos;t help. It never counts as a surgical attempt.
-              </p>
-            </div>
-          </div>
-
-          {/* Surgical lever selection — scopes attempts 2+ */}
+          {/* Lever selection — scopes bounded patch/eval attempts */}
           <div className="space-y-2 pt-1">
-            <p className="text-xs font-medium text-muted">Surgical optimization scope (attempts 2+)</p>
+            <p className="text-xs font-medium text-muted">Optimization scope</p>
             <p className="text-xs text-muted">
-              Select which levers the surgical hill-climb may use after the automatic coverage pass.
+              Select which levers the optimizer may use when proposing targeted patch sets.
             </p>
             {LEVERS.map((lever) => (
               <label key={lever.id} className="flex items-start gap-2 cursor-pointer">
@@ -162,12 +145,12 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           </div>
         </div>
 
-        {/* Stopping criteria — target accuracy + max surgical attempts */}
+        {/* Stopping criteria — target accuracy + max patch attempts */}
         <div className="space-y-3 rounded-lg border border-default px-4 py-3">
           <div>
             <p className="text-xs font-medium text-muted">Stopping criteria</p>
             <p className="text-xs text-muted">
-              The run stops at whichever comes first — reaching the target accuracy or exhausting the surgical attempts.
+              The run stops at whichever comes first: reaching the target accuracy, exhausting the patch attempts, or finding no safe new hypothesis.
             </p>
           </div>
           <div className="flex flex-wrap items-start gap-6">
@@ -193,7 +176,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
             </div>
             <div className="space-y-1.5">
               <label htmlFor="gso-max-attempts" className="block text-xs font-medium text-muted">
-                Max surgical attempts
+                Max patch attempts
               </label>
               <input
                 id="gso-max-attempts"
@@ -207,7 +190,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
                 className="h-9 w-20 rounded-lg border border-default bg-surface px-3 text-sm text-primary shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
               />
               <p className="text-xs text-muted max-w-xs">
-                Caps the surgical hill-climb (attempts 2+). The automatic coverage pass is free and never uses a slot.
+                Caps the bounded patch/eval loop inside the Optimize task.
               </p>
             </div>
           </div>

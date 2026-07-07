@@ -10,35 +10,22 @@ import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { StageScreen } from "../StageScreen";
 import { ScoreGauge } from "../shared/ScoreGauge";
-import { JUDGES, PIPELINE_GROUP_COLORS } from "../data";
+import { PIPELINE_GROUP_COLORS } from "../data";
 
 const FLOW_NODES = [
-  { label: "Benchmarks", icon: FileText },
-  { label: "Genie Space API", icon: Globe },
-  { label: "9 Judges", icon: ShieldCheck },
-  { label: "Aggregated Scores", icon: BarChart3 },
+  { label: "Valid Benchmarks", icon: FileText },
+  { label: "Genie Benchmark API", icon: Globe },
+  { label: "Iteration 0", icon: ShieldCheck },
+  { label: "Accuracy Baseline", icon: BarChart3 },
 ] as const;
 
 const EVALUATION_ORCHESTRATION_STEPS = [
-  "make_predict_fn closure — captures Genie Space config and benchmark dataset",
-  "run_evaluation DataFrame — builds input for mlflow.genai.evaluate",
-  "mlflow.genai.evaluate with 9 scorers — runs all judges per question",
-  "Retry logic: EVAL_MAX_ATTEMPTS=4 with exponential sleep on transient failures",
-  "Sequential fallback on total failure — falls back to per-question evaluation",
+  "Load the EXPLAIN-valid benchmark corpus produced by Benchmark QC & Repair",
+  "Call the native Genie Benchmark API against the current live space",
+  "Persist iteration 0 with eval_scope=full and reflection phase=baseline",
+  "Set the run's initial best_iteration and best_accuracy",
+  "Stop immediately if the baseline already reaches the configured target",
 ];
-
-/** Abbreviations for judge icons (for layoutId animation to JudgesStage) */
-const JUDGE_ABBREVS: Record<string, string> = {
-  syntax_validity: "SV",
-  schema_accuracy: "SA",
-  logical_accuracy: "LA",
-  semantic_equivalence: "SE",
-  completeness: "CO",
-  response_quality: "RQ",
-  result_correctness: "RC",
-  asset_routing: "AR",
-  arbiter: "AB",
-};
 
 function AnimatedArrow() {
   return (
@@ -81,14 +68,14 @@ function AnimatedArrow() {
   );
 }
 
-export function BaselineStage() {
-  const baselineColors = PIPELINE_GROUP_COLORS.baseline;
+export function OptimizeBaselineStage() {
+  const baselineColors = PIPELINE_GROUP_COLORS.leverLoop;
 
   return (
     <StageScreen
-      title="Baseline Evaluation"
-      subtitle="Establish quality with 9 judges"
-      pipelineGroup="baseline"
+      title="Baseline Inside Optimize"
+      subtitle="Establish current quality before patch attempts"
+      pipelineGroup="leverLoop"
       visual={
         <div className="flex flex-col items-center gap-10">
           {/* Animated flow: 4 nodes as rich cards with icons, connected by arrows */}
@@ -120,45 +107,23 @@ export function BaselineStage() {
           <div className="w-full max-w-[280px] [&_.relative]:!h-5 [&_.h-full]:!h-5">
             <div className="mb-3 text-center">
               <span className="text-xl font-semibold tabular-nums text-slate-800">
-                Baseline: 72%
+                Iteration 0: 72%
               </span>
             </div>
             <ScoreGauge
               value={72}
-              label="Accuracy (arbiter-adjusted)"
+              label="Native benchmark accuracy"
               threshold={72}
               color={baselineColors.dot}
             />
-          </div>
-
-          {/* 9 judge icons — layoutId for shared-element animation to JudgesStage, purple accent */}
-          <div className="flex flex-wrap items-center justify-center gap-2.5">
-            {JUDGES.map((judge, i) => (
-              <motion.div
-                key={judge.name}
-                layoutId={`judge-${judge.name}`}
-                className={cn(
-                  "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-xs font-semibold",
-                  "border shadow-sm transition-shadow hover:shadow",
-                  baselineColors.iconBg,
-                  baselineColors.iconText,
-                  "border-purple-200"
-                )}
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: 0.5 + i * 0.05, duration: 0.25 }}
-              >
-                {JUDGE_ABBREVS[judge.name] ?? judge.number}
-              </motion.div>
-            ))}
           </div>
         </div>
       }
       explanation={
         <p>
-          Every benchmark question is sent to the Genie Space, and the response is
-          evaluated by 9 specialized judges. The result is a baseline accuracy
-          score that tells us how good the space is before optimization.
+          The baseline is no longer a standalone job task. It is iteration 0 inside
+          the Optimize notebook, using the same full benchmark corpus that later
+          candidate patches must beat.
         </p>
       }
       learnMore={[

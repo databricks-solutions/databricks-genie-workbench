@@ -37,7 +37,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
 import {
   ArrowLeft,
   ChevronDown,
@@ -45,7 +44,6 @@ import {
   Copy,
   Rocket,
   ShieldAlert,
-  TriangleAlert,
 } from "lucide-react";
 import { ErrorBoundary } from "react-error-boundary";
 import { toast } from "sonner";
@@ -88,8 +86,6 @@ function SpaceDetailSkeleton() {
   );
 }
 
-const DEFAULT_BENCHMARK_COUNT = 24;
-
 const LEVERS = [
   { id: 1, label: "Tables & Columns", desc: "Update table descriptions, column descriptions, and synonyms" },
   { id: 2, label: "Metric Views", desc: "Update metric view column descriptions" },
@@ -118,8 +114,6 @@ function SpaceDetail() {
   const [selectedLevers, setSelectedLevers] = useState<Set<number>>(
     new Set(LEVERS.map((l) => l.id)),
   );
-  const [deployTarget, setDeployTarget] = useState("");
-  const [targetBenchmarkCount, setTargetBenchmarkCount] = useState<number>(DEFAULT_BENCHMARK_COUNT);
   const [stepperOpen, setStepperOpen] = useState(false);
   const [stepperError, setStepperError] = useState<string | null>(null);
   const [stepperComplete, setStepperComplete] = useState(false);
@@ -135,8 +129,6 @@ function SpaceDetail() {
   };
 
   const hasActiveRun = space?.hasActiveRun ?? false;
-  const benchmarkCountChanged = targetBenchmarkCount !== DEFAULT_BENCHMARK_COUNT;
-
   const spacePerms: SpacePermissions | undefined = (
     (permData as any)?.data?.spaces ?? (permData as any)?.spaces ?? []
   ).find((s: SpacePermissions) => s.spaceId === spaceId);
@@ -190,8 +182,6 @@ function SpaceDetail() {
           levers: selectedLevers.size === LEVERS.length
             ? undefined
             : Array.from(selectedLevers).sort(),
-          deploy_target: deployTarget.trim() || undefined,
-          target_benchmark_count: benchmarkCountChanged ? targetBenchmarkCount : undefined,
         },
       },
       {
@@ -649,50 +639,9 @@ function SpaceDetail() {
               </Collapsible>
             </div>
 
-            {/* Benchmark count */}
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-muted">Benchmark questions</p>
-              <Input
-                type="number"
-                min={5}
-                max={50}
-                value={targetBenchmarkCount}
-                onChange={(e) => setTargetBenchmarkCount(Number(e.target.value))}
-                className="h-8 w-20 text-xs"
-              />
-              <p className="text-xs text-muted max-w-xs">
-                Number of benchmark questions to generate (default {DEFAULT_BENCHMARK_COUNT}).
-              </p>
-              {benchmarkCountChanged && (
-                <p className="text-xs text-amber-600 max-w-xs">
-                  <TriangleAlert className="inline h-3 w-3 mr-1" />
-                  Changing this affects results. Increasing it will increase job
-                  run time and may cause timeout issues. Reducing it may lower
-                  optimization quality.
-                </p>
-              )}
-            </div>
-
-            {/* Deployment target */}
-            <div className="space-y-2">
-              <Collapsible>
-                <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium text-muted hover:text-primary">
-                  <ChevronDown className="h-3 w-3" />
-                  Deployment target (optional)
-                </CollapsibleTrigger>
-                <CollapsibleContent className="mt-2">
-                  <Input
-                    placeholder="https://target-workspace.cloud.databricks.com"
-                    value={deployTarget}
-                    onChange={(e) => setDeployTarget(e.target.value)}
-                    className="h-8 w-72 text-xs"
-                  />
-                  <p className="mt-1 text-[10px] text-muted">
-                    Leave empty to skip cross-environment deployment.
-                  </p>
-                </CollapsibleContent>
-              </Collapsible>
-            </div>
+            <p className="text-xs text-muted max-w-md">
+              Benchmark QC uses the pipeline default 30-40 question working set and up to 3 repair sweeps. Cross-workspace deployment is not part of this runner.
+            </p>
           </div>
 
           {/* Permission alerts */}

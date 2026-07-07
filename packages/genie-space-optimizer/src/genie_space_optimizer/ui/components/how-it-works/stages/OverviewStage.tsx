@@ -8,12 +8,10 @@ import { PIPELINE_STAGES, DATA_FLOW_NODES, PIPELINE_GROUP_COLORS } from "../data
 import { Card, CardContent } from "@/components/ui/card";
 
 const STAGE_TO_GROUP: Record<string, string> = {
-  preflight: "preflight",
-  baseline: "baseline",
-  enrichment: "enrichment",
-  "lever-loop": "leverLoop",
-  finalize: "finalize",
-  deploy: "finalize",
+  intake: "preflight",
+  "benchmark-qc": "baseline",
+  optimize: "leverLoop",
+  publish: "finalize",
 };
 
 function PipelineDiagram() {
@@ -49,7 +47,7 @@ function PipelineDiagram() {
           </motion.div>
         )}
 
-        <div className="relative z-0 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="relative z-0 grid grid-cols-2 gap-3 lg:grid-cols-4">
           {PIPELINE_STAGES.map((stage, index) => {
             const groupId = STAGE_TO_GROUP[stage.id] ?? "neutral";
             const colors = PIPELINE_GROUP_COLORS[groupId] ?? PIPELINE_GROUP_COLORS.neutral;

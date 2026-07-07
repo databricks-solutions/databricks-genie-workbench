@@ -173,10 +173,8 @@ export interface TableInfo {
 }
 export interface TriggerRequest {
     apply_mode?: string;
-    deploy_target?: string | null;
     levers?: number[] | null;
     space_id: string;
-    target_benchmark_count?: number | null;
 }
 export interface TriggerResponse {
     jobRunId: string;
