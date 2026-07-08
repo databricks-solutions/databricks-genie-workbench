@@ -32,10 +32,21 @@ from genie_space_optimizer.iq_scan.scoring import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
-# Terminal GSO run statuses that indicate a completed optimization.
-# Subset of auto_optimize._TERMINAL_RUN_STATUSES — only includes statuses
-# where best_accuracy is meaningful for IQ scoring.
-_GSO_TERMINAL = {"CONVERGED", "STALLED", "MAX_ITERATIONS"}
+# Terminal GSO run statuses whose ``best_accuracy`` is meaningful for the IQ
+# header's "% benchmark accuracy". Subset of auto_optimize._TERMINAL_RUN_STATUSES.
+#
+# APPLIED is included: applying an optimization flips the run status to APPLIED
+# (integration/apply.py) while preserving best_accuracy, and the applied
+# champion IS the live config — so its measured accuracy is exactly what the
+# header should report. Omitting it was the "header shows stale pre-GSO score
+# after a successful apply" bug: the applied 90% run was skipped and the scan
+# fell back to the legacy optimization_runs baseline.
+#
+# DISCARDED is deliberately EXCLUDED: a discard reverts the live space config,
+# so the discarded run's accuracy no longer describes what's deployed — the
+# header should fall back to baseline rather than claim it.
+# FAILED / CANCELLED are excluded because best_accuracy is absent or unreliable.
+_GSO_TERMINAL = {"CONVERGED", "STALLED", "MAX_ITERATIONS", "APPLIED"}
 
 # Shared thread pool for UC metadata fetches — avoids per-scan pool churn.
 _uc_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="uc-enrich")

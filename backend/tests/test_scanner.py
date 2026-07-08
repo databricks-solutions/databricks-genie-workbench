@@ -804,3 +804,121 @@ class TestParseIdentifier:
 
     def test_empty_string(self):
         assert _parse_identifier("") == ("", "", "")
+
+
+# ---------------------------------------------------------------------------
+# scan_space: GSO run selection for the header "% benchmark accuracy"
+# ---------------------------------------------------------------------------
+
+
+class TestScanSpaceGsoSelection:
+    """The header pulls optimization_accuracy from the latest terminal GSO run's
+    best_accuracy (scan_space), NOT from the Optimize tab's per-iteration path.
+    These lock in which run statuses count — the APPLIED case is the regression
+    that showed a stale pre-GSO score after a successful apply.
+    """
+
+    @staticmethod
+    def _patch_common(monkeypatch, *, gso_runs, legacy_run=None):
+        """Stub scan_space's external reads: config fetch, UC enrichment,
+        legacy optimization_runs, GSO runs, and persistence."""
+        import backend.services.scanner as scanner
+        import backend.services.gso_lakebase as gso_lakebase
+
+        # Minimal scorable config (1 table, no benchmarks needed for accuracy).
+        space_data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
+                      "instructions": {}, "benchmarks": {"questions": []}}
+        monkeypatch.setattr(scanner, "get_serialized_space", lambda _sid: space_data)
+        # Skip UC enrichment (it's already wrapped in try/except, but make it a
+        # clean no-op so the test doesn't depend on a WorkspaceClient).
+        monkeypatch.setattr(scanner, "get_workspace_client", lambda: MagicMock(), raising=False)
+        monkeypatch.setattr(scanner, "_enrich_with_uc_descriptions", lambda *a, **k: 0)
+
+        async def _legacy(_sid):
+            return legacy_run
+        monkeypatch.setattr(scanner, "get_latest_optimization_run", _legacy)
+
+        async def _gso(_sid):
+            return list(gso_runs)
+        monkeypatch.setattr(gso_lakebase, "load_gso_runs_for_space", _gso)
+
+        async def _save(_sid, _result):
+            return None
+        monkeypatch.setattr(scanner, "save_scan_result", _save)
+
+    @pytest.mark.asyncio
+    async def test_applied_run_supplies_accuracy(self, monkeypatch):
+        """An APPLIED run's best_accuracy IS the live config — it must drive the
+        header. This is the reported bug: applying a 90% run left the header on
+        the stale legacy score."""
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[{"status": "APPLIED", "best_accuracy": 90.0,
+                       "completed_at": "2026-07-08T00:00:00Z"}],
+            legacy_run={"accuracy": 0.53},  # stale pre-GSO baseline
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.90
+
+    @pytest.mark.asyncio
+    async def test_converged_run_supplies_accuracy(self, monkeypatch):
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[{"status": "CONVERGED", "best_accuracy": 88.0,
+                       "completed_at": "2026-07-08T00:00:00Z"}],
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.88
+
+    @pytest.mark.asyncio
+    async def test_discarded_run_is_ignored(self, monkeypatch):
+        """A DISCARDED run reverted the live config, so its accuracy must NOT
+        drive the header — fall back to the legacy baseline instead."""
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[{"status": "DISCARDED", "best_accuracy": 90.0,
+                       "completed_at": "2026-07-08T00:00:00Z"}],
+            legacy_run={"accuracy": 0.53},
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.53
+
+    @pytest.mark.asyncio
+    async def test_applied_beats_older_converged(self, monkeypatch):
+        """Most-recent APPLIED run wins over an older CONVERGED run (runs arrive
+        most-recent-first)."""
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[
+                {"status": "APPLIED", "best_accuracy": 90.0, "completed_at": "2026-07-08T00:00:00Z"},
+                {"status": "CONVERGED", "best_accuracy": 70.0, "completed_at": "2026-07-01T00:00:00Z"},
+            ],
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.90
+
+    @pytest.mark.asyncio
+    async def test_fraction_scale_accuracy_not_double_normalized(self, monkeypatch):
+        """best_accuracy already on the 0–1 scale (<=1.0) is passed through, not
+        divided by 100 again."""
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[{"status": "APPLIED", "best_accuracy": 0.9,
+                       "completed_at": "2026-07-08T00:00:00Z"}],
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.90
+
+    @pytest.mark.asyncio
+    async def test_no_gso_falls_back_to_legacy(self, monkeypatch):
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch, gso_runs=[], legacy_run={"accuracy": 0.53},
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.53
