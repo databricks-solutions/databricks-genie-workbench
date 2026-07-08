@@ -170,3 +170,160 @@ def test_unified_loop_rolls_back_non_improving_candidate(monkeypatch) -> None:
     assert rolled_back and rolled_back[0][0] == 1
     assert champions == [0]
     rollback.assert_called_once()
+
+
+def test_unified_loop_retries_after_preapply_rejects_all_patches(monkeypatch) -> None:
+    writes: list[int] = []
+    patch_writes: list[tuple[int, int]] = []
+    champions: list[int] = []
+
+    monkeypatch.setattr(unified_loop, "fetch_space_config", lambda _w, _space_id: {"title": "s"})
+    monkeypatch.setattr(
+        unified_loop,
+        "_native_eval",
+        MagicMock(side_effect=[_eval_result(40.0), _eval_result(95.0)]),
+    )
+    propose = MagicMock(
+        side_effect=[
+            (
+                5,
+                "text fallback without justification",
+                [
+                    {
+                        "type": "add_instruction",
+                        "lever": 5,
+                        "new_text": "Ask for a time range when customer performance is ambiguous.",
+                    }
+                ],
+                '{"patches": [{"type": "add_instruction"}]}',
+            ),
+            (
+                1,
+                "use metadata instead",
+                [
+                    {
+                        "type": "update_description",
+                        "lever": 1,
+                        "target": "cat.sch.orders",
+                        "new_text": "Orders table for regional sales analysis.",
+                    }
+                ],
+                '{"patches": [{"type": "update_description"}]}',
+            ),
+        ]
+    )
+    monkeypatch.setattr(unified_loop, "propose_patches", propose)
+    monkeypatch.setattr(
+        unified_loop,
+        "apply_patch_set",
+        lambda *_args, **_kwargs: {
+            "patch_deployed": True,
+            "post_snapshot": {"title": "candidate"},
+            "applied": [
+                {
+                    "patch": {"type": "update_description", "lever": 1, "target": "cat.sch.orders"},
+                    "action": {"risk_level": "low", "target": "cat.sch.orders"},
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "write_iteration",
+        lambda _spark, _run_id, iteration, _eval_result, **_kwargs: writes.append(iteration),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "write_patch",
+        lambda _spark, _run_id, iteration, lever, *_args: patch_writes.append((iteration, lever)),
+    )
+    monkeypatch.setattr(unified_loop, "update_iteration_loop_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        unified_loop,
+        "mark_champion_iteration",
+        lambda _spark, _run_id, iteration, **_kwargs: champions.append(iteration),
+    )
+    monkeypatch.setattr(unified_loop, "update_run_status", lambda *_args, **_kwargs: None)
+
+    result = unified_loop.run_unified_optimization_loop(
+        MagicMock(),
+        MagicMock(),
+        run_id="run",
+        space_id="space",
+        domain="default",
+        benchmarks=[{"question": "q"}],
+        catalog="cat",
+        schema="sch",
+        levers=[1, 5],
+        max_attempts=1,
+        target_accuracy=90.0,
+    )
+
+    assert result["terminal_reason"] == "TARGET_REACHED"
+    assert result["surgical_attempts_used"] == 1
+    assert propose.call_count == 2
+    assert writes == [0, 1]
+    assert patch_writes == [(1, 1)]
+    assert champions == [1]
+    assert result["reflections"][0]["stage"] == "preapply_rejected_all_patches"
+    assert result["reflections"][0]["dropped_patch_summary"][0]["drop_reason"] == (
+        "instruction_fallback_unjustified"
+    )
+
+
+def test_unified_loop_preserves_no_hypothesis_details_after_retry(monkeypatch) -> None:
+    loop_states: list[dict] = []
+    champions: list[int] = []
+
+    monkeypatch.setattr(unified_loop, "fetch_space_config", lambda _w, _space_id: {"title": "s"})
+    monkeypatch.setattr(unified_loop, "_native_eval", MagicMock(return_value=_eval_result(40.0)))
+    propose = MagicMock(
+        return_value=(
+            None,
+            "no actionable patch",
+            [],
+            '{"rationale": "no actionable patch", "patches": []}',
+        )
+    )
+    monkeypatch.setattr(unified_loop, "propose_patches", propose)
+    apply_patch_set = MagicMock()
+    monkeypatch.setattr(unified_loop, "apply_patch_set", apply_patch_set)
+    monkeypatch.setattr(unified_loop, "write_iteration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(unified_loop, "write_patch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        unified_loop,
+        "update_iteration_loop_state",
+        lambda *_args, **kwargs: loop_states.append(kwargs["loop_state"]),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "mark_champion_iteration",
+        lambda _spark, _run_id, iteration, **_kwargs: champions.append(iteration),
+    )
+    monkeypatch.setattr(unified_loop, "update_run_status", lambda *_args, **_kwargs: None)
+
+    result = unified_loop.run_unified_optimization_loop(
+        MagicMock(),
+        MagicMock(),
+        run_id="run",
+        space_id="space",
+        domain="default",
+        benchmarks=[{"question": "q"}],
+        catalog="cat",
+        schema="sch",
+        levers=[1, 5],
+        max_attempts=1,
+        target_accuracy=90.0,
+    )
+
+    assert result["terminal_reason"] == "NO_NEW_HYPOTHESIS"
+    assert result["surgical_attempts_used"] == 0
+    assert propose.call_count == 2
+    apply_patch_set.assert_not_called()
+    assert champions == [0]
+    terminal_state = loop_states[-1]
+    assert terminal_state["current_hypothesis"]["failure_stage"] == "llm_no_supported_patches"
+    assert terminal_state["decision_reason"] == (
+        "NO_NEW_HYPOTHESIS: LLM returned no supported patches"
+    )
+    assert terminal_state["do_not_repeat"][0]["stage"] == "llm_no_supported_patches"

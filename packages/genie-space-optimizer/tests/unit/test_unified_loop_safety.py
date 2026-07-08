@@ -226,13 +226,12 @@ def test_add_example_sql_is_allowed_and_canonicalized_to_instruction_lever() -> 
     assert [p["lever"] for p in patches] == [5, 6, 5]
 
 
-def test_add_example_sql_missing_required_provenance_is_dropped() -> None:
+def test_add_example_sql_missing_question_or_sql_is_dropped() -> None:
     kept, dropped = _preapply_safety_screen(
         [
             {
                 "type": "add_example_sql",
                 "example_question": "How much sales came from each territory last month?",
-                "example_sql": "SELECT region, SUM(amount) FROM orders GROUP BY region",
             }
         ],
         current_config=_config(),
@@ -246,7 +245,34 @@ def test_add_example_sql_missing_required_provenance_is_dropped() -> None:
 
     assert kept == []
     assert dropped[0]["drop_reason"] == "example_sql_contract_failed"
-    assert "usage_guidance" in dropped[0]["drop_detail"]
+    assert "example_sql" in dropped[0]["drop_detail"]
+
+
+def test_add_example_sql_missing_provenance_is_repaired() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "add_example_sql",
+                "example_question": "How much sales came from each territory last month?",
+                "example_sql": (
+                    "SELECT region, SUM(amount) AS sales_amount "
+                    "FROM orders GROUP BY region ORDER BY sales_amount DESC LIMIT 5"
+                ),
+            }
+        ],
+        current_config=_config(),
+        benchmarks=[],
+        eval_result=_eval_result(),
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert dropped == []
+    assert kept[0]["provenance_repaired"] is True
+    assert kept[0]["affected_qids"] == ["q1"]
+    assert "usage_guidance" in kept[0]
 
 
 def test_add_example_sql_copying_benchmark_qa_is_dropped() -> None:

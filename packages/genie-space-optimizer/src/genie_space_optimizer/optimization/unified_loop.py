@@ -95,6 +95,8 @@ _TEXT_INSTRUCTION_PATCH_TYPES: frozenset[str] = frozenset(
 
 _EXAMPLE_SQL_PATCH_TYPES: frozenset[str] = frozenset({"add_example_sql"})
 
+_MAX_PROPOSAL_RECOVERY_RETRIES = 1
+
 
 def target_accuracy_percent(value: float) -> float:
     """Normalize a job target to the 0-100 scale used by eval rows."""
@@ -923,30 +925,71 @@ def _validate_example_sql_patch(
     patch: dict[str, Any],
     *,
     benchmark_corpus: BenchmarkCorpus,
+    eval_result: dict[str, Any] | None = None,
     w: Any,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     patch_type = str(patch.get("type") or "")
     if patch_type not in _EXAMPLE_SQL_PATCH_TYPES:
         return patch, None
 
-    required = (
+    required_core = (
         "example_question",
         "example_sql",
+    )
+    missing_core = [field for field in required_core if patch.get(field) in (None, "", [])]
+    if missing_core:
+        dropped = dict(patch)
+        dropped["drop_reason"] = "example_sql_contract_failed"
+        dropped["drop_detail"] = f"missing required fields: {', '.join(missing_core)}"
+        return None, dropped
+
+    clean = dict(patch)
+    required_provenance = (
         "usage_guidance",
         "source_failure_pattern",
         "affected_qids",
         "semantic_delta_from_benchmark",
         "why_not_benchmark_copy",
     )
-    missing = [field for field in required if patch.get(field) in (None, "", [])]
-    if missing:
-        dropped = dict(patch)
-        dropped["drop_reason"] = "example_sql_contract_failed"
-        dropped["drop_detail"] = f"missing required fields: {', '.join(missing)}"
-        return None, dropped
+    missing_provenance = [
+        field for field in required_provenance if clean.get(field) in (None, "", [])
+    ]
+    if missing_provenance:
+        failures = _failure_rows(eval_result or {}, limit=5)
+        failure_qids = [
+            str(f.get("question_id"))
+            for f in failures
+            if f.get("question_id")
+        ]
+        defaults = {
+            "usage_guidance": (
+                clean.get("instruction")
+                or "Use as a generalized adjacent SQL construction example."
+            ),
+            "source_failure_pattern": (
+                clean.get("rationale")
+                or "Inferred from residual benchmark failures."
+            ),
+            "affected_qids": failure_qids or ["unknown"],
+            "semantic_delta_from_benchmark": (
+                "Optimizer LLM omitted this provenance field; retained only "
+                "after benchmark leakage checks."
+            ),
+            "why_not_benchmark_copy": (
+                "Optimizer LLM omitted this provenance field; retained only "
+                "after deterministic and fuzzy benchmark leakage checks."
+            ),
+        }
+        for field in missing_provenance:
+            clean[field] = defaults[field]
+        clean["provenance_repaired"] = True
+        clean["provenance_repair_detail"] = (
+            "filled missing add_example_sql provenance fields: "
+            + ", ".join(missing_provenance)
+        )
 
     leak, reason = is_benchmark_leak(
-        patch,
+        clean,
         patch_type,
         benchmark_corpus,
         w=w,
@@ -957,7 +1000,7 @@ def _validate_example_sql_patch(
         dropped["drop_detail"] = reason
         return None, dropped
 
-    return patch, None
+    return clean, None
 
 
 def _validate_text_instruction_fallback(
@@ -1082,6 +1125,55 @@ def _validate_unified_sql_snippet_patch(
     return clean, None
 
 
+def _dropped_patch_summary(patches: list[dict[str, Any]], *, limit: int = 8) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for patch in patches[:limit]:
+        if not isinstance(patch, dict):
+            continue
+        item = {
+            "type": patch.get("type") or patch.get("patch_type"),
+            "drop_reason": patch.get("drop_reason"),
+            "drop_detail": patch.get("drop_detail"),
+        }
+        for key in ("target", "table", "column", "snippet_type"):
+            if patch.get(key):
+                item[key] = patch.get(key)
+        summary.append({k: v for k, v in item.items() if v not in (None, "", [])})
+    return summary
+
+
+def _proposal_failure_reflection(
+    *,
+    iteration: int,
+    stage: str,
+    rationale: str,
+    hypothesis: dict[str, Any],
+    dropped_patches: list[dict[str, Any]] | None = None,
+    apply_log: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    reflection = {
+        "iteration": iteration,
+        "decision": "proposal_rejected",
+        "stage": stage,
+        "rationale": rationale,
+        "hypothesis": hypothesis,
+        "guidance": (
+            "Propose a different patch set that satisfies patch_rules. "
+            "Prefer metadata/synonyms or structured behavioral patches over "
+            "text instructions. Do not repeat rejected patches unless the "
+            "drop reason is fixed."
+        ),
+    }
+    if dropped_patches:
+        reflection["dropped_patch_summary"] = _dropped_patch_summary(dropped_patches)
+    if apply_log:
+        reflection["apply_error"] = apply_log.get("patch_error")
+        reflection["apply_dropped_patch_summary"] = _dropped_patch_summary(
+            list(apply_log.get("dropped_patches") or [])
+        )
+    return reflection
+
+
 def _preapply_safety_screen(
     patches: list[dict[str, Any]],
     *,
@@ -1127,6 +1219,7 @@ def _preapply_safety_screen(
         validated, validation_drop = _validate_example_sql_patch(
             patch,
             benchmark_corpus=example_sql_corpus,
+            eval_result=eval_result,
             w=w,
         )
         if validation_drop is not None:
@@ -1303,7 +1396,28 @@ def _stamp_terminal(
     config: dict[str, Any],
     catalog: str,
     schema: str,
+    current_hypothesis: dict[str, Any] | None = None,
+    do_not_repeat: list[dict[str, Any]] | None = None,
+    decision_reason: str | None = None,
 ) -> None:
+    loop_state = _loop_state(
+        attempt_no=iteration,
+        attempt_mode="baseline" if iteration == 0 else "llm_patch",
+        best_accuracy=best_accuracy,
+        current_hypothesis=current_hypothesis,
+        decision="terminal",
+        decision_reason=decision_reason or reason,
+        surgical_attempts_used=surgical_attempts_used,
+        target_accuracy=target_accuracy,
+        max_attempts=max_attempts,
+        terminal_reason=reason,
+        config=config,
+        do_not_repeat=do_not_repeat,
+    )
+    if current_hypothesis is None:
+        loop_state.pop("current_hypothesis", None)
+    if do_not_repeat is None:
+        loop_state.pop("do_not_repeat", None)
     update_iteration_loop_state(
         spark,
         run_id,
@@ -1311,18 +1425,7 @@ def _stamp_terminal(
         catalog=catalog,
         schema=schema,
         eval_scope=FULL,
-        loop_state=_loop_state(
-            attempt_no=iteration,
-            attempt_mode="baseline" if iteration == 0 else "llm_patch",
-            best_accuracy=best_accuracy,
-            decision="terminal",
-            decision_reason=reason,
-            surgical_attempts_used=surgical_attempts_used,
-            target_accuracy=target_accuracy,
-            max_attempts=max_attempts,
-            terminal_reason=reason,
-            config=config,
-        ),
+        loop_state=loop_state,
     )
     mark_champion_iteration(
         spark,
@@ -1472,77 +1575,136 @@ def run_unified_optimization_loop(
     levers_accepted: list[int] = []
     levers_rolled_back: list[int] = []
     terminal_reason: str | None = None
+    last_failed_hypothesis: dict[str, Any] | None = None
+    last_terminal_detail = ""
 
-    for iteration in range(1, max_attempts + 1):
-        attempts_used = iteration
-        lever, rationale, patches, raw_response = propose_patches(
-            w,
-            allowed_levers=allowed_levers,
-            current_config=current_config,
-            eval_result=best_eval,
-            reflections=reflections,
-            catalog=catalog,
-            schema=schema,
-        )
-        hypothesis = {
-            "lever": lever,
-            "rationale": rationale,
-            "proposed_patch_count": len(patches),
-            "patch_count": len(patches),
-            "raw_response_preview": raw_response[:1000],
-        }
-        if not patches or lever is None:
-            terminal_reason = "NO_NEW_HYPOTHESIS"
-            reflections.append(
-                {
-                    "iteration": iteration,
-                    "decision": terminal_reason,
-                    "rationale": rationale,
-                }
+    while attempts_used < max_attempts:
+        iteration = attempts_used + 1
+        proposal_retries = 0
+        lever: int | None = None
+        rationale = ""
+        patches: list[dict[str, Any]] = []
+        preapply_dropped: list[dict[str, Any]] = []
+        apply_log: dict[str, Any] = {}
+        applied_entries: list[dict[str, Any]] = []
+        hypothesis: dict[str, Any] = {}
+
+        while True:
+            lever, rationale, patches, raw_response = propose_patches(
+                w,
+                allowed_levers=allowed_levers,
+                current_config=current_config,
+                eval_result=best_eval,
+                reflections=reflections,
+                catalog=catalog,
+                schema=schema,
             )
+            hypothesis = {
+                "lever": lever,
+                "rationale": rationale,
+                "proposed_patch_count": len(patches),
+                "patch_count": len(patches),
+                "proposal_retry": proposal_retries,
+                "raw_response_preview": raw_response[:1000],
+            }
+            if not patches or lever is None:
+                hypothesis["failure_stage"] = "llm_no_supported_patches"
+                reflection = _proposal_failure_reflection(
+                    iteration=iteration,
+                    stage="llm_no_supported_patches",
+                    rationale=rationale,
+                    hypothesis=hypothesis,
+                )
+                reflections.append(reflection)
+                last_failed_hypothesis = hypothesis
+                last_terminal_detail = "LLM returned no supported patches"
+                if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
+                    proposal_retries += 1
+                    continue
+                terminal_reason = "NO_NEW_HYPOTHESIS"
+                break
+
+            patches, preapply_dropped = _preapply_safety_screen(
+                patches,
+                current_config=current_config,
+                benchmarks=benchmarks,
+                eval_result=best_eval,
+                spark=spark,
+                catalog=catalog,
+                schema=schema,
+                w=w,
+            )
+            hypothesis["patch_count"] = len(patches)
+            hypothesis["preapply_dropped_count"] = len(preapply_dropped)
+            if preapply_dropped:
+                hypothesis["preapply_dropped_reasons"] = [
+                    p.get("drop_reason") for p in preapply_dropped
+                ]
+                hypothesis["preapply_dropped_summary"] = _dropped_patch_summary(
+                    preapply_dropped
+                )
+            if not patches:
+                hypothesis["failure_stage"] = "preapply_rejected_all_patches"
+                reflection = _proposal_failure_reflection(
+                    iteration=iteration,
+                    stage="preapply_rejected_all_patches",
+                    rationale=rationale,
+                    hypothesis=hypothesis,
+                    dropped_patches=preapply_dropped,
+                )
+                reflections.append(reflection)
+                last_failed_hypothesis = hypothesis
+                last_terminal_detail = "all proposed patches were rejected before apply"
+                if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
+                    proposal_retries += 1
+                    continue
+                terminal_reason = "NO_NEW_HYPOTHESIS"
+                break
+
+            apply_log = apply_patch_set(
+                w,
+                space_id,
+                patches,
+                current_config,
+                apply_mode=apply_mode,
+                benchmark_corpus=benchmark_corpus,
+            )
+            if preapply_dropped:
+                apply_log["dropped_patches"] = preapply_dropped + list(
+                    apply_log.get("dropped_patches") or []
+                )
+            applied_entries = list(apply_log.get("applied") or [])
+            if not apply_log.get("patch_deployed") or not applied_entries:
+                hypothesis["failure_stage"] = "apply_deployed_no_patches"
+                hypothesis["apply_dropped_patch_summary"] = _dropped_patch_summary(
+                    list(apply_log.get("dropped_patches") or [])
+                )
+                reflection = _proposal_failure_reflection(
+                    iteration=iteration,
+                    stage="apply_deployed_no_patches",
+                    rationale=rationale or str(apply_log.get("patch_error") or ""),
+                    hypothesis=hypothesis,
+                    apply_log=apply_log,
+                )
+                reflections.append(reflection)
+                last_failed_hypothesis = hypothesis
+                last_terminal_detail = (
+                    str(apply_log.get("patch_error") or "")
+                    or "applier deployed no patches"
+                )
+                if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
+                    proposal_retries += 1
+                    continue
+                terminal_reason = "NO_NEW_HYPOTHESIS"
+                break
+
             break
 
-        patches, preapply_dropped = _preapply_safety_screen(
-            patches,
-            current_config=current_config,
-            benchmarks=benchmarks,
-            eval_result=best_eval,
-            spark=spark,
-            catalog=catalog,
-            schema=schema,
-            w=w,
-        )
-        if not patches:
-            terminal_reason = "NO_NEW_HYPOTHESIS"
-            reflections.append(
-                {
-                    "iteration": iteration,
-                    "decision": terminal_reason,
-                    "rationale": rationale,
-                    "dropped_patches": preapply_dropped,
-                }
-            )
+        if terminal_reason is not None:
             break
-        hypothesis["patch_count"] = len(patches)
-        hypothesis["preapply_dropped_count"] = len(preapply_dropped)
-        if preapply_dropped:
-            hypothesis["preapply_dropped_reasons"] = [
-                p.get("drop_reason") for p in preapply_dropped
-            ]
 
-        apply_log = apply_patch_set(
-            w,
-            space_id,
-            patches,
-            current_config,
-            apply_mode=apply_mode,
-            benchmark_corpus=benchmark_corpus,
-        )
-        if preapply_dropped:
-            apply_log["dropped_patches"] = preapply_dropped + list(
-                apply_log.get("dropped_patches") or []
-            )
-        applied_entries = apply_log.get("applied") or []
+        attempts_used += 1
+        iteration = attempts_used
         for idx, entry in enumerate(applied_entries):
             patch_lever = int(entry.get("patch", {}).get("lever", lever) or lever)
             write_patch(
@@ -1555,18 +1717,6 @@ def run_unified_optimization_loop(
                 catalog,
                 schema,
             )
-
-        if not apply_log.get("patch_deployed") or not applied_entries:
-            terminal_reason = "NO_NEW_HYPOTHESIS"
-            reflections.append(
-                {
-                    "iteration": iteration,
-                    "decision": terminal_reason,
-                    "rationale": rationale or apply_log.get("patch_error"),
-                    "dropped_patches": apply_log.get("dropped_patches") or [],
-                }
-            )
-            break
 
         candidate_config = copy.deepcopy(apply_log.get("post_snapshot") or current_config)
         candidate_eval = _native_eval(
@@ -1748,6 +1898,17 @@ def run_unified_optimization_loop(
         config=current_config,
         catalog=catalog,
         schema=schema,
+        current_hypothesis=(
+            last_failed_hypothesis if terminal_reason == "NO_NEW_HYPOTHESIS" else None
+        ),
+        do_not_repeat=(
+            reflections[-5:] if terminal_reason == "NO_NEW_HYPOTHESIS" else None
+        ),
+        decision_reason=(
+            f"{terminal_reason}: {last_terminal_detail}"
+            if terminal_reason == "NO_NEW_HYPOTHESIS" and last_terminal_detail
+            else terminal_reason
+        ),
     )
 
     return {
