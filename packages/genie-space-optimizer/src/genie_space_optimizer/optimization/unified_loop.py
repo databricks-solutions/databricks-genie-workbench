@@ -97,6 +97,20 @@ _EXAMPLE_SQL_PATCH_TYPES: frozenset[str] = frozenset({"add_example_sql"})
 
 _MAX_PROPOSAL_RECOVERY_RETRIES = 1
 
+_METADATA_PATCH_TYPES: frozenset[str] = frozenset(
+    {"update_description", "update_column_description", "add_column_synonym"}
+)
+
+_STRUCTURED_BEHAVIOR_REASON_MARKERS: tuple[str, ...] = (
+    "MISSING_COLUMNS",
+    "INCOMPLETE_OR_PARTIAL_OUTPUT",
+    "MISSING_OR_INCORRECT_FILTER",
+    "INCORRECT_FILTER",
+    "INCORRECT_METRIC",
+    "INCORRECT_FUNCTION",
+    "FUNCTION_USAGE",
+)
+
 
 def target_accuracy_percent(value: float) -> float:
     """Normalize a job target to the 0-100 scale used by eval rows."""
@@ -1003,22 +1017,26 @@ def _validate_example_sql_patch(
     return clean, None
 
 
-def _validate_text_instruction_fallback(
+def _validate_text_instruction_routing(
     patch: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     patch_type = str(patch.get("type") or "")
     if patch_type not in _TEXT_INSTRUCTION_PATCH_TYPES:
         return patch, None
 
-    rejected = patch.get("rejected_patch_types")
-    if not isinstance(rejected, list) or not rejected:
+    evidence = patch.get("routing_evidence")
+    if evidence is None:
+        evidence = patch.get("rejected_patch_types")
+    if not isinstance(evidence, list) or not evidence:
         dropped = dict(patch)
-        dropped["drop_reason"] = "instruction_fallback_unjustified"
-        dropped["drop_detail"] = "missing non-empty rejected_patch_types"
+        dropped["drop_reason"] = "instruction_routing_unjustified"
+        dropped["drop_detail"] = (
+            "missing non-empty routing_evidence"
+        )
         return None, dropped
 
     invalid_indexes: list[str] = []
-    for idx, item in enumerate(rejected):
+    for idx, item in enumerate(evidence):
         if (
             not isinstance(item, dict)
             or not str(item.get("type") or "").strip()
@@ -1027,13 +1045,15 @@ def _validate_text_instruction_fallback(
             invalid_indexes.append(str(idx))
     if invalid_indexes:
         dropped = dict(patch)
-        dropped["drop_reason"] = "instruction_fallback_unjustified"
+        dropped["drop_reason"] = "instruction_routing_unjustified"
         dropped["drop_detail"] = (
-            "invalid rejected_patch_types entries: " + ", ".join(invalid_indexes)
+            "invalid routing_evidence entries: " + ", ".join(invalid_indexes)
         )
         return None, dropped
 
-    return patch, None
+    clean = dict(patch)
+    clean.setdefault("routing_evidence", evidence)
+    return clean, None
 
 
 def _validate_unified_sql_snippet_patch(
@@ -1142,6 +1162,75 @@ def _dropped_patch_summary(patches: list[dict[str, Any]], *, limit: int = 8) -> 
     return summary
 
 
+def _patch_type_list(patches: list[dict[str, Any]]) -> list[str]:
+    return [
+        str(p.get("type") or p.get("patch_type") or "")
+        for p in patches
+        if isinstance(p, dict) and (p.get("type") or p.get("patch_type"))
+    ]
+
+
+def _is_metadata_only_patch_set(patches: list[dict[str, Any]]) -> bool:
+    patch_types = _patch_type_list(patches)
+    return bool(patch_types) and all(pt in _METADATA_PATCH_TYPES for pt in patch_types)
+
+
+def _residual_failures_need_structured_behavior(eval_result: dict[str, Any]) -> bool:
+    rows = eval_result.get("rows")
+    if not isinstance(rows, list):
+        return False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("assessment") or "").upper() == "GOOD":
+            continue
+        reasons = row.get("assessment_reasons")
+        genie_eval = row.get("genie_equivalent_eval")
+        if not reasons and isinstance(genie_eval, dict):
+            reasons = genie_eval.get("assessment_reasons")
+        if not isinstance(reasons, list):
+            continue
+        reason_text = " ".join(str(r or "").upper() for r in reasons)
+        if any(marker in reason_text for marker in _STRUCTURED_BEHAVIOR_REASON_MARKERS):
+            return True
+    return False
+
+
+def _recent_metadata_only_attempt(reflections: list[dict[str, Any]]) -> bool:
+    for reflection in reversed(reflections[-3:]):
+        if not isinstance(reflection, dict):
+            continue
+        if reflection.get("patch_family") == "metadata_only":
+            return True
+    return False
+
+
+def _reject_repeated_metadata_only_patch_set(
+    patches: list[dict[str, Any]],
+    *,
+    eval_result: dict[str, Any],
+    reflections: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not _is_metadata_only_patch_set(patches):
+        return patches, []
+    if not _recent_metadata_only_attempt(reflections):
+        return patches, []
+    if not _residual_failures_need_structured_behavior(eval_result):
+        return patches, []
+
+    dropped: list[dict[str, Any]] = []
+    for patch in patches:
+        clean = dict(patch)
+        clean["drop_reason"] = "metadata_repeat_without_structured_behavior"
+        clean["drop_detail"] = (
+            "A prior metadata-only attempt already ran, while residual failures "
+            "still indicate SQL behavior issues. Use join specs, SQL snippets/"
+            "expressions, or generalized example SQL instead."
+        )
+        dropped.append(clean)
+    return [], dropped
+
+
 def _proposal_failure_reflection(
     *,
     iteration: int,
@@ -1159,9 +1248,9 @@ def _proposal_failure_reflection(
         "hypothesis": hypothesis,
         "guidance": (
             "Propose a different patch set that satisfies patch_rules. "
-            "Prefer metadata/synonyms or structured behavioral patches over "
-            "text instructions. Do not repeat rejected patches unless the "
-            "drop reason is fixed."
+            "Choose the patch type by failure mode and the narrowest config "
+            "surface that directly changes the failing behavior. Do not "
+            "repeat rejected patches unless the drop reason is fixed."
         ),
     }
     if dropped_patches:
@@ -1208,7 +1297,7 @@ def _preapply_safety_screen(
             dropped.append(dropped_patch)
             continue
 
-        validated, validation_drop = _validate_text_instruction_fallback(patch)
+        validated, validation_drop = _validate_text_instruction_routing(patch)
         if validation_drop is not None:
             dropped.append(validation_drop)
             continue
@@ -1643,6 +1732,22 @@ def run_unified_optimization_loop(
                 hypothesis["preapply_dropped_summary"] = _dropped_patch_summary(
                     preapply_dropped
                 )
+            if patches:
+                patches, metadata_dropped = _reject_repeated_metadata_only_patch_set(
+                    patches,
+                    eval_result=best_eval,
+                    reflections=reflections,
+                )
+                if metadata_dropped:
+                    preapply_dropped.extend(metadata_dropped)
+                    hypothesis["patch_count"] = len(patches)
+                    hypothesis["preapply_dropped_count"] = len(preapply_dropped)
+                    hypothesis["preapply_dropped_reasons"] = [
+                        p.get("drop_reason") for p in preapply_dropped
+                    ]
+                    hypothesis["preapply_dropped_summary"] = _dropped_patch_summary(
+                        preapply_dropped
+                    )
             if not patches:
                 hypothesis["failure_stage"] = "preapply_rejected_all_patches"
                 reflection = _proposal_failure_reflection(
@@ -1660,6 +1765,11 @@ def run_unified_optimization_loop(
                     continue
                 terminal_reason = "NO_NEW_HYPOTHESIS"
                 break
+
+            hypothesis["patch_types"] = _patch_type_list(patches)
+            hypothesis["patch_family"] = (
+                "metadata_only" if _is_metadata_only_patch_set(patches) else "mixed_or_structured"
+            )
 
             apply_log = apply_patch_set(
                 w,
@@ -1820,15 +1930,23 @@ def run_unified_optimization_loop(
                 best_iteration=best_iteration,
                 best_accuracy=best_accuracy,
             )
-            reflections.append(
-                {
-                    "iteration": iteration,
-                    "decision": "accepted",
-                    "lever": lever,
-                    "accuracy": candidate_accuracy,
-                    "rationale": rationale,
-                }
-            )
+            accepted_reflection = {
+                "iteration": iteration,
+                "decision": "accepted",
+                "lever": lever,
+                "accuracy": candidate_accuracy,
+                "rationale": rationale,
+                "patch_types": hypothesis.get("patch_types", []),
+                "patch_family": hypothesis.get("patch_family"),
+            }
+            if hypothesis.get("patch_family") == "metadata_only":
+                accepted_reflection["next_guidance"] = (
+                    "A metadata-only attempt has already run. If residual "
+                    "failures still show missing columns, incorrect filters, "
+                    "metric/function errors, ranking/windowing, or output-shape "
+                    "issues, use structured behavioral patches next."
+                )
+            reflections.append(accepted_reflection)
             if best_accuracy >= target_accuracy:
                 terminal_reason = "TARGET_REACHED"
                 break
@@ -1880,6 +1998,8 @@ def run_unified_optimization_loop(
                 "accuracy": candidate_accuracy,
                 "reason": reason,
                 "rationale": rationale,
+                "patch_types": hypothesis.get("patch_types", []),
+                "patch_family": hypothesis.get("patch_family"),
             }
         )
 

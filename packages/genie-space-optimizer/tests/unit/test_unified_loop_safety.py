@@ -345,7 +345,7 @@ def test_novel_add_example_sql_with_required_provenance_survives() -> None:
     assert [p["type"] for p in kept] == ["add_example_sql"]
 
 
-def test_instruction_patch_without_rejected_patch_types_is_dropped() -> None:
+def test_instruction_patch_without_routing_evidence_is_dropped() -> None:
     kept, dropped = _preapply_safety_screen(
         [
             {
@@ -364,17 +364,17 @@ def test_instruction_patch_without_rejected_patch_types_is_dropped() -> None:
     )
 
     assert kept == []
-    assert dropped[0]["drop_reason"] == "instruction_fallback_unjustified"
+    assert dropped[0]["drop_reason"] == "instruction_routing_unjustified"
 
 
-def test_instruction_patch_with_rejected_patch_types_survives() -> None:
+def test_instruction_patch_with_routing_evidence_survives() -> None:
     kept, dropped = _preapply_safety_screen(
         [
             {
                 "type": "update_instruction_section",
                 "section": "DISAMBIGUATION",
                 "new_text": "Ask for a time range when customer performance is ambiguous.",
-                "rejected_patch_types": [
+                "routing_evidence": [
                     {
                         "type": "metadata/synonyms",
                         "reason": "No table or column terminology is ambiguous.",
@@ -397,3 +397,4 @@ def test_instruction_patch_with_rejected_patch_types_survives() -> None:
 
     assert dropped == []
     assert [p["type"] for p in kept] == ["update_instruction_section"]
+    assert kept[0]["routing_evidence"][0]["type"] == "metadata/synonyms"

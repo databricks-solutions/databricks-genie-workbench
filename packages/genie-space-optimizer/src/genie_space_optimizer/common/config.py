@@ -3959,23 +3959,25 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
             "synonyms": "required list for add_sql_snippet_* patches",
             "target_table": "required for add_sql_snippet_* patches",
             "snippet_type": "measure | filter | expression for add_sql_snippet_* patches",
-            "rejected_patch_types": (
+            "routing_evidence": (
                 "required for add_instruction/update_instruction_section; "
-                "array of {type, reason} explaining why metadata, joins, "
-                "SQL snippets/expressions, or example SQL cannot solve it"
+                "array of {type, reason} documenting considered config surfaces "
+                "and why text guidance is the direct fit"
             ),
         }
     ],
 }
 
 UNIFIED_OPTIMIZER_PATCH_RULES = [
-    "Patch selection has three tiers. Tier 1: use metadata/synonym patches for table choice, column meaning, value/entity matching, or ambiguous terminology.",
-    "Tier 2: use the best matching structured behavioral patch. add_join_spec/update_join_spec are for wrong or missing joins; add_sql_snippet_* is for reusable metrics, filters, dimensions, or formulas; add_example_sql is for multi-step SQL patterns, output shape, ranking/windowing, or ambiguous SQL construction.",
-    "Tier 3: use add_instruction/update_instruction_section only as a last resort for cross-cutting guidance that cannot be represented by metadata, joins, SQL snippets/expressions, or example SQL.",
-    "For add_instruction/update_instruction_section, include non-empty rejected_patch_types with reasons for every applicable structured alternative you rejected.",
+    "Patch selection uses failure-mode routing. Use metadata/synonym patches when the failure is table choice, column meaning, value/entity matching, or ambiguous terminology.",
+    "Do not use table/column descriptions to fix SQL-construction failures such as missing output columns, formulas, filters, grouping, ordering, ranking/windowing, percentile functions, CASE logic, or rounding.",
+    "Use join specs, SQL snippets/expressions, or example SQL when the failure is caused by SQL construction behavior such as joins, filters, formulas, grouping, ordering, ranking/windowing, output shape, or multi-step query patterns.",
+    "Join specs, SQL snippets/expressions, and example SQL are peer options. Pick the one whose shape matches the failure mode; do not choose descriptions for non-metadata failures.",
+    "Use add_instruction/update_instruction_section for cross-cutting behavioral guidance, clarification behavior, safety/constraints, summary behavior, or business rules that are not naturally represented as metadata, joins, snippets, or examples.",
+    "For add_instruction/update_instruction_section, include non-empty routing_evidence with reasons documenting the config surfaces you considered and why text guidance is the direct fit.",
     "Use update_description for table descriptions.",
     "Use update_column_description with table and column for column descriptions.",
-    "Use update_instruction_section only for narrow last-resort instruction changes; use Markdown ## sections when adding text.",
+    "Use update_instruction_section for narrow instruction changes; use Markdown ## sections when adding text.",
     "Use add_join_spec only when the relationship is clear and include a relationship annotation.",
     "Use add_example_sql only for generalized adjacent examples. Do not copy benchmark question text, expected SQL, generated SQL, aliases, output column names, or exact output shape.",
     "Do not propose update_example_sql from benchmark SQL.",
