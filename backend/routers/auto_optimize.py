@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -188,6 +189,28 @@ def _delta_query(sql: str, *, strict: bool = False) -> list[dict]:
             raise
         logger.warning("Delta query failed: %s", exc, exc_info=True)
         return []
+
+
+_T = TypeVar("_T")
+
+
+async def _offload(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+    """Run a blocking callable on a worker thread so it never stalls the loop.
+
+    The GSO read path is entirely synchronous — every ``_delta_query`` blocks
+    on a SQL-Warehouse ``execute_statement`` (up to ``wait_timeout``), and the
+    Jobs-API progress read blocks on a control-plane RPC. These were being
+    called directly inside ``async def`` handlers, so the single asyncio event
+    loop serialized all six monitoring polls (~15 warehouse statements every
+    5s) onto one thread. Wrapping each blocking call in ``asyncio.to_thread``
+    restores concurrency: independent polls now overlap instead of queueing.
+    """
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+async def _delta_query_async(sql: str, *, strict: bool = False) -> list[dict]:
+    """Async wrapper around the blocking ``_delta_query`` (off the event loop)."""
+    return await _offload(_delta_query, sql, strict=strict)
 
 
 def _delta_table(name: str) -> str:
@@ -1345,6 +1368,28 @@ _STEP_DEFINITIONS = [
 
 _TOTAL_STEPS = len(_STEP_DEFINITIONS)  # 4-task DAG
 
+# Databricks Job task_key → 4-task rail step. The job's `databricks.yml` tasks
+# map 1:1 to the rail (intake → QC → optimize → publish), so the Jobs API's
+# native per-task lifecycle state is the authoritative, low-latency progress
+# signal — it does NOT depend on the notebook's Delta `write_stage` rows
+# becoming visible through the SQL-Warehouse read path (the serverless-write →
+# warehouse-read gap that froze the rail at "0/4 · Intake & Snapshot"). Keys
+# must match `packages/genie-space-optimizer/databricks.yml` exactly.
+_JOB_TASK_KEY_TO_STEP: dict[str, dict[str, Any]] = {
+    "intake_and_snapshot":     _STEP_DEFINITIONS[0],
+    "benchmark_qc_and_repair": _STEP_DEFINITIONS[1],
+    "optimize":                _STEP_DEFINITIONS[2],
+    "publish_and_audit":       _STEP_DEFINITIONS[3],
+}
+
+# databricks.sdk RunLifeCycleState values (jobs.RunLifeCycleState) that mean a
+# task has finished — used to count completed rail steps. A TERMINATED task is
+# "done" regardless of result (result_state disambiguates success/failure);
+# SKIPPED/INTERNAL_ERROR are terminal too.
+_JOB_TASK_TERMINAL_LIFECYCLES = frozenset({"TERMINATED", "SKIPPED", "INTERNAL_ERROR"})
+# Lifecycle values that mean the task is the one actively executing.
+_JOB_TASK_RUNNING_LIFECYCLES = frozenset({"RUNNING", "TERMINATING"})
+
 # Step-name → semantic builder kind for the current 4-task UI buckets.
 _INTAKE_STEP_NAMES = {"Intake & Snapshot"}
 _QC_STEP_NAMES = {"Benchmark QC & Repair"}
@@ -1471,6 +1516,86 @@ def _derive_pipeline_step_statuses(
     return statuses
 
 
+def _extract_lifecycle(state: Any) -> str:
+    """Return the RunLifeCycleState name (e.g. 'RUNNING') from a RunState.
+
+    SDK enums stringify as ``RunLifeCycleState.RUNNING``; older/raw shapes may
+    already be a bare string. Split on '.' and upper-case so both work.
+    """
+    if state is None:
+        return ""
+    lc = getattr(state, "life_cycle_state", None)
+    if lc is None:
+        return ""
+    return str(lc).split(".")[-1].upper()
+
+
+def _job_task_progress(run: dict) -> tuple[int, str | None] | None:
+    """Derive (steps_completed, current_step_name) from the Databricks Jobs API.
+
+    Reads the job run's per-task lifecycle state — the authoritative,
+    low-latency progress signal that the 4-task rail needs — and maps each
+    task_key to its rail step via ``_JOB_TASK_KEY_TO_STEP``. This bypasses the
+    serialized-Delta-write → SQL-Warehouse-read gap that leaves the stage table
+    empty for minutes, so the rail advances the instant a task starts/finishes.
+
+    Returns ``None`` (caller falls back to the Delta-stage derivation) when:
+      • the run has no ``job_run_id`` yet (pre-submit / legacy run), or
+      • the Jobs API read fails, or
+      • the run reports no tasks (returns None so we don't clobber a good Delta
+        derivation with an all-pending "0/4").
+
+    Completed = tasks in a terminal lifecycle. Current = the lowest-ordered
+    task that is RUNNING; if none is running but the run is still active, the
+    next not-yet-terminal task in DAG order is surfaced as current.
+    """
+    job_run_id = run.get("job_run_id")
+    if not job_run_id:
+        return None
+    try:
+        sp_ws = get_service_principal_client()
+        job_run = sp_ws.jobs.get_run(run_id=int(job_run_id))
+    except Exception as exc:
+        logger.info(
+            "gso.status.job_progress_read_failed run=%s job_run=%s err=%s",
+            run.get("run_id"), job_run_id, str(exc)[:160],
+        )
+        return None
+
+    tasks = getattr(job_run, "tasks", None) or []
+    # Collapse to lifecycle-by-step (a task_key appears once per run).
+    lifecycle_by_step: dict[int, str] = {}
+    for t in tasks:
+        step_def = _JOB_TASK_KEY_TO_STEP.get(str(getattr(t, "task_key", "") or ""))
+        if not step_def:
+            continue
+        lifecycle_by_step[int(step_def["stepNumber"])] = _extract_lifecycle(
+            getattr(t, "state", None)
+        )
+    if not lifecycle_by_step:
+        return None
+
+    steps_completed = sum(
+        1 for lc in lifecycle_by_step.values()
+        if lc in _JOB_TASK_TERMINAL_LIFECYCLES
+    )
+
+    # Current step: prefer an actively-RUNNING task (lowest step number wins if
+    # more than one somehow reports running); else, for a still-active run, the
+    # next non-terminal step in DAG order.
+    current_step_name: str | None = None
+    for step_num in sorted(lifecycle_by_step):
+        if lifecycle_by_step[step_num] in _JOB_TASK_RUNNING_LIFECYCLES:
+            current_step_name = _STEP_DEFINITIONS[step_num - 1]["name"]
+            break
+    if current_step_name is None:
+        run_status = str(run.get("status", "")).upper()
+        if run_status not in _TERMINAL_RUN_STATUSES and steps_completed < _TOTAL_STEPS:
+            current_step_name = _STEP_DEFINITIONS[steps_completed]["name"]
+
+    return steps_completed, current_step_name
+
+
 def _map_stages_to_steps(
     stages: list[dict], run: dict, iterations: list[dict],
 ) -> list[dict]:
@@ -1515,7 +1640,7 @@ async def get_run(run_id: RunId):
     """Get full run detail including stages, iterations, levers, and patches."""
     run = await gso_lakebase.load_gso_run(run_id)
     if not run and _is_configured():
-        rows = _delta_query(
+        rows = await _delta_query_async(
             f"SELECT * FROM {_delta_table('genie_opt_runs')} WHERE run_id = '{run_id}'"
         )
         run = rows[0] if rows else None
@@ -1524,7 +1649,7 @@ async def get_run(run_id: RunId):
 
     stages = await gso_lakebase.load_gso_stages(run_id)
     if not stages and _is_configured():
-        stages = _delta_query(
+        stages = await _delta_query_async(
             f"SELECT * FROM {_delta_table('genie_opt_stages')} "
             f"WHERE run_id = '{run_id}' ORDER BY started_at ASC"
         )
@@ -1532,7 +1657,7 @@ async def get_run(run_id: RunId):
     # Fetch iterations (lightweight — no rows_json)
     iterations = await gso_lakebase.load_gso_iterations(run_id)
     if not iterations and _is_configured():
-        iterations = _select_iterations_delta(run_id)
+        iterations = await _offload(_select_iterations_delta, run_id)
 
     # GSO v2 Phase 6 — attach the baseline iteration's rows_json so the
     # Baseline step detail can emit an assessment/reason summary + sample
@@ -1549,7 +1674,7 @@ async def get_run(run_id: RunId):
     if baseline_row is not None:
         rows_json_str = await gso_lakebase.load_gso_iteration_rows(run_id, 0, "full")
         if not rows_json_str and _is_configured():
-            _dr = _delta_query(
+            _dr = await _delta_query_async(
                 f"SELECT rows_json FROM {_delta_table('genie_opt_iterations')} "
                 f"WHERE run_id = '{run_id}' AND iteration = 0 AND eval_scope = 'full' "
                 f"AND rows_json IS NOT NULL LIMIT 1"
@@ -1561,7 +1686,7 @@ async def get_run(run_id: RunId):
     # Fetch patches for lever detail
     patches = await gso_lakebase.load_gso_patches(run_id)
     if not patches and _is_configured():
-        patches = _delta_query(
+        patches = await _delta_query_async(
             f"SELECT * FROM {_delta_table('genie_opt_patches')} "
             f"WHERE run_id = '{run_id}' ORDER BY iteration, lever, patch_index"
         )
@@ -1631,7 +1756,7 @@ async def get_run(run_id: RunId):
     if host:
         try:
             ws = get_workspace_client()
-            workspace_id = ws.get_workspace_id()
+            workspace_id = await _offload(ws.get_workspace_id)
         except Exception:
             pass
 
@@ -1655,7 +1780,7 @@ async def get_run(run_id: RunId):
     # from the durable run-level sources (manifest / loop-state / job params).
     target_accuracy, max_attempts = (None, None)
     if _is_configured():
-        target_accuracy, max_attempts = _resolve_run_knobs(run)
+        target_accuracy, max_attempts = await _offload(_resolve_run_knobs, run)
 
     return {
         "runId": run.get("run_id"),
@@ -1687,37 +1812,48 @@ async def get_run_status(run_id: RunId):
     """Lightweight status poll endpoint."""
     run = await gso_lakebase.load_gso_run(run_id)
     if not run and _is_configured():
-        rows = _delta_query(
+        rows = await _delta_query_async(
             f"SELECT * FROM {_delta_table('genie_opt_runs')} WHERE run_id = '{run_id}'"
         )
         run = rows[0] if rows else None
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    # Compute lightweight step progress from stages
-    stages = await gso_lakebase.load_gso_stages(run_id)
-    if not stages and _is_configured():
-        stages = _delta_query(
-            f"SELECT * FROM {_delta_table('genie_opt_stages')} "
-            f"WHERE run_id = '{run_id}' ORDER BY started_at ASC"
-        )
     run_status_str = str(run.get("status", "")).upper()
+
+    # Pipeline progress: prefer the Databricks Jobs API (authoritative, fast,
+    # and immune to the serverless-Delta-write → SQL-Warehouse-read visibility
+    # gap that froze the rail at "0/4 · Intake & Snapshot"). The 4 job tasks map
+    # 1:1 to the 4 rail steps. Only when the Jobs read is unavailable (no
+    # job_run_id / API error / legacy run with no tasks) do we fall back to
+    # deriving progress from the Delta stage rows — which requires the extra
+    # warehouse read that the Jobs path lets us skip entirely on the hot poll.
     steps_completed = 0
-    current_step_name = None
-    for step_status in _derive_pipeline_step_statuses(stages or [], run_status_str):
-        status = step_status["status"]
-        if status in ("completed", "skipped"):
-            steps_completed += 1
-        elif status == "running" and current_step_name is None:
-            current_step_name = step_status["name"]
-    if current_step_name is None and steps_completed < _TOTAL_STEPS:
-        # Next pending step
-        current_step_name = _STEP_DEFINITIONS[steps_completed]["name"]
+    current_step_name: str | None = None
+    job_progress = await _offload(_job_task_progress, run) if _is_configured() else None
+    if job_progress is not None:
+        steps_completed, current_step_name = job_progress
+    else:
+        stages = await gso_lakebase.load_gso_stages(run_id)
+        if not stages and _is_configured():
+            stages = await _delta_query_async(
+                f"SELECT * FROM {_delta_table('genie_opt_stages')} "
+                f"WHERE run_id = '{run_id}' ORDER BY started_at ASC"
+            )
+        for step_status in _derive_pipeline_step_statuses(stages or [], run_status_str):
+            status = step_status["status"]
+            if status in ("completed", "skipped"):
+                steps_completed += 1
+            elif status == "running" and current_step_name is None:
+                current_step_name = step_status["name"]
+        if current_step_name is None and steps_completed < _TOTAL_STEPS:
+            # Next pending step
+            current_step_name = _STEP_DEFINITIONS[steps_completed]["name"]
 
     # Compute baseline vs optimized scores from iterations (lightweight query)
     iterations = await gso_lakebase.load_gso_iterations(run_id)
     if not iterations and _is_configured():
-        iterations = _select_iterations_delta(run_id) or []
+        iterations = await _offload(_select_iterations_delta, run_id) or []
 
     # Canonical baseline + optimized + best_iteration. See
     # ``genie_space_optimizer.common.accuracy.compute_run_scores``.
@@ -1734,7 +1870,7 @@ async def get_run_status(run_id: RunId):
     # (manifest at 00 / job params during QUEUED), not only once the loop runs.
     target_accuracy, max_attempts = (None, None)
     if _is_configured():
-        target_accuracy, max_attempts = _resolve_run_knobs(run)
+        target_accuracy, max_attempts = await _offload(_resolve_run_knobs, run)
 
     return {
         "runId": run.get("run_id"),
@@ -1912,7 +2048,7 @@ async def list_iterations(run_id: RunId):
     """Get per-iteration evaluation details for a run (excludes rows_json for performance)."""
     iterations = await gso_lakebase.load_gso_iterations(run_id)
     if not iterations and _is_configured():
-        iterations = _select_iterations_delta(run_id)
+        iterations = await _offload(_select_iterations_delta, run_id)
     # Coerce key numeric fields — Delta fallback may return strings.
     # Bug #2: evaluated_count / excluded_count must round-trip as ints so the
     # frontend divides by the same denominator the backend uses.
@@ -1984,7 +2120,7 @@ async def list_iterations(run_id: RunId):
     # and the UI keeps its legacy idxmax fallback.
     if iterations and _is_configured():
         loop_by_key: dict[tuple[int | None, str], dict] = {}
-        for lr in _select_loop_state_delta(run_id):
+        for lr in await _offload(_select_loop_state_delta, run_id):
             key = (_safe_int(lr.get("iteration")), str(lr.get("eval_scope") or "").lower())
             loop_by_key[key] = lr
         if loop_by_key:
@@ -2138,7 +2274,7 @@ async def get_loop_state(run_id: RunId):
     columns / rows) returns ``loopState=null`` + ``attempts=[]`` so the UI can
     fall back to the classic iteration view without error.
     """
-    loop_rows = _select_loop_state_delta(run_id) if _is_configured() else []
+    loop_rows = await _offload(_select_loop_state_delta, run_id) if _is_configured() else []
     # Attempts = ONE authoritative full-benchmark row per attempt_no
     # (current rows use llm_patch; legacy rows may use coverage/surgical),
     # de-duped so multiple/non-full rows never
@@ -2213,7 +2349,7 @@ async def get_publish_record(run_id: RunId):
     ``{runId, publishRecord}`` with ``publishRecord=null`` when the run has not
     reached publish yet or predates the artifact (legacy run).
     """
-    payload = _load_latest_artifact(run_id, "publish_record") if _is_configured() else None
+    payload = await _offload(_load_latest_artifact, run_id, "publish_record") if _is_configured() else None
     return {
         "runId": run_id,
         "publishRecord": _build_publish_record(payload) if payload else None,
@@ -2460,13 +2596,13 @@ async def list_benchmark_changes(run_id: RunId):
     """
     mutations = await gso_lakebase.load_gso_benchmark_mutations(run_id)
     if not mutations and _is_configured():
-        mutations = _delta_query(
+        mutations = await _delta_query_async(
             f"SELECT run_id, question_id, op, before, after, reason, logged_at "
             f"FROM {_delta_table('genie_opt_benchmark_mutations')} "
             f"WHERE run_id = '{run_id}' ORDER BY logged_at ASC"
         )
 
-    qc_payload = _load_latest_artifact(run_id, "benchmark_qc") if _is_configured() else None
+    qc_payload = await _offload(_load_latest_artifact, run_id, "benchmark_qc") if _is_configured() else None
 
     buckets: dict[str, list[dict]] = {
         "added": [], "removed": [], "changed": [], "prune_recommended": [],

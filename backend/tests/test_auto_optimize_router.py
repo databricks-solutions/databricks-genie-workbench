@@ -1133,6 +1133,151 @@ def test_status_endpoint_uses_latest_downstream_task_for_current_step(monkeypatc
     assert body["currentStepName"] == "Optimize"
 
 
+# ── Jobs-API-driven rail progress (fixes "stuck at 0/4 · Intake") ─────────
+
+
+def _fake_run_task(task_key: str, life_cycle: str) -> MagicMock:
+    """A stand-in for databricks.sdk jobs.RunTask with a RunState."""
+    t = MagicMock()
+    t.task_key = task_key
+    t.state = MagicMock()
+    # Mirror the SDK's stringification `RunLifeCycleState.RUNNING`.
+    t.state.life_cycle_state = f"RunLifeCycleState.{life_cycle}"
+    t.state.result_state = None
+    return t
+
+
+def _fake_job_run(task_states: dict[str, str]) -> MagicMock:
+    job_run = MagicMock()
+    job_run.tasks = [_fake_run_task(k, v) for k, v in task_states.items()]
+    return job_run
+
+
+def test_job_task_progress_maps_running_optimize_to_step_three(monkeypatch) -> None:
+    """The core bug: intake + QC TERMINATED, optimize RUNNING → the rail must
+    read 2 completed + current "Optimize", NOT 0/4 · Intake."""
+    sp_ws = MagicMock()
+    sp_ws.jobs.get_run.return_value = _fake_job_run({
+        "intake_and_snapshot": "TERMINATED",
+        "benchmark_qc_and_repair": "TERMINATED",
+        "optimize": "RUNNING",
+        "publish_and_audit": "PENDING",
+    })
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: sp_ws)
+
+    progress = auto_optimize._job_task_progress(
+        {"run_id": _RUN, "status": "IN_PROGRESS", "job_run_id": "999"}
+    )
+    assert progress == (2, "Optimize")
+    sp_ws.jobs.get_run.assert_called_once_with(run_id=999)
+
+
+def test_job_task_progress_all_terminated_has_no_current(monkeypatch) -> None:
+    sp_ws = MagicMock()
+    sp_ws.jobs.get_run.return_value = _fake_job_run({
+        "intake_and_snapshot": "TERMINATED",
+        "benchmark_qc_and_repair": "TERMINATED",
+        "optimize": "TERMINATED",
+        "publish_and_audit": "TERMINATED",
+    })
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: sp_ws)
+
+    progress = auto_optimize._job_task_progress(
+        {"run_id": _RUN, "status": "CONVERGED", "job_run_id": "999"}
+    )
+    assert progress == (4, None)
+
+
+def test_job_task_progress_none_without_job_run_id(monkeypatch) -> None:
+    """No job_run_id (legacy / pre-submit) → None so the caller falls back to
+    the Delta-stage derivation. The SP client must never be touched."""
+    sp_ws = MagicMock()
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: sp_ws)
+    progress = auto_optimize._job_task_progress(
+        {"run_id": _RUN, "status": "IN_PROGRESS"}
+    )
+    assert progress is None
+    sp_ws.jobs.get_run.assert_not_called()
+
+
+def test_job_task_progress_none_on_api_error(monkeypatch) -> None:
+    """A Jobs API failure yields None (fall back to Delta), never an exception."""
+    sp_ws = MagicMock()
+    sp_ws.jobs.get_run.side_effect = RuntimeError("boom")
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: sp_ws)
+    progress = auto_optimize._job_task_progress(
+        {"run_id": _RUN, "status": "IN_PROGRESS", "job_run_id": "999"}
+    )
+    assert progress is None
+
+
+def test_status_endpoint_prefers_jobs_api_over_empty_stages(monkeypatch) -> None:
+    """End-to-end reproduction: Lakebase disabled, the Delta stage table reads
+    empty (the serverless-write → warehouse-read gap), yet the job is on task 3.
+    The status endpoint must report the real progress from the Jobs API instead
+    of the misleading 0/4 · Intake the empty stage list would produce."""
+    async def fake_run(_rid):
+        return {
+            "run_id": _RUN, "space_id": "space-1", "status": "IN_PROGRESS",
+            "job_run_id": "999",
+        }
+
+    async def empty(_rid):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", fake_run)
+    # Stages read empty on BOTH paths — this is exactly the frozen-rail case.
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_stages", empty)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", empty)
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [])
+    monkeypatch.setattr(auto_optimize, "_resolve_run_knobs", lambda _run: (0.9, 3))
+
+    sp_ws = MagicMock()
+    sp_ws.jobs.get_run.return_value = _fake_job_run({
+        "intake_and_snapshot": "TERMINATED",
+        "benchmark_qc_and_repair": "TERMINATED",
+        "optimize": "RUNNING",
+        "publish_and_audit": "PENDING",
+    })
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: sp_ws)
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/status")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["stepsCompleted"] == 2
+    assert body["currentStepName"] == "Optimize"
+    assert body["totalSteps"] == 4
+
+
+def test_status_endpoint_falls_back_to_stages_when_no_job_run_id(monkeypatch) -> None:
+    """Without a job_run_id, the endpoint keeps its Delta-stage derivation."""
+    async def fake_run(_rid):
+        return {"run_id": _RUN, "space_id": "space-1", "status": "IN_PROGRESS"}
+
+    async def fake_stages(_rid):
+        return [
+            {"stage": "INTAKE_AND_SNAPSHOT", "status": "COMPLETE"},
+            {"stage": "BENCHMARK_QC_AND_REPAIR", "status": "STARTED"},
+        ]
+
+    async def empty(_rid):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", fake_run)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_stages", fake_stages)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", empty)
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [])
+    monkeypatch.setattr(auto_optimize, "_resolve_run_knobs", lambda _run: (0.9, 3))
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/status")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["stepsCompleted"] == 1
+    assert body["currentStepName"] == "Benchmark QC & Repair"
+
+
 def test_run_summaries_enriched_with_typed_terminal_reason() -> None:
     runs = [
         {"run_id": "r1", "convergence_reason": "MAX_ATTEMPTS"},
