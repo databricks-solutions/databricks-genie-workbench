@@ -114,6 +114,7 @@ def call_llm(
     max_retries: int = LLM_MAX_RETRIES,
     temperature: float = LLM_TEMPERATURE,
     max_tokens: int | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> tuple[str, Any]:
     """Call an LLM via the OpenAI SDK with retry + exponential backoff.
 
@@ -138,9 +139,13 @@ def call_llm(
     # Do not send temperature: Claude Opus 4.7/4.8 and some GPT 5.x endpoints reject it.
     if max_tokens is not None:
         call_kwargs["max_tokens"] = max_tokens
+    if response_format is not None:
+        call_kwargs["response_format"] = response_format
 
     last_err: Exception | None = None
-    for attempt in range(max_retries):
+    retried_without_response_format = False
+    total_attempts = max_retries + (1 if response_format is not None else 0)
+    for attempt in range(total_attempts):
         try:
             response = client.chat.completions.create(**call_kwargs)
             if not response.choices:
@@ -150,8 +155,18 @@ def call_llm(
                 raise ValueError("LLM response content is empty")
             return str(content).strip(), response
         except Exception as exc:
+            if response_format is not None and not retried_without_response_format:
+                message = str(exc).lower()
+                if "response_format" in message or "json" in message:
+                    logger.info(
+                        "LLM endpoint rejected response_format; retrying without it: %s",
+                        exc,
+                    )
+                    call_kwargs.pop("response_format", None)
+                    retried_without_response_format = True
+                    continue
             last_err = exc
-            if attempt < max_retries - 1:
+            if attempt < total_attempts - 1:
                 time.sleep(2**attempt)
 
     raise last_err  # type: ignore[misc]

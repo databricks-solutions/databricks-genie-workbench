@@ -174,6 +174,30 @@ class TestCallLlm:
         assert mock_client.chat.completions.create.call_count == 2
 
     @patch("genie_space_optimizer.optimization.llm_client.get_openai_client")
+    def test_response_format_falls_back_when_endpoint_rejects_it(self, mock_get_client):
+        from genie_space_optimizer.optimization.llm_client import call_llm
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            ValueError("unknown field: response_format"),
+            _make_openai_response('{"ok": true}'),
+        ]
+        mock_get_client.return_value = mock_client
+
+        text, _ = call_llm(
+            None,
+            messages=[{"role": "user", "content": "json"}],
+            max_retries=1,
+            response_format={"type": "json_object"},
+        )
+
+        assert text == '{"ok": true}'
+        first_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        second_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        assert first_kwargs["response_format"] == {"type": "json_object"}
+        assert "response_format" not in second_kwargs
+
+    @patch("genie_space_optimizer.optimization.llm_client.get_openai_client")
     def test_raises_after_exhausted_retries(self, mock_get_client):
         from genie_space_optimizer.optimization.llm_client import call_llm
 

@@ -313,6 +313,69 @@ def _parse_detail(stage: dict) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _stage_matches_step(stage_name: str, defn: _StepDefinition) -> bool:
+    normalized = stage_name.upper()
+    return any(normalized.startswith(prefix) for prefix in defn["stage_prefixes"])
+
+
+def _matching_step_numbers(stage: dict) -> list[int]:
+    stage_name = str(stage.get("stage", ""))
+    return [
+        int(defn["stepNumber"])
+        for defn in _STEP_DEFINITIONS
+        if _stage_matches_step(stage_name, defn)
+    ]
+
+
+def _latest_observed_step_number(stages_rows: list[dict]) -> int | None:
+    latest: int | None = None
+    for stage in stages_rows:
+        matches = _matching_step_numbers(stage)
+        if matches:
+            latest = max(matches)
+    return latest
+
+
+def _coerce_prior_steps_completed(
+    step_statuses: list[dict[str, Any]], stages_rows: list[dict],
+) -> None:
+    """Keep the pipeline rail monotonic when old STARTED rows remain open."""
+    latest = _latest_observed_step_number(stages_rows)
+    if latest is None:
+        return
+    for step in step_statuses:
+        step_number = step.get("stepNumber")
+        if (
+            isinstance(step_number, int)
+            and step_number < latest
+            and step.get("status") != "failed"
+        ):
+            step["status"] = "completed"
+
+
+def _derive_pipeline_step_statuses(
+    stages_rows: list[dict], run_status: str,
+) -> list[dict[str, Any]]:
+    step_statuses: list[dict[str, Any]] = []
+    for defn in _STEP_DEFINITIONS:
+        matching = [
+            s for s in stages_rows
+            if _stage_matches_step(str(s.get("stage", "")), defn)
+        ]
+        status = _derive_step_status(matching)
+        status = _normalize_step_status_for_terminal_run(
+            status=status,
+            run_status=run_status,
+        )
+        step_statuses.append({
+            "stepNumber": defn["stepNumber"],
+            "name": defn["name"],
+            "status": status,
+        })
+    _coerce_prior_steps_completed(step_statuses, stages_rows)
+    return step_statuses
+
+
 def _resolve_parsed_space(config_snapshot: dict) -> dict:
     """Extract the parsed Genie Space structure from config_snapshot.
 
@@ -363,23 +426,20 @@ def map_stages_to_steps(
 ) -> list[PipelineStep]:
     """Map internal harness stages to 4 user-facing pipeline tasks."""
     steps: list[PipelineStep] = []
+    statuses_by_step = {
+        int(s["stepNumber"]): s["status"]
+        for s in _derive_pipeline_step_statuses(
+            stages_rows,
+            str(run_data.get("status", "")),
+        )
+    }
 
     for defn in _STEP_DEFINITIONS:
-        prefixes = defn["stage_prefixes"]
-
-        matching = []
-        for s in stages_rows:
-            stage_name = str(s.get("stage", ""))
-            for prefix in prefixes:
-                if stage_name.startswith(prefix):
-                    matching.append(s)
-                    break
-
-        status = _derive_step_status(matching)
-        status = _normalize_step_status_for_terminal_run(
-            status=status,
-            run_status=str(run_data.get("status", "")),
-        )
+        matching = [
+            s for s in stages_rows
+            if _stage_matches_step(str(s.get("stage", "")), defn)
+        ]
+        status = statuses_by_step.get(int(defn["stepNumber"]), "pending")
         duration = _total_duration(matching)
 
         summary = _build_step_summary(defn, matching, iterations_rows, run_data, stages_rows=stages_rows)

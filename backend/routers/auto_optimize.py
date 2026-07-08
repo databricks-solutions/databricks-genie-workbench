@@ -1405,24 +1405,90 @@ def _normalize_step_status_for_terminal_run(*, status: str, run_status: str) -> 
     return status
 
 
+def _stage_matches_step(stage_name: str, step_def: dict[str, Any]) -> bool:
+    normalized = stage_name.upper()
+    return any(
+        normalized.startswith(prefix)
+        for prefix in step_def["stage_prefixes"]
+    )
+
+
+def _matching_step_numbers(stage: dict) -> list[int]:
+    stage_name = str(stage.get("stage", ""))
+    return [
+        int(step_def["stepNumber"])
+        for step_def in _STEP_DEFINITIONS
+        if _stage_matches_step(stage_name, step_def)
+    ]
+
+
+def _latest_observed_step_number(stages: list[dict]) -> int | None:
+    latest: int | None = None
+    for stage in stages:
+        matches = _matching_step_numbers(stage)
+        if matches:
+            latest = max(matches)
+    return latest
+
+
+def _coerce_prior_steps_completed(
+    steps: list[dict[str, Any]], stages: list[dict],
+) -> None:
+    """Keep the pipeline rail monotonic when old STARTED rows remain open."""
+    latest = _latest_observed_step_number(stages)
+    if latest is None:
+        return
+    for step in steps:
+        step_number = _safe_int(step.get("stepNumber"))
+        if (
+            step_number is not None
+            and step_number < latest
+            and step.get("status") != "failed"
+        ):
+            step["status"] = "completed"
+
+
+def _derive_pipeline_step_statuses(
+    stages: list[dict], run_status: str,
+) -> list[dict[str, Any]]:
+    statuses: list[dict[str, Any]] = []
+    for step_def in _STEP_DEFINITIONS:
+        matching = [
+            s for s in stages
+            if _stage_matches_step(str(s.get("stage", "")), step_def)
+        ]
+        status = _derive_step_status(matching)
+        status = _normalize_step_status_for_terminal_run(
+            status=status,
+            run_status=run_status,
+        )
+        statuses.append({
+            "stepNumber": step_def["stepNumber"],
+            "name": step_def["name"],
+            "status": status,
+        })
+    _coerce_prior_steps_completed(statuses, stages)
+    return statuses
+
+
 def _map_stages_to_steps(
     stages: list[dict], run: dict, iterations: list[dict],
 ) -> list[dict]:
     """Group raw stages by prefix into the 4-task DAG steps with rich IO."""
     run_status = str(run.get("status", "")).upper()
+    statuses_by_step = {
+        int(s["stepNumber"]): s["status"]
+        for s in _derive_pipeline_step_statuses(stages, run_status)
+    }
 
     steps = []
     for step_def in _STEP_DEFINITIONS:
         matching = [
             s for s in stages
-            if any(
-                str(s.get("stage", "")).upper().startswith(prefix)
-                for prefix in step_def["stage_prefixes"]
-            )
+            if _stage_matches_step(str(s.get("stage", "")), step_def)
         ]
 
-        status = _derive_step_status(matching)
-        status = _normalize_step_status_for_terminal_run(status=status, run_status=run_status)
+        status = statuses_by_step.get(int(step_def["stepNumber"]), "pending")
 
         summary = _build_step_summary(step_def, matching, iterations, run, stages_rows=stages)
         inputs, outputs = _build_step_io(step_def, matching, iterations, run, stages_rows=stages)
@@ -1638,22 +1704,12 @@ async def get_run_status(run_id: RunId):
     run_status_str = str(run.get("status", "")).upper()
     steps_completed = 0
     current_step_name = None
-    for step_def in _STEP_DEFINITIONS:
-        matching = [
-            s for s in (stages or [])
-            if any(
-                str(s.get("stage", "")).upper().startswith(p)
-                for p in step_def["stage_prefixes"]
-            )
-        ]
-        status = _derive_step_status(matching)
-        status = _normalize_step_status_for_terminal_run(
-            status=status, run_status=run_status_str,
-        )
+    for step_status in _derive_pipeline_step_statuses(stages or [], run_status_str):
+        status = step_status["status"]
         if status in ("completed", "skipped"):
             steps_completed += 1
         elif status == "running" and current_step_name is None:
-            current_step_name = step_def["name"]
+            current_step_name = step_status["name"]
     if current_step_name is None and steps_completed < _TOTAL_STEPS:
         # Next pending step
         current_step_name = _STEP_DEFINITIONS[steps_completed]["name"]

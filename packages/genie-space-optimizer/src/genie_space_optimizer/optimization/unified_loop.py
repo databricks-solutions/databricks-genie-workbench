@@ -1397,7 +1397,12 @@ def propose_patches(
                 )
         except Exception:
             pass
-        text, _response = call_llm(w, messages=messages, max_tokens=4096)
+        text, _response = call_llm(
+            w,
+            messages=messages,
+            max_tokens=8192,
+            response_format={"type": "json_object"},
+        )
         try:
             if span is not None:
                 span.set_outputs({"response_chars": len(text or "")})

@@ -284,6 +284,37 @@ class TestExtractJson:
         out = _extract_json(payload)
         assert out == [{"a": 1}]
 
+    def test_fenced_object_with_braces_inside_strings_parses(self):
+        payload = (
+            "```json\n"
+            '{"patches":[{"type":"add_sql_snippet_measure",'
+            '"instruction":"Use CASE WHEN x THEN {label} ELSE other END"}]}\n'
+            "```\nextra text"
+        )
+        out = _extract_json(payload)
+        assert out == {
+            "patches": [
+                {
+                    "type": "add_sql_snippet_measure",
+                    "instruction": "Use CASE WHEN x THEN {label} ELSE other END",
+                }
+            ]
+        }
+
+    def test_unclosed_fenced_object_still_recovers_balanced_json(self):
+        payload = (
+            "```json\n"
+            '{"lever":3,"patches":[{"type":"add_sql_snippet_measure","sql":"SUM(amount_usd)"}]}\n'
+            "trailing model text"
+        )
+        out = _extract_json(payload)
+        assert out == {
+            "lever": 3,
+            "patches": [
+                {"type": "add_sql_snippet_measure", "sql": "SUM(amount_usd)"}
+            ],
+        }
+
     def test_extract_json_array_raises_when_object(self):
         with pytest.raises(ValueError, match="Expected JSON array"):
             _extract_json_array('{"not": "an array"}')

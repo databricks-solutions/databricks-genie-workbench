@@ -789,28 +789,22 @@ def test_benchmark_changes_endpoint_groups_by_op(monkeypatch) -> None:
     assert body["changed"][0]["before"] == {"sql": "a"}
 
 
-def test_baseline_step_summary_is_assessment_centric_no_judges() -> None:
-    """The Baseline Evaluation step summary must NOT mention judges and must
-    report num_correct / num_questions + the NEEDS_REVIEW count."""
+def test_optimize_step_summary_is_attempt_centric_no_judges() -> None:
+    """The 4-task Optimize summary must not reintroduce judge-centric wording."""
     from backend.routers.auto_optimize import _build_step_summary
 
-    defn = {"name": "Baseline Evaluation"}
-    matching = [{"stage": "AG_BASELINE", "detail_json": "{}"}]
-    iterations_rows = [
-        {
-            "iteration": 0, "eval_scope": "full", "overall_accuracy": 80.0,
-            "total_questions": 10, "correct_count": 8, "num_needs_review": 2,
-        }
-    ]
-    summary = _build_step_summary(defn, matching, iterations_rows, {})
+    defn = {"name": "Optimize"}
+    matching = [{"stage": "OPTIMIZE", "detail_json": "{}"}]
+    summary = _build_step_summary(
+        defn,
+        matching,
+        [],
+        {"baseline_accuracy": 80.0, "best_accuracy": 85.0},
+    )
 
     assert summary is not None
-    # No judge-era language anywhere.
     assert "judge" not in summary.lower()
-    # Official accuracy num_correct / num_questions and the review count.
-    assert "80.0%" in summary
-    assert "8/10 correct" in summary
-    assert "2 need review" in summary
+    assert "Score improved from 80.0% to 85.0%" in summary
 
 
 def test_publish_step_io_omits_retired_uc_model_fields() -> None:
@@ -998,44 +992,41 @@ def _gso_client(monkeypatch) -> TestClient:
 _RUN = "12345678-1234-1234-1234-1234567890ab"
 
 
-# Item 1 — 5-task DAG re-map.
+# Item 1 — 4-task DAG re-map.
 
 
-def test_step_definitions_are_the_five_task_dag() -> None:
+def test_step_definitions_are_the_four_task_dag() -> None:
     names = [s["name"] for s in auto_optimize._STEP_DEFINITIONS]
     assert names == [
         "Intake & Snapshot",
         "Benchmark QC & Repair",
-        "Baseline Eval & Triage",
         "Optimize",
         "Publish & Audit",
     ]
-    assert auto_optimize._TOTAL_STEPS == 5
+    assert auto_optimize._TOTAL_STEPS == 4
     # The standalone Deploy step is gone (D7).
     assert "Deploy" not in names
 
 
 def test_map_stages_to_steps_new_dag_stage_names() -> None:
-    """The new orchestration stage names roll up into the 5 logical steps."""
+    """The new orchestration stage names roll up into the 4 logical steps."""
     stages = [
         {"stage": "INTAKE_AND_SNAPSHOT", "status": "COMPLETE"},
         {"stage": "BENCHMARK_QC_AND_REPAIR", "status": "COMPLETE"},
-        {"stage": "BASELINE_EVAL_AND_TRIAGE", "status": "COMPLETE"},
         {"stage": "OPTIMIZE", "status": "COMPLETE"},
         {"stage": "PUBLISH_AND_AUDIT", "status": "STARTED"},
     ]
     steps = auto_optimize._map_stages_to_steps(stages, {"status": "IN_PROGRESS"}, [])
     by_num = {s["stepNumber"]: s for s in steps}
-    assert len(steps) == 5
+    assert len(steps) == 4
     assert by_num[1]["name"] == "Intake & Snapshot" and by_num[1]["status"] == "completed"
     assert by_num[2]["status"] == "completed"
-    assert by_num[3]["status"] == "completed"
-    assert by_num[4]["name"] == "Optimize" and by_num[4]["status"] == "completed"
-    assert by_num[5]["name"] == "Publish & Audit" and by_num[5]["status"] == "running"
+    assert by_num[3]["name"] == "Optimize" and by_num[3]["status"] == "completed"
+    assert by_num[4]["name"] == "Publish & Audit" and by_num[4]["status"] == "running"
 
 
 def test_map_stages_to_steps_legacy_back_compat() -> None:
-    """Legacy 6-notebook stage names still render against the 5-task rail."""
+    """Legacy 6-notebook stage names still render against the 4-task rail."""
     stages = [
         {"stage": "PREFLIGHT_DONE", "status": "COMPLETE"},
         {"stage": "BASELINE_EVAL_DONE", "status": "COMPLETE"},
@@ -1047,9 +1038,24 @@ def test_map_stages_to_steps_legacy_back_compat() -> None:
     # Legacy preflight satisfies both intake (1) and QC (2).
     assert by_num[1]["status"] == "completed"
     assert by_num[2]["status"] == "completed"
-    assert by_num[3]["status"] == "completed"  # baseline
-    assert by_num[4]["status"] == "completed"  # lever loop → Optimize
-    assert by_num[5]["status"] == "completed"  # finalize → Publish & Audit
+    assert by_num[3]["status"] == "completed"  # baseline/lever loop → Optimize
+    assert by_num[4]["status"] == "completed"  # finalize → Publish & Audit
+
+
+def test_downstream_stage_overrides_stale_started_rows() -> None:
+    """An open legacy STARTED row must not pin the rail to an earlier task."""
+    stages = [
+        {"stage": "INTAKE_AND_SNAPSHOT", "status": "STARTED"},
+        {"stage": "INTAKE_AND_SNAPSHOT", "status": "COMPLETE"},
+        {"stage": "PREFLIGHT_STARTED", "status": "STARTED"},
+        {"stage": "BENCHMARK_QC_AND_REPAIR", "status": "COMPLETE"},
+        {"stage": "OPTIMIZE", "status": "STARTED"},
+    ]
+    steps = auto_optimize._map_stages_to_steps(stages, {"status": "IN_PROGRESS"}, [])
+    by_num = {s["stepNumber"]: s for s in steps}
+    assert by_num[1]["status"] == "completed"
+    assert by_num[2]["status"] == "completed"
+    assert by_num[3]["status"] == "running"
 
 
 # Item 3 — typed terminal_reason.
@@ -1069,7 +1075,7 @@ def test_typed_terminal_reason_validates_closed_set() -> None:
     assert ttr(None) is None
 
 
-def test_status_endpoint_is_five_steps_and_typed_terminal_reason(monkeypatch) -> None:
+def test_status_endpoint_is_four_steps_and_typed_terminal_reason(monkeypatch) -> None:
     async def fake_run(_rid):
         return {
             "run_id": _RUN, "space_id": "space-1", "status": "CONVERGED",
@@ -1089,12 +1095,42 @@ def test_status_endpoint_is_five_steps_and_typed_terminal_reason(monkeypatch) ->
     resp = client.get(f"/api/auto-optimize/runs/{_RUN}/status")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["totalSteps"] == 5
+    assert body["totalSteps"] == 4
     assert body["terminalReason"] == "TARGET_REACHED"
     assert body["targetAccuracy"] == 0.9
     assert body["maxAttempts"] == 3
     # convergenceReason is preserved for back-compat.
     assert body["convergenceReason"] == "TARGET_REACHED"
+
+
+def test_status_endpoint_uses_latest_downstream_task_for_current_step(monkeypatch) -> None:
+    async def fake_run(_rid):
+        return {"run_id": _RUN, "space_id": "space-1", "status": "IN_PROGRESS"}
+
+    async def fake_stages(_rid):
+        return [
+            {"stage": "INTAKE_AND_SNAPSHOT", "status": "STARTED"},
+            {"stage": "INTAKE_AND_SNAPSHOT", "status": "COMPLETE"},
+            {"stage": "PREFLIGHT_STARTED", "status": "STARTED"},
+            {"stage": "BENCHMARK_QC_AND_REPAIR", "status": "COMPLETE"},
+            {"stage": "OPTIMIZE", "status": "STARTED"},
+        ]
+
+    async def empty(_rid):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", fake_run)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_stages", fake_stages)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", empty)
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [])
+    monkeypatch.setattr(auto_optimize, "_resolve_run_knobs", lambda _run: (0.9, 3))
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/status")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["stepsCompleted"] == 2
+    assert body["currentStepName"] == "Optimize"
 
 
 def test_run_summaries_enriched_with_typed_terminal_reason() -> None:

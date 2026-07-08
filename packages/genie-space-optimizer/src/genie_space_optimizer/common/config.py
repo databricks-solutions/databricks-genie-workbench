@@ -3918,8 +3918,10 @@ OPTIMIZER_PROMPT_MAX_CHARS = _int_env("GSO_OPTIMIZER_PROMPT_MAX_CHARS", 60_000)
 """Hard character budget for the unified optimizer patch prompt's JSON context."""
 
 UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT = (
-    "You are optimizing a Databricks Genie Space. Return only JSON. "
+    "You are optimizing a Databricks Genie Space. Return exactly one compact JSON object. "
+    "Do not include markdown fences, prose, analysis, comments, or text outside JSON. "
     "You may propose ordinary Patch DSL entries; enrichment is not a separate mode. "
+    "Return at most 3 patches. Keep every text field concise; put reasoning in rationale. "
     "Use expected_sql and generated_sql only as diagnostic evidence. Do not copy "
     "benchmark question text, expected SQL, or generated SQL into Genie-visible "
     "instructions, examples, descriptions, or snippets. Choose the narrowest "
@@ -3969,6 +3971,8 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
 }
 
 UNIFIED_OPTIMIZER_PATCH_RULES = [
+    "Output must be one valid JSON object only. Do not wrap it in ```json fences. Do not write explanatory prose before or after it.",
+    "Emit no more than 3 high-impact patches in a proposal. Prefer concise generalized patches over long enumerations.",
     "Patch selection uses failure-mode routing. Use metadata/synonym patches when the failure is table choice, column meaning, value/entity matching, or ambiguous terminology.",
     "Do not use table/column descriptions to fix SQL-construction failures such as missing output columns, formulas, filters, grouping, ordering, ranking/windowing, percentile functions, CASE logic, or rounding.",
     "Use join specs, SQL snippets/expressions, or example SQL when the failure is caused by SQL construction behavior such as joins, filters, formulas, grouping, ordering, ranking/windowing, output shape, or multi-step query patterns.",

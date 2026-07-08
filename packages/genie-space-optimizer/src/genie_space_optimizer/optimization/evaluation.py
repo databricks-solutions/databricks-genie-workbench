@@ -607,6 +607,46 @@ _FENCED_BLOCK_RE = re.compile(
 )
 
 
+def _extract_balanced_json_value(text: str) -> dict | list | None:
+    """Return the longest balanced JSON object/array embedded in ``text``."""
+    candidates: list[tuple[int, dict | list]] = []
+    pairs = {"{": "}", "[": "]"}
+    for start, ch in enumerate(text):
+        if ch not in pairs:
+            continue
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        for idx in range(start, len(text)):
+            cur = text[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif cur == "\\":
+                    escaped = True
+                elif cur == '"':
+                    in_string = False
+                continue
+            if cur == '"':
+                in_string = True
+            elif cur in pairs:
+                stack.append(pairs[cur])
+            elif stack and cur == stack[-1]:
+                stack.pop()
+                if not stack:
+                    candidate = text[start: idx + 1]
+                    try:
+                        value = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(value, (dict, list)):
+                        candidates.append((len(candidate), value))
+                    break
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
 def _strip_trailing_statement_semicolon(sql: str) -> str:
     """Remove trailing semicolons before embedding SQL in a subquery wrapper.
 
@@ -650,6 +690,9 @@ def _extract_json(content: str | None, *, strict: bool = False) -> dict | list |
             try:
                 return json.loads(fenced)
             except json.JSONDecodeError:
+                recovered = _extract_balanced_json_value(fenced)
+                if recovered is not None:
+                    return recovered
                 # Fall through — the fenced block might itself be malformed
                 # but the surrounding text could still contain valid JSON.
                 pass
@@ -675,6 +718,10 @@ def _extract_json(content: str | None, *, strict: bool = False) -> dict | list |
             return json.loads(text[: _saved_err.pos])
         except json.JSONDecodeError:
             pass
+
+    recovered = _extract_balanced_json_value(text)
+    if recovered is not None:
+        return recovered
 
     # Regex fallbacks — try the first balanced `{...}` and `[...]`; take the
     # one that parses. We prefer whichever is longer so a nested structure

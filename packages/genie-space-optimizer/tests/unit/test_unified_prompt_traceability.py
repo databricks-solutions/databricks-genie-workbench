@@ -93,14 +93,16 @@ def test_optimizer_patch_prompt_links_and_records_context_metadata(monkeypatch) 
 
     monkeypatch.setattr(unified_loop, "_start_chain_span", lambda _name: _FakeSpanContext(span))
     monkeypatch.setattr(unified_loop, "_link_prompt_to_trace", lambda prompt_name: linked.append(prompt_name))
-    monkeypatch.setattr(
-        unified_loop,
-        "call_llm",
-        lambda _w, *, messages, max_tokens: (
+    captured_kwargs: dict = {}
+
+    def fake_call_llm(_w, *, messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return (
             '{"lever": 1, "rationale": "r", "patches": []}',
             object(),
-        ),
-    )
+        )
+
+    monkeypatch.setattr(unified_loop, "call_llm", fake_call_llm)
 
     unified_loop.propose_patches(
         None,
@@ -131,6 +133,7 @@ def test_optimizer_patch_prompt_links_and_records_context_metadata(monkeypatch) 
     assert span.inputs["omitted_counts"]["assets"] >= 0
     assert "messages" in span.inputs
     assert span.outputs["response_chars"] > 0
+    assert captured_kwargs["response_format"] == {"type": "json_object"}
 
 
 def test_audit_summary_links_registered_prompt_and_records_safe_context(monkeypatch) -> None:
