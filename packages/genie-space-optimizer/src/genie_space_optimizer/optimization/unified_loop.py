@@ -97,6 +97,22 @@ _EXAMPLE_SQL_PATCH_TYPES: frozenset[str] = frozenset({"add_example_sql"})
 
 _MAX_PROPOSAL_RECOVERY_RETRIES = 1
 
+# Extra proposal retries granted specifically when a pre-apply wipeout was
+# caused by a benchmark-leak drop AND viable non-leaking patch types remain.
+# This lets the loop PIVOT to a different lever family (snippet / expression /
+# join / metadata) instead of terminating NO_NEW_HYPOTHESIS at iteration 0 —
+# the observed failure mode where the LLM reconstructs a benchmark's gold SQL
+# as an "example" and the firewall correctly blocks every patch. Bounded so a
+# persistently-leaking LLM still terminates.
+_MAX_LEAK_PIVOT_RETRIES = 2
+
+# Pre-apply drop reasons that indicate a proposed patch reproduced benchmark
+# question/answer text. When an entire proposal is wiped for these reasons, the
+# offending patch types are banned for the remainder of the run.
+_BENCHMARK_LEAK_DROP_REASONS: frozenset[str] = frozenset(
+    {"benchmark_example_sql_leak", "benchmark_prose_leak"}
+)
+
 _METADATA_PATCH_TYPES: frozenset[str] = frozenset(
     {"update_description", "update_column_description", "add_column_synonym"}
 )
@@ -691,6 +707,7 @@ def _llm_messages(
     current_config: dict[str, Any],
     eval_result: dict[str, Any],
     reflections: list[dict[str, Any]],
+    banned_patch_types: set[str] | frozenset[str] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     failures = _failure_rows(eval_result)
     context, context_stats, _context_json = _optimizer_context_pack(
@@ -698,6 +715,8 @@ def _llm_messages(
         eval_result,
         max_chars=OPTIMIZER_PROMPT_MAX_CHARS,
     )
+    banned = set(banned_patch_types or ())
+    allowed_patch_types = sorted(_ALLOWED_PATCH_TYPES - banned)
     user = {
         "previous_eval": {
             "accuracy": eval_result.get("overall_accuracy"),
@@ -711,11 +730,20 @@ def _llm_messages(
         "space_title": context.get("title"),
         "space_description": context.get("description"),
         "allowed_levers": allowed_levers,
-        "allowed_patch_types": sorted(_ALLOWED_PATCH_TYPES),
+        "allowed_patch_types": allowed_patch_types,
         "response_schema": UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA,
         "patch_rules": UNIFIED_OPTIMIZER_PATCH_RULES,
         "recent_reflections": reflections[-2:],
     }
+    if banned:
+        user["banned_patch_types"] = sorted(banned)
+        user["banned_patch_types_reason"] = (
+            "These patch types were rejected earlier in this run because every "
+            "proposal reproduced a benchmark question or its expected SQL "
+            "(train-on-test leakage). They are removed from allowed_patch_types. "
+            "Do not propose them again; use a reusable snippet/expression, join "
+            "spec, or metadata patch instead."
+        )
     user_json = _pretty_json(user)
     context_stats["prompt_chars"] = len(UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT) + len(user_json)
     return [
@@ -724,7 +752,13 @@ def _llm_messages(
     ], context_stats
 
 
-def _normalize_llm_patches(raw: Any, *, allowed_levers: list[int]) -> tuple[int | None, str, list[dict[str, Any]]]:
+def _normalize_llm_patches(
+    raw: Any,
+    *,
+    allowed_levers: list[int],
+    banned_patch_types: set[str] | frozenset[str] | None = None,
+) -> tuple[int | None, str, list[dict[str, Any]]]:
+    banned = set(banned_patch_types or ())
     if isinstance(raw, list):
         parsed = {"patches": raw}
     elif isinstance(raw, dict):
@@ -754,6 +788,9 @@ def _normalize_llm_patches(raw: Any, *, allowed_levers: list[int]) -> tuple[int 
         ptype = str(patch.get("type") or patch.get("patch_type") or "").strip()
         if ptype not in _ALLOWED_PATCH_TYPES:
             logger.info("Dropping unsupported LLM patch type %r", ptype)
+            continue
+        if ptype in banned:
+            logger.info("Dropping benchmark-leak-banned LLM patch type %r", ptype)
             continue
         patch["type"] = ptype
         try:
@@ -1266,6 +1303,61 @@ def _structured_intent_lost_before_apply(
     return kept_types <= _LOW_SIGNAL_FALLBACK_PATCH_TYPES
 
 
+def _leak_banned_patch_types(
+    dropped_patches: list[dict[str, Any]] | None,
+) -> set[str]:
+    """Patch types dropped for reproducing benchmark question/answer text.
+
+    These are banned for the rest of the run (Fix #1) so a pivot proposal
+    cannot repeat the leaking family — the observed failure mode where the
+    LLM reconstructs a benchmark's gold SQL as an example and every patch is
+    firewalled.
+    """
+    banned: set[str] = set()
+    for patch in dropped_patches or []:
+        if not isinstance(patch, dict):
+            continue
+        if str(patch.get("drop_reason") or "") in _BENCHMARK_LEAK_DROP_REASONS:
+            ptype = str(patch.get("type") or patch.get("patch_type") or "").strip()
+            if ptype:
+                banned.add(ptype)
+    return banned
+
+
+def _viable_patch_types(
+    allowed_levers: list[int],
+    banned_patch_types: set[str] | frozenset[str],
+) -> set[str]:
+    """Non-banned patch types whose canonical lever is still allowed.
+
+    When this set is non-empty after a benchmark-leak wipeout, the loop has a
+    real alternative to pivot to (Fix #2) and should not terminate
+    NO_NEW_HYPOTHESIS at iteration 0.
+    """
+    allowed = {int(l) for l in allowed_levers}
+    return {
+        ptype
+        for ptype in _ALLOWED_PATCH_TYPES
+        if _PATCH_TYPE_CANONICAL_LEVER.get(ptype) in allowed
+        and ptype not in banned_patch_types
+    }
+
+
+def _proposal_retry_budget(
+    *,
+    leak_pivot_available: bool,
+) -> int:
+    """Retries allowed for the current iteration's proposal loop.
+
+    A benchmark-leak wipeout with viable non-banned patch types remaining gets
+    the wider pivot budget so the LLM can be steered to a different lever
+    family; everything else keeps the default single recovery retry.
+    """
+    if leak_pivot_available:
+        return _MAX_LEAK_PIVOT_RETRIES
+    return _MAX_PROPOSAL_RECOVERY_RETRIES
+
+
 def _proposal_failure_reflection(
     *,
     iteration: int,
@@ -1274,23 +1366,52 @@ def _proposal_failure_reflection(
     hypothesis: dict[str, Any],
     dropped_patches: list[dict[str, Any]] | None = None,
     apply_log: dict[str, Any] | None = None,
+    banned_patch_types: set[str] | frozenset[str] | None = None,
+    viable_patch_types: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
+    guidance = (
+        "Propose a different patch set that satisfies patch_rules. "
+        "Choose the patch type by failure mode and the narrowest config "
+        "surface that directly changes the failing behavior. Do not "
+        "repeat rejected patches unless the drop reason is fixed. SQL "
+        "snippet patches must use expression or predicate fragments, not "
+        "full SELECT queries; full-query teaching patterns belong in "
+        "generalized, non-benchmark-copy example SQL."
+    )
+    if banned_patch_types:
+        banned_sorted = sorted(banned_patch_types)
+        guidance = (
+            f"Patch types {banned_sorted} were rejected as benchmark leaks — "
+            "every proposed patch reproduced a benchmark's question or expected "
+            "SQL. Do NOT propose these patch types again for this run. "
+        )
+        if viable_patch_types:
+            viable_sorted = sorted(viable_patch_types)
+            guidance += (
+                "These output-shape failures are best fixed with a reusable "
+                "primitive, not a full query: pick from "
+                f"{viable_sorted}. Prefer add_sql_snippet_expression (e.g. "
+                "RANK() OVER (PARTITION BY ... ORDER BY ... DESC), NTILE(10), "
+                "PERCENTILE_CONT(0.5)) or add_sql_snippet_measure — these teach "
+                "the primitive without copying any benchmark query and are not "
+                "subject to the leak firewall."
+            )
+        else:
+            guidance += (
+                "No non-leaking patch family remains for the allowed levers."
+            )
     reflection = {
         "iteration": iteration,
         "decision": "proposal_rejected",
         "stage": stage,
         "rationale": rationale,
         "hypothesis": hypothesis,
-        "guidance": (
-            "Propose a different patch set that satisfies patch_rules. "
-            "Choose the patch type by failure mode and the narrowest config "
-            "surface that directly changes the failing behavior. Do not "
-            "repeat rejected patches unless the drop reason is fixed. SQL "
-            "snippet patches must use expression or predicate fragments, not "
-            "full SELECT queries; full-query teaching patterns belong in "
-            "generalized, non-benchmark-copy example SQL."
-        ),
+        "guidance": guidance,
     }
+    if banned_patch_types:
+        reflection["banned_patch_types"] = sorted(banned_patch_types)
+    if viable_patch_types is not None:
+        reflection["viable_patch_types"] = sorted(viable_patch_types)
     if dropped_patches:
         reflection["dropped_patch_summary"] = _dropped_patch_summary(dropped_patches)
     if apply_log:
@@ -1405,12 +1526,14 @@ def propose_patches(
     reflections: list[dict[str, Any]],
     catalog: str = "",
     schema: str = "",
+    banned_patch_types: set[str] | frozenset[str] | None = None,
 ) -> tuple[int | None, str, list[dict[str, Any]], str]:
     messages, context_stats = _llm_messages(
         allowed_levers=allowed_levers,
         current_config=current_config,
         eval_result=eval_result,
         reflections=reflections,
+        banned_patch_types=banned_patch_types,
     )
     prompt_name = _prompt_name_for_key(
         "unified_optimizer_patch",
@@ -1450,6 +1573,7 @@ def propose_patches(
     lever, rationale, patches = _normalize_llm_patches(
         parsed,
         allowed_levers=allowed_levers,
+        banned_patch_types=banned_patch_types,
     )
     return lever, rationale, patches, text
 
@@ -1709,6 +1833,10 @@ def run_unified_optimization_loop(
     terminal_reason: str | None = None
     last_failed_hypothesis: dict[str, Any] | None = None
     last_terminal_detail = ""
+    # Patch types banned for the rest of the run after a benchmark-leak wipeout
+    # (Fix #1). Threaded into every subsequent proposal so the LLM cannot repeat
+    # the leaking family.
+    banned_patch_types: set[str] = set()
 
     while attempts_used < max_attempts:
         iteration = attempts_used + 1
@@ -1730,6 +1858,7 @@ def run_unified_optimization_loop(
                 reflections=reflections,
                 catalog=catalog,
                 schema=schema,
+                banned_patch_types=banned_patch_types,
             )
             hypothesis = {
                 "lever": lever,
@@ -1741,16 +1870,27 @@ def run_unified_optimization_loop(
             }
             if not patches or lever is None:
                 hypothesis["failure_stage"] = "llm_no_supported_patches"
+                # If a benchmark-leak ban is active and viable patch families
+                # remain, the LLM may have produced only banned patches (dropped
+                # in normalization). Keep steering it toward the viable pivot
+                # rather than terminating (Fix #1/#2).
+                viable = _viable_patch_types(allowed_levers, banned_patch_types)
+                leak_pivot_available = bool(banned_patch_types) and bool(viable)
                 reflection = _proposal_failure_reflection(
                     iteration=iteration,
                     stage="llm_no_supported_patches",
                     rationale=rationale,
                     hypothesis=hypothesis,
+                    banned_patch_types=banned_patch_types if leak_pivot_available else None,
+                    viable_patch_types=viable if leak_pivot_available else None,
                 )
                 reflections.append(reflection)
                 last_failed_hypothesis = hypothesis
                 last_terminal_detail = "LLM returned no supported patches"
-                if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
+                retry_budget = _proposal_retry_budget(
+                    leak_pivot_available=leak_pivot_available
+                )
+                if proposal_retries < retry_budget:
                     proposal_retries += 1
                     continue
                 terminal_reason = "NO_NEW_HYPOTHESIS"
@@ -1823,17 +1963,37 @@ def run_unified_optimization_loop(
                 )
             if not patches:
                 hypothesis["failure_stage"] = "preapply_rejected_all_patches"
+                # Fix #1: a wipeout caused by benchmark leakage bans the
+                # offending patch types for the rest of the run so the pivot
+                # proposal cannot repeat the leaking family.
+                newly_banned = _leak_banned_patch_types(preapply_dropped)
+                banned_patch_types |= newly_banned
+                viable = _viable_patch_types(allowed_levers, banned_patch_types)
+                leak_wipeout = bool(newly_banned)
+                if leak_wipeout:
+                    hypothesis["benchmark_leak_wipeout"] = True
+                    hypothesis["banned_patch_types"] = sorted(banned_patch_types)
+                    hypothesis["viable_patch_types"] = sorted(viable)
                 reflection = _proposal_failure_reflection(
                     iteration=iteration,
                     stage="preapply_rejected_all_patches",
                     rationale=rationale,
                     hypothesis=hypothesis,
                     dropped_patches=preapply_dropped,
+                    banned_patch_types=banned_patch_types if leak_wipeout else None,
+                    viable_patch_types=viable if leak_wipeout else None,
                 )
                 reflections.append(reflection)
                 last_failed_hypothesis = hypothesis
                 last_terminal_detail = "all proposed patches were rejected before apply"
-                if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
+                # Fix #2: don't terminate at iteration 0 when a benchmark-leak
+                # wipeout still leaves a non-leaking patch family to pivot to —
+                # grant the wider pivot retry budget so the LLM can switch levers.
+                leak_pivot_available = leak_wipeout and bool(viable)
+                retry_budget = _proposal_retry_budget(
+                    leak_pivot_available=leak_pivot_available
+                )
+                if proposal_retries < retry_budget:
                     proposal_retries += 1
                     continue
                 terminal_reason = "NO_NEW_HYPOTHESIS"

@@ -592,3 +592,147 @@ def test_unified_loop_rejects_repeated_metadata_only_for_structured_failures(
     assert rejected[0]["dropped_patch_summary"][0]["drop_reason"] == (
         "metadata_repeat_without_structured_behavior"
     )
+
+
+def test_unified_loop_pivots_after_benchmark_leak_wipeout(monkeypatch) -> None:
+    """Reproduces run f5edfa0d: the LLM proposes add_example_sql patches that
+
+    the firewall wipes as benchmark leaks. Rather than terminating
+    NO_NEW_HYPOTHESIS at iteration 0, the loop must ban add_example_sql, steer
+    the retry via banned_patch_types, and pivot to a surviving snippet patch
+    that improves accuracy (Fixes #1 + #2).
+    """
+    writes: list[int] = []
+    patch_writes: list[tuple[int, int]] = []
+    champions: list[int] = []
+    propose_banned_kwargs: list[set] = []
+
+    monkeypatch.setattr(unified_loop, "fetch_space_config", lambda _w, _space_id: {"title": "s"})
+    monkeypatch.setattr(
+        unified_loop,
+        "_native_eval",
+        MagicMock(side_effect=[_structured_failure_eval_result(53.3), _eval_result(95.0)]),
+    )
+
+    def propose(_w, *, allowed_levers, current_config, eval_result, reflections, catalog, schema, banned_patch_types=None):
+        propose_banned_kwargs.append(set(banned_patch_types or ()))
+        if "add_example_sql" not in (banned_patch_types or set()):
+            # First proposal: full-query example SQL (will be firewalled).
+            return (
+                5,
+                "teach output shape with example SQL",
+                [
+                    {
+                        "type": "add_example_sql",
+                        "lever": 5,
+                        "example_question": "ranking within partitions",
+                        "example_sql": "WITH base AS (SELECT ...) SELECT ...",
+                        "usage_guidance": "g",
+                        "source_failure_pattern": "ranking",
+                        "affected_qids": ["q1"],
+                        "semantic_delta_from_benchmark": "d",
+                        "why_not_benchmark_copy": "w",
+                    }
+                ],
+                '{"lever": 5, "patches": [{"type": "add_example_sql"}]}',
+            )
+        # Pivot proposal: reusable expression primitive (firewall-exempt).
+        return (
+            6,
+            "teach the ranking primitive as a reusable expression",
+            [
+                {
+                    "type": "add_sql_snippet_expression",
+                    "lever": 6,
+                    "sql": "RANK() OVER (PARTITION BY product_category ORDER BY avg_balance DESC)",
+                    "display_name": "Rank within category",
+                    "instruction": "Use to rank rows within a category.",
+                    "synonyms": ["rank in category"],
+                    "target_table": "cat.sch.accounts",
+                    "snippet_type": "expression",
+                }
+            ],
+            '{"lever": 6, "patches": [{"type": "add_sql_snippet_expression"}]}',
+        )
+
+    monkeypatch.setattr(unified_loop, "propose_patches", propose)
+
+    def screen(patches, **_kwargs):
+        # Simulate the firewall: drop every add_example_sql as a benchmark
+        # leak; let structured snippet patches through.
+        kept, dropped = [], []
+        for p in patches:
+            if p["type"] == "add_example_sql":
+                d = dict(p)
+                d["drop_reason"] = "benchmark_example_sql_leak"
+                d["drop_detail"] = "ngram_similarity_sql_qid=gs_001"
+                dropped.append(d)
+            else:
+                kept.append(p)
+        return kept, dropped
+
+    monkeypatch.setattr(unified_loop, "_preapply_safety_screen", screen)
+
+    def apply_patch_set(_w, _space_id, patches, *_args, **_kwargs):
+        patch = patches[0]
+        return {
+            "patch_deployed": True,
+            "post_snapshot": {"title": "candidate"},
+            "applied": [
+                {
+                    "patch": patch,
+                    "action": {"risk_level": "low", "target": patch.get("target_table", "")},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(unified_loop, "apply_patch_set", apply_patch_set)
+    monkeypatch.setattr(
+        unified_loop,
+        "write_iteration",
+        lambda _spark, _run_id, iteration, _eval_result, **_kwargs: writes.append(iteration),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "write_patch",
+        lambda _spark, _run_id, iteration, lever, *_args: patch_writes.append((iteration, lever)),
+    )
+    monkeypatch.setattr(unified_loop, "update_iteration_loop_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        unified_loop,
+        "mark_champion_iteration",
+        lambda _spark, _run_id, iteration, **_kwargs: champions.append(iteration),
+    )
+    monkeypatch.setattr(unified_loop, "update_run_status", lambda *_args, **_kwargs: None)
+
+    result = unified_loop.run_unified_optimization_loop(
+        MagicMock(),
+        MagicMock(),
+        run_id="run",
+        space_id="space",
+        domain="default",
+        benchmarks=[{"question": "q"}],
+        catalog="cat",
+        schema="sch",
+        levers=[1, 2, 3, 4, 5, 6],
+        max_attempts=3,
+        target_accuracy=90.0,
+    )
+
+    # The run pivoted and applied the surviving snippet instead of dying at 0.
+    assert result["terminal_reason"] == "TARGET_REACHED"
+    assert result["surgical_attempts_used"] == 1
+    assert result["levers_accepted"] == [6]
+    assert patch_writes == [(1, 6)]
+    assert champions == [1]
+    # First proposal saw no ban; the pivot proposal was told to avoid example SQL.
+    assert propose_banned_kwargs[0] == set()
+    assert "add_example_sql" in propose_banned_kwargs[1]
+    # A leak-wipeout reflection recorded the ban and the viable pivot set.
+    leak_reflections = [
+        r for r in result["reflections"]
+        if r.get("banned_patch_types")
+    ]
+    assert leak_reflections
+    assert "add_example_sql" in leak_reflections[0]["banned_patch_types"]
+    assert "add_sql_snippet_expression" in leak_reflections[0]["viable_patch_types"]

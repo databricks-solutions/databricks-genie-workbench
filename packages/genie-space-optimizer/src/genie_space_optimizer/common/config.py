@@ -3989,7 +3989,8 @@ UNIFIED_OPTIMIZER_PATCH_RULES = [
     "Patch selection uses failure-mode routing. Use metadata/synonym patches when the failure is table choice, column meaning, value/entity matching, or ambiguous terminology.",
     "Do not use table/column descriptions to fix SQL-construction failures such as missing output columns, formulas, filters, grouping, ordering, ranking/windowing, percentile functions, CASE logic, or rounding.",
     "Use join specs, SQL snippets/expressions, or example SQL when the failure is caused by SQL construction behavior such as joins, filters, formulas, grouping, ordering, ranking/windowing, output shape, or multi-step query patterns.",
-    "Join specs, SQL snippets/expressions, and example SQL are peer options. Pick the one whose shape matches the failure mode; do not choose descriptions for non-metadata failures.",
+    "For output-shape failures (missing output columns, wrong metric/aggregation function, ranking/windowing, percentile functions, rounding, or CASE logic), prefer structured SQL snippets/expressions FIRST: add_sql_snippet_expression teaches a reusable SELECT-list primitive (e.g. RANK() OVER (PARTITION BY ... ORDER BY ... DESC), NTILE(10), PERCENTILE_CONT(0.5)) and add_sql_snippet_measure teaches a reusable metric. These teach the correct primitive without reproducing a full benchmark query, so they are not subject to the benchmark-leak firewall. Use join specs for join failures.",
+    "Use add_example_sql only as a last resort — when the fix genuinely requires teaching a full multi-step query shape that no snippet, expression, or join spec can express. Whenever the failing behavior is a single reusable primitive, use a snippet or expression instead. Do not choose descriptions for non-metadata failures.",
     "Use add_instruction/update_instruction_section for cross-cutting behavioral guidance, clarification behavior, safety/constraints, summary behavior, or business rules that are not naturally represented as metadata, joins, snippets, or examples.",
     "For add_instruction/update_instruction_section, include non-empty routing_evidence with reasons documenting the config surfaces you considered and why text guidance is the direct fit.",
     "Use update_description for table descriptions.",
@@ -4003,7 +4004,7 @@ UNIFIED_OPTIMIZER_PATCH_RULES = [
     "For add_sql_snippet_measure/add_sql_snippet_filter/add_sql_snippet_expression, include sql, display_name, instruction, synonyms, target_table, and snippet_type.",
     "For add_sql_snippet_measure and add_sql_snippet_expression, sql must be a SELECT-list expression fragment such as SUM(amount) or CASE WHEN ... END; do not include SELECT, FROM, JOIN, GROUP BY, ORDER BY, LIMIT, or a semicolon.",
     "For add_sql_snippet_filter, sql must be a WHERE predicate fragment such as status = 'active'; do not include SELECT, FROM, WHERE, GROUP BY, ORDER BY, LIMIT, or a semicolon.",
-    "If the fix needs to teach a full query shape, use add_example_sql with a generalized adjacent example that passes the benchmark-leakage rules.",
+    "If the fix truly needs a full query shape, use add_example_sql with a generalized adjacent example that passes the benchmark-leakage rules. Do NOT reconstruct a failing question's expected SQL with renamed aliases or reordered clauses — a near-verbatim copy of any benchmark's expected SQL is rejected as a leak before apply. Pick a DIFFERENT question over DIFFERENT columns/tables that still demonstrates the same construction primitive.",
     "Never set validation_passed; the optimizer validates SQL snippets before apply.",
 ]
 
