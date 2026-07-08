@@ -785,6 +785,19 @@ _SQL_SNIPPET_PATCH_TYPES: frozenset[str] = frozenset(
     }
 )
 
+_STRUCTURED_DIRECT_FIT_PATCH_TYPES: frozenset[str] = frozenset(
+    {
+        "add_join_spec",
+        "update_join_spec",
+        "add_example_sql",
+        *_SQL_SNIPPET_PATCH_TYPES,
+    }
+)
+
+_LOW_SIGNAL_FALLBACK_PATCH_TYPES: frozenset[str] = frozenset(
+    {*_METADATA_PATCH_TYPES, *_TEXT_INSTRUCTION_PATCH_TYPES}
+)
+
 _SNIPPET_TYPE_FROM_PATCH: dict[str, str] = {
     "add_sql_snippet_measure": "measure",
     "add_sql_snippet_filter": "filter",
@@ -1231,6 +1244,28 @@ def _reject_repeated_metadata_only_patch_set(
     return [], dropped
 
 
+def _structured_intent_lost_before_apply(
+    kept_patches: list[dict[str, Any]],
+    dropped_patches: list[dict[str, Any]],
+) -> bool:
+    """True when structured direct-fit patches were dropped, leaving only fallback.
+
+    This catches the observed failure mode where the LLM selects SQL snippets or
+    example SQL for a SQL-construction issue, validation/leakage correctly drops
+    those patches, and the loop would otherwise spend an eval attempt on a lone
+    text/metadata remnant.
+    """
+    kept_types = set(_patch_type_list(kept_patches))
+    dropped_types = set(_patch_type_list(dropped_patches))
+    if not kept_types or not dropped_types:
+        return False
+    if not (dropped_types & _STRUCTURED_DIRECT_FIT_PATCH_TYPES):
+        return False
+    if kept_types & _STRUCTURED_DIRECT_FIT_PATCH_TYPES:
+        return False
+    return kept_types <= _LOW_SIGNAL_FALLBACK_PATCH_TYPES
+
+
 def _proposal_failure_reflection(
     *,
     iteration: int,
@@ -1250,7 +1285,10 @@ def _proposal_failure_reflection(
             "Propose a different patch set that satisfies patch_rules. "
             "Choose the patch type by failure mode and the narrowest config "
             "surface that directly changes the failing behavior. Do not "
-            "repeat rejected patches unless the drop reason is fixed."
+            "repeat rejected patches unless the drop reason is fixed. SQL "
+            "snippet patches must use expression or predicate fragments, not "
+            "full SELECT queries; full-query teaching patterns belong in "
+            "generalized, non-benchmark-copy example SQL."
         ),
     }
     if dropped_patches:
@@ -1753,6 +1791,36 @@ def run_unified_optimization_loop(
                     hypothesis["preapply_dropped_summary"] = _dropped_patch_summary(
                         preapply_dropped
                     )
+            if _structured_intent_lost_before_apply(patches, preapply_dropped):
+                hypothesis["structured_intent_lost"] = True
+                hypothesis["structured_intent_loss_detail"] = (
+                    "structured direct-fit patches were dropped before apply; "
+                    "only text/metadata fallback patches survived"
+                )
+                reflection = _proposal_failure_reflection(
+                    iteration=iteration,
+                    stage="preapply_lost_structured_intent",
+                    rationale=rationale,
+                    hypothesis={
+                        **hypothesis,
+                        "failure_stage": "preapply_lost_structured_intent",
+                    },
+                    dropped_patches=preapply_dropped,
+                )
+                reflections.append(reflection)
+                last_failed_hypothesis = {
+                    **hypothesis,
+                    "failure_stage": "preapply_lost_structured_intent",
+                }
+                last_terminal_detail = (
+                    "structured direct-fit patches were rejected before apply"
+                )
+                if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
+                    proposal_retries += 1
+                    continue
+                hypothesis["structured_intent_loss_resolution"] = (
+                    "retry_exhausted_applied_surviving_fallback"
+                )
             if not patches:
                 hypothesis["failure_stage"] = "preapply_rejected_all_patches"
                 reflection = _proposal_failure_reflection(

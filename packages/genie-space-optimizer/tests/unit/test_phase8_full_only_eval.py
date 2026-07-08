@@ -283,6 +283,137 @@ def test_unified_loop_retries_after_preapply_rejects_all_patches(monkeypatch) ->
     )
 
 
+def test_unified_loop_retries_when_structured_patch_drops_to_text_only(
+    monkeypatch,
+) -> None:
+    writes: list[int] = []
+    patch_writes: list[tuple[int, int]] = []
+    applied_patch_sets: list[list[str]] = []
+    champions: list[int] = []
+
+    monkeypatch.setattr(unified_loop, "fetch_space_config", lambda _w, _space_id: {"title": "s"})
+    monkeypatch.setattr(
+        unified_loop,
+        "_native_eval",
+        MagicMock(side_effect=[_structured_failure_eval_result(40.0), _eval_result(95.0)]),
+    )
+
+    def fail_snippet_validation(*args, **kwargs):
+        return False, "Execution failed: SELECT SELECT ...", args[0]
+
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+        fail_snippet_validation,
+    )
+
+    propose = MagicMock(
+        side_effect=[
+            (
+                6,
+                "try a snippet and instruction",
+                [
+                    {
+                        "type": "add_sql_snippet_measure",
+                        "lever": 6,
+                        "sql": "SELECT account_type, COUNT(*) FROM accounts GROUP BY account_type",
+                        "display_name": "Account Type Count",
+                        "instruction": "Use to count accounts by type.",
+                        "synonyms": ["account type count"],
+                        "target_table": "cat.sch.accounts",
+                        "snippet_type": "measure",
+                    },
+                    {
+                        "type": "update_instruction_section",
+                        "lever": 5,
+                        "section": "DISAMBIGUATION",
+                        "new_text": "Prefer explicit account type terminology when users ask for account categories.",
+                        "routing_evidence": [
+                            {
+                                "type": "structured_behavior",
+                                "reason": "The structured SQL snippet was also attempted.",
+                            }
+                        ],
+                    },
+                ],
+                '{"patches": [{"type": "add_sql_snippet_measure"}, {"type": "update_instruction_section"}]}',
+            ),
+            (
+                4,
+                "use join spec instead",
+                [
+                    {
+                        "type": "add_join_spec",
+                        "lever": 4,
+                        "target": "cat.sch.accounts",
+                        "join_spec": {"left_table": "accounts", "right_table": "customers"},
+                    }
+                ],
+                '{"patches": [{"type": "add_join_spec"}]}',
+            ),
+        ]
+    )
+    monkeypatch.setattr(unified_loop, "propose_patches", propose)
+
+    def apply_patch_set(_w, _space_id, patches, *_args, **_kwargs):
+        applied_patch_sets.append([p["type"] for p in patches])
+        patch = patches[0]
+        return {
+            "patch_deployed": True,
+            "post_snapshot": {"title": "candidate"},
+            "applied": [
+                {
+                    "patch": patch,
+                    "action": {"risk_level": "low", "target": patch.get("target", "")},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(unified_loop, "apply_patch_set", apply_patch_set)
+    monkeypatch.setattr(
+        unified_loop,
+        "write_iteration",
+        lambda _spark, _run_id, iteration, _eval_result, **_kwargs: writes.append(iteration),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "write_patch",
+        lambda _spark, _run_id, iteration, lever, *_args: patch_writes.append((iteration, lever)),
+    )
+    monkeypatch.setattr(unified_loop, "update_iteration_loop_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        unified_loop,
+        "mark_champion_iteration",
+        lambda _spark, _run_id, iteration, **_kwargs: champions.append(iteration),
+    )
+    monkeypatch.setattr(unified_loop, "update_run_status", lambda *_args, **_kwargs: None)
+
+    result = unified_loop.run_unified_optimization_loop(
+        MagicMock(),
+        MagicMock(),
+        run_id="run",
+        space_id="space",
+        domain="default",
+        benchmarks=[{"question": "q"}],
+        catalog="cat",
+        schema="sch",
+        levers=[4, 5, 6],
+        max_attempts=1,
+        target_accuracy=90.0,
+    )
+
+    assert result["terminal_reason"] == "TARGET_REACHED"
+    assert result["surgical_attempts_used"] == 1
+    assert propose.call_count == 2
+    assert applied_patch_sets == [["add_join_spec"]]
+    assert writes == [0, 1]
+    assert patch_writes == [(1, 4)]
+    assert champions == [1]
+    assert result["reflections"][0]["stage"] == "preapply_lost_structured_intent"
+    assert result["reflections"][0]["dropped_patch_summary"][0]["type"] == (
+        "add_sql_snippet_measure"
+    )
+
+
 def test_unified_loop_preserves_no_hypothesis_details_after_retry(monkeypatch) -> None:
     loop_states: list[dict] = []
     champions: list[int] = []

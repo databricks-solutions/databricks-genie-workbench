@@ -42,6 +42,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+from collections import Counter
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
@@ -121,6 +123,10 @@ _LEAKY_FIELDS: frozenset[str] = frozenset({
     "counterfactual_fix",
     "rationale_snippet",
     "wrong_clause",
+    "decision_reason",
+    "drop_detail",
+    "rationale",
+    "raw_response_preview",
 })
 
 
@@ -348,6 +354,203 @@ def _root_cause_distribution(
     return counts
 
 
+def _json_value(value: Any, default: Any) -> Any:
+    """Decode Delta JSON columns that may already be hydrated by loaders."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    if value is None:
+        return default
+    return value
+
+
+def _safe_reason_label(value: Any, *, default: str = "UNSPECIFIED_FAILURE") -> str:
+    """Convert potentially free-text judge reasons into bounded audit labels."""
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+    upper = raw.upper()
+    keyword_map = (
+        ("MISSING JOIN", "MISSING_JOIN"),
+        ("MISSING_JOIN", "MISSING_JOIN"),
+        ("WRONG JOIN", "WRONG_JOIN"),
+        ("WRONG_JOIN", "WRONG_JOIN"),
+        ("MISSING COLUMN", "MISSING_COLUMNS"),
+        ("MISSING_COLUMNS", "MISSING_COLUMNS"),
+        ("WRONG COLUMN", "WRONG_COLUMNS"),
+        ("WRONG_COLUMNS", "WRONG_COLUMNS"),
+        ("FILTER", "MISSING_OR_INCORRECT_FILTER"),
+        ("PERCENTILE", "INCORRECT_METRIC_OR_FUNCTION"),
+        ("FUNCTION", "INCORRECT_METRIC_OR_FUNCTION"),
+        ("METRIC", "INCORRECT_METRIC_OR_FUNCTION"),
+        ("AGGREGAT", "INCORRECT_AGGREGATION"),
+        ("GROUP", "INCORRECT_GROUPING"),
+        ("ORDER", "INCORRECT_ORDERING"),
+        ("RANK", "INCORRECT_RANKING"),
+        ("WINDOW", "INCORRECT_RANKING"),
+        ("ASSET", "ASSET_ROUTING_ERROR"),
+        ("TABLE", "ASSET_ROUTING_ERROR"),
+        ("INCOMPLETE", "INCOMPLETE_OR_PARTIAL_OUTPUT"),
+        ("PARTIAL", "INCOMPLETE_OR_PARTIAL_OUTPUT"),
+        ("OUTPUT", "INCOMPLETE_OR_PARTIAL_OUTPUT"),
+        ("SEMANTIC", "SEMANTIC_ERROR"),
+        ("SYNTAX", "SQL_SYNTAX_ERROR"),
+    )
+    for needle, label in keyword_map:
+        if needle in upper:
+            return label
+    if re.fullmatch(r"[A-Z0-9_:-]{1,80}", upper):
+        return upper
+    return "OTHER_FAILURE_REASON"
+
+
+def _safe_patch_label(value: Any, *, default: str = "unknown") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+    label = re.sub(r"[^A-Za-z0-9_:-]+", "_", raw)[:80].strip("_")
+    return label or default
+
+
+def _count_values(values: list[Any]) -> dict[str, int]:
+    return dict(Counter(str(v) for v in values if str(v or "").strip()))
+
+
+def _eval_rows_from_iteration(row: dict) -> list[dict[str, Any]]:
+    rows = _json_value(row.get("rows_json"), [])
+    if not rows:
+        rows = _json_value(row.get("rows"), [])
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _failure_reason_summaries(scored_iters: list[dict]) -> list[dict[str, Any]]:
+    """Per-eval failure categories for the audit summary.
+
+    This intentionally emits only counts of bounded reason labels. It never
+    carries question text, SQL, judge prose, or question ids.
+    """
+    summaries: list[dict[str, Any]] = []
+    for row in sorted(scored_iters, key=_trajectory_sort_key):
+        eval_rows = _eval_rows_from_iteration(row)
+        if not eval_rows:
+            continue
+        assessment_counts: Counter[str] = Counter()
+        reason_counts: Counter[str] = Counter()
+        failing_count = 0
+        for eval_row in eval_rows:
+            assessment = _safe_reason_label(
+                eval_row.get("assessment")
+                or eval_row.get("result_correctness")
+                or eval_row.get("correctness"),
+                default="UNKNOWN_ASSESSMENT",
+            )
+            assessment_counts[assessment] += 1
+            if assessment in {"GOOD", "YES", "BOTH_CORRECT"}:
+                continue
+            failing_count += 1
+            reasons = eval_row.get("assessment_reasons")
+            genie_eval = eval_row.get("genie_equivalent_eval")
+            if not reasons and isinstance(genie_eval, dict):
+                reasons = genie_eval.get("assessment_reasons")
+                if not reasons and genie_eval.get("primary_assessment_reason"):
+                    reasons = [genie_eval.get("primary_assessment_reason")]
+            if not isinstance(reasons, list) or not reasons:
+                reasons = [assessment if assessment != "UNKNOWN_ASSESSMENT" else "UNSPECIFIED_FAILURE"]
+            for reason in reasons:
+                reason_counts[_safe_reason_label(reason)] += 1
+        summaries.append({
+            "iteration": _as_int(row.get("iteration")),
+            "attempt_no": _as_int(row.get("attempt_no")),
+            "eval_scope": row.get("eval_scope"),
+            "accuracy": _as_float(row.get("overall_accuracy")),
+            "decision": row.get("decision"),
+            "rolled_back": _is_rolled_back(row),
+            "is_champion": _is_champion_flag(row),
+            "failing_count": failing_count,
+            "assessment_counts": dict(assessment_counts),
+            "failure_reason_counts": dict(reason_counts),
+        })
+    return summaries
+
+
+def _pick_failure_summary(
+    summaries: list[dict[str, Any]],
+    *,
+    iteration: int | None,
+    baseline: bool = False,
+) -> dict[str, Any] | None:
+    for summary in summaries:
+        if baseline and summary.get("iteration") == 0 and summary.get("eval_scope") == "full":
+            return summary
+        if not baseline and summary.get("iteration") == iteration and summary.get("eval_scope") == "full":
+            return summary
+    return None
+
+
+def _patch_attempt_summaries(scored_iters: list[dict]) -> list[dict[str, Any]]:
+    """Summarize what each LLM patch attempt tried, kept, and dropped.
+
+    Only bounded types/counts are emitted. Raw LLM text, rationales, SQL, example
+    questions, and drop details are deliberately excluded.
+    """
+    attempts: list[dict[str, Any]] = []
+    for row in sorted(scored_iters, key=_trajectory_sort_key):
+        hypothesis = _json_value(row.get("current_hypothesis"), {})
+        if not isinstance(hypothesis, dict) or not hypothesis:
+            continue
+        patch_types = [
+            _safe_patch_label(p)
+            for p in hypothesis.get("patch_types") or []
+            if str(p or "").strip()
+        ]
+        dropped_summary = hypothesis.get("preapply_dropped_summary")
+        if not isinstance(dropped_summary, list):
+            dropped_summary = []
+        dropped_patch_types = [
+            _safe_patch_label(item.get("type") or item.get("patch_type"))
+            for item in dropped_summary
+            if isinstance(item, dict)
+        ]
+        dropped_reasons = [
+            _safe_patch_label(item.get("drop_reason"))
+            for item in dropped_summary
+            if isinstance(item, dict)
+        ]
+        if not dropped_reasons:
+            dropped_reasons = [
+                _safe_patch_label(r)
+                for r in hypothesis.get("preapply_dropped_reasons") or []
+                if str(r or "").strip()
+            ]
+
+        attempt = {
+            "iteration": _as_int(row.get("iteration")),
+            "attempt_no": _as_int(row.get("attempt_no")),
+            "accuracy": _as_float(row.get("overall_accuracy")),
+            "decision": row.get("decision"),
+            "rolled_back": _is_rolled_back(row),
+            "is_champion": _is_champion_flag(row),
+            "lever": _as_int(hypothesis.get("lever")),
+            "proposed_patch_count": _as_int(hypothesis.get("proposed_patch_count")),
+            "surviving_patch_count": _as_int(hypothesis.get("patch_count")),
+            "surviving_patch_types": patch_types,
+            "patch_family": _safe_patch_label(hypothesis.get("patch_family")),
+            "preapply_dropped_count": _as_int(hypothesis.get("preapply_dropped_count")) or 0,
+            "preapply_dropped_patch_type_counts": _count_values(dropped_patch_types),
+            "preapply_dropped_reason_counts": _count_values(dropped_reasons),
+        }
+        if hypothesis.get("failure_stage"):
+            attempt["failure_stage"] = _safe_patch_label(hypothesis.get("failure_stage"))
+        if hypothesis.get("structured_intent_lost"):
+            attempt["structured_intent_lost"] = True
+        attempts.append(attempt)
+    return attempts
+
+
 def _residual_failing_clusters(
     champion_row: dict | None, provenance_df: "pd.DataFrame | None"
 ) -> tuple[int, list[str]]:
@@ -444,6 +647,17 @@ def as_audit_context(
     residual_failure_count, residual_clusters = _residual_failing_clusters(
         champion_row, provenance_df
     )
+    failure_summaries = _failure_reason_summaries(scored_iters)
+    baseline_failure_summary = _pick_failure_summary(
+        failure_summaries,
+        iteration=None,
+        baseline=True,
+    )
+    champion_failure_summary = _pick_failure_summary(
+        failure_summaries,
+        iteration=champion_iteration,
+    )
+    patch_attempts = _patch_attempt_summaries(scored_iters)
 
     context = {
         "run_id": run_id,
@@ -462,6 +676,10 @@ def as_audit_context(
         "patches_rolled_back": rolled_back_patches,
         "patch_families": patch_families,
         "root_cause_distribution": root_cause_distribution,
+        "eval_failure_summaries": failure_summaries,
+        "baseline_failure_summary": baseline_failure_summary,
+        "champion_failure_summary": champion_failure_summary,
+        "patch_attempt_summaries": patch_attempts,
         "residual_failure_count": residual_failure_count,
         "residual_failing_clusters": residual_clusters,
     }

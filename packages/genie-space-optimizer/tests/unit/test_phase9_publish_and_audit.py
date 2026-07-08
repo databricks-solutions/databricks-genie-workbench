@@ -405,6 +405,127 @@ def test_audit_context_excludes_benchmark_qa_fields():
     assert "H001" in ctx["residual_failing_clusters"]
 
 
+def test_audit_context_includes_safe_failure_and_patch_attempt_summaries():
+    import json
+
+    iters = _full_iters(champion_reason="TARGET_REACHED")
+    iters[0]["rows_json"] = json.dumps([
+        {
+            "question_id": "q-secret-1",
+            "assessment": "BAD",
+            "assessment_reasons": ["LLM_JUDGE_MISSING_JOIN"],
+            "question": "benchmark question text must not leak",
+            "expected_sql": "SELECT secret_ground_truth FROM t",
+            "generated_sql": "SELECT wrong_generated_sql FROM t",
+        },
+        {
+            "question_id": "q-good",
+            "assessment": "GOOD",
+            "assessment_reasons": [],
+        },
+    ])
+    iters[1]["rows_json"] = json.dumps([
+        {
+            "question_id": "q-secret-2",
+            "assessment": "BAD",
+            "genie_equivalent_eval": {
+                "assessment_reasons": ["LLM_JUDGE_MISSING_OR_INCORRECT_FILTER"]
+            },
+            "question": "another benchmark question text",
+            "expected_sql": "SELECT another_secret FROM u",
+        }
+    ])
+    iters[1]["current_hypothesis"] = json.dumps({
+        "lever": 6,
+        "rationale": "must not leak rationale with SELECT secret_ground_truth",
+        "raw_response_preview": "must not leak raw response",
+        "proposed_patch_count": 3,
+        "patch_count": 1,
+        "patch_types": ["update_instruction_section"],
+        "patch_family": "mixed_or_structured",
+        "structured_intent_lost": True,
+        "preapply_dropped_count": 2,
+        "preapply_dropped_summary": [
+            {
+                "type": "add_sql_snippet_measure",
+                "drop_reason": "snippet_validation_failed",
+                "drop_detail": "Execution failed: SELECT secret_ground_truth FROM t",
+            },
+            {
+                "type": "add_example_sql",
+                "drop_reason": "benchmark_example_sql_leak",
+                "drop_detail": "Copied benchmark question text",
+            },
+        ],
+    })
+    iters[2]["rows_json"] = json.dumps([
+        {
+            "question_id": "q-secret-3",
+            "assessment": "BAD",
+            "assessment_reasons": ["LLM_JUDGE_WRONG_COLUMNS"],
+            "expected_sql": "SELECT champion_secret FROM v",
+        },
+        {
+            "question_id": "q-good",
+            "assessment": "GOOD",
+        },
+    ])
+
+    champion = P.resolve_champion_row(iters)
+    ctx = P.as_audit_context(
+        "run1", "space-abc", iters, _patches_df(), _provenance_df(),
+        terminal_reason="TARGET_REACHED", champion_row=champion,
+        target_accuracy=90.0, max_attempts=3,
+    )
+
+    blob = json.dumps(ctx, default=str)
+    for forbidden in (
+        "benchmark question text",
+        "secret_ground_truth",
+        "wrong_generated_sql",
+        "another_secret",
+        "champion_secret",
+        "must not leak rationale",
+        "must not leak raw response",
+        "drop_detail",
+        "raw_response_preview",
+    ):
+        assert forbidden not in blob
+
+    assert ctx["baseline_failure_summary"]["failure_reason_counts"] == {
+        "MISSING_JOIN": 1
+    }
+    assert ctx["champion_failure_summary"]["failure_reason_counts"] == {
+        "WRONG_COLUMNS": 1
+    }
+    attempts = ctx["patch_attempt_summaries"]
+    assert attempts == [
+        {
+            "iteration": 1,
+            "attempt_no": 1,
+            "accuracy": 84.0,
+            "decision": "accept",
+            "rolled_back": False,
+            "is_champion": False,
+            "lever": 6,
+            "proposed_patch_count": 3,
+            "surviving_patch_count": 1,
+            "surviving_patch_types": ["update_instruction_section"],
+            "patch_family": "mixed_or_structured",
+            "preapply_dropped_count": 2,
+            "preapply_dropped_patch_type_counts": {
+                "add_sql_snippet_measure": 1,
+                "add_example_sql": 1,
+            },
+            "preapply_dropped_reason_counts": {
+                "snippet_validation_failed": 1,
+                "benchmark_example_sql_leak": 1,
+            },
+            "structured_intent_lost": True,
+        }
+    ]
+
+
 def test_build_audit_summary_passes_only_context_to_llm():
     """The user message handed to the LLM is exactly the serialized leak-free
     context — no raw benchmark Q/A is appended."""

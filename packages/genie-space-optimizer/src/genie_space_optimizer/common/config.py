@@ -3248,7 +3248,7 @@ AUDIT_SUMMARY_PROMPT = (
     '\n'
     '<instructions>\n'
     '## Task\n'
-    'Write a concise 1–2 paragraph plain-English summary of the optimization run, '
+    'Write a concise 2–3 paragraph plain-English summary of the optimization run, '
     'grounded ONLY in the structured JSON context provided in the user message. '
     'Do NOT invent numbers, changes, or causes that are not present in the '
     'context. Do NOT use markdown headings, bullet lists, or code blocks — write '
@@ -3262,7 +3262,17 @@ AUDIT_SUMMARY_PROMPT = (
     '(per-iteration accuracy, delta vs. baseline, decision, and any rollbacks).\n'
     '3. The champion pointer: the champion iteration number and its accuracy, and '
     'whether it was published (see ``published`` / ``terminal_reason``).\n'
-    '4. Any concerns: e.g. the run stopped on the evaluation budget '
+    '4. The eval failure profile: summarize the major failure-reason categories '
+    'from ``baseline_failure_summary``, ``champion_failure_summary``, and '
+    '``eval_failure_summaries``. Discuss residual error types by category/count; '
+    'do not mention question text, SQL, or question ids.\n'
+    '5. What the optimizer tried to patch: use ``patch_attempt_summaries`` to '
+    'explain each LLM patch attempt at the patch-type level, including proposed '
+    'patch count, surviving patch types, pre-apply dropped patch types/reasons, '
+    'accept/reject/rollback outcome, and whether structured intent was lost. '
+    'If structured patches were dropped before apply, call out that limitation '
+    'as part of the audit.\n'
+    '6. Any concerns: e.g. the run stopped on the evaluation budget '
     '(EVAL_BUDGET_EXHAUSTED) or with no new hypothesis (NO_NEW_HYPOTHESIS) while '
     'clusters were still failing; an iteration regressed and was rolled back; '
     'the champion still has residual failing questions/clusters '
@@ -3955,7 +3965,10 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
             "affected_qids": "required list of question ids for add_example_sql patches",
             "semantic_delta_from_benchmark": "required for add_example_sql patches",
             "why_not_benchmark_copy": "required for add_example_sql patches",
-            "sql": "required for add_sql_snippet_* patches",
+            "sql": (
+                "required expression/predicate fragment for add_sql_snippet_* "
+                "patches; not a full SELECT query"
+            ),
             "display_name": "required for add_sql_snippet_* patches",
             "instruction": "required for add_sql_snippet_* patches",
             "synonyms": "required list for add_sql_snippet_* patches",
@@ -3988,6 +4001,9 @@ UNIFIED_OPTIMIZER_PATCH_RULES = [
     "Do not include raw SELECT statements in text instructions.",
     "Do not put metric formulas, reusable filters, join routing, or output-shape examples into text instructions when a structured patch can represent them.",
     "For add_sql_snippet_measure/add_sql_snippet_filter/add_sql_snippet_expression, include sql, display_name, instruction, synonyms, target_table, and snippet_type.",
+    "For add_sql_snippet_measure and add_sql_snippet_expression, sql must be a SELECT-list expression fragment such as SUM(amount) or CASE WHEN ... END; do not include SELECT, FROM, JOIN, GROUP BY, ORDER BY, LIMIT, or a semicolon.",
+    "For add_sql_snippet_filter, sql must be a WHERE predicate fragment such as status = 'active'; do not include SELECT, FROM, WHERE, GROUP BY, ORDER BY, LIMIT, or a semicolon.",
+    "If the fix needs to teach a full query shape, use add_example_sql with a generalized adjacent example that passes the benchmark-leakage rules.",
     "Never set validation_passed; the optimizer validates SQL snippets before apply.",
 ]
 
