@@ -12,7 +12,6 @@ import { ResourceLinks } from "@/components/auto-optimize/ResourceLinks"
 import { QuestionJourney } from "@/components/auto-optimize/QuestionJourney"
 import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
 import { ActivityLog } from "@/components/auto-optimize/ActivityLog"
-import { OptimizationNarrative } from "@/components/auto-optimize/OptimizationNarrative"
 import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
 import { SuggestionsPanel } from "@/components/auto-optimize/SuggestionsPanel"
 import {
@@ -288,11 +287,8 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                             <StageTimeline stages={run.stages ?? []} />
                           </div>
                           {/* Publish/audit summary headline — LLM paragraph +
-                              concerns; the rich per-iteration narrative is
-                              demoted to a collapsed expandable detail beneath. */}
-                          <PublishAuditSummary publishRecord={publishRecord}>
-                            <OptimizationNarrative run={run} iterations={iterations} convergenceReason={run.convergenceReason} />
-                          </PublishAuditSummary>
+                              concerns callout. */}
+                          <PublishAuditSummary publishRecord={publishRecord} />
                         </div>
                       </TabsContent>
 

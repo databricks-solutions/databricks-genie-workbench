@@ -1869,9 +1869,15 @@ def _enrich_run_summaries(runs: list[dict]) -> list[dict]:
     Derived from the stored `convergence_reason` (validated against the closed
     typed set); legacy free-text reasons / in-progress runs ⇒ None. The raw
     `convergence_reason` is preserved for back-compat.
+
+    Also coerces `best_accuracy` to a float: the Delta/SQL-warehouse fallback
+    path returns every column as a string (JSON_ARRAY format), and the frontend
+    history table guards with `Number.isFinite`, so a string `"53.3"` would
+    render as an em dash in the Champion accuracy column.
     """
     for r in runs:
         r["terminal_reason"] = _typed_terminal_reason(r)
+        r["best_accuracy"] = _safe_float(r.get("best_accuracy"))
     return runs
 
 
@@ -2019,11 +2025,17 @@ def _dedup_attempt_rows(loop_rows: list[dict]) -> list[dict]:
     ``attempt_no`` to the most recent row (so accuracy/decision reflect the final
     committed eval). Returned ordered by ``attempt_no`` ascending, so ``len()`` is
     the DISTINCT attempt count.
+
+    The baseline is NOT an attempt — it is the ladder floor served by
+    ``/iterations`` (and synthesized as its own row by the UI ladder/ledger
+    builders). The loop writes it as ``attempt_no=0, attempt_mode="baseline"``;
+    excluding it here keeps ``attempts[]`` to real patch attempts (≥1) and stops
+    a duplicate "Baseline" row from rendering in the Attempt Ledger/Ladder.
     """
     by_attempt: dict[int, dict] = {}
     for r in loop_rows:
         attempt_no = _safe_int(r.get("attempt_no"))
-        if attempt_no is None:
+        if attempt_no is None or attempt_no == 0:
             continue
         if str(r.get("eval_scope") or "").lower() not in _FULL_BENCHMARK_SCOPES:
             continue

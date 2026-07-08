@@ -1253,6 +1253,11 @@ def test_loop_state_endpoint_builds_attempts_and_aggregate(monkeypatch) -> None:
         # Baseline iter 0 — not an attempt (no attempt_no).
         {"iteration": 0, "eval_scope": "full", "overall_accuracy": 70.0,
          "attempt_no": None, "is_champion": False},
+        # Baseline written as an explicit attempt_no=0 row — still not an
+        # attempt; must be excluded so the ledger/ladder don't double-render it.
+        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 70.0,
+         "attempt_no": 0, "attempt_mode": "baseline", "best_accuracy": 70.0,
+         "is_champion": False},
         # Coverage attempt 1 (rolled back).
         {"iteration": 1, "eval_scope": "enrichment", "overall_accuracy": 68.0,
          "attempt_no": 1, "attempt_mode": "coverage", "best_accuracy": 70.0,
@@ -1276,7 +1281,8 @@ def test_loop_state_endpoint_builds_attempts_and_aggregate(monkeypatch) -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
 
-    # Only the two attempts (coverage + surgical); baseline excluded.
+    # Only the two attempts (coverage + surgical); baseline excluded in BOTH
+    # forms (attempt_no is None AND the explicit attempt_no=0 baseline row).
     assert [a["attemptNo"] for a in body["attempts"]] == [1, 2]
     coverage = body["attempts"][0]
     assert coverage["attemptMode"] == "coverage"

@@ -3,7 +3,6 @@ import { ArrowLeft } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { ScoreSummary } from "@/components/auto-optimize/ScoreSummary"
 import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
-import { OptimizationNarrative } from "@/components/auto-optimize/OptimizationNarrative"
 import { ResolutionActions } from "@/components/auto-optimize/ResolutionActions"
 import { BenchmarkChangesPanel } from "@/components/auto-optimize/BenchmarkChangesPanel"
 import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
@@ -106,11 +105,8 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         </div>
       </div>
 
-      {/* Publish/audit summary headline (LLM paragraph + concerns), with the
-          legacy per-iteration narrative demoted to a collapsed detail. */}
-      <PublishAuditSummary publishRecord={publishRecord}>
-        <OptimizationNarrative run={run} iterations={iterations} convergenceReason={run.convergenceReason} />
-      </PublishAuditSummary>
+      {/* Publish/audit summary headline (LLM paragraph + concerns). */}
+      <PublishAuditSummary publishRecord={publishRecord} />
 
       {/* Keep / Discard-rollback affordance (auto-publish model). */}
       {showResolution && (

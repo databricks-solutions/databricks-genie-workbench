@@ -14,7 +14,6 @@ import { TerminalBanner } from "@/components/auto-optimize/TerminalBanner"
 import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
 import { ResolutionActions } from "@/components/auto-optimize/ResolutionActions"
 import { BenchmarkChangesPanel } from "@/components/auto-optimize/BenchmarkChangesPanel"
-import { OptimizationNarrative } from "@/components/auto-optimize/OptimizationNarrative"
 import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
 import { ResourceLinks } from "@/components/auto-optimize/ResourceLinks"
 import {
@@ -479,17 +478,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         )}
 
         {/* Publish/audit summary headline — LLM paragraph + concerns callout. */}
-        {isTerminal && (
-          <PublishAuditSummary publishRecord={publishRecordForRun}>
-            {runDetailForRun && (
-              <OptimizationNarrative
-                run={runDetailForRun}
-                iterations={iterations}
-                convergenceReason={runDetailForRun.convergenceReason}
-              />
-            )}
-          </PublishAuditSummary>
-        )}
+        {isTerminal && <PublishAuditSummary publishRecord={publishRecordForRun} />}
 
         {/* Keep / Discard-rollback affordance (auto-publish model). */}
         {showResolution && (

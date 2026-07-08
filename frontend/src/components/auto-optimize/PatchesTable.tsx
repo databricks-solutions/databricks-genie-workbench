@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { getAutoOptimizePatches } from "@/lib/api"
@@ -86,37 +86,37 @@ export function PatchesTable({ runId, iterations }: PatchesTableProps) {
                 const isExpanded = expandedRows.has(i)
                 const hasCommand = !!patch.command
                 return (
-                  <tr key={i} className="border-b border-default last:border-0">
-                    <td colSpan={8} className="p-0">
-                      <div>
-                        <button
-                          onClick={() => hasCommand && toggleRow(i)}
-                          className={`flex w-full items-center text-left hover:bg-elevated/50 transition-colors ${hasCommand ? "cursor-pointer" : "cursor-default"}`}
-                        >
-                          <div className="w-8 px-2 py-2 flex items-center justify-center">
-                            {hasCommand && (
-                              isExpanded
-                                ? <ChevronDown className="h-3.5 w-3.5 text-muted" />
-                                : <ChevronRight className="h-3.5 w-3.5 text-muted" />
-                            )}
-                          </div>
-                          <div className="px-3 py-2 text-muted">
-                            {iterations ? patchAttemptLabel(patch.iteration, iterations) : patch.iteration}
-                          </div>
-                          <div className="px-3 py-2 text-muted">{LEVER_NAMES[patch.lever ?? 0] ?? `Lever ${patch.lever}`}</div>
-                          <div className="px-3 py-2 text-primary">{patch.patch_type}</div>
-                          <div className="px-3 py-2 text-primary font-mono text-xs flex-1 truncate max-w-[200px]" title={patch.target_object}>
-                            {patch.target_object}
-                          </div>
-                          <div className="px-3 py-2 text-muted">{patch.scope}</div>
-                          <div className="px-3 py-2 text-muted">{patch.risk_level}</div>
-                          <div className="px-3 py-2">
-                            <Badge variant={STATUS_COLORS[patch.status?.toLowerCase()] ?? "secondary"}>
-                              {patch.status}
-                            </Badge>
-                          </div>
-                        </button>
-                        {isExpanded && patch.command && (
+                  <Fragment key={i}>
+                    <tr
+                      onClick={() => hasCommand && toggleRow(i)}
+                      className={`border-b border-default last:border-0 transition-colors ${hasCommand ? "cursor-pointer hover:bg-elevated/50" : ""}`}
+                    >
+                      <td className="w-8 px-2 py-2 text-center">
+                        {hasCommand && (
+                          isExpanded
+                            ? <ChevronDown className="inline h-3.5 w-3.5 text-muted" />
+                            : <ChevronRight className="inline h-3.5 w-3.5 text-muted" />
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-muted">
+                        {iterations ? patchAttemptLabel(patch.iteration, iterations) : patch.iteration}
+                      </td>
+                      <td className="px-3 py-2 text-muted">{LEVER_NAMES[patch.lever ?? 0] ?? `Lever ${patch.lever}`}</td>
+                      <td className="px-3 py-2 text-primary">{patch.patch_type}</td>
+                      <td className="px-3 py-2 text-primary font-mono text-xs truncate max-w-[200px]" title={patch.target_object}>
+                        {patch.target_object}
+                      </td>
+                      <td className="px-3 py-2 text-muted">{patch.scope}</td>
+                      <td className="px-3 py-2 text-muted">{patch.risk_level}</td>
+                      <td className="px-3 py-2">
+                        <Badge variant={STATUS_COLORS[patch.status?.toLowerCase()] ?? "secondary"}>
+                          {patch.status}
+                        </Badge>
+                      </td>
+                    </tr>
+                    {isExpanded && patch.command && (
+                      <tr className="border-b border-default last:border-0">
+                        <td colSpan={8} className="p-0">
                           <div className="mx-8 mb-3 rounded-lg bg-elevated p-3 overflow-x-auto">
                             <pre className="text-xs font-mono text-muted whitespace-pre-wrap">{
                               typeof patch.command === "string"
@@ -124,10 +124,10 @@ export function PatchesTable({ runId, iterations }: PatchesTableProps) {
                                 : JSON.stringify(patch.command, null, 2)
                             }</pre>
                           </div>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
             </tbody>

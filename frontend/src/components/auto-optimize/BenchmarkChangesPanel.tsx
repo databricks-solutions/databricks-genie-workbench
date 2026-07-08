@@ -119,12 +119,7 @@ function PanelShell({
   return (
     <div className="rounded-xl border border-default p-6 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-muted">
-            Task 01 · Benchmark QC &amp; repair
-          </p>
-          <h3 className="text-sm font-semibold text-primary">Benchmark Changes</h3>
-        </div>
+        <h3 className="text-sm font-semibold text-primary">Benchmark Changes</h3>
         {counts && counts.total > 0 && (
           <div className="flex items-center gap-1.5 text-xs text-muted">
             <span className="text-emerald-500">+{counts.added} added</span>

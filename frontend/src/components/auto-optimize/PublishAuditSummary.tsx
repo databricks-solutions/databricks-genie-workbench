@@ -6,9 +6,9 @@ interface PublishAuditSummaryProps {
   /** The publish_and_audit record (arch §7.3). Null on legacy runs / pre-publish. */
   publishRecord: GSOPublishRecord | null | undefined
   /**
-   * The legacy per-iteration narrative, demoted to a collapsed expandable
-   * detail beneath the LLM headline. Optional — the cockpit doesn't pass one
-   * (the Attempt Ladder/Ledger is its trajectory).
+   * Optional supplementary detail, demoted to a collapsed expandable section
+   * beneath the LLM headline. Callers currently pass none (the Attempt
+   * Ladder/Ledger is the trajectory surface); kept for back-compat.
    */
   children?: ReactNode
 }
@@ -19,10 +19,10 @@ interface PublishAuditSummaryProps {
  * summary of all changes + a concerns callout (the surface where concerns are
  * raised — there is no separate escalation branch).
  *
- * The existing ``OptimizationNarrative`` (passed as ``children``) is demoted to
- * a collapsed expandable detail beneath this headline. For legacy runs that
- * have no publish record, there is no headline to demote into — the narrative
- * stays visible (not collapsed) so the page is never left empty.
+ * Any ``children`` passed are demoted to a collapsed expandable detail beneath
+ * this headline. For legacy runs that have no publish record, there is no
+ * headline to demote into — the children stay visible (not collapsed) so the
+ * page is never left empty.
  */
 export function PublishAuditSummary({ publishRecord, children }: PublishAuditSummaryProps) {
   const [detailOpen, setDetailOpen] = useState(false)

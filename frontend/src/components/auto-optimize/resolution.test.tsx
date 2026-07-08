@@ -42,7 +42,6 @@ import {
 import { PublishAuditSummary } from "./PublishAuditSummary"
 import { ResolutionActions } from "./ResolutionActions"
 import { BenchmarkChangesPanel } from "./BenchmarkChangesPanel"
-import { OptimizationNarrative } from "./OptimizationNarrative"
 
 // A fully-populated iteration row; tests override the fields they care about.
 function iter(overrides: Partial<GSOIterationResult>): GSOIterationResult {
@@ -433,32 +432,6 @@ describe("PublishAuditSummary — LLM headline + concerns callout (§7.3)", () =
 
   it("renders nothing when there is neither a record nor a narrative", () => {
     expect(renderToStaticMarkup(<PublishAuditSummary publishRecord={null} />)).toBe("")
-  })
-
-  it("composes with OptimizationNarrative without throwing", () => {
-    const run = {
-      runId: "r",
-      spaceId: "s",
-      status: "CONVERGED",
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-      baselineScore: 70,
-      optimizedScore: 91,
-      baselineIteration: 0,
-      bestIteration: 2,
-      steps: [],
-      stages: [],
-      levers: [],
-      links: [],
-      convergenceReason: null,
-    }
-    expect(() =>
-      renderToStaticMarkup(
-        <PublishAuditSummary publishRecord={publishRecord({ auditSummary: "x" })}>
-          <OptimizationNarrative run={run} iterations={[]} />
-        </PublishAuditSummary>,
-      ),
-    ).not.toThrow()
   })
 })
 
