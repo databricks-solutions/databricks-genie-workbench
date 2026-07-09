@@ -1157,6 +1157,11 @@ def _validate_unified_sql_snippet_patch(
             gold_schema=schema,
             w=w,
             warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+            # Authoritative table the LLM authored the snippet against. Without
+            # this the validator scans the bare expression (which names no
+            # table) and falls back to the first table in the space, qualifying
+            # columns and EXPLAINing against the wrong table.
+            target_table=str(clean.get("target_table") or ""),
         )
     except Exception as exc:
         valid, reason, normalized_sql = False, f"{type(exc).__name__}: {exc}", str(clean.get("sql") or "")

@@ -61,6 +61,8 @@ from genie_space_optimizer.optimization.applier import (
 )
 from genie_space_optimizer.optimization.benchmarks import (
     _auto_prefix_bare_columns,
+    _extract_primary_table,
+    _primary_table_for_snippet,
     normalize_sql_snippet,
 )
 from genie_space_optimizer.optimization.evaluation import (
@@ -254,6 +256,111 @@ class TestNormalizeSqlSnippet:
             spark=None, w=None, warehouse_id="",
         )
         assert "EXPLAIN failed" not in " ".join(warnings)
+
+
+class TestSnippetTargetTableResolution:
+    """Regression for run 89ed8700: a bare expression targeting the SECOND
+
+    table in the space was qualified/validated against the FIRST table
+    (``_extract_primary_table``'s silent first-table fallback), so every
+    correct snippet was rejected. The LLM patch's ``target_table`` must win.
+    """
+
+    def _two_table_snapshot(self) -> dict:
+        # accounts is FIRST — the table the old fallback wrongly picked.
+        return _make_snapshot([
+            {
+                "identifier": "cat.sch.accounts",
+                "columns": [
+                    {"name": "account_id"},
+                    {"name": "status"},
+                    {"name": "account_type"},
+                ],
+            },
+            {
+                "identifier": "cat.sch.transactions",
+                "columns": [
+                    {"name": "amount_usd"},
+                    {"name": "transaction_date"},
+                ],
+            },
+        ])
+
+    def test_resolver_prefers_target_table_over_first_table_fallback(self):
+        snap = self._two_table_snapshot()
+        bare = "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount_usd)"
+        # No hint reproduces the old (buggy) first-table behavior.
+        assert (
+            _primary_table_for_snippet(bare, snap)
+            == "cat.sch.accounts"
+        )
+        # Short-name hint resolves to the canonical FQ identifier.
+        assert (
+            _primary_table_for_snippet(bare, snap, target_table="transactions")
+            == "cat.sch.transactions"
+        )
+        # Fully-qualified hint resolves too.
+        assert (
+            _primary_table_for_snippet(
+                bare, snap, target_table="cat.sch.transactions",
+            )
+            == "cat.sch.transactions"
+        )
+
+    def test_no_hint_matches_legacy_extract_primary_table(self):
+        snap = self._two_table_snapshot()
+        bare = "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount_usd)"
+        assert (
+            _primary_table_for_snippet(bare, snap, target_table="")
+            == _extract_primary_table(bare, snap)
+        )
+
+    def test_unmatched_hint_is_trusted_verbatim(self):
+        snap = self._two_table_snapshot()
+        assert (
+            _primary_table_for_snippet(
+                "SUM(x)", snap, target_table="cat.sch.not_in_space",
+            )
+            == "cat.sch.not_in_space"
+        )
+
+    def test_normalize_qualifies_against_target_table_not_first_table(self):
+        """The failing-run expression, qualified against the RIGHT table.
+
+        With ``target_table=transactions`` the bare ``amount_usd`` is prefixed
+        to ``cat.sch.transactions.amount_usd`` — the 4-part FQ form Genie
+        accepts — instead of being left bare (accounts has no ``amount_usd``,
+        which is what produced the "Table name or alias is required" error).
+        """
+        snap = self._two_table_snapshot()
+        bare = "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount_usd)"
+        out, warnings = normalize_sql_snippet(
+            bare, "expression", snap,
+            catalog="cat", gold_schema="sch",
+            spark=None, w=None, warehouse_id="",
+            target_table="cat.sch.transactions",
+        )
+        assert "cat.sch.transactions.amount_usd" in out
+        # The column must NOT be left bare, and must NOT be pinned to accounts.
+        assert "cat.sch.accounts.amount_usd" not in out
+        assert warnings == []
+
+    def test_normalize_without_hint_cannot_qualify_against_wrong_table(self):
+        """Documents the pre-fix failure: no hint → first-table (accounts) →
+
+        ``amount_usd`` is unknown there, so it is left bare (unqualified),
+        which is exactly the shape the Genie editor rejects.
+        """
+        snap = self._two_table_snapshot()
+        bare = "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount_usd)"
+        out, _warnings = normalize_sql_snippet(
+            bare, "expression", snap,
+            catalog="cat", gold_schema="sch",
+            spark=None, w=None, warehouse_id="",
+        )
+        # accounts has no amount_usd → left bare (the bug).
+        assert "cat.sch.transactions.amount_usd" not in out
+        assert "amount_usd" in out
 
 
 # ─────────────────────────────────────────────────────────────────────

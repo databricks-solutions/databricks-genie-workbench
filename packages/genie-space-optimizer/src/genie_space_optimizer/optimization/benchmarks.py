@@ -1327,6 +1327,57 @@ def _extract_primary_table(sql: str, metadata_snapshot: dict) -> str | None:
     return None
 
 
+def _primary_table_for_snippet(
+    sql: str,
+    metadata_snapshot: dict,
+    *,
+    target_table: str = "",
+) -> str | None:
+    """Resolve the table a snippet expression should be validated against.
+
+    A bare snippet expression (``PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY
+    amount_usd)``) has no ``FROM`` and no table reference by design, so
+    :func:`_extract_primary_table`'s text-scan finds nothing and silently
+    falls back to the FIRST table in the space. When the LLM patch already
+    tells us the table (``target_table``), that guess is both unnecessary and
+    frequently wrong (it qualifies columns against — and EXPLAINs against —
+    the wrong table, so every correct snippet is rejected).
+
+    Prefer the caller-supplied ``target_table`` hint: match it against the
+    snapshot's data_sources by fully-qualified or short name and return the
+    snapshot's canonical identifier. If the hint doesn't match any known
+    source, return it verbatim (the caller was explicit; let the downstream
+    EXPLAIN surface a real error rather than silently validating the wrong
+    table). Fall back to :func:`_extract_primary_table` only when no hint is
+    given — preserving behavior for callers (proactive seeding, cluster
+    synthesis) that don't pass one.
+    """
+    hint = str(target_table or "").strip()
+    if not hint:
+        return _extract_primary_table(sql, metadata_snapshot)
+
+    ds = metadata_snapshot.get("data_sources", {})
+    all_sources: list = []
+    if isinstance(ds, dict):
+        all_sources.extend(ds.get("tables", []) or [])
+        all_sources.extend(ds.get("metric_views", []) or [])
+    table_ids = {
+        t.get("identifier", "").lower(): t.get("identifier", "")
+        for t in all_sources
+        if isinstance(t, dict) and t.get("identifier")
+    }
+
+    hint_lower = hint.lower()
+    if hint_lower in table_ids:
+        return table_ids[hint_lower]
+    hint_short = hint_lower.split(".")[-1]
+    for tid_lower, tid in table_ids.items():
+        if tid_lower.split(".")[-1] == hint_short:
+            return tid
+    # Explicit hint that matched nothing in the snapshot — trust it verbatim.
+    return hint
+
+
 def _resolve_primary_table_fqn(
     table_identifier: str, *, catalog: str, gold_schema: str,
 ) -> str:
@@ -1569,6 +1620,7 @@ def normalize_sql_snippet(
     spark: Any = None,
     w: Any = None,
     warehouse_id: str = "",
+    target_table: str = "",
 ) -> tuple[str, list[str]]:
     """Return the stored form of a SQL snippet: strip wrappers, FQ-prefix, EXPLAIN.
 
@@ -1612,8 +1664,14 @@ def normalize_sql_snippet(
         if upper.startswith("WHERE "):
             cleaned = cleaned[6:].lstrip()
 
-    # Locate the primary table so we can FQ-prefix.
-    table = _extract_primary_table(cleaned, metadata_snapshot)
+    # Locate the primary table so we can FQ-prefix. A caller-supplied
+    # ``target_table`` (the snippet patch's authored table) takes precedence
+    # over scanning the bare expression text — a bare expression names no
+    # table, so the scan would otherwise fall back to the first table in the
+    # space and prefix columns against the wrong table.
+    table = _primary_table_for_snippet(
+        cleaned, metadata_snapshot, target_table=target_table,
+    )
     if not table:
         warnings.append("cannot determine primary table; skipping FQ-prefix")
         prefixed_sql = cleaned
@@ -1717,6 +1775,7 @@ def validate_sql_snippet(
     gold_schema: str = "",
     w: Any = None,
     warehouse_id: str = "",
+    target_table: str = "",
 ) -> tuple[bool, str, str]:
     """Validate a SQL snippet: normalize + EXPLAIN + execute.
 
@@ -1744,13 +1803,23 @@ def validate_sql_snippet(
       total`` (the filter restricts nothing). If the table is empty
       (``total == 0``) we skip the check — emptiness cannot prove vacuity.
 
+    ``target_table`` is the table the snippet is authored against (the
+    ``target_table`` field on an ``add_sql_snippet_*`` patch). When supplied it
+    is used as the primary table for both FQ-column prefixing and the EXPLAIN
+    wrapper, bypassing :func:`_extract_primary_table`'s text-scan+first-table
+    fallback — a bare expression names no table, so that fallback would
+    otherwise validate against the wrong (first) table in the space. Omit it to
+    preserve the legacy scan-based behavior.
+
     Returns ``(is_valid, error_message, prefixed_sql)`` — callers should
     use ``prefixed_sql`` (the 3rd element) when storing the snippet so
     the FQ form is persisted.
     """
     from genie_space_optimizer.common.config import REJECT_VACUOUS_FILTERS
 
-    table = _extract_primary_table(sql, metadata_snapshot)
+    table = _primary_table_for_snippet(
+        sql, metadata_snapshot, target_table=target_table,
+    )
     if not table:
         return False, "Cannot determine primary table for SQL snippet", sql
 
@@ -1758,6 +1827,7 @@ def validate_sql_snippet(
         sql, snippet_type, metadata_snapshot,
         catalog=catalog, gold_schema=gold_schema,
         spark=spark, w=w, warehouse_id=warehouse_id,
+        target_table=target_table,
     )
     # ``normalize_sql_snippet`` surfaces EXPLAIN failures via warnings.
     for warning in warnings:
