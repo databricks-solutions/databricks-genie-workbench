@@ -736,3 +736,159 @@ def test_unified_loop_pivots_after_benchmark_leak_wipeout(monkeypatch) -> None:
     assert leak_reflections
     assert "add_example_sql" in leak_reflections[0]["banned_patch_types"]
     assert "add_sql_snippet_expression" in leak_reflections[0]["viable_patch_types"]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Fix B — transient eval retry; Option A-min — champion preservation
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_native_eval_retries_transient_timeout_then_succeeds(monkeypatch) -> None:
+    """Fix B: an EVALUATION_TIMEOUT is retried and a later success is returned.
+
+    Reproduces run 32f5b395's restart baseline, which timed out once. The retry
+    must recover instead of surfacing eval_run_failed.
+    """
+    monkeypatch.setattr(
+        unified_loop, "resolve_space_benchmark_qids", lambda _w, _s, _b: ["q1"]
+    )
+    monkeypatch.setattr(unified_loop, "OfficialBenchmarkRunner", lambda _w: MagicMock())
+
+    statuses = iter(["EVALUATION_TIMEOUT", "DONE"])
+
+    def fake_build(_result, *, iteration, eval_scope, model_id=None):
+        status = next(statuses)
+        return {
+            "eval_run_status": status,
+            "eval_run_failed": status != "DONE",
+            "overall_accuracy": 0.0 if status != "DONE" else 76.67,
+            "rows": [],
+        }
+
+    monkeypatch.setattr(unified_loop, "build_eval_output_from_official", fake_build)
+
+    out = unified_loop._native_eval(
+        MagicMock(), space_id="space", benchmarks=[{"question": "q"}], iteration=0,
+    )
+    assert out["eval_run_status"] == "DONE"
+    assert out["eval_run_failed"] is False
+    assert out["overall_accuracy"] == 76.67
+
+
+def test_native_eval_does_not_retry_hard_eval_failure(monkeypatch) -> None:
+    """Fix B: EVALUATION_FAILED is NOT transient — it is returned on attempt 1."""
+    monkeypatch.setattr(
+        unified_loop, "resolve_space_benchmark_qids", lambda _w, _s, _b: ["q1"]
+    )
+    monkeypatch.setattr(unified_loop, "OfficialBenchmarkRunner", lambda _w: MagicMock())
+
+    calls = {"n": 0}
+
+    def fake_build(_result, *, iteration, eval_scope, model_id=None):
+        calls["n"] += 1
+        return {
+            "eval_run_status": "EVALUATION_FAILED",
+            "eval_run_failed": True,
+            "overall_accuracy": 0.0,
+            "rows": [],
+        }
+
+    monkeypatch.setattr(unified_loop, "build_eval_output_from_official", fake_build)
+
+    out = unified_loop._native_eval(
+        MagicMock(), space_id="space", benchmarks=[{"question": "q"}], iteration=0,
+    )
+    assert out["eval_run_failed"] is True
+    assert calls["n"] == 1  # no retry
+
+
+def test_native_eval_gives_up_after_max_transient_retries(monkeypatch) -> None:
+    """Fix B: a persistently-timing-out eval stops after the bounded retries."""
+    monkeypatch.setattr(
+        unified_loop, "resolve_space_benchmark_qids", lambda _w, _s, _b: ["q1"]
+    )
+    monkeypatch.setattr(unified_loop, "OfficialBenchmarkRunner", lambda _w: MagicMock())
+
+    calls = {"n": 0}
+
+    def fake_build(_result, *, iteration, eval_scope, model_id=None):
+        calls["n"] += 1
+        return {
+            "eval_run_status": "EVALUATION_TIMEOUT",
+            "eval_run_failed": True,
+            "overall_accuracy": 0.0,
+            "rows": [],
+        }
+
+    monkeypatch.setattr(unified_loop, "build_eval_output_from_official", fake_build)
+
+    out = unified_loop._native_eval(
+        MagicMock(), space_id="space", benchmarks=[{"question": "q"}], iteration=0,
+    )
+    assert out["eval_run_failed"] is True
+    assert calls["n"] == unified_loop._MAX_TRANSIENT_EVAL_RETRIES + 1  # 1 + 2 = 3
+
+
+def test_failed_baseline_preserves_persisted_champion(monkeypatch) -> None:
+    """Option A-min: a failed baseline eval on restart must stamp the persisted
+
+    champion (iter 2 @ 76.67% committed by a prior execution), not baseline
+    iteration 0 @ 0. Reproduces run 32f5b395's EVAL_INVALID clobber.
+    """
+    champions: list[int] = []
+    status_updates: list[dict] = []
+
+    monkeypatch.setattr(unified_loop, "fetch_space_config", lambda _w, _space_id: {"title": "s"})
+    # Restart's baseline eval times out (eval_run_failed=True) even after Fix B retries.
+    monkeypatch.setattr(
+        unified_loop,
+        "_native_eval",
+        MagicMock(return_value=_eval_result(0.0, failed=True)),
+    )
+    # Prior execution already committed iterations to genie_opt_iterations.
+    persisted = [
+        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 50.0, "rolled_back": False},
+        {"iteration": 1, "eval_scope": "full", "overall_accuracy": 56.67, "rolled_back": False},
+        {"iteration": 2, "eval_scope": "full", "overall_accuracy": 76.67, "rolled_back": False},
+        # the current restart's timed-out baseline row scores 0.0 → never wins
+        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 0.0, "rolled_back": False},
+    ]
+    monkeypatch.setattr(
+        unified_loop, "load_all_scored_iterations",
+        lambda _spark, _run_id, _catalog, _schema: persisted,
+    )
+    monkeypatch.setattr(unified_loop, "write_iteration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(unified_loop, "update_iteration_loop_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        unified_loop, "mark_champion_iteration",
+        lambda _spark, _run_id, iteration, **_kwargs: champions.append(iteration),
+    )
+    monkeypatch.setattr(
+        unified_loop, "update_run_status",
+        lambda _spark, _run_id, _catalog, _schema, **kwargs: status_updates.append(kwargs),
+    )
+
+    result = unified_loop.run_unified_optimization_loop(
+        MagicMock(),
+        MagicMock(),
+        run_id="run",
+        space_id="space",
+        domain="default",
+        benchmarks=[{"question": "q"}],
+        catalog="cat",
+        schema="sch",
+        levers=[1, 2, 3, 4, 5, 6],
+        max_attempts=4,
+        target_accuracy=85.0,
+    )
+
+    assert result["terminal_reason"] == "EVAL_INVALID"
+    # The champion is the persisted iter 2, NOT baseline iteration 0.
+    assert result["best_iteration"] == 2
+    assert result["accuracy"] == 76.67
+    assert champions[-1] == 2
+    # The terminal run-status write carries the preserved champion, not 0/50.
+    terminal_status = [s for s in status_updates if s.get("convergence_reason") == "EVAL_INVALID"]
+    assert terminal_status
+    assert terminal_status[-1]["best_iteration"] == 2
+    assert terminal_status[-1]["best_accuracy"] == 76.67

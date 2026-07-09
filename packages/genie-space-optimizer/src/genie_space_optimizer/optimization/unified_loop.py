@@ -48,6 +48,7 @@ from genie_space_optimizer.optimization.leakage import (
 )
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.state import (
+    load_all_scored_iterations,
     mark_champion_iteration,
     mark_iteration_rolled_back,
     mark_patches_rolled_back,
@@ -112,6 +113,21 @@ _MAX_LEAK_PIVOT_RETRIES = 2
 _BENCHMARK_LEAK_DROP_REASONS: frozenset[str] = frozenset(
     {"benchmark_example_sql_leak", "benchmark_prose_leak"}
 )
+
+# Eval-run statuses that are TRANSIENT infra faults (not a real "the config is
+# broken" signal) — an eval-service timeout or a cancelled run can recover on a
+# fresh attempt. A single transient blip should not sink a run that has already
+# committed real improvement, so _native_eval retries these before surfacing
+# eval_run_failed. EVALUATION_FAILED is NOT here: it means the eval genuinely
+# failed and retrying is unlikely to help.
+_TRANSIENT_EVAL_STATUSES: frozenset[str] = frozenset(
+    {"EVALUATION_TIMEOUT", "EVALUATION_CANCELLED"}
+)
+
+# Number of extra attempts _native_eval makes when an eval returns a transient
+# status. 2 retries (3 total attempts) covers a brief eval-service degradation
+# window without stalling the loop indefinitely on a persistently-down service.
+_MAX_TRANSIENT_EVAL_RETRIES = 2
 
 _METADATA_PATCH_TYPES: frozenset[str] = frozenset(
     {"update_description", "update_column_description", "add_column_synonym"}
@@ -692,13 +708,33 @@ def _native_eval(
             "must push benchmarks before optimize runs."
         )
     runner = OfficialBenchmarkRunner(w)
-    result = runner.run(space_id, qids, eval_scope=FULL)
-    return build_eval_output_from_official(
-        result,
-        iteration=iteration,
-        eval_scope=FULL,
-        model_id=model_id,
-    )
+    # Fix B: retry a TRANSIENT eval failure (eval-service timeout / cancellation)
+    # before surfacing eval_run_failed. A single infra blip during an eval must
+    # not terminate a run — especially a restart's baseline eval, which would
+    # otherwise stamp EVAL_INVALID and discard already-committed improvement.
+    # EVALUATION_FAILED is not transient and is returned on the first attempt.
+    eval_output: dict[str, Any] = {}
+    for attempt in range(_MAX_TRANSIENT_EVAL_RETRIES + 1):
+        result = runner.run(space_id, qids, eval_scope=FULL)
+        eval_output = build_eval_output_from_official(
+            result,
+            iteration=iteration,
+            eval_scope=FULL,
+            model_id=model_id,
+        )
+        status = str(eval_output.get("eval_run_status") or "")
+        if not eval_output.get("eval_run_failed"):
+            return eval_output
+        if status not in _TRANSIENT_EVAL_STATUSES:
+            return eval_output
+        if attempt < _MAX_TRANSIENT_EVAL_RETRIES:
+            logger.warning(
+                "Transient eval status %s for space=%s iter=%d (attempt %d/%d); "
+                "retrying eval",
+                status, space_id, iteration, attempt + 1,
+                _MAX_TRANSIENT_EVAL_RETRIES + 1,
+            )
+    return eval_output
 
 
 def _llm_messages(
@@ -1644,6 +1680,62 @@ def _loop_state(
     }
 
 
+def _best_persisted_iteration(
+    spark: Any,
+    run_id: str,
+    *,
+    catalog: str,
+    schema: str,
+) -> tuple[int, float] | None:
+    """Return ``(iteration, accuracy)`` of the best committed iteration on disk.
+
+    Option A-min: when the loop terminates on a TRANSIENT eval failure (e.g. a
+    restart's baseline eval times out), the in-memory ``best_iteration`` is 0 —
+    but ``genie_opt_iterations`` may already hold a higher-accuracy, accepted
+    (non-rolled-back) iteration from a prior execution of the same run. Stamping
+    the terminal state against iteration 0 would clobber that real champion with
+    baseline and report it as throwaway work. This reads the durable best so the
+    terminal stamp can flag the actual champion instead.
+
+    Selection mirrors ``select_champion_row``'s accuracy fallback: highest
+    ``overall_accuracy`` among non-rolled-back full-scope rows. A failed/timed-out
+    row scores 0.0 accuracy (see ``build_eval_output_from_official``) so it can
+    never win. Returns ``None`` on read failure or no rows, so the caller keeps
+    its current in-memory behavior.
+    """
+    try:
+        rows = load_all_scored_iterations(spark, run_id, catalog, schema)
+    except Exception:
+        logger.warning(
+            "Could not load persisted iterations for run %s; terminal stamp "
+            "falls back to in-memory best", run_id, exc_info=True,
+        )
+        return None
+
+    best_iter: int | None = None
+    best_acc = float("-inf")
+    for row in rows:
+        if str(row.get("eval_scope") or "") != FULL:
+            continue
+        rolled_back = row.get("rolled_back")
+        if isinstance(rolled_back, str):
+            rolled_back = rolled_back.strip().lower() in {"1", "true", "yes", "y"}
+        if rolled_back:
+            continue
+        try:
+            iter_no = int(row.get("iteration"))
+        except (TypeError, ValueError):
+            continue
+        acc = _metric(row.get("overall_accuracy"), default=float("-inf"))
+        if acc > best_acc:
+            best_acc = acc
+            best_iter = iter_no
+
+    if best_iter is None or best_acc == float("-inf"):
+        return None
+    return best_iter, best_acc
+
+
 def _stamp_terminal(
     spark: Any,
     *,
@@ -1783,12 +1875,27 @@ def run_unified_optimization_loop(
 
     if baseline_eval.get("eval_run_failed"):
         terminal_reason = "EVAL_INVALID"
+        # Option A-min: a failed baseline eval (common on a job restart whose
+        # fresh baseline eval times out) must not clobber a real champion a
+        # prior execution already committed. Stamp against the best persisted
+        # iteration if one out-scores this failed baseline.
+        stamp_iteration, stamp_accuracy = best_iteration, best_accuracy
+        persisted_best = _best_persisted_iteration(
+            spark, run_id, catalog=catalog, schema=schema,
+        )
+        if persisted_best is not None and persisted_best[1] > best_accuracy:
+            stamp_iteration, stamp_accuracy = persisted_best
+            logger.warning(
+                "Baseline eval failed for run %s; preserving persisted champion "
+                "iteration=%d accuracy=%.2f instead of stamping baseline",
+                run_id, stamp_iteration, stamp_accuracy,
+            )
         _stamp_terminal(
             spark,
             run_id=run_id,
-            iteration=best_iteration,
+            iteration=stamp_iteration,
             reason=terminal_reason,
-            best_accuracy=best_accuracy,
+            best_accuracy=stamp_accuracy,
             surgical_attempts_used=attempts_used,
             target_accuracy=target_accuracy,
             max_attempts=max_attempts,
@@ -1798,8 +1905,8 @@ def run_unified_optimization_loop(
         )
         return {
             "run_id": run_id,
-            "accuracy": best_accuracy,
-            "best_iteration": best_iteration,
+            "accuracy": stamp_accuracy,
+            "best_iteration": stamp_iteration,
             "iteration_counter": 0,
             "terminal_reason": terminal_reason,
             "surgical_attempts_used": attempts_used,
@@ -2244,12 +2351,34 @@ def run_unified_optimization_loop(
     if terminal_reason is None:
         terminal_reason = "MAX_ATTEMPTS"
 
+    # Option A-min: on a candidate-eval EVAL_INVALID (the mid-loop transient
+    # failure path), preserve a higher-accuracy champion a prior execution
+    # already committed rather than stamping this execution's lower best. Scoped
+    # to EVAL_INVALID: on TARGET_REACHED / MAX_ATTEMPTS / NO_NEW_HYPOTHESIS the
+    # in-memory best already equals the persisted best, so this never fires. The
+    # champion's config pointer is read off the (already-written) iteration row,
+    # so overriding iteration/accuracy here re-flags the correct row safely.
+    stamp_iteration, stamp_accuracy = best_iteration, best_accuracy
+    if terminal_reason == "EVAL_INVALID":
+        persisted_best = _best_persisted_iteration(
+            spark, run_id, catalog=catalog, schema=schema,
+        )
+        if persisted_best is not None and persisted_best[1] > best_accuracy:
+            stamp_iteration, stamp_accuracy = persisted_best
+            logger.warning(
+                "Candidate eval failed for run %s; preserving persisted champion "
+                "iteration=%d accuracy=%.2f instead of stamping in-memory best "
+                "iteration=%d accuracy=%.2f",
+                run_id, stamp_iteration, stamp_accuracy,
+                best_iteration, best_accuracy,
+            )
+
     _stamp_terminal(
         spark,
         run_id=run_id,
-        iteration=best_iteration,
+        iteration=stamp_iteration,
         reason=terminal_reason,
-        best_accuracy=best_accuracy,
+        best_accuracy=stamp_accuracy,
         surgical_attempts_used=attempts_used,
         target_accuracy=target_accuracy,
         max_attempts=max_attempts,
@@ -2271,8 +2400,8 @@ def run_unified_optimization_loop(
 
     return {
         "run_id": run_id,
-        "accuracy": best_accuracy,
-        "best_iteration": best_iteration,
+        "accuracy": stamp_accuracy,
+        "best_iteration": stamp_iteration,
         "iteration_counter": attempts_used,
         "terminal_reason": terminal_reason,
         "surgical_attempts_used": attempts_used,
