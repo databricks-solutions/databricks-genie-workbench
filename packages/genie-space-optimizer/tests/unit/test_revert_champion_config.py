@@ -202,10 +202,6 @@ def test_revert_preserves_live_benchmarks_instead_of_historical_champion(monkeyp
             {"config_json": json.dumps(champion)},
         ]),
     )
-    monkeypatch.setattr(
-        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
-        lambda *a, **k: (True, ""),
-    )
     patch_mock = _patch_patch_space_config(monkeypatch, live_config=live)
 
     revert.revert_optimization("r-bench", ws, sp_ws, cfg, target="champion")
@@ -218,8 +214,8 @@ def test_revert_preserves_live_benchmarks_instead_of_historical_champion(monkeyp
     assert "category = Complaint" not in patched_questions[0]["answer"][0]["content"][0]
 
 
-def test_revert_prunes_invalid_live_benchmarks(monkeypatch) -> None:
-    """A second revert after a bad benchmark rollback should clean the live block."""
+def test_revert_preserves_live_benchmarks_byte_for_byte(monkeypatch) -> None:
+    """Revert skips benchmark edits by carrying live benchmarks forward."""
     cfg = _config()
     ws, sp_ws = _ws(), MagicMock(name="sp_ws")
     run = {
@@ -262,21 +258,12 @@ def test_revert_prunes_invalid_live_benchmarks(monkeypatch) -> None:
             {"config_json": json.dumps(champion)},
         ]),
     )
-    def _validate(sql, *a, **k):
-        if " = Deposit" in sql:
-            return False, "UNRESOLVED_COLUMN: `Deposit`"
-        return True, ""
-
-    monkeypatch.setattr(
-        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
-        _validate,
-    )
     patch_mock = _patch_patch_space_config(monkeypatch, live_config=live)
 
     revert.revert_optimization("r-prune", ws, sp_ws, cfg, target="champion")
 
     patched_questions = patch_mock.call_args.args[2]["benchmarks"]["questions"]
-    assert [q["id"] for q in patched_questions] == ["good"]
+    assert patched_questions == live["_parsed_space"]["benchmarks"]["questions"]
 
 
 def test_revert_champion_errors_when_no_champion_row(monkeypatch) -> None:
