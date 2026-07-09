@@ -13333,7 +13333,7 @@ def _merge_overlapping_instructions(proposals: list[dict]) -> list[dict]:
     return others + merged
 
 
-_LEVER_NAMES = {0: "Proactive Enrichment", 1: "Tables & Columns", 2: "Metric Views", 3: "Table-Valued Functions", 4: "Join Specifications", 5: "Genie Space Instructions", 6: "SQL Expressions"}
+_LEVER_NAMES = {0: "Proactive Enrichment", 1: "Tables & Columns", 2: "Metric Views", 3: "Table-Valued Functions", 4: "Join Specifications", 5: "Instructions & Examples", 6: "SQL Expressions"}
 
 
 def _build_provenance(cluster: dict, lever: int, patch_type: str) -> dict:
@@ -15209,7 +15209,7 @@ def generate_metadata_proposals(
                     "root_cause": "missing_instruction",
                     "originating_questions": holistic_traces,
                     "lever": 5,
-                    "lever_name": "Genie Space Instructions",
+                    "lever_name": "Instructions & Examples",
                     "patch_type": "rewrite_instruction",
                 },
             })

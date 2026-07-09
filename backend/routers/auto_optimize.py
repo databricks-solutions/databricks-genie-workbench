@@ -68,9 +68,9 @@ LEVER_NAMES: dict[int, str] = {
     0: "Legacy Enrichment",
     1: "Tables & Columns",
     2: "Metric Views",
-    3: "SQL Queries & Functions",
+    3: "Table-Valued Functions",
     4: "Join Specifications",
-    5: "Text Instructions",
+    5: "Instructions & Examples",
     6: "SQL Expressions",
 }
 

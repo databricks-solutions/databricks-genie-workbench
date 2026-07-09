@@ -92,7 +92,7 @@ const LEVERS = [
   { number: 2, name: "Metric Views", description: "MV measures, dimensions, YAML definitions", examples: ["update_mv_measure", "add_mv_dimension"], icon: BarChart3 },
   { number: 3, name: "Table-Valued Functions", description: "TVF SQL, parameters, function signatures", examples: ["update_tvf_sql", "add_tvf_parameter"], icon: Code2 },
   { number: 4, name: "Join Specifications", description: "Table relationships, join columns, cardinality", examples: ["add_join_spec", "update_join_spec"], icon: Link2 },
-  { number: 5, name: "Genie Space Instructions", description: "Routing rules, disambiguation, example SQL", examples: ["add_example_sql", "add_instruction"], icon: FileText },
+  { number: 5, name: "Instructions & Examples", description: "Routing rules, disambiguation, example SQL", examples: ["add_example_sql", "add_instruction"], icon: FileText },
   { number: 6, name: "SQL Expressions", description: "Reusable measures, filters, and dimensions", examples: ["add_sql_snippet_measure", "add_sql_snippet_filter"], icon: FlaskConical },
 ];
 

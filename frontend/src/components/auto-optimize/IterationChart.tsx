@@ -18,9 +18,9 @@ interface IterationChartProps {
 const LEVER_NAMES: Record<number, string> = {
   1: "Tables & Columns",
   2: "Metric Views",
-  3: "SQL Queries",
-  4: "Joins",
-  5: "Text Instructions",
+  3: "Table-Valued Functions",
+  4: "Join Specifications",
+  5: "Instructions & Examples",
   6: "SQL Expressions",
 }
 

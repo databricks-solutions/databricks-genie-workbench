@@ -7,9 +7,9 @@ from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER, LEVER_NAMES
 LEVER_DESCRIPTIONS: dict[int, str] = {
     1: "Update table descriptions, column descriptions, and synonyms",
     2: "Update metric view column descriptions",
-    3: "Remove underperforming TVFs",
+    3: "Tune TVF parameter handling and remove underperforming TVFs",
     4: "Add, update, or remove join relationships between tables",
-    5: "Rewrite global routing instructions and add domain-specific guidance",
+    5: "Add example SQLs and update routing guidance",
     6: "Add reusable SQL expressions (measures, filters, dimensions)",
 }
 

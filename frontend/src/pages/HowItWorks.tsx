@@ -389,9 +389,9 @@ export function AutoOptimizeContent() {
   const levers = [
     { name: "Tables & Columns", desc: "Improve table descriptions, column descriptions, and synonyms", color: CYAN },
     { name: "Metric Views", desc: "Tune metric view column descriptions", color: INFO },
-    { name: "SQL Queries & Functions", desc: "Add or update example SQLs and remove underperforming TVFs", color: DANGER },
+    { name: "Table-Valued Functions", desc: "Tune TVF parameter handling and remove underperforming TVFs", color: DANGER },
     { name: "Join Specifications", desc: "Add, update, or remove join relationships", color: SUCCESS },
-    { name: "Text Instructions", desc: "Rewrite global routing instructions", color: ACCENT },
+    { name: "Instructions & Examples", desc: "Add example SQLs and update routing guidance", color: ACCENT },
     { name: "SQL Expressions", desc: "Add reusable measures, filters, and dimensions", color: WARNING },
   ]
 

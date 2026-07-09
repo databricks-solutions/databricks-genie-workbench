@@ -89,9 +89,9 @@ function SpaceDetailSkeleton() {
 const LEVERS = [
   { id: 1, label: "Tables & Columns", desc: "Update table descriptions, column descriptions, and synonyms" },
   { id: 2, label: "Metric Views", desc: "Update metric view column descriptions" },
-  { id: 3, label: "Table-Valued Functions", desc: "Remove underperforming TVFs" },
+  { id: 3, label: "Table-Valued Functions", desc: "Tune TVF parameter handling and remove underperforming TVFs" },
   { id: 4, label: "Join Specifications", desc: "Add, update, or remove join relationships between tables" },
-  { id: 5, label: "Genie Space Instructions", desc: "Rewrite global routing instructions and add domain-specific guidance" },
+  { id: 5, label: "Instructions & Examples", desc: "Add example SQLs and update routing guidance" },
   { id: 6, label: "SQL Expressions", desc: "Add reusable measures, filters, and dimensions for business concepts" },
 ] as const;
 

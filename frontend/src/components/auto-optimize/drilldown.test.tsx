@@ -313,7 +313,7 @@ describe("OptimizationLevers — attempt-labeled provenance vs legacy Iteration 
   }
   const lever: GSOLeverStatus = {
     lever: 5,
-    name: "Text Instructions",
+    name: "Instructions & Examples",
     status: "accepted",
     patchCount: 2,
     scoreBefore: null,
@@ -342,5 +342,46 @@ describe("OptimizationLevers — attempt-labeled provenance vs legacy Iteration 
     const markup = renderToStaticMarkup(<OptimizationLevers levers={[lever]} />)
     expect(markup).toContain("Iteration 2")
     expect(markup).not.toContain("Patch 2")
+  })
+
+  it("keeps example SQL patches under their stamped lever", () => {
+    const examplePatch = {
+      patchType: "add_example_sql",
+      scope: "genie_config",
+      riskLevel: "low",
+      targetObject: null,
+      rolledBack: false,
+      rollbackReason: null,
+      command: JSON.stringify({
+        op: "add",
+        section: "example_question_sqls",
+        question: "How many orders by region?",
+        sql: "SELECT region, COUNT(*) FROM orders GROUP BY 1",
+      }),
+      patch: null,
+      appliedAt: null,
+    }
+    const leverWithExample: GSOLeverStatus = {
+      lever: 5,
+      name: "Instructions & Examples",
+      status: "accepted",
+      patchCount: 1,
+      scoreBefore: null,
+      scoreAfter: null,
+      scoreDelta: null,
+      rollbackReason: null,
+      patches: [examplePatch],
+      iterations: [],
+    }
+
+    const markup = renderToStaticMarkup(<OptimizationLevers levers={[leverWithExample]} />)
+    const instructionsIdx = markup.indexOf("Instructions &amp; Examples")
+    const exampleIdx = markup.indexOf("How many orders by region?")
+    const expressionsIdx = markup.indexOf("SQL Expressions")
+
+    expect(markup).toContain("Example SQL")
+    expect(instructionsIdx).toBeGreaterThan(-1)
+    expect(exampleIdx).toBeGreaterThan(instructionsIdx)
+    expect(expressionsIdx).toBeGreaterThan(exampleIdx)
   })
 })

@@ -271,7 +271,7 @@ function renderClassifiedPatches(patches: GSOPatchDetail[]) {
   }
   if (exampleSql.length > 0) {
     sections.push(
-      <PatchGroup key="exsql" label="SQL Queries" count={exampleSql.length}>
+      <PatchGroup key="exsql" label="Example SQL" count={exampleSql.length}>
         <ExampleSqlTable patches={exampleSql} />
       </PatchGroup>
     )
@@ -346,11 +346,8 @@ function IterationRow({
   iterationLabels: Map<number, string>
 }) {
   const badge = STATUS_BADGE[iteration.status] ?? STATUS_BADGE.pending
-  // Exclude example SQL patches from displayed count
-  const filteredCount = iteration.patches.length > 0
-    ? iteration.patches.filter((p) => !isExampleSqlPatch(p)).length
-    : iteration.patchCount
-  // For lever 5 (Text Instructions), show instruction text preview
+  const displayedCount = iteration.patches.length > 0 ? iteration.patches.length : iteration.patchCount
+  // For lever 5 (Instructions & Examples), show instruction text preview
   const instructionPreview = lever === 5 ? (() => {
     const instrPatches = iteration.patches.filter((p) => p.patchType.includes("instruction"))
     if (instrPatches.length === 0) return null
@@ -368,8 +365,8 @@ function IterationRow({
           {badge.variant === "success" && <CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />}
           {badge.label}
         </Badge>
-        {filteredCount > 0 && (
-          <span className="text-muted tabular-nums">{filteredCount} patches</span>
+        {displayedCount > 0 && (
+          <span className="text-muted tabular-nums">{displayedCount} patches</span>
         )}
       </div>
       {instructionPreview && (
@@ -488,9 +485,9 @@ function LeverCard({ lever, iterationLabels }: { lever: GSOLeverStatus; iteratio
 const ALL_LEVERS: { lever: number; name: string }[] = [
   { lever: 1, name: "Tables & Columns" },
   { lever: 2, name: "Metric Views" },
-  { lever: 3, name: "SQL Queries & Functions" },
+  { lever: 3, name: "Table-Valued Functions" },
   { lever: 4, name: "Join Specifications" },
-  { lever: 5, name: "Text Instructions" },
+  { lever: 5, name: "Instructions & Examples" },
   { lever: 6, name: "SQL Expressions" },
 ]
 
@@ -500,49 +497,6 @@ function regroupLevers(levers: GSOLeverStatus[]): GSOLeverStatus[] {
     patches: [...l.patches],
     iterations: l.iterations.map((it) => ({ ...it, patches: [...(it.patches ?? [])] })),
   }))
-
-  const exampleSqlPatches: GSOPatchDetail[] = []
-  for (const lever of result) {
-    if (lever.lever === 3 || lever.lever === 0) continue
-
-    const topLevel = lever.patches.filter(isExampleSqlPatch)
-    const iterLevel = lever.iterations.flatMap((it) => (it.patches ?? []).filter(isExampleSqlPatch))
-    const toMove = [...topLevel, ...iterLevel]
-    if (toMove.length === 0) continue
-
-    exampleSqlPatches.push(...toMove)
-    const moveSet = new Set(toMove)
-    lever.patches = lever.patches.filter((p) => !moveSet.has(p))
-    for (const it of lever.iterations) {
-      if (it.patches) {
-        const before = it.patches.length
-        it.patches = it.patches.filter((p) => !moveSet.has(p))
-        it.patchCount = Math.max(0, it.patchCount - (before - it.patches.length))
-      }
-    }
-    lever.patchCount = lever.patches.length + lever.iterations.reduce((s, it) => s + (it.patches?.length ?? 0), 0)
-  }
-
-  if (exampleSqlPatches.length > 0) {
-    let lever3 = result.find((l) => l.lever === 3)
-    if (!lever3) {
-      lever3 = {
-        lever: 3,
-        name: "SQL Queries & Functions",
-        status: "accepted",
-        patchCount: 0,
-        scoreBefore: null,
-        scoreAfter: null,
-        scoreDelta: null,
-        rollbackReason: null,
-        patches: [],
-        iterations: [],
-      }
-      result.push(lever3)
-    }
-    lever3.patches.push(...exampleSqlPatches)
-    lever3.patchCount = lever3.patches.length + lever3.iterations.reduce((s, it) => s + (it.patches?.length ?? 0), 0)
-  }
 
   const lever0 = result.find((l) => l.lever === 0)
   const hasAdaptiveLevers = result.some((l) => l.lever >= 1)

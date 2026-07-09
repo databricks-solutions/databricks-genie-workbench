@@ -3687,7 +3687,7 @@ LEVER_NAMES = {
     2: "Metric Views",
     3: "Table-Valued Functions",
     4: "Join Specifications",
-    5: "Genie Space Instructions",
+    5: "Instructions & Examples",
     6: "SQL Expressions",
 }
 """Lever ID -> display name mapping.
@@ -3706,7 +3706,7 @@ SCAN_CHECK_TO_LEVERS: dict[int, list[int]] = {
     #   (Tables & Columns) — adds/fills descriptions and synonyms.
     2: [1],
     3: [1],
-    # Check 4 (Text instructions) → lever 5 (Genie Space Instructions).
+    # Check 4 (text instructions) → lever 5 (Instructions & Examples).
     4: [5],
     # Check 5 (Join specifications) → lever 4 (Join Specifications).
     5: [4],
@@ -4229,7 +4229,7 @@ PATCH_TYPES = {
         "risk_level": "low",
         "affects": ["column_config", "synonyms"],
     },
-    # Lever 6: Genie Space Instructions (text)
+    # Lever 5: Instructions & Examples (text)
     "add_instruction": {
         "type": "add_instruction",
         "scope": "genie_config",
@@ -4260,7 +4260,7 @@ PATCH_TYPES = {
         "risk_level": "medium",
         "affects": ["instructions"],
     },
-    # Example SQL patches (used by levers 3 and 5; preferred over text instructions)
+    # Example SQL patches (usually lever 5; lever 3 may use them for TVF/asset routing)
     "add_example_sql": {
         "type": "add_example_sql",
         "scope": "genie_config",
@@ -4852,7 +4852,7 @@ _LEVER_TO_PATCH_TYPE: dict[tuple[str, int], str] = {
     ("missing_join_spec", 4): "add_join_spec",
     ("wrong_join_spec", 4): "update_join_spec",
     ("wrong_join_type", 4): "update_join_spec",
-    # Lever 5: Genie Space Instructions (example SQL preferred over text)
+    # Lever 5: Instructions & Examples (example SQL preferred over text)
     ("asset_routing_error", 5): "add_example_sql",
     ("missing_instruction", 5): "add_example_sql",
     ("ambiguous_question", 5): "add_example_sql",
