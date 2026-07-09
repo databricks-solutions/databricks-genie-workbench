@@ -3940,7 +3940,7 @@ UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT = (
 )
 
 UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
-    "lever": "integer lever id",
+    "lever": "primary/dominant lever id for this proposal (descriptive; individual patches may target other levers)",
     "rationale": "short reason",
     "patches": [
         {
@@ -3951,7 +3951,7 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
                 "add_sql_snippet_measure | add_sql_snippet_filter | "
                 "add_sql_snippet_expression | ..."
             ),
-            "lever": "same integer lever id",
+            "lever": "lever id for THIS patch; patches in one proposal MAY use different levers when they address different failure themes",
             "target": "table identifier for table-level patches",
             "table": "table identifier for column patches",
             "column": "column name for column patches",
@@ -3986,6 +3986,8 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
 UNIFIED_OPTIMIZER_PATCH_RULES = [
     "Output must be one valid JSON object only. Do not wrap it in ```json fences. Do not write explanatory prose before or after it.",
     "Emit no more than 3 high-impact patches in a proposal. Prefer concise generalized patches over long enumerations.",
+    "Cluster the residual failures into 2-3 themes by shared root cause and shared columns (e.g. wrong aggregate on one metric, a missing join, an output-shape gap). Do NOT spend all 3 patches on a single failure mode when the failures span multiple themes — address each top theme with its own best-fit patch type in the SAME proposal. A single proposal SHOULD mix lever families when the themes differ: e.g. an add_join_spec for a join theme + an add_sql_snippet_measure for a wrong-aggregate theme + one add_example_sql for a genuinely multi-step theme. Rank themes by failure_count x fix_confidence and cover the highest-impact ones first.",
+    "When choosing among patch types for the mixed set, prefer this order (highest leverage first): join specs -> SQL measures/expressions -> column descriptions/synonyms -> SQL filters -> example SQL -> text instructions (last resort). This diversifies the proposal AND degrades gracefully: if one patch is dropped before apply (leak/validation), the other themes' patches still land.",
     "Patch selection uses failure-mode routing. Use metadata/synonym patches when the failure is table choice, column meaning, value/entity matching, or ambiguous terminology.",
     "Do not use table/column descriptions to fix SQL-construction failures such as missing output columns, formulas, filters, grouping, ordering, ranking/windowing, percentile functions, CASE logic, or rounding.",
     "Use join specs, SQL snippets/expressions, or example SQL when the failure is caused by SQL construction behavior such as joins, filters, formulas, grouping, ordering, ranking/windowing, output shape, or multi-step query patterns.",
