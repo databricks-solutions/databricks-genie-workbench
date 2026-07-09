@@ -49,16 +49,24 @@ def _ws() -> MagicMock:
 def _champion_config() -> dict:
     return {
         "title": "Revenue Space — optimized",
-        "serialized_space": {"version": 2, "data_sources": {"tables": []}},
-        "instructions": {"text_instructions": [{"content": "champion-only hint"}]},
+        "serialized_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+            "instructions": {
+                "text_instructions": [{"content": "champion-only hint"}],
+            },
+        },
     }
 
 
 def _baseline_config() -> dict:
     return {
         "title": "Revenue Space",
-        "serialized_space": {"version": 2, "data_sources": {"tables": []}},
-        "instructions": {"text_instructions": []},
+        "serialized_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+            "instructions": {"text_instructions": []},
+        },
     }
 
 
@@ -94,10 +102,39 @@ def test_revert_champion_uses_champion_iteration_config(monkeypatch) -> None:
     assert "champion" in result.message
     # The champion config (not the baseline) must be what's PATCHed live.
     patched_config = patch_mock.call_args.args[2]
+    assert patched_config["version"] == 2
+    assert "serialized_space" not in patched_config
+    assert "title" not in patched_config
     assert patched_config["instructions"]["text_instructions"][0]["content"] == "champion-only hint"
     # OBO client preferred (the user ws).
     assert patch_mock.call_args.args[0] is ws
     assert patch_mock.call_args.args[1] == "space-1"
+
+
+def test_revert_champion_backfills_version_for_legacy_projected_config(monkeypatch) -> None:
+    """Legacy config_json rows projected a parsed serialized_space but dropped
+    the required top-level version. Revert repairs that shape before PATCH."""
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    run = {
+        "run_id": "r1-legacy", "space_id": "space-legacy", "status": "CONVERGED",
+        "config_snapshot": json.dumps(_baseline_config()),
+    }
+    legacy_champion = {
+        "data_sources": {"tables": []},
+        "instructions": {"text_instructions": [{"content": "legacy champion"}]},
+    }
+    champion_df = pd.DataFrame([{"config_json": json.dumps(legacy_champion)}])
+
+    monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+    monkeypatch.setattr(revert, "sql_warehouse_query", lambda *a, **k: champion_df)
+    patch_mock = _patch_patch_space_config(monkeypatch)
+
+    revert.revert_optimization("r1-legacy", ws, sp_ws, cfg, target="champion")
+
+    patched_config = patch_mock.call_args.args[2]
+    assert patched_config["version"] == 2
+    assert patched_config["instructions"]["text_instructions"][0]["content"] == "legacy champion"
 
 
 def test_revert_champion_errors_when_no_champion_row(monkeypatch) -> None:
@@ -167,7 +204,9 @@ def test_revert_baseline_uses_config_snapshot(monkeypatch) -> None:
     assert result.status == "reverted"
     assert "baseline" in result.message
     patched_config = patch_mock.call_args.args[2]
-    assert patched_config["title"] == "Revenue Space"
+    assert patched_config["version"] == 2
+    assert "serialized_space" not in patched_config
+    assert "title" not in patched_config
     assert patched_config["instructions"]["text_instructions"] == []
     query_mock.assert_not_called()
 
@@ -231,7 +270,13 @@ def test_revert_promotes_validation_failure_to_runtime_error(monkeypatch) -> Non
         raise ValueError("serialized_space missing data_sources")
 
     monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
-    monkeypatch.setattr(revert, "sql_warehouse_query", lambda *a, **k: pd.DataFrame([{"config_json": json.dumps(_champion_config())}]))
+    monkeypatch.setattr(
+        revert,
+        "sql_warehouse_query",
+        lambda *a, **k: pd.DataFrame([
+            {"config_json": json.dumps(_champion_config())},
+        ]),
+    )
     monkeypatch.setattr(
         "genie_space_optimizer.common.genie_client.patch_space_config",
         _patch_fail,

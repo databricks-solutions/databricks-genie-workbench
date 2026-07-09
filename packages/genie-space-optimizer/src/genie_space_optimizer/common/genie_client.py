@@ -70,6 +70,18 @@ def _space_from_config(config: dict | None) -> dict:
     return {}
 
 
+def _serialized_space_for_patch(config: dict) -> dict:
+    """Return the parsed ``serialized_space`` object expected by PATCH.
+
+    Most callers already pass the parsed config directly, but history and
+    snapshot paths can hand around the raw Genie Space API response, where the
+    exportable config is nested under ``serialized_space`` / ``_parsed_space``.
+    The PATCH body must contain the parsed serialized-space object itself.
+    """
+    parsed = _space_from_config(config)
+    return parsed if parsed else config
+
+
 def space_config_data_source_counts(config: dict | None) -> dict[str, int]:
     """Return counts for exported Genie data-source collections."""
     parsed = _space_from_config(config)
@@ -894,7 +906,7 @@ def patch_space_config(
     """
     from .genie_schema import normalize_array_fields, validate_serialized_space
 
-    clean = strip_non_exportable_fields(config)
+    clean = strip_non_exportable_fields(_serialized_space_for_patch(config))
     clean = sort_genie_config(clean)
     # Coerce every array-typed leaf field (description / synonyms / content /
     # …) to ``list[str]`` IN PLACE before validation AND serialization. The

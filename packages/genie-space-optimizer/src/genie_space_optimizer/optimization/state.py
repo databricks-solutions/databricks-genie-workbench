@@ -628,8 +628,8 @@ def write_eval_heartbeat(
     )
 
 
-# GSO v2 Phase 4 (D3): whitelist of Genie-domain keys persisted into
-# ``genie_opt_iterations.config_json``.
+# GSO v2 Phase 4 (D3): whitelist of documented Genie ``serialized_space`` keys
+# persisted into ``genie_opt_iterations.config_json``.
 #
 # This is INTENTIONALLY DIFFERENT from ``models._SAFE_SPACE_CONFIG_KEYS``
 # (the MLflow artifact projection) — it is not a mirror:
@@ -637,9 +637,9 @@ def write_eval_heartbeat(
 #     per-iteration record must track the FULL effective serialized space
 #     (incl. the benchmark questions/SQL and the config block) that the
 #     iteration was evaluated against, not just the MLflow snapshot subset;
-#   * ``_project_config_for_iteration`` also prefers ``_parsed_space`` so a
-#     raw fetched config and an already-parsed ``metadata_snapshot`` yield
-#     the same shape;
+#   * ``_project_config_for_iteration`` also prefers ``_parsed_space`` and
+#     unwraps ``serialized_space`` so a raw fetched config and an
+#     already-parsed ``metadata_snapshot`` yield the same documented shape;
 #   * it deliberately OMITS ``permissions`` / ``owner`` (ACL / user-identity
 #     fields) — there is no consumer of those in Delta and they are exactly
 #     the PII we must not copy into the optimization tables (reviewer
@@ -655,18 +655,9 @@ def write_eval_heartbeat(
 # no credentials/tokens/secrets: those are not Genie-domain config keys and
 # are never present on the parsed space.
 _SAFE_ITERATION_CONFIG_KEYS: frozenset[str] = frozenset({
+    "version",
     "data_sources",
     "instructions",
-    "description",
-    "title",
-    "name",
-    "id",
-    "space_id",
-    "warehouse_id",
-    "created_at",
-    "updated_at",
-    "tags",
-    "serialized_space",
     "benchmarks",
     "config",
 })
@@ -709,9 +700,10 @@ def _project_config_for_iteration(config: Any) -> dict[str, Any]:
     """Return a clean, JSON-safe projection of the per-iteration config.
 
     Accepts either a raw fetched config (which nests the parsed space under
-    ``_parsed_space``) or an already-parsed space dict (``metadata_snapshot``
-    in the lever loop); both yield the same Genie-domain shape. Drops every
-    ``_``-prefixed (optimizer-internal) key and every key not in
+    ``_parsed_space`` / ``serialized_space``) or an already-parsed space dict
+    (``metadata_snapshot`` in the lever loop); both yield the same parsed
+    ``serialized_space`` shape. Drops every ``_``-prefixed
+    (optimizer-internal) key and every key not in
     :data:`_SAFE_ITERATION_CONFIG_KEYS`, then de-cycles. Returns ``{}`` when
     *config* is not a dict or has no whitelisted keys.
     """
@@ -721,6 +713,17 @@ def _project_config_for_iteration(config: Any) -> dict[str, Any]:
     parsed = config.get("_parsed_space")
     if isinstance(parsed, dict):
         base = parsed
+    else:
+        serialized = config.get("serialized_space")
+        if isinstance(serialized, dict):
+            base = serialized
+        elif isinstance(serialized, str) and serialized.strip():
+            try:
+                loaded = json.loads(serialized)
+            except (json.JSONDecodeError, TypeError):
+                loaded = None
+            if isinstance(loaded, dict):
+                base = loaded
     out: dict[str, Any] = {}
     for k, v in base.items():
         if not isinstance(k, str) or k.startswith("_"):

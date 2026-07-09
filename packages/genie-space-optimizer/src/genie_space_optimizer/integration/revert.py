@@ -105,6 +105,7 @@ def revert_optimization(
             "Try reverting to the baseline instead."
         )
 
+    target_config = _as_serialized_space_config(target_config)
     if not target_config or not isinstance(target_config, dict):
         raise ValueError(missing_hint)
 
@@ -134,6 +135,55 @@ def revert_optimization(
         run_id=run_id,
         message=f"Genie Space reverted to this run's {target} configuration.",
     )
+
+
+def _as_serialized_space_config(config: dict | None) -> dict | None:
+    """Return the parsed ``serialized_space`` object from a stored snapshot.
+
+    History rows have existed in two shapes:
+
+    * the correct parsed ``serialized_space`` object with top-level
+      ``version`` / ``data_sources`` / ``config`` / ``instructions``;
+    * a raw Genie Space API response where that object is nested under
+      ``_parsed_space`` or ``serialized_space``.
+
+    The PATCH client must receive the first shape.
+    """
+    if not isinstance(config, dict):
+        return None
+
+    parsed = config.get("_parsed_space")
+    if isinstance(parsed, dict):
+        return _with_default_serialized_space_version(parsed)
+
+    serialized = config.get("serialized_space")
+    if isinstance(serialized, dict):
+        return _with_default_serialized_space_version(serialized)
+    if isinstance(serialized, str) and serialized.strip():
+        try:
+            loaded = json.loads(serialized)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(loaded, dict):
+            return _with_default_serialized_space_version(loaded)
+        return None
+
+    return _with_default_serialized_space_version(config)
+
+
+def _with_default_serialized_space_version(config: dict) -> dict:
+    """Backfill version for legacy projected history rows.
+
+    Older ``config_json`` rows were projected from a parsed serialized-space
+    object but accidentally dropped the required top-level ``version`` field.
+    If the remaining shape is otherwise recognizable as serialized_space, use
+    the current documented schema version.
+    """
+    if "version" in config:
+        return config
+    if any(key in config for key in ("data_sources", "instructions", "config", "benchmarks")):
+        return {"version": 2, **config}
+    return config
 
 
 def _load_baseline_config(run_data: dict) -> dict | None:

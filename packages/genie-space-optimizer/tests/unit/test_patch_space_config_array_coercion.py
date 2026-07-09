@@ -133,6 +133,26 @@ class TestSystemicCoercion:
 
 
 class TestNoFieldLoss:
+    def test_raw_space_response_is_unwrapped_before_wire_payload(self):
+        """History/revert paths may pass a raw Genie Space response. The wire
+        payload must still be the parsed serialized_space object, not the
+        response wrapper with a nested ``serialized_space`` key."""
+        raw_response = {
+            "title": "Revenue Space",
+            "serialized_space": {
+                "version": 2,
+                "data_sources": {
+                    "tables": [{"identifier": "cat.sch.t"}],
+                    "metric_views": [],
+                },
+            },
+        }
+        sent = _send(raw_response)
+        assert sent["version"] == 2
+        assert sent["data_sources"]["tables"][0]["identifier"] == "cat.sch.t"
+        assert "serialized_space" not in sent
+        assert "title" not in sent
+
     def test_unmodeled_nested_field_survives_serialization(self):
         """A field the Pydantic model does not declare must reach the wire
         unchanged — the coercion is an in-place walk, not a model round-trip

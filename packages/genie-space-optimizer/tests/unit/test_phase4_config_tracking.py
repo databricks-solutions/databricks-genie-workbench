@@ -86,6 +86,7 @@ def test_write_critical_columns_listed_in_required():
 
 def test_projection_drops_internal_keys_and_keeps_whitelisted():
     cfg = {
+        "version": 2,
         "instructions": {"text_instructions": [{"content": "x"}]},
         "data_sources": {"tables": [{"identifier": "c.s.t"}]},
         "description": "a space",
@@ -97,15 +98,17 @@ def test_projection_drops_internal_keys_and_keeps_whitelisted():
         "random_runtime_key": "drop me",
     }
     out = _project_config_for_iteration(cfg)
-    assert set(out) == {"instructions", "data_sources", "description"}
+    assert set(out) == {"version", "instructions", "data_sources"}
     assert "_failure_clusters" not in out
     assert "random_runtime_key" not in out
+    assert "description" not in out
 
 
 def test_projection_prefers_parsed_space_when_present():
     """A raw fetched config (with _parsed_space) projects the parsed view."""
     cfg = {
         "_parsed_space": {
+            "version": 2,
             "instructions": {"text_instructions": []},
             "data_sources": {"tables": []},
         },
@@ -113,7 +116,28 @@ def test_projection_prefers_parsed_space_when_present():
         "_raw_blob": object(),
     }
     out = _project_config_for_iteration(cfg)
-    assert set(out) == {"instructions", "data_sources"}
+    assert set(out) == {"version", "instructions", "data_sources"}
+
+
+def test_projection_unwraps_serialized_space_when_parsed_space_absent():
+    """A raw fetched config without _parsed_space still persists the
+    documented serialized_space object, not the API response wrapper."""
+    cfg = {
+        "title": "Revenue Space",
+        "serialized_space": {
+            "version": 2,
+            "data_sources": {"tables": [{"identifier": "cat.sch.sales"}]},
+            "instructions": {"text_instructions": []},
+        },
+    }
+    out = _project_config_for_iteration(cfg)
+    assert out == {
+        "version": 2,
+        "data_sources": {"tables": [{"identifier": "cat.sch.sales"}]},
+        "instructions": {"text_instructions": []},
+    }
+    assert "serialized_space" not in out
+    assert "title" not in out
 
 
 def test_projection_is_cycle_safe():
@@ -134,6 +158,7 @@ def test_projection_omits_acl_and_owner_pii():
     """ACL / user-identity fields must never be copied into config_json —
     even for a raw config WITHOUT _parsed_space (the worst-case caller)."""
     raw_without_parsed = {
+        "version": 2,
         "instructions": {"text_instructions": []},
         "data_sources": {"tables": []},
         # ACL / PII that the old whitelist would have kept:
@@ -144,18 +169,20 @@ def test_projection_omits_acl_and_owner_pii():
     assert "permissions" not in out
     assert "owner" not in out
     # The benign Genie-domain config still survives.
-    assert set(out) == {"instructions", "data_sources"}
+    assert set(out) == {"version", "instructions", "data_sources"}
     # And the serialized form leaks no user identity.
     serialized = json.dumps(out)
     assert "alice@example.com" not in serialized
     assert "bob@example.com" not in serialized
 
 
-def test_safe_keys_exclude_acl_and_include_full_serialized_space():
-    """Pin the intentional whitelist drift: ACL fields out, benchmarks/config
-    in (full effective serialized space, not the MLflow artifact subset)."""
+def test_safe_keys_are_documented_serialized_space_keys():
+    """Pin the config_json contract to the documented serialized_space shape."""
     assert "permissions" not in state_mod._SAFE_ITERATION_CONFIG_KEYS
     assert "owner" not in state_mod._SAFE_ITERATION_CONFIG_KEYS
+    assert "serialized_space" not in state_mod._SAFE_ITERATION_CONFIG_KEYS
+    assert "title" not in state_mod._SAFE_ITERATION_CONFIG_KEYS
+    assert "version" in state_mod._SAFE_ITERATION_CONFIG_KEYS
     assert "benchmarks" in state_mod._SAFE_ITERATION_CONFIG_KEYS
     assert "config" in state_mod._SAFE_ITERATION_CONFIG_KEYS
 
@@ -191,6 +218,7 @@ _BASE_EVAL = {
 def test_write_iteration_persists_projected_config_json(mock_spark_iter):
     eval_result = dict(_BASE_EVAL)
     config = {
+        "version": 2,
         "instructions": {"text_instructions": [{"content": "be precise"}]},
         "data_sources": {"tables": [{"identifier": "cat.sch.sales"}]},
         "_failure_clusters": ["should", "be", "dropped"],
@@ -204,6 +232,7 @@ def test_write_iteration_persists_projected_config_json(mock_spark_iter):
     assert "config_json" in sql
     assert "is_champion" in sql
     # Whitelisted content survives; internal keys are stripped.
+    assert '"version": 2' in sql
     assert "be precise" in sql
     assert "cat.sch.sales" in sql
     assert "_failure_clusters" not in sql
@@ -248,7 +277,13 @@ def test_write_iteration_empty_projection_writes_null(mock_spark_iter):
 def test_write_iteration_escapes_quotes_in_config(mock_spark_iter):
     """Config text with single quotes must be doubled so the SQL literal is
     not terminated early (injection / quote-safety, same contract as rows)."""
-    config = {"description": "Acme's 'quarterly' revenue"}
+    config = {
+        "version": 2,
+        "instructions": {
+            "text_instructions": [{"content": "Acme's 'quarterly' revenue"}],
+        },
+        "data_sources": {"tables": []},
+    }
     write_iteration(
         mock_spark_iter, run_id="run-q", iteration=0,
         eval_result=dict(_BASE_EVAL), catalog="cat", schema="sch",
