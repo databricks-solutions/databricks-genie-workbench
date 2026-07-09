@@ -1,5 +1,6 @@
 import { useState } from "react"
-import { AlertTriangle, Rocket } from "lucide-react"
+import type { LucideIcon } from "lucide-react"
+import { AlertTriangle, ListChecks, Rocket, Target } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { triggerAutoOptimize } from "@/lib/api"
@@ -38,6 +39,17 @@ const LEVERS = [
 // Job defaults (databricks.yml): target_accuracy 0.90, max_attempts 3.
 const DEFAULT_TARGET_PERCENT = "90"
 const DEFAULT_MAX_ATTEMPTS = "3"
+
+// Shared pillar header — icon + label, matching ModelPicker's own label row so
+// all three columns read as equal choices (previously only Model had an icon).
+function PillarHeader({ icon: Icon, children }: { icon: LucideIcon; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-1.5 text-xs font-medium text-muted">
+      <Icon className="h-3.5 w-3.5 text-accent" />
+      {children}
+    </div>
+  )
+}
 
 export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTriggerError, hasActiveRun, permissions, permsLoading, healthIssues, onRefreshPermissions }: OptimizationConfigProps) {
   const [selectedLevers, setSelectedLevers] = useState<Set<number>>(new Set(LEVERS.map((l) => l.id)))
@@ -97,12 +109,16 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
       <CardHeader>
         <CardTitle>Optimization Configuration</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Three pillars: (1) Optimization scope · (2) Model · (3) Stopping criteria */}
-        <div className="grid grid-cols-1 gap-x-8 gap-y-6 lg:grid-cols-3">
+      <CardContent className="space-y-6">
+        {/* Three equal pillars — scope · model · stopping criteria — separated
+            by hairline dividers. Column gap comes from symmetric per-column
+            padding (not grid `gap`) so content always clears the divider on
+            both sides; the first column only needs right-inset since its left
+            edge aligns with the card padding. */}
+        <div className="grid grid-cols-1 gap-y-8 lg:grid-cols-3 lg:divide-x lg:divide-default">
           {/* Pillar 1 — Optimization scope (lever checkboxes) */}
-          <div className="space-y-1.5">
-            <p className="text-xs font-medium text-muted">Optimization scope</p>
+          <div className="space-y-2 lg:pr-8">
+            <PillarHeader icon={ListChecks}>Optimization scope</PillarHeader>
             <p className="text-xs text-muted">
               Select which levers the optimizer may use when proposing targeted patch sets.
             </p>
@@ -123,8 +139,8 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
             </div>
           </div>
 
-          {/* Pillar 2 — Model */}
-          <div>
+          {/* Pillar 2 — Model (ModelPicker renders its own matching Bot + label) */}
+          <div className="lg:px-8">
             <ModelPicker
               value={selectedModel}
               onChange={setSelectedModel}
@@ -134,10 +150,11 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
             />
           </div>
 
-          {/* Pillar 3 — Stopping criteria (target accuracy + max patch attempts) */}
-          <div className="space-y-3 rounded-lg border border-default px-4 py-3">
-            <div>
-              <p className="text-xs font-medium text-muted">Stopping criteria</p>
+          {/* Pillar 3 — Stopping criteria. pl only: last column's right edge
+              aligns with the card padding, so no right-inset needed. */}
+          <div className="space-y-3 lg:pl-8">
+            <div className="space-y-2">
+              <PillarHeader icon={Target}>Stopping criteria</PillarHeader>
               <p className="text-xs text-muted">
                 The run stops at whichever comes first: reaching the target accuracy, exhausting the patch attempts, or finding no safe new hypothesis.
               </p>
@@ -191,41 +208,47 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           </div>
         </div>
 
-        {/* Health Issues */}
-        {hasHealthIssues && (
-          <div className="rounded-lg bg-danger/10 border border-danger/20 px-4 py-3 space-y-1">
-            <div className="flex items-center gap-2 text-sm font-medium text-danger">
-              <AlertTriangle className="w-4 h-4" />
-              Configuration issues detected
+        {/* Alerts + launch — a full-width footer separated by a hairline so the
+            CTA reads as the form's conclusion, not an orphan under one column. */}
+        <div className="space-y-4 border-t border-default pt-4">
+          {/* Health Issues */}
+          {hasHealthIssues && (
+            <div className="rounded-lg bg-danger/10 border border-danger/20 px-4 py-3 space-y-1">
+              <div className="flex items-center gap-2 text-sm font-medium text-danger">
+                <AlertTriangle className="w-4 h-4" />
+                Configuration issues detected
+              </div>
+              {healthIssues!.map((issue, i) => (
+                <p key={i} className="text-xs text-danger/80 ml-6">{issue}</p>
+              ))}
             </div>
-            {healthIssues!.map((issue, i) => (
-              <p key={i} className="text-xs text-danger/80 ml-6">{issue}</p>
-            ))}
+          )}
+
+          {/* Permission Alert */}
+          {permissions && (
+            <PermissionAlert permissions={permissions} loading={permsLoading} onRefresh={onRefreshPermissions} />
+          )}
+
+          {/* Error */}
+          {error && (
+            <div className="rounded-lg bg-danger/10 border border-danger/20 px-4 py-3 text-sm text-danger">
+              {error}
+            </div>
+          )}
+
+          {/* Start button — right-aligned commit action */}
+          <div className="flex justify-end">
+            <button
+              onClick={handleStart}
+              disabled={loading || hasActiveRun || selectedLevers.size === 0 || !canStart || !knobsValid}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white font-semibold hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title={!canStart ? "Required permissions are missing" : !knobsValid ? "Enter valid stopping criteria" : undefined}
+            >
+              <Rocket className="w-4 h-4" />
+              {loading ? "Starting..." : "Start Optimization"}
+            </button>
           </div>
-        )}
-
-        {/* Permission Alert */}
-        {permissions && (
-          <PermissionAlert permissions={permissions} loading={permsLoading} onRefresh={onRefreshPermissions} />
-        )}
-
-        {/* Error */}
-        {error && (
-          <div className="rounded-lg bg-danger/10 border border-danger/20 px-4 py-3 text-sm text-danger">
-            {error}
-          </div>
-        )}
-
-        {/* Start Button */}
-        <button
-          onClick={handleStart}
-          disabled={loading || hasActiveRun || selectedLevers.size === 0 || !canStart || !knobsValid}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white font-semibold hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          title={!canStart ? "Required permissions are missing" : !knobsValid ? "Enter valid stopping criteria" : undefined}
-        >
-          <Rocket className="w-4 h-4" />
-          {loading ? "Starting..." : "Start Optimization"}
-        </button>
+        </div>
       </CardContent>
     </Card>
   )

@@ -49,15 +49,17 @@ export function AttemptLedger({ baselineAccuracy, attempts, baselineIsChampion }
   return (
     <div className="rounded-xl border border-default p-4">
       <h3 className="mb-2 text-sm font-semibold text-primary">Attempt Ledger</h3>
+      {/* Four columns fit the half-width card without horizontal scroll: the
+          champion ★ and HIGHEST marker live inline in the Attempt cell (no
+          separate Champion column), and Δ-vs-baseline sits under the accuracy
+          number rather than in its own wide column. */}
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Attempt</TableHead>
             <TableHead className="text-right">Accuracy</TableHead>
-            <TableHead className="text-right">Δ vs baseline</TableHead>
             <TableHead>Mode</TableHead>
             <TableHead>Decision</TableHead>
-            <TableHead className="text-center">Champion</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -66,8 +68,8 @@ export function AttemptLedger({ baselineAccuracy, attempts, baselineIsChampion }
               <LedgerTableRow row={row} />
               {row.divergenceReason && (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={6} className="pt-0">
-                    <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                  <TableCell colSpan={4} className="pt-0">
+                    <p className="flex items-start gap-1.5 text-xs text-amber-600">
                       <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                       <span>
                         Highest accuracy, but not the champion: {row.divergenceReason}
@@ -85,33 +87,47 @@ export function AttemptLedger({ baselineAccuracy, attempts, baselineIsChampion }
 }
 
 function LedgerTableRow({ row }: { row: LedgerRow }) {
+  const deltaClass =
+    row.deltaVsBaseline == null || row.deltaVsBaseline === 0
+      ? "text-muted"
+      : row.deltaVsBaseline > 0
+        ? "text-emerald-600 dark:text-emerald-400"
+        : "text-red-500"
   return (
     <TableRow
-      className={row.isHighest ? "bg-amber-50 dark:bg-amber-950/20" : undefined}
+      // Semi-transparent tint (not bg-amber-50): this project drives dark mode
+      // via CSS-variable tokens with NO Tailwind `dark:` variant, so a solid
+      // light shade would stay light — and unreadable — in dark mode. An
+      // alpha tint layers over whatever surface is beneath it, working in both.
+      className={row.isHighest ? "bg-amber-500/10" : undefined}
       data-highest={row.isHighest || undefined}
     >
+      {/* Attempt: label + sublabel stacked (never wraps mid-badge), with the
+          champion ★ and HIGHEST marker inline — no separate columns for them. */}
       <TableCell>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-primary">{row.label}</span>
-          {row.sublabel && <span className="text-xs text-muted">{row.sublabel}</span>}
-          {row.isHighest && (
-            <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
-              highest
+        <div className="flex items-start gap-1.5">
+          {row.isChampion && (
+            <span title="Champion configuration" className="mt-0.5 shrink-0 text-sm leading-none text-indigo-500">
+              ★
             </span>
           )}
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-medium text-primary">{row.label}</span>
+              {row.isHighest && (
+                <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-600">
+                  highest
+                </span>
+              )}
+            </div>
+            {row.sublabel && <span className="block text-xs text-muted">{row.sublabel}</span>}
+          </div>
         </div>
       </TableCell>
-      <TableCell className="text-right font-medium text-primary">{fmtPct(row.accuracy)}</TableCell>
-      <TableCell
-        className={`text-right ${
-          row.deltaVsBaseline == null || row.deltaVsBaseline === 0
-            ? "text-muted"
-            : row.deltaVsBaseline > 0
-              ? "text-emerald-600 dark:text-emerald-400"
-              : "text-red-500"
-        }`}
-      >
-        {fmtDelta(row.deltaVsBaseline)}
+      {/* Accuracy with Δ-vs-baseline folded underneath (own column removed). */}
+      <TableCell className="text-right">
+        <span className="block font-medium text-primary">{fmtPct(row.accuracy)}</span>
+        <span className={`block text-xs ${deltaClass}`}>{fmtDelta(row.deltaVsBaseline)}</span>
       </TableCell>
       <TableCell>
         {row.mode === "baseline" ? (
@@ -119,7 +135,7 @@ function LedgerTableRow({ row }: { row: LedgerRow }) {
         ) : (
           <span className="flex items-center gap-1.5 text-sm text-primary">
             <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
               style={{ backgroundColor: attemptModeColor(row.mode) }}
             />
             {attemptModeLabel(row.mode)}
@@ -131,15 +147,6 @@ function LedgerTableRow({ row }: { row: LedgerRow }) {
           <span className="text-sm text-muted">—</span>
         ) : (
           <Badge variant={row.decisionTone}>{row.decisionDisplay}</Badge>
-        )}
-      </TableCell>
-      <TableCell className="text-center">
-        {row.isChampion ? (
-          <span title="Champion configuration" className="text-base text-indigo-500">
-            ★
-          </span>
-        ) : (
-          <span className="text-muted">—</span>
         )}
       </TableCell>
     </TableRow>
