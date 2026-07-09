@@ -5,11 +5,12 @@ import type { GSOTriggerRequest } from "@/types"
 // (react-refresh/only-export-components).
 
 // Parse the target-accuracy percentage field into the 0–1 scale the backend
-// expects. Returns null when the input is outside [1, 100] or not a number so
-// the guard matches the input's min={1} attribute and the "between 1–100%" copy.
+// expects. Returns null when the input is outside [80, 100] or not a number so
+// the guard matches the input's min={80} attribute and the "between 80–100%"
+// copy. The 80% floor is intentional: a lower optimization target isn't useful.
 export function parseTargetAccuracy(percentInput: string): number | null {
   const pct = Number(percentInput)
-  if (!Number.isFinite(pct) || pct < 1 || pct > 100) return null
+  if (!Number.isFinite(pct) || pct < 80 || pct > 100) return null
   return pct / 100
 }
 

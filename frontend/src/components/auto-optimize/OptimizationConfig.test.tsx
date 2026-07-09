@@ -54,12 +54,15 @@ describe("stopping-criteria parsing", () => {
   it("converts the target-accuracy percentage to the 0–1 scale", () => {
     expect(parseTargetAccuracy("90")).toBeCloseTo(0.9)
     expect(parseTargetAccuracy("100")).toBe(1)
-    expect(parseTargetAccuracy("1")).toBeCloseTo(0.01) // lower boundary
+    expect(parseTargetAccuracy("80")).toBeCloseTo(0.8) // lower boundary (80% floor)
   })
 
   it("rejects out-of-range or non-numeric target accuracy", () => {
+    // The 80% floor: a lower optimization target isn't useful, so <80 is invalid.
+    expect(parseTargetAccuracy("79")).toBeNull() // just below the 80% floor
+    expect(parseTargetAccuracy("1")).toBeNull()
     expect(parseTargetAccuracy("0")).toBeNull()
-    expect(parseTargetAccuracy("0.5")).toBeNull() // below min={1}, matches the "1–100%" copy
+    expect(parseTargetAccuracy("0.5")).toBeNull()
     expect(parseTargetAccuracy("150")).toBeNull()
     expect(parseTargetAccuracy("")).toBeNull()
     expect(parseTargetAccuracy("abc")).toBeNull()

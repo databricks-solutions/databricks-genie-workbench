@@ -7,12 +7,15 @@ import { ResolutionActions } from "@/components/auto-optimize/ResolutionActions"
 import { BenchmarkChangesPanel } from "@/components/auto-optimize/BenchmarkChangesPanel"
 import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
 import { ResourceLinks } from "@/components/auto-optimize/ResourceLinks"
+import { AttemptLadder } from "@/components/auto-optimize/AttemptLadder"
+import { AttemptLedger } from "@/components/auto-optimize/AttemptLedger"
 import {
   getAutoOptimizeRun,
   getAutoOptimizeIterations,
   getAutoOptimizePublishRecord,
+  getAutoOptimizeLoopState,
 } from "@/lib/api"
-import type { GSOPipelineRun, GSOIterationResult, GSOPublishRecord } from "@/types"
+import type { GSOPipelineRun, GSOIterationResult, GSOPublishRecord, GSOAttempt } from "@/types"
 
 interface RunDetailViewProps {
   runId: string
@@ -46,12 +49,19 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
   const [iterations, setIterations] = useState<GSOIterationResult[]>([])
   const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
+  // GSO v2 (Phase 14) — the 03_optimize controller attempts drive the Attempt
+  // Ladder + Ledger. These are terminal runs (history), so a one-shot fetch is
+  // enough — no polling, mirroring PipelineDetailsModal's terminal path.
+  const [attempts, setAttempts] = useState<GSOAttempt[]>([])
 
   useEffect(() => {
     getAutoOptimizeRun(runId).then(setRun).catch(() => {})
     getAutoOptimizeIterations(runId).then(setIterations).catch(() => {})
     getAutoOptimizePublishRecord(runId)
       .then((res) => setPublishRecord(res?.publishRecord ?? null))
+      .catch(() => {})
+    getAutoOptimizeLoopState(runId)
+      .then((res) => setAttempts(res?.attempts ?? []))
       .catch(() => {})
   }, [runId])
 
@@ -70,6 +80,12 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
   }
 
   const isTerminal = TERMINAL_STATUSES.has(run.status)
+  // Attempt Ladder + Ledger inputs (mirror PipelineDetailsModal / AutoOptimizeTab).
+  const hasAttempts = attempts.length > 0
+  const targetUnit = run.targetAccuracy ?? null
+  // Baseline is champion only when terminal AND nothing beat it — derived from
+  // explicit is_champion flags, never idxmax.
+  const baselineIsChampion = isTerminal && hasAttempts && !attempts.some((a) => a.isChampion)
   const resolutionPublished = publishRecord ? publishRecord.published : null
   const showResolution =
     isTerminal &&
@@ -126,6 +142,24 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         status={run.status}
         needsReviewCount={needsReviewCount}
       />
+
+      {/* Attempt Ladder + Ledger — the per-attempt staircase and decision ledger
+          from the 03_optimize controller loop-state. Guarded by hasAttempts so
+          legacy 6-step runs (no loop-state) render nothing. */}
+      {hasAttempts && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <AttemptLadder
+            baselineAccuracy={run.baselineScore}
+            attempts={attempts}
+            targetUnit={targetUnit}
+          />
+          <AttemptLedger
+            baselineAccuracy={run.baselineScore}
+            attempts={attempts}
+            baselineIsChampion={baselineIsChampion}
+          />
+        </div>
+      )}
 
       {/* Benchmark QC & changes — first-class surface under task 01. */}
       <BenchmarkChangesPanel runId={runId} />
