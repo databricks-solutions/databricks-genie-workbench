@@ -27,6 +27,7 @@ from genie_space_optimizer.integration import (
     trigger_optimization,
     apply_optimization,
     discard_optimization,
+    revert_optimization,
     get_lever_info,
     IntegrationConfig,
 )
@@ -1935,6 +1936,48 @@ async def discard_run(run_id: RunId):
         raise HTTPException(status_code=500, detail="Failed to discard optimization.")
 
 
+@router.post("/runs/{run_id}/revert")
+async def revert_run(
+    run_id: RunId,
+    target: str = Query(
+        "champion",
+        description="Which configuration to revert to: "
+        "'champion' (the run's winning iteration config) or 'baseline' "
+        "(the run's pre-run config snapshot).",
+    ),
+):
+    """Revert the live Genie Space to a past run's captured configuration.
+
+    Re-PATCHes the live space with the run's captured config. ``target=champion``
+    uses the champion iteration's ``config_json`` (the winning optimized
+    config); ``target=baseline`` uses the run's ``config_snapshot`` (the
+    pre-run serialized space, i.e. what the space looked like before this
+    optimization ran). Unlike ``/discard``, this is a pure config rollback —
+    the run's own status is left untouched, so any past history entry can be
+    reverted to regardless of its terminal resolution. Refuses runs that are
+    still in progress.
+    """
+    if target not in ("champion", "baseline"):
+        raise HTTPException(
+            status_code=422,
+            detail="target must be 'champion' or 'baseline'.",
+        )
+    ws = get_workspace_client()
+    sp_ws = get_service_principal_client()
+    config = _build_gso_config()
+
+    try:
+        result = revert_optimization(run_id, ws, sp_ws, config, target=target)
+        return {"status": result.status, "runId": result.run_id, "message": result.message}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to revert to run %s: %s", run_id, e)
+        raise HTTPException(status_code=500, detail="Failed to revert the Genie Space.")
+
+
 @router.get("/spaces/{space_id}/active-run")
 async def get_active_run(space_id: SpaceId):
     """Check for an active optimization run by querying the authoritative Delta table.
@@ -2014,6 +2057,8 @@ def _enrich_run_summaries(runs: list[dict]) -> list[dict]:
     for r in runs:
         r["terminal_reason"] = _typed_terminal_reason(r)
         r["best_accuracy"] = _safe_float(r.get("best_accuracy"))
+        r["best_iteration"] = _safe_int(r.get("best_iteration"))
+        r["has_config_snapshot"] = _safe_bool(r.get("has_config_snapshot"))
     return runs
 
 
@@ -2031,7 +2076,8 @@ async def load_runs_with_fallback(space_id: str) -> list[dict]:
 
     return _enrich_run_summaries(_delta_query(
         f"SELECT run_id, space_id, status, started_at, completed_at, "
-        f"best_accuracy, best_iteration, convergence_reason, triggered_by, llm_model "
+        f"best_accuracy, best_iteration, convergence_reason, triggered_by, llm_model, "
+        f"(config_snapshot IS NOT NULL AND length(config_snapshot) > 2) AS has_config_snapshot "
         f"FROM {_delta_table('genie_opt_runs')} "
         f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
     ))

@@ -506,6 +506,17 @@ export async function discardAutoOptimize(runId: string): Promise<{ status: stri
   )
 }
 
+export async function revertAutoOptimizeRun(
+  runId: string,
+  target: "champion" | "baseline" = "champion",
+): Promise<{ status: string; runId: string; message: string }> {
+  return fetchWithTimeout<{ status: string; runId: string; message: string }>(
+    `${API_BASE}/auto-optimize/runs/${runId}/revert?target=${target}`,
+    { method: "POST", headers: { "Content-Type": "application/json" } },
+    DEFAULT_TIMEOUT
+  )
+}
+
 export async function getActiveRunForSpace(
   spaceId: string
 ): Promise<{ hasActiveRun: boolean; activeRunId: string | null; activeRunStatus: string | null }> {

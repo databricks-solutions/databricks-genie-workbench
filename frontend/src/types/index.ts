@@ -369,6 +369,10 @@ export interface GSORunSummary {
   terminal_reason?: GSOTerminalReason | null
   triggered_by: string | null
   llm_model?: string | null
+  /** True when the run has a captured config snapshot (baseline) to revert to.
+   * Absent on older backends — treat undefined as "unknown / optimistic" so
+   * the Revert button still renders (the backend will 409 if truly missing). */
+  has_config_snapshot?: boolean
 }
 
 export interface GSOPipelineStep {

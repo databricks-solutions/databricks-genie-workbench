@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { RotateCcw, Loader2, AlertCircle, CheckCircle2, Trophy, History } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -9,7 +10,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table"
-import { getAutoOptimizeRunsForSpace } from "@/lib/api"
+import { getAutoOptimizeRunsForSpace, revertAutoOptimizeRun, ApiError } from "@/lib/api"
 import { championAccuracyText, humanizeTerminalReason } from "@/components/auto-optimize/runHistory"
 import type { GSORunSummary } from "@/types"
 
@@ -31,16 +32,37 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   QUEUED: "secondary",
 }
 
+// Revert is a live-space mutation — only offer it on runs that are no longer
+// mutating the space. Reverting to a still-running run's snapshot would race
+// the active pipeline (and the backend refuses it with a 409 anyway).
+const NON_TERMINAL_STATUSES = new Set(["IN_PROGRESS", "RUNNING", "QUEUED"])
+
 export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) {
   const [runs, setRuns] = useState<GSORunSummary[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let cancelled = false
+    getAutoOptimizeRunsForSpace(spaceId)
+      .then((res) => {
+        if (!cancelled) setRuns(res)
+      })
+      .catch(() => {
+        if (!cancelled) setRuns([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [spaceId])
+
+  function refreshRuns() {
     getAutoOptimizeRunsForSpace(spaceId)
       .then(setRuns)
       .catch(() => setRuns([]))
-      .finally(() => setLoading(false))
-  }, [spaceId])
+  }
 
   return (
     <Card>
@@ -100,12 +122,37 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                     {run.triggered_by ?? "—"}
                   </TableCell>
                   <TableCell>
-                    <button
-                      onClick={() => onSelectRun(run.run_id)}
-                      className="text-sm text-accent hover:underline"
-                    >
-                      View Details
-                    </button>
+                    <div className="flex flex-col gap-1.5">
+                      <button
+                        onClick={() => onSelectRun(run.run_id)}
+                        className="text-sm text-accent hover:underline text-left"
+                      >
+                        View Details
+                      </button>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        {/* Revert to champion — only when a distinct optimized
+                            iteration won (best_iteration > 0). When the baseline
+                            was the champion (best_iteration === 0/null), this
+                            button is hidden and only the baseline revert shows. */}
+                        {hasDistinctChampion(run) && (
+                          <RevertButton
+                            run={run}
+                            target="champion"
+                            onReverted={refreshRuns}
+                          />
+                        )}
+                        {/* Revert to baseline — shown whenever a config snapshot
+                            exists. ``has_config_snapshot`` is undefined on older
+                            backends; treat that as "unknown" and still render. */}
+                        {run.has_config_snapshot !== false && (
+                          <RevertButton
+                            run={run}
+                            target="baseline"
+                            onReverted={refreshRuns}
+                          />
+                        )}
+                      </div>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -114,5 +161,162 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
         )}
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * A distinct champion exists when an optimized iteration (iteration > 0) beat
+ * the baseline. ``best_iteration`` is stamped by ``promote_best_model``; 0 means
+ * the baseline itself was the champion (nothing beat it), null means no
+ * champion was promoted (failed run / no iterations).
+ */
+function hasDistinctChampion(run: GSORunSummary): boolean {
+  const it = run.best_iteration
+  return typeof it === "number" && Number.isFinite(it) && it > 0
+}
+
+type RevertTarget = "champion" | "baseline"
+
+type RevertPhase = "idle" | "confirming" | "pending" | "success" | "error"
+
+const REVERT_LABEL: Record<RevertTarget, string> = {
+  champion: "Revert to Champion",
+  baseline: "Revert to Baseline",
+}
+
+const REVERT_HINT: Record<RevertTarget, string> = {
+  champion: "Roll the live Genie Space back to this run's champion (winning) configuration.",
+  baseline: "Roll the live Genie Space back to this run's starting (pre-optimization) configuration.",
+}
+
+const REVERT_CONFIRM: Record<RevertTarget, string> = {
+  champion: "Roll space back to champion?",
+  baseline: "Roll space back to baseline?",
+}
+
+const REVERT_ICON: Record<RevertTarget, React.ReactNode> = {
+  champion: <Trophy className="h-3.5 w-3.5" />,
+  baseline: <History className="h-3.5 w-3.5" />,
+}
+
+interface RevertButtonProps {
+  run: GSORunSummary
+  target: RevertTarget
+  onReverted: () => void
+}
+
+/**
+ * Per-row revert affordance. Re-PATCHes the live Genie Space with either the
+ * run's champion config (``target="champion"``) or its pre-run baseline
+ * (``target="baseline"``) via ``POST /auto-optimize/runs/{id}/revert?target=``.
+ * Destructive (it overwrites the live space config), so it's gated behind an
+ * inline confirm and disabled for non-terminal runs.
+ */
+function RevertButton({ run, target, onReverted }: RevertButtonProps) {
+  const [phase, setPhase] = useState<RevertPhase>("idle")
+  const [error, setError] = useState<string | null>(null)
+
+  const disabled = NON_TERMINAL_STATUSES.has(run.status)
+
+  async function doRevert() {
+    setPhase("pending")
+    setError(null)
+    try {
+      await revertAutoOptimizeRun(run.run_id, target)
+      setPhase("success")
+      onReverted()
+      // Drop the success banner back to idle after a few seconds so the row
+      // returns to its resting affordance.
+      setTimeout(() => setPhase("idle"), 4000)
+    } catch (e) {
+      const message =
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : "Failed to revert the Genie Space."
+      setError(message)
+      setPhase("error")
+    }
+  }
+
+  if (phase === "success") {
+    return (
+      <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+        <CheckCircle2 className="h-3.5 w-3.5" />
+        Reverted
+      </span>
+    )
+  }
+
+  if (phase === "error") {
+    return (
+      <span className="flex flex-col items-start gap-0.5">
+        <button
+          onClick={() => setPhase("confirming")}
+          className="flex items-center gap-1 text-xs text-accent hover:underline"
+        >
+          {REVERT_ICON[target]}
+          {REVERT_LABEL[target]}
+        </button>
+        <span
+          className="flex items-center gap-1 text-xs text-red-500 max-w-[18rem] truncate"
+          title={error ?? undefined}
+        >
+          <AlertCircle className="h-3 w-3 shrink-0" />
+          {error ?? "Failed"}
+        </span>
+      </span>
+    )
+  }
+
+  if (phase === "pending") {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-muted">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Reverting…
+      </span>
+    )
+  }
+
+  if (phase === "confirming") {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-xs text-muted">{REVERT_CONFIRM[target]}</span>
+        <button
+          onClick={doRevert}
+          className="flex items-center gap-1 rounded-md bg-red-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-red-700"
+        >
+          <RotateCcw className="h-3 w-3" />
+          Yes
+        </button>
+        <button
+          onClick={() => {
+            setPhase("idle")
+            setError(null)
+          }}
+          className="rounded-md border border-default px-2 py-0.5 text-xs font-medium text-muted transition-colors hover:text-primary"
+        >
+          Cancel
+        </button>
+      </span>
+    )
+  }
+
+  // idle
+  return (
+    <button
+      onClick={() => setPhase("confirming")}
+      disabled={disabled}
+      title={
+        disabled
+          ? `Wait for this run to finish before reverting to its ${target} configuration.`
+          : REVERT_HINT[target]
+      }
+      className="flex items-center gap-1 text-xs text-accent hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
+    >
+      {REVERT_ICON[target]}
+      {REVERT_LABEL[target]}
+    </button>
   )
 }

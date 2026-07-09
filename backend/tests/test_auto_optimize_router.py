@@ -1290,6 +1290,36 @@ def test_run_summaries_enriched_with_typed_terminal_reason() -> None:
     assert out[1]["convergence_reason"] == "plateau"
 
 
+def test_run_summaries_enrich_has_config_snapshot_coerced() -> None:
+    """``has_config_snapshot`` is coerced to a real bool so the frontend can
+    hide the Revert button for runs with no captured config. The Delta/SQL-
+    warehouse fallback returns columns as strings (JSON_ARRAY format), so a
+    literal ``"false"`` must NOT be truthy.
+
+    Also coerces ``best_iteration`` to int — the frontend uses ``> 0`` to
+    decide whether to show the "Revert to Champion" button, and a string
+    ``"2"`` would never satisfy that check."""
+    runs = [
+        {"run_id": "r1", "has_config_snapshot": True, "best_iteration": 2},      # Postgres path
+        {"run_id": "r2", "has_config_snapshot": "true", "best_iteration": "2"},  # Delta path (strings)
+        {"run_id": "r3", "has_config_snapshot": False, "best_iteration": 0},
+        {"run_id": "r4", "has_config_snapshot": "false", "best_iteration": "0"}, # must stay falsy
+        {"run_id": "r5"},                                                     # absent → False/None
+    ]
+    out = auto_optimize._enrich_run_summaries(runs)
+    assert out[0]["has_config_snapshot"] is True
+    assert out[1]["has_config_snapshot"] is True
+    assert out[2]["has_config_snapshot"] is False
+    assert out[3]["has_config_snapshot"] is False
+    assert out[4]["has_config_snapshot"] is False
+    # best_iteration coercion (drives the champion-button visibility).
+    assert out[0]["best_iteration"] == 2
+    assert out[1]["best_iteration"] == 2
+    assert out[2]["best_iteration"] == 0
+    assert out[3]["best_iteration"] == 0
+    assert out[4]["best_iteration"] is None
+
+
 # Item 4 — round-trip target_accuracy + max_attempts.
 
 
@@ -1732,3 +1762,95 @@ def test_resolve_run_knobs_null_for_legacy_terminal_run(monkeypatch) -> None:
     )
     assert ta is None and ma is None
     sp_ws.jobs.get_run.assert_not_called()
+
+
+# ── /runs/{run_id}/revert ───────────────────────────────────────────────
+
+
+def test_revert_run_happy_path(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
+    """A successful revert returns 200 + the integration ActionResult payload."""
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    fake = MagicMock(status="reverted", run_id=run_id,
+                      message="Genie Space reverted to this run's champion configuration.")
+    captured = {}
+    def _stub(*a, **k):
+        captured.update(k)
+        return fake
+    monkeypatch.setattr(auto_optimize, "revert_optimization", _stub)
+    resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert?target=champion")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "reverted"
+    assert body["runId"] == run_id
+    assert "reverted" in body["message"].lower()
+    # The target query param is forwarded to the integration function.
+    assert captured.get("target") == "champion"
+
+
+def test_revert_run_defaults_target_to_champion(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
+    """Omitting ?target defaults to 'champion' (back-compat)."""
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    captured = {}
+    def _stub(*a, **k):
+        captured.update(k)
+        return MagicMock(status="reverted", run_id=run_id, message="ok")
+    monkeypatch.setattr(auto_optimize, "revert_optimization", _stub)
+    resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert")
+    assert resp.status_code == 200
+    assert captured.get("target") == "champion"
+
+
+def test_revert_run_rejects_invalid_target(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
+    """An unknown target value is a 422 before the integration layer is touched."""
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    stub = MagicMock(side_effect=AssertionError("must not be called"))
+    monkeypatch.setattr(auto_optimize, "revert_optimization", stub)
+    resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert?target=garbage")
+    assert resp.status_code == 422
+    assert "target" in resp.json()["detail"].lower()
+    stub.assert_not_called()
+
+
+def test_revert_run_returns_409_for_value_error(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
+    """Still-in-progress / missing-snapshot runs surface as a 409."""
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    def _raise(*a, **k):
+        raise ValueError("Cannot revert to a run that is still in progress.")
+    monkeypatch.setattr(auto_optimize, "revert_optimization", _raise)
+    resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert")
+    assert resp.status_code == 409
+    assert "in progress" in resp.json()["detail"].lower()
+
+
+def test_revert_run_returns_422_for_runtime_error(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
+    """A failed Genie PATCH rollback surfaces as a 422 (unprocessable)."""
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    def _raise(*a, **k):
+        raise RuntimeError("Failed to apply rollback via API")
+    monkeypatch.setattr(auto_optimize, "revert_optimization", _raise)
+    resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert")
+    assert resp.status_code == 422
+    assert "rollback" in resp.json()["detail"].lower()
+
+
+def test_revert_run_returns_500_for_unexpected_exception(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
+    """Any unexpected error maps to a generic 500, never a stack trace."""
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    def _raise(*a, **k):
+        raise OSError("boom")
+    monkeypatch.setattr(auto_optimize, "revert_optimization", _raise)
+    resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert")
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Failed to revert the Genie Space."
