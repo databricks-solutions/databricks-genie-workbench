@@ -21,6 +21,7 @@ can offer per-entry "Revert to champion" / "Revert to baseline" affordances.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from typing import TYPE_CHECKING, Literal
@@ -112,6 +113,14 @@ def revert_optimization(
     from genie_space_optimizer.common.genie_client import patch_space_config
 
     client = _pick_genie_client(ws, sp_ws)
+    target_config = _preserve_live_benchmarks(
+        target_config,
+        space_id=space_id,
+        clients=(client, ws, sp_ws),
+        warehouse_id=config.warehouse_id,
+        catalog=config.catalog,
+        schema_name=config.schema_name,
+    )
     try:
         patch_space_config(client, space_id, target_config)
     except ValueError as exc:
@@ -184,6 +193,150 @@ def _with_default_serialized_space_version(config: dict) -> dict:
     if any(key in config for key in ("data_sources", "instructions", "config", "benchmarks")):
         return {"version": 2, **config}
     return config
+
+
+def _preserve_live_benchmarks(
+    target_config: dict,
+    *,
+    space_id: str,
+    clients: tuple[WorkspaceClient, ...],
+    warehouse_id: str,
+    catalog: str,
+    schema_name: str,
+) -> dict:
+    """Keep revert from rolling benchmark ground truth backward.
+
+    ``benchmarks`` is part of ``serialized_space``, but it is evaluation state,
+    not the space configuration the History button is meant to restore. Preserve
+    the live benchmark block and EXPLAIN-prune invalid answers so a historical
+    champion snapshot cannot reintroduce stale or malformed ground-truth SQL.
+    """
+    from genie_space_optimizer.common.genie_client import fetch_space_config
+
+    errors: list[str] = []
+    live_config: dict | None = None
+    live_client: WorkspaceClient | None = None
+    seen_clients: set[int] = set()
+    for cli in clients:
+        if id(cli) in seen_clients:
+            continue
+        seen_clients.add(id(cli))
+        try:
+            fetched = fetch_space_config(cli, space_id)
+            live_config = _as_serialized_space_config(fetched)
+            if live_config:
+                live_client = cli
+                break
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+
+    if live_config is None or live_client is None:
+        raise RuntimeError(
+            "Cannot safely revert without reading the live Genie benchmark "
+            f"block. Fetch errors: {'; '.join(errors) or 'none'}"
+        )
+
+    target = copy.deepcopy(target_config)
+    live_benchmarks = live_config.get("benchmarks")
+    if isinstance(live_benchmarks, dict):
+        sanitized, dropped = _validated_benchmarks_block(
+            live_benchmarks,
+            client=live_client,
+            warehouse_id=warehouse_id,
+            catalog=catalog,
+            schema_name=schema_name,
+        )
+        target["benchmarks"] = sanitized
+        logger.info(
+            "Preserved live benchmark block during revert for space %s "
+            "(questions=%d, dropped_invalid=%d).",
+            space_id,
+            len(sanitized.get("questions", []) or []),
+            dropped,
+        )
+    else:
+        target.pop("benchmarks", None)
+        logger.info(
+            "Preserved empty live benchmark block during revert for space %s.",
+            space_id,
+        )
+    return target
+
+
+def _validated_benchmarks_block(
+    benchmarks: dict,
+    *,
+    client: WorkspaceClient,
+    warehouse_id: str,
+    catalog: str,
+    schema_name: str,
+) -> tuple[dict, int]:
+    """Return a benchmark block safe to include in a revert PATCH."""
+    questions = benchmarks.get("questions")
+    if not isinstance(questions, list):
+        return {**benchmarks, "questions": []}, 0
+
+    kept: list[dict] = []
+    dropped = 0
+    for entry in questions:
+        if not isinstance(entry, dict):
+            dropped += 1
+            continue
+        sql = _benchmark_answer_sql(entry)
+        if not sql:
+            dropped += 1
+            continue
+        if warehouse_id:
+            from genie_space_optimizer.optimization.benchmarks import (
+                validate_ground_truth_sql,
+            )
+
+            ok, err = validate_ground_truth_sql(
+                sql,
+                None,
+                catalog=catalog,
+                gold_schema=schema_name,
+                w=client,
+                warehouse_id=warehouse_id,
+            )
+            if not ok:
+                dropped += 1
+                logger.warning(
+                    "Dropping invalid live benchmark during revert: id=%s "
+                    "question=%r err=%s",
+                    entry.get("id", ""),
+                    _benchmark_question_text(entry)[:100],
+                    err[:300],
+                )
+                continue
+        kept.append(copy.deepcopy(entry))
+    return {**benchmarks, "questions": kept}, dropped
+
+
+def _benchmark_answer_sql(entry: dict) -> str:
+    answers = entry.get("answer")
+    if not isinstance(answers, list) or not answers:
+        return ""
+    first = answers[0]
+    if not isinstance(first, dict):
+        return ""
+    if str(first.get("format", "")).upper() != "SQL":
+        return ""
+    content = first.get("content")
+    if isinstance(content, list) and content:
+        return str(content[0]).strip()
+    if isinstance(content, str):
+        return content.strip()
+    return ""
+
+
+def _benchmark_question_text(entry: dict) -> str:
+    question = entry.get("question")
+    if isinstance(question, list) and question:
+        return str(question[0])
+    if isinstance(question, str):
+        return question
+    return ""
 
 
 def _load_baseline_config(run_data: dict) -> dict | None:

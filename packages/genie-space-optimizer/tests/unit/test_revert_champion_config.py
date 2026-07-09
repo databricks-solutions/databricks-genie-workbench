@@ -70,13 +70,31 @@ def _baseline_config() -> dict:
     }
 
 
-def _patch_patch_space_config(monkeypatch) -> MagicMock:
+def _patch_patch_space_config(monkeypatch, *, live_config: dict | None = None) -> MagicMock:
     patch_mock = MagicMock(name="patch_space_config")
     monkeypatch.setattr(
         "genie_space_optimizer.common.genie_client.patch_space_config",
         patch_mock,
     )
+    live = live_config or {
+        "_parsed_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+        },
+    }
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.genie_client.fetch_space_config",
+        lambda *a, **k: live,
+    )
     return patch_mock
+
+
+def _live_benchmark(qid: str, question: str, sql: str) -> dict:
+    return {
+        "id": qid,
+        "question": [question],
+        "answer": [{"format": "SQL", "content": [sql]}],
+    }
 
 
 # ── target="champion" ───────────────────────────────────────────────────
@@ -135,6 +153,130 @@ def test_revert_champion_backfills_version_for_legacy_projected_config(monkeypat
     patched_config = patch_mock.call_args.args[2]
     assert patched_config["version"] == 2
     assert patched_config["instructions"]["text_instructions"][0]["content"] == "legacy champion"
+
+
+def test_revert_preserves_live_benchmarks_instead_of_historical_champion(monkeypatch) -> None:
+    """Reverting config must not roll benchmark ground truth backward."""
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    run = {
+        "run_id": "r-bench",
+        "space_id": "space-bench",
+        "status": "CONVERGED",
+        "config_snapshot": json.dumps(_baseline_config()),
+    }
+    champion = {
+        "version": 2,
+        "data_sources": {"tables": []},
+        "benchmarks": {
+            "questions": [
+                _live_benchmark(
+                    "old",
+                    "complaint rate",
+                    "SELECT COUNT_IF(category = Complaint) FROM cat.sch.t",
+                ),
+            ],
+        },
+    }
+    live = {
+        "_parsed_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+            "benchmarks": {
+                "questions": [
+                    _live_benchmark(
+                        "live",
+                        "complaint rate",
+                        "SELECT COUNT_IF(category = 'Complaint') FROM cat.sch.t",
+                    ),
+                ],
+            },
+        },
+    }
+
+    monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+    monkeypatch.setattr(
+        revert,
+        "sql_warehouse_query",
+        lambda *a, **k: pd.DataFrame([
+            {"config_json": json.dumps(champion)},
+        ]),
+    )
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
+        lambda *a, **k: (True, ""),
+    )
+    patch_mock = _patch_patch_space_config(monkeypatch, live_config=live)
+
+    revert.revert_optimization("r-bench", ws, sp_ws, cfg, target="champion")
+
+    patched_config = patch_mock.call_args.args[2]
+    patched_questions = patched_config["benchmarks"]["questions"]
+    assert len(patched_questions) == 1
+    assert patched_questions[0]["id"] == "live"
+    assert "'Complaint'" in patched_questions[0]["answer"][0]["content"][0]
+    assert "category = Complaint" not in patched_questions[0]["answer"][0]["content"][0]
+
+
+def test_revert_prunes_invalid_live_benchmarks(monkeypatch) -> None:
+    """A second revert after a bad benchmark rollback should clean the live block."""
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    run = {
+        "run_id": "r-prune",
+        "space_id": "space-prune",
+        "status": "CONVERGED",
+        "config_snapshot": json.dumps(_baseline_config()),
+    }
+    champion = {
+        "version": 2,
+        "data_sources": {"tables": []},
+        "benchmarks": {"questions": []},
+    }
+    live = {
+        "_parsed_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+            "benchmarks": {
+                "questions": [
+                    _live_benchmark(
+                        "bad",
+                        "deposit volume",
+                        "SELECT * FROM t WHERE transaction_type = Deposit",
+                    ),
+                    _live_benchmark(
+                        "good",
+                        "deposit volume quoted",
+                        "SELECT * FROM t WHERE transaction_type = 'Deposit'",
+                    ),
+                ],
+            },
+        },
+    }
+
+    monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+    monkeypatch.setattr(
+        revert,
+        "sql_warehouse_query",
+        lambda *a, **k: pd.DataFrame([
+            {"config_json": json.dumps(champion)},
+        ]),
+    )
+    def _validate(sql, *a, **k):
+        if " = Deposit" in sql:
+            return False, "UNRESOLVED_COLUMN: `Deposit`"
+        return True, ""
+
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
+        _validate,
+    )
+    patch_mock = _patch_patch_space_config(monkeypatch, live_config=live)
+
+    revert.revert_optimization("r-prune", ws, sp_ws, cfg, target="champion")
+
+    patched_questions = patch_mock.call_args.args[2]["benchmarks"]["questions"]
+    assert [q["id"] for q in patched_questions] == ["good"]
 
 
 def test_revert_champion_errors_when_no_champion_row(monkeypatch) -> None:
@@ -280,6 +422,15 @@ def test_revert_promotes_validation_failure_to_runtime_error(monkeypatch) -> Non
     monkeypatch.setattr(
         "genie_space_optimizer.common.genie_client.patch_space_config",
         _patch_fail,
+    )
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.genie_client.fetch_space_config",
+        lambda *a, **k: {
+            "_parsed_space": {
+                "version": 2,
+                "data_sources": {"tables": []},
+            },
+        },
     )
 
     with pytest.raises(RuntimeError, match="invalid"):
