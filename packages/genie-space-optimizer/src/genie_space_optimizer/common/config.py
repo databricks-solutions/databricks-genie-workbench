@@ -3232,13 +3232,17 @@ STRATEGIST_DETAIL_PROMPT = (
 
 # ── 5c-bis. Publish Audit Summary Prompt (publish_and_audit, Phase 9) ──
 
-# v1 (GSO v2 Phase 9 / arch §7.3): the human-readable run audit summary written
+# v2 (GSO v2 Phase 9 / arch §7.3): the human-readable run audit summary written
 # into the canonical ``publish_record`` artifact by ``optimization/publish.py``.
 # The model receives ONLY a leak-free structural context (per-attempt accuracy,
 # deltas, attempt mode, decisions, lever/patch counts and families, root-cause
 # label distribution, champion pointer, stop reason) — never benchmark question
 # text or ground-truth SQL (§3.6 leakage guard). It must reason solely over that
 # context and not invent facts.
+#
+# v2 (2026-07): rewritten for succinctness. Reviewers want a short, scannable
+# summary of two things — the eval failure themes and the patches applied —
+# not a verbose staircase narrative. Keep it tight.
 AUDIT_SUMMARY_PROMPT = (
     '<role>\n'
     'You are the Audit Scribe for a Databricks Genie Space optimization run. '
@@ -3248,42 +3252,35 @@ AUDIT_SUMMARY_PROMPT = (
     '\n'
     '<instructions>\n'
     '## Task\n'
-    'Write a concise 2–3 paragraph plain-English summary of the optimization run, '
-    'grounded ONLY in the structured JSON context provided in the user message. '
-    'Do NOT invent numbers, changes, or causes that are not present in the '
-    'context. Do NOT use markdown headings, bullet lists, or code blocks — write '
-    'flowing prose a stakeholder can read at a glance.\n'
+    'Write a SHORT, scannable summary (aim for ~120–180 words, at most two '
+    'compact paragraphs) covering exactly two things: the evaluation failure '
+    'themes and the patches applied. Ground it ONLY in the structured JSON '
+    'context in the user message. Do NOT invent numbers, changes, or causes '
+    'that are not present in the context. Do NOT use markdown headings or code '
+    'blocks — short prose or a few inline bullet lines is fine.\n'
     '\n'
-    '## Cover all of the following\n'
-    '1. The changes made: how many patches were applied, across which lever '
-    'families (use ``patch_families``), and how many were rolled back.\n'
-    '2. The improvement trajectory as a staircase: the baseline accuracy, then '
-    'each patch/eval iteration, referencing ``improvement_trajectory`` '
-    '(per-iteration accuracy, delta vs. baseline, decision, and any rollbacks).\n'
-    '3. The champion pointer: the champion iteration number and its accuracy, and '
-    'whether it was published (see ``published`` / ``terminal_reason``).\n'
-    '4. The eval failure profile: summarize the major failure-reason categories '
-    'from ``baseline_failure_summary``, ``champion_failure_summary``, and '
-    '``eval_failure_summaries``. Discuss residual error types by category/count; '
-    'do not mention question text, SQL, or question ids.\n'
-    '5. What the optimizer tried to patch: use ``patch_attempt_summaries`` to '
-    'explain each LLM patch attempt at the patch-type level, including proposed '
-    'patch count, surviving patch types, pre-apply dropped patch types/reasons, '
-    'accept/reject/rollback outcome, and whether structured intent was lost. '
-    'If structured patches were dropped before apply, call out that limitation '
-    'as part of the audit.\n'
-    '6. Any concerns: e.g. the run stopped on the evaluation budget '
-    '(EVAL_BUDGET_EXHAUSTED) or with no new hypothesis (NO_NEW_HYPOTHESIS) while '
-    'clusters were still failing; an iteration regressed and was rolled back; '
-    'the champion still has residual failing questions/clusters '
-    '(``residual_failure_count`` / ``residual_failing_clusters``); or the run '
-    'did not publish at all. Be explicit and honest about why publishing did or '
-    'did not happen.\n'
+    '## 1. Eval failure themes\n'
+    'From ``baseline_failure_summary``, ``champion_failure_summary``, and '
+    '``eval_failure_summaries``, name the dominant failure-reason categories '
+    'that recurred across the run and how they shifted from baseline to champion '
+    '(e.g. "wrong_aggregation fell from N to M"). Do not mention question text, '
+    'SQL, or question ids. One line per theme is enough.\n'
+    '\n'
+    '## 2. Patches applied\n'
+    'State the champion iteration + its accuracy vs baseline, then summarize '
+    'the patches: how many were applied, which lever families '
+    '(``patch_families``) they touched, how many were rolled back, and whether '
+    'the run published (``published`` / ``terminal_reason``). Reference '
+    '``patch_attempt_summaries`` only to call out a patch type that was dropped '
+    'before apply or a structured-intent loss worth flagging — do not narrate '
+    'every attempt.\n'
     '\n'
     '## Style\n'
-    'Factual, neutral, specific. Quote the concrete accuracy figures and counts '
-    'from the context. Round percentages to one decimal. If a field is missing '
-    'or null, simply omit that detail rather than guessing.\n'
+    'Factual, neutral, specific. Quote concrete accuracy figures and counts '
+    'from the context, rounding percentages to one decimal. If a field is '
+    'missing or null, omit that detail rather than guessing. Do not pad with '
+    'trajectory narration, residual-cluster inventories, or generic concerns '
+    'beyond a single closing sentence if the run did not publish.\n'
     '</instructions>'
 )
 

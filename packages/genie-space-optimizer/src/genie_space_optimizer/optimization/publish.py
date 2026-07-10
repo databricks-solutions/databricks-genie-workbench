@@ -720,7 +720,7 @@ def build_audit_summary(
     *,
     prompt_name: str = "",
 ) -> tuple[str | None, str | None]:
-    """Generate the 1–2 paragraph human-readable audit summary via the LLM.
+    """Generate the short human-readable audit summary via the LLM.
 
     Returns ``(summary_text_or_None, concern_or_None)``. The call is best-effort:
     any exception or empty/unusable output yields ``(None, concern)`` so the
