@@ -2,7 +2,7 @@
 
 The IQ Scanner is a **deterministic, rule-based** quality assessment engine for Genie Space configurations. It evaluates 12 binary checks, assigns a maturity tier, and produces actionable findings with recommended next steps.
 
-Unlike the LLM-based analysis tools, the scanner runs instantly with no LLM calls — it inspects the `serialized_space` JSON directly.
+Unlike the LLM-based analysis tools, the scanner runs instantly with no LLM calls — it inspects the parsed `serialized_space` JSON plus read-only top-level Space metadata needed for scoring, such as `description`.
 
 ### Unity Catalog Enrichment
 

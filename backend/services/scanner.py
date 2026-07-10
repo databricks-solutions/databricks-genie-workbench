@@ -157,7 +157,7 @@ async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
     logger.info(f"Scanning space: {space_id}")
 
     try:
-        space_data = get_serialized_space(space_id)
+        space_data = get_serialized_space(space_id, include_top_level_description=True)
     except Exception as e:
         logger.error(f"Failed to fetch space {space_id}: {e}")
         raise ValueError(f"Cannot scan space {space_id}: {e}")

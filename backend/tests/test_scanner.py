@@ -848,7 +848,11 @@ class TestScanSpaceGsoSelection:
         # Minimal scorable config (1 table, no benchmarks needed for accuracy).
         space_data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
                       "instructions": {}, "benchmarks": {"questions": []}}
-        monkeypatch.setattr(scanner, "get_serialized_space", lambda _sid: space_data)
+        monkeypatch.setattr(
+            scanner,
+            "get_serialized_space",
+            lambda _sid, *, include_top_level_description=False: space_data,
+        )
         # Skip UC enrichment (it's already wrapped in try/except, but make it a
         # clean no-op so the test doesn't depend on a WorkspaceClient).
         monkeypatch.setattr(scanner, "get_workspace_client", lambda: MagicMock(), raising=False)
@@ -905,6 +909,42 @@ class TestScanSpaceGsoSelection:
         )
         result = await scan_space("space-1")
         assert result["optimization_accuracy"] == 0.53
+
+    @pytest.mark.asyncio
+    async def test_scan_requests_top_level_space_description(self, monkeypatch):
+        """scan_space must score the API-level Space description, not only the
+        parsed serialized_space payload."""
+        import backend.services.scanner as scanner
+        import backend.services.gso_lakebase as gso_lakebase
+
+        def _get_serialized_space(_sid, *, include_top_level_description=False):
+            assert include_top_level_description is True
+            return {
+                "description": "Useful top-level description for this sales analytics space.",
+                "data_sources": {"tables": [{"name": "t", "columns": []}]},
+                "instructions": {},
+                "benchmarks": {"questions": []},
+            }
+
+        monkeypatch.setattr(scanner, "get_serialized_space", _get_serialized_space)
+        monkeypatch.setattr(scanner, "get_workspace_client", lambda: MagicMock(), raising=False)
+        monkeypatch.setattr(scanner, "_enrich_with_uc_descriptions", lambda *a, **k: 0)
+
+        async def _legacy(_sid):
+            return None
+        monkeypatch.setattr(scanner, "get_latest_optimization_run", _legacy)
+
+        async def _gso(_sid):
+            return []
+        monkeypatch.setattr(gso_lakebase, "load_gso_runs_for_space", _gso)
+
+        async def _save(_sid, _result):
+            return None
+        monkeypatch.setattr(scanner, "save_scan_result", _save)
+
+        result = await scanner.scan_space("space-1")
+        check = _check_by_label(result, "Space description")
+        assert check["passed"] is True
 
     @pytest.mark.asyncio
     async def test_applied_beats_older_converged(self, monkeypatch):

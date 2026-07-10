@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+from copy import deepcopy
 from typing import Any
 
 from dotenv import load_dotenv
@@ -243,17 +244,37 @@ def _list_spaces_with_client(client) -> list[dict]:
     return spaces
 
 
-def get_serialized_space(genie_space_id: str | None = None) -> dict:
+def _parse_serialized_space_value(serialized_space: Any) -> dict:
+    """Parse the API ``serialized_space`` value into a mutable dict."""
+    if isinstance(serialized_space, dict):
+        return deepcopy(serialized_space)
+    if isinstance(serialized_space, str):
+        parsed = json.loads(serialized_space)
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("Genie API returned an invalid serialized_space payload")
+
+
+def get_serialized_space(
+    genie_space_id: str | None = None,
+    *,
+    include_top_level_description: bool = False,
+) -> dict:
     """Fetch a Genie space and return the parsed serialized space.
 
     Args:
         genie_space_id: The Genie space ID (defaults to GENIE_SPACE_ID env var)
+        include_top_level_description: Copy the API-level Space description
+            into the returned dict for read-only scoring paths. Genie stores
+            the Space description outside ``serialized_space``.
 
     Returns:
         Parsed serialized space configuration as a dictionary
     """
     data = get_genie_space(genie_space_id=genie_space_id)
-    space_data = json.loads(data["serialized_space"])
+    space_data = _parse_serialized_space_value(data["serialized_space"])
+    if include_top_level_description and "description" in data:
+        space_data["description"] = data.get("description") or ""
     try:
         client = get_workspace_client()
     except Exception:
