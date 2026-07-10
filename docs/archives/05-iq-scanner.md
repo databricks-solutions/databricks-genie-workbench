@@ -30,16 +30,16 @@ The first 10 checks evaluate configuration quality. The last 2 checks evaluate o
 
 | # | Check | Pass Criteria | On Failure |
 |---|-------|--------------|------------|
-| 1 | **Data sources exist** | At least 1 table or metric view configured | "No tables or metric views configured" |
-| 2 | **Table descriptions** | ≥80% of tables have descriptions | Finding + next step to add descriptions |
-| 3 | **Column descriptions** | ≥50% of columns have descriptions | Finding + next step to add descriptions |
+| 1 | **Space description** | Top-level `description` is meaningful (30+ chars, 5+ words, not placeholder text) | Finding + next step to define domain, audience, and scope |
+| 2 | **Table descriptions** | ≥80% of tables have meaningful descriptions | Finding + next step to add descriptions |
+| 3 | **Column descriptions** | ≥50% of visible columns have meaningful descriptions | Finding + next step to add descriptions |
 | 4 | **Text instructions** | Present and >50 characters total | Finding to add business context instructions |
-| 5 | **Join specifications** | At least 1 join spec (for multi-source spaces) | Finding to add join specs |
+| 5 | **Join specifications** | Single-source spaces pass; multi-source spaces have at least 1 join spec | Finding to add join specs |
 | 6 | **Data source count 1–12** | Between 1 and 12 tables + metric views | Finding to reduce data sources or use multi-room architecture |
-| 7 | **8+ example SQLs** | At least 8 example question-SQL pairs | Finding to add more examples |
-| 8 | **SQL snippets** | At least 1 function, expression, measure, or filter | Finding to add SQL snippets |
-| 9 | **Entity/format matching** | At least 1 column with entity matching or format assistance | Finding to enable on categorical/date/number columns |
-| 10 | **10+ benchmark questions** | At least 10 benchmark questions | Finding to add benchmarks |
+| 7 | **SQL guidance artifacts** | At least 1 SQL function, SQL snippet (expression/measure/filter), or example SQL | Finding to add SQL guidance |
+| 8 | **Entity/format matching** | At least 1 column with entity matching or format assistance | Finding to enable on categorical/date/number columns |
+| 9 | **10+ benchmark questions** | At least 10 benchmark questions | Finding to add benchmarks |
+| 10 | **Column visibility / noise control** | No excessive visible internal/raw/audit/debug columns | Finding to hide noisy columns |
 
 ### Optimization Checks (11–12)
 
@@ -70,12 +70,12 @@ The scanner returns:
   "total": 12,
   "maturity": "Not Ready",
   "checks": [
-    {"label": "Data sources exist", "passed": true, "detail": "5 table(s) configured", "severity": "pass"},
+    {"label": "Space description", "passed": true, "detail": "128 chars", "severity": "pass"},
     ...
   ],
   "findings": ["No join specifications for multi-source space", ...],
   "next_steps": ["Add join specifications to help Genie correctly join your tables", ...],
-  "warnings": ["Instructions total 2,501 chars — keep under 2,500", ...],
+  "warnings": ["Instructions total 2,501 chars — keep under 2,000", ...],
   "warning_next_steps": ["Restructure text instructions for optimal LLM context usage", ...],
   "scanned_at": "2026-04-08T12:00:00+00:00"
 }
@@ -91,15 +91,19 @@ Beyond the 12 scored checks, the scanner emits additional warnings for edge case
 
 | Condition | Warning |
 |-----------|---------|
+| Space description 30–99 chars | "Expand with domain, audience, and guardrails" |
 | Column descriptions at 50–80% | "Higher coverage improves SQL generation accuracy" |
 | No column synonyms defined | "Add synonyms for columns with abbreviated or technical names" |
-| Text instructions > 2,500 chars | "Keep under 2,500 to avoid pushing out higher-value SQL context" |
+| Text instructions > 2,000 chars | "Keep under 2,000 to avoid pushing out higher-value SQL context" |
 | SQL patterns in text instructions | "Move to Example SQLs or SQL Expressions" |
-| Example SQLs 8–9 | "10-15 is the sweet spot for largest accuracy jump" |
+| Multi-source join specs below `total_sources - 1` | "Relationship coverage may be incomplete" |
+| Data source count 9–12 | "Consider focused spaces for broad domains" |
 | Missing `usage_guidance` on >50% of example SQLs | "Add descriptions of when each example should be applied" |
 | Missing measures or filters in SQL snippets | "Add missing SQL snippet types for better coverage" |
 | Entity matching columns > 100 | "Approaching 120/space limit" |
 | Row-level security on tables with entity matching | "Entity matching is silently disabled for these" |
+| Benchmark questions 10–19 | "Add more benchmark questions across distinct query shapes" |
+| Visible noisy columns ≥15% in a 20+ column schema | "Review and hide noisy internal columns" |
 
 ## Integration with Auto-Optimize
 
@@ -110,7 +114,7 @@ Checks 11 and 12 evaluate optimization results. The scanner reads from two sourc
 
 The scanner normalizes accuracy values (GSO stores 0–100, scanner expects 0.0–1.0) and uses the best accuracy across both sources.
 
-Only terminal GSO run statuses count: `CONVERGED`, `STALLED`, `MAX_ITERATIONS`. In-progress or failed runs are ignored.
+Only terminal GSO run statuses count: `CONVERGED`, `STALLED`, `MAX_ITERATIONS`, `APPLIED`. In-progress, discarded, failed, or cancelled runs are ignored.
 
 ## Persistence
 

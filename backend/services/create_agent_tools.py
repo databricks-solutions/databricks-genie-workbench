@@ -3138,7 +3138,17 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
 
     # ── IQ quality warnings (aligned with scanner.py checks) ─────────────
 
-    # 1. Table descriptions: warn if <80% have descriptions; warn at 80-99%
+    # 1. Space description: warn if missing, placeholder-like, or too short.
+    raw_description = config.get("description", "")
+    description_text = " ".join(raw_description) if isinstance(raw_description, list) else str(raw_description or "")
+    description_words = re.findall(r"[A-Za-z0-9]+", description_text)
+    if len(description_text.strip()) < 30 or len(description_words) < 5 or description_text.strip().lower() in {"n/a", "na", "none", "todo", "tbd"}:
+        warning(
+            "description",
+            "Missing or short space description — define the domain, audience, and scope"
+        )
+
+    # 2. Table descriptions: warn if <80% have descriptions; warn at 80-99%
     if tables:
         described_tables = sum(
             1 for t in tables if t.get("description") or t.get("comment")
@@ -3156,7 +3166,7 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 f"{described_tables}/{total_tables} tables have descriptions ({tbl_desc_pct:.0%}) — aim for 100%"
             )
 
-    # 2. Column descriptions: warn if <50%; warn at 50-79%
+    # 3. Column descriptions: warn if <50%; warn at 50-79%
     if tables:
         total_cols = 0
         described_cols = 0
@@ -3177,7 +3187,7 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 f"{described_cols}/{total_cols} columns have descriptions ({col_desc_pct:.0%}) — aim for 80%+"
             )
 
-    # 3. Text instructions: warn if missing/short, too long, or contains SQL patterns
+    # 4. Text instructions: warn if missing/short, too long, or contains SQL patterns
     if not ti or all(not t.get("content") for t in ti):
         warning("instructions.text_instructions", "No text instructions — add business context and terminology")
     else:
@@ -3193,10 +3203,10 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 "instructions.text_instructions",
                 f"Text instructions only {ti_total_chars} chars — add more business context (>50 chars recommended)"
             )
-        if ti_total_chars > 2500:
+        if ti_total_chars > 2000:
             warning(
                 "instructions.text_instructions",
-                f"Text instructions are {ti_total_chars:,} chars — keep under 2,500 to avoid pushing out higher-value SQL context"
+                f"Text instructions are {ti_total_chars:,} chars — keep under 2,000 to avoid pushing out higher-value SQL context"
             )
         # Scanner v2 — structure-aware detection. Natural-language prose
         # like "Do not join X to Y" or "Where applicable" is no longer
@@ -3213,26 +3223,34 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 f"SQL Expressions. First offender: {sample!r}"
             )
 
-    # 4. Join specs: warn if missing when >1 table
+    # 5. Join specs: warn if missing when >1 table
     if len(tables) > 1 and not jss:
         warning(
             "instructions.join_specs",
             f"No join specs for {len(tables)} tables — add join specifications to help Genie correctly join your tables"
         )
-
-    # 5. Table count: hard structural limits are handled above.
-
-    # 6. Example SQLs: warn if <8; warn at 8-9; warn if >50% lack usage_guidance
-    n_examples = len(eqs)
-    if n_examples < 8:
+    elif len(tables) > 1 and len(jss) < max(len(tables) - 1, 1):
         warning(
-            "instructions.example_question_sqls",
-            f"Only {n_examples} example SQLs — 8+ required for good accuracy"
+            "instructions.join_specs",
+            f"{len(jss)} join specs for {len(tables)} tables — relationship coverage may be incomplete"
         )
-    elif n_examples < 10:
+
+    # 6. Table count: hard structural limits are handled above.
+
+    # 7. SQL guidance artifacts: require at least one SQL snippet/function or example SQL.
+    n_examples = len(eqs)
+    iq_sql_functions = config.get("instructions", {}).get("sql_functions", [])
+    iq_sql_snippets = config.get("instructions", {}).get("sql_snippets", {})
+    iq_expressions = iq_sql_snippets.get("expressions", [])
+    iq_measures = iq_sql_snippets.get("measures", [])
+    iq_filters = iq_sql_snippets.get("filters", [])
+    has_any_sql_guidance = bool(
+        eqs or iq_sql_functions or iq_expressions or iq_measures or iq_filters
+    )
+    if not has_any_sql_guidance:
         warning(
-            "instructions.example_question_sqls",
-            f"{n_examples} example SQLs — 10-15 is the sweet spot for largest accuracy jump"
+            "instructions",
+            "No SQL guidance artifacts — add a SQL snippet, SQL function, or example SQL"
         )
     if eqs:
         missing_guidance = sum(1 for e in eqs if not e.get("usage_guidance"))
@@ -3242,19 +3260,7 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 f"{missing_guidance}/{n_examples} example SQLs lack usage_guidance — add descriptions of when each should be applied"
             )
 
-    # 7. SQL snippets: warn if none at all; warn if missing filters or measures
-    iq_sql_functions = config.get("instructions", {}).get("sql_functions", [])
-    iq_sql_snippets = config.get("instructions", {}).get("sql_snippets", {})
-    iq_expressions = iq_sql_snippets.get("expressions", [])
-    iq_measures = iq_sql_snippets.get("measures", [])
-    iq_filters = iq_sql_snippets.get("filters", [])
-    has_any_snippets = bool(iq_sql_functions or iq_expressions or iq_measures or iq_filters)
-    if not has_any_snippets:
-        warning(
-            "instructions.sql_snippets",
-            "No SQL functions, expressions, measures, or filters — add snippets for complex business logic"
-        )
-    else:
+    if iq_sql_functions or iq_expressions or iq_measures or iq_filters:
         missing_types = []
         if not iq_filters:
             missing_types.append("filters")

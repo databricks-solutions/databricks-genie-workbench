@@ -51,7 +51,7 @@ def full_space_data():
     - 10 example SQLs with usage_guidance
     - SQL snippets (filters + measures + expressions + functions)
     - Entity matching enabled
-    - 12 benchmark questions
+    - 20 benchmark questions
     """
     tables = [
         _make_table("orders", description="Customer orders table", columns=[
@@ -76,6 +76,10 @@ def full_space_data():
     ]
 
     return {
+        "description": (
+            "This space answers e-commerce analytics questions for revenue and "
+            "operations teams using orders, customers, and product data."
+        ),
         "data_sources": {"tables": tables},
         "instructions": {
             "text_instructions": [
@@ -84,6 +88,8 @@ def full_space_data():
             ],
             "join_specs": [
                 {"id": "j1", "sql": ["ON orders.customer_id = customers.customer_id "
+                                      "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"]},
+                {"id": "j2", "sql": ["ON orders.product_id = products.product_id "
                                       "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"]},
             ],
             "example_question_sqls": _make_example_sql(10),
@@ -95,7 +101,7 @@ def full_space_data():
             },
         },
         "benchmarks": {
-            "questions": [{"id": str(i), "question": [f"Benchmark {i}?"]} for i in range(12)]
+            "questions": [{"id": str(i), "question": [f"Benchmark {i}?"]} for i in range(20)]
         },
     }
 

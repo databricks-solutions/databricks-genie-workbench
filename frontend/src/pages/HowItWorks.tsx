@@ -285,16 +285,16 @@ function CreateAgentContent() {
    ================================================================ */
 function IQScannerContent() {
   const configChecks = [
-    { name: "Data sources exist", desc: "At least one table or metric view attached to the space" },
+    { name: "Space description", desc: "Domain, audience, and scope are clearly defined" },
     { name: "Table descriptions (≥80%)", desc: "80%+ of tables have meaningful descriptions" },
-    { name: "Column descriptions (≥50%)", desc: "50%+ of columns are documented" },
+    { name: "Column descriptions (≥50%)", desc: "50%+ of visible columns are meaningfully documented" },
     { name: "Text instructions (>50 chars)", desc: "Business context and terminology explained" },
     { name: "Join specifications", desc: "Join paths defined for multi-source spaces" },
     { name: "Data source count 1–12", desc: "Optimal number of tables and metric views for accuracy" },
-    { name: "8+ example SQLs", desc: "Diverse query patterns for the model to learn" },
-    { name: "SQL snippets", desc: "Functions, expressions, measures, or filters defined" },
+    { name: "SQL guidance artifacts", desc: "At least one snippet, SQL function, or example SQL defined" },
     { name: "Entity/format matching", desc: "Categorical and date/number columns annotated" },
     { name: "10+ benchmark questions", desc: "Ground-truth questions to measure accuracy" },
+    { name: "Column visibility", desc: "No excessive internal, raw, audit, or debug columns exposed" },
   ]
 
   const optimizationChecks = [

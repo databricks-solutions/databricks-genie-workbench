@@ -82,37 +82,31 @@ class TestScoreEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# Check 1: Data sources exist
+# Check 1: Space description
 # ---------------------------------------------------------------------------
 
-class TestDataSourcesExist:
-    def test_no_tables(self, empty_space_data):
+class TestSpaceDescription:
+    def test_missing_description_fails(self, empty_space_data):
         result = calculate_score(empty_space_data)
-        check = _check_by_label(result, "Data sources exist")
+        check = _check_by_label(result, "Space description")
         assert check["passed"] is False
 
-    def test_has_tables(self, full_space_data):
-        check = _check_by_label(calculate_score(full_space_data), "Data sources exist")
+    def test_meaningful_description_passes(self, full_space_data):
+        check = _check_by_label(calculate_score(full_space_data), "Space description")
         assert check["passed"] is True
 
-    def test_metric_views_only_passes(self, metric_view_only_space):
-        check = _check_by_label(calculate_score(metric_view_only_space), "Data sources exist")
+    def test_short_but_meaningful_description_warns(self, full_space_data):
+        data = copy.deepcopy(full_space_data)
+        data["description"] = "Sales analytics space for finance teams."
+        check = _check_by_label(calculate_score(data), "Space description")
         assert check["passed"] is True
-        assert "1 metric view(s)" in check["detail"]
+        assert check["severity"] == "warning"
 
-    def test_both_tables_and_metric_views(self):
-        data = {
-            "data_sources": {
-                "tables": [{"name": "t1", "columns": []}],
-                "metric_views": [{"identifier": "cat.sch.mv1"}],
-            },
-            "instructions": {},
-            "benchmarks": {},
-        }
-        check = _check_by_label(calculate_score(data), "Data sources exist")
-        assert check["passed"] is True
-        assert "1 table(s)" in check["detail"]
-        assert "1 metric view(s)" in check["detail"]
+    def test_placeholder_description_fails(self, full_space_data):
+        data = copy.deepcopy(full_space_data)
+        data["description"] = "TBD"
+        check = _check_by_label(calculate_score(data), "Space description")
+        assert check["passed"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +122,7 @@ class TestTableDescriptions:
     def test_80_pct_boundary_pass(self):
         """4/5 = 80% should pass."""
         tables = [
-            {"name": f"t{i}", "description": f"desc{i}", "columns": []} for i in range(4)
+            {"name": f"t{i}", "description": f"Useful table description {i}", "columns": []} for i in range(4)
         ] + [{"name": "t4", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "Table descriptions")
@@ -138,7 +132,7 @@ class TestTableDescriptions:
     def test_79_pct_boundary_fail(self):
         """3/4 = 75% should fail (below 80%)."""
         tables = [
-            {"name": f"t{i}", "description": f"desc{i}", "columns": []} for i in range(3)
+            {"name": f"t{i}", "description": f"Useful table description {i}", "columns": []} for i in range(3)
         ] + [{"name": "t3", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "Table descriptions")
@@ -146,7 +140,7 @@ class TestTableDescriptions:
 
     def test_comment_counts_as_description(self):
         """Tables with 'comment' instead of 'description' should count."""
-        tables = [{"name": "t0", "comment": "has comment", "columns": []}]
+        tables = [{"name": "t0", "comment": "Useful table comment", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "Table descriptions")
         assert check["passed"] is True
@@ -170,7 +164,7 @@ class TestColumnDescriptions:
     def test_50_pct_boundary_pass(self):
         """1/2 = 50% should pass."""
         tables = [{"name": "t", "columns": [
-            {"name": "a", "description": "desc"},
+            {"name": "a", "description": "Useful column description"},
             {"name": "b"},
         ]}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
@@ -180,7 +174,7 @@ class TestColumnDescriptions:
     def test_below_50_pct_fail(self):
         """1/3 = 33% should fail."""
         tables = [{"name": "t", "columns": [
-            {"name": "a", "description": "desc"},
+            {"name": "a", "description": "Useful column description"},
             {"name": "b"},
             {"name": "c"},
         ]}]
@@ -201,7 +195,7 @@ class TestColumnDescriptions:
     def test_column_configs_counted(self):
         """column_configs should be counted alongside columns."""
         tables = [{"name": "t", "columns": [], "column_configs": [
-            {"name": "a", "description": "desc"},
+            {"name": "a", "description": "Useful column description"},
             {"name": "b"},
         ]}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
@@ -299,7 +293,22 @@ class TestJoinSpecs:
         tables = [{"name": "t1", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
         assert "No join specifications for multi-source space" not in result["findings"]
+
+    def test_partial_multi_source_join_coverage_warns(self):
+        tables = [{"name": f"t{i}", "columns": []} for i in range(3)]
+        data = {
+            "data_sources": {"tables": tables},
+            "instructions": {"join_specs": [{"id": "j1"}]},
+            "benchmarks": {},
+        }
+        result = calculate_score(data)
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
+        assert check["severity"] == "warning"
+        assert any("relationship coverage" in w for w in result["warnings"])
 
     def test_absent_with_table_and_metric_view(self):
         """1 table + 1 metric view = 2 sources → finding generated."""
@@ -336,14 +345,14 @@ class TestTableCount:
         check = _check_by_label(calculate_score(data), "Data source count 1-12")
         assert check["passed"] is True
 
-    def test_9_tables_clean_pass(self):
+    def test_9_tables_passes_with_warning(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(9)]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
         check = _check_by_label(result, "Data source count 1-12")
         assert check["passed"] is True
-        assert check["severity"] == "pass"
-        assert not any("focused rooms" in w for w in result["warnings"])
+        assert check["severity"] == "warning"
+        assert any("focused" in w for w in result["warnings"])
 
     def test_13_tables_fails(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(13)]
@@ -361,61 +370,48 @@ class TestTableCount:
 
 
 # ---------------------------------------------------------------------------
-# Check 7: 8+ example SQLs
+# Check 7: SQL guidance artifacts
 # ---------------------------------------------------------------------------
 
-class TestExampleSqls:
-    def test_0_examples_fails(self, empty_space_data):
-        check = _check_by_label(calculate_score(empty_space_data), "8+ example SQLs")
+class TestSqlGuidanceArtifacts:
+    def test_none_fails(self, empty_space_data):
+        check = _check_by_label(calculate_score(empty_space_data), "SQL guidance artifacts")
         assert check["passed"] is False
 
-    def test_7_examples_fails(self):
+    def test_one_example_sql_passes(self):
         data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(7)]},
+                "instructions": {"example_question_sqls": [{"id": "1"}]},
                 "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
-        assert check["passed"] is False
+        check = _check_by_label(calculate_score(data), "SQL guidance artifacts")
+        assert check["passed"] is True
 
-    def test_8_examples_passes(self):
+    def test_sql_function_passes(self):
         data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(8)]},
+                "instructions": {"sql_functions": [{"id": "f1"}]},
                 "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
+        check = _check_by_label(calculate_score(data), "SQL guidance artifacts")
+        assert check["passed"] is True
+
+    def test_sql_snippets_pass_with_missing_type_warning(self):
+        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
+                "instructions": {"sql_snippets": {"measures": [{"id": "m1"}]}},
+                "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "SQL guidance artifacts")
         assert check["passed"] is True
         assert check["severity"] == "warning"
 
-    def test_9_examples_warning_for_sweet_spot(self):
-        """8-9 examples pass but warn to reach the 10-15 target band."""
-        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(9)]},
-                "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
-        assert check["passed"] is True
-        assert check["severity"] == "warning"
-
-    def test_10_examples_clean_pass(self):
-        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(10)]},
-                "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
+    def test_all_sql_guidance_types_pass_cleanly(self, full_space_data):
+        check = _check_by_label(calculate_score(full_space_data), "SQL guidance artifacts")
         assert check["passed"] is True
         assert check["severity"] == "pass"
 
-    def test_12_examples_clean_pass(self):
-        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(12)]},
-                "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
-        assert check["passed"] is True
-        assert check["severity"] == "pass"
-
-    def test_15_examples_no_warning(self):
+    def test_examples_with_usage_guidance_pass_cleanly(self):
         data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
                 "instructions": {"example_question_sqls": [
-                    {"id": str(i), "usage_guidance": ["g"]} for i in range(15)
+                    {"id": str(i), "usage_guidance": ["Use for regional aggregation questions"]} for i in range(3)
                 ]},
                 "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
+        check = _check_by_label(calculate_score(data), "SQL guidance artifacts")
         assert check["passed"] is True
         assert check["severity"] == "pass"
 
@@ -426,32 +422,6 @@ class TestExampleSqls:
                 "benchmarks": {}}
         result = calculate_score(data)
         assert any("lack usage_guidance" in w for w in result["warnings"])
-
-
-# ---------------------------------------------------------------------------
-# Check 8: SQL snippets
-# ---------------------------------------------------------------------------
-
-class TestSqlSnippets:
-    def test_none_fails(self, empty_space_data):
-        label = "SQL snippets (functions/expressions/measures/filters)"
-        check = _check_by_label(calculate_score(empty_space_data), label)
-        assert check["passed"] is False
-
-    def test_functions_only_passes_with_warning(self):
-        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"sql_functions": [{"id": "f1"}]},
-                "benchmarks": {}}
-        label = "SQL snippets (functions/expressions/measures/filters)"
-        check = _check_by_label(calculate_score(data), label)
-        assert check["passed"] is True
-        assert check["severity"] == "warning"  # missing filters and measures
-
-    def test_all_types_pass(self, full_space_data):
-        label = "SQL snippets (functions/expressions/measures/filters)"
-        check = _check_by_label(calculate_score(full_space_data), label)
-        assert check["passed"] is True
-        assert check["severity"] == "pass"
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +465,7 @@ class TestEntityFormatMatching:
 
 
 # ---------------------------------------------------------------------------
-# Check 10: 10+ benchmark questions
+# Check 9: 10+ benchmark questions
 # ---------------------------------------------------------------------------
 
 class TestBenchmarks:
@@ -515,6 +485,56 @@ class TestBenchmarks:
                 "instructions": {},
                 "benchmarks": {"questions": [{"id": str(i)} for i in range(10)]}}
         check = _check_by_label(calculate_score(data), "10+ benchmark questions")
+        assert check["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Check 10: Column visibility / noise control
+# ---------------------------------------------------------------------------
+
+class TestColumnVisibilityNoiseControl:
+    def test_clean_small_schema_passes(self, full_space_data):
+        check = _check_by_label(calculate_score(full_space_data), "Column visibility / noise control")
+        assert check["passed"] is True
+        assert check["severity"] == "pass"
+
+    def test_noisy_large_schema_warns_at_15_pct(self):
+        cols = [{"name": f"business_col_{i}", "description": "Useful business column"} for i in range(17)]
+        cols += [{"name": "etl_batch_id"}, {"name": "raw_payload_json"}, {"name": "debug_flag"}]
+        data = {"data_sources": {"tables": [{"name": "t", "columns": cols}]}, "instructions": {}, "benchmarks": {}}
+        result = calculate_score(data)
+        check = _check_by_label(result, "Column visibility / noise control")
+        assert check["passed"] is True
+        assert check["severity"] == "warning"
+
+    def test_noisy_large_schema_fails_at_30_pct(self):
+        cols = [{"name": f"business_col_{i}", "description": "Useful business column"} for i in range(14)]
+        cols += [
+            {"name": "etl_batch_id"},
+            {"name": "raw_payload_json"},
+            {"name": "debug_flag"},
+            {"name": "audit_user"},
+            {"name": "col_1"},
+            {"name": "load_timestamp"},
+        ]
+        data = {"data_sources": {"tables": [{"name": "t", "columns": cols}]}, "instructions": {}, "benchmarks": {}}
+        result = calculate_score(data)
+        check = _check_by_label(result, "Column visibility / noise control")
+        assert check["passed"] is False
+        assert any("visible columns look internal/noisy" in f for f in result["findings"])
+
+    def test_excluded_noise_columns_do_not_count(self):
+        cols = [{"name": f"business_col_{i}", "description": "Useful business column"} for i in range(14)]
+        cols += [
+            {"name": "etl_batch_id", "exclude": True},
+            {"name": "raw_payload_json", "exclude": True},
+            {"name": "debug_flag", "exclude": True},
+            {"name": "audit_user", "exclude": True},
+            {"name": "col_1", "exclude": True},
+            {"name": "load_timestamp", "exclude": True},
+        ]
+        data = {"data_sources": {"tables": [{"name": "t", "columns": cols}]}, "instructions": {}, "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "Column visibility / noise control")
         assert check["passed"] is True
 
 
@@ -548,12 +568,12 @@ class TestOptimization:
 
 
 # ---------------------------------------------------------------------------
-# Check 9 addendum: Metric view entity matching
+# Check 8 addendum: Metric view entity matching
 # ---------------------------------------------------------------------------
 
 class TestMetricViewEntityMatching:
     def test_metric_view_entity_matching_counted(self):
-        """Metric view columns with entity matching should pass Check 9."""
+        """Metric view columns with entity matching should pass Check 8."""
         data = {
             "data_sources": {
                 "tables": [],
@@ -571,7 +591,7 @@ class TestMetricViewEntityMatching:
         assert check["passed"] is True
 
     def test_metric_view_format_assistance_counted(self):
-        """Metric view columns with format assistance should pass Check 9."""
+        """Metric view columns with format assistance should pass Check 8."""
         data = {
             "data_sources": {
                 "tables": [],
@@ -749,8 +769,8 @@ class TestUCEnrichment:
         ws.tables.get.return_value = _mock_table_info(
             comment="Orders",
             columns=[
-                {"name": "order_id", "comment": "PK"},
-                {"name": "amount", "comment": "Total"},
+                {"name": "order_id", "comment": "Primary key column"},
+                {"name": "amount", "comment": "Order total amount"},
             ],
         )
         _enrich_with_uc_descriptions(space_data, ws)

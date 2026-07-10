@@ -1076,11 +1076,11 @@ def preflight_fetch_config(
 # Flag-gated by GSO_ENABLE_IQ_SCAN_PREFLIGHT. When enabled, a fresh IQ Scan
 # runs between preflight_fetch_config and preflight_collect_uc_metadata and:
 #
-#   - HARD-BLOCKS when Check 1 (data sources exist) fails. The optimizer has
+#   - HARD-BLOCKS when the scan finds zero data sources. The optimizer has
 #     nothing to do without data sources, and the error message is more
 #     actionable than waiting for _validate_core_access to surface a schema
 #     access failure on zero tables.
-#   - WARNS (never blocks) when Check 10 (10+ benchmark questions) fails.
+#   - WARNS (never blocks) when the 10+ benchmark questions check fails.
 #     MIN_VALID_BENCHMARKS at line 1119 remains the authoritative
 #     post-validation gate; hard-blocking here would kill synthetic benchmark
 #     generation for fresh spaces.
@@ -1148,7 +1148,7 @@ def preflight_run_iq_scan(
 ) -> dict:
     """Sub-step 1.5: Run a fresh IQ Scan against the Genie Space snapshot.
 
-    Enforces the two scan-derived gates (Check 1 hard-block, Check 10 warn),
+    Enforces the two scan-derived gates (no-data-source hard-block, benchmark warn),
     persists a snapshot row, and returns a narrowed summary for the strategist
     plus the merged ``recommended_levers`` list.
 
@@ -1183,8 +1183,15 @@ def preflight_run_iq_scan(
         )
 
     checks = scan_result.get("checks") or []
-    check_1 = checks[0] if len(checks) >= 1 else {"passed": True}
-    check_10 = checks[9] if len(checks) >= 10 else {"passed": True}
+
+    def _check_by_label(label: str) -> dict:
+        for chk in checks:
+            if chk.get("label") == label:
+                return chk
+        return {"passed": True}
+
+    data_source_count_check = _check_by_label("Data source count 1-12")
+    benchmark_check = _check_by_label("10+ benchmark questions")
 
     findings = scan_result.get("findings") or []
     next_steps = scan_result.get("next_steps") or []
@@ -1200,20 +1207,32 @@ def preflight_run_iq_scan(
     _lines.append(_pf_bar())
     print("\n".join(_lines))
 
-    # Hard-block: Check 1 (data sources exist).
-    if not check_1.get("passed"):
-        detail = findings[0] if findings else "No tables or metric views configured"
-        step = next_steps[0] if next_steps else "Add at least one table or metric view to your Genie Space"
+    # Hard-block: no data sources.
+    if (
+        not data_source_count_check.get("passed")
+        and str(data_source_count_check.get("detail") or "").startswith("0 ")
+    ):
+        detail = next(
+            (f for f in findings if "tables or metric views" in str(f).lower()),
+            "No tables or metric views configured",
+        )
+        step = next(
+            (
+                s for s in next_steps
+                if "table or metric view" in str(s).lower()
+            ),
+            "Add at least one table or metric view to your Genie Space",
+        )
         write_stage(
-            spark, run_id, "PREFLIGHT_IQ_SCAN_CHECK1_FAILED", "FAILED",
+            spark, run_id, "PREFLIGHT_IQ_SCAN_NO_DATA_SOURCES", "FAILED",
             task_key="preflight", catalog=catalog, schema=schema,
             detail={"finding": detail, "next_step": step},
         )
         raise RuntimeError(f"{detail}. {step}")
 
-    # Warn-only: Check 10 (10+ benchmark questions).
-    if not check_10.get("passed"):
-        detail = check_10.get("detail") or ""
+    # Warn-only: 10+ benchmark questions.
+    if not benchmark_check.get("passed"):
+        detail = benchmark_check.get("detail") or ""
         write_stage(
             spark, run_id, "PREFLIGHT_IQ_SCAN_BENCHMARK_WARN", "WARNING",
             task_key="preflight", catalog=catalog, schema=schema,
@@ -1227,7 +1246,7 @@ def preflight_run_iq_scan(
             },
         )
         logger.info(
-            "IQ Scan Check 10 warning for run=%s: %s — continuing, synthetic benchmarks will top up",
+            "IQ Scan benchmark warning for run=%s: %s — continuing, synthetic benchmarks will top up",
             run_id, detail,
         )
 
@@ -2907,7 +2926,7 @@ def run_preflight(
 
     When ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is set, an IQ Scan sub-step runs
     between ``preflight_fetch_config`` and ``preflight_collect_uc_metadata``
-    and can hard-block on Check 1 (data sources exist). Recommended levers
+    and can hard-block when the scan finds zero data sources. Recommended levers
     and the strategist-facing scan summary are attached to ``config`` under
     ``_gso_iq_scan_recommended_levers`` and ``_gso_iq_scan_summary`` so they
     flow through to the lever loop via the existing config pipe.

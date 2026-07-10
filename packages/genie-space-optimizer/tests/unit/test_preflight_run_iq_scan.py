@@ -7,8 +7,8 @@ test so it is patched at the *source* module
 Guards:
 
 - Flag-gated no-op when GSO_ENABLE_IQ_SCAN_PREFLIGHT is unset.
-- Hard-block on Check 1 (no data sources).
-- Warn-only on Check 10 (<10 benchmarks) — never raises.
+- Hard-block on no data sources.
+- Warn-only on <10 benchmarks — never raises.
 - Persists a phase='preflight' row via write_scan_snapshot.
 - Translates failing/warning config checks into recommended levers via
   SCAN_CHECK_TO_LEVERS and unions with caller-supplied CTA levers.
@@ -64,7 +64,7 @@ class TestFlagGating:
 
 
 # ---------------------------------------------------------------------------
-# Check 1 hard-block
+# No-data-source hard-block
 # ---------------------------------------------------------------------------
 
 class TestCheck1HardBlock:
@@ -88,7 +88,7 @@ class TestCheck1HardBlock:
 
         # Snapshot must be written first so failure has an audit row.
         stages = [c.args[2] for c in mock_write_stage.call_args_list]
-        assert "PREFLIGHT_IQ_SCAN_CHECK1_FAILED" in stages
+        assert "PREFLIGHT_IQ_SCAN_NO_DATA_SOURCES" in stages
 
     @patch("genie_space_optimizer.optimization.preflight.write_stage")
     def test_snapshot_persisted_before_hard_block(
@@ -117,7 +117,7 @@ class TestCheck1HardBlock:
 
 
 # ---------------------------------------------------------------------------
-# Check 10 warn-only (no raise)
+# Benchmark warn-only (no raise)
 # ---------------------------------------------------------------------------
 
 class TestCheck10WarnOnly:
@@ -128,7 +128,7 @@ class TestCheck10WarnOnly:
         monkeypatch.setenv("GSO_ENABLE_IQ_SCAN_PREFLIGHT", "true")
         from genie_space_optimizer.optimization.preflight import preflight_run_iq_scan
 
-        # 1 table with good metadata BUT < 10 example_questions — Check 10 fails.
+        # 1 table with good metadata BUT < 10 benchmark questions.
         cfg = {
             "_parsed_space": {
                 "data_sources": {
@@ -160,7 +160,7 @@ class TestCheck10WarnOnly:
         assert out["scan"] is not None
         stages = [c.args[2] for c in mock_write_stage.call_args_list]
         assert "PREFLIGHT_IQ_SCAN_BENCHMARK_WARN" in stages
-        assert "PREFLIGHT_IQ_SCAN_CHECK1_FAILED" not in stages
+        assert "PREFLIGHT_IQ_SCAN_NO_DATA_SOURCES" not in stages
 
 
 # ---------------------------------------------------------------------------

@@ -185,9 +185,9 @@ persistence). The backend `scanner` service now delegates to
 Inserted between `preflight_fetch_config` and `preflight_collect_uc_metadata`
 in `optimization/preflight.py`. Behavior:
 
-- **Check 1 (data sources exist) hard-blocks** the run with a user-friendly
+- **Zero data sources hard-blocks** the run with a user-friendly
   `RuntimeError` before any UC metadata work is done.
-- **Check 10 (10+ benchmark questions) warn-only.** `MIN_VALID_BENCHMARKS = 5`
+- **10+ benchmark questions warn-only.** `MIN_VALID_BENCHMARKS = 5`
   at `optimization/preflight.py` is the authoritative post-validation gate;
   synthetic benchmark generation still tops up fresh spaces.
 - Writes `phase='preflight'` to `genie_opt_scan_snapshots` BEFORE the

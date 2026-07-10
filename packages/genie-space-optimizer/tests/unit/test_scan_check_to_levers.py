@@ -29,10 +29,9 @@ def test_every_mapped_check_is_a_config_check():
 
 
 def test_no_mapping_for_unfixable_checks():
-    # Checks 1 (data sources exist), 6 (data source count), and 10 (benchmarks)
-    # are intentionally absent — no lever can add tables / reduce count / author
-    # benchmarks.
-    for unfixable in (1, 6, 10):
+    # Checks 6 (data source count) and 9 (benchmarks) are intentionally
+    # absent — no lever can add/reduce tables or author benchmark questions.
+    for unfixable in (6, 9):
         assert unfixable not in SCAN_CHECK_TO_LEVERS, (
             f"check {unfixable} should not have a lever mapping"
         )

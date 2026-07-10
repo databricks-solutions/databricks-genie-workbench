@@ -3702,6 +3702,9 @@ DEFAULT_LEVER_ORDER = [1, 2, 3, 4, 5, 6]
 
 
 SCAN_CHECK_TO_LEVERS: dict[int, list[int]] = {
+    # Check 1 (Space description) → lever 5 (Instructions & Examples), which
+    # owns broad natural-language guidance and can update top-level scope.
+    1: [5],
     # Check 2 (Table descriptions) / Check 3 (Column descriptions) → lever 1
     #   (Tables & Columns) — adds/fills descriptions and synonyms.
     2: [1],
@@ -3710,21 +3713,22 @@ SCAN_CHECK_TO_LEVERS: dict[int, list[int]] = {
     4: [5],
     # Check 5 (Join specifications) → lever 4 (Join Specifications).
     5: [4],
-    # Check 7 (8+ example SQLs) / Check 8 (SQL snippets) → lever 6 (SQL Expressions)
-    #   which covers example SQLs, filters, measures, and expressions.
-    7: [6],
-    8: [6],
-    # Check 9 (Entity / format matching) → lever 1 (Tables & Columns) which
+    # Check 7 (SQL guidance artifacts) → behavior levers.  Lever 6 owns
+    # reusable SQL snippets; lever 5 owns example SQLs and routing guidance.
+    7: [5, 6],
+    # Check 8 (Entity / format matching) → lever 1 (Tables & Columns) which
     #   owns column_configs including enable_entity_matching / format_assistance.
-    9: [1],
+    8: [1],
+    # Check 10 (Column visibility / noise control) → lever 1 (Tables & Columns)
+    #   owns column visibility/exclude flags.
+    10: [1],
 }
 """IQ Scan check ID → recommended optimizer levers.
 
 1-indexed check IDs match the 12-check order in
 :func:`genie_space_optimizer.iq_scan.scoring.calculate_score`. Checks that
-can't be fixed by the optimizer (1 - data sources exist; 6 - data source
-count; 10 - benchmarks; 11 / 12 - optimization outcomes) are intentionally
-absent.
+can't be fixed by the optimizer (6 - data source count; 9 - benchmarks;
+11 / 12 - optimization outcomes) are intentionally absent.
 
 Consumed by :func:`preflight_run_iq_scan` to translate failing checks into a
 ``recommended_levers`` hint for the strategist and cluster-ranking tiebreaker.
