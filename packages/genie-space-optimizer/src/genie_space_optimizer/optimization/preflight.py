@@ -1152,23 +1152,37 @@ def preflight_run_iq_scan(
     persists a snapshot row, and returns a narrowed summary for the strategist
     plus the merged ``recommended_levers`` list.
 
-    No-op when ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is unset/false — returns a
-    dict with ``scan`` = ``None`` and an empty lever list so callers can use
-    ``.get(...)`` safely.
+    When ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is unset/false, durable scan side
+    effects remain disabled: no snapshot rows, no stages, and no hard-blocks.
+    The function still returns a lightweight ``space_quality_scan`` prompt
+    context so optimization can be quality-aware without changing run control
+    flow.
     """
-    if not _iq_scan_preflight_enabled():
-        return {
-            "scan": None,
-            "scan_summary_for_strategist": None,
-            "recommended_levers": list(recommended_levers_from_cta or []),
-        }
-
-    from genie_space_optimizer.common.config import SCAN_CHECK_TO_LEVERS
+    cta_levers = list(recommended_levers_from_cta or [])
+    preflight_enabled = _iq_scan_preflight_enabled()
+    from genie_space_optimizer.iq_scan.context import (
+        build_space_quality_scan_context,
+        scan_recommended_levers,
+    )
     from genie_space_optimizer.iq_scan.scoring import calculate_score
-    from genie_space_optimizer.optimization.scan_snapshots import write_scan_snapshot
 
     parsed = config.get("_parsed_space", config) if isinstance(config, dict) else {}
     scan_result = calculate_score(parsed or {}, optimization_run=None)
+    scan_levers = scan_recommended_levers(scan_result)
+    quality_context = build_space_quality_scan_context(
+        scan_result,
+        recommended_levers=sorted(set(cta_levers + scan_levers)),
+    )
+
+    if not preflight_enabled:
+        return {
+            "scan": None,
+            "scan_summary_for_strategist": None,
+            "space_quality_scan": quality_context,
+            "recommended_levers": cta_levers,
+        }
+
+    from genie_space_optimizer.optimization.scan_snapshots import write_scan_snapshot
 
     # Always persist first — if we subsequently hard-block, the scan row still
     # exists for post-hoc auditing of why the run failed preflight.
@@ -1251,13 +1265,6 @@ def preflight_run_iq_scan(
         )
 
     # Translate failing/warning config checks (1-10) into recommended levers.
-    cta_levers = list(recommended_levers_from_cta or [])
-    scan_levers: list[int] = []
-    for i, chk in enumerate(checks[:10], start=1):
-        if chk.get("passed") and (chk.get("severity") or "pass") != "warning":
-            continue
-        scan_levers.extend(SCAN_CHECK_TO_LEVERS.get(i, []))
-
     recommended = sorted(set(cta_levers + scan_levers))
 
     summary = _build_scan_summary_for_strategist(scan_result, recommended)
@@ -1276,6 +1283,7 @@ def preflight_run_iq_scan(
     return {
         "scan": scan_result,
         "scan_summary_for_strategist": summary,
+        "space_quality_scan": quality_context,
         "recommended_levers": recommended,
     }
 
@@ -2924,12 +2932,12 @@ def run_preflight(
     Wrapper that calls the sub-steps in sequence. Each sub-step is individually
     callable from a notebook cell for transparency.
 
-    When ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is set, an IQ Scan sub-step runs
-    between ``preflight_fetch_config`` and ``preflight_collect_uc_metadata``
-    and can hard-block when the scan finds zero data sources. Recommended levers
-    and the strategist-facing scan summary are attached to ``config`` under
-    ``_gso_iq_scan_recommended_levers`` and ``_gso_iq_scan_summary`` so they
-    flow through to the lever loop via the existing config pipe.
+    A lightweight IQ quality context is attached to ``config`` under
+    ``_gso_space_quality_scan`` so optimizer prompts can see the scorer
+    checklist. When ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is set, the IQ Scan
+    sub-step also writes snapshots/stages, can hard-block zero-data-source
+    spaces, and attaches recommended levers plus the legacy strategist summary
+    under ``_gso_iq_scan_recommended_levers`` and ``_gso_iq_scan_summary``.
 
     Returns:
         (config, benchmarks, model_id, experiment_name, human_corrections)
@@ -2949,6 +2957,8 @@ def run_preflight(
         config["_gso_iq_scan_recommended_levers"] = list(scan_ctx["recommended_levers"])
     if scan_ctx.get("scan_summary_for_strategist"):
         config["_gso_iq_scan_summary"] = scan_ctx["scan_summary_for_strategist"]
+    if scan_ctx.get("space_quality_scan"):
+        config["_gso_space_quality_scan"] = scan_ctx["space_quality_scan"]
 
     ctx2 = preflight_collect_uc_metadata(
         w, spark, run_id, catalog, schema, config, snapshot,

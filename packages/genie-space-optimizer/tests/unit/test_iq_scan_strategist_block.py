@@ -139,6 +139,29 @@ class TestContextDataIntegration:
         ctx = _build_context_data(**self._minimal_kwargs())
         assert "iq_scan_findings" in ctx
         assert ctx["iq_scan_findings"] is None
+        assert "well_curated_space_rubric" in ctx
+        assert ctx["space_quality_scan"] is None
+
+    def test_adds_structured_space_quality_scan_and_rubric(self):
+        from genie_space_optimizer.optimization.optimizer import _build_context_data
+
+        quality = {
+            "score": 5,
+            "total": 12,
+            "maturity": "Ready to Optimize",
+            "failed_checks": [{"id": 7, "label": "SQL guidance artifacts"}],
+        }
+        ctx = _build_context_data(
+            **self._minimal_kwargs(),
+            space_quality_scan=quality,
+        )
+        assert ctx["space_quality_scan"] == quality
+        labels = {
+            item["label"]
+            for item in ctx["well_curated_space_rubric"]["config_quality_checks"]
+        }
+        assert "Space description" in labels
+        assert "SQL guidance artifacts" in labels
 
     def test_strategist_prompt_includes_typed_rca_themes(self):
         from genie_space_optimizer.optimization.optimizer import (

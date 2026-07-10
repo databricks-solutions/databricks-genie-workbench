@@ -22,6 +22,7 @@ from genie_space_optimizer.common.config import (
     UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA,
     UNIFIED_OPTIMIZER_PATCH_RULES,
     UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT,
+    WELL_CURATED_SPACE_RUBRIC,
     format_mlflow_template,
 )
 from genie_space_optimizer.common.genie_client import fetch_space_config
@@ -205,6 +206,34 @@ def _failure_rows(eval_result: dict[str, Any], *, limit: int = 12) -> list[dict[
         if len(failures) >= limit:
             break
     return failures
+
+
+def _space_quality_scan_for_prompt(
+    current_config: dict[str, Any],
+    eval_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build non-blocking IQ quality context for the optimizer prompt."""
+    try:
+        from genie_space_optimizer.iq_scan.context import (
+            build_space_quality_scan_context,
+        )
+        from genie_space_optimizer.iq_scan.scoring import calculate_score
+
+        parsed = _parsed_space(current_config) if isinstance(current_config, dict) else {}
+        accuracy_percent = _metric(eval_result.get("overall_accuracy"), default=0.0)
+        accuracy_fraction = (
+            accuracy_percent / 100.0 if accuracy_percent > 1.0 else accuracy_percent
+        )
+        optimization_run = (
+            {"accuracy": accuracy_fraction}
+            if eval_result.get("total_questions") is not None
+            else None
+        )
+        scan_result = calculate_score(parsed or {}, optimization_run=optimization_run)
+        return build_space_quality_scan_context(scan_result)
+    except Exception:
+        logger.debug("Failed to build optimizer IQ quality context", exc_info=True)
+        return None
 
 
 def _stable_json(value: Any) -> str:
@@ -751,6 +780,7 @@ def _llm_messages(
         eval_result,
         max_chars=OPTIMIZER_PROMPT_MAX_CHARS,
     )
+    space_quality_scan = _space_quality_scan_for_prompt(current_config, eval_result)
     banned = set(banned_patch_types or ())
     allowed_patch_types = sorted(_ALLOWED_PATCH_TYPES - banned)
     user = {
@@ -765,6 +795,8 @@ def _llm_messages(
         "omitted_context_summary": context.get("omitted_context_summary", {}),
         "space_title": context.get("title"),
         "space_description": context.get("description"),
+        "well_curated_space_rubric": WELL_CURATED_SPACE_RUBRIC,
+        "space_quality_scan": space_quality_scan,
         "allowed_levers": allowed_levers,
         "allowed_patch_types": allowed_patch_types,
         "response_schema": UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA,

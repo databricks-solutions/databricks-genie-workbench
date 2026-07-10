@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
-from genie_space_optimizer.optimization.unified_loop import _optimizer_context_pack
+from genie_space_optimizer.optimization.unified_loop import (
+    _llm_messages,
+    _optimizer_context_pack,
+)
 
 
 def _table(name: str, *, columns: list[str] | None = None) -> dict:
@@ -147,3 +150,42 @@ def test_large_context_is_valid_json_with_omission_summary_and_no_raw_marker() -
     parsed = json.loads(text)
     assert parsed["omitted_context_summary"]["assets"]["omitted"] > 0
     assert "...<truncated>" not in text
+
+
+def test_llm_messages_include_quality_rubric_and_scan_context() -> None:
+    config = {
+        "description": "",
+        "data_sources": {
+            "tables": [
+                {
+                    "identifier": "cat.sch.orders",
+                    "columns": [
+                        {"name": "id", "type": "INT"},
+                        {"name": "amount", "type": "DOUBLE"},
+                    ],
+                }
+            ],
+        },
+        "instructions": {},
+    }
+
+    messages, _stats = _llm_messages(
+        allowed_levers=[1, 5, 6],
+        current_config=config,
+        eval_result=_eval("SELECT SUM(amount) FROM cat.sch.orders"),
+        reflections=[],
+    )
+
+    user = json.loads(messages[1]["content"])
+    labels = {
+        item["label"]
+        for item in user["well_curated_space_rubric"]["config_quality_checks"]
+    }
+    assert "Space description" in labels
+    assert "SQL guidance artifacts" in labels
+    failed = {
+        item["label"]
+        for item in user["space_quality_scan"]["failed_checks"]
+    }
+    assert "Space description" in failed
+    assert "SQL guidance artifacts" in failed

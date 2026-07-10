@@ -3731,6 +3731,167 @@ Consumed by :func:`preflight_run_iq_scan` to translate failing checks into a
 ``recommended_levers`` hint for the strategist and cluster-ranking tiebreaker.
 """
 
+SPACE_QUALITY_CHECK_ACTIONS: dict[int, dict[str, Any]] = {
+    1: {
+        "label": "Space description",
+        "opportunity": (
+            "Clarify the business domain, intended audience, scope, and major "
+            "guardrails so Genie starts from the right context."
+        ),
+        "preferred_actions": ["proactive_space_description"],
+        "supported_patch_types": [],
+        "note": (
+            "Top-level space description is handled by proactive space metadata "
+            "enrichment, not by a normal LLM patch type."
+        ),
+    },
+    2: {
+        "label": "Table descriptions",
+        "opportunity": "Add useful table descriptions for at least 80% of tables.",
+        "preferred_actions": ["update_description"],
+        "supported_patch_types": ["update_description"],
+    },
+    3: {
+        "label": "Column descriptions",
+        "opportunity": (
+            "Describe visible columns and add synonyms where technical names "
+            "hide business meaning."
+        ),
+        "preferred_actions": ["update_column_description", "add_column_synonym"],
+        "supported_patch_types": ["update_column_description", "add_column_synonym"],
+    },
+    4: {
+        "label": "Text instructions (>50 chars)",
+        "opportunity": (
+            "Add concise business rules, disambiguation guidance, constraints, "
+            "and summary behavior using the canonical instruction sections."
+        ),
+        "preferred_actions": ["add_instruction", "update_instruction_section"],
+        "supported_patch_types": ["add_instruction", "update_instruction_section"],
+    },
+    5: {
+        "label": "Join specifications",
+        "opportunity": "Represent clear relationships between multiple data sources.",
+        "preferred_actions": ["add_join_spec", "update_join_spec"],
+        "supported_patch_types": ["add_join_spec", "update_join_spec"],
+    },
+    6: {
+        "label": "Data source count 1-12",
+        "opportunity": (
+            "Keep the space focused. Spaces with too many sources should be "
+            "split or reduced outside the patch loop."
+        ),
+        "preferred_actions": ["reduce_or_split_data_sources"],
+        "supported_patch_types": [],
+    },
+    7: {
+        "label": "SQL guidance artifacts",
+        "opportunity": (
+            "Teach reusable SQL behavior with snippets, functions, or generalized "
+            "example SQLs instead of burying SQL in prose."
+        ),
+        "preferred_actions": [
+            "add_sql_snippet_measure",
+            "add_sql_snippet_filter",
+            "add_sql_snippet_expression",
+            "add_example_sql",
+        ],
+        "supported_patch_types": [
+            "add_sql_snippet_measure",
+            "add_sql_snippet_filter",
+            "add_sql_snippet_expression",
+            "add_example_sql",
+        ],
+    },
+    8: {
+        "label": "Entity/format matching",
+        "opportunity": (
+            "Improve value and format interpretation for categorical, date, "
+            "and numeric columns while respecting RLS limitations."
+        ),
+        "preferred_actions": [
+            "enable_value_dictionary",
+            "enable_example_values",
+            "update_column_description",
+        ],
+        "supported_patch_types": [
+            "enable_value_dictionary",
+            "enable_example_values",
+            "update_column_description",
+        ],
+    },
+    9: {
+        "label": "10+ benchmark questions",
+        "opportunity": (
+            "Maintain enough benchmark questions to measure optimization quality "
+            "across distinct query shapes."
+        ),
+        "preferred_actions": ["publish_benchmarks_to_space"],
+        "supported_patch_types": [],
+        "note": "Benchmark generation/publish is handled by the benchmark pipeline.",
+    },
+    10: {
+        "label": "Column visibility / noise control",
+        "opportunity": (
+            "Hide or de-emphasize internal, audit, raw ingestion, and opaque "
+            "technical columns that distract SQL generation."
+        ),
+        "preferred_actions": ["hide_column", "update_column_description"],
+        "supported_patch_types": ["hide_column", "update_column_description"],
+    },
+    11: {
+        "label": "Optimization workflow completed",
+        "opportunity": "Outcome status only. This is satisfied by completing optimization.",
+        "preferred_actions": [],
+        "supported_patch_types": [],
+    },
+    12: {
+        "label": "Optimization accuracy >= 85%",
+        "opportunity": "Outcome status only. This is satisfied by accepted accuracy gains.",
+        "preferred_actions": [],
+        "supported_patch_types": [],
+    },
+}
+"""IQ Scan check guidance used to make optimizer prompts quality-aware.
+
+The entries are advisory. The optimizer must still emit only patch types that
+the current route allows and validates.
+"""
+
+WELL_CURATED_SPACE_RUBRIC: dict[str, Any] = {
+    "purpose": (
+        "A well-curated Genie Space is both benchmark-accurate and complete "
+        "enough that users can understand its scope, trust its metadata, and "
+        "inspect reusable SQL guidance."
+    ),
+    "config_quality_checks": [
+        {
+            "id": check_id,
+            "label": guidance["label"],
+            "well_curated_signal": guidance["opportunity"],
+            "supported_patch_types": guidance["supported_patch_types"],
+        }
+        for check_id, guidance in SPACE_QUALITY_CHECK_ACTIONS.items()
+        if check_id <= 10
+    ],
+    "optimization_outcome_checks": [
+        {
+            "id": check_id,
+            "label": guidance["label"],
+            "well_curated_signal": guidance["opportunity"],
+        }
+        for check_id, guidance in SPACE_QUALITY_CHECK_ACTIONS.items()
+        if check_id > 10
+    ],
+    "optimizer_posture": (
+        "Benchmark failures remain the primary optimization objective. When two "
+        "candidate patches have similar benchmark value, prefer the one that "
+        "also advances failed IQ checks. Do not invent unsupported patch types "
+        "or add checklist-only content unrelated to the observed failures."
+    ),
+}
+"""Compact rubric injected into optimizer LLM prompts."""
+
 MAX_VALUE_DICTIONARY_COLUMNS = 120
 """Maximum number of string columns per Genie Space that can have
 enable_entity_matching=true. Enforced by auto_apply_prompt_matching()."""
@@ -3980,6 +4141,14 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
                 "array of {type, reason} documenting considered config surfaces "
                 "and why text guidance is the direct fit"
             ),
+            "addresses_iq_checks": (
+                "optional list of IQ check ids this patch advances when the "
+                "space_quality_scan shows related failed/warning checks"
+            ),
+            "quality_rationale": (
+                "optional short explanation of how this patch improves space "
+                "curation without overfitting benchmark failures"
+            ),
         }
     ],
 }
@@ -3987,6 +4156,10 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
 UNIFIED_OPTIMIZER_PATCH_RULES = [
     "Output must be one valid JSON object only. Do not wrap it in ```json fences. Do not write explanatory prose before or after it.",
     "Emit no more than 3 high-impact patches in a proposal. Prefer concise generalized patches over long enumerations.",
+    "Use well_curated_space_rubric and space_quality_scan as advisory context. Benchmark failures remain primary, but when a patch can fix a failure and close an IQ checklist gap, prefer that patch.",
+    "If space_quality_scan contains failed_checks or warnings, consider only the checks related to the current failure themes. Leave unrelated or unsupported quality debt for later; do not add checklist-only patches that are disconnected from benchmark evidence.",
+    "Emit only patch types present in allowed_patch_types for the current request. Do not invent update_space_description or other unsupported patch types; top-level space description is handled by proactive metadata enrichment when available.",
+    "When a patch advances IQ quality, populate addresses_iq_checks and quality_rationale. These fields are advisory metadata and must not replace required patch fields.",
     "Cluster the residual failures into 2-3 themes by shared root cause and shared columns (e.g. wrong aggregate on one metric, a missing join, an output-shape gap). Do NOT spend all 3 patches on a single failure mode when the failures span multiple themes — address each top theme with its own best-fit patch type in the SAME proposal. A single proposal SHOULD mix lever families when the themes differ: e.g. an add_join_spec for a join theme + an add_sql_snippet_measure for a wrong-aggregate theme + one add_example_sql for a genuinely multi-step theme. Rank themes by failure_count x fix_confidence and cover the highest-impact ones first.",
     "When choosing among patch types for the mixed set, prefer this order (highest leverage first): join specs -> SQL measures/expressions -> column descriptions/synonyms -> SQL filters -> example SQL -> text instructions (last resort). This diversifies the proposal AND degrades gracefully: if one patch is dropped before apply (leak/validation), the other themes' patches still land.",
     "Patch selection uses failure-mode routing. Use metadata/synonym patches when the failure is table choice, column meaning, value/entity matching, or ambiguous terminology.",
@@ -4017,6 +4190,8 @@ UNIFIED_OPTIMIZER_PATCH_PROMPT = (
     UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT
     + "\n\nResponse schema:\n"
     + str(UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA)
+    + "\n\nWell-curated space rubric:\n"
+    + str(WELL_CURATED_SPACE_RUBRIC)
     + "\n\nPatch rules:\n"
     + "\n".join(f"- {rule}" for rule in UNIFIED_OPTIMIZER_PATCH_RULES)
 )

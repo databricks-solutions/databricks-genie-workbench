@@ -69,6 +69,7 @@ from genie_space_optimizer.common.config import (
     STRATEGIST_DETAIL_PROMPT,
     STRATEGIST_PROMPT,
     STRATEGIST_TRIAGE_PROMPT,
+    WELL_CURATED_SPACE_RUBRIC,
     _LEVER_TO_PATCH_TYPE,
     format_mlflow_template,
     get_llm_endpoint,
@@ -7736,6 +7737,7 @@ def _build_context_data(
     proven_patterns_text: str,
     suggestions_text: str,
     iq_scan_text: str = "",
+    space_quality_scan: dict | None = None,
     rca_theme_context: str = "",
 ) -> dict:
     """Assemble all context sections as a single Python dict for JSON serialization."""
@@ -7765,6 +7767,8 @@ def _build_context_data(
         "persistent_failures": persistence_text,
         "human_suggestions": suggestions_text or None,
         "iq_scan_findings": iq_scan_text or None,
+        "well_curated_space_rubric": WELL_CURATED_SPACE_RUBRIC,
+        "space_quality_scan": space_quality_scan or None,
         "rca_theme_context": rca_theme_context or None,
         "schema": _build_schema_data(metadata_snapshot, filter_tables=relevant_tables),
         "failure_clusters": _build_cluster_data(clusters),
@@ -9474,6 +9478,7 @@ def _call_llm_for_adaptive_strategy(
     skill_exemplars: list[dict] | None = None,
     human_suggestions: list[dict] | None = None,
     iq_scan_summary: dict | None = None,
+    space_quality_scan: dict | None = None,
     max_ag_patches: int | None = None,
     intent_collisions: list[dict] | None = None,
     prior_iteration_dropped_causal_patches: list | tuple | None = None,
@@ -9609,6 +9614,10 @@ def _call_llm_for_adaptive_strategy(
         suggestions_text = "\n".join(lines_hs)
 
     iq_scan_text = _format_iq_scan_findings(iq_scan_summary)
+    if space_quality_scan is None:
+        candidate_quality_scan = metadata_snapshot.get("_gso_space_quality_scan")
+        if isinstance(candidate_quality_scan, dict):
+            space_quality_scan = candidate_quality_scan
     rca_theme_context = ""
     if ENABLE_RCA_THEMES_STRATEGIST:
         rca_theme_context = _format_rca_themes_for_strategy(
@@ -9630,6 +9639,7 @@ def _call_llm_for_adaptive_strategy(
         proven_patterns_text=proven_patterns_text,
         suggestions_text=suggestions_text,
         iq_scan_text=iq_scan_text,
+        space_quality_scan=space_quality_scan,
         rca_theme_context=rca_theme_context,
     )
     context_data = _truncate_context_to_budget(context_data, _adaptive_context_budget_tokens())

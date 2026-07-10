@@ -6,7 +6,8 @@ test so it is patched at the *source* module
 
 Guards:
 
-- Flag-gated no-op when GSO_ENABLE_IQ_SCAN_PREFLIGHT is unset.
+- Flag-gated scan side effects when GSO_ENABLE_IQ_SCAN_PREFLIGHT is unset,
+  while still returning lightweight optimizer quality context.
 - Hard-block on no data sources.
 - Warn-only on <10 benchmarks — never raises.
 - Persists a phase='preflight' row via write_scan_snapshot.
@@ -40,11 +41,11 @@ class TestFlagGating:
         out = preflight_run_iq_scan(
             capturing_spark, "run-1", "space-1", "cat", "gold", {},
         )
-        assert out == {
-            "scan": None,
-            "scan_summary_for_strategist": None,
-            "recommended_levers": [],
-        }
+        assert out["scan"] is None
+        assert out["scan_summary_for_strategist"] is None
+        assert out["recommended_levers"] == []
+        assert out["space_quality_scan"]["score"] is not None
+        assert out["space_quality_scan"]["failed_checks"]
 
     def test_disabled_preserves_cta_levers(self, capturing_spark, monkeypatch):
         monkeypatch.delenv("GSO_ENABLE_IQ_SCAN_PREFLIGHT", raising=False)
@@ -55,6 +56,7 @@ class TestFlagGating:
             recommended_levers_from_cta=[2, 4],
         )
         assert out["recommended_levers"] == [2, 4]
+        assert {2, 4}.issubset(set(out["space_quality_scan"]["recommended_levers"]))
 
     @pytest.mark.parametrize("flag_value", ["1", "true", "yes", "on", "TRUE"])
     def test_enabled_values(self, flag_value, capturing_spark, monkeypatch):
@@ -311,3 +313,10 @@ class TestStrategistSummaryShape:
             "score", "total", "maturity",
             "ceilings", "rls_tables", "coverage_gaps", "recommended_levers",
         }
+        quality = out["space_quality_scan"]
+        assert set(quality.keys()) == {
+            "score", "total", "maturity",
+            "failed_checks", "warnings", "outcome_checks",
+            "recommended_levers", "guidance",
+        }
+        assert any(c["label"] == "Space description" for c in quality["failed_checks"])

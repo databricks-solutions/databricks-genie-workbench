@@ -11115,6 +11115,7 @@ def _run_lever_loop(
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
     iq_scan_recommended_levers: list[int] | None = None,
     iq_scan_summary: dict | None = None,
+    space_quality_scan: dict | None = None,
     baseline_overview_evidence: dict | None = None,
     max_attempts: int = MAX_ATTEMPTS,
     target_accuracy: float = TARGET_ACCURACY,
@@ -11149,6 +11150,10 @@ def _run_lever_loop(
     """
     levers = levers or DEFAULT_LEVER_ORDER
     thresholds = thresholds or DEFAULT_THRESHOLDS
+    if space_quality_scan is None and isinstance(config, dict):
+        _cfg_quality_scan = config.get("_gso_space_quality_scan")
+        if isinstance(_cfg_quality_scan, dict):
+            space_quality_scan = _cfg_quality_scan
 
     from genie_space_optimizer.optimization.run_analysis_contract import (
         convergence_marker,
@@ -14694,6 +14699,7 @@ def _run_lever_loop(
                             iq_scan_summary=(
                                 iq_scan_summary if _iq_scan_strategist_enabled() else None
                             ),
+                            space_quality_scan=space_quality_scan,
                             max_ag_patches=MAX_AG_PATCHES,
                             intent_collisions=_intent_collisions,
                             prior_iteration_dropped_causal_patches=(
