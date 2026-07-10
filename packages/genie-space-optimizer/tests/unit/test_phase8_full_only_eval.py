@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from genie_space_optimizer.optimization import eval_budget
@@ -102,6 +103,69 @@ def test_unified_loop_stops_when_baseline_reaches_target(monkeypatch) -> None:
     assert native_eval.call_count == 1
     propose.assert_not_called()
     assert status_updates[-1]["convergence_reason"] == "TARGET_REACHED"
+
+
+def test_unified_loop_runs_space_quality_enrichment_before_baseline(monkeypatch) -> None:
+    events: list[str] = []
+    writes: list[tuple[int, dict]] = []
+
+    raw_config = {
+        "description": "",
+        "_parsed_space": {
+            "version": 2,
+            "data_sources": {
+                "tables": [{"identifier": "main.sales.orders"}],
+                "metric_views": [],
+                "functions": [],
+            },
+            "instructions": {"text_instructions": []},
+        },
+    }
+    enriched_config = {
+        **raw_config["_parsed_space"],
+        "_gso_top_level_description": "Generated sales description",
+    }
+
+    monkeypatch.setattr(unified_loop, "fetch_space_config", lambda _w, _space_id: raw_config)
+
+    def fake_enrichment(*_args, **_kwargs):
+        events.append("enrichment")
+        return SimpleNamespace(current_config=enriched_config)
+
+    def fake_eval(*_args, **_kwargs):
+        events.append("baseline")
+        return _eval_result(95.0)
+
+    monkeypatch.setattr(unified_loop, "run_space_quality_enrichment", fake_enrichment)
+    monkeypatch.setattr(unified_loop, "_native_eval", fake_eval)
+    monkeypatch.setattr(unified_loop, "propose_patches", MagicMock())
+    monkeypatch.setattr(
+        unified_loop,
+        "write_iteration",
+        lambda _spark, _run_id, iteration, eval_result, **_kwargs: writes.append(
+            (iteration, eval_result)
+        ),
+    )
+    monkeypatch.setattr(unified_loop, "mark_champion_iteration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(unified_loop, "update_run_status", lambda *_args, **_kwargs: None)
+
+    result = unified_loop.run_unified_optimization_loop(
+        MagicMock(),
+        MagicMock(),
+        run_id="run",
+        space_id="space",
+        domain="default",
+        benchmarks=[{"question": "q"}],
+        catalog="cat",
+        schema="sch",
+        levers=[1],
+        max_attempts=3,
+        target_accuracy=0.9,
+    )
+
+    assert events == ["enrichment", "baseline"]
+    assert result["terminal_reason"] == "TARGET_REACHED"
+    assert writes == [(0, _eval_result(95.0))]
 
 
 def test_unified_loop_rolls_back_non_improving_candidate(monkeypatch) -> None:

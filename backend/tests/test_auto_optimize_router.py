@@ -1013,6 +1013,7 @@ def test_map_stages_to_steps_new_dag_stage_names() -> None:
     stages = [
         {"stage": "INTAKE_AND_SNAPSHOT", "status": "COMPLETE"},
         {"stage": "BENCHMARK_QC_AND_REPAIR", "status": "COMPLETE"},
+        {"stage": "SPACE_QUALITY_ENRICHMENT", "status": "COMPLETE"},
         {"stage": "OPTIMIZE", "status": "COMPLETE"},
         {"stage": "PUBLISH_AND_AUDIT", "status": "STARTED"},
     ]

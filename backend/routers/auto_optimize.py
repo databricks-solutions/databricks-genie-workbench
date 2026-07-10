@@ -611,6 +611,8 @@ def _extract_proactive_changes(matching: list[dict]) -> dict:
         elif "SPACE_METADATA" in stage_name:
             proactive["spaceDescriptionGenerated"] = d.get("description_generated", False)
             proactive["sampleQuestionsGenerated"] = d.get("questions_count", 0)
+        elif "SPACE_QUALITY" in stage_name:
+            proactive["spaceQualityEnrichments"] = d.get("applied_count", 0)
         elif "INSTRUCTION_SEED" in stage_name:
             proactive["instructionsSeeded"] = d.get("instructions_seeded", False)
         elif "PROMPT_MATCH" in stage_name:
@@ -1114,7 +1116,7 @@ def _build_levers(
     # For legacy lever 0 coverage/enrichment records, match enrichment stages
     # since they don't use LEVER_0_* naming.
     _ENRICHMENT_PREFIXES = ("ENRICHMENT", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY",
-                            "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION",
+                            "SPACE_METADATA", "SPACE_QUALITY", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION",
                             "EXAMPLE_SQL", "PROMPT_MATCH")
     if 0 in lever_data:
         for s in stages_rows:
@@ -1363,7 +1365,7 @@ async def trigger(body: TriggerRequest, request: Request):
 _STEP_DEFINITIONS = [
     {"stepNumber": 1, "name": "Intake & Snapshot",      "stage_prefixes": ["INTAKE", "PREFLIGHT"]},
     {"stepNumber": 2, "name": "Benchmark QC & Repair",  "stage_prefixes": ["BENCHMARK_QC", "PREFLIGHT"]},
-    {"stepNumber": 3, "name": "Optimize",               "stage_prefixes": ["OPTIMIZE", "BASELINE_EVAL", "LEVER_", "AG_", "ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL"]},
+    {"stepNumber": 3, "name": "Optimize",               "stage_prefixes": ["OPTIMIZE", "BASELINE_EVAL", "LEVER_", "AG_", "ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "SPACE_QUALITY", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL"]},
     {"stepNumber": 4, "name": "Publish & Audit",        "stage_prefixes": ["PUBLISH", "FINALIZE", "REPEATABILITY", "COMPLETE"]},
 ]
 

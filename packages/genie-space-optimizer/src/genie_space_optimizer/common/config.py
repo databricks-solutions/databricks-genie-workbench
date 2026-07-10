@@ -3602,6 +3602,7 @@ Levers 4-6 are always genie_config regardless of this setting."""
 
 LOW_RISK_PATCHES = {
     "add_description",
+    "update_space_description",
     "update_description",
     "add_column_description",
     "update_column_description",
@@ -4238,6 +4239,12 @@ PATCH_TYPES = {
         "scope": "genie_config",
         "risk_level": "low",
         "affects": ["descriptions", "column_metadata"],
+    },
+    "update_space_description": {
+        "type": "update_space_description",
+        "scope": "genie_space",
+        "risk_level": "low",
+        "affects": ["space_metadata"],
     },
     "add_column_description": {
         "type": "add_column_description",

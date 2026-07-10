@@ -48,6 +48,11 @@ from genie_space_optimizer.optimization.leakage import (
     is_benchmark_leak,
 )
 from genie_space_optimizer.optimization.llm_client import call_llm
+from genie_space_optimizer.optimization.space_quality_enrichment import (
+    attach_top_level_description,
+    run_space_quality_enrichment,
+    scan_input_for_iq,
+)
 from genie_space_optimizer.optimization.state import (
     load_all_scored_iterations,
     mark_champion_iteration,
@@ -219,7 +224,7 @@ def _space_quality_scan_for_prompt(
         )
         from genie_space_optimizer.iq_scan.scoring import calculate_score
 
-        parsed = _parsed_space(current_config) if isinstance(current_config, dict) else {}
+        parsed = scan_input_for_iq(current_config) if isinstance(current_config, dict) else {}
         accuracy_percent = _metric(eval_result.get("overall_accuracy"), default=0.0)
         accuracy_fraction = (
             accuracy_percent / 100.0 if accuracy_percent > 1.0 else accuracy_percent
@@ -1856,7 +1861,24 @@ def run_unified_optimization_loop(
         allowed_levers = [1, 2, 3, 4, 5, 6]
     max_attempts = max(0, int(max_attempts))
 
-    current_config = _parsed_space(fetch_space_config(w, space_id))
+    raw_config = fetch_space_config(w, space_id)
+    try:
+        enrichment_result = run_space_quality_enrichment(
+            w,
+            spark,
+            run_id=run_id,
+            space_id=space_id,
+            raw_config=raw_config,
+            catalog=catalog,
+            schema=schema,
+        )
+        current_config = enrichment_result.current_config
+    except Exception:
+        logger.warning(
+            "Space quality enrichment failed before baseline eval; continuing",
+            exc_info=True,
+        )
+        current_config = attach_top_level_description(_parsed_space(raw_config), raw_config)
     benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
 
     baseline_eval = _native_eval(

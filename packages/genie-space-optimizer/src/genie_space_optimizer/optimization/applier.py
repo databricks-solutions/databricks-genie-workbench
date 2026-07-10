@@ -65,6 +65,7 @@ from genie_space_optimizer.common.genie_client import (
     patch_space_config,
     sort_genie_config,
     strip_non_exportable_fields,
+    update_space_description,
 )
 from genie_space_optimizer.optimization.optimizer import _resolve_scope
 from genie_space_optimizer.optimization.applier_audit import (
@@ -3041,6 +3042,24 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
         )
 
     # ── Descriptions ──────────────────────────────────────────────
+    if patch_type == "update_space_description":
+        target = "space.description"
+        return action(
+            json.dumps({
+                "op": "update",
+                "section": "space_metadata",
+                "field": "description",
+                "old_text": old_text,
+                "new_text": new_text,
+            }),
+            json.dumps({
+                "op": "update",
+                "section": "space_metadata",
+                "field": "description",
+                "old_text": new_text,
+                "new_text": old_text,
+            }),
+        )
     if patch_type == "add_description":
         return action(
             json.dumps({"op": "add", "section": "descriptions", "target": target, "value": new_text}),
@@ -4130,9 +4149,14 @@ def apply_patch_set(
 
     for idx in sorted_indices:
         patch = patches[idx]
+        patch_type = str(patch.get("type", ""))
         risk = classify_risk(patch.get("type", ""))
         lever = patch.get("lever", 5)
-        scope = _resolve_scope(lever, apply_mode)
+        scope = (
+            "genie_space"
+            if patch_type == "update_space_description"
+            else _resolve_scope(lever, apply_mode)
+        )
 
         try:
             rendered = render_patch(patch, space_id, config)
@@ -4169,11 +4193,23 @@ def apply_patch_set(
             continue
 
         ok = False
-        if scope in ("genie_config", "both"):
-            ok = _apply_action_to_config(config, rendered)
-        if scope in ("uc_artifact", "both") and w is not None:
-            uc_ok = _apply_action_to_uc(w, rendered)
-            ok = ok or uc_ok
+        if scope == "genie_space":
+            try:
+                cmd = json.loads(rendered.get("command") or "{}")
+                if w is not None:
+                    update_space_description(
+                        w, space_id, str(cmd.get("new_text") or ""),
+                    )
+                ok = True
+            except Exception:
+                logger.exception("Genie Space metadata action failed for %s", patch_type)
+                ok = False
+        else:
+            if scope in ("genie_config", "both"):
+                ok = _apply_action_to_config(config, rendered)
+            if scope in ("uc_artifact", "both") and w is not None:
+                uc_ok = _apply_action_to_uc(w, rendered)
+                ok = ok or uc_ok
 
         if ok:
             # T2.13: stamp applied provenance on the applied entry so the
@@ -4228,6 +4264,27 @@ def apply_patch_set(
                     reason="apply_action_returned_false",
                 )
             )
+
+    config_applied = [
+        entry for entry in applied
+        if entry.get("patch", {}).get("type") != "update_space_description"
+    ]
+    if applied and not config_applied:
+        return {
+            "space_id": space_id,
+            "pre_snapshot": pre_snapshot,
+            "post_snapshot": copy.deepcopy(config),
+            "applied": applied,
+            "queued_high": queued_high,
+            "rollback_commands": rollback_commands,
+            "deploy_target": deploy_target,
+            "patched_objects": list(patched_objects),
+            "validation_errors": [],
+            "patch_deployed": True,
+            "patch_error": "",
+            "dropped_patches": early_dropped_patches + leak_dropped_patches,
+            "applier_decisions": [d.__dict__ for d in applier_decisions],
+        }
 
     sort_genie_config(config)
     # D1–D3: write sentinel-wrapped quality instruction blocks. The call is
@@ -4345,7 +4402,7 @@ def apply_patch_set(
     patch_error: str = ""
     dropped_patches: list[dict] = []
 
-    if w is not None and applied:
+    if w is not None and config_applied:
         try:
             patch_space_config(w, space_id, config)
             patch_deployed = True
@@ -4399,6 +4456,8 @@ def apply_patch_set(
                     except Exception as exc2:
                         patch_error = str(exc2)
                         logger.exception("Retry without join specs also failed")
+    elif applied:
+        patch_deployed = True
 
     # Phase 3.4: end-of-pipeline canonicalization + dedup of the
     # instruction text. Single safety net that catches every write path
