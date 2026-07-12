@@ -25,17 +25,12 @@
 # MAGIC | `applications` | variable | Candidate funnel facts |
 # MAGIC | `succession_plans` | variable | Critical role successor coverage |
 # MAGIC
-# MAGIC The notebook also creates six curated mart tables and six metric views for
+# MAGIC The notebook also creates six curated mart tables for
 # MAGIC focused Genie spaces.
 # MAGIC
-# MAGIC **Setup:** Set the `catalog` and `schema` widgets (or edit defaults below), then **Run All**.
+# MAGIC **Setup:** Edit the configuration variables below, then **Run All**.
 # MAGIC
 # MAGIC Seed: `42` - fully reproducible.
-
-# COMMAND ----------
-
-# MAGIC %pip install faker==40.19.1 --quiet
-# MAGIC %restart_python
 
 # COMMAND ----------
 
@@ -47,42 +42,12 @@
 # =============================================================================
 # CONFIGURATION - Edit only this section before running
 # =============================================================================
-DEFAULT_CATALOG = ""  # Unity Catalog name; required
-DEFAULT_SCHEMA = "talent_advisory"  # Schema / database name
-
-# Widgets let the bulk runner pass values while preserving standalone defaults.
-try:
-    dbutils.widgets.text("catalog", DEFAULT_CATALOG, "Unity Catalog name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.text("schema", DEFAULT_SCHEMA, "Schema / database name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.dropdown("overwrite_existing", "false", ["false", "true"], "Overwrite existing tables")
-except Exception:
-    pass
-
-try:
-    CATALOG = dbutils.widgets.get("catalog").strip() or DEFAULT_CATALOG
-except Exception:
-    CATALOG = DEFAULT_CATALOG
-
-try:
-    SCHEMA = dbutils.widgets.get("schema").strip() or DEFAULT_SCHEMA
-except Exception:
-    SCHEMA = DEFAULT_SCHEMA
-
-try:
-    OVERWRITE_EXISTING = dbutils.widgets.get("overwrite_existing").strip().lower() == "true"
-except Exception:
-    OVERWRITE_EXISTING = False
+CATALOG = ""  # TODO: set to a Unity Catalog name before running
+SCHEMA = "talent_advisory"
+OVERWRITE_EXISTING = False
 
 if not CATALOG:
-    raise ValueError("Set the catalog widget to a Unity Catalog name before running this notebook.")
+    raise ValueError("Set CATALOG to a Unity Catalog name before running this notebook.")
 
 WRITE_MODE = "overwrite" if OVERWRITE_EXISTING else "errorifexists"
 
@@ -103,13 +68,41 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
-from faker import Faker
 
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
-fake = Faker("en_US")
-Faker.seed(SEED)
+
+FIRST_NAMES = [
+    "Alex",
+    "Avery",
+    "Casey",
+    "Drew",
+    "Jordan",
+    "Morgan",
+    "Parker",
+    "Quinn",
+    "Riley",
+    "Taylor",
+]
+LAST_NAMES = [
+    "Anderson",
+    "Bennett",
+    "Carter",
+    "Diaz",
+    "Ellis",
+    "Foster",
+    "Garcia",
+    "Hayes",
+    "Ibrahim",
+    "Jensen",
+]
+
+
+def synthetic_name(index):
+    first = FIRST_NAMES[(index - 1) % len(FIRST_NAMES)]
+    last = LAST_NAMES[((index - 1) // len(FIRST_NAMES)) % len(LAST_NAMES)]
+    return f"{first} {last}"
 
 START_DATE = date(2023, 1, 1)
 END_DATE = date(2025, 12, 31)
@@ -642,7 +635,7 @@ for i in range(1, 2851):
 
     employee = {
         "employee_id": f"EMP-{i:05d}",
-        "employee_name": fake.name(),
+        "employee_name": synthetic_name(i),
         "hire_date": hire_date,
         "termination_date": termination_date,
         "employment_status": employment_status,
@@ -2018,381 +2011,6 @@ spark.sql(
     """
 ).show()
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 20. Create Metric Views
-
-# COMMAND ----------
-
-# =============================================================================
-# CREATE METRIC VIEWS
-# =============================================================================
-print("Creating metric views...")
-
-metric_views = {
-    "mv_workforce_planning": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.mart_workforce_planning
-
-dimensions:
-  - name: Snapshot Month
-    expr: snapshot_month
-  - name: Snapshot Year
-    expr: snapshot_year
-  - name: Business Unit
-    expr: business_unit
-  - name: Function
-    expr: function
-  - name: Org Unit
-    expr: org_unit_name
-  - name: Job Family
-    expr: job_family
-  - name: Region
-    expr: region
-
-measures:
-  - name: Headcount
-    expr: SUM(active_headcount)
-  - name: Starting Headcount
-    expr: SUM(start_headcount)
-  - name: Hires
-    expr: SUM(hires)
-  - name: Exits
-    expr: SUM(exits)
-  - name: Open Requisitions
-    expr: SUM(open_requisitions)
-  - name: Filled Requisitions
-    expr: SUM(filled_requisitions)
-  - name: Attrition Rate Pct
-    expr: CASE WHEN SUM(start_headcount) = 0 THEN 0 ELSE SUM(exits) * 100.0 / SUM(start_headcount) END
-  - name: Vacancy Rate Pct
-    expr: CASE WHEN SUM(active_headcount + open_requisitions) = 0 THEN 0 ELSE SUM(open_requisitions) * 100.0 / SUM(active_headcount + open_requisitions) END
-""",
-    "mv_hiring_funnel": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.mart_hiring_funnel
-
-dimensions:
-  - name: Opened Year
-    expr: opened_year
-  - name: Status
-    expr: status
-  - name: Business Unit
-    expr: business_unit
-  - name: Org Unit
-    expr: org_unit_name
-  - name: Job Family
-    expr: job_family
-  - name: Role Title
-    expr: role_title
-  - name: Priority
-    expr: priority
-  - name: Candidate Market
-    expr: candidate_market
-  - name: Requisition Reason
-    expr: requisition_reason
-
-measures:
-  - name: Requisition Count
-    expr: COUNT(1)
-  - name: Applications
-    expr: SUM(applications_count)
-  - name: Internal Applications
-    expr: SUM(internal_applications)
-  - name: Interviews
-    expr: SUM(interview_count)
-  - name: Offers
-    expr: SUM(offer_count)
-  - name: Accepted Offers
-    expr: SUM(accepted_offer_count)
-  - name: Declined Offers
-    expr: SUM(declined_offer_count)
-  - name: Offer Acceptance Rate Pct
-    expr: CASE WHEN SUM(offer_count) = 0 THEN 0 ELSE SUM(accepted_offer_count) * 100.0 / SUM(offer_count) END
-  - name: Internal Fill Rate Pct
-    expr: SUM(CASE WHEN is_internal_fill THEN 1 ELSE 0 END) * 100.0 / COUNT(1)
-  - name: Average Time To Fill Days
-    expr: AVG(time_to_fill_days)
-""",
-    "mv_retention_engagement": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.mart_retention_engagement
-
-dimensions:
-  - name: Snapshot Year
-    expr: snapshot_year
-  - name: Snapshot Quarter
-    expr: snapshot_quarter_label
-  - name: Business Unit
-    expr: business_unit
-  - name: Function
-    expr: function
-  - name: Org Unit
-    expr: org_unit_name
-  - name: Job Family
-    expr: job_family
-
-measures:
-  - name: Employees Surveyed
-    expr: SUM(employee_count)
-  - name: Average Engagement Score
-    expr: AVG(avg_engagement_score)
-  - name: Average Manager Effectiveness Score
-    expr: AVG(avg_manager_effectiveness_score)
-  - name: Average Burnout Risk Score
-    expr: AVG(avg_burnout_risk_score)
-  - name: Average Retention Risk Score
-    expr: AVG(avg_retention_risk_score)
-  - name: High Risk Employees
-    expr: SUM(high_risk_employee_count)
-  - name: Regretted Exits
-    expr: SUM(regretted_exit_count)
-  - name: Total Exits
-    expr: SUM(total_exit_count)
-  - name: High Risk Rate Pct
-    expr: CASE WHEN SUM(employee_count) = 0 THEN 0 ELSE SUM(high_risk_employee_count) * 100.0 / SUM(employee_count) END
-""",
-    "mv_internal_mobility": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.mart_internal_mobility
-
-dimensions:
-  - name: Snapshot Year
-    expr: snapshot_year
-  - name: Business Unit
-    expr: business_unit
-  - name: Function
-    expr: function
-  - name: Org Unit
-    expr: org_unit_name
-  - name: Job Family
-    expr: job_family
-
-measures:
-  - name: Employee Count
-    expr: SUM(employee_count)
-  - name: Mobility Program Participants
-    expr: SUM(mobility_program_participants)
-  - name: Promotions
-    expr: SUM(promotion_count)
-  - name: Transfers
-    expr: SUM(transfer_count)
-  - name: Internal Fills
-    expr: SUM(internal_fill_count)
-  - name: Learning Completions
-    expr: SUM(learning_completion_count)
-  - name: Critical Skill Gaps
-    expr: SUM(critical_skill_gap_count)
-  - name: Average Skill Gap
-    expr: AVG(avg_skill_gap)
-  - name: Internal Mobility Events
-    expr: SUM(promotion_count + transfer_count)
-""",
-    "mv_comp_performance": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.mart_comp_performance
-
-dimensions:
-  - name: Snapshot Year
-    expr: snapshot_year
-  - name: Business Unit
-    expr: business_unit
-  - name: Function
-    expr: function
-  - name: Org Unit
-    expr: org_unit_name
-  - name: Job Family
-    expr: job_family
-  - name: Job Level
-    expr: job_level
-
-measures:
-  - name: Employee Count
-    expr: SUM(employee_count)
-  - name: Average Base Salary
-    expr: AVG(avg_base_salary_usd)
-  - name: Average Bonus
-    expr: AVG(avg_bonus_actual_usd)
-  - name: Average Compa Ratio
-    expr: AVG(avg_compa_ratio)
-  - name: Average Range Penetration Pct
-    expr: AVG(avg_range_penetration_pct)
-  - name: Average Performance Rating
-    expr: AVG(avg_performance_rating)
-  - name: High Performers
-    expr: SUM(high_performer_count)
-  - name: High Performers Below 90 Compa
-    expr: SUM(high_performer_below_90_compa_count)
-  - name: High Risk Employees
-    expr: SUM(high_risk_employee_count)
-""",
-    "mv_succession_planning": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.mart_succession_planning
-
-dimensions:
-  - name: Business Unit
-    expr: business_unit
-  - name: Function
-    expr: function
-  - name: Org Unit
-    expr: org_unit_name
-  - name: Job Family
-    expr: job_family
-  - name: Criticality Tier
-    expr: criticality_tier
-
-measures:
-  - name: Critical Positions
-    expr: SUM(critical_position_count)
-  - name: Ready Successors
-    expr: SUM(ready_successor_count)
-  - name: Covered Positions
-    expr: SUM(covered_position_count)
-  - name: Weak Coverage Positions
-    expr: SUM(weak_coverage_position_count)
-  - name: Coverage Rate Pct
-    expr: CASE WHEN SUM(critical_position_count) = 0 THEN 0 ELSE SUM(covered_position_count) * 100.0 / SUM(critical_position_count) END
-  - name: Average Readiness Months
-    expr: AVG(avg_readiness_months)
-""",
-}
-
-for mv_name, yaml_body in metric_views.items():
-    ddl = (
-        f"CREATE OR REPLACE VIEW `{CATALOG}`.`{SCHEMA}`.`{mv_name}`\n"
-        "WITH METRICS\n"
-        "LANGUAGE YAML\n"
-        "AS $$"
-        + yaml_body
-        + "$$"
-    )
-    spark.sql(ddl)
-    print(f"  OK {mv_name}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 21. Register Constraints & Comments
-
-# COMMAND ----------
-
-# =============================================================================
-# REGISTER CONSTRAINTS AND COMMENTS
-# =============================================================================
-print("Registering constraints and comments...")
-
-PRIMARY_KEYS = {
-    "locations": "location_id",
-    "org_units": "org_unit_id",
-    "job_roles": "role_id",
-    "skills": "skill_id",
-    "employees": "employee_id",
-    "employee_skills": "employee_skill_id",
-    "learning_activity": "learning_activity_id",
-    "talent_events": "talent_event_id",
-    "performance_reviews": "review_id",
-    "compensation_snapshots": "compensation_snapshot_id",
-    "engagement_pulses": "engagement_pulse_id",
-    "retention_risk_snapshots": "retention_risk_snapshot_id",
-    "requisitions": "requisition_id",
-    "applications": "application_id",
-    "succession_plans": "succession_plan_id",
-    "mart_workforce_planning": "mart_workforce_planning_id",
-    "mart_hiring_funnel": "mart_hiring_funnel_id",
-    "mart_retention_engagement": "mart_retention_engagement_id",
-    "mart_internal_mobility": "mart_internal_mobility_id",
-    "mart_comp_performance": "mart_comp_performance_id",
-    "mart_succession_planning": "mart_succession_planning_id",
-}
-
-FOREIGN_KEYS = [
-    ("org_units", "parent_org_unit_id", "org_units", "org_unit_id"),
-    ("employees", "org_unit_id", "org_units", "org_unit_id"),
-    ("employees", "location_id", "locations", "location_id"),
-    ("employees", "role_id", "job_roles", "role_id"),
-    ("employees", "current_manager_employee_id", "employees", "employee_id"),
-    ("employee_skills", "employee_id", "employees", "employee_id"),
-    ("employee_skills", "skill_id", "skills", "skill_id"),
-    ("learning_activity", "employee_id", "employees", "employee_id"),
-    ("learning_activity", "skill_id", "skills", "skill_id"),
-    ("talent_events", "employee_id", "employees", "employee_id"),
-    ("talent_events", "org_unit_id", "org_units", "org_unit_id"),
-    ("talent_events", "role_id", "job_roles", "role_id"),
-    ("performance_reviews", "employee_id", "employees", "employee_id"),
-    ("performance_reviews", "org_unit_id", "org_units", "org_unit_id"),
-    ("performance_reviews", "role_id", "job_roles", "role_id"),
-    ("compensation_snapshots", "employee_id", "employees", "employee_id"),
-    ("compensation_snapshots", "org_unit_id", "org_units", "org_unit_id"),
-    ("compensation_snapshots", "role_id", "job_roles", "role_id"),
-    ("engagement_pulses", "employee_id", "employees", "employee_id"),
-    ("engagement_pulses", "org_unit_id", "org_units", "org_unit_id"),
-    ("engagement_pulses", "role_id", "job_roles", "role_id"),
-    ("retention_risk_snapshots", "employee_id", "employees", "employee_id"),
-    ("retention_risk_snapshots", "org_unit_id", "org_units", "org_unit_id"),
-    ("retention_risk_snapshots", "role_id", "job_roles", "role_id"),
-    ("requisitions", "org_unit_id", "org_units", "org_unit_id"),
-    ("requisitions", "location_id", "locations", "location_id"),
-    ("requisitions", "role_id", "job_roles", "role_id"),
-    ("applications", "requisition_id", "requisitions", "requisition_id"),
-    ("succession_plans", "org_unit_id", "org_units", "org_unit_id"),
-    ("succession_plans", "role_id", "job_roles", "role_id"),
-    ("succession_plans", "incumbent_employee_id", "employees", "employee_id"),
-]
-
-for table, pk in PRIMARY_KEYS.items():
-    spark.sql(f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{pk}` SET NOT NULL")
-    spark.sql(f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT pk_{table} PRIMARY KEY (`{pk}`)")
-
-for table, col, ref_table, ref_col in FOREIGN_KEYS:
-    spark.sql(
-        f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT fk_{table}_{col} "
-        f"FOREIGN KEY (`{col}`) REFERENCES {C}.`{ref_table}` (`{ref_col}`)"
-    )
-
-
-def sql_text(value):
-    return value.replace("'", "''")
-
-
-TABLE_COMMENTS = {
-    "locations": "Work location dimension for the synthetic talent advisory dataset. No employee home addresses are included.",
-    "org_units": "Organizational hierarchy with functions, business units, and critical org flags.",
-    "job_roles": "Role catalog with job family, level, salary bands, market premiums, scarcity, and critical-role flags.",
-    "skills": "Skill taxonomy used for skills-gap and learning analysis.",
-    "employees": "Synthetic employee dimension with names, org, role, location, hire and termination dates. No real PII or protected-class attributes are included.",
-    "employee_skills": "Employee skill proficiency facts with target levels and critical gap flags.",
-    "learning_activity": "Learning activity facts, including the 2025 Talent Marketplace Accelerator mobility program.",
-    "talent_events": "Hires, exits, promotions, and transfers used for workforce, mobility, and attrition analytics.",
-    "performance_reviews": "Annual performance and potential ratings for compensation, performance, and retention demos.",
-    "compensation_snapshots": "Annual synthetic compensation snapshots with salary, bonus, market midpoint, compa-ratio, and range penetration.",
-    "engagement_pulses": "Quarterly engagement pulse facts. Sales East has a 2024 engagement dip.",
-    "retention_risk_snapshots": "Quarterly retention risk snapshots. High performers below 0.90 compa-ratio have elevated risk; 2025 mobility participants have lower risk.",
-    "requisitions": "Hiring requisitions with time-to-fill, internal fill, candidate-market, priority, and growth/backfill signals.",
-    "applications": "Candidate funnel facts without external candidate names. Product offers below market midpoint have lower synthetic acceptance.",
-    "succession_plans": "Critical role succession coverage. GTM and Data & AI Platform have weaker ready-successor coverage.",
-    "mart_workforce_planning": "Curated monthly workforce planning mart for headcount, hires, exits, open requisitions, and vacancy metrics.",
-    "mart_hiring_funnel": "Curated requisition-level hiring funnel mart for application, interview, offer, acceptance, and time-to-fill metrics.",
-    "mart_retention_engagement": "Curated quarterly retention and engagement mart for risk, engagement, burnout, and regretted exit metrics.",
-    "mart_internal_mobility": "Curated annual mobility and skills mart for promotions, transfers, internal fills, learning, and skill gaps.",
-    "mart_comp_performance": "Curated annual compensation and performance mart for salary, bonus, compa-ratio, performance, and high-risk groups.",
-    "mart_succession_planning": "Curated succession planning mart for critical position coverage and readiness metrics.",
-}
-
-for table, comment in TABLE_COMMENTS.items():
-    spark.sql(f"COMMENT ON TABLE {C}.`{table}` IS '{sql_text(comment)}'")
-
-for table, df_pd in TABLES.items():
-    for column in df_pd.columns:
-        readable = column.replace("_", " ")
-        spark.sql(
-            f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{column}` "
-            f"COMMENT '{sql_text(readable)} for the synthetic talent advisory dataset'"
-        )
-
-print("  OK constraints and comments registered")
-
 print()
 print("=" * 60)
 print("SETUP COMPLETE")
@@ -2405,6 +2023,4 @@ print("                 compensation_snapshots, engagement_pulses, retention_ris
 print("                 requisitions, applications, succession_plans")
 print("  Topic Marts : mart_workforce_planning, mart_hiring_funnel, mart_retention_engagement,")
 print("                 mart_internal_mobility, mart_comp_performance, mart_succession_planning")
-print("  Metric Views: mv_workforce_planning, mv_hiring_funnel, mv_retention_engagement,")
-print("                 mv_internal_mobility, mv_comp_performance, mv_succession_planning")
 print("  Next    : Create a Genie space from these tables, or see notebooks/demo-data/README.md")
