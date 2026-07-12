@@ -14,14 +14,9 @@
 # MAGIC | `invoices` | variable | Monthly invoice and payment facts |
 # MAGIC | `churn_events` | variable | Churn facts linked to subscriptions |
 # MAGIC
-# MAGIC **Setup:** Set the `catalog` and `schema` widgets (or edit defaults below), then **Run All**.
+# MAGIC **Setup:** Edit the configuration variables below, then **Run All**.
 # MAGIC
 # MAGIC Seed: `42` - fully reproducible.
-
-# COMMAND ----------
-
-# MAGIC %pip install faker==40.19.1 --quiet
-# MAGIC %restart_python
 
 # COMMAND ----------
 
@@ -33,42 +28,12 @@
 # =============================================================================
 # CONFIGURATION - Edit only this section before running
 # =============================================================================
-DEFAULT_CATALOG = ""  # Unity Catalog name; required
-DEFAULT_SCHEMA = "saas_churn"  # Schema / database name
-
-# Widgets let the bulk runner pass values while preserving standalone defaults.
-try:
-    dbutils.widgets.text("catalog", DEFAULT_CATALOG, "Unity Catalog name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.text("schema", DEFAULT_SCHEMA, "Schema / database name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.dropdown("overwrite_existing", "false", ["false", "true"], "Overwrite existing tables")
-except Exception:
-    pass
-
-try:
-    CATALOG = dbutils.widgets.get("catalog").strip() or DEFAULT_CATALOG
-except Exception:
-    CATALOG = DEFAULT_CATALOG
-
-try:
-    SCHEMA = dbutils.widgets.get("schema").strip() or DEFAULT_SCHEMA
-except Exception:
-    SCHEMA = DEFAULT_SCHEMA
-
-try:
-    OVERWRITE_EXISTING = dbutils.widgets.get("overwrite_existing").strip().lower() == "true"
-except Exception:
-    OVERWRITE_EXISTING = False
+CATALOG = ""  # TODO: set to a Unity Catalog name before running
+SCHEMA = "saas_churn"
+OVERWRITE_EXISTING = False
 
 if not CATALOG:
-    raise ValueError("Set the catalog widget to a Unity Catalog name before running this notebook.")
+    raise ValueError("Set CATALOG to a Unity Catalog name before running this notebook.")
 
 WRITE_MODE = "overwrite" if OVERWRITE_EXISTING else "errorifexists"
 
@@ -88,13 +53,10 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
-from faker import Faker
 
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
-fake = Faker("en_US")
-Faker.seed(SEED)
 
 START_DATE = date(2023, 1, 1)
 END_DATE = date(2025, 12, 31)
@@ -103,6 +65,25 @@ MONTH_LIST = [(y, m) for y in [2023, 2024, 2025] for m in range(1, 13)]
 SEGMENTS = ["SMB", "Mid-Market", "Enterprise"]
 PLAN_TIERS = ["Starter", "Professional", "Enterprise"]
 INDUSTRIES = ["Technology", "Retail", "Financial Services", "Healthcare", "Manufacturing", "Education"]
+COMPANY_PREFIXES = [
+    "Atlas",
+    "Beacon",
+    "Cedar",
+    "Evergreen",
+    "Horizon",
+    "Keystone",
+    "Northstar",
+    "Summit",
+    "Vertex",
+    "Waypoint",
+]
+COMPANY_SUFFIXES = ["Analytics", "Systems", "Works", "Labs", "Group", "Cloud"]
+
+
+def synthetic_company(index):
+    prefix = COMPANY_PREFIXES[(index - 1) % len(COMPANY_PREFIXES)]
+    suffix = COMPANY_SUFFIXES[((index - 1) // len(COMPANY_PREFIXES)) % len(COMPANY_SUFFIXES)]
+    return f"{prefix} {suffix} {index:03d}"
 
 print("Setup complete.")
 
@@ -132,7 +113,7 @@ for i in range(1, 901):
     accounts_data.append(
         {
             "account_id": f"ACCT-{i:05d}",
-            "account_name": fake.company(),
+            "account_name": synthetic_company(i),
             "segment": segment,
             "industry": random.choice(INDUSTRIES),
             "region": random.choice(["North America", "EMEA", "APAC", "LATAM"]),
@@ -623,232 +604,6 @@ spark.sql(
     """
 ).show()
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 11. Create Metric Views
-
-# COMMAND ----------
-
-# =============================================================================
-# CREATE METRIC VIEWS
-# =============================================================================
-print("Creating metric views...")
-
-metric_views = {
-    "mv_subscription_revenue": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.subscriptions
-
-joins:
-  - name: account
-    source: {CATALOG}.{SCHEMA}.accounts
-    on: source.account_id = account.account_id
-
-dimensions:
-  - name: Segment
-    expr: account.segment
-  - name: Industry
-    expr: account.industry
-  - name: Region
-    expr: account.region
-  - name: Plan Tier
-    expr: plan_tier
-  - name: Billing Term
-    expr: billing_term
-  - name: Subscription Status
-    expr: subscription_status
-  - name: AI Feature Adopter
-    expr: account.ai_feature_adopter
-
-measures:
-  - name: Subscription Count
-    expr: COUNT(1)
-  - name: Active Subscription Count
-    expr: COUNT(1) FILTER (WHERE subscription_status = 'Active')
-  - name: Churned Subscription Count
-    expr: COUNT(1) FILTER (WHERE subscription_status = 'Churned')
-  - name: ARR
-    expr: SUM(annual_recurring_revenue_usd)
-  - name: MRR
-    expr: SUM(monthly_recurring_revenue_usd)
-  - name: Average ARR
-    expr: AVG(annual_recurring_revenue_usd)
-  - name: Seats Purchased
-    expr: SUM(seats_purchased)
-  - name: Logo Churn Rate Pct
-    expr: COUNT(1) FILTER (WHERE subscription_status = 'Churned') * 100.0 / COUNT(1)
-""",
-    "mv_product_usage": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.product_usage
-
-joins:
-  - name: account
-    source: {CATALOG}.{SCHEMA}.accounts
-    on: source.account_id = account.account_id
-  - name: subscription
-    source: {CATALOG}.{SCHEMA}.subscriptions
-    on: source.subscription_id = subscription.subscription_id
-
-dimensions:
-  - name: Usage Month
-    expr: usage_month
-  - name: Usage Year
-    expr: usage_year
-  - name: Segment
-    expr: account.segment
-  - name: Plan Tier
-    expr: subscription.plan_tier
-  - name: Billing Term
-    expr: subscription.billing_term
-  - name: AI Feature Enabled
-    expr: ai_feature_enabled
-
-measures:
-  - name: Usage Row Count
-    expr: COUNT(1)
-  - name: Active Users
-    expr: SUM(active_users)
-  - name: Average Seat Utilization Pct
-    expr: AVG(seat_utilization_pct)
-  - name: Average Health Score
-    expr: AVG(health_score)
-  - name: Queries Run
-    expr: SUM(queries_run)
-  - name: Workflows Created
-    expr: SUM(workflows_created)
-  - name: AI Active Users
-    expr: SUM(ai_feature_active_users)
-  - name: AI Adoption Rate Pct
-    expr: COUNT(1) FILTER (WHERE ai_feature_enabled = TRUE) * 100.0 / COUNT(1)
-""",
-    "mv_churn_risk": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.churn_events
-
-joins:
-  - name: account
-    source: {CATALOG}.{SCHEMA}.accounts
-    on: source.account_id = account.account_id
-  - name: subscription
-    source: {CATALOG}.{SCHEMA}.subscriptions
-    on: source.subscription_id = subscription.subscription_id
-
-dimensions:
-  - name: Churn Month
-    expr: DATE_TRUNC('MONTH', churn_date)
-  - name: Churn Year
-    expr: churn_year
-  - name: Segment
-    expr: segment
-  - name: Plan Tier
-    expr: plan_tier
-  - name: Billing Term
-    expr: billing_term
-  - name: Churn Reason
-    expr: churn_reason
-  - name: AI Feature Adopter
-    expr: ai_feature_adopter
-
-measures:
-  - name: Churn Event Count
-    expr: COUNT(1)
-  - name: Churned ARR
-    expr: SUM(churned_arr_usd)
-  - name: Average Prior Utilization Pct
-    expr: AVG(prior_6mo_avg_utilization_pct)
-  - name: Average Prior Health Score
-    expr: AVG(prior_6mo_avg_health_score)
-  - name: Severe Tickets Before Churn
-    expr: SUM(severe_ticket_count)
-  - name: Late Invoices Before Churn
-    expr: SUM(late_invoice_count)
-""",
-}
-
-for mv_name, yaml_body in metric_views.items():
-    ddl = (
-        f"CREATE OR REPLACE VIEW `{CATALOG}`.`{SCHEMA}`.`{mv_name}`\n"
-        "WITH METRICS\n"
-        "LANGUAGE YAML\n"
-        "AS $$"
-        + yaml_body
-        + "$$"
-    )
-    spark.sql(ddl)
-    print(f"  OK {mv_name}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 12. Register Constraints & Comments
-
-# COMMAND ----------
-
-# =============================================================================
-# REGISTER CONSTRAINTS AND COMMENTS
-# =============================================================================
-print("Registering constraints and comments...")
-
-PRIMARY_KEYS = {
-    "accounts": "account_id",
-    "subscriptions": "subscription_id",
-    "product_usage": "usage_id",
-    "support_tickets": "ticket_id",
-    "invoices": "invoice_id",
-    "churn_events": "churn_event_id",
-}
-
-FOREIGN_KEYS = [
-    ("subscriptions", "account_id", "accounts", "account_id"),
-    ("product_usage", "account_id", "accounts", "account_id"),
-    ("product_usage", "subscription_id", "subscriptions", "subscription_id"),
-    ("support_tickets", "account_id", "accounts", "account_id"),
-    ("support_tickets", "subscription_id", "subscriptions", "subscription_id"),
-    ("invoices", "account_id", "accounts", "account_id"),
-    ("invoices", "subscription_id", "subscriptions", "subscription_id"),
-    ("churn_events", "account_id", "accounts", "account_id"),
-    ("churn_events", "subscription_id", "subscriptions", "subscription_id"),
-]
-
-for table, pk in PRIMARY_KEYS.items():
-    spark.sql(f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{pk}` SET NOT NULL")
-    spark.sql(f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT pk_{table} PRIMARY KEY (`{pk}`)")
-
-for table, col, ref_table, ref_col in FOREIGN_KEYS:
-    spark.sql(
-        f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT fk_{table}_{col} "
-        f"FOREIGN KEY (`{col}`) REFERENCES {C}.`{ref_table}` (`{ref_col}`)"
-    )
-
-
-def sql_text(value):
-    return value.replace("'", "''")
-
-
-TABLE_COMMENTS = {
-    "accounts": "Fictional SaaS customer account dimension with segment, industry, region, CSM tier, and AI adoption flag.",
-    "subscriptions": "Subscription dimension with plan, billing term, seats, MRR, ARR, status, and churn end date.",
-    "product_usage": "Monthly usage facts. Low seat utilization and lower health scores increase synthetic churn risk.",
-    "support_tickets": "Support ticket facts with severity, category, status, resolution time, CSAT, and escalation flag.",
-    "invoices": "Invoice and payment facts. Late payment behavior is correlated with churn risk.",
-    "churn_events": "Churn facts linked to subscriptions with churn reason, churned ARR, prior usage, support, and invoice signals.",
-}
-
-for table, comment in TABLE_COMMENTS.items():
-    spark.sql(f"COMMENT ON TABLE {C}.`{table}` IS '{sql_text(comment)}'")
-
-for table, df_pd in TABLES.items():
-    for column in df_pd.columns:
-        readable = column.replace("_", " ")
-        spark.sql(
-            f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{column}` "
-            f"COMMENT '{sql_text(readable)} for the synthetic SaaS churn dataset'"
-        )
-
-print("  OK constraints and comments registered")
-
 print()
 print("=" * 60)
 print("SETUP COMPLETE")
@@ -856,5 +611,4 @@ print("=" * 60)
 print(f"  Catalog     : {CATALOG}")
 print(f"  Schema      : {SCHEMA}")
 print("  Tables      : accounts, subscriptions, product_usage, support_tickets, invoices, churn_events")
-print("  Metric Views: mv_subscription_revenue, mv_product_usage, mv_churn_risk")
 print("  Next    : Create a Genie space from these tables, or see notebooks/demo-data/README.md")

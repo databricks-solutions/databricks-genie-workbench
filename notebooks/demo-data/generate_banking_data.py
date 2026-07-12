@@ -14,14 +14,9 @@
 # MAGIC | `transactions` | 10,000 | Primary fact table (2023–2025) |
 # MAGIC | `service_requests` | 3,000 | Secondary fact table (2023–2025) |
 # MAGIC
-# MAGIC **Setup:** Set the `catalog` and `schema` widgets (or edit defaults below), then **Run All**.
+# MAGIC **Setup:** Edit the configuration variables below, then **Run All**.
 # MAGIC
 # MAGIC Seed: `42` — fully reproducible.
-
-# COMMAND ----------
-
-# MAGIC %pip install faker==40.19.1 --quiet
-# MAGIC %restart_python
 
 # COMMAND ----------
 
@@ -33,42 +28,12 @@
 # =============================================================================
 # CONFIGURATION — Edit only this section before running
 # =============================================================================
-DEFAULT_CATALOG = ""  # Unity Catalog name; required
-DEFAULT_SCHEMA = "horizon_bank"  # Schema / database name
-
-# Widgets let the bulk runner pass values while preserving standalone defaults.
-try:
-    dbutils.widgets.text("catalog", DEFAULT_CATALOG, "Unity Catalog name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.text("schema", DEFAULT_SCHEMA, "Schema / database name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.dropdown("overwrite_existing", "false", ["false", "true"], "Overwrite existing tables")
-except Exception:
-    pass
-
-try:
-    CATALOG = dbutils.widgets.get("catalog").strip() or DEFAULT_CATALOG
-except Exception:
-    CATALOG = DEFAULT_CATALOG
-
-try:
-    SCHEMA = dbutils.widgets.get("schema").strip() or DEFAULT_SCHEMA
-except Exception:
-    SCHEMA = DEFAULT_SCHEMA
-
-try:
-    OVERWRITE_EXISTING = dbutils.widgets.get("overwrite_existing").strip().lower() == "true"
-except Exception:
-    OVERWRITE_EXISTING = False
+CATALOG = ""  # TODO: set to a Unity Catalog name before running
+SCHEMA = "horizon_bank"
+OVERWRITE_EXISTING = False
 
 if not CATALOG:
-    raise ValueError("Set the catalog widget to a Unity Catalog name before running this notebook.")
+    raise ValueError("Set CATALOG to a Unity Catalog name before running this notebook.")
 
 WRITE_MODE = "overwrite" if OVERWRITE_EXISTING else "errorifexists"
 
@@ -90,13 +55,41 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
-from faker import Faker
 
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
-fake = Faker("en_US")
-Faker.seed(SEED)
+
+FIRST_NAMES = [
+    "Alex",
+    "Avery",
+    "Casey",
+    "Drew",
+    "Jordan",
+    "Morgan",
+    "Parker",
+    "Quinn",
+    "Riley",
+    "Taylor",
+]
+LAST_NAMES = [
+    "Anderson",
+    "Bennett",
+    "Carter",
+    "Diaz",
+    "Ellis",
+    "Foster",
+    "Garcia",
+    "Hayes",
+    "Ibrahim",
+    "Jensen",
+]
+
+
+def synthetic_name(index):
+    first = FIRST_NAMES[(index - 1) % len(FIRST_NAMES)]
+    last = LAST_NAMES[((index - 1) // len(FIRST_NAMES)) % len(LAST_NAMES)]
+    return f"{first} {last}"
 
 # Date range for fact tables
 START_DATE = date(2023, 1, 1)
@@ -881,7 +874,7 @@ for i in range(1, 1001):
     customers_data.append(
         {
             "customer_id": cid,
-            "customer_name": fake.name(),
+            "customer_name": synthetic_name(i),
             "age_band": age_band,
             "income_band": income_band,
             "customer_segment": segment,
@@ -1644,598 +1637,6 @@ for label, q in fk_checks:
 
 print("\nData generation complete.")
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 11. Create Metric Views
-
-# COMMAND ----------
-
-# =============================================================================
-# CREATE METRIC VIEWS
-# =============================================================================
-print("Creating metric views...")
-
-metric_views = {
-    "mv_banking_transactions": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.transactions
-
-joins:
-  - name: customer
-    source: {CATALOG}.{SCHEMA}.customers
-    on: source.customer_id = customer.customer_id
-  - name: branch
-    source: {CATALOG}.{SCHEMA}.branches
-    on: source.branch_id = branch.branch_id
-  - name: account
-    source: {CATALOG}.{SCHEMA}.accounts
-    on: source.account_id = account.account_id
-
-dimensions:
-  - name: Transaction Month
-    expr: DATE_TRUNC('MONTH', transaction_date)
-  - name: Transaction Year
-    expr: transaction_year
-  - name: Channel
-    expr: channel
-  - name: Transaction Type
-    expr: transaction_type
-  - name: Channel Type
-    expr: CASE WHEN channel IN ('Mobile', 'Online') THEN 'Digital' ELSE 'In-Person' END
-  - name: Relationship Tier
-    expr: customer.relationship_tier
-  - name: Customer Segment
-    expr: customer.customer_segment
-  - name: Region
-    expr: customer.region
-  - name: State
-    expr: customer.state
-  - name: Account Type
-    expr: account.account_type
-
-measures:
-  - name: Transaction Count
-    expr: COUNT(1)
-  - name: Total Transaction Amount
-    expr: SUM(amount_usd)
-  - name: Deposit Volume
-    expr: SUM(amount_usd) FILTER (WHERE transaction_type = 'Deposit')
-  - name: Withdrawal Volume
-    expr: SUM(amount_usd) FILTER (WHERE transaction_type = 'Withdrawal')
-  - name: Net Flow
-    expr: SUM(amount_usd) FILTER (WHERE transaction_type = 'Deposit') - SUM(amount_usd) FILTER (WHERE transaction_type = 'Withdrawal')
-  - name: Fee Revenue
-    expr: SUM(fee_usd)
-  - name: Unique Customers
-    expr: COUNT(DISTINCT source.customer_id)
-  - name: Average Transaction Amount
-    expr: AVG(amount_usd)
-  - name: Digital Transaction Count
-    expr: COUNT(1) FILTER (WHERE channel IN ('Mobile', 'Online'))
-  - name: Digital Share Pct
-    expr: COUNT(1) FILTER (WHERE channel IN ('Mobile', 'Online')) * 100.0 / COUNT(1)
-  - name: Flagged Transaction Count
-    expr: COUNT(1) FILTER (WHERE is_flagged = TRUE)
-  - name: Fee Revenue per Customer
-    expr: SUM(fee_usd) / COUNT(DISTINCT source.customer_id)
-  - name: Previous Month Deposit Volume
-    expr: SUM(amount_usd) FILTER (WHERE transaction_type = 'Deposit')
-    window:
-      - order: Transaction Month
-        range: trailing 1 month
-        semiadditive: last
-  - name: YTD Deposit Volume
-    expr: SUM(amount_usd) FILTER (WHERE transaction_type = 'Deposit')
-    window:
-      - order: Transaction Month
-        range: cumulative
-        semiadditive: last
-      - order: Transaction Year
-        range: current
-        semiadditive: last
-  - name: Trailing 3-Month Fee Revenue
-    expr: SUM(fee_usd)
-    window:
-      - order: Transaction Month
-        range: trailing 3 month
-        semiadditive: last
-  - name: Current Month Deposit Volume
-    expr: SUM(amount_usd) FILTER (WHERE transaction_type = 'Deposit')
-    window:
-      - order: Transaction Month
-        range: current
-        semiadditive: last
-  - name: Month-over-Month Deposit Growth Pct
-    expr: try_divide(MEASURE(`Current Month Deposit Volume`) - MEASURE(`Previous Month Deposit Volume`), MEASURE(`Previous Month Deposit Volume`)) * 100
-""",
-    "mv_customer_health": f"""
-version: "1.1"
-source: {CATALOG}.{SCHEMA}.accounts
-
-joins:
-  - name: customer
-    source: {CATALOG}.{SCHEMA}.customers
-    on: source.customer_id = customer.customer_id
-  - name: product
-    source: {CATALOG}.{SCHEMA}.products
-    on: source.product_id = product.product_id
-
-dimensions:
-  - name: Relationship Tier
-    expr: customer.relationship_tier
-  - name: Customer Segment
-    expr: customer.customer_segment
-  - name: Account Type
-    expr: account_type
-  - name: Account Status
-    expr: status
-  - name: Product Category
-    expr: product.product_category
-  - name: Product Name
-    expr: product.product_name
-  - name: Region
-    expr: customer.region
-  - name: State
-    expr: customer.state
-  - name: Acquisition Channel
-    expr: customer.acquisition_channel
-  - name: Income Band
-    expr: customer.income_band
-  - name: Age Band
-    expr: customer.age_band
-
-measures:
-  - name: Account Count
-    expr: COUNT(1)
-  - name: Active Account Count
-    expr: COUNT(1) FILTER (WHERE status = 'Active')
-  - name: Delinquent Account Count
-    expr: COUNT(1) FILTER (WHERE status = 'Delinquent')
-  - name: Dormant Account Count
-    expr: COUNT(1) FILTER (WHERE status = 'Dormant')
-  - name: Total Balance
-    expr: SUM(current_balance_usd)
-  - name: Average Balance
-    expr: AVG(current_balance_usd)
-  - name: Total Deposit Balance
-    expr: SUM(current_balance_usd) FILTER (WHERE account_type IN ('Checking', 'Savings'))
-  - name: Total Loan Balance
-    expr: SUM(current_balance_usd) FILTER (WHERE account_type IN ('Mortgage', 'Auto Loan', 'Home Equity'))
-  - name: Average Credit Limit
-    expr: AVG(credit_limit_usd) FILTER (WHERE credit_limit_usd > 0)
-  - name: Unique Customers
-    expr: COUNT(DISTINCT source.customer_id)
-  - name: Average Balance per Customer
-    expr: SUM(current_balance_usd) / COUNT(DISTINCT source.customer_id)
-  - name: Delinquency Rate Pct
-    expr: COUNT(1) FILTER (WHERE status = 'Delinquent') * 100.0 / COUNT(1)
-  - name: Dormancy Rate Pct
-    expr: COUNT(1) FILTER (WHERE status = 'Dormant') * 100.0 / COUNT(1)
-  - name: Mortgage Penetration Rate Pct
-    expr: COUNT(DISTINCT source.customer_id) FILTER (WHERE account_type = 'Mortgage') * 100.0 / COUNT(DISTINCT source.customer_id)
-""",
-    "mv_service_quality": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.service_requests
-
-joins:
-  - name: customer
-    source: {CATALOG}.{SCHEMA}.customers
-    on: source.customer_id = customer.customer_id
-  - name: branch
-    source: {CATALOG}.{SCHEMA}.branches
-    on: source.branch_id = branch.branch_id
-
-dimensions:
-  - name: Request Month
-    expr: DATE_TRUNC('MONTH', request_date)
-  - name: Request Year
-    expr: request_year
-  - name: Channel
-    expr: channel
-  - name: Category
-    expr: category
-  - name: Status
-    expr: status
-  - name: Relationship Tier
-    expr: customer.relationship_tier
-  - name: Customer Segment
-    expr: customer.customer_segment
-  - name: Region
-    expr: customer.region
-  - name: Branch Region
-    expr: branch.region
-
-measures:
-  - name: Request Count
-    expr: COUNT(1)
-  - name: Complaint Count
-    expr: COUNT(1) FILTER (WHERE category = 'Complaint')
-  - name: Escalated Count
-    expr: COUNT(1) FILTER (WHERE status = 'Escalated')
-  - name: Resolved Count
-    expr: COUNT(1) FILTER (WHERE status = 'Resolved')
-  - name: Open Count
-    expr: COUNT(1) FILTER (WHERE status = 'Open')
-  - name: Unique Customers
-    expr: COUNT(DISTINCT source.customer_id)
-  - name: Average Resolution Time Days
-    expr: AVG(resolution_time_days) FILTER (WHERE status = 'Resolved')
-  - name: Average Satisfaction Score
-    expr: AVG(satisfaction_score)
-  - name: Resolution Rate Pct
-    expr: COUNT(1) FILTER (WHERE status = 'Resolved') * 100.0 / COUNT(1)
-  - name: Escalation Rate Pct
-    expr: COUNT(1) FILTER (WHERE status = 'Escalated') * 100.0 / COUNT(1)
-  - name: Complaint Rate Pct
-    expr: COUNT(1) FILTER (WHERE category = 'Complaint') * 100.0 / COUNT(1)
-  - name: Previous Month Complaint Count
-    expr: COUNT(1) FILTER (WHERE category = 'Complaint')
-    window:
-      - order: Request Month
-        range: trailing 1 month
-        semiadditive: last
-  - name: Current Month Complaint Count
-    expr: COUNT(1) FILTER (WHERE category = 'Complaint')
-    window:
-      - order: Request Month
-        range: current
-        semiadditive: last
-  - name: Month-over-Month Complaint Change Pct
-    expr: try_divide(MEASURE(`Current Month Complaint Count`) - MEASURE(`Previous Month Complaint Count`), MEASURE(`Previous Month Complaint Count`)) * 100
-  - name: Trailing 3-Month Resolution Rate Pct
-    expr: COUNT(1) FILTER (WHERE status = 'Resolved') * 100.0 / COUNT(1)
-    window:
-      - order: Request Month
-        range: trailing 3 month
-        semiadditive: last
-""",
-}
-
-for mv_name, yaml_body in metric_views.items():
-    ddl = (
-        f"CREATE OR REPLACE VIEW `{CATALOG}`.`{SCHEMA}`.`{mv_name}`\n"
-        "WITH METRICS\n"
-        "LANGUAGE YAML\n"
-        "AS $$" + yaml_body + "$$"
-    )
-    spark.sql(ddl)
-    print(f"  ✓ {mv_name}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 12. Register Constraints & Column Comments
-
-# COMMAND ----------
-
-# =============================================================================
-# REGISTER CONSTRAINTS & COLUMN COMMENTS
-# =============================================================================
-print("Registering constraints and column comments...")
-
-C = f"`{CATALOG}`.`{SCHEMA}`"  # shorthand for fully-qualified table refs
-
-# --- Set PK columns NOT NULL (required before adding primary key constraints) ---
-spark.sql(f"ALTER TABLE {C}.products         ALTER COLUMN product_id    SET NOT NULL")
-spark.sql(f"ALTER TABLE {C}.branches         ALTER COLUMN branch_id     SET NOT NULL")
-spark.sql(f"ALTER TABLE {C}.customers        ALTER COLUMN customer_id   SET NOT NULL")
-spark.sql(f"ALTER TABLE {C}.accounts         ALTER COLUMN account_id    SET NOT NULL")
-spark.sql(f"ALTER TABLE {C}.transactions     ALTER COLUMN transaction_id SET NOT NULL")
-spark.sql(f"ALTER TABLE {C}.service_requests ALTER COLUMN request_id    SET NOT NULL")
-
-# --- Primary keys ---
-spark.sql(
-    f"ALTER TABLE {C}.products         ADD CONSTRAINT pk_products         PRIMARY KEY (product_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches         ADD CONSTRAINT pk_branches         PRIMARY KEY (branch_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers        ADD CONSTRAINT pk_customers        PRIMARY KEY (customer_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts         ADD CONSTRAINT pk_accounts         PRIMARY KEY (account_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions     ADD CONSTRAINT pk_transactions     PRIMARY KEY (transaction_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ADD CONSTRAINT pk_service_requests PRIMARY KEY (request_id)"
-)
-
-# --- Foreign keys ---
-spark.sql(
-    f"ALTER TABLE {C}.customers        ADD CONSTRAINT fk_customers_branch    FOREIGN KEY (primary_branch_id) REFERENCES {C}.branches (branch_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts         ADD CONSTRAINT fk_accounts_customer   FOREIGN KEY (customer_id)       REFERENCES {C}.customers (customer_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts         ADD CONSTRAINT fk_accounts_product    FOREIGN KEY (product_id)        REFERENCES {C}.products (product_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions     ADD CONSTRAINT fk_transactions_account  FOREIGN KEY (account_id)      REFERENCES {C}.accounts (account_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions     ADD CONSTRAINT fk_transactions_customer FOREIGN KEY (customer_id)     REFERENCES {C}.customers (customer_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions     ADD CONSTRAINT fk_transactions_branch   FOREIGN KEY (branch_id)       REFERENCES {C}.branches (branch_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ADD CONSTRAINT fk_sr_customer          FOREIGN KEY (customer_id)      REFERENCES {C}.customers (customer_id)"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ADD CONSTRAINT fk_sr_branch            FOREIGN KEY (branch_id)        REFERENCES {C}.branches (branch_id)"
-)
-
-# --- Column comments: products ---
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN product_id             COMMENT 'Primary key. Format: PROD-NNN'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN product_name           COMMENT 'Full commercial name of the product (e.g., Horizon Rewards Visa)'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN product_category       COMMENT 'High-level category: Deposit, Credit, or Lending'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN product_type           COMMENT 'Specific type: Checking, Savings, Credit Card, Mortgage, Auto Loan, HELOC'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN annual_fee_usd         COMMENT 'Annual fee charged to the customer in USD. 0 for fee-free products'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN base_interest_rate_pct COMMENT 'Base APR or APY in percent (e.g., 19.99 means 19.99%). Deposit rates are APY; lending rates are APR'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN reward_program         COMMENT 'Loyalty/reward program: None, Cash Back, Points, or Miles'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN min_balance_usd        COMMENT 'Minimum balance required to avoid fees or qualify for rate. 0 if no minimum'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN is_active              COMMENT 'True if the product is currently offered to new customers'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.products ALTER COLUMN launched_date          COMMENT 'Date the product was first made available'"
-)
-
-# --- Column comments: branches ---
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN branch_id                   COMMENT 'Primary key. Format: BRNCH-NNN'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN branch_name                 COMMENT 'Descriptive name of the branch location'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN branch_type                 COMMENT 'Service level: Full Service, Limited Service, or Drive-Through'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN region                      COMMENT 'Geographic region: Northeast, Southeast, Midwest, West, Southwest'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN state                       COMMENT 'US 2-letter state code (e.g., NY, CA)'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN city                        COMMENT 'City where the branch is located'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN opened_date                 COMMENT 'Date the branch first opened for business'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN monthly_operating_cost_usd  COMMENT 'Fixed monthly cost to operate the branch in USD (rent, salaries, utilities)'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN headcount                   COMMENT 'Number of full-time employees at the branch'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.branches ALTER COLUMN is_active                   COMMENT 'True if the branch is currently open'"
-)
-
-# --- Column comments: customers ---
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN customer_id         COMMENT 'Primary key. Format: CUST-NNNN'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN customer_name       COMMENT 'Full name of the customer'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN age_band            COMMENT 'Age range bracket: 18-24, 25-34, 35-44, 45-54, 55-64, 65+'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN income_band         COMMENT 'Annual household income bracket: <$50K, $50K-$100K, $100K-$200K, $200K+'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN customer_segment    COMMENT 'Business segment: Retail, Small Business, or Wealth Management'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN relationship_tier   COMMENT 'Relationship depth tier: Standard, Preferred, or Private Client. Private Client customers hold 3x higher average balances'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN state               COMMENT 'US 2-letter state code for customer primary residence'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN region              COMMENT 'Geographic region derived from state: Northeast, Southeast, Midwest, West, Southwest'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN primary_branch_id   COMMENT 'FK → branches. The branch this customer is primarily associated with'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN acquisition_channel COMMENT 'How the customer was acquired: Branch, Online, Mobile, or Referral'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN customer_since_date COMMENT 'Date the customer first opened a relationship with Horizon Bank'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN is_active           COMMENT 'True if the customer relationship is active (~94% of customers)'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN has_checking        COMMENT 'True if the customer holds at least one checking account'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN has_savings         COMMENT 'True if the customer holds at least one savings account'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN has_credit_card     COMMENT 'True if the customer holds at least one credit card'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN has_mortgage        COMMENT 'True if the customer holds at least one mortgage. Private Client: ~60% penetration'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.customers ALTER COLUMN credit_score_band   COMMENT 'Credit score bracket: Poor (<580), Fair (580-669), Good (670-739), Very Good (740-799), Exceptional (800+)'"
-)
-
-# --- Column comments: accounts ---
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN account_id          COMMENT 'Primary key. Format: ACCT-NNNNN'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN customer_id         COMMENT 'FK → customers. Owner of this account'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN product_id          COMMENT 'FK → products. The specific product this account is based on'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN account_type        COMMENT 'Type of account: Checking, Savings, Credit Card, Mortgage, Auto Loan, Home Equity'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN open_date           COMMENT 'Date the account was opened'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN close_date          COMMENT 'Date the account was closed. NULL if account is still open'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN status              COMMENT 'Current account status: Active, Dormant, Closed, or Delinquent'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN current_balance_usd COMMENT 'Current balance in USD. For credit accounts: outstanding balance owed. For deposit accounts: available balance'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN credit_limit_usd    COMMENT 'Credit limit in USD. Only populated for Credit Card and HELOC accounts; NULL for deposit and other lending accounts'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN interest_rate_pct   COMMENT 'Account-specific interest rate in percent. May vary from product base_interest_rate_pct due to promotional or relationship pricing'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.accounts ALTER COLUMN is_primary_account  COMMENT 'True if this is the customer''s primary account (typically the first checking account)'"
-)
-
-# --- Column comments: transactions ---
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN transaction_id      COMMENT 'Primary key. Format: TXN-NNNNNNN'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN transaction_date    COMMENT 'Date the transaction occurred. Range: 2023-01-01 to 2025-12-31'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN transaction_year    COMMENT 'Calendar year of the transaction (2023, 2024, or 2025). Redundant column for easy filtering without date functions'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN transaction_month   COMMENT 'Calendar month of the transaction (1–12). Redundant column for easy filtering'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN transaction_quarter COMMENT 'Calendar quarter of the transaction (1–4). Redundant column for easy filtering'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN account_id          COMMENT 'FK → accounts. The account on which this transaction was recorded'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN customer_id         COMMENT 'FK → customers. Denormalized from accounts for query convenience'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN branch_id           COMMENT 'FK → branches. NULL for digital-channel transactions (Online, Mobile, ATM, Wire)'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN transaction_type    COMMENT 'Type: Deposit (in), Withdrawal (out), Transfer, Payment, Purchase (credit card), Fee, or Interest. Amounts are always positive — direction is determined by transaction_type'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN channel             COMMENT 'Channel used: Branch, ATM, Online, Mobile, or Wire. Mobile share grows from 25% (Jan 2023) to 48% (Dec 2025)'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN amount_usd          COMMENT 'Transaction amount in USD. Always stored as a positive value. Use transaction_type to determine direction of money flow'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN fee_usd             COMMENT 'Explicit fee in USD. Separate from amount_usd. 0 for most transactions — non-zero for wire transfers and overdraft events. Grows ~20% YoY'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN balance_after_usd   COMMENT 'Account balance after this transaction was applied'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN merchant_category   COMMENT 'Merchant category for credit card purchases only: Groceries, Travel, Dining, Gas, Retail, Healthcare, Entertainment. NULL for all other transaction types'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN is_international    COMMENT 'True if the transaction involved a foreign counterparty or cross-border transfer'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN status              COMMENT 'Settlement status: Posted (cleared), Pending, or Reversed'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.transactions ALTER COLUMN is_flagged          COMMENT 'True if the transaction was flagged by fraud or AML monitoring (~0.5% of transactions)'"
-)
-
-# --- Column comments: service_requests ---
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN request_id            COMMENT 'Primary key. Format: SR-NNNNNN'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN request_date          COMMENT 'Date the service request was submitted. Range: 2023-01-01 to 2025-12-31'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN request_year          COMMENT 'Calendar year of the request. Redundant for easy filtering'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN request_month         COMMENT 'Calendar month of the request (1–12). Redundant for easy filtering'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN customer_id           COMMENT 'FK → customers. The customer who submitted this request'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN branch_id             COMMENT 'FK → branches. NULL for non-branch channels (Phone, Chat, App)'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN channel               COMMENT 'Channel used to submit the request: Phone, Chat, Branch, or App'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN category              COMMENT 'Category: Account Inquiry, Dispute, Complaint, Product Inquiry, or Technical Issue. Complaint requests spike +80% in Jan 2024 (system outage narrative)'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN status                COMMENT 'Resolution status: Resolved, Open, or Escalated'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN resolution_time_days  COMMENT 'Days from submission to resolution. NULL if still Open. Escalated requests may have a partial value'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN satisfaction_score    COMMENT 'Customer satisfaction rating 1–5 (5 = most satisfied). NULL if not yet rated. Lower scores correlate with Complaint category'"
-)
-spark.sql(
-    f"ALTER TABLE {C}.service_requests ALTER COLUMN is_resolved           COMMENT 'True if status = Resolved. Convenience boolean for filtering'"
-)
-
-# --- Table comments ---
-spark.sql(
-    f"COMMENT ON TABLE {C}.products IS 'Product catalog for Horizon Bank. 20 rows covering Deposit, Credit, and Lending product types. Static reference dimension.'"
-)
-spark.sql(
-    f"COMMENT ON TABLE {C}.branches IS 'Branch dimension for Horizon Bank. 25 branches across 5 US regions. Southeast branches have ~20% higher average transaction values vs. national average.'"
-)
-spark.sql(
-    f"COMMENT ON TABLE {C}.customers IS 'Customer dimension. 1,000 synthetic customers. Private Client tier (top 10%) holds 3x the average account balance and has 60% mortgage penetration.'"
-)
-spark.sql(
-    f"COMMENT ON TABLE {C}.accounts IS 'Account dimension. ~2,500 accounts across all product types. FK to customers and products. current_balance_usd reflects the balance after all transactions in the 2023–2025 window.'"
-)
-spark.sql(
-    f"COMMENT ON TABLE {C}.transactions IS 'Primary fact table. 10,000 transactions from 2023-01-01 to 2025-12-31. Key patterns: (1) Nov/Dec volume +45%, (2) Q2 2024 deposit dip -15%, (3) Mobile channel grows 25% to 48%, (4) Fee revenue +20% YoY, (5) Top 10% customers = ~35% of deposit volume. Amounts are always positive — use transaction_type for direction.'"
-)
-spark.sql(
-    f"COMMENT ON TABLE {C}.service_requests IS 'Secondary fact table. 3,000 service requests from 2023–2025. Complaint category spikes +80% in Jan 2024, correlating with a simulated system outage narrative.'"
-)
-
-print("  ✓ PK/FK constraints and column comments registered")
-
 print()
 print("=" * 60)
 print("SETUP COMPLETE")
@@ -2245,5 +1646,4 @@ print(f"  Schema  : {SCHEMA}")
 print(
     "  Tables  : products, branches, customers, accounts,transactions, service_requests"
 )
-print("  Metric Views: mv_banking_transactions, mv_customer_health, mv_service_quality")
 print("  Next    : Create a Genie space from these tables, or see notebooks/demo-data/README.md")

@@ -14,14 +14,9 @@
 # MAGIC | `sales` | 15,000 | Item-level sales facts from 2023-2025 |
 # MAGIC | `returns` | variable | Return facts linked to sales |
 # MAGIC
-# MAGIC **Setup:** Set the `catalog` and `schema` widgets (or edit defaults below), then **Run All**.
+# MAGIC **Setup:** Edit the configuration variables below, then **Run All**.
 # MAGIC
 # MAGIC Seed: `42` - fully reproducible.
-
-# COMMAND ----------
-
-# MAGIC %pip install faker==40.19.1 --quiet
-# MAGIC %restart_python
 
 # COMMAND ----------
 
@@ -33,42 +28,12 @@
 # =============================================================================
 # CONFIGURATION - Edit only this section before running
 # =============================================================================
-DEFAULT_CATALOG = ""  # Unity Catalog name; required
-DEFAULT_SCHEMA = "retail_apparel"  # Schema / database name
-
-# Widgets let the bulk runner pass values while preserving standalone defaults.
-try:
-    dbutils.widgets.text("catalog", DEFAULT_CATALOG, "Unity Catalog name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.text("schema", DEFAULT_SCHEMA, "Schema / database name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.dropdown("overwrite_existing", "false", ["false", "true"], "Overwrite existing tables")
-except Exception:
-    pass
-
-try:
-    CATALOG = dbutils.widgets.get("catalog").strip() or DEFAULT_CATALOG
-except Exception:
-    CATALOG = DEFAULT_CATALOG
-
-try:
-    SCHEMA = dbutils.widgets.get("schema").strip() or DEFAULT_SCHEMA
-except Exception:
-    SCHEMA = DEFAULT_SCHEMA
-
-try:
-    OVERWRITE_EXISTING = dbutils.widgets.get("overwrite_existing").strip().lower() == "true"
-except Exception:
-    OVERWRITE_EXISTING = False
+CATALOG = ""  # TODO: set to a Unity Catalog name before running
+SCHEMA = "retail_apparel"
+OVERWRITE_EXISTING = False
 
 if not CATALOG:
-    raise ValueError("Set the catalog widget to a Unity Catalog name before running this notebook.")
+    raise ValueError("Set CATALOG to a Unity Catalog name before running this notebook.")
 
 WRITE_MODE = "overwrite" if OVERWRITE_EXISTING else "errorifexists"
 
@@ -88,13 +53,41 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
-from faker import Faker
 
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
-fake = Faker("en_US")
-Faker.seed(SEED)
+
+FIRST_NAMES = [
+    "Alex",
+    "Avery",
+    "Casey",
+    "Drew",
+    "Jordan",
+    "Morgan",
+    "Parker",
+    "Quinn",
+    "Riley",
+    "Taylor",
+]
+LAST_NAMES = [
+    "Anderson",
+    "Bennett",
+    "Carter",
+    "Diaz",
+    "Ellis",
+    "Foster",
+    "Garcia",
+    "Hayes",
+    "Ibrahim",
+    "Jensen",
+]
+
+
+def synthetic_name(index):
+    first = FIRST_NAMES[(index - 1) % len(FIRST_NAMES)]
+    last = LAST_NAMES[((index - 1) // len(FIRST_NAMES)) % len(LAST_NAMES)]
+    return f"{first} {last}"
 
 START_DATE = date(2023, 1, 1)
 END_DATE = date(2025, 12, 31)
@@ -247,7 +240,7 @@ for i in range(1, 1501):
     customers_data.append(
         {
             "customer_id": f"CUST-{i:05d}",
-            "customer_name": fake.name(),
+            "customer_name": synthetic_name(i),
             "loyalty_tier": tier,
             "age_band": random.choices(
                 ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"],
@@ -524,12 +517,15 @@ print("=" * 60)
 print("PATTERN VALIDATION")
 print("=" * 60)
 
-print("\n1. Holiday sales spike: Nov/Dec should have higher order counts.")
+print("\n1. Holiday sales spike: Nov/Dec should have higher monthly order counts.")
 spark.sql(
     f"""
     SELECT CASE WHEN sale_month IN (11, 12) THEN 'Nov/Dec' ELSE 'Other' END AS period,
            COUNT(*) AS orders,
-           ROUND(SUM(net_sales_usd), 2) AS revenue
+           ROUND(SUM(net_sales_usd), 2) AS revenue,
+           COUNT(DISTINCT sale_month) AS months,
+           ROUND(COUNT(*) / COUNT(DISTINCT sale_month), 1) AS avg_orders_per_month,
+           ROUND(SUM(net_sales_usd) / COUNT(DISTINCT sale_month), 2) AS avg_revenue_per_month
     FROM {C}.`sales`
     GROUP BY 1
     """
@@ -581,230 +577,6 @@ spark.sql(
     """
 ).show()
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 11. Create Metric Views
-
-# COMMAND ----------
-
-# =============================================================================
-# CREATE METRIC VIEWS
-# =============================================================================
-print("Creating metric views...")
-
-metric_views = {
-    "mv_retail_sales": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.sales
-
-joins:
-  - name: product
-    source: {CATALOG}.{SCHEMA}.products
-    on: source.product_id = product.product_id
-  - name: store
-    source: {CATALOG}.{SCHEMA}.stores
-    on: source.store_id = store.store_id
-  - name: customer
-    source: {CATALOG}.{SCHEMA}.customers
-    on: source.customer_id = customer.customer_id
-
-dimensions:
-  - name: Sale Month
-    expr: DATE_TRUNC('MONTH', sale_date)
-  - name: Sale Year
-    expr: sale_year
-  - name: Channel
-    expr: channel
-  - name: Product Category
-    expr: product.category
-  - name: Brand Line
-    expr: product.brand_line
-  - name: Loyalty Tier
-    expr: source.loyalty_tier
-  - name: Store Region
-    expr: store.region
-  - name: Store Type
-    expr: store.store_type
-  - name: Clearance Flag
-    expr: is_clearance
-
-measures:
-  - name: Order Count
-    expr: COUNT(1)
-  - name: Units Sold
-    expr: SUM(quantity)
-  - name: Net Sales
-    expr: SUM(net_sales_usd)
-  - name: Gross Margin
-    expr: SUM(gross_margin_usd)
-  - name: Discount Amount
-    expr: SUM(discount_amount_usd)
-  - name: Average Order Value
-    expr: SUM(net_sales_usd) / COUNT(1)
-  - name: Online Sales
-    expr: SUM(net_sales_usd) FILTER (WHERE channel = 'Online')
-  - name: Online Order Share Pct
-    expr: COUNT(1) FILTER (WHERE channel = 'Online') * 100.0 / COUNT(1)
-  - name: Clearance Sales
-    expr: SUM(net_sales_usd) FILTER (WHERE is_clearance = TRUE)
-""",
-    "mv_inventory_health": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.inventory_snapshots
-
-joins:
-  - name: product
-    source: {CATALOG}.{SCHEMA}.products
-    on: source.product_id = product.product_id
-  - name: store
-    source: {CATALOG}.{SCHEMA}.stores
-    on: source.store_id = store.store_id
-
-dimensions:
-  - name: Snapshot Month
-    expr: snapshot_month
-  - name: Snapshot Year
-    expr: snapshot_year
-  - name: Product Category
-    expr: product.category
-  - name: Store Region
-    expr: store.region
-  - name: Store Type
-    expr: store.store_type
-
-measures:
-  - name: Inventory Value
-    expr: SUM(inventory_value_usd)
-  - name: On Hand Units
-    expr: SUM(on_hand_units)
-  - name: Stockout Days
-    expr: SUM(stockout_days)
-  - name: Lost Sales Estimate Units
-    expr: SUM(lost_sales_estimate_units)
-  - name: Stockout Snapshot Rate Pct
-    expr: COUNT(1) FILTER (WHERE stockout_days >= 7) * 100.0 / COUNT(1)
-""",
-    "mv_retail_returns": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.returns
-
-joins:
-  - name: product
-    source: {CATALOG}.{SCHEMA}.products
-    on: source.product_id = product.product_id
-  - name: store
-    source: {CATALOG}.{SCHEMA}.stores
-    on: source.store_id = store.store_id
-
-dimensions:
-  - name: Return Month
-    expr: DATE_TRUNC('MONTH', return_date)
-  - name: Return Year
-    expr: return_year
-  - name: Channel
-    expr: channel
-  - name: Product Category
-    expr: product.category
-  - name: Return Reason
-    expr: return_reason
-  - name: Store Region
-    expr: store.region
-
-measures:
-  - name: Return Count
-    expr: COUNT(1)
-  - name: Returned Units
-    expr: SUM(return_quantity)
-  - name: Return Amount
-    expr: SUM(return_amount_usd)
-  - name: Average Days to Return
-    expr: AVG(days_to_return)
-""",
-}
-
-for mv_name, yaml_body in metric_views.items():
-    ddl = (
-        f"CREATE OR REPLACE VIEW `{CATALOG}`.`{SCHEMA}`.`{mv_name}`\n"
-        "WITH METRICS\n"
-        "LANGUAGE YAML\n"
-        "AS $$"
-        + yaml_body
-        + "$$"
-    )
-    spark.sql(ddl)
-    print(f"  OK {mv_name}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 12. Register Constraints & Comments
-
-# COMMAND ----------
-
-# =============================================================================
-# REGISTER CONSTRAINTS AND COMMENTS
-# =============================================================================
-print("Registering constraints and comments...")
-
-PRIMARY_KEYS = {
-    "products": "product_id",
-    "stores": "store_id",
-    "customers": "customer_id",
-    "inventory_snapshots": "snapshot_id",
-    "sales": "sale_id",
-    "returns": "return_id",
-}
-
-FOREIGN_KEYS = [
-    ("sales", "customer_id", "customers", "customer_id"),
-    ("sales", "product_id", "products", "product_id"),
-    ("sales", "store_id", "stores", "store_id"),
-    ("inventory_snapshots", "product_id", "products", "product_id"),
-    ("inventory_snapshots", "store_id", "stores", "store_id"),
-    ("returns", "sale_id", "sales", "sale_id"),
-    ("returns", "customer_id", "customers", "customer_id"),
-    ("returns", "product_id", "products", "product_id"),
-    ("returns", "store_id", "stores", "store_id"),
-]
-
-for table, pk in PRIMARY_KEYS.items():
-    spark.sql(f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{pk}` SET NOT NULL")
-    spark.sql(f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT pk_{table} PRIMARY KEY (`{pk}`)")
-
-for table, col, ref_table, ref_col in FOREIGN_KEYS:
-    spark.sql(
-        f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT fk_{table}_{col} "
-        f"FOREIGN KEY (`{col}`) REFERENCES {C}.`{ref_table}` (`{ref_col}`)"
-    )
-
-
-def sql_text(value):
-    return value.replace("'", "''")
-
-
-TABLE_COMMENTS = {
-    "products": "Product catalog for a fictional apparel retailer. Includes category, brand line, price, cost, season, and active flag.",
-    "stores": "Store dimension covering physical retail stores and an ecommerce storefront across US regions.",
-    "customers": "Synthetic loyalty customer dimension. VIP and Gold customers drive a disproportionate share of revenue.",
-    "inventory_snapshots": "Monthly product-store inventory snapshots with stockout days and estimated lost sales units.",
-    "sales": "Item-level retail apparel sales from 2023-01-01 to 2025-12-31. Patterns include holiday spikes, online growth, clearance discounts, and stockout effects.",
-    "returns": "Returned merchandise facts linked to sales. Online sales have a higher return rate than store sales.",
-}
-
-for table, comment in TABLE_COMMENTS.items():
-    spark.sql(f"COMMENT ON TABLE {C}.`{table}` IS '{sql_text(comment)}'")
-
-for table, df_pd in TABLES.items():
-    for column in df_pd.columns:
-        readable = column.replace("_", " ")
-        spark.sql(
-            f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{column}` "
-            f"COMMENT '{sql_text(readable)} for the synthetic retail apparel dataset'"
-        )
-
-print("  OK constraints and comments registered")
-
 print()
 print("=" * 60)
 print("SETUP COMPLETE")
@@ -812,5 +584,4 @@ print("=" * 60)
 print(f"  Catalog     : {CATALOG}")
 print(f"  Schema      : {SCHEMA}")
 print("  Tables      : products, stores, customers, inventory_snapshots, sales, returns")
-print("  Metric Views: mv_retail_sales, mv_inventory_health, mv_retail_returns")
 print("  Next    : Create a Genie space from these tables, or see notebooks/demo-data/README.md")

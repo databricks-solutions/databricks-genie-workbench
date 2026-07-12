@@ -14,14 +14,9 @@
 # MAGIC | `maintenance_events` | variable | Preventive, inspection, and corrective work orders |
 # MAGIC | `failure_events` | variable | Component failure facts |
 # MAGIC
-# MAGIC **Setup:** Set the `catalog` and `schema` widgets (or edit defaults below), then **Run All**.
+# MAGIC **Setup:** Edit the configuration variables below, then **Run All**.
 # MAGIC
 # MAGIC Seed: `42` - fully reproducible.
-
-# COMMAND ----------
-
-# MAGIC %pip install faker==40.19.1 --quiet
-# MAGIC %restart_python
 
 # COMMAND ----------
 
@@ -33,42 +28,12 @@
 # =============================================================================
 # CONFIGURATION - Edit only this section before running
 # =============================================================================
-DEFAULT_CATALOG = ""  # Unity Catalog name; required
-DEFAULT_SCHEMA = "wind_turbine_maintenance"  # Schema / database name
-
-# Widgets let the bulk runner pass values while preserving standalone defaults.
-try:
-    dbutils.widgets.text("catalog", DEFAULT_CATALOG, "Unity Catalog name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.text("schema", DEFAULT_SCHEMA, "Schema / database name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.dropdown("overwrite_existing", "false", ["false", "true"], "Overwrite existing tables")
-except Exception:
-    pass
-
-try:
-    CATALOG = dbutils.widgets.get("catalog").strip() or DEFAULT_CATALOG
-except Exception:
-    CATALOG = DEFAULT_CATALOG
-
-try:
-    SCHEMA = dbutils.widgets.get("schema").strip() or DEFAULT_SCHEMA
-except Exception:
-    SCHEMA = DEFAULT_SCHEMA
-
-try:
-    OVERWRITE_EXISTING = dbutils.widgets.get("overwrite_existing").strip().lower() == "true"
-except Exception:
-    OVERWRITE_EXISTING = False
+CATALOG = ""  # TODO: set to a Unity Catalog name before running
+SCHEMA = "wind_turbine_maintenance"
+OVERWRITE_EXISTING = False
 
 if not CATALOG:
-    raise ValueError("Set the catalog widget to a Unity Catalog name before running this notebook.")
+    raise ValueError("Set CATALOG to a Unity Catalog name before running this notebook.")
 
 WRITE_MODE = "overwrite" if OVERWRITE_EXISTING else "errorifexists"
 
@@ -88,22 +53,19 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
-from faker import Faker
 
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
-fake = Faker("en_US")
-Faker.seed(SEED)
 
 START_DATE = date(2023, 1, 1)
 END_DATE = date(2025, 12, 31)
 MONTH_LIST = [(y, m) for y in [2023, 2024, 2025] for m in range(1, 13)]
 
 MODEL_CONFIG = {
-    "WT-2.5A": {"capacity_mw": 2.5, "failure_mult": 0.85, "hub_height_m": 90},
-    "WT-3.0B": {"capacity_mw": 3.0, "failure_mult": 1.00, "hub_height_m": 105},
-    "WT-4.2C": {"capacity_mw": 4.2, "failure_mult": 1.45, "hub_height_m": 120},
+    "WT-2.5A": {"capacity_mw": 2.5, "hub_height_m": 90},
+    "WT-3.0B": {"capacity_mw": 3.0, "hub_height_m": 105},
+    "WT-4.2C": {"capacity_mw": 4.2, "hub_height_m": 120},
 }
 COMPONENT_TYPES = ["Gearbox", "Generator", "Blade Set", "Yaw System"]
 
@@ -304,10 +266,13 @@ failure_data = []
 failure_counter = 1
 
 for turbine in turbines_data:
-    model_mult = MODEL_CONFIG[turbine["turbine_model"]]["failure_mult"]
-    farm = FARM_BY_ID[turbine["farm_id"]]
-    base_failures = random.choices([0, 1, 2, 3], weights=[50, 34, 12, 4])[0]
-    if random.random() < (model_mult - 1.0) * 0.22:
+    failure_weights = {
+        "WT-2.5A": [62, 30, 7, 1],
+        "WT-3.0B": [52, 34, 11, 3],
+        "WT-4.2C": [18, 42, 28, 12],
+    }[turbine["turbine_model"]]
+    base_failures = random.choices([0, 1, 2, 3], weights=failure_weights)[0]
+    if turbine["turbine_model"] == "WT-4.2C" and random.random() < 0.30:
         base_failures += 1
     for _ in range(base_failures):
         year = random.choice([2023, 2024, 2025])
@@ -578,229 +543,6 @@ spark.sql(
     """
 ).show()
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 11. Create Metric Views
-
-# COMMAND ----------
-
-# =============================================================================
-# CREATE METRIC VIEWS
-# =============================================================================
-print("Creating metric views...")
-
-metric_views = {
-    "mv_turbine_performance": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.sensor_readings
-
-joins:
-  - name: turbine
-    source: {CATALOG}.{SCHEMA}.turbines
-    on: source.turbine_id = turbine.turbine_id
-  - name: farm
-    source: {CATALOG}.{SCHEMA}.wind_farms
-    on: source.farm_id = farm.farm_id
-
-dimensions:
-  - name: Reading Month
-    expr: DATE_TRUNC('MONTH', reading_date)
-  - name: Reading Year
-    expr: reading_year
-  - name: Farm Name
-    expr: farm.farm_name
-  - name: Region
-    expr: farm.region
-  - name: Turbine Model
-    expr: turbine.turbine_model
-  - name: Icing Flag
-    expr: icing_flag
-
-measures:
-  - name: Reading Count
-    expr: COUNT(1)
-  - name: Average Capacity Factor Pct
-    expr: AVG(capacity_factor_pct)
-  - name: Average Power Output KW
-    expr: AVG(power_output_kw)
-  - name: Average Anomaly Score
-    expr: AVG(anomaly_score)
-  - name: High Anomaly Count
-    expr: COUNT(1) FILTER (WHERE anomaly_score >= 70)
-  - name: Average Gearbox Temp C
-    expr: AVG(gearbox_temp_c)
-  - name: Average Vibration
-    expr: AVG(vibration_mm_s)
-""",
-    "mv_maintenance_reliability": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.maintenance_events
-
-joins:
-  - name: turbine
-    source: {CATALOG}.{SCHEMA}.turbines
-    on: source.turbine_id = turbine.turbine_id
-  - name: farm
-    source: {CATALOG}.{SCHEMA}.wind_farms
-    on: source.farm_id = farm.farm_id
-  - name: component
-    source: {CATALOG}.{SCHEMA}.components
-    on: source.component_id = component.component_id
-
-dimensions:
-  - name: Maintenance Month
-    expr: DATE_TRUNC('MONTH', maintenance_date)
-  - name: Maintenance Year
-    expr: maintenance_year
-  - name: Maintenance Type
-    expr: maintenance_type
-  - name: Component Type
-    expr: component.component_type
-  - name: Farm Name
-    expr: farm.farm_name
-  - name: Turbine Model
-    expr: turbine.turbine_model
-
-measures:
-  - name: Maintenance Count
-    expr: COUNT(1)
-  - name: Preventive Count
-    expr: COUNT(1) FILTER (WHERE maintenance_type = 'Preventive')
-  - name: Corrective Count
-    expr: COUNT(1) FILTER (WHERE maintenance_type = 'Corrective')
-  - name: Total Maintenance Cost
-    expr: SUM(cost_usd)
-  - name: Average Duration Hours
-    expr: AVG(duration_hours)
-""",
-    "mv_failure_events": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.failure_events
-
-joins:
-  - name: turbine
-    source: {CATALOG}.{SCHEMA}.turbines
-    on: source.turbine_id = turbine.turbine_id
-  - name: farm
-    source: {CATALOG}.{SCHEMA}.wind_farms
-    on: source.farm_id = farm.farm_id
-
-dimensions:
-  - name: Failure Month
-    expr: DATE_TRUNC('MONTH', failure_date)
-  - name: Failure Year
-    expr: failure_year
-  - name: Component Type
-    expr: component_type
-  - name: Failure Type
-    expr: failure_type
-  - name: Severity
-    expr: severity
-  - name: Turbine Model
-    expr: turbine.turbine_model
-  - name: Farm Name
-    expr: farm.farm_name
-  - name: Recent Preventive Flag
-    expr: had_recent_preventive
-
-measures:
-  - name: Failure Count
-    expr: COUNT(1)
-  - name: Total Downtime Hours
-    expr: SUM(downtime_hours)
-  - name: Average Downtime Hours
-    expr: AVG(downtime_hours)
-  - name: Total Repair Cost
-    expr: SUM(repair_cost_usd)
-  - name: Recent Preventive Failure Count
-    expr: COUNT(1) FILTER (WHERE had_recent_preventive = TRUE)
-""",
-}
-
-for mv_name, yaml_body in metric_views.items():
-    ddl = (
-        f"CREATE OR REPLACE VIEW `{CATALOG}`.`{SCHEMA}`.`{mv_name}`\n"
-        "WITH METRICS\n"
-        "LANGUAGE YAML\n"
-        "AS $$"
-        + yaml_body
-        + "$$"
-    )
-    spark.sql(ddl)
-    print(f"  OK {mv_name}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 12. Register Constraints & Comments
-
-# COMMAND ----------
-
-# =============================================================================
-# REGISTER CONSTRAINTS AND COMMENTS
-# =============================================================================
-print("Registering constraints and comments...")
-
-PRIMARY_KEYS = {
-    "wind_farms": "farm_id",
-    "turbines": "turbine_id",
-    "components": "component_id",
-    "sensor_readings": "reading_id",
-    "maintenance_events": "maintenance_id",
-    "failure_events": "failure_id",
-}
-
-FOREIGN_KEYS = [
-    ("turbines", "farm_id", "wind_farms", "farm_id"),
-    ("components", "turbine_id", "turbines", "turbine_id"),
-    ("sensor_readings", "farm_id", "wind_farms", "farm_id"),
-    ("sensor_readings", "turbine_id", "turbines", "turbine_id"),
-    ("maintenance_events", "farm_id", "wind_farms", "farm_id"),
-    ("maintenance_events", "turbine_id", "turbines", "turbine_id"),
-    ("maintenance_events", "component_id", "components", "component_id"),
-    ("failure_events", "farm_id", "wind_farms", "farm_id"),
-    ("failure_events", "turbine_id", "turbines", "turbine_id"),
-    ("failure_events", "component_id", "components", "component_id"),
-]
-
-for table, pk in PRIMARY_KEYS.items():
-    spark.sql(f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{pk}` SET NOT NULL")
-    spark.sql(f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT pk_{table} PRIMARY KEY (`{pk}`)")
-
-for table, col, ref_table, ref_col in FOREIGN_KEYS:
-    spark.sql(
-        f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT fk_{table}_{col} "
-        f"FOREIGN KEY (`{col}`) REFERENCES {C}.`{ref_table}` (`{ref_col}`)"
-    )
-
-
-def sql_text(value):
-    return value.replace("'", "''")
-
-
-TABLE_COMMENTS = {
-    "wind_farms": "Wind farm dimension with region, state, terrain, and wind resource attributes.",
-    "turbines": "Turbine asset dimension. WT-4.2C turbines have an intentionally higher synthetic failure rate.",
-    "components": "Major turbine components tracked for maintenance and failure analysis.",
-    "sensor_readings": "Monthly turbine telemetry. Anomaly score, vibration, and gearbox temperature rise before failures.",
-    "maintenance_events": "Preventive, inspection, and corrective maintenance work orders with duration and cost.",
-    "failure_events": "Component failure facts with severity, downtime, repair cost, and recent preventive maintenance flag.",
-}
-
-for table, comment in TABLE_COMMENTS.items():
-    spark.sql(f"COMMENT ON TABLE {C}.`{table}` IS '{sql_text(comment)}'")
-
-for table, df_pd in TABLES.items():
-    for column in df_pd.columns:
-        readable = column.replace("_", " ")
-        spark.sql(
-            f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{column}` "
-            f"COMMENT '{sql_text(readable)} for the synthetic wind turbine maintenance dataset'"
-        )
-
-print("  OK constraints and comments registered")
-
 print()
 print("=" * 60)
 print("SETUP COMPLETE")
@@ -808,5 +550,4 @@ print("=" * 60)
 print(f"  Catalog     : {CATALOG}")
 print(f"  Schema      : {SCHEMA}")
 print("  Tables      : wind_farms, turbines, components, sensor_readings, maintenance_events, failure_events")
-print("  Metric Views: mv_turbine_performance, mv_maintenance_reliability, mv_failure_events")
 print("  Next    : Create a Genie space from these tables, or see notebooks/demo-data/README.md")

@@ -17,14 +17,9 @@
 # MAGIC | `claims` | 7,000 | Encounter-level claim facts |
 # MAGIC | `readmissions` | variable | 30-day readmission facts |
 # MAGIC
-# MAGIC **Setup:** Set the `catalog` and `schema` widgets (or edit defaults below), then **Run All**.
+# MAGIC **Setup:** Edit the configuration variables below, then **Run All**.
 # MAGIC
 # MAGIC Seed: `42` - fully reproducible.
-
-# COMMAND ----------
-
-# MAGIC %pip install faker==40.19.1 --quiet
-# MAGIC %restart_python
 
 # COMMAND ----------
 
@@ -36,42 +31,12 @@
 # =============================================================================
 # CONFIGURATION - Edit only this section before running
 # =============================================================================
-DEFAULT_CATALOG = ""  # Unity Catalog name; required
-DEFAULT_SCHEMA = "hospital_readmission"  # Schema / database name
-
-# Widgets let the bulk runner pass values while preserving standalone defaults.
-try:
-    dbutils.widgets.text("catalog", DEFAULT_CATALOG, "Unity Catalog name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.text("schema", DEFAULT_SCHEMA, "Schema / database name")
-except Exception:
-    pass
-
-try:
-    dbutils.widgets.dropdown("overwrite_existing", "false", ["false", "true"], "Overwrite existing tables")
-except Exception:
-    pass
-
-try:
-    CATALOG = dbutils.widgets.get("catalog").strip() or DEFAULT_CATALOG
-except Exception:
-    CATALOG = DEFAULT_CATALOG
-
-try:
-    SCHEMA = dbutils.widgets.get("schema").strip() or DEFAULT_SCHEMA
-except Exception:
-    SCHEMA = DEFAULT_SCHEMA
-
-try:
-    OVERWRITE_EXISTING = dbutils.widgets.get("overwrite_existing").strip().lower() == "true"
-except Exception:
-    OVERWRITE_EXISTING = False
+CATALOG = ""  # TODO: set to a Unity Catalog name before running
+SCHEMA = "hospital_readmission"
+OVERWRITE_EXISTING = False
 
 if not CATALOG:
-    raise ValueError("Set the catalog widget to a Unity Catalog name before running this notebook.")
+    raise ValueError("Set CATALOG to a Unity Catalog name before running this notebook.")
 
 WRITE_MODE = "overwrite" if OVERWRITE_EXISTING else "errorifexists"
 
@@ -91,13 +56,10 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
-from faker import Faker
 
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
-fake = Faker("en_US")
-Faker.seed(SEED)
 
 START_DATE = date(2023, 1, 1)
 END_DATE = date(2025, 12, 31)
@@ -535,12 +497,18 @@ spark.sql(
     """
 ).show()
 
-print("\n3. Flu season should show more respiratory admissions.")
+print("\n3. Flu season should show higher monthly respiratory admissions.")
 spark.sql(
     f"""
     SELECT CASE WHEN encounter_month IN (1, 2, 12) THEN 'Flu Season' ELSE 'Other' END AS period,
            COUNT(*) FILTER (WHERE primary_diagnosis_group IN ('COPD', 'Pneumonia')) AS respiratory_encounters,
-           COUNT(*) AS total_encounters
+           COUNT(*) AS total_encounters,
+           COUNT(DISTINCT encounter_month) AS months,
+           ROUND(
+               COUNT(*) FILTER (WHERE primary_diagnosis_group IN ('COPD', 'Pneumonia'))
+               / COUNT(DISTINCT encounter_month),
+               1
+           ) AS avg_respiratory_encounters_per_month
     FROM {C}.`encounters`
     GROUP BY 1
     """
@@ -574,226 +542,6 @@ spark.sql(
     """
 ).show()
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 11. Create Metric Views
-
-# COMMAND ----------
-
-# =============================================================================
-# CREATE METRIC VIEWS
-# =============================================================================
-print("Creating metric views...")
-
-metric_views = {
-    "mv_readmission_quality": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.encounters
-
-joins:
-  - name: hospital
-    source: {CATALOG}.{SCHEMA}.hospitals
-    on: source.hospital_id = hospital.hospital_id
-  - name: patient
-    source: {CATALOG}.{SCHEMA}.patients
-    on: source.patient_id = patient.patient_id
-  - name: transition
-    source: {CATALOG}.{SCHEMA}.care_transitions
-    on: source.encounter_id = transition.encounter_id
-  - name: readmission
-    source: {CATALOG}.{SCHEMA}.readmissions
-    on: source.encounter_id = readmission.index_encounter_id
-
-dimensions:
-  - name: Discharge Month
-    expr: DATE_TRUNC('MONTH', discharge_date)
-  - name: Encounter Year
-    expr: encounter_year
-  - name: Hospital Region
-    expr: hospital.region
-  - name: Hospital Type
-    expr: hospital.hospital_type
-  - name: Service Line
-    expr: service_line
-  - name: Diagnosis Group
-    expr: primary_diagnosis_group
-  - name: Follow Up Within 7 Days
-    expr: transition.follow_up_within_7_days
-  - name: Weekend Discharge
-    expr: weekend_discharge
-  - name: Clinical Risk Band
-    expr: patient.clinical_risk_band
-
-measures:
-  - name: Encounter Count
-    expr: COUNT(DISTINCT source.encounter_id)
-  - name: Readmission Count
-    expr: COUNT(DISTINCT readmission.readmission_id)
-  - name: Readmission Rate Pct
-    expr: COUNT(DISTINCT readmission.readmission_id) * 100.0 / COUNT(DISTINCT source.encounter_id)
-  - name: Average Length of Stay
-    expr: AVG(length_of_stay_days)
-  - name: Weekend Discharge Count
-    expr: COUNT(1) FILTER (WHERE weekend_discharge = TRUE)
-  - name: Follow Up Rate Pct
-    expr: COUNT(1) FILTER (WHERE transition.follow_up_within_7_days = TRUE) * 100.0 / COUNT(1)
-""",
-    "mv_claims_cost": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.claims
-
-joins:
-  - name: hospital
-    source: {CATALOG}.{SCHEMA}.hospitals
-    on: source.hospital_id = hospital.hospital_id
-  - name: encounter
-    source: {CATALOG}.{SCHEMA}.encounters
-    on: source.encounter_id = encounter.encounter_id
-
-dimensions:
-  - name: Paid Month
-    expr: DATE_TRUNC('MONTH', paid_date)
-  - name: Payer Type
-    expr: payer_type
-  - name: Service Line
-    expr: service_line
-  - name: Claim Status
-    expr: claim_status
-  - name: Hospital Region
-    expr: hospital.region
-  - name: Diagnosis Group
-    expr: encounter.primary_diagnosis_group
-
-measures:
-  - name: Claim Count
-    expr: COUNT(1)
-  - name: Allowed Amount
-    expr: SUM(allowed_amount_usd)
-  - name: Average Allowed Amount
-    expr: AVG(allowed_amount_usd)
-  - name: Patient Responsibility
-    expr: SUM(patient_responsibility_usd)
-  - name: Denied Claim Count
-    expr: COUNT(1) FILTER (WHERE claim_status = 'Denied')
-""",
-    "mv_care_transitions": f"""
-version: "0.1"
-source: {CATALOG}.{SCHEMA}.care_transitions
-
-joins:
-  - name: hospital
-    source: {CATALOG}.{SCHEMA}.hospitals
-    on: source.hospital_id = hospital.hospital_id
-
-dimensions:
-  - name: Discharge Month
-    expr: DATE_TRUNC('MONTH', discharge_date)
-  - name: Hospital Region
-    expr: hospital.region
-  - name: Transition Program Enrolled
-    expr: transition_program_enrolled
-  - name: Follow Up Within 7 Days
-    expr: follow_up_within_7_days
-
-measures:
-  - name: Transition Count
-    expr: COUNT(1)
-  - name: Follow Up Rate Pct
-    expr: COUNT(1) FILTER (WHERE follow_up_within_7_days = TRUE) * 100.0 / COUNT(1)
-  - name: Medication Reconciliation Rate Pct
-    expr: COUNT(1) FILTER (WHERE medication_reconciliation_completed = TRUE) * 100.0 / COUNT(1)
-  - name: Home Health Referral Count
-    expr: COUNT(1) FILTER (WHERE home_health_referral = TRUE)
-  - name: Average Outreach Attempts
-    expr: AVG(outreach_attempts)
-""",
-}
-
-for mv_name, yaml_body in metric_views.items():
-    ddl = (
-        f"CREATE OR REPLACE VIEW `{CATALOG}`.`{SCHEMA}`.`{mv_name}`\n"
-        "WITH METRICS\n"
-        "LANGUAGE YAML\n"
-        "AS $$"
-        + yaml_body
-        + "$$"
-    )
-    spark.sql(ddl)
-    print(f"  OK {mv_name}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 12. Register Constraints & Comments
-
-# COMMAND ----------
-
-# =============================================================================
-# REGISTER CONSTRAINTS AND COMMENTS
-# =============================================================================
-print("Registering constraints and comments...")
-
-PRIMARY_KEYS = {
-    "patients": "patient_id",
-    "hospitals": "hospital_id",
-    "encounters": "encounter_id",
-    "care_transitions": "transition_id",
-    "claims": "claim_id",
-    "readmissions": "readmission_id",
-}
-
-FOREIGN_KEYS = [
-    ("encounters", "patient_id", "patients", "patient_id"),
-    ("encounters", "hospital_id", "hospitals", "hospital_id"),
-    ("care_transitions", "encounter_id", "encounters", "encounter_id"),
-    ("care_transitions", "patient_id", "patients", "patient_id"),
-    ("care_transitions", "hospital_id", "hospitals", "hospital_id"),
-    ("claims", "encounter_id", "encounters", "encounter_id"),
-    ("claims", "patient_id", "patients", "patient_id"),
-    ("claims", "hospital_id", "hospitals", "hospital_id"),
-    ("readmissions", "index_encounter_id", "encounters", "encounter_id"),
-    ("readmissions", "patient_id", "patients", "patient_id"),
-    ("readmissions", "hospital_id", "hospitals", "hospital_id"),
-]
-
-for table, pk in PRIMARY_KEYS.items():
-    spark.sql(f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{pk}` SET NOT NULL")
-    spark.sql(f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT pk_{table} PRIMARY KEY (`{pk}`)")
-
-for table, col, ref_table, ref_col in FOREIGN_KEYS:
-    spark.sql(
-        f"ALTER TABLE {C}.`{table}` ADD CONSTRAINT fk_{table}_{col} "
-        f"FOREIGN KEY (`{col}`) REFERENCES {C}.`{ref_table}` (`{ref_col}`)"
-    )
-
-
-def sql_text(value):
-    return value.replace("'", "''")
-
-
-TABLE_COMMENTS = {
-    "patients": "Synthetic patient risk dimension using IDs only. Contains no patient names, DOBs, addresses, emails, or phone numbers.",
-    "hospitals": "Fictional hospital dimension with region, bed count, hospital type, and transition program flag.",
-    "encounters": "Index admission encounters from 2023-01-01 to 2025-12-31 with diagnosis, service line, discharge, and acuity attributes.",
-    "care_transitions": "One discharge transition row per encounter, including 7-day follow-up, medication reconciliation, and outreach actions.",
-    "claims": "Encounter-level claim facts with payer type, allowed amount, patient responsibility, and claim status.",
-    "readmissions": "30-day readmission facts linked to index encounters. CHF, COPD, missed follow-up, and weekend discharge increase risk.",
-}
-
-for table, comment in TABLE_COMMENTS.items():
-    spark.sql(f"COMMENT ON TABLE {C}.`{table}` IS '{sql_text(comment)}'")
-
-for table, df_pd in TABLES.items():
-    for column in df_pd.columns:
-        readable = column.replace("_", " ")
-        spark.sql(
-            f"ALTER TABLE {C}.`{table}` ALTER COLUMN `{column}` "
-            f"COMMENT '{sql_text(readable)} for the synthetic hospital readmission dataset'"
-        )
-
-print("  OK constraints and comments registered")
-
 print()
 print("=" * 60)
 print("SETUP COMPLETE")
@@ -801,5 +549,4 @@ print("=" * 60)
 print(f"  Catalog     : {CATALOG}")
 print(f"  Schema      : {SCHEMA}")
 print("  Tables      : patients, hospitals, encounters, care_transitions, claims, readmissions")
-print("  Metric Views: mv_readmission_quality, mv_claims_cost, mv_care_transitions")
 print("  Next    : Create a Genie space from these tables, or see notebooks/demo-data/README.md")
