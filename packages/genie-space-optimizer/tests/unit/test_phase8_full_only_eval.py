@@ -530,9 +530,9 @@ def test_unified_loop_preserves_no_hypothesis_details_after_retry(monkeypatch) -
     assert champions == [0]
     terminal_state = loop_states[-1]
     assert terminal_state["current_hypothesis"]["failure_stage"] == "llm_no_supported_patches"
-    assert terminal_state["decision_reason"] == (
-        "NO_NEW_HYPOTHESIS: LLM returned no supported patches"
-    )
+    assert "decision" not in terminal_state
+    assert "decision_reason" not in terminal_state
+    assert terminal_state["terminal_reason"] == "NO_NEW_HYPOTHESIS"
     assert terminal_state["do_not_repeat"][0]["stage"] == "llm_no_supported_patches"
 
 

@@ -1,4 +1,10 @@
-import type { GSOTerminalReason } from "@/types"
+import type { GSORunSummary, GSOTerminalReason } from "@/types"
+
+const ACTIVE_RUN_STATUSES = new Set(["IN_PROGRESS", "RUNNING", "QUEUED"])
+
+export function hasActiveOptimizationRun(runs: GSORunSummary[]): boolean {
+  return runs.some((run) => ACTIVE_RUN_STATUSES.has(run.status.toUpperCase()))
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers for the GSO v2 optimization history table (Phase 14, item 3).

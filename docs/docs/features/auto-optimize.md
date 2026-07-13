@@ -1,209 +1,145 @@
 ---
 sidebar_position: 3
-description: "Benchmark-driven optimization: a 6-task pipeline, 5 levers, 3 gates, and 9 judges."
+description: "Benchmark-driven Genie optimization with a four-task, auditable hill-climbing pipeline."
 ---
 
 # Auto-Optimize (GSO)
 
-Auto-Optimize is a benchmark-driven optimization pipeline that measures Genie Space accuracy, diagnoses failures, and iteratively applies metadata patches until quality thresholds are met. It is powered by the Genie Space Optimizer (GSO) engine — a separate Python package at `packages/genie-space-optimizer/`.
+Auto-Optimize measures a Genie Space against its benchmark corpus, diagnoses failures, and tests targeted configuration changes. It is powered by the Genie Space Optimizer package in `packages/genie-space-optimizer/`.
 
-## Overview
+Unlike the [IQ Scanner](/docs/features/iq-scanner), which produces an instant rule-based readiness score, Auto-Optimize runs a bounded optimization job against the live Space. Every attempt is evaluated, accepted only when accuracy improves, and persisted for audit.
 
-Unlike the [IQ Scanner](/docs/features/iq-scanner) (which produces instant rule-based findings), Auto-Optimize runs a **closed-loop pipeline**: it generates benchmarks, evaluates Genie's generated SQL against expected answers using specialized judges, identifies failure patterns, proposes and tests metadata changes, and only commits changes that pass multi-stage evaluation gates.
+## Four-task pipeline
 
-## The 6-Task Pipeline
-
-The optimization runs as a Databricks Lakeflow Job with six sequential tasks:
+The current Lakeflow Job is a linear four-task DAG:
 
 ```mermaid
 flowchart LR
-    p1["1 · Preflight"] --> p2["2 · Baseline Eval"]
-    p2 --> p3["3 · Enrichment"]
-    p3 --> p4["4 · Lever Loop"]
-    p4 --> p5["5 · Finalize"]
-    p5 --> p6["6 · Deploy"]
+    intake["1 · Intake & Snapshot"] --> qc["2 · Benchmark QC & Repair"]
+    qc --> optimize["3 · Optimize"]
+    optimize --> publish["4 · Publish & Audit"]
 ```
 
-### Task Details
+| # | Task | Responsibility |
+|---|------|----------------|
+| 1 | **Intake & Snapshot** | Validate the run envelope, retain the trigger-time rollback snapshot, and write the `run_manifest` artifact. |
+| 2 | **Benchmark QC & Repair** | Validate, repair, deduplicate, or prune benchmarks within a bounded retry budget, then persist `benchmark_qc`. |
+| 3 | **Optimize** | Apply low-risk Space quality enrichment, run the baseline evaluation, and execute the bounded patch/evaluation loop. |
+| 4 | **Publish & Audit** | Resolve the stamped terminal reason, mark the champion when eligible, generate a best-effort audit summary, capture postflight IQ, and write terminal run state. |
 
-| # | Task | Purpose | Key Actions |
-|---|------|---------|-------------|
-| 1 | **Preflight** | Validate prerequisites | Check SP permissions, verify benchmark questions, validate table access, ensure Prompt Registry is enabled |
-| 2 | **Baseline Evaluation** | Measure current accuracy | Run all benchmark questions through Genie, evaluate with 9 judges, establish baseline score |
-| 3 | **Enrichment** | Gather optimization context | Proactive metadata enrichment — profile tables, analyze query patterns, identify improvement opportunities |
-| 4 | **Lever Loop** | Iterative optimization | The core loop: RCA-ground failures → cluster → pick one action group (cluster + lever) → generate patches → safety gates → apply → re-evaluate → accept or roll back |
-| 5 | **Finalize** | Consolidate results | Merge accepted patches, validate final configuration, compute final accuracy |
-| 6 | **Deploy** | Apply to space | Optionally apply the optimized configuration to the live Genie Space |
+Each task receives the complete job parameter set and exchanges durable state through Delta by `run_id`. There is no notebook chaining or task-value handoff.
 
-## The Levers
+## Optimization loop
 
-Levers are the categories of metadata change the optimizer can apply. **Lever 0 (Proactive Enrichment)** always runs first — in the Enrichment task — and is not user-selectable. **Levers 1–6** are the adaptive levers the lever loop chooses from; they can be selected per run from the Optimize tab.
-
-| Lever | Name | Target | Examples |
-|-------|------|--------|----------|
-| **0** | Proactive Enrichment *(always-on)* | UC metadata the space doesn't yet inline | Table/column descriptions, glossary terms, UC tags — non-behavioral context only |
-| **1** | Tables & Columns | Table allowlist + per-column metadata | Add a table, add column synonyms/aliases, mark deprecated columns |
-| **2** | Metric Views | Governed metric definitions | Add or refine a metric view for a common aggregation |
-| **3** | Table-Valued Functions | Parameterized SQL patterns | Register a TVF for a recurring query shape |
-| **4** | Join Specifications | Table relationships | Add or correct a join spec / preferred join key |
-| **5** | Genie Space Instructions | Natural-language guidance | Add a domain term, routing rule, or guardrail to the instructions block |
-| **6** | SQL Expressions | Example SQL library | Add a worked example, replace a stale one |
-
-The lever loop's **strategist** analyzes current failure patterns and selects the lever most likely to address them.
-
-## The Lever Loop
-
-The heart of Auto-Optimize is an evidence-grounded iteration — **measure, diagnose, intervene, prove, learn** — that never changes the space on a hunch:
+The Optimize task uses a full-benchmark hill-climbing loop:
 
 ```mermaid
 flowchart LR
-    rca["Diagnose<br/>RCA-ground<br/>failing traces"] --> cl["Cluster<br/>group similar<br/>failures"]
-    cl --> ag["Intervene<br/>one action group<br/>(cluster + lever)"]
-    ag --> gate["Gate + Apply<br/>safety gates →<br/>patch the config"]
-    gate --> ev["Prove<br/>re-evaluate on<br/>the train set"]
-    ev --> acc["Accept / Rollback<br/>+ write a<br/>reflection"]
+    eval["Evaluate current config"] --> diagnose["Diagnose failures"]
+    diagnose --> propose["Propose one bounded patch set"]
+    propose --> safety["Validate & apply"]
+    safety --> prove["Run full evaluation"]
+    prove --> decision{"Accuracy improved?"}
+    decision -->|Yes| keep["Accept as best"]
+    decision -->|No| rollback["Rollback & record reflection"]
+    keep --> eval
+    rollback --> eval
 ```
 
-1. **Diagnose** — for every failing benchmark question, the optimizer builds a root-cause (RCA) ledger from the trace: the SQL Genie wrote, the judge verdicts, and the tables/joins it used.
-2. **Cluster** — failures sharing a root cause are grouped so one patch can fix a whole theme.
-3. **Intervene** — the strategist commits to exactly **one** action group per iteration (a cluster paired with a lever). One change at a time keeps cause and effect attributable.
-4. **Gate + apply** — proposed patches run the safety gates (below); survivors are applied to a candidate config, with a pre-iteration snapshot kept for rollback.
-5. **Prove** — the train benchmark is re-evaluated through the patched space with the same judge panel.
-6. **Accept / learn** — the acceptance rule (below) keeps or rolls back the change, and a reflection entry records what worked so the strategist won't repeat a dead end.
+Iteration 0 is the baseline. Later rows are patch attempts. A candidate is accepted only when its full-evaluation accuracy is strictly greater than the best accepted accuracy; otherwise its patches and iteration are marked rolled back and the live serialized configuration is restored.
 
-## Acceptance: did the score actually improve?
+The controller stores attempt mode, hypothesis, decision, decision reason, best accuracy, retry memory, terminal reason, and champion state on `genie_opt_iterations`. Terminal stamping adds the terminal reason without overwriting the attempt's existing accept/reject decision.
 
-Each iteration is kept or discarded by a single explicit rule (`decide_acceptance`): the **post-arbiter accuracy** of the patched space must beat the carried baseline by at least a gain floor.
+## Levers
 
-```
-accept if  candidate_accuracy ≥ baseline_accuracy + min_gain_pp
-```
+The strategist selects from the configured levers for each attempt:
 
-| Outcome | Condition |
-|---------|-----------|
-| `ACCEPTED` | Gain ≥ `min_gain_pp` and no regression |
-| `REJECTED_INSUFFICIENT_GAIN` | Score moved up by less than the floor |
-| `REJECTED_REGRESSION` | Score went down |
+| Lever | Area | Typical changes |
+|-------|------|-----------------|
+| 1 | Tables & columns | Table selection, column descriptions, synonyms, entity matching |
+| 2 | Metric views | Governed metric definitions and routing |
+| 3 | Table-valued functions | Parameterized query patterns |
+| 4 | Join specifications | Preferred relationships and join keys |
+| 5 | Instructions | Business vocabulary, routing rules, constraints, examples |
+| 6 | SQL expressions | Reusable filters, measures, expressions, and worked SQL |
 
-The gain floor is `MIN_POST_ARBITER_GAIN_PP` (env `GSO_MIN_POST_ARBITER_GAIN_PP`, default `0.0` — so any genuine positive gain is accepted). A rejected patch set is **rolled back** from its pre-iteration snapshot, and the strategist records a reflection entry so it doesn't retry the same approach.
+Before baseline evaluation, a narrow Space-quality phase may also fill low-risk curation gaps such as an empty top-level Space description or thin instructions. Its post-enrichment description is persisted separately because Genie stores `description` as Space metadata, outside `serialized_space`.
 
-## Safety Gates
+## Evaluation and leakage safety
 
-Before a proposed patch is ever applied, it must clear a pipeline of safety gates (`GATE_PIPELINE_ORDER`). Only survivors get applied and evaluated:
+Current runs use Genie's native benchmark evaluation surface and persist the official evaluation run identifiers, status, question counts, correctness counts, and needs-review counts. Headline accuracy is `num_correct / num_questions` for native evaluation rows.
 
-| Gate | What it checks |
-|------|----------------|
-| `intra_ag_dedup` | Collapses duplicate proposals within the action group |
-| `lever5_structural` | Rejects proposals with empty patch content (no `patch_text` / `value` / `new_text` / `example_sql`) |
-| `rca_groundedness` | The patch must carry an `rca_id` linking it to a clustered RCA finding — no guessing |
-| `blast_radius` | Caps how many distinct tables a single patch may touch (default 5) |
-| `content_fingerprint_dedup` | Drops patches whose content fingerprint was already rolled back |
-| `dead_on_arrival` | Drops no-op patches (they wouldn't change the config) and records their signature |
+Benchmark expected SQL is evaluation truth and must never become inference-visible configuration. The optimizer's leakage firewall blocks patches that copy or closely echo benchmark answer material into instructions, examples, descriptions, or other Space content.
 
-:::note
-`slice`, `p0`, `full`, `held_out`, and `enrichment` are evaluation **scopes**, not gates. The older slice + P0 pre-gates are disabled by default (`GSO_ENABLE_LEGACY_SLICE_P0_GATES=false`); acceptance is now decided by the single full-eval criterion above.
-:::
+## Terminal outcomes
 
-## The 9 Judges
+The loop stamps one of the typed reasons below. Publish & Audit uses that stamped reason and never re-derives it from accuracy.
 
-Every benchmark answer is scored by a panel of nine judges (`make_all_scorers` / `EXPECTED_JUDGE_SET`), each evaluating a different dimension of SQL correctness:
+| Terminal reason | Run status | Champion publish |
+|-----------------|------------|------------------|
+| `TARGET_REACHED` | `CONVERGED` | Yes |
+| `MAX_ATTEMPTS` | `MAX_ITERATIONS` | Yes |
+| `NO_NEW_HYPOTHESIS` | `STALLED` | No |
+| `EVAL_INVALID` | `FAILED` | No |
+| `EVAL_BUDGET_EXHAUSTED` | `STALLED` | No |
+| Missing or unknown | `STALLED` | No, fail closed |
 
-| Judge | Kind | What it evaluates |
-|-------|------|-------------------|
-| `syntax_validity` | code | The generated SQL is valid (passes `EXPLAIN`) |
-| `schema_accuracy` | LLM | References the correct tables, columns, and joins |
-| `logical_accuracy` | LLM | Correct aggregations, filters, GROUP BY / ORDER BY / WHERE |
-| `semantic_equivalence` | LLM | Measures the same thing as the expected SQL, even if written differently |
-| `completeness` | LLM | Fully answers the question (no missing dimensions/measures/filters) |
-| `response_quality` | LLM | Genie's natural-language explanation accurately describes the SQL and answer |
-| `asset_routing` | code | Genie used the correct asset type (metric view / TVF / table) |
-| `result_correctness` | code | Returned result set matches the expected result |
-| `arbiter` | LLM (conditional) | On a result mismatch, decides whether the ground-truth or Genie's SQL is correct |
+Publishing is an idempotent Delta champion mark. Accepted patches are already applied to the live Space by the loop; Publish & Audit does not replay them. Audit-summary generation and postflight IQ capture are soft-failing and cannot prevent the final status write.
 
-The panel is **3 deterministic code judges** (`syntax_validity`, `asset_routing`, `result_correctness`) plus **6 LLM judges**. The `arbiter` fires only when `result_correctness` flags a mismatch; after it adjudicates, the resulting **post-arbiter accuracy** is the single number the acceptance rule compares against the baseline. Two further judges (`repeatability`, `previous_sql`) are diagnostic-only and never drive acceptance.
+## History, revert, and discard
 
-Judge prompts are managed via **MLflow Prompt Registry**, providing version control and traceability for evaluation criteria.
+Optimization History exposes two different rollback contracts:
 
-## Finalize: generalization & repeatability
+- **Revert to champion/baseline** changes live Space configuration without changing the historical run status. It preserves the Space's current benchmark block so reverting history cannot roll benchmark ground truth backward. Champion reverts restore the captured post-enrichment description when available; legacy runs preserve the current description.
+- **Discard** restores the complete trigger-time snapshot, including the original benchmark block and top-level description, then marks the run `DISCARDED` only after rollback succeeds.
 
-A candidate that scores well on the questions it was tuned against might simply be overfit. The Finalize task guards against that before anything is promoted:
+Both paths snapshot live state before a two-part serialized-config/description mutation. If the description update fails after the serialized config succeeds, the optimizer attempts compensation and never reports success for the partial operation.
 
-- **Held-out generalization** — at preflight the benchmark is split, reserving ~15% (`HELD_OUT_RATIO = 0.15`) of questions that the lever loop **never sees**. Finalize evaluates the candidate against this held-out set; a large train-vs-held-out gap flags overfitting.
-- **Repeatability** — the candidate is re-run to confirm the score is stable rather than a lucky draw from LLM-graded variance.
-- **Champion promotion** — each accepted iteration is snapshotted as an MLflow **LoggedModel**; the best is promoted to the **`champion`** alias (`promote_best_model`). The Deploy task applies that champion config to the live space.
+History revert is disabled while any run for the same Space is active. The backend also reconciles all same-Space runs and returns a conflict if one remains `QUEUED`, `IN_PROGRESS`, or `RUNNING`.
 
-## Convergence
+## Permission model
 
-The lever loop terminates when one of three conditions is met:
+The app service principal owns optimizer Delta state and executes the Lakeflow Job. A history action therefore reads internal state with the SP, but separately authorizes the requesting OBO user against the target Genie Space. The user must have `CAN_EDIT` or `CAN_MANAGE`; the SP's broader access never substitutes for user authorization.
 
-| Status | Condition | Meaning |
-|--------|-----------|---------|
-| `CONVERGED` | Accuracy target reached (typically ≥ 85%) | Optimization succeeded |
-| `STALLED` | No improvement across consecutive iterations | Further optimization is unlikely |
-| `MAX_ITERATIONS` | Iteration limit reached (default 5) | Time-boxed stop |
+See [Authentication & Permissions](/docs/platform/authentication) for setup and required grants.
 
-The IQ Scanner checks for terminal GSO runs when evaluating checks 11 and 12. A `CONVERGED` run with `best_accuracy ≥ 85%` satisfies both checks.
+## Durable state
 
-## Data Persistence
-
-Auto-Optimize stores all state in **12 Delta tables** under `GSO_CATALOG.GSO_SCHEMA`:
+The main current-run sources of truth are:
 
 | Table | Contents |
 |-------|----------|
-| `genie_opt_runs` | Run metadata: status, accuracy, timestamps, config |
-| `genie_opt_iterations` | Per-iteration evaluation results |
-| `genie_opt_patches` | All patches generated (accepted and rejected) |
-| `genie_opt_suggestions` | Strategist suggestions per iteration |
-| `genie_opt_eval_results` | Detailed per-question evaluation results |
-| `genie_opt_asi_results` | ASI (judge) results per question per iteration |
-| `genie_opt_benchmarks` | Benchmark question definitions |
-| `genie_opt_enrichments` | Proactive enrichment data |
-| `genie_opt_lever_configs` | Lever configuration per run |
-| `genie_opt_space_snapshots` | Space config snapshots (before/after) |
-| `genie_opt_failure_clusters` | Failure pattern clusters |
-| `genie_opt_reflection` | Reflection buffer (what worked, what didn't) |
+| `genie_opt_runs` | Run envelope, trigger snapshot, status, champion pointer, terminal reason |
+| `genie_opt_stages` | Four-task and nested-stage timeline |
+| `genie_opt_iterations` | Baseline/attempt evaluation and controller state |
+| `genie_opt_patches` | Applied and rolled-back patch records |
+| `genie_opt_provenance` | Root-cause and proposal provenance |
+| `genie_eval_lever_loop_decisions` | Ordered safety and controller decisions |
+| `genie_opt_benchmark_mutations` | Benchmark QC additions, removals, and changes |
+| `genie_opt_artifacts` | `run_manifest`, `benchmark_qc`, `space_quality_enrichment`, and `publish_record` payloads |
+| `genie_opt_scan_snapshots` | Optional paired preflight/postflight IQ snapshots |
 
-The Workbench frontend reads this data through `backend/routers/auto_optimize.py`, which queries Lakebase synced tables (preferred) or falls back to direct Delta queries via the SP.
-
-## Permission Model
-
-The optimization job runs entirely as the app's **Service Principal** (SP). See [Authentication & Permissions](/docs/platform/authentication) for the full security model, including:
-
-- Why jobs can't use OBO
-- How user authorization is verified before job submission
-- What SP permissions are required
-
-## MLflow Integration
-
-- **Experiment tracking**: each optimization run is tracked as an MLflow experiment
-- **Prompt Registry**: judge prompts are versioned in MLflow Prompt Registry, enabling reproducible evaluations
-- **Configuration versioning**: each accepted iteration is snapshotted as an MLflow LoggedModel; the winning config is promoted to the **`champion`** alias and applied on deploy
-- **`MLFLOW_EXPERIMENT_ID`**: configured in `app.yaml`, validated at startup
-
-:::warning
-MLflow Prompt Registry must be enabled on the workspace. If disabled, the preflight task will fail with `FEATURE_DISABLED`.
-:::
+The Workbench prefers Lakebase synced reads for UI views and falls back to direct Delta reads where needed. Mutating integration paths use the configured SQL Warehouse and SP-owned state.
 
 ## Triggering from the UI
 
-Users trigger optimization from the **Optimize** tab in the Space Detail view:
+1. Open a Space and select **Optimize**.
+2. Configure levers, target accuracy, attempt budget, and model.
+3. Start the run. The UI submits `POST /api/auto-optimize/trigger` and polls the run status.
+4. Review the attempt ladder, question results, patches, benchmark QC, audit summary, and terminal outcome.
+5. Keep the accepted state, discard it to the trigger snapshot, or later use Optimization History to revert to a past champion or baseline.
 
-1. The UI calls `GET /api/auto-optimize/permissions/{space_id}` to pre-check SP access
-2. User configures options (apply mode, levers) and clicks "Optimize"
-3. `POST /api/auto-optimize/trigger` starts the job (see [trigger flow](/docs/platform/authentication#optimization-trigger-flow))
-4. The UI polls `GET /api/auto-optimize/runs/{run_id}/status` for progress
-5. On completion, the user can review patches and choose to apply or discard
+## Source files
 
-## Source Files
+- `packages/genie-space-optimizer/databricks.yml` — four-task job definition
+- `packages/genie-space-optimizer/src/genie_space_optimizer/jobs/` — task notebooks
+- `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py` — optimizer controller
+- `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/publish.py` — publish and audit
+- `packages/genie-space-optimizer/src/genie_space_optimizer/integration/` — trigger, apply, discard, and history revert
+- `backend/routers/auto_optimize.py` — Workbench API bridge
 
-- `packages/genie-space-optimizer/` — the GSO engine package
-- `backend/routers/auto_optimize.py` — 16 API endpoints for GSO management
-- `backend/services/gso_lakebase.py` — synced table reads
-- `backend/main.py` — `_ensure_gso_job_run_as()` startup hook
-- `databricks.yml` — job definition for the optimization DAG
+## Related documentation
 
-## Related Documentation
-
-- [Authentication & Permissions](/docs/platform/authentication) — SP-based execution model
-- [IQ Scanner](/docs/features/iq-scanner) — checks 11–12 evaluate optimization results
-- [Operations Guide](/docs/platform/operations) — managing the GSO job
+- [Authentication & Permissions](/docs/platform/authentication)
+- [IQ Scanner](/docs/features/iq-scanner)
+- [Operations Guide](/docs/platform/operations)

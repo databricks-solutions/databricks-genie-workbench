@@ -1788,15 +1788,14 @@ def _stamp_terminal(
     schema: str,
     current_hypothesis: dict[str, Any] | None = None,
     do_not_repeat: list[dict[str, Any]] | None = None,
-    decision_reason: str | None = None,
 ) -> None:
     loop_state = _loop_state(
         attempt_no=iteration,
         attempt_mode="baseline" if iteration == 0 else "llm_patch",
         best_accuracy=best_accuracy,
         current_hypothesis=current_hypothesis,
-        decision="terminal",
-        decision_reason=decision_reason or reason,
+        decision=None,
+        decision_reason=None,
         surgical_attempts_used=surgical_attempts_used,
         target_accuracy=target_accuracy,
         max_attempts=max_attempts,
@@ -1808,6 +1807,10 @@ def _stamp_terminal(
         loop_state.pop("current_hypothesis", None)
     if do_not_repeat is None:
         loop_state.pop("do_not_repeat", None)
+    # Terminal stamping annotates the winning attempt. Its already-persisted
+    # accept/reject decision and rationale remain the attempt-level truth.
+    loop_state.pop("decision", None)
+    loop_state.pop("decision_reason", None)
     update_iteration_loop_state(
         spark,
         run_id,
@@ -1998,7 +2001,6 @@ def run_unified_optimization_loop(
     levers_rolled_back: list[int] = []
     terminal_reason: str | None = None
     last_failed_hypothesis: dict[str, Any] | None = None
-    last_terminal_detail = ""
     # Patch types banned for the rest of the run after a benchmark-leak wipeout
     # (Fix #1). Threaded into every subsequent proposal so the LLM cannot repeat
     # the leaking family.
@@ -2052,7 +2054,6 @@ def run_unified_optimization_loop(
                 )
                 reflections.append(reflection)
                 last_failed_hypothesis = hypothesis
-                last_terminal_detail = "LLM returned no supported patches"
                 retry_budget = _proposal_retry_budget(
                     leak_pivot_available=leak_pivot_available
                 )
@@ -2118,9 +2119,6 @@ def run_unified_optimization_loop(
                     **hypothesis,
                     "failure_stage": "preapply_lost_structured_intent",
                 }
-                last_terminal_detail = (
-                    "structured direct-fit patches were rejected before apply"
-                )
                 if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
                     proposal_retries += 1
                     continue
@@ -2151,7 +2149,6 @@ def run_unified_optimization_loop(
                 )
                 reflections.append(reflection)
                 last_failed_hypothesis = hypothesis
-                last_terminal_detail = "all proposed patches were rejected before apply"
                 # Fix #2: don't terminate at iteration 0 when a benchmark-leak
                 # wipeout still leaves a non-leaking patch family to pivot to —
                 # grant the wider pivot retry budget so the LLM can switch levers.
@@ -2197,10 +2194,6 @@ def run_unified_optimization_loop(
                 )
                 reflections.append(reflection)
                 last_failed_hypothesis = hypothesis
-                last_terminal_detail = (
-                    str(apply_log.get("patch_error") or "")
-                    or "applier deployed no patches"
-                )
                 if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
                     proposal_retries += 1
                     continue
@@ -2444,11 +2437,6 @@ def run_unified_optimization_loop(
         ),
         do_not_repeat=(
             reflections[-5:] if terminal_reason == "NO_NEW_HYPOTHESIS" else None
-        ),
-        decision_reason=(
-            f"{terminal_reason}: {last_terminal_detail}"
-            if terminal_reason == "NO_NEW_HYPOTHESIS" and last_terminal_detail
-            else terminal_reason
         ),
     )
 

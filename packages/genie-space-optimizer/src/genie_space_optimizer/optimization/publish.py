@@ -60,6 +60,7 @@ from genie_space_optimizer.optimization.evaluation import (
 )
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.models import promote_best_model
+from genie_space_optimizer.optimization.scan_snapshots import run_postflight_scan
 from genie_space_optimizer.optimization.state import (
     load_all_scored_iterations,
     load_patches,
@@ -954,6 +955,19 @@ def publish_and_audit(
         stage_name="PUBLISH_AND_AUDIT",
         iteration=champion_iteration,
         source_notebook=source_notebook,
+    )
+
+    # Capture final IQ state while the run is still non-terminal. The hook is
+    # soft-failing, so scan/API/persistence issues never block the authoritative
+    # terminal status update immediately below.
+    run_postflight_scan(
+        w,
+        spark,
+        run_id,
+        space_id,
+        catalog,
+        schema,
+        best_accuracy=champion_accuracy,
     )
 
     # Reuse an existing terminal status (arch §13.3 — PUBLISHED_AUDITED is NOT

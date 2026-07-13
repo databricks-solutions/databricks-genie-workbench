@@ -106,6 +106,7 @@ def _run_publish_and_audit(
     llm_raises: bool = False,
     promoted_iteration: int = 2,
     refreshed_best_accuracy: float | None = None,
+    events: list[str] | None = None,
 ):
     """Invoke ``publish_and_audit`` with all Delta/LLM deps patched.
 
@@ -123,10 +124,19 @@ def _run_publish_and_audit(
 
     def _fake_write_artifact(spark, run_id, kind, payload, **kwargs):  # noqa: ANN001
         artifact_calls.append({"kind": kind, "payload": payload, "kwargs": kwargs})
+        if events is not None:
+            events.append("artifact")
         return "artifact-1"
 
     def _fake_update_run_status(spark, run_id, catalog, schema, **kwargs):  # noqa: ANN001
         update_calls.append(kwargs)
+        if events is not None:
+            events.append("terminal_update")
+
+    def _fake_postflight(*args, **kwargs):  # noqa: ANN001
+        if events is not None:
+            events.append("postflight")
+        return True
 
     promote_mock = MagicMock(return_value=promoted_iteration)
 
@@ -150,6 +160,7 @@ def _run_publish_and_audit(
         patch.object(P, "load_provenance", return_value=_provenance_df()),
         patch.object(P, "promote_best_model", promote_mock),
         patch.object(P, "write_artifact", _fake_write_artifact),
+        patch.object(P, "run_postflight_scan", _fake_postflight),
         patch.object(P, "update_run_status", _fake_update_run_status),
         patch.object(P, "call_llm", llm_mock),
     ):
@@ -159,6 +170,17 @@ def _run_publish_and_audit(
             target_accuracy=90.0, max_attempts=3,
         )
     return result, artifact_calls, update_calls, promote_mock, llm_mock
+
+
+def test_postflight_scan_runs_immediately_before_terminal_status_update():
+    events: list[str] = []
+
+    _run_publish_and_audit(
+        scored_iters=_full_iters(champion_reason="TARGET_REACHED"),
+        events=events,
+    )
+
+    assert events[-2:] == ["postflight", "terminal_update"]
 
 
 # ── (i) gating-reason publish path ──────────────────────────────────────────

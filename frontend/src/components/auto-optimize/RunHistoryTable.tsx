@@ -11,7 +11,11 @@ import {
   TableCell,
 } from "@/components/ui/table"
 import { getAutoOptimizeRunsForSpace, revertAutoOptimizeRun, ApiError } from "@/lib/api"
-import { championAccuracyText, humanizeTerminalReason } from "@/components/auto-optimize/runHistory"
+import {
+  championAccuracyText,
+  hasActiveOptimizationRun,
+  humanizeTerminalReason,
+} from "@/components/auto-optimize/runHistory"
 import type { GSORunSummary } from "@/types"
 
 interface RunHistoryTableProps {
@@ -35,11 +39,10 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
 // Revert is a live-space mutation — only offer it on runs that are no longer
 // mutating the space. Reverting to a still-running run's snapshot would race
 // the active pipeline (and the backend refuses it with a 409 anyway).
-const NON_TERMINAL_STATUSES = new Set(["IN_PROGRESS", "RUNNING", "QUEUED"])
-
 export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) {
   const [runs, setRuns] = useState<GSORunSummary[]>([])
   const [loading, setLoading] = useState(true)
+  const hasActiveRun = hasActiveOptimizationRun(runs)
 
   useEffect(() => {
     let cancelled = false
@@ -138,6 +141,7 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                           <RevertButton
                             run={run}
                             target="champion"
+                            disabled={hasActiveRun}
                             onReverted={refreshRuns}
                           />
                         )}
@@ -148,6 +152,7 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                           <RevertButton
                             run={run}
                             target="baseline"
+                            disabled={hasActiveRun}
                             onReverted={refreshRuns}
                           />
                         )}
@@ -202,6 +207,7 @@ const REVERT_ICON: Record<RevertTarget, React.ReactNode> = {
 interface RevertButtonProps {
   run: GSORunSummary
   target: RevertTarget
+  disabled: boolean
   onReverted: () => void
 }
 
@@ -210,15 +216,14 @@ interface RevertButtonProps {
  * run's champion config (``target="champion"``) or its pre-run baseline
  * (``target="baseline"``) via ``POST /auto-optimize/runs/{id}/revert?target=``.
  * Destructive (it overwrites the live space config), so it's gated behind an
- * inline confirm and disabled for non-terminal runs.
+ * inline confirm and disabled whenever any run for the Space is active.
  */
-function RevertButton({ run, target, onReverted }: RevertButtonProps) {
+export function RevertButton({ run, target, disabled, onReverted }: RevertButtonProps) {
   const [phase, setPhase] = useState<RevertPhase>("idle")
   const [error, setError] = useState<string | null>(null)
 
-  const disabled = NON_TERMINAL_STATUSES.has(run.status)
-
   async function doRevert() {
+    if (disabled) return
     setPhase("pending")
     setError(null)
     try {
@@ -254,7 +259,8 @@ function RevertButton({ run, target, onReverted }: RevertButtonProps) {
       <span className="flex flex-col items-start gap-0.5">
         <button
           onClick={() => setPhase("confirming")}
-          className="flex items-center gap-1 text-xs text-accent hover:underline"
+          disabled={disabled}
+          className="flex items-center gap-1 text-xs text-accent hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
         >
           {REVERT_ICON[target]}
           {REVERT_LABEL[target]}
@@ -285,7 +291,8 @@ function RevertButton({ run, target, onReverted }: RevertButtonProps) {
         <span className="text-xs text-muted">{REVERT_CONFIRM[target]}</span>
         <button
           onClick={doRevert}
-          className="flex items-center gap-1 rounded-md bg-red-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-red-700"
+          disabled={disabled}
+          className="flex items-center gap-1 rounded-md bg-red-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <RotateCcw className="h-3 w-3" />
           Yes
@@ -310,7 +317,7 @@ function RevertButton({ run, target, onReverted }: RevertButtonProps) {
       disabled={disabled}
       title={
         disabled
-          ? `Wait for this run to finish before reverting to its ${target} configuration.`
+          ? `Wait for the active optimization on this Space to finish before reverting history.`
           : REVERT_HINT[target]
       }
       className="flex items-center gap-1 text-xs text-accent hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
