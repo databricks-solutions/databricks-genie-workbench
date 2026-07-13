@@ -44,6 +44,7 @@ _LOOP_STATE_COLUMNS = (
 _ARTIFACT_KINDS = (
     "run_manifest",
     "benchmark_qc",
+    "space_quality_enrichment",
     "publish_record",
 )
 

@@ -561,6 +561,49 @@ def test_rollback_errors_without_pre_snapshot():
     assert result["status"] == "error"
 
 
+def test_rollback_compensates_config_when_description_restore_fails():
+    """A two-part discard rollback never reports success after partial apply."""
+    from genie_space_optimizer.optimization import applier as applier_mod
+
+    target = {
+        "description": "Original description",
+        "_parsed_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+            "instructions": {"text_instructions": [{"content": "original"}]},
+        },
+    }
+    live = {
+        "description": "Current description",
+        "_parsed_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+            "instructions": {"text_instructions": [{"content": "current"}]},
+        },
+    }
+    metadata = {"unchanged": True}
+
+    with patch.object(applier_mod, "fetch_space_config", return_value=live), \
+         patch.object(applier_mod, "patch_space_config") as patch_config, \
+         patch.object(
+             applier_mod,
+             "update_space_description",
+             side_effect=[RuntimeError("description failed"), None],
+         ) as update_description:
+        result = applier_mod.rollback(
+            {"pre_snapshot": target}, MagicMock(), "space-1", metadata,
+        )
+
+    assert result["status"] == "error"
+    assert patch_config.call_count == 2
+    assert patch_config.call_args_list[0].args[2] == target
+    assert patch_config.call_args_list[1].args[2] == live
+    assert [call.args[2] for call in update_description.call_args_list] == [
+        "Original description", "Current description",
+    ]
+    assert metadata == {"unchanged": True}
+
+
 def test_discard_reverts_from_runs_config_snapshot_unchanged():
     """Discard still reads genie_opt_runs.config_snapshot and re-PATCHes it via
     applier.rollback; Phase 4's per-iteration config_json/is_champion are not in
@@ -581,17 +624,27 @@ def test_discard_reverts_from_runs_config_snapshot_unchanged():
 
     rollback_calls: list = []
     exec_sql: list = []
+    ws = MagicMock(name="obo_ws")
+    sp_ws = MagicMock(name="sp_ws")
+
+    def _record_rollback(*args, **kwargs):
+        rollback_calls.append((args, kwargs))
+        return {"status": "SUCCESS", "errors": []}
+
+    load_run_mock = MagicMock(return_value=run_row)
 
     cfg = IntegrationConfig(catalog="cat", schema_name="sch", warehouse_id="wh1")
 
-    with patch.object(discard_mod, "wh_load_run", return_value=run_row), \
+    with patch.object(discard_mod, "wh_load_run", load_run_mock), \
          patch.object(discard_mod, "sql_warehouse_execute",
                       side_effect=lambda *a, **k: exec_sql.append(a)), \
          patch.object(discard_mod, "_pick_genie_client", return_value=MagicMock()), \
          patch.object(applier_mod, "rollback",
-                      side_effect=lambda *a, **k: rollback_calls.append((a, k))):
+                      side_effect=_record_rollback), \
+         patch("genie_space_optimizer.common.genie_client.user_can_edit_space",
+               return_value=True):
         result = discard_mod.discard_optimization(
-            "run-d", MagicMock(), MagicMock(), cfg,
+            "run-d", ws, sp_ws, cfg,
         )
 
     assert result.status == "discarded"
@@ -605,3 +658,40 @@ def test_discard_reverts_from_runs_config_snapshot_unchanged():
     update_sql = " ".join(str(a) for call in exec_sql for a in call)
     assert "DISCARDED" in update_sql
     assert "genie_opt_runs" in update_sql
+    assert load_run_mock.call_args.args[0] is sp_ws
+    assert exec_sql[0][0] is sp_ws
+
+
+def test_discard_does_not_mark_run_when_rollback_fails():
+    from genie_space_optimizer.integration import discard as discard_mod
+    from genie_space_optimizer.integration.config import IntegrationConfig
+    from genie_space_optimizer.optimization import applier as applier_mod
+
+    cfg = IntegrationConfig(catalog="cat", schema_name="sch", warehouse_id="wh1")
+    run_row = {
+        "status": "CONVERGED",
+        "space_id": "space-1",
+        "config_snapshot": json.dumps({
+            "version": 2,
+            "data_sources": {"tables": []},
+        }),
+    }
+
+    with patch.object(discard_mod, "wh_load_run", return_value=run_row), \
+         patch.object(discard_mod, "sql_warehouse_execute") as execute, \
+         patch.object(discard_mod, "_pick_genie_client", return_value=MagicMock()), \
+         patch.object(
+             applier_mod,
+             "rollback",
+             return_value={"status": "error", "errors": ["description failed"]},
+         ), \
+         patch(
+             "genie_space_optimizer.common.genie_client.user_can_edit_space",
+             return_value=True,
+         ):
+        with pytest.raises(RuntimeError, match="rollback failed"):
+            discard_mod.discard_optimization(
+                "run-d", MagicMock(), MagicMock(), cfg,
+            )
+
+    execute.assert_not_called()

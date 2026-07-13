@@ -47,7 +47,9 @@ def discard_optimization(
     Raises:
         ValueError: If the run is not found or already in a terminal state.
     """
-    run_data = wh_load_run(ws, config.warehouse_id, run_id, config.catalog, config.schema_name)
+    run_data = wh_load_run(
+        sp_ws, config.warehouse_id, run_id, config.catalog, config.schema_name,
+    )
     if not run_data:
         raise ValueError(f"Run not found: {run_id}")
 
@@ -56,6 +58,16 @@ def discard_optimization(
         raise ValueError(f"Run already {status.lower()}.")
 
     space_id = run_data.get("space_id", "")
+    if not space_id:
+        raise ValueError("Run has no space_id; cannot roll back the Genie Space.")
+    from genie_space_optimizer.common.genie_client import user_can_edit_space
+
+    if not user_can_edit_space(ws, str(space_id), acl_client=sp_ws):
+        raise PermissionError(
+            "You need CAN_EDIT or CAN_MANAGE permission on this Genie Space "
+            "to discard optimization changes."
+        )
+
     original_snapshot = run_data.get("config_snapshot")
     if isinstance(original_snapshot, str):
         try:
@@ -63,15 +75,25 @@ def discard_optimization(
         except (json.JSONDecodeError, TypeError):
             original_snapshot = {}
 
-    if original_snapshot and isinstance(original_snapshot, dict):
-        from genie_space_optimizer.optimization.applier import rollback
+    if not original_snapshot or not isinstance(original_snapshot, dict):
+        raise ValueError(
+            "This run has no pre-optimization snapshot; it cannot be safely discarded."
+        )
 
-        apply_log = {"pre_snapshot": original_snapshot}
-        client = _pick_genie_client(ws, sp_ws)
-        rollback(apply_log, client, space_id)
+    from genie_space_optimizer.optimization.applier import rollback
+
+    apply_log = {"pre_snapshot": original_snapshot}
+    client = _pick_genie_client(ws, sp_ws)
+    rollback_result = rollback(apply_log, client, space_id)
+    if str(rollback_result.get("status") or "").upper() != "SUCCESS":
+        errors = rollback_result.get("errors") or ["unknown rollback failure"]
+        raise RuntimeError(
+            "Optimization was not discarded because rollback failed: "
+            + "; ".join(str(error) for error in errors)
+        )
 
     sql_warehouse_execute(
-        ws,
+        sp_ws,
         config.warehouse_id,
         f"UPDATE {config.catalog}.{config.schema_name}.genie_opt_runs "
         f"SET status = 'DISCARDED', "

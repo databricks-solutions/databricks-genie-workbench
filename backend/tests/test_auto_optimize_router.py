@@ -1831,6 +1831,24 @@ def test_revert_run_returns_409_for_value_error(client, monkeypatch, mock_sp_ws,
     assert "in progress" in resp.json()["detail"].lower()
 
 
+def test_revert_run_returns_403_for_permission_error(
+    client, monkeypatch, mock_sp_ws, mock_user_ws,
+) -> None:
+    """An OBO caller without CAN_EDIT/CAN_MANAGE cannot use the SP to mutate."""
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+
+    def _raise(*args, **kwargs):
+        raise PermissionError("You need CAN_EDIT or CAN_MANAGE permission.")
+
+    monkeypatch.setattr(auto_optimize, "revert_optimization", _raise)
+    resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert")
+
+    assert resp.status_code == 403
+    assert "can_edit" in resp.json()["detail"].lower()
+
+
 def test_revert_run_returns_422_for_runtime_error(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
     """A failed Genie PATCH rollback surfaces as a 422 (unprocessable)."""
     run_id = "12345678-1234-1234-1234-1234567890ab"

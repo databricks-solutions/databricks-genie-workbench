@@ -25,7 +25,11 @@ from genie_space_optimizer.optimization.applier import (
     _set_general_instructions,
     validate_instruction_text,
 )
-from genie_space_optimizer.optimization.state import write_patch, write_stage
+from genie_space_optimizer.optimization.state import (
+    write_artifact,
+    write_patch,
+    write_stage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +139,9 @@ def run_space_quality_enrichment(
         msg = f"iq_scan_before_failed:{type(exc).__name__}"
         logger.warning("Space quality enrichment: initial IQ Scan failed", exc_info=True)
         result.errors.append(msg)
+        _write_description_artifact(
+            spark, run_id, working_raw, catalog=catalog, schema=schema,
+        )
         return result
 
     write_stage(
@@ -160,6 +167,9 @@ def run_space_quality_enrichment(
             detail=_stage_detail(result),
             catalog=catalog,
             schema=schema,
+        )
+        _write_description_artifact(
+            spark, run_id, working_raw, catalog=catalog, schema=schema,
         )
         return result
 
@@ -202,7 +212,14 @@ def run_space_quality_enrichment(
         result.applied_count = patch_index
         if result.applied_count:
             try:
-                working_raw = fetch_space_config(w, space_id)
+                refreshed_raw = fetch_space_config(w, space_id)
+                # The description PATCH already succeeded and the local raw
+                # snapshot carries its exact value. Keep it authoritative if a
+                # read-after-write response is stale while refreshing the
+                # serialized-space portion.
+                if "description" in working_raw:
+                    refreshed_raw["description"] = working_raw["description"]
+                working_raw = refreshed_raw
                 parsed = parsed_space_from_config(working_raw)
             except Exception:
                 logger.warning(
@@ -237,6 +254,9 @@ def run_space_quality_enrichment(
             catalog=catalog,
             schema=schema,
         )
+        _write_description_artifact(
+            spark, run_id, working_raw, catalog=catalog, schema=schema,
+        )
         return result
 
     except Exception as exc:  # pragma: no cover - defensive non-fatal boundary
@@ -252,7 +272,41 @@ def run_space_quality_enrichment(
             schema=schema,
         )
         result.current_config = attach_top_level_description(parsed, working_raw)
+        _write_description_artifact(
+            spark, run_id, working_raw, catalog=catalog, schema=schema,
+        )
         return result
+
+
+def _write_description_artifact(
+    spark: Any,
+    run_id: str,
+    raw_config: dict[str, Any] | None,
+    *,
+    catalog: str,
+    schema: str,
+) -> None:
+    """Persist exact post-enrichment description metadata for history revert."""
+    present = isinstance(raw_config, dict) and "description" in raw_config
+    value = raw_config.get("description") if present and raw_config is not None else None
+    if isinstance(value, list):
+        description = " ".join(str(item) for item in value if item is not None)
+    else:
+        description = "" if value is None else str(value)
+    write_artifact(
+        spark,
+        run_id,
+        "space_quality_enrichment",
+        {
+            "description_present": present,
+            "description": description,
+        },
+        catalog=catalog,
+        schema=schema,
+        stage_name=_STAGE,
+        iteration=0,
+        source_notebook="run_optimize.py",
+    )
 
 
 def _check(scan_result: dict[str, Any] | None, check_id: int) -> dict[str, Any]:

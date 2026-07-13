@@ -4539,11 +4539,21 @@ def rollback(
 
     restored = copy.deepcopy(pre_snapshot)
 
-    if metadata_snapshot is not None:
-        metadata_snapshot.clear()
-        metadata_snapshot.update(restored)
-
     if w is not None:
+        has_description = isinstance(restored, dict) and "description" in restored
+        live_snapshot: dict | None = None
+        if has_description:
+            try:
+                live_snapshot = fetch_space_config(w, space_id)
+            except Exception:
+                logger.exception("Failed to capture live state before rollback")
+                return {
+                    "status": "error",
+                    "executed_count": 0,
+                    "errors": ["Failed to capture live state before rollback"],
+                    "restored_config": restored,
+                }
+
         try:
             patch_space_config(w, space_id, restored)
         except Exception:
@@ -4554,6 +4564,56 @@ def rollback(
                 "errors": ["Failed to apply rollback via API"],
                 "restored_config": restored,
             }
+
+        if has_description:
+            target_description = restored.get("description")
+            if isinstance(target_description, list):
+                target_description = " ".join(
+                    str(item) for item in target_description if item is not None
+                )
+            else:
+                target_description = "" if target_description is None else str(target_description)
+            try:
+                update_space_description(w, space_id, target_description)
+            except Exception:
+                logger.exception(
+                    "Failed to PATCH rollback description; compensating live state"
+                )
+                compensation_errors: list[str] = []
+                if live_snapshot is not None:
+                    try:
+                        patch_space_config(w, space_id, live_snapshot)
+                    except Exception as exc:
+                        compensation_errors.append(
+                            f"serialized_space compensation failed: {exc}"
+                        )
+                    try:
+                        live_description = live_snapshot.get("description")
+                        if isinstance(live_description, list):
+                            live_description = " ".join(
+                                str(item) for item in live_description if item is not None
+                            )
+                        else:
+                            live_description = (
+                                "" if live_description is None else str(live_description)
+                            )
+                        update_space_description(w, space_id, live_description)
+                    except Exception as exc:
+                        compensation_errors.append(
+                            f"description compensation failed: {exc}"
+                        )
+                errors = ["Failed to apply rollback description via API"]
+                errors.extend(compensation_errors)
+                return {
+                    "status": "error",
+                    "executed_count": 0,
+                    "errors": errors,
+                    "restored_config": restored,
+                }
+
+    if metadata_snapshot is not None:
+        metadata_snapshot.clear()
+        metadata_snapshot.update(restored)
 
     commands = apply_log.get("rollback_commands", [])
     return {

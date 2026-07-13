@@ -10,7 +10,7 @@ The main sources of truth live under `<LOG_CATALOG>.<LOG_SCHEMA>`.
 |---|---|---|
 | `INTAKE_AND_SNAPSHOT` | `genie_opt_runs`, `genie_opt_artifacts` (`run_manifest`), `genie_opt_stages` | original snapshot, job/run metadata, warehouse id, config contract |
 | `BENCHMARK_QC_AND_REPAIR` | `genie_opt_artifacts` (`benchmark_qc`), `genie_opt_benchmark_mutations`, `genie_opt_stages` | benchmark validation, repair/prune attempts, live benchmark push |
-| `OPTIMIZE` | `genie_opt_iterations`, `genie_opt_patches`, `genie_eval_lever_loop_decisions`, `genie_opt_provenance`, `genie_opt_stages` | baseline / enrichment evals, lever-loop decisions, root cause, terminal reason |
+| `OPTIMIZE` | `genie_opt_iterations`, `genie_opt_patches`, `genie_eval_lever_loop_decisions`, `genie_opt_provenance`, `genie_opt_artifacts` (`space_quality_enrichment`), `genie_opt_stages` | baseline / enrichment evals, lever-loop decisions, root cause, description metadata, terminal reason |
 | `PUBLISH_AND_AUDIT` | `genie_opt_artifacts` (`publish_record`), `genie_opt_runs`, `genie_opt_stages` | publish decision, audit summary, final status, concerns |
 
 Older 6-notebook tables are retired. Only consult them for legacy installs.
@@ -82,7 +82,7 @@ WHERE space_id = '<SPACE_ID>'
 - `config_snapshot` - the rollback anchor captured at trigger time.
 - `human_corrections_json` - carry-forward human feedback, if any.
 
-If `config_snapshot` is missing, the run violated the trigger-time snapshot contract and later revert logic will fall back to a live fetch.
+If `config_snapshot` is missing, the run violated the trigger-time snapshot contract. Baseline revert and discard fail closed because there is no trustworthy rollback anchor.
 
 ## Step 2: Get The Current Task Timeline
 
@@ -119,7 +119,7 @@ WHERE run_id = '<RUN_ID>'
 ORDER BY created_at
 ```
 
-**Reasoning:** `genie_opt_stages` is the chronological timeline, while `genie_opt_artifacts` stores the run manifest, benchmark QC payload, and publish record.
+**Reasoning:** `genie_opt_stages` is the chronological timeline, while `genie_opt_artifacts` stores the run manifest, benchmark QC payload, post-enrichment Space description metadata, and publish record.
 
 **Current labels to expect:**
 - Top-level task labels: `INTAKE_AND_SNAPSHOT`, `BENCHMARK_QC_AND_REPAIR`, `OPTIMIZE`, `PUBLISH_AND_AUDIT`.

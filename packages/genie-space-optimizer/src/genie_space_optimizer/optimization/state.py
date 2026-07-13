@@ -1750,6 +1750,7 @@ def write_benchmark_mutations(
 ARTIFACT_KINDS: tuple[str, ...] = (
     "run_manifest",
     "benchmark_qc",
+    "space_quality_enrichment",
     "publish_record",
 )
 
@@ -1770,7 +1771,7 @@ def write_artifact(
     """Append one stage-level handoff blob to ``genie_opt_artifacts`` (arch §7.1).
 
     ``artifact_kind`` must be one of ``ARTIFACT_KINDS`` (run_manifest,
-    benchmark_qc, publish_record). ``payload`` is
+    benchmark_qc, space_quality_enrichment, publish_record). ``payload`` is
     JSON-serialized into ``artifact_json``; a ``content_hash`` is computed for
     dedupe / replay safety. Returns the generated ``artifact_id`` (or ``None``
     on a swallowed write failure — best-effort, never aborts the notebook).

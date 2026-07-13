@@ -1931,8 +1931,12 @@ async def discard_run(run_id: RunId):
     try:
         result = discard_optimization(run_id, ws, sp_ws, config)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception("Failed to discard optimization %s: %s", run_id, e)
         raise HTTPException(status_code=500, detail="Failed to discard optimization.")
@@ -1971,6 +1975,8 @@ async def revert_run(
     try:
         result = revert_optimization(run_id, ws, sp_ws, config, target=target)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except RuntimeError as e:

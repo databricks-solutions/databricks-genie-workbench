@@ -26,6 +26,19 @@ from genie_space_optimizer.integration import revert
 from genie_space_optimizer.integration.config import IntegrationConfig
 
 
+_REAL_ASSERT_NO_ACTIVE_SPACE_RUNS = revert._assert_no_active_space_runs
+
+
+@pytest.fixture(autouse=True)
+def _default_revert_guards(monkeypatch) -> None:
+    """Existing target-selection tests run behind successful auth/race guards."""
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.genie_client.user_can_edit_space",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(revert, "_assert_no_active_space_runs", lambda **kwargs: None)
+
+
 # ── Fixtures ────────────────────────────────────────────────────────────
 
 
@@ -422,3 +435,168 @@ def test_revert_promotes_validation_failure_to_runtime_error(monkeypatch) -> Non
 
     with pytest.raises(RuntimeError, match="invalid"):
         revert.revert_optimization("r8", ws, sp_ws, cfg, target="champion")
+
+
+def test_revert_reads_state_with_sp_and_requires_obo_edit_permission(monkeypatch) -> None:
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    run = {"run_id": "r-auth", "space_id": "space-auth", "status": "CONVERGED"}
+    load_run = MagicMock(return_value=run)
+    can_edit = MagicMock(return_value=False)
+    monkeypatch.setattr(revert, "wh_load_run", load_run)
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.genie_client.user_can_edit_space", can_edit,
+    )
+
+    with pytest.raises(PermissionError, match="CAN_EDIT"):
+        revert.revert_optimization("r-auth", ws, sp_ws, cfg, target="baseline")
+
+    assert load_run.call_args.args[0] is sp_ws
+    can_edit.assert_called_once_with(ws, "space-auth", acl_client=sp_ws)
+
+
+def test_revert_refuses_when_a_different_run_for_space_is_active(monkeypatch) -> None:
+    cfg = _config()
+    sp_ws = MagicMock(name="sp_ws")
+    runs = pd.DataFrame([
+        {"run_id": "history-run", "status": "CONVERGED"},
+        {"run_id": "new-run", "status": "IN_PROGRESS"},
+    ])
+    query = MagicMock(return_value=runs)
+    reconcile = MagicMock(return_value=False)
+    monkeypatch.setattr(revert, "sql_warehouse_query", query)
+    monkeypatch.setattr(revert, "wh_reconcile_active_runs", reconcile)
+
+    with pytest.raises(ValueError, match="new-run"):
+        _REAL_ASSERT_NO_ACTIVE_SPACE_RUNS(
+            space_id="space-1", sp_ws=sp_ws, config=cfg,
+        )
+
+    assert query.call_args.args[0] is sp_ws
+    assert "WHERE space_id = 'space-1'" in query.call_args.args[2]
+    assert reconcile.call_args.args[0] is sp_ws
+    assert reconcile.call_args.args[1] is sp_ws
+
+
+def test_revert_fails_closed_when_active_run_state_cannot_be_reconciled(monkeypatch) -> None:
+    cfg = _config()
+    sp_ws = MagicMock(name="sp_ws")
+    before = pd.DataFrame([{"run_id": "uncertain-run", "status": "IN_PROGRESS"}])
+    after = pd.DataFrame([{
+        "run_id": "uncertain-run",
+        "status": "FAILED",
+        "convergence_reason": "job_run_lookup_failed",
+    }])
+    query = MagicMock(side_effect=[before, after])
+    monkeypatch.setattr(revert, "sql_warehouse_query", query)
+    monkeypatch.setattr(revert, "wh_reconcile_active_runs", lambda *args, **kwargs: True)
+
+    with pytest.raises(ValueError, match="STATE_UNVERIFIED"):
+        _REAL_ASSERT_NO_ACTIVE_SPACE_RUNS(
+            space_id="space-1", sp_ws=sp_ws, config=cfg,
+        )
+
+
+def test_revert_baseline_restores_empty_top_level_description(monkeypatch) -> None:
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    baseline = _baseline_config()
+    baseline["description"] = ""
+    run = {
+        "run_id": "r-desc", "space_id": "space-desc", "status": "CONVERGED",
+        "config_snapshot": json.dumps(baseline),
+    }
+    monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+    patch_mock = _patch_patch_space_config(
+        monkeypatch,
+        live_config={
+            "description": "Current generated description",
+            "_parsed_space": {"version": 2, "data_sources": {"tables": []}},
+        },
+    )
+    update_description = MagicMock()
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.genie_client.update_space_description",
+        update_description,
+    )
+
+    revert.revert_optimization("r-desc", ws, sp_ws, cfg, target="baseline")
+
+    patch_mock.assert_called_once()
+    update_description.assert_called_once_with(ws, "space-desc", "")
+
+
+def test_revert_champion_restores_description_artifact(monkeypatch) -> None:
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    run = {"run_id": "r-champ-desc", "space_id": "space-desc", "status": "CONVERGED"}
+    monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+
+    def query(_ws, _warehouse_id, sql):
+        if "genie_opt_iterations" in sql:
+            return pd.DataFrame([{"config_json": json.dumps(_champion_config())}])
+        if "genie_opt_artifacts" in sql:
+            return pd.DataFrame([{
+                "artifact_json": json.dumps({
+                    "description_present": True,
+                    "description": "Post-enrichment description",
+                }),
+            }])
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(revert, "sql_warehouse_query", query)
+    _patch_patch_space_config(
+        monkeypatch,
+        live_config={
+            "description": "Current description",
+            "_parsed_space": {"version": 2, "data_sources": {"tables": []}},
+        },
+    )
+    update_description = MagicMock()
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.genie_client.update_space_description",
+        update_description,
+    )
+
+    revert.revert_optimization("r-champ-desc", ws, sp_ws, cfg, target="champion")
+
+    update_description.assert_called_once_with(
+        ws, "space-desc", "Post-enrichment description",
+    )
+
+
+def test_revert_compensates_when_description_patch_fails(monkeypatch) -> None:
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    baseline = _baseline_config()
+    baseline["description"] = "Baseline description"
+    run = {
+        "run_id": "r-comp", "space_id": "space-comp", "status": "CONVERGED",
+        "config_snapshot": json.dumps(baseline),
+    }
+    live = {
+        "description": "Live description",
+        "_parsed_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+            "instructions": {"text_instructions": [{"content": "live"}]},
+        },
+    }
+    monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+    patch_mock = _patch_patch_space_config(monkeypatch, live_config=live)
+    update_description = MagicMock(
+        side_effect=[RuntimeError("description PATCH failed"), None],
+    )
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.genie_client.update_space_description",
+        update_description,
+    )
+
+    with pytest.raises(RuntimeError, match="revert was not completed"):
+        revert.revert_optimization("r-comp", ws, sp_ws, cfg, target="baseline")
+
+    assert patch_mock.call_count == 2
+    assert patch_mock.call_args_list[1].args[2] == live["_parsed_space"]
+    assert [call.args[2] for call in update_description.call_args_list] == [
+        "Baseline description", "Live description",
+    ]

@@ -56,6 +56,12 @@ def _stub_state(monkeypatch):
 
 def test_missing_description_uses_top_level_space_patch(monkeypatch) -> None:
     stages, patches = _stub_state(monkeypatch)
+    artifacts: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        sqe,
+        "write_artifact",
+        lambda _spark, _run_id, kind, payload, **_kwargs: artifacts.append((kind, payload)),
+    )
     raw = _raw_space(
         description="",
         instructions=(
@@ -105,6 +111,13 @@ def test_missing_description_uses_top_level_space_patch(monkeypatch) -> None:
     assert stages[-1][0] == "SPACE_QUALITY_ENRICHMENT"
     assert stages[-1][1] == "COMPLETE"
     assert stages[-1][2]["detail"]["applied_count"] == 1
+    assert artifacts == [(
+        "space_quality_enrichment",
+        {
+            "description_present": True,
+            "description": "Sales analytics space for orders, regions, and revenue reporting.",
+        },
+    )]
 
 
 def test_thin_instructions_seed_full_serialized_space(monkeypatch) -> None:
