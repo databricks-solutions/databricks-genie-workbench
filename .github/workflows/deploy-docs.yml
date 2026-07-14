@@ -1,0 +1,108 @@
+name: Deploy Docs to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/**
+      - .github/workflows/deploy-docs.yml
+  # Allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+# Least-privilege defaults; the deploy job elevates what it needs.
+permissions:
+  contents: read
+  id-token: write # required to mint the JFrog OIDC token
+
+# Serialize deploys; don't cancel an in-flight publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Docusaurus
+    runs-on:
+      group: databricks-solutions-protected-runner-group
+      labels: linux-ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./docs
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ./docs/package-lock.json
+
+      - name: Configure npm for JFrog (OIDC)
+        run: |
+          set -euo pipefail
+
+          # Exchange the GitHub Actions OIDC token for a JFrog access token so
+          # npm can install from the org's internal registry. JFrog is for use
+          # from GitHub Actions only. The token is written only into ~/.npmrc —
+          # never into GITHUB_ENV — so it is not exposed to later steps'
+          # process environments.
+          ID_TOKEN=$(curl -sLS \
+            -H "User-Agent: actions/oidc-client" \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=jfrog-github" | jq .value | tr -d '"')
+          echo "::add-mask::${ID_TOKEN}"
+
+          ACCESS_TOKEN=$(curl -sLS -XPOST -H "Content-Type: application/json" \
+            "https://databricks.jfrog.io/access/api/v1/oidc/token" \
+            -d "{\"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\", \"subject_token_type\":\"urn:ietf:params:oauth:token-type:id_token\", \"subject_token\": \"${ID_TOKEN}\", \"provider_name\": \"github-actions\"}" | jq .access_token | tr -d '"')
+          echo "::add-mask::${ACCESS_TOKEN}"
+
+          if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
+            echo "FAIL: Could not extract JFrog access token"
+            exit 1
+          fi
+
+          cat > ~/.npmrc << EOF
+          registry=https://databricks.jfrog.io/artifactory/api/npm/db-npm/
+          //databricks.jfrog.io/artifactory/api/npm/db-npm/:_authToken=${ACCESS_TOKEN}
+          always-auth=true
+          EOF
+
+          echo "npm configured to use JFrog registry"
+
+      - name: Install dependencies
+        # --ignore-scripts: dependency lifecycle scripts must never run in CI
+        # (they would execute third-party code with registry credentials on disk).
+        run: npm ci --ignore-scripts
+
+      - name: Build website
+        run: npx docusaurus build
+
+      - name: Upload Build Artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ./docs/build
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+
+    permissions:
+      pages: write # to deploy to Pages
+      id-token: write # to verify the deployment originates from an appropriate source
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    runs-on:
+      group: databricks-solutions-protected-runner-group
+      labels: linux-ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
