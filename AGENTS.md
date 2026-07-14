@@ -190,9 +190,12 @@ transitive dependencies through lockfiles with integrity hashes.
 - `uv.lock` must resolve against **public PyPI** (`https://pypi.org/simple`),
   pinned as the default index in the root `pyproject.toml` so it overrides any
   machine-level registry config. Internal registry URLs must never appear in
-  the lockfile — this is a public repo. On networks that block pypi.org,
-  run `uv lock` from a machine or environment with public PyPI access; do not
-  re-lock through an internal proxy.
+  the lockfile — this is a public repo. On networks that block pypi.org:
+  `uv sync --frozen` works with a mirror override, which is safe because the
+  lockfile's hashes are still verified —
+  `UV_DEFAULT_INDEX=<mirror>/simple/ uv sync --frozen` — but re-locking
+  (`uv lock`) must run from an environment with public PyPI access so mirror
+  URLs never enter the lockfile.
 
 **Lock files — always commit these:**
 
