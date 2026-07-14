@@ -21,6 +21,9 @@ jobs:
         working-directory: packages/genie-space-optimizer
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # PR-controlled test code runs below; don't leave the token in .git/config.
+          persist-credentials: false
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           version: "0.10.2"
