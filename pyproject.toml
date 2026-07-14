@@ -29,6 +29,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["backend"]
 
+# Public repo: the lockfile must resolve against public PyPI so external
+# users and CI can install. This project-level index overrides any
+# machine-level default (e.g. an internal corporate proxy in ~/.config/uv),
+# preventing internal registry URLs from leaking into uv.lock on re-lock.
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
 [tool.uv.workspace]
 members = ["packages/genie-space-optimizer"]
 

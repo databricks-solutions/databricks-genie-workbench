@@ -187,6 +187,12 @@ transitive dependencies through lockfiles with integrity hashes.
 - `npm` install paths must succeed without `--legacy-peer-deps`. If a peer
   conflict appears, fix the manifest (bump the offending pin to a version
   inside the peer-dep range) instead of reaching for the escape-hatch flag.
+- `uv.lock` must resolve against **public PyPI** (`https://pypi.org/simple`),
+  pinned as the default index in the root `pyproject.toml` so it overrides any
+  machine-level registry config. Internal registry URLs must never appear in
+  the lockfile — this is a public repo. On networks that block pypi.org,
+  run `uv lock` from a machine or environment with public PyPI access; do not
+  re-lock through an internal proxy.
 
 **Lock files — always commit these:**
 
