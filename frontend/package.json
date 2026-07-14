@@ -15,7 +15,7 @@
     "@databricks/aibi-client": "1.0.3-alpha.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "lucide-react": "0.560.0",
+    "lucide-react": "1.24.0",
     "prism-react-renderer": "2.4.1",
     "react": "19.2.4",
     "react-diff-viewer-continued": "3.4.0",
