@@ -36,7 +36,7 @@
         "@opentelemetry/resources": "2.7.0",
         "@opentelemetry/sdk-logs": "0.215.0",
         "@tailwindcss/vite": "4.2.4",
-        "@tanstack/router-generator": "1.166.33",
+        "@tanstack/router-generator": "1.167.19",
         "@tanstack/router-plugin": "1.167.23",
         "@types/node": "25.0.3",
         "@types/react": "19.2.7",
