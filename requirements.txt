@@ -232,7 +232,7 @@ langchain-openai==1.1.12
     # via databricks-sdk
 langsmith==0.7.22
     # via langchain-core
-litellm==1.82.6
+litellm==1.84.0
     # via
     #   databricks-agents
     #   genie-space-optimizer
