@@ -5,7 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi==0.135.2",
-    "pydantic-settings==2.13.1",
+    "pydantic-settings==2.14.2",
     "uvicorn==0.42.0",
     "databricks-sdk==0.102.0",
     "mlflow[databricks]==3.11.1",
