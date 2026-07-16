@@ -72,14 +72,14 @@ The strategist selects from the configured levers for each attempt:
 
 | Lever | Area | Typical changes |
 |-------|------|-----------------|
-| 1 | Tables & columns | Table selection, column descriptions, synonyms, entity matching |
+| 1 | Tables & columns | Table and column descriptions, synonyms |
 | 2 | Metric views | Governed metric definitions and routing |
 | 3 | Table-valued functions | Parameterized query patterns |
 | 4 | Join specifications | Preferred relationships and join keys |
 | 5 | Instructions | Business vocabulary, routing rules, constraints, examples |
 | 6 | SQL expressions | Reusable filters, measures, expressions, and worked SQL |
 
-Before baseline evaluation, a narrow Space-quality phase may also fill low-risk curation gaps such as an empty top-level Space description or thin instructions. Its post-enrichment description is persisted separately because Genie stores `description` as Space metadata, outside `serialized_space`.
+Before baseline evaluation, a narrow Space-quality phase may also fill low-risk curation gaps such as an empty top-level Space description, thin instructions, and prompt-matching flags. Format assistance is enabled on visible columns, while entity matching is allocated deterministically to eligible string columns using UC types, cardinality, benchmark references, and RLS safeguards. These flags are not proposed by the LLM lever loop. The post-enrichment description is persisted separately because Genie stores `description` as Space metadata, outside `serialized_space`.
 
 ## Evaluation and leakage safety
 

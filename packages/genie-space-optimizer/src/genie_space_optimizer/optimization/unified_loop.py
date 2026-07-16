@@ -1852,6 +1852,7 @@ def run_unified_optimization_loop(
     max_attempts: int,
     target_accuracy: float,
     apply_mode: str = "genie_config",
+    prompt_matching_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run baseline eval plus bounded LLM patch attempts."""
     target_accuracy = target_accuracy_percent(float(target_accuracy))
@@ -1870,6 +1871,8 @@ def run_unified_optimization_loop(
             raw_config=raw_config,
             catalog=catalog,
             schema=schema,
+            prompt_matching_context=prompt_matching_context,
+            benchmarks=benchmarks,
         )
         current_config = enrichment_result.current_config
     except Exception:

@@ -165,3 +165,135 @@ def test_scan_input_scores_top_level_description_without_mutating_serialized_spa
 
     assert scan_input["description"] == "Useful top-level description for this sales space."
     assert raw["_parsed_space"] == parsed_before
+
+
+def test_prompt_matching_context_drops_profile_values() -> None:
+    context = sqe.build_prompt_matching_context({
+        "_uc_columns": [{
+            "catalog_name": "main",
+            "schema_name": "sales",
+            "table_name": "orders",
+            "column_name": "region",
+            "data_type": "STRING",
+            "comment": "Sales region",
+        }],
+        "_data_profile": {
+            "main.sales.orders": {
+                "row_count": 100,
+                "columns": {
+                    "region": {
+                        "cardinality": 4,
+                        "distinct_values": ["East", "West"],
+                        "min": "East",
+                        "max": "West",
+                    },
+                },
+            },
+        },
+        "_rls_audit": {
+            "main.sales.orders": {
+                "verdict": "clean",
+                "reason": "no policies",
+            },
+        },
+        "_asset_semantics": {"main.sales.orders": {"kind": "table"}},
+    })
+
+    assert context["uc_columns"] == [{
+        "catalog_name": "main",
+        "schema_name": "sales",
+        "table_name": "orders",
+        "column_name": "region",
+        "data_type": "STRING",
+    }]
+    assert context["data_profile"] == {
+        "main.sales.orders": {
+            "row_count": 100,
+            "columns": {"region": {"cardinality": 4}},
+        },
+    }
+    assert context["rls_audit"] == {
+        "main.sales.orders": {"verdict": "clean"},
+    }
+    assert "East" not in str(context)
+
+
+def test_active_enrichment_applies_and_audits_prompt_matching(monkeypatch) -> None:
+    stages, patches = _stub_state(monkeypatch)
+    raw = _raw_space(
+        description="Sales analytics space for regional order reporting.",
+        instructions="Use the configured data sources for regional sales reporting and summaries.",
+    )
+    refreshed: dict = {}
+    waits: list[int] = []
+
+    def fake_prompt_matching(_w, _sid, config, *, benchmarks=None):
+        assert benchmarks == [{"question": "Revenue by region"}]
+        cc = config["_parsed_space"]["data_sources"]["tables"][0]["column_configs"][0]
+        cc["enable_format_assistance"] = True
+        cc["enable_entity_matching"] = True
+        refreshed.update(copy.deepcopy(config["_parsed_space"]))
+        return {
+            "applied": [
+                {
+                    "type": "enable_example_values",
+                    "table": "main.sales.orders",
+                    "column": "region",
+                },
+                {
+                    "type": "enable_value_dictionary",
+                    "table": "main.sales.orders",
+                    "column": "region",
+                    "score": 6.0,
+                    "reason": "ok",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(sqe, "auto_apply_prompt_matching", fake_prompt_matching)
+    monkeypatch.setattr(sqe.time, "sleep", lambda seconds: waits.append(seconds))
+    monkeypatch.setattr(
+        sqe,
+        "fetch_space_config",
+        lambda _w, _sid: {**raw, "_parsed_space": copy.deepcopy(refreshed)},
+    )
+    monkeypatch.setattr(sqe, "write_artifact", lambda *_args, **_kwargs: None)
+
+    result = sqe.run_space_quality_enrichment(
+        MagicMock(),
+        MagicMock(),
+        run_id="run",
+        space_id="space",
+        raw_config=raw,
+        catalog="cat",
+        schema="sch",
+        prompt_matching_context={
+            "version": 1,
+            "uc_columns": [{
+                "table_name": "orders",
+                "column_name": "region",
+                "data_type": "STRING",
+            }],
+            "data_profile": {},
+            "rls_audit": {},
+            "asset_semantics": {},
+        },
+        benchmarks=[{"question": "Revenue by region"}],
+    )
+
+    assert result.applied_count == 2
+    assert [patch["patch_type"] for patch in patches] == [
+        "enable_example_values",
+        "enable_value_dictionary",
+    ]
+    assert patches[0]["rollback"]["enable_format_assistance"] is False
+    assert patches[1]["rollback"]["enable_entity_matching"] is False
+    assert patches[1]["provenance"]["iq_check_id"] == 8
+    assert waits == [sqe.PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS]
+    entity_check = next(
+        check
+        for check in result.scan_after["checks"]
+        if check["label"] == "Entity/format matching"
+    )
+    assert entity_check["passed"] is True
+    assert stages[-1][2]["detail"]["applied_count"] == 2

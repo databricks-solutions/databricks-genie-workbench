@@ -6,7 +6,7 @@
 # MAGIC |---|---|
 # MAGIC | **Task** | `benchmark_qc_and_repair` |
 # MAGIC | **Reads** | space metadata, run-row snapshot, benchmark set |
-# MAGIC | **Writes** | `genie_opt_artifacts` (`benchmark_qc`), `genie_opt_benchmark_mutations`, `genie_opt_stages` |
+# MAGIC | **Writes** | `genie_opt_artifacts` (`space_metadata`, `benchmark_qc`), `genie_opt_benchmark_mutations`, `genie_opt_stages` |
 # MAGIC | **Hard stop** | `BENCHMARK_UNREPAIRABLE` if still invalid after `benchmark_repair_max_tries` |
 # MAGIC | **Log label** | `[TASK BENCH_QC]` |
 # MAGIC
@@ -49,6 +49,7 @@ from genie_space_optimizer.common.warehouse import (
 )
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
+from genie_space_optimizer.iq_scan import collect_rls_audit
 from genie_space_optimizer.optimization.benchmark_repair import (
     BENCHMARK_UNREPAIRABLE,
     BenchmarkUnrepairableError,
@@ -66,6 +67,9 @@ from genie_space_optimizer.optimization.preflight import (
     preflight_generate_benchmarks,
     preflight_push_benchmarks_to_space,
     preflight_setup_experiment,
+)
+from genie_space_optimizer.optimization.space_quality_enrichment import (
+    build_prompt_matching_context,
 )
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
@@ -158,6 +162,36 @@ try:
     _uc_columns = ctx_uc["uc_columns"]
     _uc_tags = ctx_uc["uc_tags"]
     _uc_routines = ctx_uc["uc_routines"]
+
+    _parsed = _config.get("_parsed_space", {})
+    _data_sources = _parsed.get("data_sources", {}) if isinstance(_parsed, dict) else {}
+    _space_sources = (
+        list(_data_sources.get("tables") or [])
+        + list(_data_sources.get("metric_views") or [])
+    ) if isinstance(_data_sources, dict) else []
+    try:
+        _config["_rls_audit"] = collect_rls_audit(
+            _space_sources,
+            spark=spark,
+            w=w,
+            warehouse_id=warehouse_id,
+        )
+    except Exception as exc:
+        _log(
+            "RLS audit unavailable for prompt matching; continuing fail-open",
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+        _config["_rls_audit"] = {}
+    write_artifact(
+        spark,
+        run_id,
+        "space_metadata",
+        build_prompt_matching_context(_config),
+        catalog=catalog,
+        schema=schema,
+        stage_name=_TASK_KEY,
+        source_notebook="run_benchmark_qc_and_repair.py",
+    )
 
     ctx_bench = preflight_generate_benchmarks(
         w, spark, run_id, catalog, schema, _config,

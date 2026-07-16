@@ -106,6 +106,12 @@ GENIE_POLL_INITIAL = 3
 GENIE_POLL_MAX = 10
 GENIE_MAX_WAIT = 120
 CONNECTION_POOL_SIZE = 20
+PROPAGATION_WAIT_SECONDS = int(
+    os.getenv("GENIE_SPACE_OPTIMIZER_PROPAGATION_WAIT", "30")
+)
+PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS = int(
+    os.getenv("GENIE_SPACE_OPTIMIZER_PROPAGATION_WAIT_ENTITY_MATCHING", "90")
+)
 
 # ── 2b. Official Benchmark Eval-Run API (GSO v2, Phase 1) ───────────────
 # The native Genie Benchmark (Eval-Run) API is the sole eval runner in v2
@@ -1375,9 +1381,8 @@ SCAN_CHECK_TO_LEVERS: dict[int, list[int]] = {
     # Check 7 (SQL guidance artifacts) → behavior levers.  Lever 6 owns
     # reusable SQL snippets; lever 5 owns example SQLs and routing guidance.
     7: [5, 6],
-    # Check 8 (Entity / format matching) → lever 1 (Tables & Columns) which
-    #   owns column_configs including enable_entity_matching / format_assistance.
-    8: [1],
+    # Check 8 (Entity / format matching) is handled by deterministic
+    # pre-baseline prompt-matching enrichment, not an adaptive LLM lever.
     # Check 10 (Column visibility / noise control) → lever 1 (Tables & Columns)
     #   owns column visibility/exclude flags.
     10: [1],
@@ -1387,7 +1392,9 @@ SCAN_CHECK_TO_LEVERS: dict[int, list[int]] = {
 1-indexed check IDs match the 12-check order in
 :func:`genie_space_optimizer.iq_scan.scoring.calculate_score`. Checks that
 can't be fixed by the optimizer (6 - data source count; 9 - benchmarks;
-11 / 12 - optimization outcomes) are intentionally absent.
+11 / 12 - optimization outcomes) are intentionally absent. Check 8 is also
+absent because deterministic pre-baseline enrichment owns it instead of an
+adaptive lever.
 
 Consumed by :func:`preflight_run_iq_scan` to translate failing checks into a
 ``recommended_levers`` hint for the unified optimizer.
@@ -1471,16 +1478,12 @@ SPACE_QUALITY_CHECK_ACTIONS: dict[int, dict[str, Any]] = {
             "Improve value and format interpretation for categorical, date, "
             "and numeric columns while respecting RLS limitations."
         ),
-        "preferred_actions": [
-            "enable_value_dictionary",
-            "enable_example_values",
-            "update_column_description",
-        ],
-        "supported_patch_types": [
-            "enable_value_dictionary",
-            "enable_example_values",
-            "update_column_description",
-        ],
+        "preferred_actions": ["deterministic_prompt_matching_enrichment"],
+        "supported_patch_types": [],
+        "note": (
+            "Handled before baseline evaluation by deterministic prompt-matching "
+            "enrichment; the LLM patch loop must not propose these flags."
+        ),
     },
     9: {
         "label": "10+ benchmark questions",
@@ -1701,8 +1704,8 @@ UI 'Benchmark changes' view that consume it are Phase 6."""
 TABLE_ARTIFACTS = "genie_opt_artifacts"
 """GSO v2 orchestration (Phase 7, arch §7.1) — generic Delta handoff table
 for the fat JSON stage-level blobs that don't fit a per-attempt scored row:
-``run_manifest``, ``benchmark_qc``, and ``publish_record`` (the 3
-``artifact_kind`` values). Per-attempt truth
+``run_manifest``, ``space_metadata``, ``benchmark_qc``,
+``space_quality_enrichment``, and ``publish_record``. Per-attempt truth
 (scores, loop-state, patches, decisions) lives in ``genie_opt_iterations`` /
 ``genie_opt_patches`` / ``genie_eval_lever_loop_decisions`` — NOT here.
 Backed by ``ddl._GENIE_OPT_ARTIFACTS_DDL`` and written via

@@ -1202,6 +1202,7 @@ def write_benchmark_mutations(
 # genie_opt_iterations / genie_opt_patches / genie_eval_lever_loop_decisions.
 ARTIFACT_KINDS: tuple[str, ...] = (
     "run_manifest",
+    "space_metadata",
     "benchmark_qc",
     "space_quality_enrichment",
     "publish_record",
@@ -1223,8 +1224,7 @@ def write_artifact(
 ) -> str | None:
     """Append one stage-level handoff blob to ``genie_opt_artifacts`` (arch §7.1).
 
-    ``artifact_kind`` must be one of ``ARTIFACT_KINDS`` (run_manifest,
-    benchmark_qc, space_quality_enrichment, publish_record). ``payload`` is
+    ``artifact_kind`` must be one of :data:`ARTIFACT_KINDS`. ``payload`` is
     JSON-serialized into ``artifact_json``; a ``content_hash`` is computed for
     dedupe / replay safety. Returns the generated ``artifact_id`` (or ``None``
     on a swallowed write failure — best-effort, never aborts the notebook).
@@ -1308,6 +1308,40 @@ def load_artifacts(
     except Exception:
         logger.debug("load_artifacts: no rows for run %s", run_id, exc_info=True)
         return pd.DataFrame()
+
+
+def load_latest_artifact_payload(
+    spark: SparkSession,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    artifact_kind: str,
+) -> dict[str, Any] | None:
+    """Return the newest JSON-object payload for one artifact kind."""
+    rows = load_artifacts(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        artifact_kind=artifact_kind,
+    )
+    if rows.empty:
+        return None
+    raw = rows.iloc[0].get("artifact_json")
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Artifact %s for run %s contains invalid JSON",
+            artifact_kind,
+            run_id,
+        )
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 # ── Read Functions ───────────────────────────────────────────────────────

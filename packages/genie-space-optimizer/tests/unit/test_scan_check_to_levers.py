@@ -9,6 +9,7 @@ from __future__ import annotations
 from genie_space_optimizer.common.config import (
     DEFAULT_LEVER_ORDER,
     SCAN_CHECK_TO_LEVERS,
+    SPACE_QUALITY_CHECK_ACTIONS,
 )
 from genie_space_optimizer.iq_scan.scoring import CONFIG_CHECK_COUNT
 
@@ -57,3 +58,12 @@ def test_lever_lists_are_unique_per_check():
 def test_mapping_is_non_empty():
     # Sanity: the mapping should cover at least half of the config checks.
     assert len(SCAN_CHECK_TO_LEVERS) >= 5
+
+
+def test_prompt_matching_check_is_owned_by_deterministic_enrichment():
+    assert 8 not in SCAN_CHECK_TO_LEVERS
+    guidance = SPACE_QUALITY_CHECK_ACTIONS[8]
+    assert guidance["preferred_actions"] == [
+        "deterministic_prompt_matching_enrichment",
+    ]
+    assert guidance["supported_patch_types"] == []

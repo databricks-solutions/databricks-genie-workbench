@@ -10,9 +10,14 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from genie_space_optimizer.common.config import (
+    PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS,
+    PROPAGATION_WAIT_SECONDS,
+)
 from genie_space_optimizer.common.genie_client import (
     fetch_space_config,
     patch_space_config,
@@ -23,6 +28,7 @@ from genie_space_optimizer.iq_scan.scoring import calculate_score
 from genie_space_optimizer.optimization.applier import (
     _get_general_instructions,
     _set_general_instructions,
+    auto_apply_prompt_matching,
     validate_instruction_text,
 )
 from genie_space_optimizer.optimization.state import (
@@ -37,6 +43,95 @@ _STAGE = "SPACE_QUALITY_ENRICHMENT"
 _TASK_KEY = "space_quality_enrichment"
 _INSTRUCTION_SEED_THRESHOLD = 50
 _MAX_SOURCE_NAMES = 6
+_PROMPT_MATCHING_CONTEXT_VERSION = 1
+
+
+def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
+    """Build a compact, non-sensitive handoff for prompt matching.
+
+    Preflight profiles may contain sampled distinct values. The prompt matcher
+    only needs row counts and cardinalities, so the artifact deliberately drops
+    those values while retaining UC types, RLS verdicts, and asset semantics.
+    """
+    uc_columns: list[dict[str, Any]] = []
+    for raw in config.get("_uc_columns") or []:
+        if not isinstance(raw, dict):
+            continue
+        column_name = str(raw.get("column_name") or "").strip()
+        table_name = str(raw.get("table_name") or "").strip()
+        if not column_name or not table_name:
+            continue
+        uc_columns.append({
+            "catalog_name": str(raw.get("catalog_name") or "").strip(),
+            "schema_name": str(raw.get("schema_name") or "").strip(),
+            "table_name": table_name,
+            "column_name": column_name,
+            "data_type": str(raw.get("data_type") or "").strip(),
+        })
+    uc_columns.sort(key=lambda col: (
+        col["catalog_name"],
+        col["schema_name"],
+        col["table_name"],
+        col["column_name"],
+    ))
+
+    data_profile: dict[str, Any] = {}
+    for identifier, raw_table in (config.get("_data_profile") or {}).items():
+        if not isinstance(raw_table, dict):
+            continue
+        columns: dict[str, Any] = {}
+        for column_name, raw_column in (raw_table.get("columns") or {}).items():
+            if not isinstance(raw_column, dict):
+                continue
+            cardinality = raw_column.get("cardinality")
+            if cardinality is None:
+                continue
+            columns[str(column_name)] = {"cardinality": cardinality}
+        data_profile[str(identifier)] = {
+            "row_count": raw_table.get("row_count", 0),
+            "columns": columns,
+        }
+
+    rls_audit: dict[str, Any] = {}
+    for identifier, raw_verdict in (config.get("_rls_audit") or {}).items():
+        if not isinstance(raw_verdict, dict):
+            continue
+        verdict = str(raw_verdict.get("verdict") or "unknown")
+        if verdict not in {"clean", "tainted", "unknown"}:
+            verdict = "unknown"
+        rls_audit[str(identifier)] = {"verdict": verdict}
+
+    asset_semantics: dict[str, Any] = {}
+    for identifier, raw_asset in (config.get("_asset_semantics") or {}).items():
+        if not isinstance(raw_asset, dict):
+            continue
+        asset_semantics[str(identifier)] = {
+            key: copy.deepcopy(raw_asset[key])
+            for key in ("kind", "outcome", "short_name", "measures")
+            if key in raw_asset
+        }
+
+    return {
+        "version": _PROMPT_MATCHING_CONTEXT_VERSION,
+        "uc_columns": uc_columns,
+        "data_profile": data_profile,
+        "rls_audit": rls_audit,
+        "asset_semantics": asset_semantics,
+    }
+
+
+def apply_prompt_matching_context(
+    config: dict[str, Any],
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Attach a persisted prompt-matching handoff to a fresh space config."""
+    if not isinstance(context, dict):
+        return config
+    config["_uc_columns"] = copy.deepcopy(context.get("uc_columns") or [])
+    config["_data_profile"] = copy.deepcopy(context.get("data_profile") or {})
+    config["_rls_audit"] = copy.deepcopy(context.get("rls_audit") or {})
+    config["_asset_semantics"] = copy.deepcopy(context.get("asset_semantics") or {})
+    return config
 
 
 @dataclass
@@ -124,6 +219,8 @@ def run_space_quality_enrichment(
     raw_config: dict[str, Any],
     catalog: str,
     schema: str,
+    prompt_matching_context: dict[str, Any] | None = None,
+    benchmarks: list[dict[str, Any]] | None = None,
 ) -> SpaceQualityEnrichmentResult:
     """Apply narrow, non-fatal quality curation before baseline eval."""
     working_raw = copy.deepcopy(raw_config)
@@ -209,6 +306,22 @@ def run_space_quality_enrichment(
             on_error=_record_error,
         )
 
+        patch_index = _maybe_apply_prompt_matching(
+            w,
+            spark,
+            run_id=run_id,
+            space_id=space_id,
+            parsed=parsed,
+            prompt_matching_context=prompt_matching_context,
+            benchmarks=benchmarks,
+            scan_result=result.scan_before,
+            patch_index=patch_index,
+            catalog=catalog,
+            schema=schema,
+            skipped=result.skipped,
+            on_error=_record_error,
+        )
+
         result.applied_count = patch_index
         if result.applied_count:
             try:
@@ -276,6 +389,121 @@ def run_space_quality_enrichment(
             spark, run_id, working_raw, catalog=catalog, schema=schema,
         )
         return result
+
+
+def _maybe_apply_prompt_matching(
+    w: Any,
+    spark: Any,
+    *,
+    run_id: str,
+    space_id: str,
+    parsed: dict[str, Any],
+    prompt_matching_context: dict[str, Any] | None,
+    benchmarks: list[dict[str, Any]] | None,
+    scan_result: dict[str, Any] | None,
+    patch_index: int,
+    catalog: str,
+    schema: str,
+    skipped: list[str],
+    on_error,
+) -> int:
+    """Run deterministic format/entity matching and persist its audit trail."""
+    if not prompt_matching_context:
+        skipped.append("prompt_matching_context_unavailable")
+        return patch_index
+
+    runtime_config: dict[str, Any] = {"_parsed_space": parsed}
+    apply_prompt_matching_context(runtime_config, prompt_matching_context)
+
+    try:
+        apply_log = auto_apply_prompt_matching(
+            w,
+            space_id,
+            runtime_config,
+            benchmarks=benchmarks,
+        )
+    except Exception as exc:
+        on_error("prompt_matching", exc)
+        return patch_index
+
+    applied = list(apply_log.get("applied") or [])
+    if not applied:
+        skipped.append("prompt_matching_already_configured")
+        return patch_index
+
+    check = _check(scan_result, 8)
+    inverse_by_type = {
+        "enable_example_values": {"enable_format_assistance": False},
+        "enable_value_dictionary": {"enable_entity_matching": False},
+        "disable_value_dictionary": {"enable_entity_matching": True},
+    }
+    command_by_type = {
+        "enable_example_values": {"enable_format_assistance": True},
+        "enable_value_dictionary": {"enable_entity_matching": True},
+        "disable_value_dictionary": {"enable_entity_matching": False},
+    }
+
+    for offset, entry in enumerate(applied):
+        patch_type = str(entry.get("type") or "prompt_matching")
+        table = str(entry.get("table") or "")
+        column = str(entry.get("column") or "")
+        command = command_by_type.get(patch_type)
+        rollback = inverse_by_type.get(patch_type)
+        try:
+            write_patch(
+                spark,
+                run_id,
+                0,
+                0,
+                patch_index + offset,
+                {
+                    "patch_type": patch_type,
+                    "scope": "genie_config",
+                    "risk_level": "low",
+                    "target_object": f"{table}.{column}".strip("."),
+                    "patch": entry,
+                    "command": (
+                        {
+                            "op": "update",
+                            "section": "column_configs",
+                            "table": table,
+                            "column": column,
+                            **command,
+                        }
+                        if command else None
+                    ),
+                    "rollback": (
+                        {
+                            "op": "update",
+                            "section": "column_configs",
+                            "table": table,
+                            "column": column,
+                            **rollback,
+                        }
+                        if rollback else None
+                    ),
+                    "proposal_id": "space_quality_enrichment.prompt_matching",
+                    "provenance": {"iq_check_id": 8, "iq_check": check},
+                },
+                catalog,
+                schema,
+            )
+        except Exception as exc:
+            on_error("prompt_matching_audit", exc)
+
+    entity_changes = sum(
+        1
+        for entry in applied
+        if entry.get("type") in {"enable_value_dictionary", "disable_value_dictionary"}
+    )
+    wait_seconds = (
+        PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS
+        if entity_changes
+        else PROPAGATION_WAIT_SECONDS
+    )
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+    return patch_index + len(applied)
 
 
 def _write_description_artifact(

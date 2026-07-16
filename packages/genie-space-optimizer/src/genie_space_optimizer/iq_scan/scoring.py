@@ -461,21 +461,26 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         warning_next_steps.append("Restructure text instructions for optimal LLM context usage")
 
     # 5. Join specifications
+    #
+    # Join specs describe relationships between ordinary tables. Metric views
+    # already encode their source relationships and cannot be joined directly
+    # at query time, so they must not increase the required join-spec count.
     join_specs = instructions.get("join_specs", [])
     join_count = len(join_specs)
-    passed = total_sources == 1 or (total_sources > 1 and join_count > 0)
-    detail = f"{join_count} join spec(s) for {total_sources} data source(s)"
+    table_count = len(tables)
+    passed = total_sources > 0 and (table_count <= 1 or join_count > 0)
+    detail = f"{join_count} join spec(s) for {table_count} table(s)"
     severity = "pass" if passed else "fail"
-    if passed and total_sources > 1 and join_count < max(total_sources - 1, 1):
+    if passed and table_count > 1 and join_count < table_count - 1:
         severity = "warning"
         detail += " — relationship coverage may be incomplete"
     _check(checks, "Join specifications", passed, detail=detail, severity=severity)
-    if not passed and total_sources > 1:
-        findings.append("No join specifications for multi-source space")
-        next_steps.append("Add join specifications to help Genie correctly join your data sources")
+    if not passed and table_count > 1:
+        findings.append("No join specifications for multi-table space")
+        next_steps.append("Add join specifications to help Genie correctly join your tables")
     elif severity == "warning":
         warnings.append(detail)
-        warning_next_steps.append("Add join specs for the remaining key relationships between sources")
+        warning_next_steps.append("Add join specs for the remaining key relationships between tables")
 
     # 6. Data source count 1-12 (Gap 10: adjusted from 1-10)
     passed = 1 <= total_sources <= 12

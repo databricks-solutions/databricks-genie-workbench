@@ -39,7 +39,7 @@ The first 10 checks evaluate configuration quality. The last 2 checks evaluate o
 | 2 | **Table descriptions** | ≥80% of tables have descriptions | Finding + next step to add descriptions |
 | 3 | **Column descriptions** | ≥50% of columns have descriptions | Finding + next step to add descriptions |
 | 4 | **Text instructions** | Present and >50 characters total | Finding to add business context instructions |
-| 5 | **Join specifications** | At least 1 join spec (for multi-source spaces) | Finding to add join specs |
+| 5 | **Join specifications** | At least 1 join spec when multiple ordinary tables are configured; metric views do not require join specs | Finding to add join specs |
 | 6 | **Data source count 1–12** | Between 1 and 12 tables + metric views | Finding to reduce data sources or use multi-room architecture |
 | 7 | **8+ example SQLs** | At least 8 example question-SQL pairs | Finding to add more examples |
 | 8 | **SQL snippets** | At least 1 function, expression, measure, or filter | Finding to add SQL snippets |
@@ -78,7 +78,7 @@ The scanner returns:
     {"label": "Data sources exist", "passed": true, "detail": "5 table(s) configured", "severity": "pass"},
     ...
   ],
-  "findings": ["No join specifications for multi-source space", ...],
+  "findings": ["No join specifications for multi-table space", ...],
   "next_steps": ["Add join specifications to help Genie correctly join your tables", ...],
   "warnings": ["Instructions total 2,500 chars — keep under 2,000", ...],
   "warning_next_steps": ["Restructure text instructions for optimal LLM context usage", ...],

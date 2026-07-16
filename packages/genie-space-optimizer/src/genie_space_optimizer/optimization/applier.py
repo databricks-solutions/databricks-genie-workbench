@@ -1722,6 +1722,7 @@ def auto_apply_prompt_matching(
     # work both directions — enable new winners AND disable existing slots
     # that no longer score highly (PII previously slotted, RLS added, etc.).
     all_scored: list[tuple[str, str, str, float, str]] = []
+    protected_unknown_type: set[tuple[str, str]] = set()
     for tbl in tables + metric_views:
         identifier = tbl.get("identifier", "")
         short_name = _table_short_name(identifier)
@@ -1745,7 +1746,31 @@ def auto_apply_prompt_matching(
                     "table": identifier,
                     "column": col_name,
                 })
-            dtype = type_lookup.get((short_name.lower(), col_name.lower()), "")
+            dtype = type_lookup.get(
+                (short_name.lower(), col_name.lower()),
+                str(cc.get("data_type") or ""),
+            )
+            if not dtype:
+                # A partial UC metadata fetch must never disable an existing
+                # value dictionary merely because this run could not prove the
+                # column type. Preserve a still-eligible slot and reserve its
+                # capacity, while continuing to reclaim known-bad PII/RLS/etc.
+                if cc.get("enable_entity_matching"):
+                    score, reason = _score(
+                        col_name,
+                        _column_description(cc),
+                        dtype,
+                        identifier,
+                        table_rls,
+                        _column_has_rls(cc),
+                    )
+                    if score <= 0.0:
+                        all_scored.append(
+                            (identifier, col_name, dtype, score, reason)
+                        )
+                    else:
+                        protected_unknown_type.add((identifier, col_name))
+                continue
             # MV measure columns opt out of EM entirely (numeric aggregates
             # don't have meaningful value dictionaries).
             if is_mv and (
@@ -1776,7 +1801,11 @@ def auto_apply_prompt_matching(
     candidates.sort(key=lambda x: (-x[3], x[0].lower(), x[1].lower()))
 
     # ── 3. Target = top-120 ──────────────────────────────────────────
-    selected = candidates[:MAX_VALUE_DICTIONARY_COLUMNS]
+    available_slots = max(
+        0,
+        MAX_VALUE_DICTIONARY_COLUMNS - len(protected_unknown_type),
+    )
+    selected = candidates[:available_slots]
     target_set: set[tuple[str, str]] = {
         (ident, col) for ident, col, _, _, _ in selected
     }
@@ -1795,8 +1824,9 @@ def auto_apply_prompt_matching(
 
     # ── 5. Diff ──────────────────────────────────────────────────────
     to_enable = target_set - current_set
-    to_disable = current_set - target_set
-    kept = target_set & current_set
+    to_disable = (current_set - target_set) - protected_unknown_type
+    kept = (target_set & current_set) | (current_set & protected_unknown_type)
+    effective_target_set = target_set | (current_set & protected_unknown_type)
 
     # Build a deterministic dry-run view (sorted by score DESC).
     _enable_sorted = sorted(
@@ -1899,7 +1929,7 @@ def auto_apply_prompt_matching(
                     + ("  (displaced by higher-scoring candidates)"
                        if to_disable else ""))
     em_lines.append(
-        f"    Net slots: {len(target_set):3d} / {MAX_VALUE_DICTIONARY_COLUMNS} max"
+        f"    Net slots: {len(effective_target_set):3d} / {MAX_VALUE_DICTIONARY_COLUMNS} max"
         + ("  (no changes)" if not to_enable and not to_disable else "")
     )
     if _enable_sorted:
@@ -1948,7 +1978,7 @@ def auto_apply_prompt_matching(
     print(
         f"Prompt matching auto-config: format assistance on {fa_count} columns, "
         f"entity matching enabled on {em_count} + disabled on {em_disabled} "
-        f"({len(target_set)}/{MAX_VALUE_DICTIONARY_COLUMNS} slots in use)"
+        f"({len(effective_target_set)}/{MAX_VALUE_DICTIONARY_COLUMNS} slots in use)"
     )
 
     return {

@@ -289,7 +289,7 @@ function IQScannerContent() {
     { name: "Table descriptions (≥80%)", desc: "80%+ of tables have meaningful descriptions" },
     { name: "Column descriptions (≥50%)", desc: "50%+ of visible columns are meaningfully documented" },
     { name: "Text instructions (>50 chars)", desc: "Business context and terminology explained" },
-    { name: "Join specifications", desc: "Join paths defined for multi-source spaces" },
+    { name: "Join specifications", desc: "Join paths defined for multi-table spaces" },
     { name: "Data source count 1–12", desc: "Optimal number of tables and metric views for accuracy" },
     { name: "SQL guidance artifacts", desc: "At least one snippet, SQL function, or example SQL defined" },
     { name: "Entity/format matching", desc: "Categorical and date/number columns annotated" },

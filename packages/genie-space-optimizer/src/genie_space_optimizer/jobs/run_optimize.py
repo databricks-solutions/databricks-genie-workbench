@@ -46,6 +46,7 @@ from genie_space_optimizer.optimization.benchmarking import load_benchmarks_from
 from genie_space_optimizer.optimization.preflight import _resolve_experiment_path
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
+    load_latest_artifact_payload,
     write_stage,
 )
 from genie_space_optimizer.optimization.unified_loop import (
@@ -150,6 +151,14 @@ _log(
     target_accuracy=target_accuracy,
 )
 
+prompt_matching_context = load_latest_artifact_payload(
+    spark,
+    run_id,
+    catalog,
+    schema,
+    "space_metadata",
+) or {}
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -171,6 +180,7 @@ try:
         max_attempts=max_attempts,
         target_accuracy=target_accuracy,
         apply_mode=apply_mode,
+        prompt_matching_context=prompt_matching_context,
     )
     _log(
         "Optimize loop finished",

@@ -283,11 +283,11 @@ class TestJoinSpecs:
         check = _check_by_label(calculate_score(full_space_data), "Join specifications")
         assert check["passed"] is True
 
-    def test_absent_multi_source_generates_finding(self):
+    def test_absent_multi_table_generates_finding(self):
         tables = [{"name": "t1", "columns": []}, {"name": "t2", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
-        assert "No join specifications for multi-source space" in result["findings"]
+        assert "No join specifications for multi-table space" in result["findings"]
 
     def test_absent_single_table_no_finding(self):
         tables = [{"name": "t1", "columns": []}]
@@ -295,9 +295,9 @@ class TestJoinSpecs:
         result = calculate_score(data)
         check = _check_by_label(result, "Join specifications")
         assert check["passed"] is True
-        assert "No join specifications for multi-source space" not in result["findings"]
+        assert "No join specifications for multi-table space" not in result["findings"]
 
-    def test_partial_multi_source_join_coverage_warns(self):
+    def test_partial_multi_table_join_coverage_warns(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(3)]
         data = {
             "data_sources": {"tables": tables},
@@ -310,8 +310,8 @@ class TestJoinSpecs:
         assert check["severity"] == "warning"
         assert any("relationship coverage" in w for w in result["warnings"])
 
-    def test_absent_with_table_and_metric_view(self):
-        """1 table + 1 metric view = 2 sources → finding generated."""
+    def test_absent_with_table_and_metric_view_passes(self):
+        """Metric views do not create a join-spec requirement."""
         data = {
             "data_sources": {
                 "tables": [{"name": "t1", "columns": []}],
@@ -321,7 +321,66 @@ class TestJoinSpecs:
             "benchmarks": {},
         }
         result = calculate_score(data)
-        assert "No join specifications for multi-source space" in result["findings"]
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
+        assert "No join specifications for multi-table space" not in result["findings"]
+
+    def test_absent_with_multiple_metric_views_passes(self):
+        data = {
+            "data_sources": {
+                "tables": [],
+                "metric_views": [
+                    {"identifier": "cat.sch.mv1"},
+                    {"identifier": "cat.sch.mv2"},
+                    {"identifier": "cat.sch.mv3"},
+                ],
+            },
+            "instructions": {},
+            "benchmarks": {},
+        }
+        result = calculate_score(data)
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
+        assert check["detail"] == "0 join spec(s) for 0 table(s)"
+
+    def test_metric_views_do_not_hide_missing_table_joins(self):
+        data = {
+            "data_sources": {
+                "tables": [
+                    {"name": "t1", "columns": []},
+                    {"name": "t2", "columns": []},
+                ],
+                "metric_views": [{"identifier": "cat.sch.mv1"}],
+            },
+            "instructions": {},
+            "benchmarks": {},
+        }
+        result = calculate_score(data)
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is False
+        assert "No join specifications for multi-table space" in result["findings"]
+
+    def test_metric_views_do_not_inflate_join_coverage_requirement(self):
+        data = {
+            "data_sources": {
+                "tables": [
+                    {"name": "t1", "columns": []},
+                    {"name": "t2", "columns": []},
+                    {"name": "t3", "columns": []},
+                ],
+                "metric_views": [
+                    {"identifier": "cat.sch.mv1"},
+                    {"identifier": "cat.sch.mv2"},
+                ],
+            },
+            "instructions": {"join_specs": [{"id": "j1"}, {"id": "j2"}]},
+            "benchmarks": {},
+        }
+        result = calculate_score(data)
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
+        assert check["severity"] == "pass"
+        assert check["detail"] == "2 join spec(s) for 3 table(s)"
 
 
 # ---------------------------------------------------------------------------
