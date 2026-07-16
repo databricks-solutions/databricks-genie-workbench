@@ -138,7 +138,6 @@ _preflight_check_npm_lockfiles() {
     local lockfiles=(
         "$PROJECT_DIR/package-lock.json"
         "$PROJECT_DIR/frontend/package-lock.json"
-        "$PROJECT_DIR/packages/genie-space-optimizer/package-lock.json"
     )
     local offenders=()
     local lockfile

@@ -37,7 +37,7 @@ from genie_space_optimizer.optimization.eval_runner import (
     build_eval_output_from_official,
     resolve_space_benchmark_qids,
 )
-from genie_space_optimizer.optimization.evaluation import (
+from genie_space_optimizer.optimization.benchmarking import (
     _extract_json,
     _link_prompt_to_trace,
     get_registered_prompt_name,
@@ -1845,7 +1845,6 @@ def run_unified_optimization_loop(
     *,
     run_id: str,
     space_id: str,
-    domain: str,
     benchmarks: list[dict[str, Any]],
     catalog: str,
     schema: str,
@@ -1853,11 +1852,8 @@ def run_unified_optimization_loop(
     max_attempts: int,
     target_accuracy: float,
     apply_mode: str = "genie_config",
-    triggered_by: str = "",
-    human_corrections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run baseline eval plus bounded LLM patch attempts."""
-    _ = (domain, triggered_by, human_corrections)
     target_accuracy = target_accuracy_percent(float(target_accuracy))
     allowed_levers = [int(l) for l in levers if int(l) in {1, 2, 3, 4, 5, 6}]
     if not allowed_levers:

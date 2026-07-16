@@ -327,31 +327,7 @@ class TestPreflightValidateBenchmarks:
 
 
 # ---------------------------------------------------------------------------
-# Step 5: preflight_load_human_feedback
-# ---------------------------------------------------------------------------
-
-class TestPreflightLoadHumanFeedback:
-    def test_returns_empty_corrections_on_failure(self):
-        from genie_space_optimizer.optimization.preflight import preflight_load_human_feedback
-
-        result = preflight_load_human_feedback(
-            MagicMock(), "run-1", "space-1", "cat", "gold", "default",
-        )
-        assert "human_corrections" in result
-        assert isinstance(result["human_corrections"], list)
-
-    def test_prints_feedback_block(self, capsys):
-        from genie_space_optimizer.optimization.preflight import preflight_load_human_feedback
-
-        preflight_load_human_feedback(
-            MagicMock(), "run-1", "space-1", "cat", "gold", "default",
-        )
-        captured = capsys.readouterr()
-        assert "HUMAN FEEDBACK" in captured.out
-
-
-# ---------------------------------------------------------------------------
-# Step 6: preflight_setup_experiment
+# preflight_setup_experiment
 # ---------------------------------------------------------------------------
 
 class TestPreflightSetupExperiment:
@@ -512,7 +488,7 @@ class TestSetSqlContext:
     """Direct unit tests for the _set_sql_context helper."""
 
     def test_sets_catalog_and_schema(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "my_catalog", "my_schema")
@@ -522,7 +498,7 @@ class TestSetSqlContext:
         assert "USE SCHEMA" in calls[1] and "my_schema" in calls[1]
 
     def test_skips_when_catalog_empty(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "", "my_schema")
@@ -530,7 +506,7 @@ class TestSetSqlContext:
         assert "USE SCHEMA" in str(spark.sql.call_args)
 
     def test_skips_when_schema_empty(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "my_catalog", "")
@@ -538,98 +514,20 @@ class TestSetSqlContext:
         assert "USE CATALOG" in str(spark.sql.call_args)
 
     def test_skips_when_both_empty(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "", "")
         spark.sql.assert_not_called()
 
     def test_escapes_backticks_in_identifiers(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "cat`alog", "sch`ema")
         calls = [str(c) for c in spark.sql.call_args_list]
         assert "cat``alog" in calls[0]
         assert "sch``ema" in calls[1]
-
-
-# ---------------------------------------------------------------------------
-# Wrapper equivalence
-# ---------------------------------------------------------------------------
-
-class TestPreflightWrapperEquivalence:
-    @patch("genie_space_optimizer.optimization.preflight.preflight_setup_experiment")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_load_human_feedback")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_validate_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_generate_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_collect_uc_metadata")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_fetch_config")
-    def test_wrapper_calls_all_6_substeps(self, mock_cfg, mock_uc, mock_gen, mock_val, mock_fb, mock_exp):
-        from genie_space_optimizer.optimization.preflight import run_preflight
-
-        mock_cfg.return_value = {
-            "config": {}, "snapshot": {}, "genie_table_refs": [],
-            "domain": "default", "apply_mode": "genie_config", "configured_cols": 0,
-        }
-        mock_uc.return_value = {"uc_columns": [], "uc_tags": [], "uc_routines": [], "uc_fk": []}
-        mock_gen.return_value = {"benchmarks": [{"q": "test"}], "regenerated": False}
-        mock_val.return_value = {"benchmarks": [{"q": "test"}], "pre_count": 1, "invalid_errors": []}
-        mock_fb.return_value = {"human_corrections": []}
-        mock_exp.return_value = {
-            "model_id": "mv-1", "experiment_name": "/exp",
-            "experiment_id": "exp-1", "prompt_registrations": [],
-        }
-
-        config, benchmarks, model_id, exp_name, corrections = run_preflight(
-            MagicMock(), MagicMock(), "run-1", "space-1", "cat", "gold", "revenue",
-        )
-
-        mock_cfg.assert_called_once()
-        mock_uc.assert_called_once()
-        mock_gen.assert_called_once()
-        mock_val.assert_called_once()
-        mock_fb.assert_called_once()
-        mock_exp.assert_called_once()
-
-        assert model_id == "mv-1"
-        assert exp_name == "/exp"
-        assert isinstance(config, dict)
-        assert isinstance(benchmarks, list)
-        assert isinstance(corrections, list)
-
-    @patch("genie_space_optimizer.optimization.preflight.preflight_setup_experiment")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_load_human_feedback")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_validate_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_generate_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_collect_uc_metadata")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_fetch_config")
-    def test_wrapper_forwards_warehouse_id_to_warehouse_aware_substeps(
-        self, mock_cfg, mock_uc, mock_gen, mock_val, mock_fb, mock_exp
-    ):
-        from genie_space_optimizer.optimization.preflight import run_preflight
-
-        mock_cfg.return_value = {
-            "config": {}, "snapshot": {}, "genie_table_refs": [],
-            "domain": "default", "apply_mode": "genie_config", "configured_cols": 0,
-        }
-        mock_uc.return_value = {"uc_columns": [], "uc_tags": [], "uc_routines": [], "uc_fk": []}
-        mock_gen.return_value = {"benchmarks": [{"q": "test"}], "regenerated": False}
-        mock_val.return_value = {"benchmarks": [{"q": "test"}], "pre_count": 1, "invalid_errors": []}
-        mock_fb.return_value = {"human_corrections": []}
-        mock_exp.return_value = {
-            "model_id": "mv-1", "experiment_name": "/exp",
-            "experiment_id": "exp-1", "prompt_registrations": [],
-        }
-
-        run_preflight(
-            MagicMock(), MagicMock(), "run-1", "space-1", "cat", "gold", "revenue",
-            warehouse_id="wh-test",
-        )
-
-        assert mock_uc.call_args.kwargs["warehouse_id"] == "wh-test"
-        assert mock_gen.call_args.kwargs["warehouse_id"] == "wh-test"
-        assert mock_val.call_args.kwargs["warehouse_id"] == "wh-test"
 
 
 def test_update_run_status_retries_delta_concurrent_append(monkeypatch) -> None:

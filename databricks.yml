@@ -21,7 +21,6 @@ sync:
     - dashboards/**
     - packages/genie-space-optimizer/src/genie_space_optimizer/jobs
     - packages/genie-space-optimizer/src/genie_space_optimizer/jobs/**
-    - packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py
   exclude:
     - backend/**
     - frontend/**
@@ -29,7 +28,6 @@ sync:
     - sql/**
     - TODO/**
     - packages/genie-space-optimizer/tests/**
-    - packages/genie-space-optimizer/src/genie_space_optimizer/ui/**
     - packages/genie-space-optimizer/src/genie_space_optimizer/backend/**
     - packages/genie-space-optimizer/node_modules/**
     - packages/genie-space-optimizer/.build/**
@@ -162,7 +160,6 @@ resources:
               levers: "{{job.parameters.levers}}"
               max_attempts: "{{job.parameters.max_attempts}}"
               target_accuracy: "{{job.parameters.target_accuracy}}"
-              triggered_by: "{{job.parameters.triggered_by}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
           environment_key: default

@@ -17,10 +17,9 @@ server-side ``assessment`` (GOOD/BAD/NEEDS_REVIEW), accuracy is
 ``num_correct / num_questions``, and lever routing reads ``assessment_reasons``.
 We never double-run the retired in-process scorer path.
 
-Result mapping reuses GSO's EXISTING flat per-question result-row dict shape (the
-MLflow-flattened form consumed across ``evaluation.py`` / the harness) so no
-parallel per-question schema is introduced. The run-level summary is returned in
-:class:`EvalRunResult`.
+Result mapping reuses GSO's existing flat per-question result-row shape consumed
+by the unified loop and state writer, so no parallel schema is introduced. The
+run-level summary is returned in :class:`EvalRunResult`.
 
 Verified against the installed SDK (v0.102.0,
 ``databricks/sdk/service/dashboards.py``):
@@ -50,9 +49,7 @@ from genie_space_optimizer.optimization.genie_eval_taxonomy import (
 
 logger = logging.getLogger(__name__)
 
-# ── Gate labels (mirror the existing ``eval_scope`` vocabulary) ────────────
-SLICE = "slice"
-P0 = "p0"
+# The active workflow evaluates the full benchmark corpus.
 FULL = "full"
 
 EVAL_SOURCE = "official_benchmark_api"
@@ -62,31 +59,6 @@ _SUCCESS_STATUS = "DONE"
 _TERMINAL_STATUSES = frozenset(
     {"DONE", "EVALUATION_CANCELLED", "EVALUATION_FAILED", "EVALUATION_TIMEOUT"}
 )
-
-
-# ── Eval wall-clock accumulator (budget guard, §3.4) ───────────────────────
-# Sequential eval-runs ⇒ the budget is the sum of every run's wall-clock. The
-# lever loop runs slice/P0/full evals inside one gate call across several
-# return paths, so we accumulate the official eval-run wall-clock here (reset
-# per iteration by the loop) rather than timing the whole gate call (which
-# would also count propagation waits). Single-threaded loop ⇒ a module-level
-# accumulator is safe.
-_EVAL_WALL_CLOCK = {"seconds": 0.0}
-
-
-def reset_eval_wall_clock() -> None:
-    """Reset the per-iteration official eval-run wall-clock accumulator."""
-    _EVAL_WALL_CLOCK["seconds"] = 0.0
-
-
-def record_eval_wall_clock(seconds: float) -> None:
-    """Add one official eval-run's wall-clock to the accumulator."""
-    _EVAL_WALL_CLOCK["seconds"] += max(0.0, float(seconds))
-
-
-def accumulated_eval_wall_clock() -> float:
-    """Total official eval-run wall-clock since the last reset."""
-    return _EVAL_WALL_CLOCK["seconds"]
 
 
 def _status_str(status: Any) -> str:
@@ -195,9 +167,8 @@ class EvalRunResult:
 class EvalRunner(Protocol):
     """The single seam the optimizer evaluates through.
 
-    Implementations run a benchmark eval over ``space_id``. ``benchmark_question_ids``
-    selects a subset (e.g. a slice or P0 gate); ``None`` evaluates every benchmark
-    question in the space.
+    Implementations run a benchmark eval over ``space_id``.
+    ``benchmark_question_ids=None`` evaluates every benchmark question.
     """
 
     def run(
@@ -319,13 +290,11 @@ def map_eval_detail_to_row(summary: Any, detail: Any) -> dict[str, Any]:
         # Legacy verdict keys — both flattened forms recognised by ``_rc_str``.
         "result_correctness/value": rc_value,
         "feedback/result_correctness/value": rc_value,
-        # Neutral arbiter verdict (the arbiter judge is retired; no rescue path).
-        "arbiter/value": "skipped",
         # Generated / expected SQL in the existing response/expectations shape.
         "response": {"response": actual_sql, "comparison": {}},
         "expectations": {"expected_response": expected_sql},
         # ── Legacy flat aliases (row-schema compatibility, no downstream drift) ──
-        # The active harness/state readers consume these flat keys, not the
+        # The active unified-loop/state readers consume these flat keys, not the
         # nested forms: ``_get_question_text`` reads ``inputs/question``,
         # ``_get_genie_sql`` reads ``outputs/response``, ``_get_expected_sql``
         # reads ``inputs/expected_response``, and feature-mining reads
@@ -508,30 +477,6 @@ class OfficialBenchmarkRunner:
                 logger.debug("eval-run progress callback failed for %s", event)
 
 
-def maybe_build_official_runner(
-    w: Any,
-    *,
-    progress: Callable[[str, dict], None] | None = None,
-) -> OfficialBenchmarkRunner | None:
-    """Return an :class:`OfficialBenchmarkRunner` when it should be the active path.
-
-    Returns ``None`` (⇒ caller keeps the legacy in-process path) when the feature
-    switch ``USE_OFFICIAL_BENCHMARK_RUNNER`` is off or ``w`` is not a real
-    :class:`~databricks.sdk.WorkspaceClient`. Gating on the concrete client type is
-    what keeps the unit/integration suites — which pass ``MagicMock`` workspaces —
-    on the legacy path while production (a real client) gets the official runner.
-    """
-    if not getattr(_config, "USE_OFFICIAL_BENCHMARK_RUNNER", True):
-        return None
-    try:
-        from databricks.sdk import WorkspaceClient
-    except Exception:  # pragma: no cover - SDK always present in deploy
-        return None
-    if not isinstance(w, WorkspaceClient):
-        return None
-    return OfficialBenchmarkRunner(w, progress=progress)
-
-
 _EXPLICIT_SPACE_ID_KEYS = ("space_question_id", "genie_question_id", "benchmark_question_id")
 
 
@@ -642,27 +587,19 @@ def build_eval_output_from_official(
     eval_scope: str,
     model_id: str | None = None,
 ) -> dict[str, Any]:
-    """Map an :class:`EvalRunResult` into the legacy ``run_evaluation`` output dict.
+    """Map an :class:`EvalRunResult` into the unified-loop output dictionary.
 
-    Keeps every key the harness / baseline / finalize consume so the official
-    runner is a drop-in for the in-process path. Acceptance already gates on the
-    post-arbiter accuracy delta (``acceptance_policy.decide_acceptance``), so the
-    authoritative field is ``overall_accuracy``; per-judge thresholds are derived
-    only from ``result_correctness`` here. Reworking acceptance / per-judge
-    thresholds is **Phase 3** — this mapper deliberately does not touch them.
+    ``overall_accuracy`` is authoritative and ``result_correctness`` remains as a
+    flat compatibility carrier for state and Workbench readers.
 
     **Fail-closed (D1):** a non-DONE / partial / empty run NEVER reads as a
     passing gate. Such a result maps to accuracy ``0``, every requested question
-    id as a failure, and ``thresholds_met=False`` so the slice / P0 / full gates
-    all reject and the iteration rolls back.
+    id as a failure, and ``thresholds_met=False`` so the iteration rejects.
     """
-    from genie_space_optimizer.optimization.evaluation import (
+    from genie_space_optimizer.optimization.benchmarking import (
         all_thresholds_met,
         normalize_scores,
     )
-
-    # Sequential eval-runs ⇒ accumulate wall-clock for the budget guard (§3.4).
-    record_eval_wall_clock(result.wall_clock_seconds)
 
     if not result.is_complete_success:
         # Map ALL requested ids to failures (fall back to row ids, else what the
@@ -674,8 +611,6 @@ def build_eval_output_from_official(
                 str(r.get("question_id") or "") for r in result.rows if r.get("question_id")
             ]
         zero_scores = normalize_scores({"result_correctness": 0.0})
-        zero_scores["_pre_arbiter/result_correctness"] = 0.0
-        zero_scores["_pre_arbiter/overall_accuracy"] = 0.0
         logger.warning(
             "Official eval-run %s did not complete cleanly (status=%s, "
             "num_done=%d/%d) — failing the gate closed (accuracy=0, %d failures).",
@@ -692,12 +627,9 @@ def build_eval_output_from_official(
             "experiment_id": "",
             "iteration": iteration,
             "overall_accuracy": 0.0,
-            "pre_arbiter_accuracy": 0.0,
             "total_questions": result.num_questions or len(failure_ids),
             "evaluated_count": result.num_questions or len(failure_ids),
             "correct_count": 0,
-            "both_correct_count": 0,
-            "both_correct_rate": 0.0,
             "scores": zero_scores,
             "thresholds_met": False,
             "thresholds_passed": False,
@@ -705,15 +637,10 @@ def build_eval_output_from_official(
             "failures": failure_ids,
             "failure_question_ids": failure_ids,
             "remaining_failures": failure_ids,
-            "arbiter_verdicts": {},
-            "arbiter_actions": [],
             "model_id": model_id,
             "rows": result.rows,
             "trace_map": {},
             "excluded_count": 0,
-            "row_exclusions": [],
-            "arbiter_overridden_qids": [],
-            "soft_signal_qids": [],
             "eval_run_id": result.eval_run_id,
             "eval_run_status": result.status,
             "eval_run_failed": True,
@@ -727,9 +654,6 @@ def build_eval_output_from_official(
     frac = result.accuracy_fraction
     per_judge = {"result_correctness": frac}
     scores_100 = normalize_scores(per_judge)
-    # Parity with the in-process payload: pre-arbiter == post-arbiter (no arbiter).
-    scores_100["_pre_arbiter/result_correctness"] = scores_100.get("result_correctness", 0.0)
-    scores_100["_pre_arbiter/overall_accuracy"] = scores_100.get("result_correctness", 0.0)
     thresholds_passed = all_thresholds_met(scores_100)
 
     failure_ids = result.failure_question_ids
@@ -741,12 +665,9 @@ def build_eval_output_from_official(
         "experiment_id": "",
         "iteration": iteration,
         "overall_accuracy": result.accuracy,
-        "pre_arbiter_accuracy": result.accuracy,
         "total_questions": result.num_questions,
         "evaluated_count": result.num_done or result.num_questions,
         "correct_count": result.num_correct,
-        "both_correct_count": result.num_correct,
-        "both_correct_rate": result.accuracy,
         "scores": scores_100,
         "thresholds_met": thresholds_passed,
         "thresholds_passed": thresholds_passed,
@@ -754,15 +675,10 @@ def build_eval_output_from_official(
         "failures": failure_ids,
         "failure_question_ids": failure_ids,
         "remaining_failures": failure_ids,
-        "arbiter_verdicts": {},
-        "arbiter_actions": [],
         "model_id": model_id,
         "rows": result.rows,
         "trace_map": {},
         "excluded_count": 0,
-        "row_exclusions": [],
-        "arbiter_overridden_qids": [],
-        "soft_signal_qids": [],
         # Native official run-level fields (additive — consumed by Phase 6 UI).
         "eval_run_id": result.eval_run_id,
         "eval_run_status": result.status,

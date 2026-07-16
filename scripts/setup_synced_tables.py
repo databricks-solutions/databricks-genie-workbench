@@ -41,9 +41,7 @@ TABLES = [
     ("genie_opt_stages",             ["run_id", "stage", "started_at"]),
     ("genie_opt_iterations",         ["run_id", "iteration", "eval_scope"]),
     ("genie_opt_patches",            ["run_id", "iteration", "lever", "patch_index"]),
-    ("genie_opt_provenance",         ["run_id", "iteration", "lever", "question_id", "judge"]),
-    ("genie_opt_suggestions",        ["suggestion_id"]),
-    ("genie_opt_data_access_grants", ["grant_id"]),
+    ("genie_opt_benchmark_mutations", ["run_id", "question_id", "op"]),
 ]
 
 SYNCED_SUFFIX = "_synced"

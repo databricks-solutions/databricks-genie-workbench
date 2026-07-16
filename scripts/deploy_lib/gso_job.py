@@ -62,7 +62,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "levers", "max_attempts", "target_accuracy",
-            "triggered_by", "warehouse_id", "llm_model",
+            "warehouse_id", "llm_model",
         ],
     ),
     (

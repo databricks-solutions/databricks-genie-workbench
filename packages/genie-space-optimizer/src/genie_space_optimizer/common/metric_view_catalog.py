@@ -7,8 +7,8 @@ its ``view_text`` payload parses as metric-view YAML (a ``source`` plus
 
 Lives in ``common`` rather than ``optimization.preflight`` so the same
 helper can be invoked by every stage that needs the answer (preflight,
-enrichment, follow-up refreshes) without dragging the entire preflight
-module into harness's import graph.
+enrichment, follow-up refreshes) without importing the entire preflight
+module.
 
 Detection is *permissive* — false negatives only, never false positives.
 A failed DESCRIBE, a non-JSON envelope, or a YAML that doesn't match the
@@ -112,7 +112,7 @@ def detect_metric_views_via_catalog_with_outcomes(
     import yaml as _yaml
 
     if exec_sql is None:
-        from genie_space_optimizer.optimization.evaluation import _exec_sql as _exec
+        from genie_space_optimizer.optimization.benchmarking import _exec_sql as _exec
     else:
         _exec = exec_sql
 

@@ -81,7 +81,7 @@ def write_scan_snapshot(
     """Persist (or update) the IQ Scan snapshot for a given run and phase.
 
     Uses ``MERGE INTO`` keyed on ``(run_id, phase)`` so re-runs of the same
-    phase — which happen when the harness retries preflight or when the
+    phase — which happen when the workflow retries preflight or when the
     postflight hook fires twice — produce exactly one row per
     ``(run_id, phase)`` pair.
 

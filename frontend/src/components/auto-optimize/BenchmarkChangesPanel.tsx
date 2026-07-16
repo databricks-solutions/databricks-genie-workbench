@@ -1,7 +1,22 @@
-import { useEffect, useState } from "react"
-import { PlusCircle, MinusCircle, RefreshCw, AlertTriangle, Wrench, Target, CheckCircle2 } from "lucide-react"
+import { useEffect, useId, useState } from "react"
+import {
+  PlusCircle,
+  MinusCircle,
+  RefreshCw,
+  AlertTriangle,
+  Wrench,
+  Target,
+  CheckCircle2,
+  ChevronDown,
+  ShieldCheck,
+} from "lucide-react"
 import { getAutoOptimizeBenchmarkChanges } from "@/lib/api"
-import type { GSOBenchmarkChanges, GSOBenchmarkMutation, GSOBenchmarkQC } from "@/types"
+import type {
+  GSOBenchmarkChanges,
+  GSOBenchmarkMutation,
+  GSOBenchmarkQC,
+  GSOBenchmarkQualityFinding,
+} from "@/types"
 
 interface BenchmarkChangesPanelProps {
   runId: string
@@ -70,34 +85,39 @@ export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkCha
   return (
     <PanelShell counts={changes?.counts}>
       {qc && <QcMeter qc={qc} />}
+      {qc && <BenchmarkQuality qc={qc} />}
 
       {total > 0 ? (
         <>
           <p className="text-xs text-muted">
-            GSO pushes its EXPLAIN-validated benchmark questions into your live Genie Space (additive,
-            merge-only) and recommends pruning invalid ones. Discarding the run reverts these from the
-            intake snapshot.
+            GSO pushes its quality-reviewed, SQL-valid benchmark questions into your live Genie Space
+            (additive, merge-only) and excludes hard failures from evaluation. Discarding the run reverts
+            additions and changes from the intake snapshot.
           </p>
 
           <ChangeGroup
             title="Added"
             icon={<PlusCircle className="h-4 w-4 text-emerald-500" />}
             mutations={changes?.added ?? []}
+            defaultExpanded={false}
           />
           <ChangeGroup
             title="Changed"
             icon={<RefreshCw className="h-4 w-4 text-blue-400" />}
             mutations={changes?.changed ?? []}
+            defaultExpanded
           />
           <ChangeGroup
             title="Removed"
             icon={<MinusCircle className="h-4 w-4 text-red-400" />}
             mutations={changes?.removed ?? []}
+            defaultExpanded
           />
           <ChangeGroup
             title="Prune recommended"
             icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
             mutations={changes?.pruneRecommended ?? []}
+            defaultExpanded
           />
         </>
       ) : (
@@ -235,7 +255,7 @@ function QcMeter({ qc }: { qc: GSOBenchmarkQC }) {
             }`}
           >
             {qc.finalValidity ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
-            {qc.finalValidity ? "Benchmark valid" : "Benchmark invalid"}
+            {qc.finalValidity ? "SQL valid" : "SQL invalid"}
           </span>
         )}
         {stillInvalid > 0 && (
@@ -255,29 +275,194 @@ function QcMeter({ qc }: { qc: GSOBenchmarkQC }) {
   )
 }
 
+function BenchmarkQuality({ qc }: { qc: GSOBenchmarkQC }) {
+  const findings = qc.qualityFindings ?? []
+  const counts = qc.qualityCounts
+  if (!counts && findings.length === 0 && !qc.qualityReviewStatus) return null
+
+  const errors = findings.filter((f) => f.severity === "error")
+  const warnings = findings.filter((f) => f.severity !== "error")
+  const coverage = qc.semanticReviewCoverage == null
+    ? null
+    : Math.round(qc.semanticReviewCoverage * 100)
+
+  return (
+    <div className="space-y-3 rounded-lg border border-default bg-elevated/20 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+            <ShieldCheck className="h-3.5 w-3.5 text-cyan-500" />
+            Benchmark quality
+          </div>
+          <p className="mt-1 text-[11px] text-muted">
+            Question clarity, ground-truth alignment, SQL validity, and data checks
+          </p>
+        </div>
+        {counts && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-medium">
+            <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-600 dark:text-emerald-400">
+              {counts.trusted} trusted
+            </span>
+            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-amber-600 dark:text-amber-400">
+              {counts.warnings} warnings
+            </span>
+            <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-red-600 dark:text-red-400">
+              {counts.excluded} excluded
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-default pt-3 text-[11px] text-muted">
+        {coverage != null && <span>Semantic review coverage: <strong className="text-primary">{coverage}%</strong></span>}
+        {qc.qualityReviewVersion && <span>Policy: {qc.qualityReviewVersion}</span>}
+        {qc.qualityReviewStatus === "degraded" && (
+          <span className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400">
+            <AlertTriangle className="h-3 w-3" />
+            Review incomplete — treat the accuracy score with caution
+          </span>
+        )}
+      </div>
+
+      <QualityFindingGroup
+        title="Excluded from evaluation"
+        findings={errors}
+        tone="error"
+        defaultExpanded
+      />
+      <QualityFindingGroup
+        title="Warnings"
+        findings={warnings}
+        tone="warning"
+        defaultExpanded={false}
+      />
+    </div>
+  )
+}
+
+function QualityFindingGroup({
+  title,
+  findings,
+  tone,
+  defaultExpanded,
+}: {
+  title: string
+  findings: GSOBenchmarkQualityFinding[]
+  tone: "error" | "warning"
+  defaultExpanded: boolean
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const contentId = useId()
+  if (findings.length === 0) return null
+
+  return (
+    <div className="border-t border-default pt-2">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 rounded px-1 py-1 text-left hover:bg-elevated/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60"
+        aria-expanded={expanded}
+        aria-controls={contentId}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span className={`text-[11px] font-semibold uppercase tracking-wider ${tone === "error" ? "text-red-500" : "text-amber-600 dark:text-amber-400"}`}>
+          {title} ({findings.length})
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 text-muted transition-transform ${expanded ? "rotate-180" : ""}`} />
+      </button>
+      {expanded && (
+        <div id={contentId} className="mt-2 space-y-2">
+          {findings.map((finding, index) => (
+            <QualityFindingRow key={`${finding.question_id}-${finding.code}-${index}`} finding={finding} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function QualityFindingRow({ finding }: { finding: GSOBenchmarkQualityFinding }) {
+  const code = finding.code.toLowerCase().replaceAll("_", " ")
+  const currentSql = finding.before?.sql
+  return (
+    <div className="rounded-md border border-default bg-surface/70 px-3 py-2 text-xs">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <span className="font-medium text-primary">{finding.question || finding.question_id}</span>
+        <span className="rounded-full border border-default bg-elevated px-2 py-0.5 text-[10px] font-medium capitalize text-muted">
+          {code}
+        </span>
+      </div>
+      <p className="mt-1 text-[11px] leading-relaxed text-muted">{finding.explanation}</p>
+      {currentSql && (
+        <div className={`mt-2 grid gap-2 ${finding.proposed_sql ? "md:grid-cols-2" : ""}`}>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Current ground truth</p>
+            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-elevated p-2 font-mono text-[10px] text-primary">
+              {currentSql}
+            </pre>
+          </div>
+          {finding.proposed_sql && (
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-600 dark:text-cyan-400">Suggested ground truth</p>
+              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-cyan-500/5 p-2 font-mono text-[10px] text-primary ring-1 ring-cyan-500/20">
+                {finding.proposed_sql}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+      {(finding.proposed_question || (finding.proposed_sql && !currentSql)) && (
+        <div className="mt-2 border-l-2 border-cyan-500/50 pl-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-600 dark:text-cyan-400">Suggested repair</p>
+          {finding.proposed_question && <p className="mt-1 text-[11px] text-primary">{finding.proposed_question}</p>}
+          {finding.proposed_sql && !currentSql && (
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-elevated p-2 font-mono text-[10px] text-primary">
+              {finding.proposed_sql}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ChangeGroup({
   title,
   icon,
   mutations,
+  defaultExpanded,
 }: {
   title: string
   icon: React.ReactNode
   mutations: GSOBenchmarkMutation[]
+  defaultExpanded: boolean
 }) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const contentId = useId()
   if (mutations.length === 0) return null
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        {icon}
-        <h4 className="text-xs font-semibold text-primary uppercase tracking-wider">
-          {title} ({mutations.length})
-        </h4>
-      </div>
-      <div className="space-y-2">
-        {mutations.map((m, i) => (
-          <MutationRow key={`${m.questionId ?? "q"}-${i}`} mutation={m} />
-        ))}
-      </div>
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 rounded-md px-1 py-1 text-left hover:bg-elevated/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60"
+        aria-expanded={expanded}
+        aria-controls={contentId}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span className="flex items-center gap-2">
+          {icon}
+          <span className="text-xs font-semibold uppercase tracking-wider text-primary">
+            {title} ({mutations.length})
+          </span>
+        </span>
+        <ChevronDown className={`h-4 w-4 text-muted transition-transform ${expanded ? "rotate-180" : ""}`} />
+      </button>
+      {expanded && (
+        <div id={contentId} className="space-y-2">
+          {mutations.map((m, i) => (
+            <MutationRow key={`${m.questionId ?? "q"}-${i}`} mutation={m} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

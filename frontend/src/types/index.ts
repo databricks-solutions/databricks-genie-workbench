@@ -333,7 +333,7 @@ export interface GSORunStatus {
   startedAt: string | null
   completedAt: string | null
   baselineScore: number | null
-  // Canonical "arbiter adjusted accuracy" headline. The backend guarantees
+  // Canonical official full-corpus benchmark accuracy headline. The backend guarantees
   // ``optimizedScore >= baselineScore`` (regressions are clamped to baseline,
   // since regressions don't get posted) and ``optimizedScore`` is null while
   // no full-scope iteration > 0 has been evaluated yet.
@@ -479,13 +479,11 @@ export interface GSOIterationResult {
   overall_accuracy: number
   // Bug #2 denominator contract. evaluated_count is the denominator of
   // overall_accuracy; total_questions is the pre-exclusion count kept for
-  // back-compat. excluded_count reflects runtime exclusions;
-  // quarantined_benchmarks_json captures pre-evaluation quarantines.
+  // back-compat. excluded_count reflects runtime exclusions.
   total_questions: number
   evaluated_count?: number | null
   correct_count: number
   excluded_count?: number | null
-  quarantined_benchmarks_json?: string | null
   rolled_back?: boolean | null
   // GSO v2 Phase 6 — official assessment counts (replace per-judge scores_json).
   // num_correct / num_questions mirror correct_count / total_questions;
@@ -567,20 +565,6 @@ export interface GSOLoopStateResponse {
   attempts: GSOAttempt[]
 }
 
-export interface GSOSuggestion {
-  suggestionId: string
-  runId: string
-  spaceId: string
-  iteration: number | null
-  suggestionType: string
-  title: string
-  rationale: string | null
-  definition: string | null
-  affectedQuestions: string[]
-  estimatedImpact: string | null
-  status: string
-}
-
 // GSO v2 Phase 6 — official per-question assessment. The native Benchmark API
 // verdict drives a three-valued display state (GOOD/BAD/NEEDS_REVIEW); a row
 // is never collapsed to a plain pass/fail boolean.
@@ -651,6 +635,45 @@ export interface GSOBenchmarkMutation {
   loggedAt: string | null
 }
 
+export type GSOBenchmarkQualityCategory =
+  | "question_quality"
+  | "question_sql_alignment"
+  | "sql_validity"
+  | "data_validity"
+  | "review_system"
+  | string
+
+export interface GSOBenchmarkQualityFinding {
+  question_id: string
+  question: string
+  source: string
+  category: GSOBenchmarkQualityCategory
+  code: string
+  severity: "warning" | "error" | string
+  confidence: number
+  explanation: string
+  evidence?: unknown
+  before?: GSOBenchmarkQuestionState | null
+  proposed_question?: string | null
+  proposed_sql?: string | null
+}
+
+export interface GSOBenchmarkQualityCounts {
+  total: number
+  trusted: number
+  warnings: number
+  excluded: number
+  review_not_run: number
+}
+
+export interface GSOBenchmarkProposedChange {
+  question_id?: string | null
+  question?: string | null
+  proposed_question?: string | null
+  proposed_sql?: string | null
+  reason?: string | null
+}
+
 // GSO v2 (item 7) — benchmark QC metadata from 01_benchmark_qc_and_repair
 // (benchmark_qc artifact): the 30–40 window recommendation, repair-try usage,
 // and validity findings. `window` is the raw recommendation payload (status +
@@ -670,6 +693,12 @@ export interface GSOBenchmarkQC {
   gtCorrectionCandidates: unknown[]
   terminalReason: string | null
   stillInvalidIds: string[] | null
+  qualityReviewVersion?: string | null
+  qualityReviewStatus?: "complete" | "degraded" | string | null
+  semanticReviewCoverage?: number | null
+  qualityCounts?: GSOBenchmarkQualityCounts | null
+  qualityFindings?: GSOBenchmarkQualityFinding[]
+  proposedChanges?: GSOBenchmarkProposedChange[]
 }
 
 export interface GSOBenchmarkChanges {

@@ -565,16 +565,6 @@ export async function getAutoOptimizePatches(runId: string): Promise<GSOPatch[]>
   }
 }
 
-export async function getAutoOptimizeSuggestions(runId: string): Promise<import("@/types").GSOSuggestion[]> {
-  try {
-    return await fetchWithTimeout<import("@/types").GSOSuggestion[]>(
-      `${API_BASE}/auto-optimize/runs/${runId}/suggestions`
-    )
-  } catch {
-    return []
-  }
-}
-
 // GSO v2 Phase 6 (§3.5) — benchmark provenance ledger (added/removed/changed
 // questions GSO made in the live Genie Space). GSO v2 (item 7): the response
 // also carries `qc` (30–40 window status, repair tries, validity findings).

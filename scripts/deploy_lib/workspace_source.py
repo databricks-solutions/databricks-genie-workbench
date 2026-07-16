@@ -99,8 +99,6 @@ def should_copy(path: Path, repo_root: Path) -> bool:
         return False
     if rel.startswith("packages/genie-space-optimizer/tests/"):
         return False
-    if rel.startswith("packages/genie-space-optimizer/browser-test-output/"):
-        return False
     if rel.startswith("packages/genie-space-optimizer/.build/"):
         return False
     return True

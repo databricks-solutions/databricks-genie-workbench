@@ -14,13 +14,13 @@
 # MAGIC
 # MAGIC Validate the benchmark set → **bounded inline repair/prune** (≤
 # MAGIC `benchmark_repair_max_tries`, default 3) → re-validate → push the
-# MAGIC EXPLAIN-validated set into the LIVE space (additive/merge-only) → flow
+# MAGIC quality-reviewed, SQL-valid set into the LIVE space (additive/merge-only) → flow
 # MAGIC **unconditionally** into `optimize`. Only a benchmark still invalid after K
 # MAGIC tries hard-fails with `BENCHMARK_UNREPAIRABLE`.
 # MAGIC
 # MAGIC The bounded try-counting control loop lives in
 # MAGIC `optimization.benchmark_repair.run_bounded_benchmark_repair`; this task
-# MAGIC wires it to the existing EXPLAIN validator + benchmark synthesis + the
+# MAGIC wires it to the canonical benchmark-quality reviewer + benchmark synthesis + the
 # MAGIC Phase-2 live-space push (`preflight_push_benchmarks_to_space`) and the
 # MAGIC `genie_opt_benchmark_mutations` ledger — no re-invention.
 
@@ -55,13 +55,15 @@ from genie_space_optimizer.optimization.benchmark_repair import (
     default_id_of,
     run_bounded_benchmark_repair,
 )
-from genie_space_optimizer.optimization.benchmarks import validate_benchmarks
-from genie_space_optimizer.optimization.evaluation import generate_benchmarks
+from genie_space_optimizer.optimization.benchmark_quality import (
+    QUALITY_REVIEW_VERSION,
+    review_benchmark_quality,
+)
+from genie_space_optimizer.optimization.benchmarking import generate_benchmarks
 from genie_space_optimizer.optimization.preflight import (
     preflight_collect_uc_metadata,
     preflight_fetch_config,
     preflight_generate_benchmarks,
-    preflight_load_human_feedback,
     preflight_push_benchmarks_to_space,
     preflight_setup_experiment,
 )
@@ -179,22 +181,71 @@ except Exception as exc:
 # MAGIC %md
 # MAGIC ## Bounded inline repair/prune (≤ benchmark_repair_max_tries)
 # MAGIC
-# MAGIC EXPLAIN-validate the set, regenerate/prune the invalid subset, and
-# MAGIC re-validate — bounded by `benchmark_repair_max_tries`. A try is consumed
-# MAGIC only when ≥1 question is still invalid after re-validation (progress §5).
+# MAGIC Quality-review the set, regenerate/prune the invalid subset, and
+# MAGIC re-review — bounded by `benchmark_repair_max_tries`. The quality review
+# MAGIC includes SQL/data validity, question clarity, and question↔SQL alignment.
+# MAGIC A try is consumed only when ≥1 question is still invalid after
+# MAGIC re-validation (progress §5).
 
 # COMMAND ----------
 
 
+_quality_findings_by_key: dict[str, dict] = {}
+_quality_results_by_id: dict[str, dict] = {}
+_rejected_benchmarks_by_id: dict[str, dict] = {}
+_quality_review_status = "complete"
+_semantic_review_coverage = 1.0
+
+
 def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
-    """EXPLAIN-validate ``bms`` and partition into (valid, invalid)."""
-    results = validate_benchmarks(
-        bms, spark, catalog=catalog, gold_schema=schema,
-        w=w, warehouse_id=warehouse_id, config=_config,
+    """Comprehensively review ``bms`` and partition into eligible/excluded."""
+    global _quality_review_status, _semantic_review_coverage
+
+    review = review_benchmark_quality(
+        bms,
+        spark,
+        catalog=catalog,
+        schema=schema,
+        w=w,
+        warehouse_id=warehouse_id,
+        config=_config,
+        uc_columns=_uc_columns,
+        uc_routines=_uc_routines,
     )
-    valid = [b for b, r in zip(bms, results) if r.get("valid")]
-    invalid = [b for b, r in zip(bms, results) if not r.get("valid")]
-    return valid, invalid
+    if review.get("review_status") != "complete":
+        _quality_review_status = "degraded"
+    _semantic_review_coverage = min(
+        _semantic_review_coverage,
+        float(review.get("semantic_review_coverage", 0.0) or 0.0),
+    )
+
+    for result in review.get("benchmark_results", []):
+        qid = str(result.get("question_id") or result.get("question") or "")
+        if qid:
+            _quality_results_by_id[qid] = result
+    for finding in review.get("findings", []):
+        key = "|".join(
+            [
+                str(finding.get("question_id") or ""),
+                str(finding.get("category") or ""),
+                str(finding.get("code") or ""),
+            ]
+        )
+        _quality_findings_by_key[key] = finding
+    for benchmark, result in zip(bms, review.get("benchmark_results", [])):
+        if result.get("disposition") != "excluded":
+            continue
+        qid = str(result.get("question_id") or default_id_of(benchmark) or result.get("question") or "")
+        rejected = dict(benchmark)
+        errors = [
+            f for f in result.get("findings", []) if f.get("severity") == "error"
+        ]
+        if errors:
+            rejected["validation_reason_code"] = str(errors[0].get("code") or "quality_rejected").lower()
+            rejected["validation_error"] = str(errors[0].get("explanation") or "")[:200]
+        _rejected_benchmarks_by_id[qid] = rejected
+
+    return list(review.get("accepted", [])), list(review.get("excluded", []))
 
 
 def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
@@ -256,7 +307,7 @@ except BenchmarkUnrepairableError as exc:
 # MAGIC %md
 # MAGIC ## Push validated set to the LIVE space (additive/merge-only)
 # MAGIC
-# MAGIC Reuses the Phase-2 publisher: additive push of the EXPLAIN-validated set,
+# MAGIC Reuses the Phase-2 publisher: additive push of the quality-reviewed set,
 # MAGIC 30–40 window recommendation, the §3.6 leakage firewall (in the applier),
 # MAGIC and the §3.5 `genie_opt_benchmark_mutations` ledger. Skipped on the
 # MAGIC unrepairable path (we hard-fail below instead of mutating the live space).
@@ -270,6 +321,7 @@ if not _repair_failed and _benchmarks:
         _banner("Step 01c — Push Benchmarks to Live Space")
         _push = preflight_push_benchmarks_to_space(
             w, spark, run_id, space_id, catalog, schema, _benchmarks,
+            rejected_benchmarks=list(_rejected_benchmarks_by_id.values()),
         )
         _window = _push.get("window", {})
         _log(
@@ -305,8 +357,6 @@ if not _repair_failed and _benchmarks:
         )
         _experiment_name = ctx_exp.get("experiment_name")
         _persisted_count = int(ctx_exp.get("benchmark_count", len(_benchmarks)))
-        # Carry-forward human corrections (loaded for completeness / parity).
-        preflight_load_human_feedback(spark, run_id, space_id, catalog, schema, _domain)
     except Exception as exc:
         _banner("Experiment / Dataset Setup FAILED")
         _log("Failure", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
@@ -323,6 +373,24 @@ if not _repair_failed and _benchmarks:
 
 # COMMAND ----------
 
+
+def _final_quality_result(benchmark: dict) -> dict:
+    qid = default_id_of(benchmark)
+    if qid and qid in _quality_results_by_id:
+        return _quality_results_by_id[qid]
+    question = str(benchmark.get("question") or "").strip().lower()
+    return next(
+        (
+            result
+            for result in _quality_results_by_id.values()
+            if str(result.get("question") or "").strip().lower() == question
+        ),
+        {},
+    )
+
+
+_final_quality_results = [_final_quality_result(b) for b in _benchmarks]
+
 _qc_payload: dict[str, Any] = {
     "run_id": run_id,
     "valid_count": len(_benchmarks),
@@ -335,6 +403,40 @@ _qc_payload: dict[str, Any] = {
     "window": _window,
     "window_target_min": 30,
     "window_target_max": 40,
+    "quality_review_version": QUALITY_REVIEW_VERSION,
+    "quality_review_status": _quality_review_status,
+    "semantic_review_coverage": _semantic_review_coverage,
+    "quality_findings": list(_quality_findings_by_key.values()),
+    "quality_counts": {
+        "total": len(_benchmarks),
+        "trusted": sum(
+            1
+            for result in _final_quality_results
+            if result.get("disposition") == "passed"
+        ),
+        "warnings": sum(
+            1
+            for result in _final_quality_results
+            if result.get("disposition") == "warning"
+        ),
+        "excluded": len(_rejected_benchmarks_by_id),
+        "review_not_run": sum(
+            1
+            for f in _quality_findings_by_key.values()
+            if f.get("code") == "REVIEW_NOT_RUN"
+        ),
+    },
+    "proposed_changes": [
+        {
+            "question_id": f.get("question_id"),
+            "question": f.get("question"),
+            "proposed_question": f.get("proposed_question"),
+            "proposed_sql": f.get("proposed_sql"),
+            "reason": f.get("code"),
+        }
+        for f in _quality_findings_by_key.values()
+        if f.get("proposed_question") or f.get("proposed_sql")
+    ],
     # GT-correction candidates folded in here (retired
     # genie_eval_gt_correction_candidates table — §7 reconciliation).
     "gt_correction_candidates": [],

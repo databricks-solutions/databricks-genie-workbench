@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from genie_space_optimizer.common import genie_client
-from genie_space_optimizer.optimization import evaluation
+from genie_space_optimizer.optimization import benchmarking
 
 
 class _FakeGenie:
@@ -72,7 +72,7 @@ def test_execute_sql_via_warehouse_raises_running_timeout() -> None:
             )
 
     with pytest.raises(RuntimeError, match="SQL warehouse query did not finish"):
-        evaluation._execute_sql_via_warehouse(
+        benchmarking._execute_sql_via_warehouse(
             SimpleNamespace(statement_execution=_StatementExecution()),
             "warehouse-1",
             "SELECT 1",

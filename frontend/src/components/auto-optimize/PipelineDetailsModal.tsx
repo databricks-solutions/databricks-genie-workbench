@@ -13,7 +13,6 @@ import { QuestionJourney } from "@/components/auto-optimize/QuestionJourney"
 import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
 import { ActivityLog } from "@/components/auto-optimize/ActivityLog"
 import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
-import { SuggestionsPanel } from "@/components/auto-optimize/SuggestionsPanel"
 import {
   getAutoOptimizeRun,
   getAutoOptimizeIterations,
@@ -259,14 +258,13 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                 </div>
               )}
 
-              {/* Main tabs: Summary / Attempts / Levers / Suggestions */}
+              {/* Main tabs: Summary / Attempts / Levers */}
               {runIsTerminal && iterations.length > 0 && (
                 <Tabs defaultValue="summary">
                   <TabsList>
                     <TabsTrigger value="summary">Summary</TabsTrigger>
                     <TabsTrigger value="attempts">Attempt Explorer</TabsTrigger>
                     <TabsTrigger value="levers">Levers</TabsTrigger>
-                    <TabsTrigger value="suggestions">Suggestions</TabsTrigger>
                   </TabsList>
 
                   {/* Summary tab with sub-tabs */}
@@ -342,10 +340,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                     )}
                   </TabsContent>
 
-                  {/* Suggestions tab */}
-                  <TabsContent value="suggestions">
-                    <SuggestionsPanel runId={runId} />
-                  </TabsContent>
                 </Tabs>
               )}
 

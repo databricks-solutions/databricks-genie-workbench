@@ -31,7 +31,7 @@ import re
 
 import pytest
 
-from genie_space_optimizer.optimization.evaluation import (
+from genie_space_optimizer.optimization.benchmarking import (
     _classify_sql_validation_error,
     _repair_hint_for_reason,
     _repair_measure_in_where,

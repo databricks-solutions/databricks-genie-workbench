@@ -1,4 +1,4 @@
-from genie_space_optimizer.optimization.evaluation import (
+from genie_space_optimizer.optimization.benchmarking import (
     _benchmark_space_routine_violations,
     _extract_fully_qualified_routine_calls,
 )
@@ -70,7 +70,7 @@ def test_benchmark_space_routine_violations_allows_registered_function() -> None
 
 
 def test_mark_function_not_in_space_marks_candidate_invalid() -> None:
-    from genie_space_optimizer.optimization.evaluation import (
+    from genie_space_optimizer.optimization.benchmarking import (
         _mark_function_not_in_space_if_needed,
     )
 
@@ -92,7 +92,7 @@ def test_mark_function_not_in_space_marks_candidate_invalid() -> None:
 
 
 def test_mark_function_not_in_space_leaves_registered_candidate_valid() -> None:
-    from genie_space_optimizer.optimization.evaluation import (
+    from genie_space_optimizer.optimization.benchmarking import (
         _mark_function_not_in_space_if_needed,
     )
 
@@ -113,10 +113,10 @@ def test_mark_function_not_in_space_leaves_registered_candidate_valid() -> None:
 def test_benchmark_llm_calls_are_wrapped_in_named_chain_spans() -> None:
     import inspect
 
-    from genie_space_optimizer.optimization import evaluation
+    from genie_space_optimizer.optimization import benchmarking
 
-    source = inspect.getsource(evaluation.generate_benchmarks)
-    correction_source = inspect.getsource(evaluation._attempt_sql_correction)
+    source = inspect.getsource(benchmarking.generate_benchmarks)
+    correction_source = inspect.getsource(benchmarking._attempt_sql_correction)
 
     assert 'name="benchmark_generation"' in source
     assert 'name="benchmark_correction"' in correction_source

@@ -329,8 +329,7 @@ def collect_rls_audit(
         considered; short-form entries are skipped.
     exec_sql
         Optional executor with signature ``(sql: str) -> pd.DataFrame``.
-        If omitted, a default backed by :func:`_exec_sql` from
-        ``optimization.evaluation`` is built from ``spark`` / ``w`` /
+        If omitted, an executor is built from ``spark`` / ``w`` /
         ``warehouse_id``.
 
     Returns
@@ -351,7 +350,7 @@ def collect_rls_audit(
     if exec_sql is None:
         # Local import so this module stays importable from contexts
         # (unit tests, CI) where optimizer.evaluation isn't available.
-        from genie_space_optimizer.optimization.evaluation import _exec_sql
+        from genie_space_optimizer.optimization.benchmarking import _exec_sql
 
         def exec_sql(sql: str):
             return _exec_sql(

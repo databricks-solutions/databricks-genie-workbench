@@ -9,11 +9,8 @@
  *     reason vs nothing)
  *   - The convergence-reason copy under the progress bar
  *
- * Locks down the customer-visible contract from PR description:
- *
- *   "The optimized score is the arbiter adjusted accuracy. And we shouldn't
- *    show regression here — cos regressions don't get posted. So they should
- *    either stay as baseline or an improvement."
+ * The optimized score is the official full-corpus benchmark accuracy. A
+ * rejected regression is never displayed as the optimized score.
  *
  * The backend canonical helper
  * (``genie_space_optimizer.common.accuracy.compute_run_scores``) already

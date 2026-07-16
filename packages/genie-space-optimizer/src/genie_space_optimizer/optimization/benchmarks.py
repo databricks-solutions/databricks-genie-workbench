@@ -325,7 +325,7 @@ def _verify_table_exists(
         return True, ""
     try:
         if w and warehouse_id:
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 _execute_sql_via_warehouse,
             )
             _execute_sql_via_warehouse(
@@ -362,7 +362,7 @@ def _resolve_params_with_defaults(
     if not parameters:
         return sql, False
 
-    from genie_space_optimizer.optimization.evaluation import _extract_sql_params
+    from genie_space_optimizer.optimization.benchmarking import _extract_sql_params
 
     params_in_sql = _extract_sql_params(sql)
     if not params_in_sql:
@@ -430,7 +430,7 @@ def validate_ground_truth_sql(
         return False, "Empty SQL"
     resolved = fix_mv_alias_sort_collision(resolved)
 
-    from genie_space_optimizer.optimization.evaluation import _extract_sql_params
+    from genie_space_optimizer.optimization.benchmarking import _extract_sql_params
 
     _params = _extract_sql_params(resolved)
     if _params:
@@ -453,7 +453,7 @@ def validate_ground_truth_sql(
 
     try:
         if w and warehouse_id:
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 _execute_sql_via_warehouse,
             )
             explain_df = _execute_sql_via_warehouse(
@@ -500,7 +500,7 @@ def validate_ground_truth_sql(
             #       handles the case where Spark collapses the
             #       failure into a plain UNRESOLVED_COLUMN while
             #       still being a measure issue.
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 metric_view_error_kind,
             )
 
@@ -574,7 +574,7 @@ def validate_ground_truth_sql(
     if execute:
         if w and warehouse_id:
             try:
-                from genie_space_optimizer.optimization.evaluation import (
+                from genie_space_optimizer.optimization.benchmarking import (
                     _execute_sql_via_warehouse,
                 )
                 result_df = _execute_sql_via_warehouse(
@@ -723,7 +723,7 @@ def validate_question_sql_alignment(
         )
 
         try:
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 _link_prompt_to_trace,
                 get_registered_prompt_name,
             )
@@ -972,7 +972,7 @@ def validate_gt_returns_results(
 
     Returns a list of ``{question, has_results, row_count, error}`` dicts.
     """
-    from genie_space_optimizer.optimization.evaluation import _exec_sql
+    from genie_space_optimizer.optimization.benchmarking import _exec_sql
 
     _sql_kw: dict[str, Any] = dict(w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema)
     results: list[dict] = []
@@ -1098,203 +1098,6 @@ def build_eval_records(benchmarks: list[dict]) -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 5. Corrections
-# ═══════════════════════════════════════════════════════════════════════
-
-
-_CORRECTABLE_VERDICTS = {"genie_correct", "arbiter_repair"}
-
-
-def apply_benchmark_corrections(
-    corrections: list[dict],
-    spark: Any,
-    uc_schema: str,
-    domain: str,
-    *,
-    w: Any = None,
-    warehouse_id: str = "",
-    data_profile: dict | None = None,
-) -> dict:
-    """Apply arbiter corrections to the MLflow evaluation dataset.
-
-    Each correction dict should have:
-    - ``question``: the benchmark question to correct
-    - ``new_expected_sql``: the corrected SQL
-    - ``verdict``: ``genie_correct`` or ``arbiter_repair``
-
-    Before applying, validates:
-    1. Syntactic validity (EXPLAIN)
-    2. Semantic alignment with the question (LLM check)
-    3. Predicate values against data profile (if available)
-
-    Returns ``{applied: int, skipped: int, errors: list[str]}``.
-    """
-    table_name = f"{uc_schema}.genie_benchmarks_{domain}"
-    applied = 0
-    skipped = 0
-    errors: list[str] = []
-
-    for c in corrections:
-        question = c.get("question", "")
-        new_sql = c.get("new_expected_sql", "")
-        verdict = c.get("verdict", "")
-
-        if verdict not in _CORRECTABLE_VERDICTS:
-            skipped += 1
-            continue
-
-        if not new_sql:
-            errors.append(f"Empty new_expected_sql for question: {question[:50]}")
-            skipped += 1
-            continue
-
-        is_valid, val_err = validate_ground_truth_sql(
-            new_sql, spark, execute=True, w=w, warehouse_id=warehouse_id,
-        )
-        if not is_valid:
-            errors.append(
-                f"Correction SQL invalid for '{question[:50]}': {val_err[:200]}"
-            )
-            logger.warning(
-                "Skipping arbiter correction — SQL fails validation: %s — %s",
-                question[:60], val_err[:200],
-            )
-            skipped += 1
-            continue
-
-        try:
-            alignment = validate_question_sql_alignment(
-                [{"question": question, "expected_sql": new_sql}]
-            )
-            if alignment and not alignment[0].get("aligned", True):
-                issues = "; ".join(alignment[0].get("issues", []))
-                logger.warning(
-                    "Skipping arbiter correction — SQL misaligned with question: "
-                    "'%s' — issues: %s",
-                    question[:60], issues,
-                )
-                errors.append(
-                    f"Alignment mismatch for '{question[:50]}': {issues[:150]}"
-                )
-                skipped += 1
-                continue
-        except Exception:
-            logger.debug(
-                "Alignment check failed for correction, proceeding cautiously",
-                exc_info=True,
-            )
-
-        if data_profile:
-            try:
-                pred_results = validate_predicate_values(
-                    [{"question": question, "expected_sql": new_sql}],
-                    data_profile,
-                )
-                if pred_results and not pred_results[0]["valid"]:
-                    unfixable = [
-                        m for m in pred_results[0]["mismatches"]
-                        if not m.get("suggestion")
-                    ]
-                    if unfixable:
-                        mm_desc = "; ".join(
-                            f"{m['column']}='{m['literal']}'" for m in unfixable
-                        )
-                        logger.warning(
-                            "Skipping arbiter correction — predicate value "
-                            "mismatch: '%s' — %s",
-                            question[:60], mm_desc,
-                        )
-                        errors.append(
-                            f"Predicate mismatch for '{question[:50]}': {mm_desc[:150]}"
-                        )
-                        skipped += 1
-                        continue
-            except Exception:
-                logger.debug(
-                    "Predicate check failed for correction, proceeding cautiously",
-                    exc_info=True,
-                )
-
-        try:
-            escaped_sql = new_sql.replace("'", "\\'")
-            escaped_q = question.replace("'", "\\'")
-            spark.sql(
-                f"""
-                UPDATE {table_name}
-                SET expected_sql = '{escaped_sql}',
-                    corrected_by = 'arbiter',
-                    correction_verdict = '{verdict}'
-                WHERE question = '{escaped_q}'
-                """
-            )
-            applied += 1
-        except Exception as e:
-            errors.append(f"Failed to update '{question[:50]}': {e}")
-            skipped += 1
-
-    return {"applied": applied, "skipped": skipped, "errors": errors}
-
-
-def quarantine_benchmark_question(
-    spark: Any,
-    uc_schema: str,
-    domain: str,
-    question: str,
-    *,
-    reason: str = "",
-) -> bool:
-    """Quarantine a benchmark question by setting ``quarantined_at`` and ``quarantine_reason``.
-
-    Quarantined questions are excluded from the accuracy denominator so the
-    optimizer stops wasting lever budget on questions with broken ground truth.
-
-    The columns are added dynamically if they don't exist yet (safe for
-    existing tables that predate this feature).
-
-    Returns ``True`` if the row was updated, ``False`` otherwise.
-    """
-    table_name = f"{uc_schema}.genie_benchmarks_{domain}"
-
-    for col, dtype in [("quarantined_at", "TIMESTAMP"), ("quarantine_reason", "STRING")]:
-        try:
-            spark.sql(f"ALTER TABLE {table_name} ADD COLUMN {col} {dtype}")
-        except Exception:
-            pass
-
-    escaped_q = question.replace("'", "\\'")
-    escaped_reason = reason.replace("'", "\\'")
-    try:
-        spark.sql(
-            f"""
-            UPDATE {table_name}
-            SET quarantined_at = CURRENT_TIMESTAMP(),
-                quarantine_reason = '{escaped_reason}'
-            WHERE question = '{escaped_q}'
-              AND quarantined_at IS NULL
-            """
-        )
-        return True
-    except Exception as e:
-        logger.warning("Failed to quarantine question '%s': %s", question[:60], e)
-        return False
-
-
-def get_quarantined_questions(
-    spark: Any,
-    uc_schema: str,
-    domain: str,
-) -> set[str]:
-    """Return the set of question IDs that are currently quarantined."""
-    table_name = f"{uc_schema}.genie_benchmarks_{domain}"
-    try:
-        df = spark.sql(
-            f"SELECT question_id FROM {table_name} WHERE quarantined_at IS NOT NULL"
-        ).toPandas()
-        return set(df["question_id"].dropna().astype(str).tolist())
-    except Exception:
-        return set()
-
-
 # ── SQL Snippet Validation (Lever 6) ──────────────────────────────────
 
 
@@ -1694,7 +1497,7 @@ def normalize_sql_snippet(
             wrapped = f"SELECT {prefixed_sql} FROM {resolved_table} LIMIT 1"
         try:
             if w and warehouse_id:
-                from genie_space_optimizer.optimization.evaluation import (
+                from genie_space_optimizer.optimization.benchmarking import (
                     _execute_sql_via_warehouse,
                 )
                 _execute_sql_via_warehouse(
@@ -1853,7 +1656,7 @@ def validate_sql_snippet(
 
     def _run_sql(statement: str) -> Any:
         if w and warehouse_id:
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 _execute_sql_via_warehouse,
             )
             return _execute_sql_via_warehouse(
@@ -1916,7 +1719,7 @@ def validate_sql_snippet(
                 prefixed_sql,
             )
         try:
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 is_metric_view_error,
             )
             if is_metric_view_error(_msg):

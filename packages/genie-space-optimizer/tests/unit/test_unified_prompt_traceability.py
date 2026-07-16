@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from genie_space_optimizer.common.config import BENCHMARK_PROMPTS
-from genie_space_optimizer.optimization.evaluation import _attempt_sql_correction
+from genie_space_optimizer.optimization.benchmarking import _attempt_sql_correction
 
 
 def test_optimizer_and_audit_prompts_are_registered_prompt_keys() -> None:
@@ -17,7 +17,7 @@ def test_sql_correction_prompt_receives_join_specs_context(monkeypatch) -> None:
         return {"benchmarks": []}
 
     monkeypatch.setattr(
-        "genie_space_optimizer.optimization.evaluation._call_llm_for_scoring",
+        "genie_space_optimizer.optimization.benchmarking._call_llm_for_scoring",
         fake_call,
     )
 
@@ -93,6 +93,7 @@ def test_optimizer_patch_prompt_links_and_records_context_metadata(monkeypatch) 
 
     monkeypatch.setattr(unified_loop, "_start_chain_span", lambda _name: _FakeSpanContext(span))
     monkeypatch.setattr(unified_loop, "_link_prompt_to_trace", lambda prompt_name: linked.append(prompt_name))
+    monkeypatch.setattr(unified_loop, "get_registered_prompt_name", lambda _key: "")
     captured_kwargs: dict = {}
 
     def fake_call_llm(_w, *, messages, **kwargs):
@@ -156,7 +157,6 @@ def test_audit_summary_links_registered_prompt_and_records_safe_context(monkeypa
         "champion_accuracy": 91.0,
         "improvement_trajectory": [{"iteration": 0, "accuracy": 80.0}],
         "patch_families": {"lever_1": 2},
-        "root_cause_distribution": {"WRONG_COLUMN": 1},
     }
     summary, concern = publish.build_audit_summary(
         None,
@@ -172,5 +172,4 @@ def test_audit_summary_links_registered_prompt_and_records_safe_context(monkeypa
     assert span.inputs["audit_context_field_count"] == len(ctx)
     assert span.inputs["improvement_trajectory_count"] == 1
     assert span.inputs["patch_family_count"] == 1
-    assert span.inputs["root_cause_field_count"] == 1
     assert captured_messages["messages"][1]["content"]

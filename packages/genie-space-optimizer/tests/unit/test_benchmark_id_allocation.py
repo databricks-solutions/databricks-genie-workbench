@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_benchmark_id_allocator_skips_existing_ids() -> None:
-    from genie_space_optimizer.optimization.evaluation import _make_benchmark_id_allocator
+    from genie_space_optimizer.optimization.benchmarking import _make_benchmark_id_allocator
 
     allocate = _make_benchmark_id_allocator([
         {"id": "sales_gs_001"},
@@ -16,7 +16,7 @@ def test_benchmark_id_allocator_skips_existing_ids() -> None:
 
 
 def test_benchmark_id_allocator_tracks_ids_allocated_in_same_call() -> None:
-    from genie_space_optimizer.optimization.evaluation import _make_benchmark_id_allocator
+    from genie_space_optimizer.optimization.benchmarking import _make_benchmark_id_allocator
 
     allocate = _make_benchmark_id_allocator([])
 
@@ -26,7 +26,7 @@ def test_benchmark_id_allocator_tracks_ids_allocated_in_same_call() -> None:
 
 
 def test_allocator_prevents_incident_shape_gs_id_reuse() -> None:
-    from genie_space_optimizer.optimization.evaluation import _make_benchmark_id_allocator
+    from genie_space_optimizer.optimization.benchmarking import _make_benchmark_id_allocator
 
     existing = [
         {"id": f"esr_daily_sales_performance_analytics_space_gs_{i + 1:03d}"}

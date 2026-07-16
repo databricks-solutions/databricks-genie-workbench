@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from genie_space_optimizer.optimization.evaluation import extract_genie_space_benchmarks
+from genie_space_optimizer.optimization.benchmarking import extract_genie_space_benchmarks
 
 
 def _hex(seed: str) -> str:
@@ -136,7 +136,7 @@ def test_legacy_auto_optimize_prefix_is_normalized_when_reading_native_benchmark
 
 
 def test_benchmark_rows_matching_example_sql_questions_are_filtered() -> None:
-    from genie_space_optimizer.optimization.evaluation import (
+    from genie_space_optimizer.optimization.benchmarking import (
         _filter_example_sql_mirrored_benchmarks,
     )
 

@@ -264,7 +264,6 @@ All dependencies are pinned to exact versions with integrity hashes. Lock files 
 |------|--------|-------------|
 | `uv.lock` | Workspace-wide Python transitive deps (root + GSO) | SHA256 hashes |
 | `frontend/package-lock.json` | Frontend npm deps | SHA-512 integrity |
-| `packages/genie-space-optimizer/package-lock.json` | GSO UI npm deps | SHA-512 integrity |
 
 ### Updating Python dependencies
 

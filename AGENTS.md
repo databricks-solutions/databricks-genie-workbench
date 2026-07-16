@@ -115,7 +115,7 @@ frontend/
   vite.config.ts           # Vite config with /api proxy to localhost:8000
 packages/
   genie-space-optimizer/   # GSO engine: separate Python package deployed as a wheel
-                           # Has its own pyproject.toml, uv.lock, package.json, package-lock.json
+                           # Has its own pyproject.toml and shares the root uv.lock
 ```
 
 ## Key Patterns
@@ -180,7 +180,7 @@ transitive dependencies through lockfiles with integrity hashes.
 
 - `pyproject.toml` and `package.json` use only exact versions (`==1.2.3` for
   Python, `1.2.3` for npm). No `^`, `~`, `>=`, `<=`, `<`, `>`, `~=`, or `*`.
-- All three lockfiles below must validate (`uv lock --check`,
+- The Python and frontend lockfiles below must validate (`uv lock --check`,
   `npm ci --dry-run --ignore-scripts`) before any deploy.
 - `mlflow` (and `mlflow-skinny` / `mlflow-tracing`) MUST resolve to the same
   version across the workspace (today: `3.11.1`).
@@ -194,7 +194,6 @@ transitive dependencies through lockfiles with integrity hashes.
 |---|---|---|
 | `uv.lock` | Workspace-wide Python transitive deps | SHA256 hashes |
 | `frontend/package-lock.json` | Frontend npm deps | SHA-512 integrity |
-| `packages/genie-space-optimizer/package-lock.json` | GSO UI npm deps | SHA-512 integrity |
 
 The workspace uses a single root `uv.lock` for both root and
 `packages/genie-space-optimizer/` — uv writes there for any
@@ -213,10 +212,10 @@ echo "-e ./packages/genie-space-optimizer" >> requirements.txt
 git add pyproject.toml packages/genie-space-optimizer/pyproject.toml uv.lock requirements.txt
 ```
 
-**Updating an npm dep:**
+**Updating a frontend npm dep:**
 
 ```bash
-cd <frontend|packages/genie-space-optimizer>
+cd frontend
 npm install <package>@<exact-version> --save-exact
 git add package.json package-lock.json
 ```

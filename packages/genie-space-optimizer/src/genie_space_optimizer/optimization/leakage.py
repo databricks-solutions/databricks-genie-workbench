@@ -14,7 +14,7 @@ Design:
   ``add_example_sql`` and ``update_example_sql`` are firewalled because they
   persist retrievable question+SQL examples. Structural SQL snippets are
   guarded by source gating, identifier allowlists, SQL validation, proposal
-  grounding, and post-apply arbiter evaluation.
+  grounding, and post-apply official benchmark evaluation.
 """
 
 from __future__ import annotations
@@ -218,7 +218,7 @@ def precompute_benchmark_embeddings(
     Returns True on success, False if the endpoint is unavailable. On
     failure the corpus is left without embeddings and the firewall
     degrades to n-gram + fingerprint (logged via ``firewall_embedding_disabled``
-    counter when wired into the harness).
+    counter when wired into the unified loop).
     """
     if w is None or len(corpus) == 0:
         return False
@@ -257,11 +257,10 @@ def preflight_embedding_endpoint(w: Any, endpoint: str | None = None) -> bool:
 # has to pick tables, group-bys, filters to assemble a full query. The
 # persistence gates for these are:
 #
-#   - Proactive seeding — pre-mining arbiter-approved source filter
-#     (baseline verdict == ``both_correct``) + ``validate_sql_snippet``
+#   - Proactive seeding — trusted source filtering plus ``validate_sql_snippet``
 #     EXPLAIN+execute / ``EXPLAIN SELECT 1 FROM l JOIN r ON ... LIMIT 1``.
 #   - Lever 6 / join-lever — LLM proposal + exec-validation at propose
-#     time + post-iteration full-eval arbiter gate with rollback on
+#     time + post-iteration full-corpus evaluation with rollback on
 #     regression (equivalent invariant, different mechanism).
 #   - Prose miner — user-asserted source + exec-validation.
 #
@@ -276,7 +275,7 @@ def preflight_embedding_endpoint(w: Any, endpoint: str | None = None) -> bool:
 # examples. It does not apply to structural primitives or metadata updates:
 # sql snippets, join specs, table/column descriptions, synonyms, dictionaries,
 # and space instructions still pass through their own validators plus the
-# post-apply full-eval arbiter acceptance gate.
+# post-apply full-corpus acceptance check.
 _PATCH_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "add_example_sql": ("example_question", "example_sql"),
     "update_example_sql": ("example_question", "example_sql"),

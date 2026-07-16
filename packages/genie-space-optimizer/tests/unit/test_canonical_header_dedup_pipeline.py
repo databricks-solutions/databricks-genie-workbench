@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from genie_space_optimizer.optimization import applier
-from genie_space_optimizer.optimization.optimizer import (
+from genie_space_optimizer.optimization.optimizer_utils import (
     _is_already_canonical_plaintext,
     _sanitize_plaintext_instructions,
 )

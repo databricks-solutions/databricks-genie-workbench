@@ -17,8 +17,6 @@ def test_load_latest_full_iteration_can_exclude_candidate_iteration(monkeypatch)
             "scores_json": "{}",
             "failures_json": "[]",
             "remaining_failures": "[]",
-            "arbiter_actions_json": "[]",
-            "repeatability_json": "null",
             "rows_json": '[{"question_id": "q_base"}]',
         }])
 

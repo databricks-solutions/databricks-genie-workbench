@@ -14,7 +14,6 @@ vi.mock("@/lib/api", () => ({
   getAutoOptimizeQuestionResults: vi.fn(() => Promise.resolve([])),
   getAutoOptimizePatches: vi.fn(() => Promise.resolve([])),
   getAutoOptimizeBenchmarkChanges: vi.fn(() => Promise.resolve(null)),
-  getAutoOptimizeSuggestions: vi.fn(() => Promise.resolve([])),
   ApiError: class ApiError extends Error {},
 }))
 

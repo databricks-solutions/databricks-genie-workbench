@@ -1,9 +1,9 @@
 """
 Delta-backed state machine for Genie Space optimization runs.
 
-Persists every stage transition, iteration score, and patch record
-across 5 Delta tables. Both the optimization harness (writer) and
-the FastAPI backend (reader) depend on this module.
+Persists stage transitions, iteration scores, and patch records in the
+canonical GSO Delta tables. The optimization workflow writes them and the
+Workbench reads them.
 
 All functions accept ``spark``, ``catalog``, and ``schema`` as explicit
 arguments — no globals.
@@ -22,13 +22,10 @@ import pandas as pd
 from genie_space_optimizer.common.config import (
     TABLE_ARTIFACTS,
     TABLE_BENCHMARK_MUTATIONS,
-    TABLE_FINALIZE_ATTESTATION,
     TABLE_ITERATIONS,
     TABLE_PATCHES,
-    TABLE_PROVENANCE,
     TABLE_RUNS,
     TABLE_STAGES,
-    TABLE_SUGGESTIONS,
 )
 from genie_space_optimizer.common.delta_helpers import (
     _fqn,
@@ -41,13 +38,6 @@ from genie_space_optimizer.common.delta_helpers import (
 )
 from genie_space_optimizer.optimization.ddl import (
     ADDITIVE_COLUMN_MIGRATIONS,
-    RETIRED_TABLES,
-    TABLE_DATA_ACCESS_GRANTS,
-    TABLE_GT_CORRECTION_CANDIDATES,
-    TABLE_HUMAN_REQUIRED,
-    TABLE_LEVER_LOOP_DECISIONS,
-    TABLE_PROACTIVE_CORPUS_PROFILE,
-    TABLE_PROACTIVE_PATCHES,
     _ALL_DDL,
 )
 
@@ -99,73 +89,6 @@ def ensure_optimization_tables(spark: SparkSession, catalog: str, schema: str) -
                 raise
 
     _migrate_add_columns(spark, catalog, schema)
-    migrate_retire_dropped_tables(spark, catalog, schema)
-
-
-def _table_exists(spark: SparkSession, fqn: str) -> bool:
-    """Return True if Delta table ``fqn`` exists (best-effort).
-
-    Uses ``DESCRIBE TABLE`` so it works against the same mock-friendly
-    surface the migration helpers use. Any error (table absent, permission
-    denied, mock with no rows) is treated as "does not exist / unknown" so
-    the retire migration stays safe and never raises.
-    """
-    try:
-        spark.sql(f"DESCRIBE TABLE {fqn}").collect()
-        return True
-    except Exception:
-        return False
-
-
-def migrate_retire_dropped_tables(
-    spark: SparkSession, catalog: str, schema: str,
-) -> None:
-    """One-shot, idempotent retire of the 6-notebook tables removed in GSO v2.
-
-    The 9 tables in ``ddl.RETIRED_TABLES`` are tied to retired stages (ASI
-    judges, MLflow human-review, enrichment sidecars, finalize attestation,
-    suggestions, subset-gate regressions, GT-correction candidates, and the
-    writer-less data-access-grants table). They were removed from ``_ALL_DDL``
-    so **fresh installs never create them** (the "drop" path). For **existing
-    installs** that still hold the tables (possibly with data), this renames
-    each to ``<name>_deprecated`` rather than hard-dropping — data is
-    preserved, never lost.
-
-    Idempotent and safe:
-      * active table absent  → skip (fresh install, or already retired).
-      * active present, ``*_deprecated`` absent → RENAME (preserve data).
-      * active present, ``*_deprecated`` present → the rename already
-        happened on a prior run and the active table is a post-rename
-        recreation (e.g. a stray best-effort writer); DROP the stray so the
-        schema converges, leaving the preserved ``*_deprecated`` copy intact.
-
-    Best-effort per table: a failure (permission denied, etc.) is logged and
-    the loop continues — it never aborts table bootstrap.
-    """
-    for table in RETIRED_TABLES:
-        fqn = _fqn(catalog, schema, table)
-        dep_fqn = _fqn(catalog, schema, f"{table}_deprecated")
-        try:
-            if not _table_exists(spark, fqn):
-                continue  # fresh install or already retired — nothing to do
-            if _table_exists(spark, dep_fqn):
-                # Already retired previously; the active table is a stray
-                # recreation. The preserved copy lives in *_deprecated, so
-                # the stray can be dropped to converge the schema.
-                spark.sql(f"DROP TABLE IF EXISTS {fqn}")
-                logger.info(
-                    "  [RETIRE] Dropped stray %s (data preserved in %s_deprecated)",
-                    fqn, table,
-                )
-            else:
-                # Existing install with (possibly populated) data — preserve
-                # it by renaming, never hard-drop.
-                spark.sql(f"ALTER TABLE {fqn} RENAME TO {dep_fqn}")
-                logger.info("  [RETIRE] Renamed %s -> %s", fqn, dep_fqn)
-        except Exception as exc:
-            logger.warning(
-                "  [RETIRE] Could not retire %s (continuing): %s", fqn, exc,
-            )
 
 
 def _try_enable_column_defaults(spark: SparkSession, fqn: str) -> None:
@@ -197,13 +120,8 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
     _try_enable_column_defaults(spark, _fqn(catalog, schema, TABLE_ITERATIONS))
 
     for table, col, col_def in ADDITIVE_COLUMN_MIGRATIONS:
-        # GSO v2 (Phase 7): several ADDITIVE_COLUMN_MIGRATIONS entries still
-        # target tables that v2 RETIRED (removed from ``_ALL_DDL`` — see
-        # ``ddl.RETIRED_TABLES``). On a fresh v2 install those tables are never
-        # created, so ``ALTER TABLE`` would fail with TABLE_OR_VIEW_NOT_FOUND,
-        # get swallowed, and spam ``[MIGRATION FAILED]`` ERROR logs. Skip any
-        # entry whose target table is not in the active DDL set — there is no
-        # table to migrate.
+        # Ignore migrations for tables that are no longer part of the active
+        # schema. Existing historical tables are left untouched.
         if table not in _ALL_DDL:
             logger.debug(
                 "  [SKIP] %s (retired / not in active DDL set) — no migration for %s",
@@ -293,18 +211,8 @@ _REQUIRED_ITERATION_COLUMNS = (
     "rolled_back",
     "rolled_back_at",
     "rollback_reason",
-    "both_correct_count",
-    "both_correct_rate",
     "evaluated_count",
     "excluded_count",
-    "quarantined_benchmarks_json",
-    "leakage_count_by_type",
-    "firewall_rejection_count_by_type",
-    "secondary_mining_blocked",
-    "synthesis_slots_persisted",
-    "arbiter_rejection_count",
-    "cluster_fallback_to_instruction_count",
-    "synthesis_archetype_distribution",
     "reflection_json",
     # GSO v2 Phase 4 (D3): write_iteration emits both columns on every row.
     "config_json",
@@ -462,13 +370,11 @@ def update_run_status(
     status: str | None = None,
     best_iteration: int | None = None,
     best_accuracy: float | None = None,
-    best_repeatability: float | None = None,
     convergence_reason: str | None = None,
     job_run_id: str | None = None,
     job_id: str | None = None,
     config_snapshot: dict | None = None,
     warehouse_id: str | None = None,
-    human_corrections: list[dict] | None = None,
     max_benchmark_count: int | None = None,
     llm_model: str | None = None,
     space_id: str | None = None,
@@ -487,8 +393,6 @@ def update_run_status(
         updates["best_iteration"] = best_iteration
     if best_accuracy is not None:
         updates["best_accuracy"] = best_accuracy
-    if best_repeatability is not None:
-        updates["best_repeatability"] = best_repeatability
     if convergence_reason is not None:
         updates["convergence_reason"] = convergence_reason
     if job_run_id is not None:
@@ -499,8 +403,6 @@ def update_run_status(
         updates["config_snapshot"] = json.dumps(config_snapshot)
     if warehouse_id is not None:
         updates["warehouse_id"] = warehouse_id
-    if human_corrections is not None:
-        updates["human_corrections_json"] = json.dumps(human_corrections, default=str)
     if max_benchmark_count is not None:
         updates["max_benchmark_count"] = int(max_benchmark_count)
     if llm_model is not None:
@@ -739,7 +641,7 @@ def _project_config_for_iteration(config: Any) -> dict[str, Any]:
 # the contract shared by ``write_iteration`` (INSERT) and
 # ``update_iteration_loop_state`` (UPDATE); ``(name, kind)`` where kind ∈
 # {int, float, str, json}. ``best_iteration`` is intentionally absent — it is a
-# ``genie_opt_runs`` column, not an iterations column (see control_plane.build_loop_state).
+# ``genie_opt_runs`` column, not an iterations column.
 _LOOP_STATE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("attempt_no", "int"),
     ("attempt_mode", "str"),
@@ -869,9 +771,9 @@ def write_iteration(
     ``loop_state`` (GSO v2 Phase 8, arch §7.4) carries the two-mode controller's
     per-attempt loop-state columns (``attempt_no``, ``attempt_mode``, ``decision``,
     ``best_accuracy``, ``surgical_attempts_used``, ``target_accuracy``, etc.). The
-    map is the contract built by ``control_plane.build_loop_state``; absent keys
-    are written ``NULL`` so legacy / baseline / repeatability-only writes are
-    unaffected. ``genie_opt_iterations`` is the single per-attempt truth, so the
+    map is the contract produced by the unified loop; absent keys are written
+    ``NULL``. ``genie_opt_iterations`` is the single
+    per-attempt truth, so the
     loop commits its state here rather than in a separate artifact."""
     now = datetime.now(timezone.utc).isoformat()
     fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
@@ -879,13 +781,10 @@ def write_iteration(
     scores = eval_result.get("scores", {})
     failures = eval_result.get("failures", [])
     remaining = eval_result.get("remaining_failures", failures)
-    arbiter_actions = eval_result.get("arbiter_actions", [])
     thresholds_met = eval_result.get("thresholds_met", False)
     if isinstance(thresholds_met, (int, float)):
         thresholds_met = thresholds_met == 1.0
 
-    repeatability_pct = eval_result.get("repeatability_pct")
-    repeatability_details = eval_result.get("repeatability_details")
     rows_data = eval_result.get("rows")
     if isinstance(rows_data, list):
         _STRIP_COLS = {"trace", "trace_id"}
@@ -903,56 +802,18 @@ def write_iteration(
     # Read from eval_result but fall back sensibly:
     #   evaluated_count defaults to total_questions (matches pre-Bug#2 behavior
     #   where no rows were excluded at runtime).
-    #   excluded_count / quarantined default to 0 / empty list.
-    # This keeps the write safe against eval_results emitted by older call
-    # sites (e.g. repeatability-only paths) that don't populate the new keys.
+    #   excluded_count defaults to 0.
+    # This keeps the write safe when a result omits explicit denominator fields.
     _total_questions = int(eval_result.get("total_questions", 0) or 0)
     _evaluated_count = eval_result.get("evaluated_count")
     if _evaluated_count is None:
         _evaluated_count = _total_questions
     _excluded_count = int(eval_result.get("excluded_count", 0) or 0)
-    _quarantined = eval_result.get("quarantined_benchmarks")
-    if not isinstance(_quarantined, list):
-        _quarantined = []
-
-    # Bug #4 leakage observability. Callers pass the metrics through
-    # eval_result so the write stays back-compat for call sites that don't
-    # track them (older repeatability-only paths). Defaults: empty maps, 0.
-    _leakage_count_by_type = eval_result.get("leakage_count_by_type") or {}
-    if not isinstance(_leakage_count_by_type, dict):
-        _leakage_count_by_type = {}
-    _firewall_rejection_count_by_type = eval_result.get("firewall_rejection_count_by_type") or {}
-    if not isinstance(_firewall_rejection_count_by_type, dict):
-        _firewall_rejection_count_by_type = {}
-    _secondary_mining_blocked = int(eval_result.get("secondary_mining_blocked", 0) or 0)
-
-    # Bug #4 Phase 3 synthesis observability.
-    _synthesis_slots_persisted = int(eval_result.get("synthesis_slots_persisted", 0) or 0)
-    _arbiter_rejection_count = int(eval_result.get("arbiter_rejection_count", 0) or 0)
-    _cluster_fallback_to_instruction_count = int(
-        eval_result.get("cluster_fallback_to_instruction_count", 0) or 0
-    )
-    _synthesis_archetype_distribution = eval_result.get("synthesis_archetype_distribution") or {}
-    if not isinstance(_synthesis_archetype_distribution, dict):
-        _synthesis_archetype_distribution = {}
-
-    # Tier 1.7: both_correct_count / both_correct_rate. These are
-    # strictly stricter than overall_accuracy (which counts arbiter
-    # overrides of rc=yes). Defaults preserve back-compat with eval
-    # results emitted before the migration landed.
-    _both_correct_count = int(eval_result.get("both_correct_count", 0) or 0)
-    _both_correct_rate_val = eval_result.get("both_correct_rate")
-    if _both_correct_rate_val is None and _evaluated_count:
-        _both_correct_rate_val = round(
-            100.0 * _both_correct_count / int(_evaluated_count), 2
-        ) if int(_evaluated_count) > 0 else 0.0
-
     # GSO v2 Phase 4 (D3): capture the FULL effective config in force for
     # this iteration. ``config_snapshot`` may be the raw fetched config or an
     # already-parsed space dict; ``_project_config_for_iteration`` normalizes
     # both to a whitelisted, cycle-safe Genie-domain projection. When the
-    # caller does not pass a snapshot (older/repeatability-only call sites)
-    # the column is written NULL — back-compat is preserved. ``is_champion``
+    # caller does not pass a snapshot, the column is written NULL. ``is_champion``
     # is always written ``false`` here; the champion is stamped later by
     # ``mark_champion_iteration`` reusing the existing best-iteration
     # selection.
@@ -966,8 +827,8 @@ def write_iteration(
     # Workbench UI (assessment-centric contract). ``num_needs_review`` lets the
     # UI distinguish review-pending rows from failures; ``eval_run_id`` /
     # ``eval_run_status`` reference the underlying native run. All three are
-    # produced by ``build_eval_output_from_official`` and default to NULL on the
-    # legacy in-process / repeatability-only paths that don't emit them.
+    # produced by ``build_eval_output_from_official`` and default to NULL when
+    # the native runner does not emit them.
     _num_needs_review = eval_result.get("num_needs_review")
     _num_needs_review = (
         int(_num_needs_review) if isinstance(_num_needs_review, (int, float)) else None
@@ -975,21 +836,16 @@ def write_iteration(
     _eval_run_id = eval_result.get("eval_run_id") or None
     _eval_run_status = eval_result.get("eval_run_status") or None
 
-    # GSO v2 Phase 8 (arch §7.4): per-attempt loop-state columns. Rendered from
-    # the ``loop_state`` map (control_plane.build_loop_state); every column is
-    # written ``NULL`` when the caller omits it (baseline / legacy writes).
+    # Per-attempt loop-state columns emitted by the native optimizer.
     _loop_state_cols, _loop_state_vals = _render_loop_state_sql(loop_state, _esc)
 
     col_names = (
         "run_id, iteration, lever, eval_scope, timestamp, "
         "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
-        "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
+        "remaining_failures, "
         "thresholds_met, rows_json, reflection_json, "
-        "evaluated_count, excluded_count, quarantined_benchmarks_json, "
-        "leakage_count_by_type, firewall_rejection_count_by_type, secondary_mining_blocked, "
-        "synthesis_slots_persisted, arbiter_rejection_count, "
-        "cluster_fallback_to_instruction_count, synthesis_archetype_distribution, "
-        "rolled_back, both_correct_count, both_correct_rate, "
+        "evaluated_count, excluded_count, "
+        "rolled_back, "
         "config_json, is_champion, "
         "num_needs_review, eval_run_id, eval_run_status, "
         + _loop_state_cols
@@ -1007,25 +863,12 @@ def write_iteration(
             f"'{_esc(json.dumps(scores))}'",
             _opt_json(failures),
             _opt_json(remaining),
-            _opt_json(arbiter_actions),
-            str(repeatability_pct) if repeatability_pct is not None else "NULL",
-            _opt_json(repeatability_details),
             str(thresholds_met).lower(),
             _opt_json(rows_data),
             _opt_json(reflection_json),
             str(int(_evaluated_count)),
             str(_excluded_count),
-            _opt_json(_quarantined) if _quarantined else "NULL",
-            _opt_json(_leakage_count_by_type) if _leakage_count_by_type else "NULL",
-            _opt_json(_firewall_rejection_count_by_type) if _firewall_rejection_count_by_type else "NULL",
-            str(_secondary_mining_blocked),
-            str(_synthesis_slots_persisted),
-            str(_arbiter_rejection_count),
-            str(_cluster_fallback_to_instruction_count),
-            _opt_json(_synthesis_archetype_distribution) if _synthesis_archetype_distribution else "NULL",
             "true" if rolled_back else "false",
-            str(_both_correct_count),
-            str(_both_correct_rate_val) if _both_correct_rate_val is not None else "NULL",
             _opt_json(_config_payload) if _config_payload else "NULL",
             "false",
             str(_num_needs_review) if _num_needs_review is not None else "NULL",
@@ -1048,40 +891,6 @@ def write_iteration(
         eval_scope,
         run_id,
         eval_result.get("overall_accuracy", 0.0),
-    )
-
-
-def update_iteration_reflection(
-    spark: SparkSession,
-    run_id: str,
-    iteration: int,
-    reflection_json: dict,
-    *,
-    catalog: str,
-    schema: str,
-    eval_scope: str = "full",
-) -> None:
-    """Update ``reflection_json`` on an existing iteration row."""
-    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
-
-    def _esc(s: str) -> str:
-        return s.replace("\\", "\\\\").replace("'", "''")
-
-    payload = _esc(json.dumps(reflection_json))
-    stmt = (
-        f"UPDATE {fqn} SET reflection_json = '{payload}' "
-        f"WHERE run_id = '{run_id}' AND iteration = {iteration} "
-        f"AND eval_scope = '{eval_scope}'"
-    )
-    execute_delta_write_with_retry(
-        spark,
-        stmt,
-        operation_name="update_iteration_reflection",
-        table_name=fqn,
-    )
-    logger.info(
-        "Updated reflection_json for run %s iteration %d scope=%s",
-        run_id, iteration, eval_scope,
     )
 
 
@@ -1320,362 +1129,6 @@ def mark_champion_iteration(
 # ── Provenance Write Functions ───────────────────────────────────────────
 
 
-def write_provenance(
-    spark: SparkSession,
-    run_id: str,
-    iteration: int,
-    lever: int,
-    provenance_rows: list[dict],
-    catalog: str,
-    schema: str,
-) -> None:
-    """Write provenance rows linking questions/judges to clusters."""
-    if not provenance_rows:
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    for p in provenance_rows:
-        blame = p.get("blame_set")
-        if isinstance(blame, list):
-            blame = json.dumps(blame)
-        row: dict[str, Any] = {
-            "run_id": run_id,
-            "iteration": iteration,
-            "lever": lever,
-            "question_id": p.get("question_id", ""),
-            "signal_type": p.get("signal_type", "hard"),
-            "arbiter_verdict": p.get("arbiter_verdict"),
-            "judge": p.get("judge", ""),
-            "judge_verdict": p.get("judge_verdict", "FAIL"),
-            "asi_failure_type_raw": p.get("asi_failure_type_raw"),
-            "resolved_root_cause": p.get("resolved_root_cause", "other"),
-            "resolution_method": p.get("resolution_method", "unknown"),
-            "blame_set": blame,
-            "counterfactual_fix": p.get("counterfactual_fix"),
-            "wrong_clause": p.get("wrong_clause"),
-            "rationale_snippet": (p.get("rationale_snippet") or "")[:500],
-            "expected_sql": (p.get("expected_sql") or "")[:2000],
-            "generated_sql": (p.get("generated_sql") or "")[:2000],
-            "cluster_id": p.get("cluster_id", ""),
-            "logged_at": now,
-        }
-        row = {k: v for k, v in row.items() if v is not None}
-        try:
-            insert_row(spark, catalog, schema, TABLE_PROVENANCE, row)
-        except Exception:
-            logger.debug("Failed to write provenance row for %s/%s", p.get("question_id"), p.get("judge"), exc_info=True)
-    logger.info("Wrote %d provenance rows for run %s iter %d lever %d", len(provenance_rows), run_id, iteration, lever)
-
-
-def write_lever_loop_decisions(
-    spark: SparkSession,
-    rows: list[dict],
-    *,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist Task 3 decision audit rows.
-
-    Each input row may carry plain Python lists/dicts under
-    ``affected_qids``, ``source_cluster_ids``, ``proposal_ids``,
-    ``proposal_to_patch_map``, and ``metrics``. We JSON-serialize them
-    here so callers don't have to round-trip through ``json.dumps``.
-    No-op when ``rows`` is empty.
-    """
-    if not rows:
-        return
-
-    def _as_json(val: Any) -> Any:
-        if val is None:
-            return None
-        if isinstance(val, str):
-            return val  # already serialized
-        try:
-            return json.dumps(val, sort_keys=True, default=str)
-        except (TypeError, ValueError):
-            return None
-
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        payload: dict[str, Any] = {
-            "run_id": r.get("run_id", ""),
-            "iteration": int(r.get("iteration") or 0),
-            "ag_id": r.get("ag_id"),
-            "decision_order": int(r.get("decision_order") or 0),
-            "stage_letter": r.get("stage_letter"),
-            "gate_name": r.get("gate_name", ""),
-            "decision": r.get("decision", ""),
-            "reason_code": r.get("reason_code"),
-            "reason_detail": (r.get("reason_detail") or None) if not isinstance(
-                r.get("reason_detail"), str,
-            ) else r["reason_detail"][:2000],
-            "affected_qids_json": _as_json(
-                r.get("affected_qids_json", r.get("affected_qids")),
-            ),
-            "source_cluster_ids_json": _as_json(
-                r.get("source_cluster_ids_json", r.get("source_cluster_ids")),
-            ),
-            "proposal_ids_json": _as_json(
-                r.get("proposal_ids_json", r.get("proposal_ids")),
-            ),
-            "proposal_to_patch_map_json": _as_json(
-                r.get(
-                    "proposal_to_patch_map_json", r.get("proposal_to_patch_map"),
-                ),
-            ),
-            "metrics_json": _as_json(r.get("metrics_json", r.get("metrics"))),
-            "created_at": now,
-        }
-        if not payload["run_id"] or not payload["gate_name"] or not payload["decision"]:
-            continue
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_LEVER_LOOP_DECISIONS, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write lever-loop decision row %s/%s",
-                payload["gate_name"],
-                payload["reason_code"],
-                exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d lever-loop decision row(s) for run %s",
-            written,
-            rows[0].get("run_id", "?"),
-        )
-
-
-def write_proactive_corpus_profile(
-    spark: SparkSession,
-    *,
-    run_id: str,
-    iteration: int,
-    table_id: str | None,
-    profile_blob: dict | str | None,
-    eligible_row_count: int,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist a Task 9 proactive corpus profile snapshot.
-
-    ``profile_blob`` may be a Python dict (will be JSON-serialized) or
-    a pre-serialized string. No-op when both ``profile_blob`` and
-    ``eligible_row_count`` are empty.
-    """
-    if not profile_blob and not eligible_row_count:
-        return
-    if isinstance(profile_blob, dict):
-        try:
-            profile_blob_str = json.dumps(profile_blob, sort_keys=True, default=str)
-        except (TypeError, ValueError):
-            profile_blob_str = None
-    else:
-        profile_blob_str = profile_blob
-    payload: dict[str, Any] = {
-        "run_id": run_id,
-        "iteration": int(iteration),
-        "table_id": table_id,
-        "profile_blob": profile_blob_str,
-        "eligible_row_count": int(eligible_row_count or 0),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        insert_row(
-            spark, catalog, schema, TABLE_PROACTIVE_CORPUS_PROFILE, payload,
-        )
-    except Exception:
-        logger.debug(
-            "Failed to write proactive corpus profile row for run %s iter %d",
-            run_id, iteration, exc_info=True,
-        )
-
-
-def write_proactive_patches(
-    spark: SparkSession,
-    rows: list[dict],
-    *,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist Task 9 proactive enrichment patches.
-
-    Each input row is the patch dict emitted by
-    ``feature_mining.synthesize_proactive_patches`` plus an
-    ``applied`` boolean and optional ``patch_id`` / ``run_id`` /
-    ``iteration``. No-op when ``rows`` is empty.
-    """
-    if not rows:
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        run_id = str(r.get("run_id") or "")
-        if not run_id:
-            continue
-        target = (
-            r.get("target")
-            or r.get("column")
-            or r.get("snippet_name")
-            or (
-                f"{r.get('left_table', '')}|{r.get('join_kind', '')}|"
-                f"{r.get('right_table', '')}"
-                if r.get("type") == "add_join_spec" else None
-            )
-        )
-        payload: dict[str, Any] = {
-            "run_id": run_id,
-            "iteration": int(r.get("iteration") or 0),
-            "patch_id": str(r.get("patch_id") or f"proactive_{written + 1}"),
-            "patch_type": r.get("type"),
-            "target": str(target) if target is not None else None,
-            "table_id": r.get("table_id"),
-            "source_signal": r.get("source_signal"),
-            "frequency": int(r.get("frequency") or 0),
-            "dedup_route": r.get("dedup_route"),
-            "dedup_dropped_reason": r.get("dedup_dropped_reason"),
-            "applied": bool(r.get("applied", False)),
-            "created_at": now,
-        }
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_PROACTIVE_PATCHES, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write proactive patch row for run %s",
-                run_id, exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d proactive patch row(s) for run %s",
-            written, rows[0].get("run_id", "?"),
-        )
-
-
-def write_human_required_escalations(
-    spark: SparkSession,
-    rows: list[dict],
-    *,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist Task 8 escalation records to ``genie_eval_human_required``.
-
-    Each input row may carry plain Python lists/dicts under
-    ``evidence`` / ``evidence_json``; we JSON-serialize defensively.
-    Empty list is a no-op. Skips rows missing run_id or
-    cluster_signature so orphan rows do not pollute the queue.
-    """
-    if not rows:
-        return
-
-    def _as_json(val: Any) -> Any:
-        if val is None:
-            return None
-        if isinstance(val, str):
-            return val
-        try:
-            return json.dumps(val, sort_keys=True, default=str)
-        except (TypeError, ValueError):
-            return None
-
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        sig = str(r.get("cluster_signature") or "").strip()
-        run_id = str(r.get("run_id") or "").strip()
-        if not sig or not run_id:
-            continue
-        payload: dict[str, Any] = {
-            "run_id": run_id,
-            "cluster_signature": sig,
-            "question_id": r.get("question_id") or "",
-            "root_cause": r.get("root_cause"),
-            "attempt_count": int(r.get("attempt_count") or 0),
-            "last_iteration": int(r.get("last_iteration") or 0),
-            "reason_code": r.get("reason_code"),
-            "evidence_json": _as_json(r.get("evidence_json", r.get("evidence"))),
-            "created_at": now,
-        }
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_HUMAN_REQUIRED, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write human-required row for sig=%s qid=%s",
-                sig,
-                payload["question_id"],
-                exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d human-required escalation row(s) for run %s",
-            written,
-            rows[0].get("run_id", "?"),
-        )
-
-
-def write_gt_correction_candidates(
-    spark: SparkSession,
-    rows: list[dict],
-    *,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist GT correction queue payloads from Task 1.
-
-    Each row already carries the Delta-shaped fields built by
-    ``ground_truth_corrections.build_gt_correction_candidate``. Status
-    starts at ``pending_review``; the four-state machine
-    (``pending_review`` / ``accepted_corpus_fix`` / ``rejected_keep_gt``
-    / ``superseded``) is documented in the helper module. No-op when
-    ``rows`` is empty.
-    """
-    if not rows:
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        payload: dict[str, Any] = {
-            "run_id": r.get("run_id", ""),
-            "iteration": int(r.get("iteration") or 0),
-            "question_id": r.get("question_id", ""),
-            "question": (r.get("question") or "")[:5000],
-            "expected_sql": (r.get("expected_sql") or "")[:5000],
-            "genie_sql": (r.get("genie_sql") or "")[:5000],
-            "arbiter_verdict": r.get("arbiter_verdict", ""),
-            "arbiter_rationale": (r.get("arbiter_rationale") or "")[:2000],
-            "status": r.get("status") or "pending_review",
-            "created_at": now,
-        }
-        if not payload["question_id"]:
-            # Skip orphan rows; downstream consumers key on question_id.
-            continue
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_GT_CORRECTION_CANDIDATES, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write GT correction candidate for %s",
-                payload["question_id"],
-                exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d GT correction candidate(s) for run %s",
-            written,
-            rows[0].get("run_id", "?"),
-        )
-
-
 def write_benchmark_mutations(
     spark: SparkSession,
     run_id: str,
@@ -1857,69 +1310,6 @@ def load_artifacts(
         return pd.DataFrame()
 
 
-def update_provenance_proposals(
-    spark: SparkSession,
-    run_id: str,
-    iteration: int,
-    proposal_mappings: list[dict],
-    catalog: str,
-    schema: str,
-) -> None:
-    """Backfill ``proposal_id`` and ``patch_type`` into provenance rows."""
-    fqn = _fqn(catalog, schema, TABLE_PROVENANCE)
-    for m in proposal_mappings:
-        cid = (m.get("cluster_id") or "").replace("'", "''")
-        pid = (m.get("proposal_id") or "").replace("'", "''")
-        pt = (m.get("patch_type") or "").replace("'", "''")
-        if not cid:
-            continue
-        try:
-            stmt = (
-                f"UPDATE {fqn} SET proposal_id = '{pid}', patch_type = '{pt}' "
-                f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND cluster_id = '{cid}'"
-            )
-            execute_delta_write_with_retry(
-                spark,
-                stmt,
-                operation_name="update_provenance_proposals",
-                table_name=fqn,
-            )
-        except Exception:
-            logger.debug("Failed to update provenance proposals for cluster %s", cid, exc_info=True)
-
-
-def update_provenance_gate(
-    spark: SparkSession,
-    run_id: str,
-    iteration: int,
-    lever: int,
-    gate_type: str,
-    gate_result: str,
-    gate_regression: dict | None,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Backfill gate outcome into provenance rows."""
-    fqn = _fqn(catalog, schema, TABLE_PROVENANCE)
-    gt = gate_type.replace("'", "''")
-    gr = gate_result.replace("'", "''")
-    reg_json = json.dumps(gate_regression, default=str) if gate_regression else None
-    reg_str = f"'{reg_json.replace(chr(39), chr(39)+chr(39))}'" if reg_json else "NULL"
-    try:
-        stmt = (
-            f"UPDATE {fqn} SET gate_type = '{gt}', gate_result = '{gr}', gate_regression = {reg_str} "
-            f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND lever = {lever}"
-        )
-        execute_delta_write_with_retry(
-            spark,
-            stmt,
-            operation_name="update_provenance_gate",
-            table_name=fqn,
-        )
-    except Exception:
-        logger.debug("Failed to update provenance gate for run %s iter %d lever %d", run_id, iteration, lever, exc_info=True)
-
-
 # ── Read Functions ───────────────────────────────────────────────────────
 
 
@@ -2023,8 +1413,7 @@ def load_latest_full_iteration(
     if df.empty:
         return None
     row = df.iloc[0].to_dict()
-    for col in ("scores_json", "failures_json", "remaining_failures", "arbiter_actions_json",
-                "repeatability_json", "rows_json"):
+    for col in ("scores_json", "failures_json", "remaining_failures", "rows_json"):
         if row.get(col) and isinstance(row[col], str):
             try:
                 row[col] = json.loads(row[col])
@@ -2069,8 +1458,7 @@ def load_latest_state_iteration(
     if df.empty:
         return None
     row = df.iloc[0].to_dict()
-    for col in ("scores_json", "failures_json", "remaining_failures", "arbiter_actions_json",
-                "repeatability_json", "rows_json"):
+    for col in ("scores_json", "failures_json", "remaining_failures", "rows_json"):
         if row.get(col) and isinstance(row[col], str):
             try:
                 row[col] = json.loads(row[col])
@@ -2099,8 +1487,7 @@ def load_all_full_iterations(
     rows = df.to_dict("records")
     for row in rows:
         for col in ("scores_json", "failures_json", "remaining_failures",
-                     "arbiter_actions_json", "repeatability_json", "rows_json",
-                     "reflection_json"):
+                    "rows_json", "reflection_json"):
             if row.get(col) and isinstance(row[col], str):
                 try:
                     row[col] = json.loads(row[col])
@@ -2132,8 +1519,7 @@ def load_all_scored_iterations(
     rows = df.to_dict("records")
     for row in rows:
         for col in ("scores_json", "failures_json", "remaining_failures",
-                     "arbiter_actions_json", "repeatability_json", "rows_json",
-                     "reflection_json"):
+                    "rows_json", "reflection_json"):
             if row.get(col) and isinstance(row[col], str):
                 try:
                     row[col] = json.loads(row[col])
@@ -2173,260 +1559,10 @@ def load_recent_activity(
     )
 
 
-def load_provenance(
-    spark: SparkSession,
-    run_id: str,
-    catalog: str,
-    schema: str,
-    *,
-    iteration: int | None = None,
-    lever: int | None = None,
-) -> pd.DataFrame:
-    """All provenance records for a run, optionally filtered by iteration/lever."""
-    fqn = _fqn(catalog, schema, TABLE_PROVENANCE)
-    where = f"WHERE run_id = '{run_id}'"
-    if iteration is not None:
-        where += f" AND iteration = {iteration}"
-    if lever is not None:
-        where += f" AND lever = {lever}"
-    return run_query(
-        spark,
-        f"SELECT * FROM {fqn} {where} ORDER BY iteration, lever, question_id",
-    )
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Queued Patches (high-risk, pending human review)
 # ═══════════════════════════════════════════════════════════════════════
 
-TABLE_QUEUED_PATCHES = "genie_opt_queued_patches"
-
-
-def _ensure_queued_patches_table(spark: Any, catalog: str, schema: str) -> None:
-    fqn = _fqn(catalog, schema, TABLE_QUEUED_PATCHES)
-    spark.sql(f"""
-        CREATE TABLE IF NOT EXISTS {fqn} (
-            run_id              STRING      NOT NULL,
-            iteration           INT         NOT NULL,
-            patch_type          STRING      NOT NULL,
-            target_identifier   STRING      NOT NULL,
-            confidence_tier     STRING,
-            coverage_analysis   STRING      COMMENT 'JSON blob with schema overlap details',
-            blame_iterations    INT,
-            status              STRING      NOT NULL,
-            created_at          TIMESTAMP   NOT NULL,
-            resolved_at         TIMESTAMP
-        ) USING DELTA
-    """)
-
-
-def write_queued_patch(
-    spark: Any,
-    run_id: str,
-    iteration: int,
-    patch_type: str,
-    target_identifier: str,
-    catalog: str,
-    schema: str,
-    *,
-    confidence_tier: str = "",
-    coverage_analysis: dict | None = None,
-    blame_iterations: int = 0,
-) -> None:
-    """Persist a high-risk patch that needs human approval."""
-    _ensure_queued_patches_table(spark, catalog, schema)
-    fqn = _fqn(catalog, schema, TABLE_QUEUED_PATCHES)
-    now = datetime.now(timezone.utc).isoformat()
-    cov_json = json.dumps(coverage_analysis or {}).replace("'", "''")
-    target_esc = target_identifier.replace("'", "''")
-    execute_delta_write_with_retry(
-        spark,
-        f"""
-        INSERT INTO {fqn} (run_id, iteration, patch_type, target_identifier,
-                           confidence_tier, coverage_analysis, blame_iterations,
-                           status, created_at)
-        VALUES ('{run_id}', {iteration}, '{patch_type}', '{target_esc}',
-                '{confidence_tier}', '{cov_json}', {blame_iterations},
-                'pending', '{now}')
-        """,
-        operation_name="write_queued_patch",
-        table_name=fqn,
-    )
-
-
-def get_queued_patches(
-    spark: Any,
-    catalog: str,
-    schema: str,
-    *,
-    status: str = "pending",
-) -> list[dict]:
-    """Return all queued patches with the given status."""
-    _ensure_queued_patches_table(spark, catalog, schema)
-    fqn = _fqn(catalog, schema, TABLE_QUEUED_PATCHES)
-    try:
-        df = run_query(
-            spark,
-            f"SELECT * FROM {fqn} WHERE status = '{status}' ORDER BY created_at DESC",
-        )
-        return df.to_dict("records") if not df.empty else []
-    except Exception:
-        logger.debug("Could not read queued patches table", exc_info=True)
-        return []
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Improvement Suggestions
 # ═══════════════════════════════════════════════════════════════════════
-
-
-def write_suggestion(
-    spark: Any,
-    catalog: str,
-    schema: str,
-    suggestion: dict,
-) -> None:
-    """Insert a single improvement suggestion row."""
-    import uuid
-
-    now = datetime.now(timezone.utc).isoformat()
-    row = {
-        "suggestion_id": suggestion.get("suggestion_id") or str(uuid.uuid4()),
-        "run_id": suggestion["run_id"],
-        "space_id": suggestion["space_id"],
-        "iteration": suggestion.get("iteration"),
-        "lever": suggestion.get("lever"),
-        "type": suggestion["type"],
-        "title": suggestion["title"],
-        "rationale": suggestion.get("rationale"),
-        "definition": suggestion.get("definition"),
-        "affected_questions": json.dumps(suggestion.get("affected_questions", [])),
-        "estimated_impact": suggestion.get("estimated_impact"),
-        "status": suggestion.get("status", "PROPOSED"),
-        "reviewed_by": None,
-        "reviewed_at": None,
-        "created_at": now,
-        "updated_at": now,
-    }
-    insert_row(spark, catalog, schema, TABLE_SUGGESTIONS, row)
-    logger.info(
-        "Wrote suggestion %s (%s) for run %s",
-        row["suggestion_id"], row["type"], row["run_id"],
-    )
-
-
-def load_suggestions(
-    spark: Any,
-    run_id: str,
-    catalog: str,
-    schema: str,
-) -> pd.DataFrame:
-    """All suggestions for a run, ordered by created_at ASC."""
-    fqn = _fqn(catalog, schema, TABLE_SUGGESTIONS)
-    return run_query(
-        spark,
-        f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' ORDER BY created_at ASC",
-    )
-
-
-def load_suggestion_by_id(
-    spark: Any,
-    suggestion_id: str,
-    catalog: str,
-    schema: str,
-) -> dict | None:
-    """Load a single suggestion by its ID. Returns dict or None."""
-    fqn = _fqn(catalog, schema, TABLE_SUGGESTIONS)
-    df = run_query(
-        spark,
-        f"SELECT * FROM {fqn} WHERE suggestion_id = '{suggestion_id}' LIMIT 1",
-    )
-    if df.empty:
-        return None
-    return df.iloc[0].to_dict()
-
-
-def update_suggestion_status(
-    spark: Any,
-    suggestion_id: str,
-    catalog: str,
-    schema: str,
-    status: str,
-    reviewed_by: str | None = None,
-) -> None:
-    """Update the status of a suggestion (ACCEPTED, REJECTED, IMPLEMENTED)."""
-    now = datetime.now(timezone.utc).isoformat()
-    updates: dict[str, Any] = {
-        "status": status,
-        "updated_at": now,
-    }
-    if reviewed_by:
-        updates["reviewed_by"] = reviewed_by
-        updates["reviewed_at"] = now
-    update_row(spark, catalog, schema, TABLE_SUGGESTIONS, {"suggestion_id": suggestion_id}, updates)
-
-
-def write_finalize_attestation_matrix(
-    spark: SparkSession,
-    run_id: str,
-    *,
-    iteration_idx: str,
-    train_passes: dict[str, bool],
-    heldout_passes: dict[str, bool],
-    catalog: str,
-    schema: str,
-) -> None:
-    """Bug #4 Phase 4 — persist per-qid pass/fail for a baseline / finalize
-    sweep.
-
-    ``iteration_idx`` is a canonical marker: ``"baseline"`` for the run-
-    start sweep, ``"final"`` for the end-of-run sweep. Integer iteration
-    values are accepted but not emitted by the standard harness.
-
-    Writes one row per (run_id, qid, iteration_idx). Safe to call multiple
-    times per run (different iteration_idx values) but NOT idempotent for
-    the same marker — callers should delete existing rows before rewriting
-    if re-running.
-    """
-    if not train_passes and not heldout_passes:
-        return
-    fqn = _fqn(catalog, schema, TABLE_FINALIZE_ATTESTATION)
-    now = datetime.now(timezone.utc).isoformat()
-    values: list[str] = []
-
-    def _bool_sql(v: bool | None) -> str:
-        if v is None:
-            return "NULL"
-        return "true" if v else "false"
-
-    def _esc(s: str) -> str:
-        return s.replace("\\", "\\\\").replace("'", "''")
-
-    for qid, passed in train_passes.items():
-        values.append(
-            f"('{_esc(run_id)}', '{_esc(qid)}', '{_esc(iteration_idx)}', "
-            f"{_bool_sql(passed)}, false, TIMESTAMP '{now}')"
-        )
-    for qid, passed in heldout_passes.items():
-        values.append(
-            f"('{_esc(run_id)}', '{_esc(qid)}', '{_esc(iteration_idx)}', "
-            f"{_bool_sql(passed)}, true, TIMESTAMP '{now}')"
-        )
-
-    if not values:
-        return
-
-    execute_delta_write_with_retry(
-        spark,
-        (
-            f"INSERT INTO {fqn} "
-            f"(run_id, qid, iteration_idx, passed, is_heldout, logged_at) "
-            f"VALUES {', '.join(values)}"
-        ),
-        operation_name="write_finalize_attestation",
-        table_name=fqn,
-    )
-    logger.info(
-        "Wrote %d finalize_attestation rows for run %s (marker=%s)",
-        len(values), run_id, iteration_idx,
-    )

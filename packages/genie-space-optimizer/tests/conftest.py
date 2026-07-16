@@ -116,7 +116,6 @@ def sample_run():
         "apply_mode": "genie_config",
         "best_iteration": 3,
         "best_accuracy": 92.5,
-        "best_repeatability": 95.0,
         "convergence_reason": "threshold_met",
         "experiment_name": "/Shared/genie-space-optimizer/test-space/revenue",
         "triggered_by": "test@example.com",

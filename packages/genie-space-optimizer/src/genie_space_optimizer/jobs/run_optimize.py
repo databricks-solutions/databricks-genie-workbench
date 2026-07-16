@@ -42,11 +42,10 @@ from genie_space_optimizer.common.warehouse import export_warehouse_id, resolve_
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.benchmarks import benchmark_corpus_for_optimization
-from genie_space_optimizer.optimization.evaluation import load_benchmarks_from_dataset
+from genie_space_optimizer.optimization.benchmarking import load_benchmarks_from_dataset
 from genie_space_optimizer.optimization.preflight import _resolve_experiment_path
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
-    load_run,
     write_stage,
 )
 from genie_space_optimizer.optimization.unified_loop import (
@@ -72,7 +71,6 @@ dbutils.widgets.text("apply_mode", "genie_config")
 dbutils.widgets.text("levers", "[1,2,3,4,5,6]")
 dbutils.widgets.text("max_attempts", "3")
 dbutils.widgets.text("target_accuracy", "0.90")
-dbutils.widgets.text("triggered_by", "")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
 
@@ -87,7 +85,6 @@ max_attempts = int(dbutils.widgets.get("max_attempts") or "3")
 target_accuracy = target_accuracy_percent(
     float(dbutils.widgets.get("target_accuracy") or "0.90")
 )
-triggered_by = dbutils.widgets.get("triggered_by").strip()
 llm_model = dbutils.widgets.get("llm_model").strip()
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
@@ -138,13 +135,6 @@ write_stage(
 
 # COMMAND ----------
 
-_run_row = load_run(spark, run_id, catalog, schema) or {}
-_human_corrections_raw = _run_row.get("human_corrections_json")
-try:
-    human_corrections = json.loads(_human_corrections_raw) if _human_corrections_raw else []
-except (ValueError, TypeError):
-    human_corrections = []
-
 uc_schema = f"{catalog}.{schema}"
 _all_benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
 benchmarks = benchmark_corpus_for_optimization(_all_benchmarks)
@@ -174,7 +164,6 @@ try:
         spark,
         run_id=run_id,
         space_id=space_id,
-        domain=domain,
         benchmarks=benchmarks,
         catalog=catalog,
         schema=schema,
@@ -182,8 +171,6 @@ try:
         max_attempts=max_attempts,
         target_accuracy=target_accuracy,
         apply_mode=apply_mode,
-        triggered_by=triggered_by,
-        human_corrections=human_corrections,
     )
     _log(
         "Optimize loop finished",

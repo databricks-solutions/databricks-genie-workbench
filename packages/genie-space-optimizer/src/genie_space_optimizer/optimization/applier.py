@@ -67,7 +67,7 @@ from genie_space_optimizer.common.genie_client import (
     strip_non_exportable_fields,
     update_space_description,
 )
-from genie_space_optimizer.optimization.optimizer import _resolve_scope
+from genie_space_optimizer.optimization.optimizer_utils import _resolve_scope
 from genie_space_optimizer.optimization.applier_audit import (
     ApplierDecision,
     build_applier_decision,
@@ -254,7 +254,7 @@ def _canonicalize_and_dedup_instructions(config: dict) -> bool:
         return False
 
     # Lazy import to break a circular at module load.
-    from genie_space_optimizer.optimization.optimizer import (
+    from genie_space_optimizer.optimization.optimizer_utils import (
         _sanitize_plaintext_instructions,
     )
 
@@ -3392,7 +3392,7 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
 
     # ── Instructions ──────────────────────────────────────────────
     if section == "instructions":
-        from genie_space_optimizer.optimization.optimizer import normalize_instructions
+        from genie_space_optimizer.optimization.optimizer_utils import normalize_instructions
 
         if op == "add":
             text = cmd.get("new_text", "")
@@ -3428,7 +3428,7 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 return False
             current = _get_general_instructions(config)
             try:
-                from genie_space_optimizer.optimization.optimizer import (
+                from genie_space_optimizer.optimization.optimizer_utils import (
                     _ensure_structured,
                 )
                 structured = _ensure_structured(current, config)
@@ -3484,7 +3484,7 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
             _orig_sections = config.get("_original_instruction_sections")
             if _orig_sections and isinstance(_orig_sections, dict) and text:
                 try:
-                    from genie_space_optimizer.optimization.optimizer import (
+                    from genie_space_optimizer.optimization.optimizer_utils import (
                         _detect_instruction_contradictions,
                         _ensure_structured,
                     )
@@ -4045,13 +4045,6 @@ def apply_patch_set(
                     _dropped = dict(_p)
                     _dropped["drop_reason"] = f"benchmark_leak:{_why}"
                     leak_dropped_patches.append(_dropped)
-                    try:
-                        from genie_space_optimizer.optimization.optimizer import (
-                            _incr_bug4_counter,
-                        )
-                        _incr_bug4_counter("firewall_rejections")
-                    except Exception:
-                        logger.debug("bug4 counter increment failed", exc_info=True)
                     logger.warning(
                         "Bug #4 last-mile applier firewall: dropped %s example-SQL "
                         "patch (%s) — a scored benchmark Q/A may not be seeded as "
@@ -4143,7 +4136,7 @@ def apply_patch_set(
     early_dropped_patches: list[dict] = []
     patched_objects: set[str] = set()
     # Task 3 — per-patch decision audit, surfaced via apply_log so the
-    # harness can reconcile what the cap selected against what the
+    # unified loop can reconcile what the cap selected against what the
     # applier actually applied (Task 4).
     applier_decisions: list[ApplierDecision] = []
 
@@ -4213,7 +4206,7 @@ def apply_patch_set(
 
         if ok:
             # T2.13: stamp applied provenance on the applied entry so the
-            # harness can persist ``applied_patch_type`` /
+            # unified loop can persist ``applied_patch_type`` /
             # ``applied_patch_detail`` on genie_opt_patches and the
             # pretty-printer can enumerate records accurately. The
             # proposal-side patch_type (pre-downgrade) is preserved as
@@ -4505,7 +4498,7 @@ def apply_patch_set(
         "patch_deployed": patch_deployed,
         "patch_error": patch_error,
         "dropped_patches": dropped_patches + early_dropped_patches + leak_dropped_patches,
-        # Task 3 — per-patch applier decision audit so the harness can
+        # Task 3 — per-patch applier decision audit so the unified loop can
         # reconcile cap-selected vs applier-applied identity sets and
         # operators can see why a patch was dropped without grepping
         # multiple log lines.
@@ -4627,16 +4620,6 @@ def rollback(
 # ═══════════════════════════════════════════════════════════════════════
 # 9. Validation & Verification
 # ═══════════════════════════════════════════════════════════════════════
-
-
-def validate_patch_set(patches: list[dict], metadata_snapshot: dict) -> tuple[bool, list[str]]:
-    """Validate a patch set before application.
-
-    Delegates to ``optimizer.validate_patch_set`` but adds metadata checks.
-    """
-    from genie_space_optimizer.optimization.optimizer import validate_patch_set as _validate
-
-    return _validate(patches, metadata_snapshot)
 
 
 def _canonical_for_rollback_compare(value: Any) -> Any:

@@ -428,7 +428,7 @@ def _reset_schema_cache():
 def test_select_iterations_delta_falls_back_to_legacy_cols(monkeypatch) -> None:
     """The exact regression the user reported: GSO job bundle hasn't been
     redeployed, so the Delta table is missing evaluated_count /
-    excluded_count / quarantined_benchmarks_json. The Workbench app must
+    excluded_count. The Workbench app must
     still render the evaluation summary by degrading to the legacy SELECT
     and relying on stored overall_accuracy via _derived_accuracy.
     """
@@ -448,7 +448,6 @@ def test_select_iterations_delta_falls_back_to_legacy_cols(monkeypatch) -> None:
         "failures_json": "[]",
         "thresholds_met": False,
         "lever": None,
-        "repeatability_pct": None,
         "reflection_json": None,
     }
     calls: list[str] = []
@@ -828,7 +827,6 @@ def test_publish_step_io_omits_retired_uc_model_fields() -> None:
         {
             "best_iteration": 2,
             "best_accuracy": 91.0,
-            "best_repeatability": 88.0,
             "convergence_reason": "TARGET_REACHED",
         },
     )
@@ -1582,6 +1580,20 @@ def test_benchmark_changes_includes_qc(monkeypatch) -> None:
         "window": {"status": "in_window", "count": 32},
         "window_target_min": 30, "window_target_max": 40,
         "gt_correction_candidates": [],
+        "quality_review_version": "benchmark_quality_v1",
+        "quality_review_status": "complete",
+        "semantic_review_coverage": 1.0,
+        "quality_counts": {
+            "total": 32, "trusted": 30, "warnings": 2,
+            "excluded": 1, "review_not_run": 0,
+        },
+        "quality_findings": [{
+            "question_id": "q9", "question": "Show sales", "source": "genie_space",
+            "category": "question_quality", "code": "WEAK_BUT_ANSWERABLE",
+            "severity": "warning", "confidence": 0.8,
+            "explanation": "Could be more specific.",
+        }],
+        "proposed_changes": [],
     }
 
     async def empty(_rid):
@@ -1603,6 +1615,11 @@ def test_benchmark_changes_includes_qc(monkeypatch) -> None:
     assert qc["finalValidity"] is True
     assert qc["window"] == {"status": "in_window", "count": 32}
     assert qc["windowTargetMin"] == 30
+    assert qc["qualityReviewVersion"] == "benchmark_quality_v1"
+    assert qc["qualityReviewStatus"] == "complete"
+    assert qc["semanticReviewCoverage"] == 1.0
+    assert qc["qualityCounts"]["trusted"] == 30
+    assert qc["qualityFindings"][0]["code"] == "WEAK_BUT_ANSWERABLE"
 
 
 def test_benchmark_changes_qc_null_for_legacy_run(monkeypatch) -> None:

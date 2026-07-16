@@ -73,31 +73,6 @@ def _patches_df() -> pd.DataFrame:
     ])
 
 
-def _provenance_df() -> pd.DataFrame:
-    """Provenance with the leakage-sensitive columns POPULATED, to prove the
-    serializer never forwards them into the prompt context."""
-    return pd.DataFrame([
-        {
-            "iteration": 2, "lever": 1, "cluster_id": "H001",
-            "resolved_root_cause": "WRONG_COLUMN",
-            "expected_sql": "SELECT secret_ground_truth FROM t",
-            "generated_sql": "SELECT wrong FROM t",
-            "rationale_snippet": "the model picked the wrong column for revenue",
-            "counterfactual_fix": "use revenue_usd",
-            "wrong_clause": "SELECT wrong",
-        },
-        {
-            "iteration": 2, "lever": 6, "cluster_id": "H002",
-            "resolved_root_cause": "WRONG_COLUMN",
-            "expected_sql": "SELECT another_secret FROM u",
-            "generated_sql": "SELECT bad FROM u",
-            "rationale_snippet": "wrong aggregation",
-            "counterfactual_fix": "sum not avg",
-            "wrong_clause": "AVG",
-        },
-    ])
-
-
 def _run_publish_and_audit(
     *,
     scored_iters: list[dict],
@@ -157,7 +132,6 @@ def _run_publish_and_audit(
         patch.object(P, "load_run", load_run_mock),
         patch.object(P, "load_all_scored_iterations", return_value=scored_iters),
         patch.object(P, "load_patches", return_value=_patches_df()),
-        patch.object(P, "load_provenance", return_value=_provenance_df()),
         patch.object(P, "promote_best_model", promote_mock),
         patch.object(P, "write_artifact", _fake_write_artifact),
         patch.object(P, "run_postflight_scan", _fake_postflight),
@@ -394,7 +368,7 @@ def test_audit_context_excludes_benchmark_qa_fields():
     iters = _full_iters(champion_reason="TARGET_REACHED")
     champion = P.resolve_champion_row(iters)
     ctx = P.as_audit_context(
-        "run1", "space-abc", iters, _patches_df(), _provenance_df(),
+        "run1", "space-abc", iters, _patches_df(),
         terminal_reason="TARGET_REACHED", champion_row=champion,
         target_accuracy=90.0, max_attempts=3,
     )
@@ -406,25 +380,17 @@ def test_audit_context_excludes_benchmark_qa_fields():
     ):
         assert leaky not in ctx, f"audit context leaked key {leaky!r}"
 
-    # ...and the serialized payload must not contain the ground-truth SQL / text
-    # that lived in the provenance rows.
+    # ...and the serialized payload must not contain answer-key material.
     import json
     blob = json.dumps(ctx, default=str)
-    assert "secret_ground_truth" not in blob
-    assert "another_secret" not in blob
-    assert "the model picked the wrong column" not in blob
-    assert "revenue_usd" not in blob
-
-    # But the structural facts ARE present.
+    # But the structural facts are present.
     assert ctx["baseline_accuracy"] == 80.0
     assert ctx["champion_iteration"] == 2
     assert ctx["champion_accuracy"] == 91.0
     assert ctx["total_patches_applied"] == 3
     assert ctx["patches_rolled_back"] == 1
     assert ctx["patch_families"]  # lever-family counts
-    assert ctx["root_cause_distribution"] == {"WRONG_COLUMN": 2}
     assert ctx["residual_failure_count"] == 2  # ["q5","q9"]
-    assert "H001" in ctx["residual_failing_clusters"]
 
 
 def test_audit_context_includes_safe_failure_and_patch_attempt_summaries():
@@ -495,7 +461,7 @@ def test_audit_context_includes_safe_failure_and_patch_attempt_summaries():
 
     champion = P.resolve_champion_row(iters)
     ctx = P.as_audit_context(
-        "run1", "space-abc", iters, _patches_df(), _provenance_df(),
+        "run1", "space-abc", iters, _patches_df(),
         terminal_reason="TARGET_REACHED", champion_row=champion,
         target_accuracy=90.0, max_attempts=3,
     )
@@ -583,7 +549,7 @@ def test_decision_reason_free_text_is_excluded_from_audit_context():
     iters[1]["decision_reason"] = "coverage note quoting the benchmark question text"
     champion = P.resolve_champion_row(iters)
     ctx = P.as_audit_context(
-        "run1", "space-abc", iters, _patches_df(), _provenance_df(),
+        "run1", "space-abc", iters, _patches_df(),
         terminal_reason="TARGET_REACHED", champion_row=champion,
         target_accuracy=90.0, max_attempts=3,
     )

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auto-optimize")
 
 # Lightweight column list for iterations queries — excludes rows_json (megabytes per row).
-# Bug #2: evaluated_count / excluded_count / quarantined_benchmarks_json MUST be
+# Bug #2: evaluated_count / excluded_count MUST be
 # included so the frontend can compute `accuracy = correct / evaluated` without
 # falling back to total_questions (the original Bug #2 regression).
 #
@@ -48,8 +48,8 @@ router = APIRouter(prefix="/api/auto-optimize")
 # slightly different deploy versions.
 _ITER_COLS = _ITER_COLS_V2 = (
     "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
-    "evaluated_count, excluded_count, quarantined_benchmarks_json, "
-    "scores_json, failures_json, thresholds_met, lever, repeatability_pct, "
+    "evaluated_count, excluded_count, "
+    "scores_json, failures_json, thresholds_met, lever, "
     "reflection_json, rolled_back, "
     # GSO v2 Phase 6 — native official eval-run metadata. The Workbench
     # surfaces these as num_needs_review / eval_run_id / eval_run_status. A
@@ -59,7 +59,7 @@ _ITER_COLS = _ITER_COLS_V2 = (
 )
 _ITER_COLS_LEGACY = (
     "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
-    "scores_json, failures_json, thresholds_met, lever, repeatability_pct, "
+    "scores_json, failures_json, thresholds_met, lever, "
     "reflection_json"
 )
 
@@ -253,7 +253,7 @@ def probe_iterations_schema() -> str:
     table = _delta_table("genie_opt_iterations")
     try:
         _delta_query(
-            f"SELECT evaluated_count, excluded_count, quarantined_benchmarks_json, rolled_back "
+            f"SELECT evaluated_count, excluded_count, rolled_back "
             f"FROM {table} LIMIT 0",
             strict=True,
         )
@@ -264,7 +264,7 @@ def probe_iterations_schema() -> str:
                 "columns. The UI will fall back to stored overall_accuracy but "
                 "accuracy may appear stale until the GSO job bundle redeploys "
                 "and _migrate_add_columns adds evaluated_count / excluded_count "
-                "/ quarantined_benchmarks_json / rolled_back. err=%s",
+                "/ rolled_back. err=%s",
                 table,
                 str(exc)[:200],
             )
@@ -282,7 +282,6 @@ _LEGACY_COL_ERROR_MARKERS = (
     "cannot resolve",
     "evaluated_count",
     "excluded_count",
-    "quarantined_benchmarks_json",
     "rolled_back",
 )
 
@@ -322,7 +321,7 @@ def _select_iterations_delta(run_id: str) -> list[dict]:
             return []
         logger.warning(
             "gso.runs.schema_drift genie_opt_iterations is missing Bug #2 columns "
-            "(evaluated_count / excluded_count / quarantined_benchmarks_json / rolled_back). "
+            "(evaluated_count / excluded_count / rolled_back). "
             "Falling back to the legacy SELECT — scores render from stored "
             "overall_accuracy. Redeploy the GSO job bundle so "
             "_migrate_add_columns can ALTER TABLE ADD COLUMN. err=%s",
@@ -721,8 +720,7 @@ def _build_step_summary(
         return f"Applied {patches} optimizations across {len(levers_accepted) if isinstance(levers_accepted, list) else '?'} categories. Score improved from {before}% to {after}%"
     if step_name in _PUBLISH_STEP_NAMES:
         score = f"{_finite(run_data.get('best_accuracy', 0)):.1f}" if run_data.get("best_accuracy") else "?"
-        rep = f"{_finite(run_data.get('best_repeatability', 0)):.1f}" if run_data.get("best_repeatability") else "?"
-        return f"Final evaluation complete. Optimized score: {score}%. Repeatability: {rep}%"
+        return f"Final evaluation complete. Optimized score: {score}%."
     return None
 
 
@@ -912,7 +910,7 @@ def _build_step_io(
     if step_name in _PUBLISH_STEP_NAMES:
         return (
             {"bestIteration": run_data.get("best_iteration")},
-            {"bestAccuracy": _safe_float(run_data.get("best_accuracy")), "repeatability": _safe_float(run_data.get("best_repeatability")), "convergenceReason": run_data.get("convergence_reason"), "terminalReason": _typed_terminal_reason(run_data), "stageEvents": timeline},
+            {"bestAccuracy": _safe_float(run_data.get("best_accuracy")), "convergenceReason": run_data.get("convergence_reason"), "terminalReason": _typed_terminal_reason(run_data), "stageEvents": timeline},
         )
 
     return None, {"stageEvents": timeline}
@@ -2421,6 +2419,9 @@ def _build_benchmark_qc(payload: dict) -> dict:
     repaired = payload.get("repaired_ids")
     gt_candidates = payload.get("gt_correction_candidates")
     still_invalid = payload.get("still_invalid_ids")
+    quality_counts = payload.get("quality_counts")
+    quality_findings = payload.get("quality_findings")
+    proposed_changes = payload.get("proposed_changes")
     final_validity = payload.get("final_validity")
     return {
         "validCount": _safe_int(payload.get("valid_count")),
@@ -2436,6 +2437,12 @@ def _build_benchmark_qc(payload: dict) -> dict:
         "gtCorrectionCandidates": gt_candidates if isinstance(gt_candidates, list) else [],
         "terminalReason": payload.get("terminal_reason") or None,
         "stillInvalidIds": still_invalid if isinstance(still_invalid, list) else None,
+        "qualityReviewVersion": payload.get("quality_review_version") or None,
+        "qualityReviewStatus": payload.get("quality_review_status") or None,
+        "semanticReviewCoverage": _safe_float(payload.get("semantic_review_coverage")),
+        "qualityCounts": quality_counts if isinstance(quality_counts, dict) else None,
+        "qualityFindings": quality_findings if isinstance(quality_findings, list) else [],
+        "proposedChanges": proposed_changes if isinstance(proposed_changes, list) else [],
     }
 
 
@@ -2595,41 +2602,6 @@ async def list_patches(run_id: RunId):
             f"WHERE run_id = '{run_id}' ORDER BY iteration, lever, patch_index"
         )
     return patches
-
-
-@router.get("/runs/{run_id}/suggestions")
-async def list_suggestions(run_id: RunId):
-    """Get strategist improvement suggestions for a run."""
-    suggestions = await gso_lakebase.load_gso_suggestions(run_id)
-    if not suggestions and _is_configured():
-        suggestions = _delta_query(
-            f"SELECT * FROM {_delta_table('genie_opt_suggestions')} "
-            f"WHERE run_id = '{run_id}' ORDER BY created_at ASC"
-        )
-    results = []
-    for s in suggestions:
-        aff = s.get("affected_questions", "[]")
-        if isinstance(aff, str):
-            try:
-                aff = json.loads(aff)
-            except (json.JSONDecodeError, TypeError):
-                aff = []
-        if not isinstance(aff, list):
-            aff = []
-        results.append({
-            "suggestionId": s.get("suggestion_id"),
-            "runId": s.get("run_id"),
-            "spaceId": s.get("space_id"),
-            "iteration": s.get("iteration"),
-            "suggestionType": s.get("type", ""),
-            "title": s.get("title", ""),
-            "rationale": s.get("rationale"),
-            "definition": s.get("definition"),
-            "affectedQuestions": aff,
-            "estimatedImpact": s.get("estimated_impact"),
-            "status": s.get("status", "PROPOSED"),
-        })
-    return results
 
 
 @router.get("/runs/{run_id}/benchmark-changes")

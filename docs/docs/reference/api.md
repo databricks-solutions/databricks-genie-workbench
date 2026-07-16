@@ -80,7 +80,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/asi-results` | <span className="badge badge--secondary">SP</span> | ASI judge results (requires `iteration` param) |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/question-results` | <span className="badge badge--secondary">SP</span> | Per-question results (requires `iteration` param) |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/patches` | <span className="badge badge--secondary">SP</span> | All patches for the run |
-| <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/suggestions` | <span className="badge badge--secondary">SP</span> | Strategist suggestions for the run |
+| <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/benchmark-changes` | <span className="badge badge--secondary">SP</span> | Benchmark mutation ledger plus QC window, structured quality findings, semantic-review coverage, and proposed repairs |
 
 ## Static File Serving (`main.py`)
 

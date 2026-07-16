@@ -14,7 +14,6 @@ from genie_space_optimizer.optimization.state import _migrate_add_columns
 def test_runs_ddl_includes_handoff_columns():
     """The fresh DDL must declare the handoff/telemetry columns."""
     assert "warehouse_id" in _GENIE_OPT_RUNS_DDL
-    assert "human_corrections_json" in _GENIE_OPT_RUNS_DDL
     assert "max_benchmark_count" in _GENIE_OPT_RUNS_DDL
     assert "llm_model" in _GENIE_OPT_RUNS_DDL
 
@@ -33,7 +32,6 @@ def test_migration_adds_handoff_columns_when_missing():
     issued = [str(call.args[0]) for call in spark.sql.call_args_list]
     altered = [s for s in issued if s.startswith("ALTER TABLE")]
     assert any("warehouse_id" in s for s in altered)
-    assert any("human_corrections_json" in s for s in altered)
     assert any("max_benchmark_count" in s for s in altered)
     assert any("llm_model" in s for s in altered)
 
@@ -44,7 +42,6 @@ def test_migration_idempotent_when_columns_already_exist():
     spark.sql.return_value.collect.return_value = [
         {"col_name": "run_id"},
         {"col_name": "warehouse_id"},
-        {"col_name": "human_corrections_json"},
         {"col_name": "max_benchmark_count"},
         {"col_name": "llm_model"},
     ]
@@ -56,7 +53,6 @@ def test_migration_idempotent_when_columns_already_exist():
         s for s in issued
         if s.startswith("ALTER TABLE") and (
             "warehouse_id" in s
-            or "human_corrections_json" in s
             or "max_benchmark_count" in s
             or "llm_model" in s
         )

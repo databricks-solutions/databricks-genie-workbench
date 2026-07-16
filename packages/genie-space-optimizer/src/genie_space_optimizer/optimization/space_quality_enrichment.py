@@ -336,7 +336,7 @@ def _maybe_enrich_description(
         return patch_index
 
     try:
-        from genie_space_optimizer.optimization.optimizer import (
+        from genie_space_optimizer.optimization.optimizer_utils import (
             _generate_space_description,
         )
 

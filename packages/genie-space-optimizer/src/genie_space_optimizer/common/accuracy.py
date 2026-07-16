@@ -1,12 +1,8 @@
 """Canonical per-iteration accuracy derivation for GSO.
 
 Bug #2 contract: the UI must see accuracy that matches correct/evaluated to
-the decimal point. Before this module existed, both the standalone GSO
-backend (``genie_space_optimizer.backend.routes.runs``) and the Workbench
-router (``backend.routers.auto_optimize``) each carried near-identical copies
-of ``_derived_accuracy`` — easy for the two to drift (and they did; see PR #79
-review finding #4). Extracted here as the single source of truth, mirroring
-the ``common/prompt_registry.py`` pattern.
+the decimal point. This module is the single source of truth shared with the
+Workbench router (``backend.routers.auto_optimize``).
 
 The guard that gates derived vs. stored accuracy also fixes PR #79 review
 finding #5: parse ``evaluated_count`` first, then gate on the parsed result,
@@ -46,8 +42,8 @@ def derived_accuracy(
     """Return the canonical per-iteration accuracy percentage.
 
     Prefers ``correct_count / evaluated_count * 100`` (the same math the
-    frontend uses for tab labels via ``ui/lib/eval-counts.ts``) so KPI cards
-    and tab labels agree to the decimal. Falls back to stored
+    frontend uses for tab labels via ``frontend/src/lib/eval-counts.ts``) so
+    KPI cards and tab labels agree to the decimal. Falls back to stored
     ``overall_accuracy`` when ``evaluated_count`` is absent or unparseable
     (legacy rows written before the Bug #2 column migration).
 
@@ -121,7 +117,7 @@ class RunScores:
     Wire/UI contract (locks down the bug where a 100% slice probe was being
     rendered as the "Optimized" headline mid-run, see PR description):
 
-    * ``baseline`` is iteration 0's full-scope arbiter-adjusted accuracy.
+    * ``baseline`` is iteration 0's full-corpus official assessment accuracy.
       ``None`` only before iteration 0 has been written (i.e. before the
       Baseline Evaluation step completes).
     * ``optimized`` is ``max(baseline, best_non_rolled_back_candidate)``
@@ -169,9 +165,8 @@ class RunScores:
 def _is_rolled_back(row: dict[str, Any]) -> bool:
     """True iff the iteration was rejected by detect_regressions (or similar).
 
-    Mirrors ``backend.routes.runs._is_rolled_back``: legacy rows written
-    before the Tier 1.1 column migration return ``False`` so historical
-    dashboards don't suddenly drop iterations from the max() pool.
+    Legacy rows written before the ``rolled_back`` column migration return
+    ``False`` so historical dashboards retain their prior score selection.
     """
     val = row.get("rolled_back")
     if val is None:

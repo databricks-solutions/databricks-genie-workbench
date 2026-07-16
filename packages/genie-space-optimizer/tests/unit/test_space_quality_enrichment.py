@@ -76,7 +76,7 @@ def test_missing_description_uses_top_level_space_patch(monkeypatch) -> None:
     config_patches: list[dict] = []
 
     monkeypatch.setattr(
-        "genie_space_optimizer.optimization.optimizer._generate_space_description",
+        "genie_space_optimizer.optimization.optimizer_utils._generate_space_description",
         lambda _parsed, _w: "Sales analytics space for orders, regions, and revenue reporting.",
     )
     monkeypatch.setattr(

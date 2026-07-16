@@ -135,6 +135,19 @@ def test_repair_task_receives_benchmark_repair_max_tries():
     assert "benchmark_repair_max_tries" in bp
 
 
+def test_repair_task_uses_canonical_quality_review_and_persists_findings():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_benchmark_qc_and_repair.py"
+    ).read_text()
+    assert "review_benchmark_quality(" in src
+    assert '"quality_findings"' in src
+    assert '"semantic_review_coverage"' in src
+
+
 def test_optimize_and_publish_receive_loop_params():
     job = _load_job()
     by_key = {t["task_key"]: t for t in job["tasks"]}

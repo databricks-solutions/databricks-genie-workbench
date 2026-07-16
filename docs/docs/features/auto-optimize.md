@@ -23,11 +23,27 @@ flowchart LR
 | # | Task | Responsibility |
 |---|------|----------------|
 | 1 | **Intake & Snapshot** | Validate the run envelope, retain the trigger-time rollback snapshot, and write the `run_manifest` artifact. |
-| 2 | **Benchmark QC & Repair** | Validate, repair, deduplicate, or prune benchmarks within a bounded retry budget, then persist `benchmark_qc`. |
+| 2 | **Benchmark QC & Repair** | Review question clarity and question-to-SQL alignment, validate SQL and ground-truth data, repair or replace hard failures within a bounded retry budget, then persist `benchmark_qc`. |
 | 3 | **Optimize** | Apply low-risk Space quality enrichment, run the baseline evaluation, and execute the bounded patch/evaluation loop. |
 | 4 | **Publish & Audit** | Resolve the stamped terminal reason, mark the champion when eligible, generate a best-effort audit summary, capture postflight IQ, and write terminal run state. |
 
 Each task receives the complete job parameter set and exchanges durable state through Delta by `run_id`. There is no notebook chaining or task-value handoff.
+
+### Benchmark quality review
+
+Benchmark QC separates five kinds of evidence: question quality,
+question-to-SQL alignment, SQL validity, data validity, and review-system
+health. A benchmark with a hard semantic or validation error is excluded from
+the evaluation working set and replaced toward the configured target. Wording
+that is weak but still has one defensible answer remains eligible with a
+warning. A semantic-review outage is recorded as `review_not_run`; it is never
+silently reported as a successful review.
+
+The `benchmark_qc` artifact records structured findings, review coverage,
+quality counts, and proposed repairs. The **Benchmark Changes** panel surfaces
+trusted, warning, and excluded counts alongside the mutation ledger. Long
+mutation groups are disclosures; **Added** starts collapsed so generated
+benchmark SQL does not dominate the run page.
 
 ## Optimization loop
 
@@ -113,8 +129,6 @@ The main current-run sources of truth are:
 | `genie_opt_stages` | Four-task and nested-stage timeline |
 | `genie_opt_iterations` | Baseline/attempt evaluation and controller state |
 | `genie_opt_patches` | Applied and rolled-back patch records |
-| `genie_opt_provenance` | Root-cause and proposal provenance |
-| `genie_eval_lever_loop_decisions` | Ordered safety and controller decisions |
 | `genie_opt_benchmark_mutations` | Benchmark QC additions, removals, and changes |
 | `genie_opt_artifacts` | `run_manifest`, `benchmark_qc`, `space_quality_enrichment`, and `publish_record` payloads |
 | `genie_opt_scan_snapshots` | Optional paired preflight/postflight IQ snapshots |

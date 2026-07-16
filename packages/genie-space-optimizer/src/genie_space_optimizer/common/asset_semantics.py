@@ -238,7 +238,7 @@ def build_asset_semantics(
        ``column_type='measure'`` / ``is_measure`` flags. Legacy MV
        serialization.
     3. ``catalog_yamls`` — runtime catalog detection cache (or a fresh
-       result passed in by preflight/harness). Picks up MVs missing from
+       result passed in by preflight/the unified loop). Picks up MVs missing from
        (1) and (2) via DESCRIBE.
     4. ``profile_reclassified_mvs`` — runtime planner errors observed during
        profiling. Spark has proven these refs are MVs even when catalog

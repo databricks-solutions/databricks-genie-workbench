@@ -30,8 +30,6 @@ logger = logging.getLogger(__name__)
 
 _ACTIVE_RUN_STATUSES = frozenset({"QUEUED", "IN_PROGRESS"})
 
-# Inlined from backend.routes.spaces to avoid importing the full GSO FastAPI
-# factory (which requires _metadata.py that may be missing on fresh installs).
 _SUPPORTED_APPLY_MODES = {"genie_config", "uc_artifact", "both"}
 
 
@@ -205,10 +203,7 @@ def trigger_optimization(
 
     genie_refs = extract_genie_space_table_refs(space_snapshot) if space_snapshot else []
     try:
-        # Lazy import: fetch_uc_metadata_obo lives in backend.routes.spaces which
-        # transitively imports the GSO FastAPI factory (requires _metadata.py).
-        # This prefetch is optional — degrade gracefully if the import fails.
-        from genie_space_optimizer.backend.routes.spaces import fetch_uc_metadata_obo
+        from genie_space_optimizer.integration.uc_metadata import fetch_uc_metadata_obo
 
         obo_uc_metadata = fetch_uc_metadata_obo(
             ws,

@@ -482,7 +482,7 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
     expect(markup).toContain("In window")
     expect(markup).toContain("Repair sweeps")
     expect(markup).toContain("1 / 3")
-    expect(markup).toContain("Benchmark valid")
+    expect(markup).toContain("SQL valid")
   })
 
   it("renders the QC meter even when there are zero benchmark mutations", () => {
@@ -510,7 +510,7 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
       />,
     )
     expect(markup).toContain("could not be repaired")
-    expect(markup).toContain("Benchmark invalid")
+    expect(markup).toContain("SQL invalid")
   })
 
   it("shows the empty placeholder when there is neither qc nor mutations", () => {
@@ -520,5 +520,64 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
     // renderToStaticMarkup HTML-escapes the apostrophe (' → &#x27;).
     expect(markup).toContain("GSO made no changes to this space")
     expect(markup).not.toContain("Working-set window")
+  })
+
+  it("renders structured benchmark-quality findings", () => {
+    const markup = renderToStaticMarkup(
+      <BenchmarkChangesPanel
+        runId="r"
+        changes={changes({
+          qc: qc({
+            qualityReviewVersion: "benchmark_quality_v1",
+            qualityReviewStatus: "complete",
+            semanticReviewCoverage: 0.97,
+            qualityCounts: { total: 32, trusted: 29, warnings: 2, excluded: 1, review_not_run: 0 },
+            qualityFindings: [{
+              question_id: "q9",
+              question: "Show sales",
+              source: "genie_space",
+              category: "question_sql_alignment",
+              code: "EXTRA_FILTER",
+              severity: "error",
+              confidence: 0.94,
+              explanation: "Ground-truth SQL adds an active-only filter.",
+              before: { question: "Show sales", sql: "SELECT SUM(sales) FROM sales WHERE active = true" },
+              proposed_sql: "SELECT SUM(sales) FROM sales",
+            }],
+          }),
+        })}
+      />,
+    )
+    expect(markup).toContain("Benchmark quality")
+    expect(markup).toContain("29 trusted")
+    expect(markup).toContain("97%")
+    expect(markup).toContain("Excluded from evaluation (1)")
+    expect(markup).toContain("Ground-truth SQL adds an active-only filter.")
+    expect(markup).toContain("Current ground truth")
+    expect(markup).toContain("Suggested ground truth")
+  })
+
+  it("keeps the Added group collapsed by default", () => {
+    const added = {
+      questionId: "q-new",
+      op: "added",
+      before: null,
+      after: { question: "New benchmark question", sql: "SELECT 1" },
+      reason: "preflight_push",
+      loggedAt: null,
+    }
+    const markup = renderToStaticMarkup(
+      <BenchmarkChangesPanel
+        runId="r"
+        changes={changes({
+          added: [added],
+          items: [added],
+          counts: { added: 1, removed: 0, changed: 0, pruneRecommended: 0, total: 1 },
+        })}
+      />,
+    )
+    expect(markup).toContain("Added (1)")
+    expect(markup).toContain('aria-expanded="false"')
+    expect(markup).not.toContain("New benchmark question")
   })
 })

@@ -1,9 +1,7 @@
 """Shared logging utilities (Tier 3.7).
 
-``quiet_grpc_logs`` was previously only usable from ``benchmarks.py``; moving
-it here lets ``scorers/syntax_validity.py`` (and any other EXPLAIN / spark.sql
-call site) wrap the same helper so every path produces at most one digest
-line per gRPC failure — not three stack traces from reattach retries.
+``quiet_grpc_logs`` lets EXPLAIN and ``spark.sql`` call sites produce at most
+one digest line per gRPC failure instead of repeated reattach stack traces.
 
 The helper is import-safe under test environments that don't have the
 ``pyspark`` logger registered; it acts as a no-op if the logger is missing.

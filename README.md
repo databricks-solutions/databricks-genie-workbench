@@ -108,9 +108,7 @@ This app runs only on Databricks Apps. Do not run a local `uvicorn` server for a
 Dependency lock files are the source of truth and should be committed when changed:
 
 - `uv.lock`
-- `packages/genie-space-optimizer/uv.lock`
 - `frontend/package-lock.json`
-- `packages/genie-space-optimizer/package-lock.json`
 
 Do not edit `requirements.txt` manually. It is generated from `uv.lock` and excluded from Databricks App deployment so the platform uses `uv sync` from `pyproject.toml` and `uv.lock`.
 

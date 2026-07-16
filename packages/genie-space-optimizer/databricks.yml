@@ -2,9 +2,6 @@ bundle:
   name: "genie-space-optimizer"
 
 variables:
-  app_name:
-    description: "Databricks App name (must be unique in your workspace)"
-    default: "genie-space-optimizer"
   catalog:
     description: "Unity Catalog name for storing optimization state tables"
     default: "main"
@@ -13,8 +10,6 @@ variables:
     default: "genie_optimization"
   warehouse_id:
     description: "SQL Warehouse ID for query execution"
-  deploy_profile:
-    default: "DEFAULT"
 
 sync:
   include:
@@ -25,45 +20,14 @@ sync:
 
 artifacts:
   default:
-    build: apx build && rm -f .build/.gitignore && python resources/patch_app_yml.py .build/app.yml --catalog ${var.catalog} --schema ${var.gold_schema} --warehouse-id ${var.warehouse_id} && cp .build/genie_space_optimizer-*.whl .build/genie_space_optimizer-0.0.0-py3-none-any.whl && echo "databricks-connect>=15.0.0" >> .build/requirements.txt
+    build: uv build --wheel --out-dir .build && cp .build/genie_space_optimizer-*.whl .build/genie_space_optimizer-0.0.0-py3-none-any.whl
 
 resources:
-  apps:
-    genie-space-optimizer-app:
-      name: ${var.app_name}
-      description: "genie-space-optimizer created with apx"
-      source_code_path: ./.build
-      user_api_scopes:
-        - "dashboards.genie"
-        - "files.files"
-        - "catalog.catalogs:read"
-        - "catalog.schemas:read"
-        - "catalog.tables:read"
-        - "sql"
-      config:
-        env:
-          - name: GENIE_SPACE_OPTIMIZER_CATALOG
-            value: ${var.catalog}
-          - name: GENIE_SPACE_OPTIMIZER_SCHEMA
-            value: ${var.gold_schema}
-          - name: GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID
-            value: ${var.warehouse_id}
-          - name: GENIE_SPACE_OPTIMIZER_JOB_ID
-            value: ${resources.jobs.genie-space-optimizer-runner.id}
-      resources:
-        - name: "sql-warehouse"
-          sql_warehouse:
-            id: ${var.warehouse_id}
-            permission: "CAN_USE"
-      permissions:
-        - user_name: "users"
-          level: "CAN_USE"
-
   jobs:
     genie-space-optimizer-runner:
       name: "genie-space-optimizer-job"
       description: >-
-        GSO v2 bounded hill-climbing runner managed by the Genie Space Optimizer app
+        GSO v2 bounded hill-climbing runner managed by Genie Workbench
         (intake_and_snapshot -> benchmark_qc_and_repair -> optimize
         -> publish_and_audit). Linear 4-task serverless DAG; the baseline eval and
         hill-climb run as an in-process native Benchmark API loop inside optimize. No condition
@@ -161,7 +125,6 @@ resources:
               levers: "{{job.parameters.levers}}"
               max_attempts: "{{job.parameters.max_attempts}}"
               target_accuracy: "{{job.parameters.target_accuracy}}"
-              triggered_by: "{{job.parameters.triggered_by}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
           environment_key: default
           timeout_seconds: 14400

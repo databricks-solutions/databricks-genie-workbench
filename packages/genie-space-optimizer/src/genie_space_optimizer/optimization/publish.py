@@ -54,7 +54,7 @@ from genie_space_optimizer.common.config import (
     format_mlflow_template,
 )
 from genie_space_optimizer.optimization.champion import select_champion_row
-from genie_space_optimizer.optimization.evaluation import (
+from genie_space_optimizer.optimization.benchmarking import (
     _link_prompt_to_trace,
     get_registered_prompt_name,
 )
@@ -64,7 +64,6 @@ from genie_space_optimizer.optimization.scan_snapshots import run_postflight_sca
 from genie_space_optimizer.optimization.state import (
     load_all_scored_iterations,
     load_patches,
-    load_provenance,
     load_run,
     update_run_status,
     write_artifact,
@@ -332,29 +331,6 @@ def _patch_family_counts(patches_df: "pd.DataFrame | None") -> tuple[int, int, d
     return total, rolled_back, families
 
 
-def _root_cause_distribution(
-    provenance_df: "pd.DataFrame | None", *, iteration: int | None = None
-) -> dict[str, int]:
-    """Aggregate ``resolved_root_cause`` counts (structural RCA labels only).
-
-    Free-text / SQL columns (``expected_sql``, ``generated_sql``,
-    ``rationale_snippet``, ``counterfactual_fix``, ``wrong_clause``) are NEVER
-    read here — only the categorical root-cause label is aggregated.
-    """
-    if provenance_df is None or getattr(provenance_df, "empty", True):
-        return {}
-    df = provenance_df
-    if iteration is not None and "iteration" in df.columns:
-        df = df[df["iteration"] == iteration]
-    if "resolved_root_cause" not in df.columns or df.empty:
-        return {}
-    counts: dict[str, int] = {}
-    for value in df["resolved_root_cause"].dropna():
-        key = str(value)
-        counts[key] = counts.get(key, 0) + 1
-    return counts
-
-
 def _json_value(value: Any, default: Any) -> Any:
     """Decode Delta JSON columns that may already be hydrated by loaders."""
     if isinstance(value, str):
@@ -552,14 +528,8 @@ def _patch_attempt_summaries(scored_iters: list[dict]) -> list[dict[str, Any]]:
     return attempts
 
 
-def _residual_failing_clusters(
-    champion_row: dict | None, provenance_df: "pd.DataFrame | None"
-) -> tuple[int, list[str]]:
-    """Count residual failures on the champion + distinct failing cluster ids.
-
-    Returns ``(residual_failure_count, sorted_distinct_cluster_ids)``. Cluster
-    ids (e.g. ``H001``) are structural, not benchmark Q/A.
-    """
+def _residual_failure_count(champion_row: dict | None) -> int:
+    """Count residual failures recorded on the champion iteration."""
     residual_count = 0
     if champion_row is not None:
         remaining = champion_row.get("remaining_failures")
@@ -570,19 +540,7 @@ def _residual_failing_clusters(
                 remaining = None
         if isinstance(remaining, list):
             residual_count = len(remaining)
-
-    clusters: list[str] = []
-    champ_iter = _as_int(champion_row.get("iteration")) if champion_row else None
-    if (
-        provenance_df is not None
-        and not getattr(provenance_df, "empty", True)
-        and "cluster_id" in provenance_df.columns
-    ):
-        df = provenance_df
-        if champ_iter is not None and "iteration" in df.columns:
-            df = df[df["iteration"] == champ_iter]
-        clusters = sorted({str(c) for c in df["cluster_id"].dropna()})
-    return residual_count, clusters
+    return residual_count
 
 
 def _assert_leak_free(obj: Any) -> None:
@@ -607,7 +565,6 @@ def as_audit_context(
     space_id: str,
     scored_iters: list[dict],
     patches_df: "pd.DataFrame | None",
-    provenance_df: "pd.DataFrame | None",
     *,
     terminal_reason: str | None,
     champion_row: dict | None,
@@ -618,8 +575,8 @@ def as_audit_context(
 
     ONLY structural / aggregate / bounded fields are included (D8 / §3.6): per-attempt
     accuracy + deltas, attempt mode, the bounded ``decision`` value (NOT the free-text
-    ``decision_reason``), lever/patch counts and families, root-cause label
-    distribution, champion pointer, and the stop reason. NO benchmark question text,
+    ``decision_reason``), lever/patch counts and families, champion pointer, and
+    the stop reason. NO benchmark question text,
     NO ``expected_sql`` / ground-truth, NO judge rationale — those are the leakage
     surface and are excluded by construction; ``_assert_leak_free`` enforces it
     recursively. ``scored_iters`` is the ``full`` + ``enrichment`` set.
@@ -642,12 +599,7 @@ def as_audit_context(
     )
 
     total_patches, rolled_back_patches, patch_families = _patch_family_counts(patches_df)
-    root_cause_distribution = _root_cause_distribution(
-        provenance_df, iteration=champion_iteration
-    )
-    residual_failure_count, residual_clusters = _residual_failing_clusters(
-        champion_row, provenance_df
-    )
+    residual_failure_count = _residual_failure_count(champion_row)
     failure_summaries = _failure_reason_summaries(scored_iters)
     baseline_failure_summary = _pick_failure_summary(
         failure_summaries,
@@ -676,13 +628,11 @@ def as_audit_context(
         "total_patches_applied": total_patches,
         "patches_rolled_back": rolled_back_patches,
         "patch_families": patch_families,
-        "root_cause_distribution": root_cause_distribution,
         "eval_failure_summaries": failure_summaries,
         "baseline_failure_summary": baseline_failure_summary,
         "champion_failure_summary": champion_failure_summary,
         "patch_attempt_summaries": patch_attempts,
         "residual_failure_count": residual_failure_count,
-        "residual_failing_clusters": residual_clusters,
     }
     _assert_leak_free(context)
     return context
@@ -751,9 +701,6 @@ def build_audit_summary(
                             ),
                             "patch_family_count": len(
                                 audit_context.get("patch_families") or {}
-                            ),
-                            "root_cause_field_count": len(
-                                audit_context.get("root_cause_distribution") or {}
                             ),
                         }
                     )
@@ -891,9 +838,7 @@ def publish_and_audit(
                     "champion was NOT published.",
                 )
             )
-        residual_count, residual_clusters = _residual_failing_clusters(
-            champion_row, None
-        )
+        residual_count = _residual_failure_count(champion_row)
         if residual_count:
             concerns.append(
                 f"{residual_count} benchmark question(s) still failing on the "
@@ -902,13 +847,11 @@ def publish_and_audit(
 
     # Best-effort LLM audit summary over the LEAK-FREE structural context.
     patches_df = load_patches(spark, run_id, catalog, schema)
-    provenance_df = load_provenance(spark, run_id, catalog, schema)
     audit_context = as_audit_context(
         run_id,
         space_id,
         scored_iters,
         patches_df,
-        provenance_df,
         terminal_reason=terminal_reason,
         champion_row=champion_row,
         target_accuracy=target_accuracy,

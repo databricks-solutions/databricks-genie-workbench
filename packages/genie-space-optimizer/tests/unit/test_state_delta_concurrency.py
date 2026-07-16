@@ -153,30 +153,6 @@ def test_write_iteration_uses_delta_write_retry(monkeypatch: pytest.MonkeyPatch)
     assert "'run-1'" in captured_sql[0]
 
 
-def test_update_iteration_reflection_uses_delta_write_retry(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured_sql: list[str] = []
-
-    def fake_execute(_spark, sql: str, **kwargs: Any) -> None:
-        captured_sql.append(sql)
-        assert kwargs["operation_name"] == "update_iteration_reflection"
-        assert kwargs["table_name"] == "cat.sch.genie_opt_iterations"
-
-    monkeypatch.setattr(state, "execute_delta_write_with_retry", fake_execute)
-
-    state.update_iteration_reflection(
-        object(),
-        "run-1",
-        2,
-        {"accepted": False, "reason": "regression"},
-        catalog="cat",
-        schema="sch",
-    )
-
-    assert len(captured_sql) == 1
-    assert captured_sql[0].startswith("UPDATE cat.sch.genie_opt_iterations")
-    assert "WHERE run_id = 'run-1' AND iteration = 2" in captured_sql[0]
-
-
 def test_mark_patches_rolled_back_retries_both_updates(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_sql: list[str] = []
 

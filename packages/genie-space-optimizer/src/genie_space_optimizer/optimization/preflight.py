@@ -1,5 +1,5 @@
 """
-Preflight logic — extracted from the harness to keep orchestration lean.
+Preflight logic for intake, metadata discovery, and benchmark preparation.
 
 Fetches Genie Space config, UC metadata, loads or generates benchmarks,
 validates SQL, registers judge prompts, and creates the initial MLflow
@@ -46,7 +46,7 @@ from genie_space_optimizer.common.uc_metadata import (
 )
 from genie_space_optimizer.optimization.benchmarks import validate_benchmarks
 from genie_space_optimizer.optimization.applier import _get_general_instructions
-from genie_space_optimizer.optimization.evaluation import (
+from genie_space_optimizer.optimization.benchmarking import (
     _drop_benchmark_table,
     _flag_stale_temporal_benchmarks,
     _set_sql_context,
@@ -265,8 +265,8 @@ def _ensure_experiment_parent_dir(ws: WorkspaceClient, experiment_path: str) -> 
         return False
 
 
-# PR 19: detection moved to ``common.metric_view_catalog`` so harness's
-# enrichment startup can reuse it without importing the entire preflight
+# PR 19: detection moved to ``common.metric_view_catalog`` so enrichment can
+# reuse it without importing the entire preflight
 # module. Re-exported here under the original name so existing call
 # sites and tests continue to work unchanged.
 from genie_space_optimizer.common.metric_view_catalog import (  # noqa: E402
@@ -327,7 +327,7 @@ def _profile_metric_view(
         LOW_CARDINALITY_THRESHOLD,
         PROFILE_SAMPLE_SIZE,
     )
-    from genie_space_optimizer.optimization.evaluation import (
+    from genie_space_optimizer.optimization.benchmarking import (
         _exec_sql,
         is_metric_view_error,
     )
@@ -559,7 +559,7 @@ def _collect_data_profile(
         MAX_PROFILE_TABLES,
         PROFILE_SAMPLE_SIZE,
     )
-    from genie_space_optimizer.optimization.evaluation import _exec_sql
+    from genie_space_optimizer.optimization.benchmarking import _exec_sql
 
     max_tables = max_tables or MAX_PROFILE_TABLES
     sample_size = sample_size or PROFILE_SAMPLE_SIZE
@@ -596,7 +596,7 @@ def _collect_data_profile(
     profile: dict[str, dict] = {}
     reclassified_mvs: list[str] = []
     yaml_cache = metric_view_yaml or {}
-    from genie_space_optimizer.optimization.evaluation import is_metric_view_error
+    from genie_space_optimizer.optimization.benchmarking import is_metric_view_error
     for table_fqn in tables[:max_tables]:
         _leaf = table_fqn.split(".")[-1].strip("`").lower()
         _fq_lower = table_fqn.strip().lower()
@@ -804,7 +804,7 @@ def _compute_join_overlaps(
     When *w* and *warehouse_id* are provided, queries are routed through
     the SQL warehouse; otherwise Spark SQL is used.
     """
-    from genie_space_optimizer.optimization.evaluation import _exec_sql
+    from genie_space_optimizer.optimization.benchmarking import _exec_sql
 
     _sql_kw: dict[str, Any] = dict(w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema)
 
@@ -868,7 +868,7 @@ def _validate_core_access(
     """Early-fail if the SP cannot read table metadata for referenced schemas.
 
     Uses the REST API (``w.tables.get``) to validate access — the same path
-    the harness uses for UC metadata extraction.  This avoids Spark SQL
+    the workflow uses for UC metadata extraction. This avoids Spark SQL
     ``information_schema`` queries which have a hidden dependency on the
     ``system`` catalog.
     """
@@ -1534,7 +1534,7 @@ def preflight_collect_uc_metadata(
             "Asset semantics stamping failed (non-fatal)", exc_info=True,
         )
 
-    from genie_space_optimizer.optimization.evaluation import (
+    from genie_space_optimizer.optimization.benchmarking import (
         effective_metric_view_identifiers,
         effective_metric_view_identifiers_with_catalog,
     )
@@ -1890,7 +1890,7 @@ def preflight_collect_uc_metadata(
                 "metric_view_profile_outcomes": mv_outcomes,
             }
             # Mirror the same fields onto the persisted run-status
-            # snapshot so the harness's resume / re-run paths see them
+            # snapshot so resume / re-run paths see them
             # without re-reading the stage history.
             config["_data_profile_stage_detail"] = _stage_detail
             _ps_stage_mirror = config.get("_parsed_space")
@@ -2508,7 +2508,7 @@ def preflight_push_benchmarks_to_space(
       ``genie_opt_benchmark_mutations``. The preflight ``config_snapshot``
       remains the discard revert anchor (unchanged).
 
-    Returns a summary dict (also used by the test harness).
+    Returns a summary dict used by the caller and unit tests.
     """
     rejected_benchmarks = rejected_benchmarks or []
     changed_benchmarks = changed_benchmarks or []
@@ -2740,45 +2740,6 @@ def preflight_push_benchmarks_to_space(
     }
 
 
-def preflight_load_human_feedback(
-    spark: "SparkSession",
-    run_id: str,
-    space_id: str,
-    catalog: str,
-    schema: str,
-    domain: str,
-) -> dict:
-    """Sub-step 5: Load human corrections from prior labeling sessions.
-
-    Returns a dict with key: human_corrections (list[dict]).
-    """
-    # GSO v2 Phase 5 (D7): the MLflow Review App labeling session was removed,
-    # so there are no prior human-feedback corrections to carry forward here.
-    # Human review now flows through the Delta-backed flagging
-    # (``genie_opt_flagged_questions``) + the official Benchmark API
-    # ``manual_assessment`` / ``NEEDS_REVIEW`` signal.
-    _human_corrections: list[dict] = []
-
-    _lines = [_pf_section("PREFLIGHT — PAST HUMAN FEEDBACK")]
-    _lines.append(_pf_kv("Corrections loaded", len(_human_corrections)))
-    if _human_corrections:
-        _type_counts: dict[str, int] = {}
-        for c in _human_corrections:
-            ct = c.get("type", c.get("correction_type", "unknown"))
-            _type_counts[ct] = _type_counts.get(ct, 0) + 1
-        for ct, cnt in sorted(_type_counts.items()):
-            _lines.append(_pf_kv(f"  {ct}", cnt))
-        sample = _human_corrections[0]
-        _sq = str(sample.get("question", sample.get("question_text", "")))[:80]
-        _lines.append(_pf_kv("Sample", f'"{_sq}"'))
-    else:
-        _lines.append(_pf_kv("Status", "No prior labeling sessions found"))
-    _lines.append(_pf_bar())
-    print("\n".join(_lines))
-
-    return {"human_corrections": _human_corrections}
-
-
 def preflight_setup_experiment(
     w: "WorkspaceClient",
     spark: "SparkSession",
@@ -2915,105 +2876,6 @@ def preflight_setup_experiment(
     }
 
 
-def run_preflight(
-    w: WorkspaceClient,
-    spark: SparkSession,
-    run_id: str,
-    space_id: str,
-    catalog: str,
-    schema: str,
-    domain: str,
-    experiment_name: str | None = None,
-    apply_mode: str = "genie_config",
-    warehouse_id: str = "",
-) -> tuple[dict, list[dict], str | None, str, list[dict]]:
-    """Execute the full preflight sequence (Stage 1).
-
-    Wrapper that calls the sub-steps in sequence. Each sub-step is individually
-    callable from a notebook cell for transparency.
-
-    A lightweight IQ quality context is attached to ``config`` under
-    ``_gso_space_quality_scan`` so optimizer prompts can see the scorer
-    checklist. When ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is set, the IQ Scan
-    sub-step also writes snapshots/stages, can hard-block zero-data-source
-    spaces, and attaches recommended levers plus the legacy strategist summary
-    under ``_gso_iq_scan_recommended_levers`` and ``_gso_iq_scan_summary``.
-
-    Returns:
-        (config, benchmarks, model_id, experiment_name, human_corrections)
-    """
-    ctx1 = preflight_fetch_config(
-        w, spark, run_id, space_id, catalog, schema, domain, apply_mode,
-    )
-    config = ctx1["config"]
-    snapshot = ctx1["snapshot"]
-    genie_table_refs = ctx1["genie_table_refs"]
-    domain = ctx1["domain"]
-
-    scan_ctx = preflight_run_iq_scan(
-        spark, run_id, space_id, catalog, schema, config,
-    )
-    if scan_ctx.get("recommended_levers"):
-        config["_gso_iq_scan_recommended_levers"] = list(scan_ctx["recommended_levers"])
-    if scan_ctx.get("scan_summary_for_strategist"):
-        config["_gso_iq_scan_summary"] = scan_ctx["scan_summary_for_strategist"]
-    if scan_ctx.get("space_quality_scan"):
-        config["_gso_space_quality_scan"] = scan_ctx["space_quality_scan"]
-
-    ctx2 = preflight_collect_uc_metadata(
-        w, spark, run_id, catalog, schema, config, snapshot,
-        genie_table_refs, apply_mode=apply_mode,
-        configured_cols=ctx1.get("configured_cols", 0),
-        warehouse_id=warehouse_id,
-    )
-
-    # C3: advisory calendar-drift check. Never blocks preflight; log-only.
-    try:
-        dim_date_status = check_dim_date_staleness(spark, catalog, schema)
-        config["_gso_dim_date_status"] = dim_date_status
-    except Exception:  # pragma: no cover - defensive; check_* is already safe
-        logger.debug("DIM_DATE staleness check raised unexpectedly", exc_info=True)
-
-    ctx3 = preflight_generate_benchmarks(
-        w, spark, run_id, catalog, schema, config,
-        ctx2["uc_columns"], ctx2["uc_tags"], ctx2["uc_routines"],
-        domain,
-        warehouse_id=warehouse_id,
-    )
-    benchmarks = ctx3["benchmarks"]
-
-    ctx4 = preflight_validate_benchmarks(
-        w, spark, run_id, catalog, schema, config, benchmarks,
-        ctx2["uc_columns"], ctx2["uc_tags"], ctx2["uc_routines"],
-        domain,
-        warehouse_id=warehouse_id,
-    )
-    benchmarks = ctx4["benchmarks"]
-
-    ctx5 = preflight_load_human_feedback(
-        spark, run_id, space_id, catalog, schema, domain,
-    )
-
-    ctx6 = preflight_setup_experiment(
-        w, spark, run_id, space_id, catalog, schema, domain,
-        config, benchmarks,
-        ctx2["uc_columns"], ctx2["uc_tags"], ctx2["uc_routines"],
-        genie_table_refs, experiment_name,
-    )
-
-    # GSO v2 Phase 5 (D6): the MLflow Prompt Registry write-path gate was
-    # removed. Judge prompts are no longer registered/gated, so there is no
-    # preflight prompt-registry probe.
-
-    return (
-        config,
-        benchmarks,
-        ctx6["model_id"],
-        ctx6["experiment_name"],
-        ctx5["human_corrections"],
-    )
-
-
 def _load_or_generate_benchmarks(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -3080,7 +2942,7 @@ def _load_or_generate_benchmarks(
             b for b, v in zip(existing, validation_results)
             if v.get("valid")
         ]
-        from genie_space_optimizer.optimization.evaluation import (
+        from genie_space_optimizer.optimization.benchmarking import (
             _filter_example_sql_mirrored_benchmarks,
         )
         valid_existing = _filter_example_sql_mirrored_benchmarks(valid_existing, config)
@@ -3190,7 +3052,7 @@ def _load_or_generate_benchmarks(
                         benchmark.setdefault("validation_error", None)
                         benchmark.setdefault("correction_source", "")
                     if len(valid_existing) > max_benchmark_count:
-                        from genie_space_optimizer.optimization.evaluation import _truncate_benchmarks
+                        from genie_space_optimizer.optimization.benchmarking import _truncate_benchmarks
                         valid_existing = _truncate_benchmarks(valid_existing, max_benchmark_count)
                     from genie_space_optimizer.optimization.benchmarks import assign_splits
                     valid_existing = assign_splits(valid_existing)
@@ -3238,7 +3100,7 @@ def _load_or_generate_benchmarks(
                         catalog=catalog, schema=schema,
                     )
                     if len(new_benchmarks) > max_benchmark_count:
-                        from genie_space_optimizer.optimization.evaluation import _truncate_benchmarks
+                        from genie_space_optimizer.optimization.benchmarking import _truncate_benchmarks
                         new_benchmarks = _truncate_benchmarks(new_benchmarks, max_benchmark_count)
                     return new_benchmarks, False
 
@@ -3299,6 +3161,6 @@ def _load_or_generate_benchmarks(
         catalog=catalog, schema=schema,
     )
     if len(benchmarks) > max_benchmark_count:
-        from genie_space_optimizer.optimization.evaluation import _truncate_benchmarks
+        from genie_space_optimizer.optimization.benchmarking import _truncate_benchmarks
         benchmarks = _truncate_benchmarks(benchmarks, max_benchmark_count)
     return benchmarks, True

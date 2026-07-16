@@ -80,7 +80,7 @@ The backend is a FastAPI application (`backend/main.py`) that provides REST API 
 | `admin.py` | `/api/admin` | Org-wide dashboard, leaderboard, alerts |
 | `auth.py` | `/api/auth` | Current user info, health check |
 | `create.py` | `/api/create` | Create agent chat, UC discovery, wizard, session management |
-| `auto_optimize.py` | `/api/auto-optimize` | GSO trigger, run management, results, patches, suggestions |
+| `auto_optimize.py` | `/api/auto-optimize` | GSO trigger, run management, results, patches, and benchmark changes |
 
 See [Appendix A: API Reference](/docs/reference/api) for the complete endpoint list.
 
@@ -139,14 +139,14 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 
 ## GSO Package
 
-The `packages/genie-space-optimizer/` directory contains a separate Python package with its own frontend:
+The `packages/genie-space-optimizer/` directory contains the Python optimization engine:
 
-- **Python backend** — optimization pipeline, job notebooks, FastAPI service
-- **React frontend** — built with Bun (not npm), includes a "How It Works" walkthrough UI
-- **Deployed as** — a wheel installed into the app's Python environment + a Databricks Job for the optimization DAG
-- **Has its own** — `pyproject.toml`, `uv.lock`, `package.json`, `bun.lock`
+- **Python engine** — benchmark QC, native patch/evaluation loop, publish, and durable Delta state
+- **Four job notebooks** — intake, benchmark QC/repair, optimize, and publish/audit
+- **Deployed as** — a wheel installed into the Workbench app environment and the four-task Databricks Job
+- **Dependencies** — package-local `pyproject.toml` with the repository-root `uv.lock`
 
-The main Workbench app proxies GSO functionality through `backend/routers/auto_optimize.py`.
+The Workbench app owns the FastAPI and React surfaces and exposes GSO through `backend/routers/auto_optimize.py`.
 
 ## Data Flows
 

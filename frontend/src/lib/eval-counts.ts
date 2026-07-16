@@ -18,7 +18,7 @@
  * as `questions.filter(q => q.passed !== null)` while `run.baselineScore`
  * came from the server-derived `overall_accuracy`. When the inline filter
  * disagreed with the server's `evaluated_count` (legacy rows, the server
- * upgrading its exclusion semantics, or an arbiter override flipping a
+ * upgrading its exclusion semantics, or a legacy verdict override flipping a
  * `passed` bit), the two surfaces drifted.
  *
  * Everything that needs an accuracy percentage in the auto-optimize UI goes
@@ -33,7 +33,7 @@ export interface EvalCounts {
   total: number
   /** Authoritative denominator for `accuracyPct`. */
   evaluated: number
-  /** Passing (arbiter-adjusted) questions — the numerator. */
+  /** Questions marked GOOD by the official benchmark evaluation. */
   correct: number
   /** Runtime exclusions (ground-truth excluded, both_empty, …). */
   excluded: number

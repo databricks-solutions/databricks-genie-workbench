@@ -50,7 +50,7 @@ description: "Common issues, causes, and fixes."
 | Job stuck in QUEUED | No available cluster or warehouse | Check cluster policies and warehouse availability |
 | "Baseline Evaluation" fails | Benchmark questions reference inaccessible tables | Grant SP `SELECT` on all referenced schemas |
 | "FEATURE_DISABLED" during preflight | MLflow Prompt Registry not enabled | Contact workspace admin to enable it |
-| Patches generated but accuracy doesn't improve | Optimization strategy exhausted | Run may reach `STALLED` status — review suggestions for manual improvements |
+| Patches generated but accuracy doesn't improve | Optimization strategy exhausted | Run may reach `STALLED` status — review the attempt and patch details |
 | `__GSO_*__` values in running app | `deploy.sh` didn't patch `app.yaml` before deploy | Check `GENIE_CATALOG` in `.env.deploy`; re-run deploy |
 
 ## Debug Commands
