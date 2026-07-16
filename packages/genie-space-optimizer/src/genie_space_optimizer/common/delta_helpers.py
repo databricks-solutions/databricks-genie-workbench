@@ -273,7 +273,7 @@ def update_row(
 
     def _fmt(val: Any) -> str:
         if isinstance(val, str):
-            escaped = val.replace("'", "''")
+            escaped = val.replace("\\", "\\\\").replace("'", "''")
             return f"'{escaped}'"
         if val is None:
             return "NULL"

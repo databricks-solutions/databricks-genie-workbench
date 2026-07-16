@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from unittest.mock import MagicMock
 
@@ -7,6 +8,7 @@ import pandas as pd
 import pytest
 
 import genie_space_optimizer.common.genie_client as _genie_client
+from genie_space_optimizer.common import warehouse
 from genie_space_optimizer.integration import trigger
 from genie_space_optimizer.integration.config import IntegrationConfig
 
@@ -146,3 +148,37 @@ def test_trigger_capture_rejects_empty_snapshots_and_never_persists_them(
     assert calls == ["sp", "obo"]
     create_run.assert_not_called()
     assert "Rejecting empty Genie space snapshot" in caplog.text
+
+
+def test_warehouse_run_insert_preserves_nested_serialized_space_escapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statements: list[str] = []
+    monkeypatch.setattr(
+        warehouse,
+        "sql_warehouse_execute",
+        lambda _ws, _warehouse_id, stmt: statements.append(stmt),
+    )
+    snapshot = {
+        "title": "Revenue Space",
+        "serialized_space": json.dumps({
+            "version": 2,
+            "data_sources": {"tables": [{"identifier": "cat.sch.table_1"}]},
+        }),
+    }
+    encoded = json.dumps(snapshot)
+    expected = encoded.replace("\\", "\\\\").replace("'", "''")
+
+    warehouse.wh_create_run(
+        MagicMock(),
+        "warehouse-1",
+        run_id="run-1",
+        space_id="space-1",
+        domain="revenue",
+        catalog="cat",
+        schema="sch",
+        config_snapshot=snapshot,
+    )
+
+    assert len(statements) == 1
+    assert f"'{expected}'" in statements[0]

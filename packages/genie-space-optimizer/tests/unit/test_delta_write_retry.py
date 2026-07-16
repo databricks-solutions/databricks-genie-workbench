@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -133,6 +134,32 @@ def test_insert_and_update_row_use_retry_helper(monkeypatch: pytest.MonkeyPatch)
     )
     assert captured[1]["kwargs"]["operation_name"] == "update_row"
     assert captured[1]["kwargs"]["table_name"] == "cat.sch.tbl"
+
+
+def test_insert_and_update_row_preserve_nested_json_escapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statements: list[str] = []
+    monkeypatch.setattr(
+        delta_helpers,
+        "execute_delta_write_with_retry",
+        lambda _spark, stmt, **_kwargs: statements.append(stmt),
+    )
+    payload = json.dumps({
+        "serialized_space": json.dumps({"version": 2, "description": "O'Brien"}),
+    })
+    expected = payload.replace("\\", "\\\\").replace("'", "''")
+
+    delta_helpers.insert_row(
+        object(), "cat", "sch", "tbl", {"config_snapshot": payload},
+    )
+    delta_helpers.update_row(
+        object(), "cat", "sch", "tbl", {"run_id": "r1"},
+        {"config_snapshot": payload},
+    )
+
+    assert f"'{expected}'" in statements[0]
+    assert f"config_snapshot = '{expected}'" in statements[1]
 
 
 def test_retry_delta_write_raises_final_conflict_after_attempts() -> None:

@@ -368,6 +368,44 @@ def test_revert_baseline_errors_when_no_snapshot(monkeypatch) -> None:
     patch_mock.assert_not_called()
 
 
+def test_revert_baseline_recovers_legacy_sql_unescaped_snapshot(monkeypatch) -> None:
+    """Historical SQL writers consumed the outer escapes around serialized_space.
+
+    The row remains non-empty (so history advertises a baseline) but the outer
+    JSON cannot be decoded. Revert recovers the still-valid nested config.
+    """
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    serialized = json.dumps(_baseline_config()["serialized_space"])
+    corrupted = (
+        '{"title": "Revenue Space", "serialized_space": "'
+        + serialized
+        + '", "_parsed_space": '
+        + serialized
+        + "}"
+    )
+    run = {
+        "run_id": "r-legacy-sql",
+        "space_id": "space-legacy-sql",
+        "status": "APPLIED",
+        "config_snapshot": corrupted,
+    }
+
+    monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+    query_mock = MagicMock(name="sql_warehouse_query")
+    monkeypatch.setattr(revert, "sql_warehouse_query", query_mock)
+    patch_mock = _patch_patch_space_config(monkeypatch)
+
+    result = revert.revert_optimization(
+        "r-legacy-sql", ws, sp_ws, cfg, target="baseline",
+    )
+
+    assert result.status == "reverted"
+    assert patch_mock.call_args.args[2]["version"] == 2
+    assert patch_mock.call_args.args[2]["data_sources"] == {"tables": []}
+    query_mock.assert_not_called()
+
+
 # ── Guard rails ─────────────────────────────────────────────────────────
 
 

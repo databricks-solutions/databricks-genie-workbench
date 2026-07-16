@@ -470,15 +470,55 @@ def _apply_revert_state(
 def _load_baseline_config(run_data: dict) -> dict | None:
     """Extract the run's pre-run config snapshot (iteration 0's config)."""
     raw = run_data.get("config_snapshot")
+    if not isinstance(raw, (str, dict)):
+        raw = getattr(raw, "value", None)
     if isinstance(raw, str):
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            return None
+            recovered = _recover_legacy_sql_snapshot(raw)
+            if recovered is not None:
+                logger.warning(
+                    "gso.revert.recovered_legacy_snapshot run=%s",
+                    run_data.get("run_id") or "unknown",
+                )
+            return recovered
         return parsed if isinstance(parsed, dict) else None
     if isinstance(raw, dict):
         return raw
     return None
+
+
+def _recover_legacy_sql_snapshot(raw: str) -> dict | None:
+    """Recover snapshots corrupted by the legacy SQL-literal writer.
+
+    ``serialized_space`` is a JSON *string* in the Genie API response. Older
+    run writers embedded the full response in a Spark SQL string without
+    doubling backslashes. Spark consumed the response's outer escape layer,
+    producing a non-empty but invalid value such as::
+
+        {"serialized_space": "{"version": 2, ...}", ...}
+
+    The nested object is still valid JSON. Decode that object directly and
+    return the normal snapshot wrapper so historical runs remain revertible.
+    """
+    key = '"serialized_space"'
+    key_start = raw.find(key)
+    if key_start < 0:
+        return None
+    colon = raw.find(":", key_start + len(key))
+    if colon < 0:
+        return None
+    object_start = raw.find("{", colon + 1)
+    if object_start < 0 or raw[colon + 1 : object_start].strip() != '"':
+        return None
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(raw[object_start:])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return {"serialized_space": parsed}
 
 
 def _load_champion_config(

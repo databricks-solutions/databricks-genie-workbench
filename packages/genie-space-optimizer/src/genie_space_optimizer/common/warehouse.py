@@ -274,7 +274,11 @@ def wh_create_run(
     """Insert a QUEUED run row via SQL warehouse."""
     from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER, MAX_ITERATIONS
 
-    snap_json = json.dumps(config_snapshot).replace("'", "''") if config_snapshot else ""
+    snap_json = (
+        json.dumps(config_snapshot).replace("\\", "\\\\").replace("'", "''")
+        if config_snapshot
+        else ""
+    )
     levers_json = json.dumps(levers if levers is not None else DEFAULT_LEVER_ORDER)
     user = (triggered_by or "").replace("'", "''")
     model_escaped = llm_model.replace("'", "''") if llm_model else ""
