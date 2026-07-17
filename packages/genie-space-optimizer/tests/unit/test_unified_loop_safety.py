@@ -147,6 +147,42 @@ def test_valid_sql_snippet_is_validated_stamped_and_materialized(monkeypatch) ->
     assert kept[0]["sql_snippet"]["instruction"] == ["Use for West region filtering."]
 
 
+def test_measure_and_expression_snippets_do_not_synthesize_alias(monkeypatch) -> None:
+    def pass_validation(sql, snippet_type, metadata_snapshot, **kwargs):
+        return True, "", sql
+
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+        pass_validation,
+    )
+
+    for snippet_type, patch_type, sql in (
+        ("measure", "add_sql_snippet_measure", "SUM(orders.amount)"),
+        ("expression", "add_sql_snippet_expression", "YEAR(orders.order_date)"),
+    ):
+        kept, dropped = _preapply_safety_screen(
+            [{
+                "type": patch_type,
+                "sql": sql,
+                "display_name": f"Test {snippet_type}",
+                "instruction": f"Use this {snippet_type} when applicable.",
+                "synonyms": [],
+                "target_table": "cat.sch.orders",
+                "snippet_type": snippet_type,
+            }],
+            current_config=_config(),
+            benchmarks=[],
+            eval_result={"rows": []},
+            spark=None,
+            catalog="cat",
+            schema="sch",
+            w=None,
+        )
+
+        assert dropped == []
+        assert "alias" not in kept[0]["sql_snippet"]
+
+
 def test_invalid_sql_snippet_is_dropped_without_dropping_other_patch(monkeypatch) -> None:
     def fail_validation(*args, **kwargs):
         return False, "bad filter", args[0]

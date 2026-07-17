@@ -227,6 +227,19 @@ class TestMetricViewClassification:
         assert data_sources["tables"] == []
         assert [mv["identifier"] for mv in data_sources["metric_views"]] == ["cat.sch.mv_churn_risk"]
 
+    def test_generate_config_emits_ui_style_snippets_without_aliases(self):
+        result = _generate_config(
+            tables=[{"identifier": "cat.sch.sales"}],
+            measures=[{"display_name": "Total Revenue", "sql": "SUM(sales.revenue)"}],
+            expressions=[{"display_name": "Order Year", "sql": "YEAR(sales.order_date)"}],
+        )
+
+        snippets = result["config"]["instructions"]["sql_snippets"]
+        assert snippets["measures"][0]["display_name"] == "Total Revenue"
+        assert snippets["expressions"][0]["display_name"] == "Order Year"
+        assert "alias" not in snippets["measures"][0]
+        assert "alias" not in snippets["expressions"][0]
+
     def test_validate_detects_cross_section_column_duplicates_when_not_reconciled(self):
         config = {
             "version": 2,
@@ -282,51 +295,67 @@ class TestUpdateConfigAddMeasure:
         assert measures[0]["sql"] == ["SUM(revenue)"]
         assert len(measures[0]["id"]) == 32  # hex ID
 
-    def test_skips_measure_without_alias(self):
+    def test_adds_measure_without_alias(self):
         cfg = _empty_config()
         result = _update_config(
             [{"action": "add_measure", "display_name": "Total Revenue", "sql": "SUM(revenue)"}],
             config=cfg,
         )
         measures = result["config"].get("instructions", {}).get("sql_snippets", {}).get("measures", [])
-        assert len(measures) == 0
-        assert any("Skipped" in a for a in result["applied"])
+        assert len(measures) == 1
+        assert measures[0]["display_name"] == "Total Revenue"
+        assert "alias" not in measures[0]
 
     def test_skips_measure_without_sql(self):
         cfg = _empty_config()
         result = _update_config(
-            [{"action": "add_measure", "alias": "total_rev"}],
+            [{"action": "add_measure", "display_name": "Total Revenue"}],
             config=cfg,
         )
         measures = result["config"].get("instructions", {}).get("sql_snippets", {}).get("measures", [])
         assert len(measures) == 0
 
-    def test_display_name_optional(self):
+    def test_skips_measure_without_display_name(self):
         cfg = _empty_config()
         result = _update_config(
             [{"action": "add_measure", "alias": "total_rev", "sql": "SUM(revenue)"}],
             config=cfg,
         )
-        measures = result["config"]["instructions"]["sql_snippets"]["measures"]
-        assert len(measures) == 1
-        assert "display_name" not in measures[0]
+        measures = result["config"].get("instructions", {}).get("sql_snippets", {}).get("measures", [])
+        assert len(measures) == 0
+        assert any("display_name and sql required" in a for a in result["applied"])
 
 
 class TestUpdateConfigAddExpression:
     def test_adds_expression_with_alias(self):
         cfg = _empty_config()
         result = _update_config(
-            [{"action": "add_expression", "alias": "profit_margin", "sql": "(revenue - cost) / revenue"}],
+            [{
+                "action": "add_expression",
+                "alias": "profit_margin",
+                "display_name": "Profit Margin",
+                "sql": "(revenue - cost) / revenue",
+            }],
             config=cfg,
         )
         exprs = result["config"]["instructions"]["sql_snippets"]["expressions"]
         assert len(exprs) == 1
         assert exprs[0]["alias"] == "profit_margin"
 
-    def test_skips_expression_without_alias(self):
+    def test_adds_expression_without_alias(self):
         cfg = _empty_config()
         result = _update_config(
-            [{"action": "add_expression", "sql": "SUM(x)"}],
+            [{"action": "add_expression", "display_name": "Total X", "sql": "SUM(x)"}],
+            config=cfg,
+        )
+        exprs = result["config"].get("instructions", {}).get("sql_snippets", {}).get("expressions", [])
+        assert len(exprs) == 1
+        assert "alias" not in exprs[0]
+
+    def test_skips_expression_without_display_name(self):
+        cfg = _empty_config()
+        result = _update_config(
+            [{"action": "add_expression", "alias": "total_x", "sql": "SUM(x)"}],
             config=cfg,
         )
         exprs = result["config"].get("instructions", {}).get("sql_snippets", {}).get("expressions", [])

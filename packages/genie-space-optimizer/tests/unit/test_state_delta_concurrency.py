@@ -118,6 +118,49 @@ def test_write_stage_uses_delta_write_retry(monkeypatch: pytest.MonkeyPatch) -> 
     assert "'COMPLETE'" in captured_sql[0]
 
 
+def test_write_stage_escapes_backslashes_and_apostrophes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_sql: list[str] = []
+
+    monkeypatch.setattr(state, "run_query", lambda *_args, **_kwargs: pd.DataFrame())
+    monkeypatch.setattr(
+        state,
+        "execute_delta_write_with_retry",
+        lambda _spark, sql, **_kwargs: captured_sql.append(sql),
+    )
+
+    state.write_stage(
+        object(),
+        "run-1",
+        "OPTIMIZE",
+        "FAILED",
+        error_message="Validation failed: [\\'id\\']",
+        catalog="cat",
+        schema="sch",
+    )
+
+    assert "Validation failed: [\\\\''id\\\\'']" in captured_sql[0]
+
+
+def test_safe_failure_writer_does_not_mask_original_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_write(*_args, **_kwargs):
+        raise RuntimeError("telemetry write failed")
+
+    monkeypatch.setattr(state, "write_stage", fail_write)
+
+    state.write_failure_stage_safely(
+        object(),
+        "run-1",
+        "OPTIMIZE",
+        error_message="original validation error",
+        catalog="cat",
+        schema="sch",
+    )
+
+
 def test_write_iteration_uses_delta_write_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_sql: list[str] = []
 

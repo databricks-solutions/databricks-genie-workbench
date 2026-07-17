@@ -138,7 +138,6 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
       "expressions": [
         {
           "id": "b8c9d0e1f2a30000000000000000000b",
-          "alias": "order_year",
           "display_name": "Order Year",
           "sql": ["YEAR(orders.order_date)"],
           "synonyms": ["year"],
@@ -149,7 +148,6 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
       "measures": [
         {
           "id": "c9d0e1f2a3b40000000000000000000c",
-          "alias": "total_revenue",
           "display_name": "Total Revenue",
           "sql": ["SUM(orders.quantity * orders.unit_price)"],
           "synonyms": ["revenue", "sales", "total sales"],
@@ -201,6 +199,7 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
 ### SQL formatting
 - `sql` fields: string arrays, each clause on a separate element with `\n` suffix
 - `sql_snippets` require table-qualified column references: `table_alias.column_name`
+- SQL snippet filters, expressions, and measures require `id` and non-empty `sql`. `display_name`, `instruction`, `synonyms`, and `comment` are optional API metadata. Expressions and measures may also contain a legacy/programmatic `alias`; preserve it when present, but do not require or synthesize it.
 - Filters must NOT include `WHERE` keyword — only the boolean condition
 - `join_specs.sql`: exactly **TWO elements** — (1) backtick-quoted condition `` `alias`.`col` = `alias`.`col` `` (2) `--rt=FROM_RELATIONSHIP_TYPE_...--` relationship annotation. **Without the `--rt=` annotation the API rejects the request** with a protobuf parsing error.
 - `join_specs` required fields: `id`, `left` (object: `identifier` + `alias`), `right` (object: `identifier` + `alias`), `sql` (2 elements). Optional: `comment`, `instruction`. **Omitting `left` or `right` causes a protobuf parsing error.**
@@ -233,7 +232,7 @@ generate_config(
   sample_questions=["What is total revenue?", "Show top customers"],
   text_instructions=["Revenue = SUM(amount).", "Fiscal year starts April 1."],
   example_sqls=[{"question": "Top 10 customers", "sql": "SELECT ..."}],
-  measures=[{"alias": "total_rev", "sql": "SUM(amount)", "display_name": "Total Revenue"}],
+  measures=[{"display_name": "Total Revenue", "sql": "SUM(amount)"}],
 )
 ```
 

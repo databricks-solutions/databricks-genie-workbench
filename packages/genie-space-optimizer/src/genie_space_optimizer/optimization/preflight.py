@@ -28,7 +28,10 @@ from genie_space_optimizer.common.genie_client import (
     compute_benchmark_window_recommendation,
     fetch_space_config,
 )
-from genie_space_optimizer.common.genie_schema import validate_serialized_space
+from genie_space_optimizer.common.genie_schema import (
+    SerializedSpaceValidationError,
+    validate_serialized_space,
+)
 from genie_space_optimizer.common.mlflow_names import default_tags, preflight_run_name
 from genie_space_optimizer.common.uc_metadata import (
     extract_genie_space_table_refs,
@@ -61,6 +64,7 @@ from genie_space_optimizer.optimization.state import (
     load_run,
     update_run_status as _update_run_status,
     write_benchmark_mutations,
+    write_failure_stage_safely,
     write_stage,
 )
 
@@ -1016,9 +1020,20 @@ def preflight_fetch_config(
         _parsed if isinstance(_parsed, dict) else config
     )
     if not _schema_ok:
-        logger.warning(
+        logger.error(
             "Space config has structural issues for %s: %s", space_id, _schema_errors
         )
+        write_failure_stage_safely(
+            spark,
+            run_id,
+            "PREFLIGHT_CONFIG_VALIDATION",
+            task_key="preflight",
+            detail={"space_id": space_id, "errors": _schema_errors[:20]},
+            error_message="CONFIG_VALIDATION_FAILED",
+            catalog=catalog,
+            schema=schema,
+        )
+        raise SerializedSpaceValidationError(_schema_errors)
 
     _ds = _parsed.get("data_sources", {}) if isinstance(_parsed, dict) else {}
     _inv_tables = _ds.get("tables", [])

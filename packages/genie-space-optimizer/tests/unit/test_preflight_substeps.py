@@ -96,6 +96,43 @@ class TestPreflightFetchConfig:
         result = preflight_fetch_config(mock_ws, mock_spark, "run-1", "space-1", "cat", "gold", "My Domain!!")
         assert result["domain"] == "my_domain"
 
+    @patch("genie_space_optimizer.optimization.preflight.validate_serialized_space")
+    @patch("genie_space_optimizer.optimization.preflight.load_run")
+    @patch("genie_space_optimizer.optimization.preflight.write_failure_stage_safely")
+    @patch("genie_space_optimizer.optimization.preflight.write_stage")
+    def test_structural_validation_failure_is_persisted_and_raised(
+        self,
+        mock_write_stage,
+        mock_write_failure,
+        mock_load,
+        mock_validate,
+        mock_spark,
+        mock_ws,
+    ):
+        from genie_space_optimizer.common.genie_schema import SerializedSpaceValidationError
+        from genie_space_optimizer.optimization.preflight import preflight_fetch_config
+
+        mock_load.return_value = {
+            "config_snapshot": {"_parsed_space": {"instructions": {"sql_snippets": {}}}}
+        }
+        mock_validate.return_value = (
+            False,
+            ["instructions.sql_snippets.measures.0.id: Field required"],
+        )
+
+        with pytest.raises(SerializedSpaceValidationError, match="CONFIG_VALIDATION_FAILED"):
+            preflight_fetch_config(
+                mock_ws, mock_spark, "run-1", "space-1", "cat", "gold", "revenue"
+            )
+
+        mock_write_stage.assert_called_once()
+        failure_call = mock_write_failure.call_args
+        assert failure_call.args[2] == "PREFLIGHT_CONFIG_VALIDATION"
+        assert failure_call.kwargs["error_message"] == "CONFIG_VALIDATION_FAILED"
+        assert failure_call.kwargs["detail"]["errors"] == [
+            "instructions.sql_snippets.measures.0.id: Field required"
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Step 2: preflight_collect_uc_metadata

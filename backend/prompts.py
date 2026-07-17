@@ -304,12 +304,14 @@ _VALID_FIELD_PATHS_BLOCK = """## Valid Field Paths (ONLY use these exact names p
 - `instructions.sql_snippets.filters[N].sql` — array of strings
 - `instructions.sql_snippets.filters[N].synonyms` — array of strings
 - `instructions.sql_snippets.filters[N].instruction` — array of strings
-- `instructions.sql_snippets.expressions[N].alias` — string
+- `instructions.sql_snippets.expressions[N].alias` — optional legacy/programmatic string; preserve if already present, but do not add it
 - `instructions.sql_snippets.expressions[N].display_name` — string
 - `instructions.sql_snippets.expressions[N].sql` — array of strings
-- `instructions.sql_snippets.measures[N].alias` — string
+- `instructions.sql_snippets.measures[N].alias` — optional legacy/programmatic string; preserve if already present, but do not add it
 - `instructions.sql_snippets.measures[N].display_name` — string
 - `instructions.sql_snippets.measures[N].sql` — array of strings
+
+For all SQL snippet types, `id` and non-empty `sql` are required by the API. The Workbench also requires `display_name` when creating a new snippet. `instruction`, `synonyms`, and `comment` are optional. Snippet `alias` is not required and must never be synthesized. Join-side aliases above remain required.
 
 **config & benchmarks:**
 - `config.sample_questions[N].question` — array of strings

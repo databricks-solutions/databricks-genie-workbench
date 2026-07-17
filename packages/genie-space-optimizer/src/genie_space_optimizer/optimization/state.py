@@ -448,6 +448,16 @@ def write_stage(
     now_iso = now.isoformat()
     fqn = _fqn(catalog, schema, TABLE_STAGES)
 
+    def _sql_val(val: Any) -> str:
+        if val is None:
+            return "NULL"
+        if isinstance(val, bool):
+            return str(val).lower()
+        if isinstance(val, (int, float)):
+            return str(val)
+        escaped = str(val).replace("\\", "\\\\").replace("'", "''")
+        return f"'{escaped}'"
+
     completed_at: str | None = None
     duration_seconds: float | None = None
 
@@ -456,7 +466,8 @@ def write_stage(
         started_df = run_query(
             spark,
             f"SELECT started_at FROM {fqn} "
-            f"WHERE run_id = '{run_id}' AND stage = '{stage}' AND status = 'STARTED' "
+            f"WHERE run_id = {_sql_val(run_id)} AND stage = {_sql_val(stage)} "
+            "AND status = 'STARTED' "
             f"ORDER BY started_at DESC LIMIT 1",
         )
         if not started_df.empty:
@@ -466,21 +477,11 @@ def write_stage(
             duration_seconds = (now - started_ts.to_pydatetime()).total_seconds()
 
     detail_json = json.dumps(detail) if detail else None
-    _safe_err = error_message.replace("'", "''") if error_message else None
 
     col_names = (
         "run_id, task_key, stage, status, started_at, completed_at, "
         "duration_seconds, lever, iteration, detail_json, error_message"
     )
-
-    def _sql_val(val: Any) -> str:
-        if val is None:
-            return "NULL"
-        if isinstance(val, bool):
-            return str(val).lower()
-        if isinstance(val, (int, float)):
-            return str(val)
-        return f"'{val}'"
 
     vals = ", ".join(
         [
@@ -493,8 +494,8 @@ def write_stage(
             _sql_val(duration_seconds),
             _sql_val(lever),
             _sql_val(iteration),
-            _sql_val(detail_json.replace("'", "''") if detail_json else None),
-            _sql_val(_safe_err),
+            _sql_val(detail_json),
+            _sql_val(error_message),
         ]
     )
 
@@ -505,6 +506,39 @@ def write_stage(
         table_name=fqn,
     )
     logger.info("Stage %s/%s for run %s", stage, status, run_id)
+
+
+def write_failure_stage_safely(
+    spark: SparkSession,
+    run_id: str,
+    stage: str,
+    *,
+    task_key: str | None = None,
+    detail: dict | None = None,
+    error_message: str | None = None,
+    catalog: str,
+    schema: str,
+) -> None:
+    """Best-effort failure telemetry that never masks the original exception."""
+
+    try:
+        write_stage(
+            spark,
+            run_id,
+            stage,
+            "FAILED",
+            task_key=task_key,
+            detail=detail,
+            error_message=error_message,
+            catalog=catalog,
+            schema=schema,
+        )
+    except Exception:
+        logger.exception(
+            "Could not persist FAILED stage %s for run %s; preserving original error",
+            stage,
+            run_id,
+        )
 
 
 def write_eval_heartbeat(

@@ -74,6 +74,7 @@ from genie_space_optimizer.optimization.space_quality_enrichment import (
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
     write_artifact,
+    write_failure_stage_safely,
     write_stage,
 )
 
@@ -204,8 +205,8 @@ try:
 except Exception as exc:
     _banner("Benchmark Generation FAILED")
     _log("Failure details", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
-    write_stage(
-        spark, run_id, "BENCHMARK_QC_AND_REPAIR", "FAILED",
+    write_failure_stage_safely(
+        spark, run_id, "BENCHMARK_QC_AND_REPAIR",
         task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
     )
     raise
@@ -367,8 +368,8 @@ if not _repair_failed and _benchmarks:
     except Exception as exc:
         _banner("Benchmark Push FAILED")
         _log("Push failure", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
-        write_stage(
-            spark, run_id, "BENCHMARK_QC_AND_REPAIR", "FAILED",
+        write_failure_stage_safely(
+            spark, run_id, "BENCHMARK_QC_AND_REPAIR",
             task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
         )
         raise
@@ -394,8 +395,8 @@ if not _repair_failed and _benchmarks:
     except Exception as exc:
         _banner("Experiment / Dataset Setup FAILED")
         _log("Failure", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
-        write_stage(
-            spark, run_id, "BENCHMARK_QC_AND_REPAIR", "FAILED",
+        write_failure_stage_safely(
+            spark, run_id, "BENCHMARK_QC_AND_REPAIR",
             task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
         )
         raise
@@ -488,8 +489,8 @@ write_artifact(
 )
 
 if _repair_failed and _repair_error is not None:
-    write_stage(
-        spark, run_id, "BENCHMARK_QC_AND_REPAIR", "FAILED",
+    write_failure_stage_safely(
+        spark, run_id, "BENCHMARK_QC_AND_REPAIR",
         task_key=_TASK_KEY, catalog=catalog, schema=schema,
         detail={"terminal_reason": BENCHMARK_UNREPAIRABLE},
         error_message=str(_repair_error),

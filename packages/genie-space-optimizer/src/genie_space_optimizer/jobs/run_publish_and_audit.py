@@ -45,6 +45,7 @@ from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.publish import publish_and_audit
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
+    write_failure_stage_safely,
     write_stage,
 )
 
@@ -135,8 +136,8 @@ try:
 except Exception as exc:
     _banner("Publish + Audit FAILED")
     _log("Failure details", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
-    write_stage(
-        spark, run_id, "PUBLISH_AND_AUDIT", "FAILED",
+    write_failure_stage_safely(
+        spark, run_id, "PUBLISH_AND_AUDIT",
         task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
     )
     raise

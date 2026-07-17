@@ -1248,8 +1248,6 @@ def _validate_unified_sql_snippet_patch(
     from genie_space_optimizer.common.genie_schema import generate_genie_id
 
     display_name = str(clean.get("display_name") or "").strip()
-    alias = str(clean.get("alias") or display_name or snippet_type).strip()
-    alias = re.sub(r"[^A-Za-z0-9_]+", "_", alias).strip("_").lower() or snippet_type
     instruction = str(clean.get("instruction") or "").strip()
     snippet = {
         "id": str(clean.get("snippet_id") or clean.get("id") or generate_genie_id()),
@@ -1258,8 +1256,8 @@ def _validate_unified_sql_snippet_patch(
         "synonyms": synonyms,
         "instruction": [instruction] if instruction else [],
     }
-    if snippet_type != "filter":
-        snippet["alias"] = alias
+    if snippet_type != "filter" and clean.get("alias"):
+        snippet["alias"] = str(clean["alias"])
     clean.update(
         {
             "snippet_type": _SNIPPET_SECTION_FROM_TYPE[snippet_type],
@@ -2180,7 +2178,11 @@ def run_unified_optimization_loop(
                 )
             applied_entries = list(apply_log.get("applied") or [])
             if not apply_log.get("patch_deployed") or not applied_entries:
+                validation_errors = list(apply_log.get("validation_errors") or [])
                 hypothesis["failure_stage"] = "apply_deployed_no_patches"
+                if validation_errors:
+                    hypothesis["failure_stage"] = "config_validation_failed"
+                    hypothesis["validation_errors"] = validation_errors[:20]
                 hypothesis["apply_dropped_patch_summary"] = _dropped_patch_summary(
                     list(apply_log.get("dropped_patches") or [])
                 )
@@ -2193,6 +2195,9 @@ def run_unified_optimization_loop(
                 )
                 reflections.append(reflection)
                 last_failed_hypothesis = hypothesis
+                if validation_errors:
+                    terminal_reason = "CONFIG_VALIDATION_FAILED"
+                    break
                 if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
                     proposal_retries += 1
                     continue
@@ -2432,10 +2437,14 @@ def run_unified_optimization_loop(
         catalog=catalog,
         schema=schema,
         current_hypothesis=(
-            last_failed_hypothesis if terminal_reason == "NO_NEW_HYPOTHESIS" else None
+            last_failed_hypothesis
+            if terminal_reason in {"NO_NEW_HYPOTHESIS", "CONFIG_VALIDATION_FAILED"}
+            else None
         ),
         do_not_repeat=(
-            reflections[-5:] if terminal_reason == "NO_NEW_HYPOTHESIS" else None
+            reflections[-5:]
+            if terminal_reason in {"NO_NEW_HYPOTHESIS", "CONFIG_VALIDATION_FAILED"}
+            else None
         ),
     )
 

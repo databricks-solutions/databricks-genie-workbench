@@ -143,14 +143,14 @@ The plan should include:
 
 6. **Measures** — reusable aggregation SQL for key metrics
 
-   Each measure has an `alias`, `sql` (an aggregate expression), `display_name`, and optional `synonyms`, `instruction`, and `comment`.
+   Each measure has a `display_name`, `sql` (an aggregate expression), and optional `synonyms`, `instruction`, and `comment`.
    - `instruction`: tells Genie WHEN to use this measure (e.g., "Use for any revenue aggregation")
    - `comment`: internal note explaining the formula or business context
    Put the actual aggregation formula here, not in text instructions. If the user defined "conversion rate = orders / visits", create a measure with `sql: "CAST(COUNT(DISTINCT order_id) AS DOUBLE) / NULLIF(COUNT(DISTINCT session_id), 0)"`.
 
 7. **Expressions** — reusable computed columns / dimension expressions
 
-   Each expression has an `alias`, `sql` (a dimension expression), `display_name`, and optional `synonyms`, `instruction`, and `comment`.
+   Each expression has a `display_name`, `sql` (a dimension expression), and optional `synonyms`, `instruction`, and `comment`.
    Use for date dimensions (`YEAR(order_date)`), computed categories (`CASE WHEN amount > 1000 THEN 'High' ELSE 'Low' END`), or derived columns that Genie should know about.
 
 8. **Join specs** — table relationships for multi-table queries

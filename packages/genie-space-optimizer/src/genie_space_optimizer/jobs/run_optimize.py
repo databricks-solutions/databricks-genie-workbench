@@ -47,6 +47,7 @@ from genie_space_optimizer.optimization.preflight import _resolve_experiment_pat
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
     load_latest_artifact_payload,
+    write_failure_stage_safely,
     write_stage,
 )
 from genie_space_optimizer.optimization.unified_loop import (
@@ -200,11 +201,10 @@ except Exception as exc:
         error_message=str(exc),
         traceback=traceback.format_exc(),
     )
-    write_stage(
+    write_failure_stage_safely(
         spark,
         run_id,
         "OPTIMIZE",
-        "FAILED",
         task_key=_TASK_KEY,
         catalog=catalog,
         schema=schema,

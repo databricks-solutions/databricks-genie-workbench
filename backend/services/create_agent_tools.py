@@ -453,7 +453,7 @@ TOOL_DEFINITIONS = [
                                 "instruction": {"type": "string", "description": "When Genie should use this measure (e.g., 'Use for any revenue aggregation')"},
                                 "comment": {"type": "string", "description": "Internal note about the measure definition or business context"},
                             },
-                            "required": ["alias", "sql"],
+                            "required": ["display_name", "sql"],
                         },
                     },
                     "filters": {
@@ -482,7 +482,7 @@ TOOL_DEFINITIONS = [
                                 "instruction": {"type": "string", "description": "When Genie should use this expression (e.g., 'Use for year-based grouping')"},
                                 "comment": {"type": "string", "description": "Internal note about this computed column"},
                             },
-                            "required": ["alias", "sql"],
+                            "required": ["display_name", "sql"],
                         },
                     },
                     "join_specs": {
@@ -684,7 +684,7 @@ TOOL_DEFINITIONS = [
                                 "instruction": {"type": "string"},
                                 "comment": {"type": "string"},
                             },
-                            "required": ["alias", "sql"],
+                            "required": ["display_name", "sql"],
                         },
                     },
                     "filters": {
@@ -713,7 +713,7 @@ TOOL_DEFINITIONS = [
                                 "instruction": {"type": "string"},
                                 "comment": {"type": "string"},
                             },
-                            "required": ["alias", "sql"],
+                            "required": ["display_name", "sql"],
                         },
                     },
                     "join_specs": {
@@ -2440,9 +2440,13 @@ def _generate_config(
     if measures:
         m_items = []
         for m in measures:
-            entry = {"id": secrets.token_hex(16), "alias": m["alias"], "sql": [m["sql"]]}
-            if m.get("display_name"):
-                entry["display_name"] = m["display_name"]
+            entry = {
+                "id": secrets.token_hex(16),
+                "display_name": m["display_name"],
+                "sql": [m["sql"]],
+            }
+            if m.get("alias"):
+                entry["alias"] = m["alias"]
             if m.get("synonyms"):
                 entry["synonyms"] = m["synonyms"]
             if m.get("instruction"):
@@ -2473,9 +2477,13 @@ def _generate_config(
     if expressions:
         e_items = []
         for e in expressions:
-            entry = {"id": secrets.token_hex(16), "alias": e["alias"], "sql": [e["sql"]]}
-            if e.get("display_name"):
-                entry["display_name"] = e["display_name"]
+            entry = {
+                "id": secrets.token_hex(16),
+                "display_name": e["display_name"],
+                "sql": [e["sql"]],
+            }
+            if e.get("alias"):
+                entry["alias"] = e["alias"]
             if e.get("synonyms"):
                 entry["synonyms"] = e["synonyms"]
             if e.get("instruction"):
@@ -2814,15 +2822,18 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
 
         # ── SQL snippet actions (measures, filters, expressions) ──────
         elif action == "add_measure":
-            alias = act.get("alias", "")
             dn = act.get("display_name", "")
             sql = act.get("sql", "")
-            if not alias or not sql:
-                applied.append("Skipped add_measure — alias and sql required")
+            if not dn or not sql:
+                applied.append("Skipped add_measure — display_name and sql required")
                 continue
-            entry_m: dict[str, Any] = {"id": secrets.token_hex(16), "alias": alias, "sql": [sql]}
-            if dn:
-                entry_m["display_name"] = dn
+            entry_m: dict[str, Any] = {
+                "id": secrets.token_hex(16),
+                "display_name": dn,
+                "sql": [sql],
+            }
+            if act.get("alias"):
+                entry_m["alias"] = act["alias"]
             if act.get("synonyms"):
                 entry_m["synonyms"] = act["synonyms"]
             if act.get("instruction"):
@@ -2871,14 +2882,18 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
             applied.append(f"Removed {removed} filter(s) matching '{dn}'")
 
         elif action == "add_expression":
-            alias = act.get("alias", "")
+            dn = act.get("display_name", "")
             sql = act.get("sql", "")
-            if not alias or not sql:
-                applied.append("Skipped add_expression — alias and sql required")
+            if not dn or not sql:
+                applied.append("Skipped add_expression — display_name and sql required")
                 continue
-            entry_e: dict[str, Any] = {"id": secrets.token_hex(16), "alias": alias, "sql": [sql]}
-            if act.get("display_name"):
-                entry_e["display_name"] = act["display_name"]
+            entry_e: dict[str, Any] = {
+                "id": secrets.token_hex(16),
+                "display_name": dn,
+                "sql": [sql],
+            }
+            if act.get("alias"):
+                entry_e["alias"] = act["alias"]
             if act.get("synonyms"):
                 entry_e["synonyms"] = act["synonyms"]
             if act.get("instruction"):
@@ -2886,17 +2901,23 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
             es = cfg.setdefault("instructions", {}).setdefault("sql_snippets", {}).setdefault("expressions", [])
             es.append(entry_e)
             es.sort(key=lambda x: x["id"])
-            applied.append(f"Added expression: {alias}")
+            applied.append(f"Added expression: {dn}")
 
         elif action == "remove_expression":
+            dn = act.get("display_name", "").lower()
             alias = act.get("alias", "").lower()
             es = cfg.get("instructions", {}).get("sql_snippets", {}).get("expressions", [])
             before = len(es)
             cfg.setdefault("instructions", {}).setdefault("sql_snippets", {})["expressions"] = [
-                e for e in es if e.get("alias", "").lower() != alias
+                e for e in es
+                if not (
+                    (dn and e.get("display_name", "").lower() == dn)
+                    or (alias and e.get("alias", "").lower() == alias)
+                )
             ]
             removed = before - len(cfg["instructions"]["sql_snippets"]["expressions"])
-            applied.append(f"Removed {removed} expression(s) matching '{alias}'")
+            selector = dn or alias
+            applied.append(f"Removed {removed} expression(s) matching '{selector}'")
 
         else:
             applied.append(f"Unknown action: {action}")

@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from genie_space_optimizer.common.genie_client import patch_space_config
 from genie_space_optimizer.common.genie_schema import (
     normalize_array_fields,
@@ -245,3 +247,69 @@ class TestStrictShapeGuard:
         }
         ok, _ = validate_serialized_space(config, strict=False)
         assert ok
+
+
+class TestSqlSnippetAliasCompatibility:
+    def _ui_style_config(self) -> dict:
+        return {
+            "version": 2,
+            "data_sources": {
+                "tables": [{"identifier": "cat.sch.sales"}],
+                "metric_views": [],
+            },
+            "instructions": {
+                "sql_snippets": {
+                    "filters": [{
+                        "id": "1" * 32,
+                        "sql": ["products.product_id = 1"],
+                        "display_name": "Product one",
+                        "instruction": ["Use for product one."],
+                        "synonyms": ["first product"],
+                    }],
+                    "expressions": [{
+                        "id": "2" * 32,
+                        "sql": ["YEAR(sales.order_date)"],
+                        "display_name": "Order year",
+                    }],
+                    "measures": [{
+                        "id": "3" * 32,
+                        "sql": ["ROUND(SUM(sales.net_sales_usd), 2)"],
+                        "display_name": "Net sales (USD)",
+                    }],
+                }
+            },
+        }
+
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_ui_style_snippets_without_alias_validate(self, strict: bool):
+        ok, errors = validate_serialized_space(self._ui_style_config(), strict=strict)
+        assert ok, errors
+
+    def test_patch_round_trip_does_not_inject_alias(self):
+        sent = _send(self._ui_style_config())
+        snippets = sent["instructions"]["sql_snippets"]
+        assert "alias" not in snippets["filters"][0]
+        assert "alias" not in snippets["expressions"][0]
+        assert "alias" not in snippets["measures"][0]
+
+    def test_legacy_snippet_alias_is_preserved(self):
+        config = self._ui_style_config()
+        config["instructions"]["sql_snippets"]["measures"][0]["alias"] = "net_sales"
+        sent = _send(config)
+        assert sent["instructions"]["sql_snippets"]["measures"][0]["alias"] == "net_sales"
+
+    def test_join_side_alias_remains_required(self):
+        config = {
+            "version": 2,
+            "instructions": {
+                "join_specs": [{
+                    "id": "4" * 32,
+                    "left": {"identifier": "cat.sch.orders"},
+                    "right": {"identifier": "cat.sch.customers", "alias": "customers"},
+                    "sql": ["orders.customer_id = customers.customer_id"],
+                }]
+            },
+        }
+        ok, errors = validate_serialized_space(config)
+        assert not ok
+        assert any("left.alias" in error for error in errors)

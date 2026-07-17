@@ -402,66 +402,43 @@ class SqlFunction(BaseModel):
 # ── SQL Snippet sub-models ───────────────────────────────────────────
 
 
-class SqlSnippetFilter(BaseModel):
+class SqlSnippetBase(BaseModel):
+    """Fields shared by all reusable SQL snippet types."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    sql: list[str]
+    display_name: str | None = None
+    synonyms: list[str] | None = None
+    comment: list[str] | None = None
+    instruction: list[str] | None = None
+
+    @field_validator("sql", "synonyms", "comment", "instruction", mode="before")
+    @classmethod
+    def _coerce_str_to_list(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return [v]
+        return v
+
+
+class SqlSnippetFilter(SqlSnippetBase):
     """A reusable SQL filter snippet."""
 
-    model_config = ConfigDict(extra="allow")
 
-    id: str
-    sql: list[str]
-    display_name: str | None = None
-    synonyms: list[str] | None = None
-    comment: list[str] | None = None
-    instruction: list[str] | None = None
-
-    @field_validator("sql", "synonyms", "comment", "instruction", mode="before")
-    @classmethod
-    def _coerce_str_to_list(cls, v: Any) -> Any:
-        if isinstance(v, str):
-            return [v]
-        return v
-
-
-class SqlSnippetExpression(BaseModel):
+class SqlSnippetExpression(SqlSnippetBase):
     """A reusable SQL expression snippet."""
 
-    model_config = ConfigDict(extra="allow")
-
-    id: str
-    alias: str
-    sql: list[str]
-    display_name: str | None = None
-    synonyms: list[str] | None = None
-    comment: list[str] | None = None
-    instruction: list[str] | None = None
-
-    @field_validator("sql", "synonyms", "comment", "instruction", mode="before")
-    @classmethod
-    def _coerce_str_to_list(cls, v: Any) -> Any:
-        if isinstance(v, str):
-            return [v]
-        return v
+    # ``alias`` appears in some legacy/programmatic payloads but is not emitted
+    # by the current Genie UI and is not required by the serialized_space
+    # validation contract. Preserve it when present without requiring it.
+    alias: str | None = None
 
 
-class SqlSnippetMeasure(BaseModel):
+class SqlSnippetMeasure(SqlSnippetBase):
     """A reusable SQL measure snippet."""
 
-    model_config = ConfigDict(extra="allow")
-
-    id: str
-    alias: str
-    sql: list[str]
-    display_name: str | None = None
-    synonyms: list[str] | None = None
-    comment: list[str] | None = None
-    instruction: list[str] | None = None
-
-    @field_validator("sql", "synonyms", "comment", "instruction", mode="before")
-    @classmethod
-    def _coerce_str_to_list(cls, v: Any) -> Any:
-        if isinstance(v, str):
-            return [v]
-        return v
+    alias: str | None = None
 
 
 class SqlSnippets(BaseModel):
@@ -1052,6 +1029,14 @@ def _strict_validate(config: dict) -> list[str]:
 
 
 # ── Public validation entry point ────────────────────────────────────
+
+
+class SerializedSpaceValidationError(ValueError):
+    """A fetched Genie configuration failed structural validation."""
+
+    def __init__(self, errors: list[str]):
+        self.errors = list(errors)
+        super().__init__("CONFIG_VALIDATION_FAILED: " + "; ".join(self.errors))
 
 
 def validate_serialized_space(

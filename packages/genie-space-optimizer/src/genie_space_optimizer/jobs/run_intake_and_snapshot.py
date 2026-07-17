@@ -48,6 +48,7 @@ from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
     update_run_status,
     write_artifact,
+    write_failure_stage_safely,
     write_stage,
 )
 
@@ -174,8 +175,8 @@ try:
 except Exception as exc:
     _banner("Snapshot Capture FAILED")
     _log("Failure details", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
-    write_stage(
-        spark, run_id, "INTAKE_AND_SNAPSHOT", "FAILED",
+    write_failure_stage_safely(
+        spark, run_id, "INTAKE_AND_SNAPSHOT",
         task_key=_TASK_KEY, catalog=catalog, schema=schema,
         error_message=str(exc),
     )
