@@ -328,7 +328,7 @@ pandas==2.3.3
     #   databricks-agents
     #   genie-space-optimizer
     #   mlflow
-pillow==12.1.1
+pillow==12.3.0
     # via matplotlib
 prettytable==3.17.0
     # via skops
