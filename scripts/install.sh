@@ -134,6 +134,7 @@ _header "Step 1: Checking prerequisites"
 # _preflight_check_tools verifies presence + minimum versions for every
 # required tool in a single pass and exits if anything is wrong.
 _preflight_check_tools
+_preflight_check_python_dependency_sources
 
 # ══════════════════════════════════════════════════════════════════════════
 # Step 2: Databricks profile
