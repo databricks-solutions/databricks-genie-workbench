@@ -100,6 +100,7 @@ def trigger_optimization(
     levers: list[int] | None = None,
     target_accuracy: float | None = None,
     max_attempts: int | None = None,
+    workload_warehouse_ids: list[str] | None = None,
 ) -> TriggerResult:
     """Trigger a GSO optimization run using SQL Warehouse for state management.
 
@@ -119,6 +120,8 @@ def trigger_optimization(
             ``0.90`` when None — matches the job's databricks.yml param).
         max_attempts: SURGICAL hill-climb budget (default ``3`` when None); the
             attempt-1 coverage pass is a free probe that never consumes a slot.
+        workload_warehouse_ids: Representative workload warehouses whose query
+            history may be used as optional ranking evidence.
 
     Returns:
         :class:`TriggerResult` with run_id, job_run_id, job_url, and status.
@@ -236,6 +239,13 @@ def trigger_optimization(
         f"{float(target_accuracy):g}" if target_accuracy is not None else "0.90"
     )
     max_attempts_str = str(int(max_attempts)) if max_attempts is not None else "3"
+    workload_warehouse_ids_str = json.dumps(
+        list(dict.fromkeys(
+            str(value).strip()
+            for value in (workload_warehouse_ids or [])
+            if str(value).strip()
+        ))[:20]
+    )
 
     wh_create_run(
         ws,
@@ -270,6 +280,7 @@ def trigger_optimization(
             llm_model=config.llm_model or "",
             target_accuracy=target_accuracy_str,
             max_attempts=max_attempts_str,
+            workload_warehouse_ids=workload_warehouse_ids_str,
         )
 
         sql_warehouse_execute(

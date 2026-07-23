@@ -26,6 +26,7 @@
 
 # COMMAND ----------
 
+import copy
 import json
 import os
 import traceback
@@ -73,9 +74,29 @@ from genie_space_optimizer.optimization.space_quality_enrichment import (
 )
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
+    load_artifacts,
+    load_latest_artifact_payload,
+    load_latest_artifact_record,
     write_artifact,
     write_failure_stage_safely,
+    write_required_artifact,
     write_stage,
+)
+from genie_space_optimizer.optimization.wide_schema import (
+    active_column_keys,
+    build_local_evidence,
+    build_selection_plan,
+    project_active_inventory,
+    project_full_inventory,
+    revise_plan_for_column,
+    revise_plan_with_profile_outcomes,
+    sql_column_evidence,
+    validate_inventory,
+    validate_selection_plan,
+)
+from genie_space_optimizer.optimization.wide_schema_profile import (
+    build_profiling_budget,
+    merge_profiling_budgets,
 )
 
 dbutils = cast(Any, globals().get("dbutils"))
@@ -110,6 +131,7 @@ if llm_model:
 
 if not run_id:
     raise RuntimeError("benchmark_qc_and_repair: run_id parameter is required")
+os.environ["GSO_RUN_ID"] = run_id
 
 effective_target = TARGET_BENCHMARK_COUNT
 effective_max = MAX_BENCHMARK_COUNT
@@ -154,15 +176,168 @@ try:
     _genie_table_refs = ctx_config["genie_table_refs"]
     _domain = ctx_config["domain"]
 
+    _inventory_record = load_latest_artifact_record(
+        spark, run_id, catalog, schema, "wide_schema_inventory",
+    )
+    if _inventory_record is None:
+        raise RuntimeError("Required wide_schema_inventory artifact is missing")
+    _wide_schema_inventory = _inventory_record["payload"]
+    validate_inventory(_wide_schema_inventory)
+
+    _wide_schema_evidence = load_latest_artifact_payload(
+        spark, run_id, catalog, schema, "wide_schema_evidence",
+    )
+    if (
+        not isinstance(_wide_schema_evidence, dict)
+        or _wide_schema_evidence.get("inventory_hash")
+        != _wide_schema_inventory["inventory_hash"]
+    ):
+        # Evidence is optional. Reconstruct the always-available local subset
+        # and continue without query-history signal when its artifact is absent
+        # or belongs to a different inventory.
+        _wide_schema_evidence = build_local_evidence(
+            _config, _wide_schema_inventory,
+        )
+
+    _plan_record = load_latest_artifact_record(
+        spark, run_id, catalog, schema, "wide_schema_selection_plan",
+    )
+    if _plan_record is not None:
+        _wide_schema_plan = _plan_record["payload"]
+        validate_selection_plan(
+            _wide_schema_plan,
+            inventory_hash=_wide_schema_inventory["inventory_hash"],
+        )
+    else:
+        _wide_schema_plan = build_selection_plan(
+            _wide_schema_inventory,
+            _wide_schema_evidence,
+            run_id=run_id,
+        )
+        _plan_record = write_required_artifact(
+            spark,
+            run_id,
+            "wide_schema_selection_plan",
+            _wide_schema_plan,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+            iteration=_wide_schema_plan["revision"],
+            parent_artifact_id=_inventory_record.get("artifact_id"),
+        )
+
+    _existing_space_metadata = load_latest_artifact_payload(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        "space_metadata",
+    )
+    if (
+        isinstance(_existing_space_metadata, dict)
+        and _existing_space_metadata.get("inventory_hash")
+        == _wide_schema_inventory["inventory_hash"]
+        and _existing_space_metadata.get("plan_hash")
+        == _wide_schema_plan["plan_hash"]
+    ):
+        _config["_data_profile"] = copy.deepcopy(
+            _existing_space_metadata.get("data_profile") or {},
+        )
+
+    _profile_artifact_rows = load_artifacts(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        artifact_kind="wide_schema_profile_telemetry",
+    )
+    _persisted_profile_telemetry: list[dict[str, Any]] = []
+    for _raw_profile_telemetry in _profile_artifact_rows.get(
+        "artifact_json", [],
+    ):
+        try:
+            _profile_payload = (
+                json.loads(_raw_profile_telemetry)
+                if isinstance(_raw_profile_telemetry, str)
+                else _raw_profile_telemetry
+            )
+        except (TypeError, ValueError):
+            continue
+        if isinstance(_profile_payload, dict):
+            _persisted_profile_telemetry.append(_profile_payload)
+    _wide_schema_profile_budget = merge_profiling_budgets(
+        _wide_schema_plan.get("profiling_budget") or {},
+        build_profiling_budget(_persisted_profile_telemetry),
+    )
+
     ctx_uc = preflight_collect_uc_metadata(
         w, spark, run_id, catalog, schema, _config, _snapshot,
         _genie_table_refs, apply_mode=apply_mode,
         configured_cols=ctx_config.get("configured_cols", 0),
         warehouse_id=warehouse_id,
+        wide_schema_inventory=_wide_schema_inventory,
+        wide_schema_plan=_wide_schema_plan,
+        wide_schema_profile_budget=_wide_schema_profile_budget,
     )
     _uc_columns = ctx_uc["uc_columns"]
     _uc_tags = ctx_uc["uc_tags"]
     _uc_routines = ctx_uc["uc_routines"]
+    _deterministic_uc_columns = project_full_inventory(_wide_schema_inventory)
+
+    _initial_profile_outcomes = ctx_uc.get("wide_schema_profile_outcomes") or {}
+    if ctx_uc.get("wide_schema_profile_telemetry"):
+        write_artifact(
+            spark,
+            run_id,
+            "wide_schema_profile_telemetry",
+            {
+                "stage": "initial",
+                **ctx_uc["wide_schema_profile_telemetry"],
+            },
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+        )
+    if _initial_profile_outcomes:
+        _wide_schema_plan = revise_plan_with_profile_outcomes(
+            _wide_schema_plan,
+            _wide_schema_inventory,
+            _initial_profile_outcomes,
+            profiling_budget=_wide_schema_profile_budget,
+        )
+        _plan_record = write_required_artifact(
+            spark,
+            run_id,
+            "wide_schema_selection_plan",
+            _wide_schema_plan,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+            iteration=_wide_schema_plan["revision"],
+            parent_artifact_id=_plan_record.get("artifact_id"),
+        )
+    validate_selection_plan(
+        _wide_schema_plan,
+        inventory_hash=_wide_schema_inventory["inventory_hash"],
+    )
+    os.environ["GSO_WIDE_SCHEMA_INVENTORY_HASH"] = _wide_schema_inventory[
+        "inventory_hash"
+    ]
+    os.environ["GSO_WIDE_SCHEMA_PLAN_HASH"] = _wide_schema_plan["plan_hash"]
+    _config["_wide_schema_inventory_hash"] = _wide_schema_inventory["inventory_hash"]
+    _config["_wide_schema_plan_hash"] = _wide_schema_plan["plan_hash"]
+    _config["_wide_schema_inventory_column_count"] = sum(
+        len(asset.get("columns") or [])
+        for asset in _wide_schema_inventory.get("assets") or []
+    )
+    _uc_columns = project_active_inventory(
+        _wide_schema_inventory,
+        _wide_schema_plan,
+    )
+    _config["_uc_columns"] = _uc_columns
 
     _parsed = _config.get("_parsed_space", {})
     _data_sources = _parsed.get("data_sources", {}) if isinstance(_parsed, dict) else {}
@@ -213,6 +388,149 @@ except Exception as exc:
 
 # COMMAND ----------
 
+
+def _activate_benchmark_columns(benchmarks: list[dict[str, Any]]) -> None:
+    """Persist adaptive revisions for omitted columns used by this operation."""
+    global _wide_schema_plan, _plan_record, _uc_columns
+
+    referenced: set[tuple[str, str, str, str]] = set()
+    for benchmark in benchmarks:
+        sql = benchmark.get("expected_sql") or benchmark.get("sql") or ""
+        if isinstance(sql, list):
+            sql = " ".join(str(part) for part in sql)
+        for item in sql_column_evidence(str(sql), _wide_schema_inventory):
+            referenced.add(tuple(item["column_key"]))
+    omitted = sorted(referenced - active_column_keys(_wide_schema_plan))
+    if not omitted:
+        return
+
+    for column_key in omitted:
+        try:
+            _wide_schema_plan = revise_plan_for_column(
+                _wide_schema_plan,
+                _wide_schema_inventory,
+                column_key,
+                reason="REPAIR_FAILURE",
+                protected_column_keys=referenced,
+            )
+        except ValueError as exc:
+            _log(
+                "Adaptive column activation skipped",
+                column=".".join(column_key),
+                reason=str(exc),
+            )
+            continue
+        _plan_record = write_required_artifact(
+            spark,
+            run_id,
+            "wide_schema_selection_plan",
+            _wide_schema_plan,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+            iteration=_wide_schema_plan["revision"],
+            parent_artifact_id=_plan_record.get("artifact_id"),
+        )
+
+    pending = {
+        tuple(row["column_key"])
+        for asset in _wide_schema_plan.get("assets") or []
+        for row in asset.get("columns") or []
+        if row.get("active") and row.get("profile_status") == "pending"
+    }
+    if pending:
+        profile_result: dict[str, Any] = {}
+        if warehouse_id:
+            from genie_space_optimizer.optimization.wide_schema_profile import (
+                run_bounded_profile,
+            )
+
+            profile_result = run_bounded_profile(
+                w,
+                warehouse_id,
+                _wide_schema_inventory,
+                _wide_schema_plan,
+                run_id=run_id,
+                budget=_wide_schema_profile_budget,
+            )
+            outcomes = profile_result.get("outcomes") or {}
+            write_artifact(
+                spark,
+                run_id,
+                "wide_schema_profile_telemetry",
+                {
+                    "stage": "benchmark_adaptive",
+                    **(profile_result.get("telemetry") or {}),
+                    "asset_statement_counts": profile_result.get(
+                        "asset_statement_counts"
+                    ) or {},
+                },
+                catalog=catalog,
+                schema=schema,
+                stage_name=_TASK_KEY,
+                source_notebook="run_benchmark_qc_and_repair.py",
+                parent_artifact_id=_plan_record.get("artifact_id"),
+            )
+        else:
+            outcomes = {
+                key: {
+                    "profile_status": "metadata_only",
+                    "submitted": False,
+                    "available_metrics": [],
+                }
+                for key in pending
+            }
+        _wide_schema_plan = revise_plan_with_profile_outcomes(
+            _wide_schema_plan,
+            _wide_schema_inventory,
+            outcomes,
+            profiling_budget=_wide_schema_profile_budget,
+        )
+        _plan_record = write_required_artifact(
+            spark,
+            run_id,
+            "wide_schema_selection_plan",
+            _wide_schema_plan,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+            iteration=_wide_schema_plan["revision"],
+            parent_artifact_id=_plan_record.get("artifact_id"),
+        )
+        for asset_id, asset_profile in (profile_result.get("data_profile") or {}).items():
+            current = _config.setdefault("_data_profile", {}).setdefault(
+                asset_id,
+                {"row_count": -1, "columns": {}, "kind": asset_profile.get("kind")},
+            )
+            if asset_profile.get("row_count", -1) >= 0:
+                current["row_count"] = asset_profile["row_count"]
+            current.setdefault("columns", {}).update(asset_profile.get("columns") or {})
+
+    _uc_columns = project_active_inventory(
+        _wide_schema_inventory,
+        _wide_schema_plan,
+    )
+    _config["_uc_columns"] = _uc_columns
+    _config["_wide_schema_plan_hash"] = _wide_schema_plan["plan_hash"]
+    write_artifact(
+        spark,
+        run_id,
+        "space_metadata",
+        build_prompt_matching_context(_config),
+        catalog=catalog,
+        schema=schema,
+        stage_name=_TASK_KEY,
+        source_notebook="run_benchmark_qc_and_repair.py",
+        parent_artifact_id=_plan_record.get("artifact_id"),
+    )
+
+
+_activate_benchmark_columns(_benchmarks)
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Bounded inline repair/prune (≤ benchmark_repair_max_tries)
 # MAGIC
@@ -236,6 +554,7 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
     """Comprehensively review ``bms`` and partition into eligible/excluded."""
     global _quality_review_status, _semantic_review_coverage
 
+    _activate_benchmark_columns(bms)
     review = review_benchmark_quality(
         bms,
         spark,
@@ -245,6 +564,7 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
         warehouse_id=warehouse_id,
         config=_config,
         uc_columns=_uc_columns,
+        deterministic_uc_columns=_deterministic_uc_columns,
         uc_routines=_uc_routines,
     )
     if review.get("review_status") != "complete":
@@ -290,6 +610,7 @@ def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
     Returns ONLY the newly synthesized candidates (not the already-valid set),
     so the bounded loop accumulates valid rows correctly.
     """
+    _activate_benchmark_columns(invalid)
     refilled = generate_benchmarks(
         w, _config, _uc_columns, _uc_tags, _uc_routines, _domain,
         catalog, schema, spark,
@@ -487,6 +808,24 @@ write_artifact(
     catalog=catalog, schema=schema,
     stage_name=_TASK_KEY, source_notebook="run_benchmark_qc_and_repair.py",
 )
+
+from genie_space_optimizer.optimization.wide_schema_prompt import (
+    drain_prompt_telemetry,
+)
+
+_prompt_telemetry = drain_prompt_telemetry()
+if _prompt_telemetry:
+    write_artifact(
+        spark,
+        run_id,
+        "wide_schema_prompt_telemetry",
+        {"stage": _TASK_KEY, "requests": _prompt_telemetry},
+        catalog=catalog,
+        schema=schema,
+        stage_name=_TASK_KEY,
+        source_notebook="run_benchmark_qc_and_repair.py",
+        parent_artifact_id=_plan_record.get("artifact_id"),
+    )
 
 if _repair_failed and _repair_error is not None:
     write_failure_stage_safely(

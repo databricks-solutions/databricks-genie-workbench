@@ -317,6 +317,33 @@ def test_trigger_rejects_malformed_space_id(client) -> None:
     assert resp.status_code == 422
 
 
+def test_trigger_forwards_workload_warehouse_ids(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
+    )
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    fake_result = MagicMock(
+        run_id="run-workloads", job_run_id=1, job_url=None, status="QUEUED",
+    )
+    with patch.object(
+        auto_optimize, "trigger_optimization", return_value=fake_result,
+    ) as trigger_mock:
+        response = client.post(
+            "/api/auto-optimize/trigger",
+            json={
+                "space_id": "space-abc",
+                "workload_warehouse_ids": ["wh-a", "wh-b"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert trigger_mock.call_args.kwargs["workload_warehouse_ids"] == [
+        "wh-a", "wh-b",
+    ]
+
+
 # ── Bug #2 — derived accuracy ───────────────────────────────────────────
 
 

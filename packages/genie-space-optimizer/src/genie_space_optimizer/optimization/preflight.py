@@ -8,6 +8,7 @@ LoggedModel (iteration 0).
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from pathlib import PurePosixPath
@@ -1316,6 +1317,9 @@ def preflight_collect_uc_metadata(
     configured_cols: int = 0,
     *,
     warehouse_id: str = "",
+    wide_schema_inventory: dict[str, Any] | None = None,
+    wide_schema_plan: dict[str, Any] | None = None,
+    wide_schema_profile_budget: dict[str, Any] | None = None,
 ) -> dict:
     """Sub-step 2: Collect UC columns, tags, routines, FK constraints.
 
@@ -1439,6 +1443,23 @@ def preflight_collect_uc_metadata(
     uc_tags_dicts = uc_tags_dicts if isinstance(uc_tags_dicts, list) else []
     uc_routines_dicts = uc_routines_dicts if isinstance(uc_routines_dicts, list) else []
     uc_fk_dicts = uc_fk_dicts if isinstance(uc_fk_dicts, list) else []
+
+    if wide_schema_inventory is not None and wide_schema_plan is not None:
+        from genie_space_optimizer.optimization.wide_schema import (
+            project_active_inventory,
+            validate_selection_plan,
+        )
+
+        validate_selection_plan(
+            wide_schema_plan,
+            inventory_hash=wide_schema_inventory.get("inventory_hash"),
+        )
+        uc_columns_dicts = project_active_inventory(
+            wide_schema_inventory,
+            wide_schema_plan,
+        )
+        config["_wide_schema_inventory_hash"] = wide_schema_inventory["inventory_hash"]
+        config["_wide_schema_plan_hash"] = wide_schema_plan["plan_hash"]
 
     if not uc_tags_dicts:
         print(
@@ -1701,18 +1722,63 @@ def preflight_collect_uc_metadata(
         for n in _eff_mvs
         if isinstance(n, str) and n.strip()
     )
+    _wide_profile_outcomes: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    _wide_profile_telemetry: dict[str, Any] = {}
     if table_names and uc_columns_dicts:
         write_stage(
             spark, run_id, "DATA_PROFILING", "STARTED",
             task_key="preflight", catalog=catalog, schema=schema,
         )
         try:
-            data_profile, reclassified_mvs = _collect_data_profile(
-                spark, table_names, uc_columns_dicts,
-                metric_view_names=_mv_names,
-                metric_view_yaml=config.get("_metric_view_yaml") or {},
-                w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
-            )
+            if wide_schema_inventory is not None and wide_schema_plan is not None:
+                if not (w and warehouse_id):
+                    raise RuntimeError("Wide-schema profiling requires a SQL warehouse")
+                from genie_space_optimizer.optimization.wide_schema_profile import (
+                    run_bounded_profile,
+                )
+
+                _wide_profile_result = run_bounded_profile(
+                    w,
+                    warehouse_id,
+                    wide_schema_inventory,
+                    wide_schema_plan,
+                    run_id=run_id,
+                    budget=wide_schema_profile_budget,
+                )
+                data_profile = _wide_profile_result["data_profile"]
+                existing_profile = config.get("_data_profile") or {}
+                if isinstance(existing_profile, dict):
+                    merged_profile = copy.deepcopy(existing_profile)
+                    for asset_id, asset_profile in data_profile.items():
+                        target = merged_profile.setdefault(
+                            asset_id,
+                            {
+                                "row_count": -1,
+                                "columns": {},
+                                "kind": asset_profile.get("kind"),
+                            },
+                        )
+                        if asset_profile.get("row_count", -1) >= 0:
+                            target["row_count"] = asset_profile["row_count"]
+                        target.setdefault("columns", {}).update(
+                            asset_profile.get("columns") or {},
+                        )
+                    data_profile = merged_profile
+                _wide_profile_outcomes = _wide_profile_result["outcomes"]
+                _wide_profile_telemetry = {
+                    **_wide_profile_result["telemetry"],
+                    "asset_statement_counts": _wide_profile_result.get(
+                        "asset_statement_counts"
+                    ) or {},
+                }
+                reclassified_mvs = []
+            else:
+                data_profile, reclassified_mvs = _collect_data_profile(
+                    spark, table_names, uc_columns_dicts,
+                    metric_view_names=_mv_names,
+                    metric_view_yaml=config.get("_metric_view_yaml") or {},
+                    w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
+                )
             # Tier-A #2: merge runtime-reclassified MVs into the YAML cache
             # (with empty payloads — we have no YAML, just the fact that
             # Spark told us they're MVs) so all four downstream gates
@@ -1903,6 +1969,7 @@ def preflight_collect_uc_metadata(
                 "metric_views_detected_via_catalog": len(_catalog_mvs),
                 "metric_views_reclassified_at_runtime": len(reclassified_mvs),
                 "metric_view_profile_outcomes": mv_outcomes,
+                "wide_schema_profile": _wide_profile_telemetry,
             }
             # Mirror the same fields onto the persisted run-status
             # snapshot so resume / re-run paths see them
@@ -1919,6 +1986,18 @@ def preflight_collect_uc_metadata(
             )
         except Exception:
             logger.warning("Data profiling failed — continuing without profile", exc_info=True)
+            if wide_schema_plan is not None:
+                _wide_profile_outcomes = {
+                    tuple(row["column_key"]): {
+                        "profile_status": "metadata_only",
+                        "submitted": False,
+                        "available_metrics": [],
+                    }
+                    for asset in wide_schema_plan.get("assets") or []
+                    for row in asset.get("columns") or []
+                    if row.get("active") and row.get("profile_status") == "pending"
+                }
+                _wide_profile_telemetry = {"profiling_unavailable": 1}
             config["_data_profile"] = {}
             _ps = config.get("_parsed_space")
             if isinstance(_ps, dict):
@@ -1962,12 +2041,16 @@ def preflight_collect_uc_metadata(
     else:
         config["_join_overlaps"] = []
 
-    return {
+    result = {
         "uc_columns": uc_columns_dicts,
         "uc_tags": uc_tags_dicts,
         "uc_routines": uc_routines_dicts,
         "uc_fk": uc_fk_dicts,
     }
+    if wide_schema_inventory is not None and wide_schema_plan is not None:
+        result["wide_schema_profile_outcomes"] = _wide_profile_outcomes
+        result["wide_schema_profile_telemetry"] = _wide_profile_telemetry
+    return result
 
 
 def preflight_generate_benchmarks(

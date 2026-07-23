@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from databricks.sdk.service.sql import Disposition, Format
+from genie_space_optimizer.common.query_tags import gso_query_tags
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -25,6 +26,7 @@ def _sql_rows(
         disposition=Disposition.INLINE,
         format=Format.JSON_ARRAY,
         wait_timeout="30s",
+        query_tags=gso_query_tags(purpose="optimization"),
     )
     rows = result.result.data_array if result.result and result.result.data_array else []
     columns = (
@@ -53,9 +55,12 @@ def fetch_uc_metadata_obo(
     safe_schema = schema_name.replace("'", "''")
     queries = {
         "uc_columns": (
-            "SELECT table_name, column_name, data_type, comment "
-            f"FROM {catalog}.information_schema.columns "
-            f"WHERE table_schema = '{safe_schema}'"
+            f"SELECT '{catalog}' AS catalog_name, '{safe_schema}' AS schema_name, "
+            "c.table_name, c.column_name, c.data_type, c.comment, c.ordinal_position, t.table_type "
+            f"FROM {catalog}.information_schema.columns c "
+            f"LEFT JOIN {catalog}.information_schema.tables t "
+            f"ON c.table_catalog = t.table_catalog AND c.table_schema = t.table_schema AND c.table_name = t.table_name "
+            f"WHERE c.table_schema = '{safe_schema}'"
         ),
         "uc_tags": (
             f"SELECT * FROM {catalog}.information_schema.table_tags "
@@ -91,9 +96,12 @@ def _fetch_for_tables(
             f"'{table.replace(chr(39), chr(39) + chr(39))}'" for table in tables
         )
         column_queries.append(
-            "SELECT table_name, column_name, data_type, comment "
-            f"FROM {catalog}.information_schema.columns "
-            f"WHERE table_schema = '{schema}' AND table_name IN ({safe_tables})"
+            f"SELECT '{catalog}' AS catalog_name, '{schema}' AS schema_name, "
+            "c.table_name, c.column_name, c.data_type, c.comment, c.ordinal_position, t.table_type "
+            f"FROM {catalog}.information_schema.columns c "
+            f"LEFT JOIN {catalog}.information_schema.tables t "
+            f"ON c.table_catalog = t.table_catalog AND c.table_schema = t.table_schema AND c.table_name = t.table_name "
+            f"WHERE c.table_schema = '{schema}' AND c.table_name IN ({safe_tables})"
         )
         tag_queries.append(
             f"SELECT * FROM {catalog}.information_schema.table_tags "

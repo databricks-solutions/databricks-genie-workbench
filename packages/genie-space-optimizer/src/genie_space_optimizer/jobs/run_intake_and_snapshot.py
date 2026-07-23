@@ -46,10 +46,22 @@ from genie_space_optimizer.optimization.preflight import (
 )
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
+    load_latest_artifact_record,
     update_run_status,
     write_artifact,
+    write_required_artifact,
     write_failure_stage_safely,
     write_stage,
+)
+from genie_space_optimizer.optimization.wide_schema import (
+    build_local_evidence,
+    collect_inventory,
+    merge_query_history_evidence,
+    project_full_inventory,
+    validate_inventory,
+)
+from genie_space_optimizer.optimization.wide_schema_history import (
+    collect_query_history_evidence,
 )
 
 dbutils = cast(Any, globals().get("dbutils"))
@@ -76,6 +88,7 @@ dbutils.widgets.text("benchmark_repair_max_tries", "3")
 dbutils.widgets.text("triggered_by", "")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
+dbutils.widgets.text("workload_warehouse_ids", "[]")
 
 run_id = dbutils.widgets.get("run_id").strip()
 space_id = dbutils.widgets.get("space_id").strip()
@@ -89,11 +102,20 @@ target_accuracy = float(dbutils.widgets.get("target_accuracy") or "0.90")
 benchmark_repair_max_tries = int(dbutils.widgets.get("benchmark_repair_max_tries") or "3")
 triggered_by = dbutils.widgets.get("triggered_by").strip()
 llm_model = dbutils.widgets.get("llm_model").strip()
+try:
+    workload_warehouse_ids = [
+        str(value).strip()
+        for value in json.loads(dbutils.widgets.get("workload_warehouse_ids") or "[]")
+        if str(value).strip()
+    ]
+except (TypeError, ValueError):
+    workload_warehouse_ids = []
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
 
 if not run_id:
     raise RuntimeError("intake_and_snapshot: run_id parameter is required")
+os.environ["GSO_RUN_ID"] = run_id
 
 _banner("Resolved Job Parameters")
 _log(
@@ -185,7 +207,95 @@ except Exception as exc:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 00b — Write the run_manifest artifact (arch §7.3)
+# MAGIC ## Step 00b — Complete inventory and optional usage evidence
+
+# COMMAND ----------
+
+try:
+    _existing_inventory_record = load_latest_artifact_record(
+        spark, run_id, catalog, schema, "wide_schema_inventory",
+    )
+    if _existing_inventory_record is not None:
+        _inventory = _existing_inventory_record["payload"]
+        validate_inventory(_inventory)
+        _inventory_uc_columns = project_full_inventory(_inventory)
+        _inventory_foreign_keys = []
+    else:
+        _inventory, _inventory_uc_columns, _inventory_foreign_keys = collect_inventory(
+            w,
+            spark,
+            _config,
+            _genie_table_refs,
+            prefetched=(
+                _snapshot.get("_prefetched_uc_metadata", {})
+                if isinstance(_snapshot, dict)
+                else {}
+            ),
+            warehouse_id=warehouse_id,
+        )
+        write_required_artifact(
+            spark,
+            run_id,
+            "wide_schema_inventory",
+            _inventory,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_intake_and_snapshot.py",
+        )
+
+    _local_evidence = build_local_evidence(_config, _inventory)
+    try:
+        from genie_space_optimizer.common.sp_permissions import get_sp_principal_aliases
+
+        _sp_identities = get_sp_principal_aliases(w)
+    except Exception:
+        _sp_identities = set()
+    _history_evidence = collect_query_history_evidence(
+        w,
+        _inventory,
+        profiling_warehouse_id=warehouse_id,
+        workload_warehouse_ids=workload_warehouse_ids,
+        run_id=run_id,
+        service_principal_identities=_sp_identities,
+    )
+    _wide_schema_evidence = merge_query_history_evidence(
+        _local_evidence,
+        _history_evidence,
+    )
+    write_artifact(
+        spark,
+        run_id,
+        "wide_schema_evidence",
+        _wide_schema_evidence,
+        catalog=catalog,
+        schema=schema,
+        stage_name=_TASK_KEY,
+        source_notebook="run_intake_and_snapshot.py",
+    )
+    _log(
+        "Wide-schema inventory captured",
+        assets=len(_inventory.get("assets") or []),
+        columns=sum(len(asset.get("columns") or []) for asset in _inventory.get("assets") or []),
+        history_source=_wide_schema_evidence.get("source_mode"),
+    )
+except Exception as exc:
+    _banner("Wide-Schema Inventory FAILED")
+    write_failure_stage_safely(
+        spark,
+        run_id,
+        "INTAKE_AND_SNAPSHOT",
+        task_key=_TASK_KEY,
+        catalog=catalog,
+        schema=schema,
+        error_message=str(exc),
+    )
+    raise
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 00c — Write the run_manifest artifact (arch §7.3)
 
 # COMMAND ----------
 
@@ -208,6 +318,7 @@ write_artifact(
         "baseline_config_hash": _config_hash,
         "triggered_by": triggered_by,
         "warehouse_id": warehouse_id,
+        "workload_warehouse_ids": workload_warehouse_ids,
     },
     catalog=catalog, schema=schema,
     stage_name=_TASK_KEY, source_notebook="run_intake_and_snapshot.py",

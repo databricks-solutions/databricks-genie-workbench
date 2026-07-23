@@ -98,6 +98,46 @@ def test_relevant_column_after_old_position_cap_is_included() -> None:
     assert "late_revenue_flag" in included_columns
 
 
+def test_optimizer_uses_only_active_wide_schema_columns() -> None:
+    original_columns = [f"col_{index}" for index in range(90)]
+    config = {
+        "_parsed_space": {
+            "data_sources": {
+                "tables": [_table("wide_fact", columns=original_columns)],
+            },
+            "instructions": {},
+        },
+        "_uc_columns": [
+            {
+                "catalog_name": "cat",
+                "schema_name": "sch",
+                "table_name": "wide_fact",
+                "column_name": f"col_{index}",
+                "data_type": "STRING",
+                "comment": f"UC comment {index}",
+                "stable_rank": index + 1,
+            }
+            for index in range(50)
+        ],
+    }
+
+    context, _stats, _text = _optimizer_context_pack(
+        config,
+        _eval("SELECT col_89 FROM `cat`.`sch`.`wide_fact`"),
+    )
+
+    columns = context["space_context"]["assets"][0]["columns"]
+    assert len(columns) == 50
+    assert {column["column_name"] for column in columns} == {
+        f"col_{index}" for index in range(50)
+    }
+    assert "col_89" not in {column["column_name"] for column in columns}
+    col_0 = next(column for column in columns if column["column_name"] == "col_0")
+    assert col_0["description"] == "col_0 description"
+    assert col_0["comment"] == "UC comment 0"
+    assert col_0["stable_rank"] == 1
+
+
 def test_relevant_join_spec_after_old_position_cap_is_included() -> None:
     join_specs = []
     for i in range(45):

@@ -104,6 +104,7 @@ def test_new_job_parameters_present_with_defaults():
     assert params.get("max_attempts") == "3"
     assert params.get("target_accuracy") == "0.90"
     assert params.get("benchmark_repair_max_tries") == "3"
+    assert params.get("workload_warehouse_ids") == "[]"
 
 
 def test_legacy_deploy_target_param_removed():
@@ -133,6 +134,13 @@ def test_repair_task_receives_benchmark_repair_max_tries():
     by_key = {t["task_key"]: t for t in job["tasks"]}
     bp = by_key["benchmark_qc_and_repair"]["notebook_task"]["base_parameters"]
     assert "benchmark_repair_max_tries" in bp
+
+
+def test_intake_receives_optional_workload_warehouses():
+    job = _load_job()
+    by_key = {t["task_key"]: t for t in job["tasks"]}
+    bp = by_key["intake_and_snapshot"]["notebook_task"]["base_parameters"]
+    assert bp["workload_warehouse_ids"] == "{{job.parameters.workload_warehouse_ids}}"
 
 
 def test_repair_task_uses_canonical_quality_review_and_persists_findings():
@@ -178,11 +186,13 @@ def test_submit_optimization_threads_loop_knobs_into_job_parameters():
         schema="sch",
         target_accuracy="0.85",
         max_attempts="5",
+        workload_warehouse_ids='["wh-a","wh-b"]',
     )
     assert resolved_job_id == 99
     params = ws.jobs.run_now.call_args.kwargs["job_parameters"]
     assert params["target_accuracy"] == "0.85"
     assert params["max_attempts"] == "5"
+    assert params["workload_warehouse_ids"] == '["wh-a","wh-b"]'
 
 
 def test_submit_optimization_loop_knobs_default_to_job_defaults():

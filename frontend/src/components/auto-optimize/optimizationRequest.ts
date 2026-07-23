@@ -32,6 +32,7 @@ export function buildOptimizationTriggerRequest(args: {
   selectedModel: string | null
   targetAccuracy: number
   maxAttempts: number
+  workloadWarehouseIds?: string[]
 }): GSOTriggerRequest {
   return {
     space_id: args.spaceId,
@@ -42,5 +43,6 @@ export function buildOptimizationTriggerRequest(args: {
     llm_model: args.selectedModel,
     target_accuracy: args.targetAccuracy,
     max_attempts: args.maxAttempts,
+    workload_warehouse_ids: args.workloadWarehouseIds ?? [],
   }
 }

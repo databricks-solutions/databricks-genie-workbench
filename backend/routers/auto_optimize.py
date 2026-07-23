@@ -7,12 +7,17 @@ import json
 import logging
 import os
 import re
-from typing import Any, Callable, TypeVar
+from typing import Annotated, Any, Callable, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from backend.models import PermissionCheckResponse, SchemaAccessStatus
+from backend.models import (
+    PermissionCheckResponse,
+    QueryHistoryWarehouseStatus,
+    QueryUsageSignal,
+    SchemaAccessStatus,
+)
 from backend.routers._validators import RunId, SpaceId
 
 from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
@@ -149,6 +154,9 @@ class TriggerRequest(BaseModel):
     # native patch/eval loop. The loop stops at whichever comes first.
     target_accuracy: float | None = Field(None, ge=0.0, le=1.0)
     max_attempts: int | None = Field(None, ge=1, le=20)
+    workload_warehouse_ids: list[
+        Annotated[str, Field(pattern=r"^[0-9a-zA-Z_-]{1,128}$")]
+    ] = Field(default_factory=list, max_length=20)
 
 
 # PermissionCheckResponse + SchemaAccessStatus now live in `backend.models`
@@ -1274,6 +1282,81 @@ async def check_permissions(space_id: SpaceId):
     all_read = all(s.read_granted for s in schemas) if schemas else True
     can_start = sp_has_manage and all_read
 
+    system_history_available = False
+    try:
+        from databricks.sdk.service.sql import Disposition, Format, StatementState
+        from genie_space_optimizer.common.query_tags import gso_query_tags
+
+        gso_config = _build_gso_config()
+        if gso_config.warehouse_id:
+            probe = sp_ws.statement_execution.execute_statement(
+                warehouse_id=gso_config.warehouse_id,
+                statement="SELECT 1 FROM system.query.history LIMIT 1",
+                wait_timeout="10s",
+                disposition=Disposition.INLINE,
+                format=Format.JSON_ARRAY,
+                query_tags=gso_query_tags(purpose="history_collection"),
+            )
+            system_history_available = bool(
+                probe.status and probe.status.state == StatementState.SUCCEEDED
+            )
+    except Exception:
+        logger.info("System query history is not available to the GSO SP")
+
+    workload_warehouses: list[QueryHistoryWarehouseStatus] = []
+    try:
+        sp_visible_warehouse_ids = {
+            str(getattr(warehouse, "id", "") or "").strip()
+            for warehouse in sp_ws.warehouses.list()
+            if str(getattr(warehouse, "id", "") or "").strip()
+        }
+        for warehouse in get_workspace_client().warehouses.list():
+            warehouse_id = str(getattr(warehouse, "id", "") or "").strip()
+            if not warehouse_id:
+                continue
+            workload_warehouses.append(QueryHistoryWarehouseStatus(
+                warehouse_id=warehouse_id,
+                name=str(getattr(warehouse, "name", "") or warehouse_id),
+                accessible=warehouse_id in sp_visible_warehouse_ids,
+            ))
+    except Exception:
+        logger.info("Warehouse query-history discovery is unavailable", exc_info=True)
+
+    accessible_warehouses = [
+        warehouse for warehouse in workload_warehouses if warehouse.accessible
+    ]
+    inaccessible_warehouses = [
+        warehouse.name for warehouse in workload_warehouses
+        if not warehouse.accessible
+    ]
+    query_signal = QueryUsageSignal(
+        status=(
+            "system_table_available"
+            if system_history_available
+            else "partially_available"
+            if accessible_warehouses and inaccessible_warehouses
+            else "warehouse_api_available"
+            if accessible_warehouses
+            else "unavailable"
+        ),
+        system_table_available=system_history_available,
+        warehouse_api_available=bool(accessible_warehouses),
+        warehouses=workload_warehouses,
+        inaccessible_warehouses=inaccessible_warehouses,
+        system_grant_sql=(
+            None
+            if system_history_available
+            else (
+                "GRANT USE CATALOG ON CATALOG system TO "
+                f"`{sp_application_id or '<gso-service-principal>'}`;\n"
+                "GRANT USE SCHEMA ON SCHEMA system.query TO "
+                f"`{sp_application_id or '<gso-service-principal>'}`;\n"
+                "GRANT SELECT ON TABLE system.query.history TO "
+                f"`{sp_application_id or '<gso-service-principal>'}`;"
+            )
+        ),
+    )
+
     return PermissionCheckResponse(
         sp_display_name=sp_display_name,
         sp_application_id=sp_application_id,
@@ -1281,6 +1364,7 @@ async def check_permissions(space_id: SpaceId):
         schemas=schemas,
         can_start=can_start,
         errors=errors,
+        query_usage_signal=query_signal,
     )
 
 
@@ -1313,6 +1397,7 @@ async def trigger(body: TriggerRequest, request: Request):
             levers=body.levers,
             target_accuracy=body.target_accuracy,
             max_attempts=body.max_attempts,
+            workload_warehouse_ids=body.workload_warehouse_ids,
         )
         # Echo the resolved knobs (request value or the job default) so the UI
         # can confirm what the run will use without re-reading the job config.

@@ -218,6 +218,34 @@ def test_prompt_matching_context_drops_profile_values() -> None:
     assert "East" not in str(context)
 
 
+def test_prompt_matching_context_drops_inactive_profile_columns() -> None:
+    context = sqe.build_prompt_matching_context({
+        "_uc_columns": [{
+            "catalog_name": "Main",
+            "schema_name": "Sales",
+            "table_name": "Orders",
+            "column_name": "Region",
+            "data_type": "STRING",
+        }],
+        "_data_profile": {
+            "`main`.`sales`.`orders`": {
+                "row_count": 100,
+                "columns": {
+                    "region": {"cardinality": 4},
+                    "amount": {"cardinality": 87},
+                },
+            },
+        },
+    })
+
+    assert context["data_profile"] == {
+        "`main`.`sales`.`orders`": {
+            "row_count": 100,
+            "columns": {"region": {"cardinality": 4}},
+        },
+    }
+
+
 def test_active_enrichment_applies_and_audits_prompt_matching(monkeypatch) -> None:
     stages, patches = _stub_state(monkeypatch)
     raw = _raw_space(

@@ -1913,6 +1913,7 @@ def _execute_sql_via_warehouse(
     Raises ``RuntimeError`` on failure with the warehouse error message.
     """
     from databricks.sdk.service.sql import Disposition, Format, StatementState
+    from genie_space_optimizer.common.query_tags import gso_query_tags
 
     resp = w.statement_execution.execute_statement(
         warehouse_id=warehouse_id,
@@ -1922,6 +1923,7 @@ def _execute_sql_via_warehouse(
         wait_timeout=wait_timeout,
         disposition=Disposition.INLINE,
         format=Format.JSON_ARRAY,
+        query_tags=gso_query_tags(purpose="benchmark_validation"),
     )
     if resp.status and resp.status.state == StatementState.SUCCEEDED:
         manifest_schema = resp.manifest.schema if resp.manifest else None

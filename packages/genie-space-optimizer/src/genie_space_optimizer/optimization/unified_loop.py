@@ -50,6 +50,7 @@ from genie_space_optimizer.optimization.leakage import (
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.space_quality_enrichment import (
     attach_top_level_description,
+    build_prompt_matching_context,
     run_space_quality_enrichment,
     scan_input_for_iq,
 )
@@ -62,6 +63,20 @@ from genie_space_optimizer.optimization.state import (
     update_run_status,
     write_iteration,
     write_patch,
+    write_artifact,
+    write_required_artifact,
+)
+from genie_space_optimizer.optimization.wide_schema import (
+    MAX_ACTIVE_COLUMNS_PER_ASSET,
+    _identifier_parts,
+    active_column_keys,
+    normalize_component,
+    project_active_inventory,
+    revise_plan_for_column,
+    revise_plan_with_profile_outcomes,
+    sql_column_evidence,
+    validate_inventory,
+    validate_selection_plan,
 )
 
 logger = logging.getLogger(__name__)
@@ -291,6 +306,111 @@ def _column_name(column: dict[str, Any]) -> str:
     return str(column.get("column_name") or column.get("name") or "").strip()
 
 
+def _stable_rank(value: Any, fallback: int) -> tuple[int, int]:
+    try:
+        return int(value), fallback
+    except (TypeError, ValueError):
+        return 999999, fallback
+
+
+def _project_prompt_columns(
+    config: dict[str, Any],
+    data_sources: dict[str, Any],
+) -> dict[str, Any]:
+    """Replace serialized columns with the active UC prompt projection.
+
+    Wide-schema selection is persisted in ``_uc_columns`` while the serialized
+    Space necessarily retains every configured column. Prompt construction must
+    use the former as an allowlist; otherwise failure text can pull an evicted
+    column from the latter back into the LLM request.
+    """
+    raw_active = config.get("_uc_columns")
+    if not isinstance(raw_active, list):
+        return data_sources
+
+    active_by_asset: dict[tuple[str, str, str], list[tuple[int, dict[str, Any]]]] = {}
+    for index, raw in enumerate(raw_active):
+        if not isinstance(raw, dict):
+            continue
+        asset_key = (
+            normalize_component(raw.get("catalog_name")),
+            normalize_component(raw.get("schema_name")),
+            normalize_component(raw.get("table_name") or raw.get("table")),
+        )
+        column_name = normalize_component(raw.get("column_name") or raw.get("column"))
+        if not all(asset_key) or not column_name:
+            continue
+        active_by_asset.setdefault(asset_key, []).append((index, raw))
+
+    projected = copy.deepcopy(data_sources)
+    for key in ("tables", "metric_views"):
+        assets = projected.get(key)
+        if not isinstance(assets, list):
+            continue
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            asset_key = _identifier_parts(_table_identifier(asset))
+            original_columns = [
+                column
+                for column in (asset.get("column_configs") or asset.get("columns") or [])
+                if isinstance(column, dict)
+            ]
+            original_by_name = {
+                normalize_component(_column_name(column)): column
+                for column in original_columns
+                if _column_name(column)
+            }
+            active_rows = active_by_asset.get(asset_key, []) if len(asset_key) == 3 else []
+            active_rows.sort(
+                key=lambda item: (
+                    _stable_rank(item[1].get("stable_rank"), item[0]),
+                    normalize_component(
+                        item[1].get("column_name") or item[1].get("column")
+                    ),
+                )
+            )
+
+            selected: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for _index, active in active_rows:
+                name = normalize_component(
+                    active.get("column_name") or active.get("column")
+                )
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                original = original_by_name.get(name) or {}
+                merged = copy.deepcopy(original)
+                merged["column_name"] = str(
+                    active.get("column_name") or active.get("column") or _column_name(original)
+                ).strip()
+                merged["data_type"] = (
+                    active.get("data_type")
+                    or active.get("type_text")
+                    or original.get("data_type")
+                    or original.get("type")
+                )
+                comment = active.get("comment") or active.get("description")
+                if comment:
+                    merged["uc_comment"] = comment
+                    if not original.get("description"):
+                        merged["description"] = comment
+                if active.get("stable_rank") is not None:
+                    merged["stable_rank"] = active["stable_rank"]
+                if active.get("reason_codes"):
+                    merged["reason_codes"] = copy.deepcopy(active["reason_codes"])
+                if active.get("profile_status") is not None:
+                    merged["profile_status"] = active["profile_status"]
+                selected.append(merged)
+                if len(selected) >= MAX_ACTIVE_COLUMNS_PER_ASSET:
+                    break
+
+            asset["column_configs"] = selected
+            asset.pop("columns", None)
+    return projected
+
+
 def _identifier_aliases(identifier: str) -> set[str]:
     ident = identifier.strip().lower()
     if not ident:
@@ -322,7 +442,7 @@ def _columns_for_prompt(
     table: dict[str, Any],
     evidence_text: str,
     *,
-    max_columns: int = 90,
+    max_columns: int = MAX_ACTIVE_COLUMNS_PER_ASSET,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     raw_columns = [
         c for c in (table.get("column_configs") or table.get("columns") or [])
@@ -335,21 +455,26 @@ def _columns_for_prompt(
         bucket = relevant if name and _text_mentions_any(evidence_text, {name.lower()}) else other
         bucket.append(col)
 
-    selected = relevant + other[: max(0, max_columns - len(relevant))]
+    selected = relevant[:max_columns]
+    selected.extend(other[: max(0, max_columns - len(selected))])
     omitted = max(0, len(raw_columns) - len(selected))
     return [
         {
             "column_name": _column_name(col),
             "description": _short_text(col.get("description"), limit=500),
+            "comment": _short_text(col.get("uc_comment"), limit=500),
             "synonyms": col.get("synonyms") or [],
             "data_type": col.get("data_type") or col.get("type"),
+            "stable_rank": col.get("stable_rank"),
+            "reason_codes": col.get("reason_codes") or [],
+            "profile_status": col.get("profile_status"),
             "referenced_by_failures": col in relevant,
         }
         for col in selected
     ], {
         "total": len(raw_columns),
         "included": len(selected),
-        "referenced_included": len(relevant),
+        "referenced_included": sum(column in relevant for column in selected),
         "omitted": omitted,
         "omitted_names": [_column_name(c) for c in raw_columns if c not in selected][:25],
     }
@@ -484,7 +609,12 @@ def _optimizer_context_pack(
     parsed = config.get("_parsed_space") if isinstance(config.get("_parsed_space"), dict) else config
     if not isinstance(parsed, dict):
         parsed = {}
-    data_sources = parsed.get("data_sources") if isinstance(parsed.get("data_sources"), dict) else {}
+    raw_data_sources = (
+        parsed.get("data_sources")
+        if isinstance(parsed.get("data_sources"), dict)
+        else {}
+    )
+    data_sources = _project_prompt_columns(config, raw_data_sources)
     instructions = parsed.get("instructions") if isinstance(parsed.get("instructions"), dict) else {}
     failures = _failure_rows(eval_result, limit=30)
     evidence_text = _failure_evidence_text(failures)
@@ -1851,6 +1981,10 @@ def run_unified_optimization_loop(
     target_accuracy: float,
     apply_mode: str = "genie_config",
     prompt_matching_context: dict[str, Any] | None = None,
+    wide_schema_inventory: dict[str, Any] | None = None,
+    wide_schema_plan: dict[str, Any] | None = None,
+    wide_schema_parent_artifact_id: str | None = None,
+    wide_schema_profile_budget: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run baseline eval plus bounded LLM patch attempts."""
     target_accuracy = target_accuracy_percent(float(target_accuracy))
@@ -1858,6 +1992,210 @@ def run_unified_optimization_loop(
     if not allowed_levers:
         allowed_levers = [1, 2, 3, 4, 5, 6]
     max_attempts = max(0, int(max_attempts))
+
+    if wide_schema_inventory is not None:
+        validate_inventory(wide_schema_inventory)
+    if wide_schema_plan is not None:
+        if wide_schema_inventory is None:
+            raise ValueError("wide_schema_plan requires wide_schema_inventory")
+        validate_selection_plan(
+            wide_schema_plan,
+            inventory_hash=wide_schema_inventory["inventory_hash"],
+        )
+        if wide_schema_profile_budget is None:
+            from genie_space_optimizer.optimization.wide_schema_profile import (
+                build_profiling_budget,
+            )
+
+            wide_schema_profile_budget = build_profiling_budget([
+                wide_schema_plan.get("profiling_budget") or {},
+            ])
+
+    def _adapt_wide_schema_for_failures(
+        eval_result: dict[str, Any],
+        config: dict[str, Any],
+        plan: dict[str, Any] | None,
+        parent_artifact_id: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+        """Activate omitted columns referenced by the current failed operation.
+
+        Activation and profile completion are persisted as separate immutable
+        revisions. Raw SQL is used only for local AST resolution and is never
+        written to the plan or prompt-matching artifact.
+        """
+        if wide_schema_inventory is None or plan is None:
+            return config, plan, parent_artifact_id
+
+        failures = _failure_rows(eval_result)
+        failure_ids: set[str] = set()
+        sql_texts: list[str] = []
+        for failure in failures:
+            for field in ("question_id", "id", "question"):
+                value = str(failure.get(field) or "").strip().casefold()
+                if value:
+                    failure_ids.add(value)
+            for field in ("expected_sql", "ground_truth_sql", "sql"):
+                value = failure.get(field)
+                if isinstance(value, list):
+                    value = " ".join(str(part) for part in value)
+                if isinstance(value, str) and value.strip():
+                    sql_texts.append(value)
+        for benchmark in benchmarks:
+            identities = {
+                str(benchmark.get(field) or "").strip().casefold()
+                for field in ("question_id", "id", "question")
+            } - {""}
+            if failure_ids and identities & failure_ids:
+                value = benchmark.get("expected_sql")
+                if isinstance(value, list):
+                    value = " ".join(str(part) for part in value)
+                if isinstance(value, str) and value.strip():
+                    sql_texts.append(value)
+
+        referenced: set[tuple[str, str, str, str]] = set()
+        for sql in sql_texts:
+            referenced.update(
+                tuple(item["column_key"])
+                for item in sql_column_evidence(sql, wide_schema_inventory)
+            )
+        omitted = sorted(referenced - active_column_keys(plan))
+        if not omitted:
+            return config, plan, parent_artifact_id
+
+        for column_key in omitted:
+            try:
+                plan = revise_plan_for_column(
+                    plan,
+                    wide_schema_inventory,
+                    column_key,
+                    reason="REPAIR_FAILURE",
+                    protected_column_keys=referenced,
+                )
+            except ValueError:
+                logger.warning(
+                    "Could not activate wide-schema failure target %s",
+                    column_key,
+                    exc_info=True,
+                )
+                continue
+            record = write_required_artifact(
+                spark,
+                run_id,
+                "wide_schema_selection_plan",
+                plan,
+                catalog=catalog,
+                schema=schema,
+                stage_name="optimize",
+                source_notebook="run_optimize.py",
+                iteration=plan["revision"],
+                parent_artifact_id=parent_artifact_id,
+            )
+            parent_artifact_id = str(record.get("artifact_id") or "") or None
+            os.environ["GSO_WIDE_SCHEMA_PLAN_HASH"] = plan["plan_hash"]
+
+        pending = {
+            tuple(row["column_key"])
+            for asset in plan.get("assets") or []
+            for row in asset.get("columns") or []
+            if row.get("active") and row.get("profile_status") == "pending"
+        }
+        if pending:
+            warehouse_id = os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "").strip()
+            profile_result: dict[str, Any] = {}
+            if warehouse_id:
+                from genie_space_optimizer.optimization.wide_schema_profile import (
+                    run_bounded_profile,
+                )
+
+                profile_result = run_bounded_profile(
+                    w,
+                    warehouse_id,
+                    wide_schema_inventory,
+                    plan,
+                    run_id=run_id,
+                    budget=wide_schema_profile_budget,
+                )
+                outcomes = profile_result.get("outcomes") or {}
+                write_artifact(
+                    spark,
+                    run_id,
+                    "wide_schema_profile_telemetry",
+                    {
+                        "stage": "optimize_adaptive",
+                        **(profile_result.get("telemetry") or {}),
+                        "asset_statement_counts": profile_result.get(
+                            "asset_statement_counts"
+                        ) or {},
+                    },
+                    catalog=catalog,
+                    schema=schema,
+                    stage_name="optimize",
+                    source_notebook="run_optimize.py",
+                    parent_artifact_id=parent_artifact_id,
+                )
+            else:
+                outcomes = {
+                    key: {
+                        "profile_status": "metadata_only",
+                        "submitted": False,
+                        "available_metrics": [],
+                    }
+                    for key in pending
+                }
+            plan = revise_plan_with_profile_outcomes(
+                plan,
+                wide_schema_inventory,
+                outcomes,
+                profiling_budget=wide_schema_profile_budget,
+            )
+            record = write_required_artifact(
+                spark,
+                run_id,
+                "wide_schema_selection_plan",
+                plan,
+                catalog=catalog,
+                schema=schema,
+                stage_name="optimize",
+                source_notebook="run_optimize.py",
+                iteration=plan["revision"],
+                parent_artifact_id=parent_artifact_id,
+            )
+            parent_artifact_id = str(record.get("artifact_id") or "") or None
+            os.environ["GSO_WIDE_SCHEMA_PLAN_HASH"] = plan["plan_hash"]
+            new_profile = profile_result.get("data_profile") or {}
+            existing_profile = copy.deepcopy(config.get("_data_profile") or {})
+            for asset_id, asset_profile in new_profile.items():
+                target = existing_profile.setdefault(
+                    asset_id,
+                    {"row_count": -1, "columns": {}, "kind": asset_profile.get("kind")},
+                )
+                if asset_profile.get("row_count", -1) >= 0:
+                    target["row_count"] = asset_profile["row_count"]
+                target.setdefault("columns", {}).update(asset_profile.get("columns") or {})
+            config["_data_profile"] = existing_profile
+
+        config["_uc_columns"] = project_active_inventory(
+            wide_schema_inventory,
+            plan,
+        )
+        config["_wide_schema_inventory_hash"] = wide_schema_inventory["inventory_hash"]
+        config["_wide_schema_plan_hash"] = plan["plan_hash"]
+        config["_wide_schema_inventory_column_count"] = sum(
+            len(asset.get("columns") or [])
+            for asset in wide_schema_inventory.get("assets") or []
+        )
+        write_artifact(
+            spark,
+            run_id,
+            "space_metadata",
+            build_prompt_matching_context(config),
+            catalog=catalog,
+            schema=schema,
+            stage_name="optimize",
+            source_notebook="run_optimize.py",
+            parent_artifact_id=parent_artifact_id,
+        )
+        return config, plan, parent_artifact_id
 
     raw_config = fetch_space_config(w, space_id)
     try:
@@ -1894,6 +2232,15 @@ def run_unified_optimization_loop(
     accepted = 0
     rolled_back = 0
     reflections: list[dict[str, Any]] = []
+
+    current_config, wide_schema_plan, wide_schema_parent_artifact_id = (
+        _adapt_wide_schema_for_failures(
+            baseline_eval,
+            current_config,
+            wide_schema_plan,
+            wide_schema_parent_artifact_id,
+        )
+    )
 
     write_iteration(
         spark,
@@ -2225,6 +2572,19 @@ def run_unified_optimization_loop(
             )
 
         candidate_config = copy.deepcopy(apply_log.get("post_snapshot") or current_config)
+        for runtime_key in (
+            "_uc_columns",
+            "_data_profile",
+            "_rls_audit",
+            "_asset_semantics",
+            "_wide_schema_inventory_hash",
+            "_wide_schema_plan_hash",
+            "_wide_schema_inventory_column_count",
+        ):
+            if runtime_key in current_config:
+                candidate_config[runtime_key] = copy.deepcopy(
+                    current_config[runtime_key]
+                )
         candidate_eval = _native_eval(
             w,
             space_id=space_id,
@@ -2291,6 +2651,14 @@ def run_unified_optimization_loop(
             best_iteration = iteration
             best_eval = candidate_eval
             current_config = candidate_config
+            current_config, wide_schema_plan, wide_schema_parent_artifact_id = (
+                _adapt_wide_schema_for_failures(
+                    best_eval,
+                    current_config,
+                    wide_schema_plan,
+                    wide_schema_parent_artifact_id,
+                )
+            )
             accepted += 1
             levers_accepted.append(int(lever))
             decision_reason = (
