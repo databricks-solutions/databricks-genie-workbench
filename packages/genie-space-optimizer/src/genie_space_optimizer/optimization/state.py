@@ -1311,7 +1311,14 @@ def write_artifact(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        insert_row(spark, catalog, schema, TABLE_ARTIFACTS, payload_row)
+        insert_row(
+            spark,
+            catalog,
+            schema,
+            TABLE_ARTIFACTS,
+            payload_row,
+            base64_string_columns={"artifact_json"},
+        )
         logger.info(
             "Wrote %s artifact %s for run %s", artifact_kind, artifact_id, run_id,
         )
