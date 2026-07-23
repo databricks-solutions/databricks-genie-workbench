@@ -156,6 +156,21 @@ def test_repair_task_uses_canonical_quality_review_and_persists_findings():
     assert '"semantic_review_coverage"' in src
 
 
+def test_repair_task_enforces_corpus_floor_before_publish_and_optimize():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_benchmark_qc_and_repair.py"
+    ).read_text()
+    floor_call = "    require_minimum_valid_benchmarks(\n        _benchmarks,"
+    push_call = "        _push = preflight_push_benchmarks_to_space("
+    assert floor_call in src
+    assert push_call in src
+    assert src.index(floor_call) < src.index(push_call)
+
+
 def test_optimize_and_publish_receive_loop_params():
     job = _load_job()
     by_key = {t["task_key"]: t for t in job["tasks"]}

@@ -39,6 +39,11 @@ that is weak but still has one defensible answer remains eligible with a
 warning. A semantic-review outage is recorded as `review_not_run`; it is never
 silently reported as a successful review.
 
+Generation targets 30 valid questions. A run may proceed with fewer when
+generation or bounded repair cannot reach that ideal, but Benchmark QC fails
+closed if fewer than 15 valid questions remain; 15–29 is accepted with 30 still
+treated as the target.
+
 The `benchmark_qc` artifact records structured findings, review coverage,
 quality counts, and proposed repairs. The **Benchmark Changes** panel surfaces
 trusted, warning, and excluded counts alongside the mutation ledger. Long

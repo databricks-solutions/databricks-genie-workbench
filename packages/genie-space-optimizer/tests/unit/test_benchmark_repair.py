@@ -15,11 +15,18 @@ from __future__ import annotations
 
 import pytest
 
+from genie_space_optimizer.common.config import (
+    MIN_VALID_BENCHMARK_COUNT,
+    TARGET_BENCHMARK_COUNT,
+)
 from genie_space_optimizer.optimization.benchmark_repair import (
     BENCHMARK_UNREPAIRABLE,
+    INSUFFICIENT_VALID_BENCHMARKS,
     DEFAULT_BENCHMARK_REPAIR_MAX_TRIES,
+    BenchmarkCorpusTooSmallError,
     BenchmarkRepairOutcome,
     BenchmarkUnrepairableError,
+    require_minimum_valid_benchmarks,
     run_bounded_benchmark_repair,
 )
 
@@ -38,6 +45,27 @@ def _validate_by_flag(benchmarks: list[dict]):
 
 def test_default_max_tries_is_three():
     assert DEFAULT_BENCHMARK_REPAIR_MAX_TRIES == 3
+
+
+def test_default_corpus_floor_is_15_and_generation_target_remains_30():
+    assert MIN_VALID_BENCHMARK_COUNT == 15
+    assert TARGET_BENCHMARK_COUNT == 30
+
+
+def test_fourteen_valid_benchmarks_fail_the_corpus_floor():
+    with pytest.raises(BenchmarkCorpusTooSmallError) as exc_info:
+        require_minimum_valid_benchmarks([_q(str(i), True) for i in range(14)])
+
+    err = exc_info.value
+    assert err.terminal_reason == INSUFFICIENT_VALID_BENCHMARKS
+    assert err.valid_count == 14
+    assert err.minimum_count == 15
+    assert err.target_count == 30
+
+
+@pytest.mark.parametrize("count", [15, 17, 30])
+def test_minimum_or_larger_valid_corpus_passes(count):
+    require_minimum_valid_benchmarks([_q(str(i), True) for i in range(count)])
 
 
 def test_all_valid_at_discovery_no_repair_called():

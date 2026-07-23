@@ -28,8 +28,9 @@ def _row(
     evaluated_count: int,
     rolled_back: bool = False,
     eval_scope: str = "full",
+    timestamp: str | None = None,
 ) -> dict:
-    return {
+    row = {
         "iteration": iteration,
         "eval_scope": eval_scope,
         "overall_accuracy": overall_accuracy,
@@ -37,6 +38,9 @@ def _row(
         "evaluated_count": evaluated_count,
         "rolled_back": rolled_back,
     }
+    if timestamp is not None:
+        row["timestamp"] = timestamp
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +334,31 @@ def test_enrichment_row_drives_optimized_when_lever_loop_skipped() -> None:
     assert scores.baseline == 80.0
     assert scores.optimized == 95.0
     assert scores.baseline_iteration == 0
+    assert scores.best_iteration == 0
+    assert scores.best_eval_scope == "enrichment"
+
+
+def test_later_duplicate_iteration_zero_is_recovered_as_improvement() -> None:
+    """A repaired Optimize task must not replace the original baseline.
+
+    The rows are deliberately supplied newest-first to prove timestamp order,
+    not SQL tie order, defines the 15/17 -> 16/17 trajectory.
+    """
+    rows = [
+        _row(
+            0, overall_accuracy=94.12, correct_count=16, evaluated_count=17,
+            timestamp="2026-07-23T11:22:00+00:00",
+        ),
+        _row(
+            0, overall_accuracy=88.24, correct_count=15, evaluated_count=17,
+            timestamp="2026-07-23T11:12:00+00:00",
+        ),
+    ]
+
+    scores = compute_run_scores(rows)
+
+    assert scores.baseline == 88.24
+    assert scores.optimized == 94.12
     assert scores.best_iteration == 0
     assert scores.best_eval_scope == "enrichment"
 

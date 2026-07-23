@@ -306,6 +306,11 @@ than this many questions, regardless of how many are generated or loaded.
 With the V2 default the assessed corpus is exactly 30 questions. Flip
 GSO_NEW_SIZING=0 to restore the legacy 24/29 values."""
 
+MIN_VALID_BENCHMARK_COUNT = 15
+"""Hard floor for the quality-reviewed benchmark corpus. Generation still
+aims for ``TARGET_BENCHMARK_COUNT`` (30 by default), but optimization may
+proceed with a smaller corpus as long as at least 15 valid questions remain."""
+
 BENCHMARK_WINDOW_MIN = int(os.environ.get("GSO_BENCHMARK_WINDOW_MIN", "30") or "30")
 """GSO v2 (D8) — lower bound of the working benchmark window. At preflight,
 a validated set BELOW this count triggers a synthesis top-up recommendation

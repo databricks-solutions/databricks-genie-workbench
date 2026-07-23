@@ -314,7 +314,7 @@ def _select_iterations_delta(run_id: str) -> list[dict]:
     """
     global _iterations_schema_legacy
     table = _delta_table("genie_opt_iterations")
-    order = f"WHERE run_id = '{run_id}' ORDER BY iteration ASC"
+    order = f"WHERE run_id = '{run_id}' ORDER BY iteration ASC, timestamp ASC"
 
     if _iterations_schema_legacy is True:
         return _delta_query(f"SELECT {_ITER_COLS_LEGACY} FROM {table} {order}")
@@ -1763,7 +1763,7 @@ async def get_run(run_id: RunId):
             _dr = await _delta_query_async(
                 f"SELECT rows_json FROM {_delta_table('genie_opt_iterations')} "
                 f"WHERE run_id = '{run_id}' AND iteration = 0 AND eval_scope = 'full' "
-                f"AND rows_json IS NOT NULL LIMIT 1"
+                f"AND rows_json IS NOT NULL ORDER BY timestamp ASC LIMIT 1"
             )
             rows_json_str = _dr[0]["rows_json"] if _dr else None
         if rows_json_str:
@@ -2290,6 +2290,11 @@ def _attempt_row_sort_key(r: dict) -> tuple:
     return (_safe_int(r.get("iteration")) or 0, str(r.get("timestamp") or ""))
 
 
+def _evaluation_event_sort_key(r: dict) -> tuple:
+    """Chronological key for recovering append-only iteration-0 evaluations."""
+    return (str(r.get("timestamp") or ""), _safe_int(r.get("iteration")) or 0)
+
+
 def _dedup_attempt_rows(loop_rows: list[dict]) -> list[dict]:
     """One authoritative full-benchmark row per ``attempt_no`` (B1).
 
@@ -2305,17 +2310,65 @@ def _dedup_attempt_rows(loop_rows: list[dict]) -> list[dict]:
     excluding it here keeps ``attempts[]`` to real patch attempts (≥1) and stops
     a duplicate "Baseline" row from rendering in the Attempt Ledger/Ladder.
     """
+    eligible = [
+        r for r in loop_rows
+        if str(r.get("eval_scope") or "").lower() in _FULL_BENCHMARK_SCOPES
+    ]
+
+    # The append-only iteration table can contain multiple iteration-0/full
+    # rows when an Optimize task is repaired or re-entered. The earliest row is
+    # the true baseline. Later timestamped rows are real official evaluations
+    # and must appear in the ladder instead of being discarded with baseline.
+    baseline_rows = [
+        r for r in eligible
+        if (_safe_int(r.get("attempt_no")) in {None, 0})
+        and (_safe_int(r.get("iteration")) or 0) == 0
+        and str(r.get("eval_scope") or "").lower() == "full"
+    ]
+    baseline_rows.sort(key=_evaluation_event_sort_key)
+    baseline = baseline_rows[0] if baseline_rows else None
+    recovered = [
+        r for r in baseline_rows[1:]
+        if str(r.get("timestamp") or "")
+        and _evaluation_event_sort_key(r) != _evaluation_event_sort_key(baseline or {})
+    ]
+
     by_attempt: dict[int, dict] = {}
-    for r in loop_rows:
+    for r in eligible:
         attempt_no = _safe_int(r.get("attempt_no"))
         if attempt_no is None or attempt_no == 0:
-            continue
-        if str(r.get("eval_scope") or "").lower() not in _FULL_BENCHMARK_SCOPES:
             continue
         existing = by_attempt.get(attempt_no)
         if existing is None or _attempt_row_sort_key(r) > _attempt_row_sort_key(existing):
             by_attempt[attempt_no] = r
-    return [by_attempt[k] for k in sorted(by_attempt)]
+
+    next_attempt_no = max(by_attempt, default=0) + 1
+    for source in recovered:
+        row = dict(source)
+        row["attempt_no"] = next_attempt_no
+        row["attempt_mode"] = "enrichment"
+        if str(row.get("decision") or "").lower() in {"", "baseline"}:
+            row["decision"] = "accept"
+        if str(row.get("decision_reason") or "").lower() in {"", "baseline"}:
+            row["decision_reason"] = "post-baseline evaluation recovered from task re-entry"
+        by_attempt[next_attempt_no] = row
+        next_attempt_no += 1
+
+    rows = [by_attempt[k] for k in sorted(by_attempt)]
+    # A run-scoped champion UPDATE can flag every duplicate iteration-0 row.
+    # Among returned attempts, retain only the highest flagged row as champion;
+    # if the omitted earliest baseline is strictly higher, no attempt is marked
+    # and the frontend correctly treats baseline as champion.
+    flagged_pool = [
+        row
+        for row in ([baseline] if baseline else []) + rows
+        if _safe_bool(row.get("is_champion"))
+    ]
+    if flagged_pool:
+        champion = max(flagged_pool, key=lambda r: _safe_float(r.get("overall_accuracy")) or 0.0)
+        for row in rows:
+            row["is_champion"] = row is champion
+    return rows
 
 
 def _build_attempt(lr: dict) -> dict:
@@ -2645,13 +2698,14 @@ async def _load_iteration_rows_json(run_id: str, iteration: int) -> str | None:
         logger.info("Lakebase returned no rows_json for run=%s iter=%s, trying Delta", run_id, iteration)
         delta_rows = _delta_query(
             f"SELECT rows_json FROM {_delta_table('genie_opt_iterations')} "
-            f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND eval_scope = 'full' LIMIT 1"
+            f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND eval_scope = 'full' "
+            f"ORDER BY timestamp ASC LIMIT 1"
         )
         if not delta_rows:
             delta_rows = _delta_query(
                 f"SELECT rows_json FROM {_delta_table('genie_opt_iterations')} "
                 f"WHERE run_id = '{run_id}' AND iteration = {iteration} "
-                f"AND rows_json IS NOT NULL LIMIT 1"
+                f"AND rows_json IS NOT NULL ORDER BY timestamp ASC LIMIT 1"
             )
         rows_json_str = delta_rows[0]["rows_json"] if delta_rows else None
     return rows_json_str

@@ -297,6 +297,68 @@ class TestPreflightValidateBenchmarks:
         _, kwargs = mock_validate.call_args
         assert kwargs.get("warehouse_id") == "wh-789"
 
+    def test_fourteen_rows_still_fail_after_regeneration_attempt(self):
+        from genie_space_optimizer.optimization.benchmark_repair import (
+            BenchmarkCorpusTooSmallError,
+        )
+        from genie_space_optimizer.optimization.preflight import (
+            preflight_validate_benchmarks,
+        )
+
+        benchmarks = self._enough_benchmarks(14)
+        with (
+            patch(
+                "genie_space_optimizer.optimization.preflight.validate_benchmarks",
+                return_value=[{"valid": True}] * 14,
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.extract_genie_space_benchmarks",
+                return_value=[],
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.generate_benchmarks",
+                return_value=benchmarks,
+            ) as mock_generate,
+            patch("genie_space_optimizer.optimization.preflight.write_stage"),
+        ):
+            with pytest.raises(BenchmarkCorpusTooSmallError):
+                preflight_validate_benchmarks(
+                    MagicMock(), MagicMock(), "run-1", "cat", "gold", {},
+                    benchmarks, [], [], [], "default",
+                )
+
+        mock_generate.assert_called_once()
+
+    @pytest.mark.parametrize("count", [15, 17])
+    def test_fifteen_or_seventeen_rows_pass_if_topup_cannot_reach_30(self, count):
+        from genie_space_optimizer.optimization.preflight import (
+            preflight_validate_benchmarks,
+        )
+
+        benchmarks = self._enough_benchmarks(count)
+
+        def all_valid(rows, *args, **kwargs):
+            return [{"valid": True}] * len(rows)
+
+        with (
+            patch(
+                "genie_space_optimizer.optimization.preflight.validate_benchmarks",
+                side_effect=all_valid,
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.generate_benchmarks",
+                return_value=benchmarks,
+            ) as mock_generate,
+            patch("genie_space_optimizer.optimization.preflight.write_stage"),
+        ):
+            result = preflight_validate_benchmarks(
+                MagicMock(), MagicMock(), "run-1", "cat", "gold", {},
+                benchmarks, [], [], [], "default",
+            )
+
+        assert len(result["benchmarks"]) == count
+        assert mock_generate.call_args.kwargs["target_count"] == 30
+
     @patch("genie_space_optimizer.optimization.preflight.write_stage")
     @patch("genie_space_optimizer.optimization.preflight.validate_benchmarks")
     @patch("genie_space_optimizer.optimization.preflight.generate_benchmarks")

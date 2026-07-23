@@ -7,7 +7,7 @@
 # MAGIC | **Task** | `benchmark_qc_and_repair` |
 # MAGIC | **Reads** | space metadata, run-row snapshot, benchmark set |
 # MAGIC | **Writes** | `genie_opt_artifacts` (`space_metadata`, `benchmark_qc`), `genie_opt_benchmark_mutations`, `genie_opt_stages` |
-# MAGIC | **Hard stop** | `BENCHMARK_UNREPAIRABLE` if still invalid after `benchmark_repair_max_tries` |
+# MAGIC | **Hard stop** | Invalid after repair budget, or fewer than 15 valid questions after QC |
 # MAGIC | **Log label** | `[TASK BENCH_QC]` |
 # MAGIC
 # MAGIC ## 🎯 Purpose (arch §5 / §6 / progress §5 K=3)
@@ -15,8 +15,9 @@
 # MAGIC Validate the benchmark set → **bounded inline repair/prune** (≤
 # MAGIC `benchmark_repair_max_tries`, default 3) → re-validate → push the
 # MAGIC quality-reviewed, SQL-valid set into the LIVE space (additive/merge-only) → flow
-# MAGIC **unconditionally** into `optimize`. Only a benchmark still invalid after K
-# MAGIC tries hard-fails with `BENCHMARK_UNREPAIRABLE`.
+# MAGIC into `optimize` when at least 15 valid questions remain. A benchmark
+# MAGIC still invalid after K tries hard-fails with `BENCHMARK_UNREPAIRABLE`;
+# MAGIC a smaller final corpus hard-fails with `INSUFFICIENT_VALID_BENCHMARKS`.
 # MAGIC
 # MAGIC The bounded try-counting control loop lives in
 # MAGIC `optimization.benchmark_repair.run_bounded_benchmark_repair`; this task
@@ -38,6 +39,7 @@ from genie_space_optimizer._workspace_client import make_workspace_client
 from genie_space_optimizer.common.config import (
     CONNECTION_POOL_SIZE,
     MAX_BENCHMARK_COUNT,
+    MIN_VALID_BENCHMARK_COUNT,
     TARGET_BENCHMARK_COUNT,
 )
 from genie_space_optimizer.common.genie_client import (
@@ -52,9 +54,10 @@ from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.iq_scan import collect_rls_audit
 from genie_space_optimizer.optimization.benchmark_repair import (
-    BENCHMARK_UNREPAIRABLE,
+    BenchmarkCorpusTooSmallError,
     BenchmarkUnrepairableError,
     default_id_of,
+    require_minimum_valid_benchmarks,
     run_bounded_benchmark_repair,
 )
 from genie_space_optimizer.optimization.benchmark_quality import (
@@ -624,7 +627,7 @@ def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
 
 
 _repair_failed = False
-_repair_error: BenchmarkUnrepairableError | None = None
+_repair_error: BenchmarkUnrepairableError | BenchmarkCorpusTooSmallError | None = None
 try:
     _banner("Step 01b — Bounded Benchmark Repair")
     outcome = run_bounded_benchmark_repair(
@@ -638,6 +641,12 @@ try:
     _repaired_ids = outcome.repaired_ids
     _repair_sweeps = outcome.sweeps
     _final_validity = True
+    require_minimum_valid_benchmarks(
+        _benchmarks,
+        minimum_count=MIN_VALID_BENCHMARK_COUNT,
+        target_count=effective_target,
+        context="bounded benchmark quality review and repair",
+    )
     _log(
         "Benchmark repair complete",
         valid_count=len(_benchmarks),
@@ -656,6 +665,16 @@ except BenchmarkUnrepairableError as exc:
         "Benchmark UNREPAIRABLE",
         tries_used=exc.tries_used,
         still_invalid=[default_id_of(b) for b in exc.still_invalid],
+    )
+except BenchmarkCorpusTooSmallError as exc:
+    _repair_failed = True
+    _repair_error = exc
+    _final_validity = False
+    _log(
+        "Benchmark corpus below minimum",
+        valid_count=exc.valid_count,
+        minimum_count=exc.minimum_count,
+        target_count=exc.target_count,
     )
 
 # COMMAND ----------
@@ -750,6 +769,8 @@ _final_quality_results = [_final_quality_result(b) for b in _benchmarks]
 _qc_payload: dict[str, Any] = {
     "run_id": run_id,
     "valid_count": len(_benchmarks),
+    "minimum_valid_count": MIN_VALID_BENCHMARK_COUNT,
+    "target_count": effective_target,
     "persisted_count": _persisted_count,
     "repair_tries_used": _repair_tries_used,
     "repaired_ids": _repaired_ids,
@@ -798,10 +819,11 @@ _qc_payload: dict[str, Any] = {
     "gt_correction_candidates": [],
 }
 if _repair_failed and _repair_error is not None:
-    _qc_payload["terminal_reason"] = BENCHMARK_UNREPAIRABLE
-    _qc_payload["still_invalid_ids"] = [
-        default_id_of(b) for b in _repair_error.still_invalid
-    ]
+    _qc_payload["terminal_reason"] = _repair_error.terminal_reason
+    if isinstance(_repair_error, BenchmarkUnrepairableError):
+        _qc_payload["still_invalid_ids"] = [
+            default_id_of(b) for b in _repair_error.still_invalid
+        ]
 
 write_artifact(
     spark, run_id, "benchmark_qc", _qc_payload,
@@ -831,10 +853,14 @@ if _repair_failed and _repair_error is not None:
     write_failure_stage_safely(
         spark, run_id, "BENCHMARK_QC_AND_REPAIR",
         task_key=_TASK_KEY, catalog=catalog, schema=schema,
-        detail={"terminal_reason": BENCHMARK_UNREPAIRABLE},
+        detail={
+            "terminal_reason": _repair_error.terminal_reason,
+            "valid_count": len(_benchmarks),
+            "minimum_valid_count": MIN_VALID_BENCHMARK_COUNT,
+        },
         error_message=str(_repair_error),
     )
-    # Hard stop — the only failure mode of 01 (arch §5.1 / §6).
+    # Hard stop — invalid questions or an undersized final corpus.
     raise _repair_error
 
 write_stage(

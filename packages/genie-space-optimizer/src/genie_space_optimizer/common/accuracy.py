@@ -180,6 +180,14 @@ def _is_rolled_back(row: dict[str, Any]) -> bool:
     return False
 
 
+def _timestamp_sort_key(row: dict[str, Any], fallback_index: int) -> tuple[str, int]:
+    """Order append-only rows deterministically, preserving legacy input order."""
+    value = row.get("timestamp")
+    if hasattr(value, "isoformat"):
+        value = value.isoformat()
+    return (str(value or ""), fallback_index)
+
+
 def compute_run_scores(
     iter_rows: list[dict[str, Any]] | None,
     *,
@@ -204,10 +212,14 @@ def compute_run_scores(
     1. Filter to ``eval_scope == "full"`` rows for baseline derivation.
        Slice/p0/held-out probes evaluate on a tiny subset and routinely
        show 100% — they MUST NOT contribute to the headline.
-    2. Iteration 0 (full scope) is always retained, even if some bug stamped
-       ``rolled_back=true`` on it. Baseline is the floor.
+    2. The EARLIEST iteration-0 full-scope row is always retained, even if some
+       bug stamped ``rolled_back=true`` on it. Baseline is the floor. A repaired
+       or re-entered Optimize task can append another iteration-0 full row; that
+       later evaluation is an optimization candidate, not a replacement floor.
     3. Candidates for ``optimized`` are:
-       - rows with ``eval_scope == "full"`` AND ``iteration > 0``, plus
+       - rows with ``eval_scope == "full"`` AND ``iteration > 0``,
+       - later duplicate iteration-0 full rows (recovered as pre-loop
+         enrichment/re-entry candidates), plus
        - the iter 0 row with ``eval_scope == "enrichment"`` (post-enrichment
          eval). It can win because enrichment may have already mutated the
          space enough to clear thresholds before the lever loop runs.
@@ -236,7 +248,13 @@ def compute_run_scores(
     if not full_rows:
         return RunScores(None, None, None, None)
 
-    iter_zero_rows = [r for r in full_rows if safe_int(r.get("iteration")) == 0]
+    indexed_zero_rows = [
+        (index, row)
+        for index, row in enumerate(full_rows)
+        if safe_int(row.get("iteration")) == 0
+    ]
+    indexed_zero_rows.sort(key=lambda item: _timestamp_sort_key(item[1], item[0]))
+    iter_zero_rows = [row for _, row in indexed_zero_rows]
     iter_zero = iter_zero_rows[0] if iter_zero_rows else None
     baseline = derived_accuracy(
         iter_zero, run_id=run_id, iteration=0, logger=logger,
@@ -254,7 +272,7 @@ def compute_run_scores(
     candidates: list[tuple[int, float, str]] = []
     for row in full_rows:
         it = safe_int(row.get("iteration"))
-        if it is None or it <= 0:
+        if it is None or it < 0 or row is iter_zero:
             continue
         if _is_rolled_back(row):
             continue
@@ -263,7 +281,11 @@ def compute_run_scores(
         )
         if acc is None:
             continue
-        candidates.append((it, acc, "full"))
+        # A later append-only iteration-0/full row is the post-baseline result
+        # of an Optimize task re-entry. Surface it like the historical
+        # enrichment candidate so the UI reports baseline -> optimized rather
+        # than replacing the baseline with whichever tied row SQL returned.
+        candidates.append((it, acc, "enrichment" if it == 0 else "full"))
 
     for row in iter_rows:
         if str(row.get("eval_scope") or "").lower() != "enrichment":

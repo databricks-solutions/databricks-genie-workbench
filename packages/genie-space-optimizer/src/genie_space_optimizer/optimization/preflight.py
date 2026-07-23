@@ -21,6 +21,7 @@ from genie_space_optimizer.common.config import (
     BENCHMARK_WINDOW_MIN,
     EXPERIMENT_PATH_TEMPLATE,
     MAX_BENCHMARK_COUNT,
+    MIN_VALID_BENCHMARK_COUNT,
     PUBLISH_BENCHMARKS_TO_SPACE,
     TARGET_BENCHMARK_COUNT,
     format_mlflow_template,
@@ -49,6 +50,9 @@ from genie_space_optimizer.common.uc_metadata import (
     get_tags_for_tables_rest,
 )
 from genie_space_optimizer.optimization.benchmarks import validate_benchmarks
+from genie_space_optimizer.optimization.benchmark_repair import (
+    require_minimum_valid_benchmarks,
+)
 from genie_space_optimizer.optimization.applier import _get_general_instructions
 from genie_space_optimizer.optimization.benchmarking import (
     _drop_benchmark_table,
@@ -1097,7 +1101,7 @@ def preflight_fetch_config(
 #     actionable than waiting for _validate_core_access to surface a schema
 #     access failure on zero tables.
 #   - WARNS (never blocks) when the 10+ benchmark questions check fails.
-#     MIN_VALID_BENCHMARKS at line 1119 remains the authoritative
+#     MIN_VALID_BENCHMARK_COUNT remains the authoritative
 #     post-validation gate; hard-blocking here would kill synthetic benchmark
 #     generation for fresh spaces.
 #   - Persists a phase='preflight' row to genie_opt_scan_snapshots so the
@@ -1270,7 +1274,7 @@ def preflight_run_iq_scan(
                 "check": "10+ benchmark questions",
                 "scan_detail": detail,
                 "note": (
-                    "Warning only — MIN_VALID_BENCHMARKS remains the gate. "
+                    "Warning only — MIN_VALID_BENCHMARK_COUNT remains the gate. "
                     "Synthetic benchmark generation will top up to target count."
                 ),
             },
@@ -2152,8 +2156,6 @@ def preflight_validate_benchmarks(
 
     Returns a dict with keys: benchmarks (filtered), pre_count, invalid_errors.
     """
-    MIN_VALID_BENCHMARKS = 5
-
     validation_results = validate_benchmarks(
         benchmarks, spark, catalog=catalog, gold_schema=schema,
         w=w, warehouse_id=warehouse_id, config=config,
@@ -2448,11 +2450,11 @@ def preflight_validate_benchmarks(
 
     TOP_UP_THRESHOLD = int(target_benchmark_count * 0.75)
 
-    if len(benchmarks) < MIN_VALID_BENCHMARKS:
+    if len(benchmarks) < MIN_VALID_BENCHMARK_COUNT:
         logger.warning(
             "Only %d valid benchmarks after filtering (min %d). "
             "Re-generating from scratch using Genie space assets.",
-            len(benchmarks), MIN_VALID_BENCHMARKS,
+            len(benchmarks), MIN_VALID_BENCHMARK_COUNT,
         )
         genie_benchmarks_regen = extract_genie_space_benchmarks(
             config, spark, catalog=catalog, schema=schema,
@@ -2538,12 +2540,12 @@ def preflight_validate_benchmarks(
             + (f" ({_reval_dropped} dropped by re-validation)" if _reval_dropped else "")
         )
 
-    if not benchmarks:
-        raise RuntimeError(
-            f"All {pre_count} benchmarks failed validation even after regeneration. "
-            f"Sample errors: {invalid_errors[:5]}. "
-            "Check that the Genie space's referenced tables actually exist."
-        )
+    require_minimum_valid_benchmarks(
+        benchmarks,
+        minimum_count=MIN_VALID_BENCHMARK_COUNT,
+        target_count=target_benchmark_count,
+        context="preflight validation and regeneration",
+    )
 
     return {
         "benchmarks": benchmarks,
@@ -3031,7 +3033,7 @@ def _load_or_generate_benchmarks(
     )
 
     existing = load_benchmarks_from_dataset(spark, uc_schema, domain)
-    if existing and len(existing) >= 5:
+    if existing and len(existing) >= MIN_VALID_BENCHMARK_COUNT:
         validation_results = validate_benchmarks(
             existing, spark, catalog=catalog, gold_schema=schema,
             w=w, warehouse_id=warehouse_id,
@@ -3068,7 +3070,7 @@ def _load_or_generate_benchmarks(
         if _rejected_lines:
             print("  Rejected reasons:\n" + "\n".join(_rejected_lines[:10]))
 
-        if len(valid_existing) >= 5:
+        if len(valid_existing) >= MIN_VALID_BENCHMARK_COUNT:
             # ── Schema fingerprint check ─────────────────────────────
             current_fp = compute_asset_fingerprint(config)
             stored_fp = ""
@@ -3213,13 +3215,14 @@ def _load_or_generate_benchmarks(
             )
         else:
             print(
-                f"  Decision: RE-GENERATE (only {len(valid_existing)} valid, need >=5)\n"
+                f"  Decision: RE-GENERATE (only {len(valid_existing)} valid, "
+                f"need >={MIN_VALID_BENCHMARK_COUNT})\n"
                 + "-" * 52
             )
             logger.info(
-                "Only %d valid benchmarks remain after re-validation (need >=5). "
+                "Only %d valid benchmarks remain after re-validation (need >=%d). "
                 "Re-generating from scratch.",
-                len(valid_existing),
+                len(valid_existing), MIN_VALID_BENCHMARK_COUNT,
             )
     else:
         print(

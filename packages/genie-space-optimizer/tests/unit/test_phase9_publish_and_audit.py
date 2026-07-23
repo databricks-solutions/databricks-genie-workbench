@@ -703,3 +703,33 @@ def test_improvement_trajectory_is_baseline_coverage_surgical_staircase():
     assert traj[2]["is_champion"] is True
     # B3: free-text decision_reason is not present on trajectory rungs.
     assert all("decision_reason" not in t for t in traj)
+
+
+def test_improvement_trajectory_recovers_duplicate_iteration_zero():
+    iters = [
+        {
+            "iteration": 0,
+            "eval_scope": "full",
+            "timestamp": "2026-07-23T11:12:00+00:00",
+            "overall_accuracy": 88.24,
+            "attempt_no": 0,
+            "attempt_mode": "baseline",
+            "decision": "accept",
+        },
+        {
+            "iteration": 0,
+            "eval_scope": "full",
+            "timestamp": "2026-07-23T11:22:00+00:00",
+            "overall_accuracy": 94.12,
+            "attempt_no": 0,
+            "attempt_mode": "baseline",
+            "decision": "accept",
+            "is_champion": True,
+        },
+    ]
+
+    trajectory = P.build_improvement_trajectory(iters)
+
+    assert [row["attempt_mode"] for row in trajectory] == ["baseline", "enrichment"]
+    assert [row["attempt_no"] for row in trajectory] == [None, 1]
+    assert [row["delta_vs_baseline"] for row in trajectory] == [0.0, 5.88]

@@ -32,6 +32,7 @@ from typing import Any, cast
 from genie_space_optimizer._workspace_client import make_workspace_client
 from genie_space_optimizer.common.config import (
     MAX_BENCHMARK_COUNT,
+    MIN_VALID_BENCHMARK_COUNT,
     TARGET_BENCHMARK_COUNT,
 )
 from genie_space_optimizer.common.warehouse import (
@@ -313,6 +314,7 @@ write_artifact(
         "target_accuracy": target_accuracy,
         "max_attempts": max_attempts,
         "benchmark_repair_max_tries": benchmark_repair_max_tries,
+        "benchmark_min_valid": MIN_VALID_BENCHMARK_COUNT,
         "benchmark_target": TARGET_BENCHMARK_COUNT,
         "benchmark_max": MAX_BENCHMARK_COUNT,
         "baseline_config_hash": _config_hash,
