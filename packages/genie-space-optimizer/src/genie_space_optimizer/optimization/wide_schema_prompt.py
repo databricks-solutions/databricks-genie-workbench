@@ -184,10 +184,7 @@ def _compact_json_object(value: Any, *, target_chars: int) -> tuple[Any, dict[st
 def _pack_plain_text(content: str, target_chars: int) -> tuple[str, int]:
     if len(content) <= target_chars:
         return content, 0
-    blocks = [block for block in content.split("\n\n") if block]
-    if len(blocks) <= 1:
-        lines = content.splitlines()
-        blocks = lines if len(lines) > 1 else [content]
+    blocks = _plain_text_blocks(content)
     if len(blocks) <= 1:
         raise ValueError("oversized indivisible prompt block cannot be safely packed")
     kept_front: list[str] = []
@@ -217,6 +214,14 @@ def _pack_plain_text(content: str, target_chars: int) -> tuple[str, int]:
     return packed, omitted
 
 
+def _plain_text_blocks(content: str) -> list[str]:
+    blocks = [block for block in content.split("\n\n") if block]
+    if len(blocks) <= 1:
+        lines = content.splitlines()
+        blocks = lines if len(lines) > 1 else [content]
+    return blocks
+
+
 def fit_messages(
     messages: list[dict[str, str]],
     *,
@@ -240,17 +245,57 @@ def fit_messages(
     available = max_chars - fixed_overhead
     if available <= 0:
         raise ValueError("LLM message envelope exceeds request budget")
-    content_lengths = [max(1, len(str(message.get("content") or ""))) for message in packed]
-    total_content = sum(content_lengths)
-    omitted: defaultdict[str, int] = defaultdict(int)
-
-    for index, message in enumerate(packed):
-        content = str(message.get("content") or "")
-        target = max(256, int(available * content_lengths[index] / total_content))
+    contents = [str(message.get("content") or "") for message in packed]
+    parsed_contents: list[Any] = []
+    reserved_indices: set[int] = set()
+    for index, (message, content) in enumerate(zip(packed, contents)):
         try:
             parsed = json.loads(content)
         except (TypeError, ValueError):
             parsed = None
+        parsed_contents.append(parsed)
+        if message.get("role") == "system" or (
+            parsed is None and len(_plain_text_blocks(content)) <= 1
+        ):
+            reserved_indices.add(index)
+
+    reserved_chars = sum(len(contents[index]) for index in reserved_indices)
+    shrinkable_indices = [
+        index for index in range(len(packed)) if index not in reserved_indices
+    ]
+    shrinkable_available = available - reserved_chars
+    if shrinkable_available <= 0:
+        raise ValueError(
+            "required or indivisible LLM message content exceeds request budget"
+        )
+    if not shrinkable_indices:
+        raise ValueError(
+            "required or indivisible LLM message content cannot fit within "
+            "the complete request budget"
+        )
+
+    minimum_target = min(
+        256,
+        max(1, shrinkable_available // len(shrinkable_indices)),
+    )
+    minimum_total = minimum_target * len(shrinkable_indices)
+    weighted_available = shrinkable_available - minimum_total
+    shrinkable_total = sum(
+        max(1, len(contents[index])) for index in shrinkable_indices
+    )
+    targets = {
+        index: minimum_target
+        + int(weighted_available * max(1, len(contents[index])) / shrinkable_total)
+        for index in shrinkable_indices
+    }
+    omitted: defaultdict[str, int] = defaultdict(int)
+
+    for index, message in enumerate(packed):
+        if index in reserved_indices:
+            continue
+        content = contents[index]
+        target = targets[index]
+        parsed = parsed_contents[index]
         if isinstance(parsed, (dict, list)):
             compact, counts = _compact_json_object(parsed, target_chars=target)
             message["content"] = json.dumps(compact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -264,7 +309,11 @@ def fit_messages(
     # complete-block passes over the largest non-system message until it fits.
     while messages_size(packed) > max_chars:
         candidates = sorted(
-            range(len(packed)),
+            (
+                index
+                for index in range(len(packed))
+                if index not in reserved_indices
+            ),
             key=lambda idx: (packed[idx].get("role") == "system", -len(packed[idx].get("content") or "")),
         )
         changed = False

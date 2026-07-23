@@ -492,6 +492,31 @@ def test_prompt_packing_bounds_twenty_assets_without_losing_json_validity():
     json.loads(messages[1]["content"])
 
 
+def test_prompt_packing_preserves_indivisible_system_message():
+    system_prompt = "S" * 640
+    user_payload = {
+        "response_schema": {"patches": [{"type": "required"}]},
+        "ordinary_context": [
+            {"name": f"context_{index}", "detail": "x" * 1_000}
+            for index in range(150)
+        ],
+    }
+
+    messages, pack_stats = fit_messages([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps(user_payload)},
+    ])
+
+    assert messages[0]["content"] == system_prompt
+    assert messages_size(messages) <= 60_000
+    assert pack_stats["final_request_chars"] <= 60_000
+    packed_user = json.loads(messages[1]["content"])
+    assert packed_user["response_schema"] == user_payload["response_schema"]
+    assert len(packed_user["ordinary_context"]) < len(
+        user_payload["ordinary_context"]
+    )
+
+
 def test_prompt_compaction_preserves_repair_targets_before_ordinary_context():
     repair_targets = [
         {"column": f"repair_{index}", "reason": "required"}
