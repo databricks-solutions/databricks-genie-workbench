@@ -14,6 +14,7 @@ import { getAutoOptimizeRunsForSpace, revertAutoOptimizeRun, ApiError } from "@/
 import {
   championAccuracyText,
   hasActiveOptimizationRun,
+  hasRevertibleChampion,
   humanizeTerminalReason,
 } from "@/components/auto-optimize/runHistory"
 import type { GSORunSummary } from "@/types"
@@ -133,11 +134,9 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                         View Details
                       </button>
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                        {/* Revert to champion — only when a distinct optimized
-                            iteration won (best_iteration > 0). When the baseline
-                            was the champion (best_iteration === 0/null), this
-                            button is hidden and only the baseline revert shows. */}
-                        {hasDistinctChampion(run) && (
+                        {/* Iteration 0 can be a real post-enrichment/recovery
+                            champion distinct from the pre-run baseline. */}
+                        {hasRevertibleChampion(run) && (
                           <RevertButton
                             run={run}
                             target="champion"
@@ -167,17 +166,6 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
       </CardContent>
     </Card>
   )
-}
-
-/**
- * A distinct champion exists when an optimized iteration (iteration > 0) beat
- * the baseline. ``best_iteration`` is stamped by ``promote_best_model``; 0 means
- * the baseline itself was the champion (nothing beat it), null means no
- * champion was promoted (failed run / no iterations).
- */
-function hasDistinctChampion(run: GSORunSummary): boolean {
-  const it = run.best_iteration
-  return typeof it === "number" && Number.isFinite(it) && it > 0
 }
 
 type RevertTarget = "champion" | "baseline"

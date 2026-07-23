@@ -142,6 +142,25 @@ def test_revert_champion_uses_champion_iteration_config(monkeypatch) -> None:
     assert patch_mock.call_args.args[1] == "space-1"
 
 
+def test_champion_lookup_disambiguates_duplicate_iteration_zero_rows(monkeypatch) -> None:
+    """Recovery may stamp both iteration-0 rows; highest/latest wins."""
+    captured_sql: list[str] = []
+
+    def _query(_ws, _warehouse_id, sql):
+        captured_sql.append(sql)
+        return pd.DataFrame([{"config_json": json.dumps(_champion_config())}])
+
+    monkeypatch.setattr(revert, "sql_warehouse_query", _query)
+
+    result = revert._load_champion_config(
+        _ws(), "warehouse-1", "catalog", "schema", "run-duplicate-zero",
+    )
+
+    assert result == _champion_config()
+    assert "ORDER BY overall_accuracy DESC NULLS LAST" in captured_sql[0]
+    assert "timestamp DESC NULLS LAST" in captured_sql[0]
+
+
 def test_revert_champion_backfills_version_for_legacy_projected_config(monkeypatch) -> None:
     """Legacy config_json rows projected a parsed serialized_space but dropped
     the required top-level version. Revert repairs that shape before PATCH."""
