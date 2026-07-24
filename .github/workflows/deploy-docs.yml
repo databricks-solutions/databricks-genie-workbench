@@ -41,7 +41,9 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
-    runs-on: ubuntu-latest
+    runs-on:
+      group: databricks-solutions-protected-runner-group
+      labels: linux-ubuntu-latest
     # Pages write scope is confined to this job only.
     permissions:
       pages: write
