@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from genie_space_optimizer.common.config import BENCHMARK_PROMPTS
+from genie_space_optimizer.common.config import (
+    AUDIT_SUMMARY_PROMPT,
+    UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT,
+)
 from genie_space_optimizer.optimization.benchmarking import _attempt_sql_correction
 
 
-def test_optimizer_and_audit_prompts_are_registered_prompt_keys() -> None:
-    assert "unified_optimizer_patch" in BENCHMARK_PROMPTS
-    assert "audit_summary" in BENCHMARK_PROMPTS
+def test_optimizer_and_audit_prompts_are_version_controlled_templates() -> None:
+    assert UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT.strip()
+    assert AUDIT_SUMMARY_PROMPT.strip()
 
 
 def test_sql_correction_prompt_receives_join_specs_context(monkeypatch) -> None:
@@ -55,7 +58,7 @@ def test_sql_correction_prompt_receives_join_specs_context(monkeypatch) -> None:
         None,
         {},
         correction_prompt_template=prompt_template,
-        correction_prompt_registry_key="benchmark_correction",
+        correction_prompt_key="benchmark_correction",
     )
 
     assert "orders.customer_id = customers.customer_id" in captured["prompt"]
@@ -85,15 +88,12 @@ class _FakeSpanContext:
         return False
 
 
-def test_optimizer_patch_prompt_links_and_records_context_metadata(monkeypatch) -> None:
+def test_optimizer_patch_prompt_records_local_template_metadata(monkeypatch) -> None:
     from genie_space_optimizer.optimization import unified_loop
 
-    linked: list[str] = []
     span = _FakeSpan()
 
     monkeypatch.setattr(unified_loop, "_start_chain_span", lambda _name: _FakeSpanContext(span))
-    monkeypatch.setattr(unified_loop, "_link_prompt_to_trace", lambda prompt_name: linked.append(prompt_name))
-    monkeypatch.setattr(unified_loop, "get_registered_prompt_name", lambda _key: "")
     captured_kwargs: dict = {}
 
     def fake_call_llm(_w, *, messages, **kwargs):
@@ -120,12 +120,10 @@ def test_optimizer_patch_prompt_links_and_records_context_metadata(monkeypatch) 
             ]
         },
         reflections=[],
-        catalog="cat",
-        schema="sch",
     )
 
-    assert linked == ["cat.sch.genie_opt_unified_optimizer_patch"]
-    assert span.inputs["prompt_name"] == "cat.sch.genie_opt_unified_optimizer_patch"
+    assert span.inputs["prompt_template"] == "unified_optimizer_patch"
+    assert "prompt_name" not in span.inputs
     assert span.inputs["prompt_chars"] > 0
     assert span.inputs["context_chars"] > 0
     assert span.inputs["context_hash"]
@@ -137,10 +135,9 @@ def test_optimizer_patch_prompt_links_and_records_context_metadata(monkeypatch) 
     assert captured_kwargs["response_format"] == {"type": "json_object"}
 
 
-def test_audit_summary_links_registered_prompt_and_records_safe_context(monkeypatch) -> None:
+def test_audit_summary_records_local_template_and_safe_context(monkeypatch) -> None:
     from genie_space_optimizer.optimization import publish
 
-    linked: list[str] = []
     captured_messages = {}
     span = _FakeSpan()
 
@@ -149,7 +146,6 @@ def test_audit_summary_links_registered_prompt_and_records_safe_context(monkeypa
         return "summary", object()
 
     monkeypatch.setattr(publish, "_start_chain_span", lambda _name: _FakeSpanContext(span))
-    monkeypatch.setattr(publish, "_link_prompt_to_trace", lambda prompt_name: linked.append(prompt_name))
     monkeypatch.setattr(publish, "call_llm", fake_call_llm)
 
     ctx = {
@@ -158,16 +154,12 @@ def test_audit_summary_links_registered_prompt_and_records_safe_context(monkeypa
         "improvement_trajectory": [{"iteration": 0, "accuracy": 80.0}],
         "patch_families": {"lever_1": 2},
     }
-    summary, concern = publish.build_audit_summary(
-        None,
-        ctx,
-        prompt_name="cat.sch.genie_opt_audit_summary",
-    )
+    summary, concern = publish.build_audit_summary(None, ctx)
 
     assert summary == "summary"
     assert concern is None
-    assert linked == ["cat.sch.genie_opt_audit_summary"]
-    assert span.inputs["prompt_name"] == "cat.sch.genie_opt_audit_summary"
+    assert span.inputs["prompt_template"] == "audit_summary"
+    assert "prompt_name" not in span.inputs
     assert span.inputs["audit_context_hash"]
     assert span.inputs["audit_context_field_count"] == len(ctx)
     assert span.inputs["improvement_trajectory_count"] == 1

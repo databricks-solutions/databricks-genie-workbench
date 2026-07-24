@@ -2,8 +2,8 @@
 Preflight logic for intake, metadata discovery, and benchmark preparation.
 
 Fetches Genie Space config, UC metadata, loads or generates benchmarks,
-validates SQL, registers judge prompts, and creates the initial MLflow
-LoggedModel (iteration 0).
+validates SQL, configures MLflow experiment tracking, and prepares the initial
+benchmark dataset.
 """
 
 from __future__ import annotations
@@ -53,7 +53,6 @@ from genie_space_optimizer.optimization.benchmarks import validate_benchmarks
 from genie_space_optimizer.optimization.benchmark_repair import (
     require_minimum_valid_benchmarks,
 )
-from genie_space_optimizer.optimization.applier import _get_general_instructions
 from genie_space_optimizer.optimization.benchmarking import (
     _drop_benchmark_table,
     _flag_stale_temporal_benchmarks,
@@ -62,8 +61,6 @@ from genie_space_optimizer.optimization.benchmarking import (
     extract_genie_space_benchmarks,
     generate_benchmarks,
     load_benchmarks_from_dataset,
-    register_benchmark_prompts,
-    register_instruction_version,
 )
 from genie_space_optimizer.optimization.state import (
     load_run,
@@ -2088,12 +2085,9 @@ def preflight_generate_benchmarks(
 
     try:
         _ensure_experiment_parent_dir(w, experiment_name)
-        register_benchmark_prompts(uc_schema, domain, experiment_name)
+        mlflow.set_experiment(experiment_name)
     except Exception:
-        logger.warning(
-            "Benchmark prompt registration failed — tracing will be limited",
-            exc_info=True,
-        )
+        logger.warning("MLflow experiment setup failed", exc_info=True)
 
     with mlflow.start_run(run_name=preflight_run_name(run_id)) as _bench_run:
         _pf_tags = default_tags(
@@ -2858,10 +2852,9 @@ def preflight_setup_experiment(
     *,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict:
-    """Sub-step 6: Create MLflow experiment, register judges, create model.
+    """Sub-step 6: Configure the MLflow experiment and evaluation dataset.
 
-    Returns a dict with keys: model_id, experiment_name, experiment_id,
-    prompt_registrations.
+    Returns experiment and persisted evaluation-dataset metadata.
     """
     uc_schema = f"{catalog}.{schema}"
     _set_sql_context(spark, catalog, schema)
@@ -2894,19 +2887,6 @@ def preflight_setup_experiment(
         })
     except Exception:
         logger.debug("Failed to set experiment-level tags", exc_info=True)
-
-    initial_instructions = _get_general_instructions(config.get("_parsed_space", config))
-    if initial_instructions:
-        register_instruction_version(
-            uc_schema=uc_schema,
-            space_id=space_id,
-            instruction_text=initial_instructions,
-            run_id=run_id,
-            lever=0,
-            iteration=0,
-            accuracy=0.0,
-            domain=domain,
-        )
 
     import os as _os
     _wh_id = _os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
@@ -2941,7 +2921,6 @@ def preflight_setup_experiment(
     _lines.append(_pf_kv("Experiment ID", experiment_id))
     _lines.append(_pf_kv("Model creation", "deferred to baseline eval"))
     _lines.append(_pf_kv("Eval dataset", f"synced ({benchmark_count} persisted valid benchmarks)"))
-    _lines.append(_pf_kv("Instructions", "registered" if initial_instructions else "none to register"))
     _lines.append(_pf_bar())
     print("\n".join(_lines))
 

@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-SELECTOR_VERSION = "wide_schema_selector_v2"
+SELECTOR_VERSION = "wide_schema_selector_v3"
 CONTRACT_VERSION = 1
 
 MAX_ACTIVE_COLUMNS_PER_ASSET = 50
@@ -50,9 +50,9 @@ PRIORITY_BY_REASON = {
     "BENCHMARK_SQL": 1,
     "CONFIG_SQL": 2,
     "JOIN_KEY": 2,
-    "USER_PIN": 2,
     "METRIC_FIELD": 3,
     "QUERY_HISTORY": 3,
+    "COLUMN_BEHAVIOR": 4,
     "SEMANTIC_MATCH": 4,
     "STRUCTURAL_COVERAGE": 5,
     "EXPLORATION": 6,
@@ -63,13 +63,13 @@ HARD_REQUIRED_REASONS = frozenset({
     "BENCHMARK_SQL",
     "CONFIG_SQL",
     "JOIN_KEY",
-    "USER_PIN",
 })
 
-# These settings explicitly request column-level value behavior. Descriptions
-# and synonyms are valuable Genie metadata, but are too common to mean that a
-# column must consume one of the bounded profiling slots.
-USER_PIN_FIELDS = (
+# These settings request column-level value behavior, but they are commonly
+# enabled across an entire data source.  They are useful as a weak tie-breaker;
+# they are not evidence that a user explicitly pinned the column and must not
+# consume all bounded profiling slots ahead of observed query usage.
+COLUMN_BEHAVIOR_FIELDS = (
     "enable_entity_matching",
     "enable_format_assistance",
     "build_value_dictionary",
@@ -809,9 +809,9 @@ def build_local_evidence(config: dict[str, Any], inventory: dict[str, Any]) -> d
     for key, cfg in _column_config_index(config).items():
         if key not in evidence:
             continue
-        if any(cfg.get(field) for field in USER_PIN_FIELDS):
-            evidence[key]["reason_codes"].add("USER_PIN")
-            evidence[key]["scores"]["USER_PIN"] += 1.0
+        if any(cfg.get(field) for field in COLUMN_BEHAVIOR_FIELDS):
+            evidence[key]["reason_codes"].add("COLUMN_BEHAVIOR")
+            evidence[key]["scores"]["COLUMN_BEHAVIOR"] += 1.0
         if columns[key].get("metric_role") in {"measure", "dimension"}:
             evidence[key]["reason_codes"].add("METRIC_FIELD")
             evidence[key]["scores"]["METRIC_FIELD"] += 1.0
@@ -963,6 +963,7 @@ def build_selection_plan(
             )
             history_score = float(scores.get("QUERY_HISTORY") or 0.0)
             metric_score = float(scores.get("METRIC_FIELD") or 0.0)
+            behavior_score = float(scores.get("COLUMN_BEHAVIOR") or 0.0)
             semantic_score = float(scores.get("SEMANTIC_MATCH") or 0.0)
             structural_score = float(scores.get("STRUCTURAL_COVERAGE") or 0.0)
             ranked.append({
@@ -979,6 +980,7 @@ def build_selection_plan(
                 "hard_evidence_score": hard_score,
                 "query_history_score": history_score,
                 "metric_field_score": metric_score,
+                "column_behavior_score": behavior_score,
                 "semantic_score": semantic_score,
                 "structural_score": structural_score,
                 "reason_codes": reasons,
@@ -989,6 +991,7 @@ def build_selection_plan(
             -item["hard_evidence_score"],
             -item["query_history_score"],
             -item["metric_field_score"],
+            -item["column_behavior_score"],
             -item["semantic_score"],
             -item["structural_score"],
             item["column_id"],
@@ -1233,7 +1236,7 @@ def revise_plan_for_column(
             evictable = [
                 row for row in active
                 if tuple(row["column_key"]) not in protected
-                and not ({"USER_PIN", "JOIN_KEY"} & set(row.get("reason_codes") or []))
+                and "JOIN_KEY" not in set(row.get("reason_codes") or [])
             ]
             if not evictable:
                 raise ValueError("active working set is full and has no evictable column")

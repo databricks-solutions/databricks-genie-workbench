@@ -532,8 +532,8 @@ _safe_json_parse = safe_json_parse
 
 
 # Bug #2 — canonical per-iteration accuracy derivation lives in
-# `genie_space_optimizer.common.accuracy.derived_accuracy` (mirrors the
-# prompt-registry pattern: one implementation, thin re-exports at the edge).
+# `genie_space_optimizer.common.accuracy.derived_accuracy` with a thin
+# router-local compatibility wrapper.
 # Calls here pass this module's logger so drift lines keep showing up under
 # `backend.routers.auto_optimize`, preserving existing log-scraping rules
 # and the caplog-scoped unit tests in `test_auto_optimize_router.py`.

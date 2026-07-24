@@ -45,8 +45,9 @@ src/genie_space_optimizer/
     utils.py         Shared numeric/JSON coercion helpers
 ```
 
-`common/prompt_registry.py` remains the single source of truth for the MLflow
-Prompt Registry probe used by both the job and Workbench.
+Prompt templates are version-controlled in `common/config.py`. GSO uses MLflow
+for experiment tracking, traces, and evaluation datasets, but has no MLflow
+Prompt Registry runtime or permission dependency.
 
 ## Persistence rules
 

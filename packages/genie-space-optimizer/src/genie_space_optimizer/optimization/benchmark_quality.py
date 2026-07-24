@@ -130,13 +130,8 @@ def _strip_json_fence(raw: str) -> str:
 
 
 def _call_quality_llm(prompt: str) -> str:
-    from genie_space_optimizer.optimization.benchmarking import (
-        _link_prompt_to_trace,
-        get_registered_prompt_name,
-    )
     from genie_space_optimizer.optimization.llm_client import call_llm
 
-    _link_prompt_to_trace(get_registered_prompt_name("benchmark_quality_review"))
     raw, _response = call_llm(
         None,
         messages=[{"role": "user", "content": prompt}],

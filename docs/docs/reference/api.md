@@ -66,7 +66,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/health` | <span className="badge badge--secondary">SP</span> | GSO health check: job/warehouse configuration status |
-| <span className="badge badge--success">GET</span> | `/api/auto-optimize/permissions/{space_id}` | <span className="badge badge--warning">Mixed</span> | Pre-check SP manage + UC read + Prompt Registry |
+| <span className="badge badge--success">GET</span> | `/api/auto-optimize/permissions/{space_id}` | <span className="badge badge--warning">Mixed</span> | Pre-check SP manage + UC read |
 | <span className="badge badge--info">POST</span> | `/api/auto-optimize/trigger` | <span className="badge badge--warning">Mixed</span> | Start GSO optimization job (OBO for auth, SP for job submission) |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}` | <span className="badge badge--secondary">SP</span> | Full run detail: stages, steps, levers, links |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/status` | <span className="badge badge--secondary">SP</span> | Lightweight status poll: steps, scores |

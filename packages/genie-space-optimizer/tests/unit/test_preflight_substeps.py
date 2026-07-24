@@ -441,8 +441,6 @@ class TestPreflightSetupExperiment:
         "genie_space_optimizer.optimization.preflight._resolve_experiment_path",
         "genie_space_optimizer.optimization.preflight._ensure_experiment_parent_dir",
         "genie_space_optimizer.optimization.preflight.mlflow",
-        "genie_space_optimizer.optimization.preflight._get_general_instructions",
-        "genie_space_optimizer.optimization.preflight.register_instruction_version",
         "genie_space_optimizer.optimization.preflight._flag_stale_temporal_benchmarks",
         "genie_space_optimizer.optimization.preflight.compute_asset_fingerprint",
         "genie_space_optimizer.optimization.preflight._drop_benchmark_table",
@@ -461,12 +459,10 @@ class TestPreflightSetupExperiment:
             patch(self._COMMON_PATCHES[1], return_value="/exp/path"),
             patch(self._COMMON_PATCHES[2]),
             patch(self._COMMON_PATCHES[3]) as mock_mlflow,
-            patch(self._COMMON_PATCHES[4], return_value="instructions"),
-            patch(self._COMMON_PATCHES[5]),
-            patch(self._COMMON_PATCHES[6]),
-            patch(self._COMMON_PATCHES[7], return_value="fp123"),
-            patch(self._COMMON_PATCHES[8]) as mock_drop,
-            patch(self._COMMON_PATCHES[9]) as mock_create_ds,
+            patch(self._COMMON_PATCHES[4]),
+            patch(self._COMMON_PATCHES[5], return_value="fp123"),
+            patch(self._COMMON_PATCHES[6]) as mock_drop,
+            patch(self._COMMON_PATCHES[7]) as mock_create_ds,
         ):
             mock_exp = MagicMock()
             mock_exp.experiment_id = "exp-123"
@@ -489,15 +485,12 @@ class TestPreflightSetupExperiment:
     @patch("genie_space_optimizer.optimization.preflight._drop_benchmark_table")
     @patch("genie_space_optimizer.optimization.preflight.compute_asset_fingerprint", return_value="fp123")
     @patch("genie_space_optimizer.optimization.preflight._flag_stale_temporal_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.register_instruction_version")
-    @patch("genie_space_optimizer.optimization.preflight._get_general_instructions", return_value="instructions")
     @patch("genie_space_optimizer.optimization.preflight.mlflow")
     @patch("genie_space_optimizer.optimization.preflight._ensure_experiment_parent_dir")
     @patch("genie_space_optimizer.optimization.preflight._resolve_experiment_path", return_value="/exp/path")
     @patch("genie_space_optimizer.optimization.preflight.write_stage")
     def test_returns_expected_keys(self, mock_ws, mock_resolve, mock_dir, mock_mlflow,
-                                    mock_instr_fn, mock_reg_instr, mock_flag, mock_fp,
-                                    mock_drop, mock_create_ds):
+                                    mock_flag, mock_fp, mock_drop, mock_create_ds):
         from genie_space_optimizer.optimization.preflight import preflight_setup_experiment
 
         mock_exp = MagicMock()

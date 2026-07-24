@@ -258,6 +258,7 @@ try:
         profiling_warehouse_id=warehouse_id,
         workload_warehouse_ids=workload_warehouse_ids,
         run_id=run_id,
+        target_space_id=space_id,
         service_principal_identities=_sp_identities,
     )
     _wide_schema_evidence = merge_query_history_evidence(

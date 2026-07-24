@@ -267,12 +267,14 @@ column evidence is copied to `wide_schema_evidence`.
 
 ### 7.2 Query-history source hierarchy
 
-GSO uses at most one query-history source per run.
+GSO returns evidence from at most one query-history source per run.
 
 1. Probe `system.query.history` using the GSO service principal.
-2. If the probe and a bounded read succeed, use `system_table` exclusively.
-3. Otherwise probe the Query History REST API for the workload warehouse IDs
-   supplied with the optimization request.
+2. If the bounded read yields attributable columns, use `system_table`
+   exclusively.
+3. If the system-table read fails or yields no attributable columns, probe the
+   Query History REST API for the workload warehouse IDs supplied with the
+   optimization request.
 4. Use every accessible configured workload warehouse and record inaccessible
    warehouses.
 5. If neither source yields usable history, record `none` and continue.
@@ -304,21 +306,23 @@ resource.
 
 | Setting | Default |
 |---|---:|
-| Lookback | 30 days |
+| Lookback | 30 days, expanding to 90 when fewer than 20 query shapes are found |
 | Maximum system-table statements | 10,000 |
 | Maximum REST statements | 5,000 |
 | Maximum accepted statement size | 256 KiB |
 | Maximum raw SQL processed per run | 50 MiB |
 | Maximum history parsing time | 120 seconds |
 
-Statements are processed newest first. Collection stops when any applicable
-count, byte, or time limit is reached. Oversized or unparsed statements are
-skipped and counted; they are not truncated and reparsed as potentially invalid
-SQL.
+Target-Space statements are processed first; statements within each relevance
+tier are newest first. Collection stops when any applicable count, byte, or time
+limit is reached. Oversized or unparsed statements are skipped and counted; they
+are not truncated and reparsed as potentially invalid SQL.
 
-Source-side filters retain only successful SQL in the lookback window and, for
-the REST path, configured workload warehouses. Where supported, source-side
-filters also exclude the GSO service principal.
+The system-table query applies workspace, `FINISHED`, `SELECT`, configured-asset
+or target-Space relevance, GSO job/tag/identity, and legacy-shape filters before
+the 10,000-row limit. Target-Space rows sort ahead of other configured-asset
+matches. The REST path is bounded to configured workload warehouses. Client-side
+checks repeat the GSO exclusions before parsing.
 
 ### 7.4 GSO traffic exclusion
 
@@ -372,7 +376,7 @@ may not.
 
 ## 8. Deterministic ranking
 
-The selector implementation is versioned as `wide_schema_selector_v1`.
+The selector implementation is versioned as `wide_schema_selector_v3`.
 
 ### 8.1 Priority order
 
@@ -383,14 +387,18 @@ number below.
 |---:|---|---|
 | 0 | Active benchmark failure or repair target | `REPAIR_FAILURE` |
 | 1 | Existing benchmark SQL | `BENCHMARK_SQL` |
-| 2 | Genie SQL, expression, filter, join, key, user pin, or explicitly used metric field | `CONFIG_SQL`, `JOIN_KEY`, `USER_PIN`, `METRIC_FIELD` |
-| 3 | Human query-history evidence | `QUERY_HISTORY` |
-| 4 | Local semantic match | `SEMANTIC_MATCH` |
+| 2 | Genie SQL, expression, filter, join, or key | `CONFIG_SQL`, `JOIN_KEY` |
+| 3 | Human query-history evidence, then metric-view role | `QUERY_HISTORY`, `METRIC_FIELD` |
+| 4 | Column behavior flags, then local semantic match | `COLUMN_BEHAVIOR`, `SEMANTIC_MATCH` |
 | 5 | Type and structural coverage | `STRUCTURAL_COVERAGE` |
 | 6 | Reserved exploration | `EXPLORATION` |
 
-Within a priority, columns sort by descending evidence score and then ascending
-canonical column ID. No iteration over an unordered set or map may affect rank.
+Only priorities 0–2 are hard requirements. Column behavior flags such as entity
+matching or example-value collection are soft evidence, because they are often
+enabled for every field in a data source. For non-hard columns, ties sort by
+query-history score, metric-field score, column-behavior score, semantic score,
+structural score, and finally canonical column ID. No iteration over an
+unordered set or map may affect rank.
 
 ### 8.2 Query-history score
 
@@ -414,9 +422,12 @@ shapes:
 | 0–7 days | 1.00 |
 | 8–14 days | 0.50 |
 | 15–30 days | 0.25 |
+| 31–90 days | 0.10 |
 
-One query contributes at most one weighted score per column. Automated GSO
-traffic contributes zero.
+Each normalized query shape contributes at most once per column. Repeated
+occurrences add a capped logarithmic frequency multiplier (maximum 3.0), and
+query shapes observed through the target Genie Space receive a 2.0 multiplier.
+Automated GSO traffic contributes zero.
 
 ### 8.3 Semantic score
 

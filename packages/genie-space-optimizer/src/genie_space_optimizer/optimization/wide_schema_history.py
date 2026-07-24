@@ -6,6 +6,7 @@ import hashlib
 import copy
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -25,6 +26,8 @@ from genie_space_optimizer.optimization.wide_schema import (
 logger = logging.getLogger(__name__)
 
 HISTORY_LOOKBACK_DAYS = 30
+EXTENDED_HISTORY_LOOKBACK_DAYS = 90
+MIN_USEFUL_QUERY_SHAPES = 20
 MAX_SYSTEM_STATEMENTS = 10_000
 MAX_REST_STATEMENTS = 5_000
 MAX_STATEMENT_BYTES = 256 * 1024
@@ -35,8 +38,15 @@ _MAX_AGGREGATE_CACHE_ENTRIES = 128
 _AGGREGATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _AGGREGATE_CACHE_LOCK = threading.Lock()
 
-_RECENCY = ((7, "0_7_days", 1.0), (14, "8_14_days", 0.5), (30, "15_30_days", 0.25))
+_RECENCY = (
+    (7, "0_7_days", 1.0),
+    (14, "8_14_days", 0.5),
+    (30, "15_30_days", 0.25),
+    (90, "31_90_days", 0.1),
+)
 _ERROR_CODE_RE = re.compile(r"\[([A-Z][A-Z0-9_.-]+)\]")
+_MAX_FREQUENCY_MULTIPLIER = 3.0
+_SPACE_QUERY_WEIGHT = 2.0
 
 
 def _query_tags(run_id: str, purpose: str = "history_collection") -> list[Any]:
@@ -45,12 +55,68 @@ def _query_tags(run_id: str, purpose: str = "history_collection") -> list[Any]:
     return gso_query_tags(purpose=purpose, run_id=run_id)
 
 
-def _response_rows(response: Any) -> list[dict[str, Any]]:
+def _statement_result_rows(
+    w: Any,
+    response: Any,
+    *,
+    max_rows: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fetch every INLINE result chunk and return bounded row dictionaries."""
     manifest_schema = response.manifest.schema if response.manifest else None
     schema_columns = manifest_schema.columns if manifest_schema else None
     names = [str(column.name or "") for column in (schema_columns or [])]
-    data = response.result.data_array if response.result and response.result.data_array else []
-    return [dict(zip(names, row)) for row in data]
+    result = response.result
+    rows: list[dict[str, Any]] = []
+    chunks_fetched = 0
+    seen_chunks: set[int] = set()
+
+    def append_chunk(chunk: Any) -> None:
+        nonlocal chunks_fetched
+        if chunk is None:
+            return
+        chunks_fetched += 1
+        for raw in chunk.data_array or []:
+            if len(rows) >= max_rows:
+                break
+            rows.append(dict(zip(names, raw)))
+
+    append_chunk(result)
+    next_index = getattr(result, "next_chunk_index", None) if result else None
+    total_chunks = int(
+        getattr(response.manifest, "total_chunk_count", 0) or 0
+    ) if response.manifest else 0
+    statement_id = str(getattr(response, "statement_id", "") or "")
+
+    while len(rows) < max_rows:
+        if next_index is None:
+            remaining = [
+                index for index in range(1, total_chunks)
+                if index not in seen_chunks
+            ]
+            if not remaining:
+                break
+            next_index = remaining[0]
+        chunk_index = int(next_index)
+        if chunk_index in seen_chunks:
+            raise RuntimeError("statement result chunk chain contains a cycle")
+        if not statement_id:
+            raise RuntimeError("statement result is chunked but statement_id is missing")
+        seen_chunks.add(chunk_index)
+        chunk = w.statement_execution.get_statement_result_chunk_n(
+            statement_id=statement_id,
+            chunk_index=chunk_index,
+        )
+        append_chunk(chunk)
+        next_index = getattr(chunk, "next_chunk_index", None)
+
+    manifest = response.manifest
+    return rows, {
+        "chunks_fetched": chunks_fetched,
+        "rows_returned": len(rows),
+        "result_total_rows": int(getattr(manifest, "total_row_count", 0) or 0),
+        "result_total_chunks": total_chunks,
+        "result_truncated": bool(getattr(manifest, "truncated", False)),
+    }
 
 
 def _safe_error_code(error: Any) -> str:
@@ -67,7 +133,124 @@ def _safe_error_code(error: Any) -> str:
     return type(error).__name__[:128]
 
 
-def _system_history_rows(w: Any, warehouse_id: str, *, run_id: str) -> list[dict[str, Any]]:
+def _sql_literal(value: Any) -> str:
+    return "'" + str(value or "").replace("'", "''") + "'"
+
+
+def _asset_relevance_predicate(inventory: dict[str, Any]) -> str:
+    normalized_sql = "lower(replace(coalesce(statement_text, ''), '`', ''))"
+    exact_names: set[str] = set()
+    leaf_names: set[str] = set()
+    for asset in inventory.get("assets") or []:
+        parts = [str(value or "").casefold() for value in asset.get("asset_key") or []]
+        if len(parts) != 3:
+            continue
+        exact_names.add(".".join(parts))
+        exact_names.add(".".join(parts[-2:]))
+        leaf_names.add(parts[-1])
+    predicates = [
+        f"instr({normalized_sql}, {_sql_literal(name)}) > 0"
+        for name in sorted(exact_names)
+    ]
+    for name in sorted(leaf_names):
+        boundary_pattern = rf"(^|[^a-z0-9_]){re.escape(name)}([^a-z0-9_]|$)"
+        predicates.append(
+            f"regexp_like({normalized_sql}, {_sql_literal(boundary_pattern)})"
+        )
+    return " OR ".join(predicates) or "FALSE"
+
+
+def _system_history_statement(
+    workspace_id: int,
+    inventory: dict[str, Any],
+    *,
+    target_space_id: str,
+    gso_job_id: str,
+    service_principal_identities: Iterable[str],
+    lookback_days: int,
+) -> str:
+    normalized_sql = "lower(replace(coalesce(statement_text, ''), '`', ''))"
+    relevance = [_asset_relevance_predicate(inventory)]
+    if target_space_id:
+        relevance.insert(
+            0,
+            "query_source.genie_space_id = " + _sql_literal(target_space_id),
+        )
+    exclusions = [
+        "coalesce(query_tags['application'], '') <> 'genie_workbench'",
+        "coalesce(query_tags['component'], '') <> 'gso'",
+    ]
+    if gso_job_id:
+        exclusions.append(
+            "coalesce(query_source.job_info.job_id, '') <> "
+            + _sql_literal(gso_job_id)
+        )
+    identities = sorted({
+        str(value).casefold() for value in service_principal_identities if value
+    })
+    if identities:
+        rendered_identities = ", ".join(
+            _sql_literal(value) for value in identities
+        )
+        exclusions.extend((
+            "lower(coalesce(executed_by, '')) NOT IN ("
+            + rendered_identities
+            + ")",
+            "lower(coalesce(executed_as, '')) NOT IN ("
+            + rendered_identities
+            + ")",
+        ))
+    for marker in (
+        "tablesample (100 rows)",
+        "_card_",
+        "collect_set(",
+        "select * from (explain",
+        "genie_opt_",
+    ):
+        exclusions.append(
+            f"instr({normalized_sql}, {_sql_literal(marker)}) = 0"
+        )
+    order_by = "start_time DESC"
+    if target_space_id:
+        order_by = (
+            "CASE WHEN query_source.genie_space_id = "
+            + _sql_literal(target_space_id)
+            + " THEN 0 ELSE 1 END, start_time DESC"
+        )
+
+    return f"""
+        SELECT
+          statement_id,
+          statement_text,
+          statement_type,
+          start_time,
+          executed_by,
+          executed_as,
+          query_source,
+          query_tags
+        FROM system.query.history
+        WHERE start_time >= current_timestamp() - INTERVAL {int(lookback_days)} DAYS
+          AND execution_status = 'FINISHED'
+          AND statement_type = 'SELECT'
+          AND workspace_id = {int(workspace_id)}
+          AND ({' OR '.join(relevance)})
+          AND {' AND '.join(exclusions)}
+        ORDER BY {order_by}
+        LIMIT {MAX_SYSTEM_STATEMENTS}
+    """
+
+
+def _system_history_rows(
+    w: Any,
+    warehouse_id: str,
+    *,
+    run_id: str,
+    inventory: dict[str, Any],
+    target_space_id: str = "",
+    gso_job_id: str = "",
+    service_principal_identities: Iterable[str] = (),
+    lookback_days: int = HISTORY_LOOKBACK_DAYS,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     from databricks.sdk.service.sql import Disposition, Format, StatementState
 
     try:
@@ -81,21 +264,14 @@ def _system_history_rows(w: Any, warehouse_id: str, *, run_id: str) -> list[dict
             "current workspace ID is required to scope system.query.history"
         )
 
-    statement = f"""
-        SELECT
-          statement_id,
-          statement_text,
-          start_time,
-          executed_by,
-          query_source,
-          query_tags
-        FROM system.query.history
-        WHERE start_time >= current_timestamp() - INTERVAL {HISTORY_LOOKBACK_DAYS} DAYS
-          AND execution_status = 'FINISHED'
-          AND workspace_id = {workspace_id}
-        ORDER BY start_time DESC
-        LIMIT {MAX_SYSTEM_STATEMENTS}
-    """
+    statement = _system_history_statement(
+        workspace_id,
+        inventory,
+        target_space_id=target_space_id,
+        gso_job_id=gso_job_id,
+        service_principal_identities=service_principal_identities,
+        lookback_days=lookback_days,
+    )
     response = w.statement_execution.execute_statement(
         warehouse_id=warehouse_id,
         statement=statement,
@@ -111,7 +287,22 @@ def _system_history_rows(w: Any, warehouse_id: str, *, run_id: str) -> list[dict
         raise RuntimeError(
             f"system.query.history bounded read failed [{code}]"
         )
-    return _response_rows(response)
+    rows, read_telemetry = _statement_result_rows(
+        w,
+        response,
+        max_rows=MAX_SYSTEM_STATEMENTS,
+    )
+    read_telemetry.update({
+        "lookback_days": int(lookback_days),
+        "workspace_scoped": True,
+        "server_side_select_filter": True,
+        "server_side_gso_filter": True,
+        "server_side_relevance_filter": True,
+        "target_space_scoped": bool(target_space_id),
+        "target_space_prioritized": bool(target_space_id),
+        "configured_asset_count": len(inventory.get("assets") or []),
+    })
+    return rows, read_telemetry
 
 
 def _rest_history_rows(
@@ -230,6 +421,18 @@ def _query_source_job_id(row: dict[str, Any]) -> str:
     return str(job_info.get("job_id") or "") if isinstance(job_info, dict) else ""
 
 
+def _query_source_space_id(row: dict[str, Any]) -> str:
+    raw = row.get("query_source") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return ""
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("genie_space_id") or "")
+
+
 def _legacy_gso_shape(sql: str) -> bool:
     normalized = " ".join(str(sql or "").casefold().split())
     markers = (
@@ -242,22 +445,33 @@ def _legacy_gso_shape(sql: str) -> bool:
     return any(marker in normalized for marker in markers)
 
 
-def _excluded(
+def _exclusion_reason(
     row: dict[str, Any],
     sql: str,
     *,
     gso_job_id: str,
     service_principal_identities: set[str],
-) -> bool:
+) -> str | None:
     if gso_job_id and _query_source_job_id(row) == gso_job_id:
-        return True
+        return "excluded_gso_job"
     tags = _tags(row)
     if tags.get("application") == "genie_workbench" or tags.get("component") == "gso":
-        return True
-    identity = str(row.get("executed_by") or "").casefold()
-    if identity and identity in service_principal_identities:
-        return True
-    return _legacy_gso_shape(sql)
+        return "excluded_gso_tags"
+    row_identities = {
+        str(row.get(field) or "").casefold()
+        for field in (
+            "executed_by",
+            "executed_as",
+            "executed_as_user_name",
+            "user_name",
+        )
+        if row.get(field)
+    }
+    if row_identities & service_principal_identities:
+        return "excluded_service_principal"
+    if _legacy_gso_shape(sql):
+        return "excluded_legacy_gso_shape"
+    return None
 
 
 def _normalized_shape_hash(sql: str) -> str | None:
@@ -291,6 +505,7 @@ def normalize_history_rows(
     source_scope: list[str],
     gso_job_id: str = "",
     service_principal_identities: Iterable[str] = (),
+    target_space_id: str = "",
     max_statements: int,
     inaccessible_scope: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -301,7 +516,8 @@ def normalize_history_rows(
     counters: defaultdict[str, int] = defaultdict(int)
     total_bytes = 0
     accepted = 0
-    seen_shapes: set[str] = set()
+    accepted_source_counts: defaultdict[str, int] = defaultdict(int)
+    shape_columns: dict[str, list[tuple[tuple[str, ...], str]]] = {}
     column_shapes: dict[tuple[str, ...], dict[str, dict[str, Any]]] = defaultdict(dict)
 
     for row in rows:
@@ -320,39 +536,69 @@ def normalize_history_rows(
             counters["byte_limit_reached"] += 1
             break
         total_bytes += size
-        if _excluded(
+        statement_type = str(row.get("statement_type") or "").upper()
+        if statement_type and statement_type != "SELECT":
+            counters["non_select"] += 1
+            continue
+        exclusion_reason = _exclusion_reason(
             row,
             sql,
             gso_job_id=gso_job_id,
             service_principal_identities=identities,
-        ):
+        )
+        if exclusion_reason:
+            counters[exclusion_reason] += 1
             counters["gso_excluded"] += 1
             continue
         shape_hash = _normalized_shape_hash(sql)
         if not shape_hash:
             counters["unparsed"] += 1
             continue
-        if shape_hash in seen_shapes:
-            counters["duplicate_shape"] += 1
-            continue
         recency = _recency(_start_epoch(row), now_epoch)
         if recency is None:
             counters["outside_lookback"] += 1
+            continue
+        space_scoped = bool(
+            target_space_id
+            and _query_source_space_id(row) == target_space_id
+        )
+        source_kind = "target_space" if space_scoped else "configured_asset"
+        bucket, multiplier = recency
+        if shape_hash in shape_columns:
+            counters["duplicate_shape"] += 1
+            accepted += 1
+            accepted_source_counts[source_kind] += 1
+            for key, _role in shape_columns[shape_hash]:
+                shape = column_shapes[key][shape_hash]
+                shape["frequency"] += 1
+                shape["space_scoped"] = bool(
+                    shape["space_scoped"] or space_scoped
+                )
+                if multiplier > float(shape["recency_multiplier"]):
+                    shape["bucket"] = bucket
+                    shape["recency_multiplier"] = multiplier
+                shape["last_used_epoch"] = max(
+                    float(shape["last_used_epoch"]),
+                    _start_epoch(row),
+                )
             continue
         evidence = sql_column_evidence(sql, inventory, diagnostics=counters)
         if not evidence:
             counters["no_column_attribution"] += 1
             continue
-        seen_shapes.add(shape_hash)
         accepted += 1
-        bucket, multiplier = recency
+        accepted_source_counts[source_kind] += 1
+        shape_columns[shape_hash] = []
         for item in evidence:
             key = tuple(item["column_key"])
             role = str(item.get("sql_role") or "projection")
+            shape_columns[shape_hash].append((key, role))
             column_shapes[key][shape_hash] = {
                 "role": role,
                 "bucket": bucket,
-                "score": QUERY_ROLE_WEIGHTS.get(role, 1.0) * multiplier,
+                "recency_multiplier": multiplier,
+                "frequency": 1,
+                "space_scoped": space_scoped,
                 "last_used_epoch": _start_epoch(row),
             }
 
@@ -361,9 +607,26 @@ def normalize_history_rows(
         counts: defaultdict[str, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
         score = 0.0
         last_used = 0.0
+        occurrence_count = 0
+        target_space_shape_count = 0
         for shape in shapes.values():
             counts[shape["role"]][shape["bucket"]] += 1
-            score += float(shape["score"])
+            frequency = int(shape["frequency"])
+            frequency_multiplier = min(
+                _MAX_FREQUENCY_MULTIPLIER,
+                1.0 + math.log1p(max(0, frequency - 1)),
+            )
+            space_multiplier = (
+                _SPACE_QUERY_WEIGHT if shape["space_scoped"] else 1.0
+            )
+            score += (
+                QUERY_ROLE_WEIGHTS.get(shape["role"], 1.0)
+                * float(shape["recency_multiplier"])
+                * frequency_multiplier
+                * space_multiplier
+            )
+            occurrence_count += frequency
+            target_space_shape_count += int(bool(shape["space_scoped"]))
             last_used = max(last_used, float(shape["last_used_epoch"]))
         columns.append({
             "column_key": list(key),
@@ -372,6 +635,8 @@ def normalize_history_rows(
             "distinct_query_counts": {
                 role: dict(sorted(buckets.items())) for role, buckets in sorted(counts.items())
             },
+            "query_occurrence_count": occurrence_count,
+            "target_space_query_shape_count": target_space_shape_count,
             "last_used_timestamp": datetime.fromtimestamp(last_used, timezone.utc).isoformat() if last_used else None,
             "query_shape_hashes": sorted(shapes),
         })
@@ -383,7 +648,9 @@ def normalize_history_rows(
         "source_scope": source_scope,
         "coverage": {
             "accepted_statements": accepted,
-            "distinct_query_shapes": len(seen_shapes),
+            "distinct_query_shapes": len(shape_columns),
+            "target_space_statements": accepted_source_counts["target_space"],
+            "configured_asset_statements": accepted_source_counts["configured_asset"],
             "raw_sql_bytes_processed": total_bytes,
             "inaccessible_scope": inaccessible_scope or [],
         },
@@ -399,10 +666,11 @@ def collect_query_history_evidence(
     profiling_warehouse_id: str,
     workload_warehouse_ids: list[str] | None,
     run_id: str,
+    target_space_id: str = "",
     gso_job_id: str | None = None,
     service_principal_identities: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """Use exactly one source hierarchy and degrade to ``none`` on failures."""
+    """Collect relevant history, expanding/falling back when evidence is empty."""
     job_id = str(gso_job_id or os.getenv("GSO_JOB_ID", ""))
     identities = sorted(
         str(value).casefold()
@@ -414,6 +682,7 @@ def collect_query_history_evidence(
         "inventory_hash": inventory.get("inventory_hash"),
         "profiling_warehouse_id": profiling_warehouse_id,
         "workload_warehouse_ids": warehouses,
+        "target_space_id": target_space_id,
         "gso_job_id": job_id,
         "service_principal_identities_hash": hashlib.sha256(
             json.dumps(identities, separators=(",", ":")).encode("utf-8")
@@ -433,32 +702,79 @@ def collect_query_history_evidence(
                 _AGGREGATE_CACHE.pop(oldest, None)
         return evidence
 
-    try:
-        system_rows = _system_history_rows(w, profiling_warehouse_id, run_id=run_id)
-        evidence = normalize_history_rows(
+    def read_system(lookback_days: int) -> dict[str, Any]:
+        system_rows, read_telemetry = _system_history_rows(
+            w,
+            profiling_warehouse_id,
+            run_id=run_id,
+            inventory=inventory,
+            target_space_id=target_space_id,
+            gso_job_id=job_id,
+            service_principal_identities=identities,
+            lookback_days=lookback_days,
+        )
+        result = normalize_history_rows(
             system_rows,
             inventory,
             source_mode="system_table",
             source_scope=["system.query.history"],
             gso_job_id=job_id,
             service_principal_identities=identities,
+            target_space_id=target_space_id,
             max_statements=MAX_SYSTEM_STATEMENTS,
         )
-        evidence["source_attempts"] = {
-            "system_table": "succeeded",
-            "warehouse_api": "not_attempted",
-        }
-        evidence["source_errors"] = {}
-        evidence["warnings"] = []
-        return cache(evidence)
+        result.setdefault("coverage", {})["read_telemetry"] = read_telemetry
+        return result
+
+    system_evidence: dict[str, Any] | None = None
+    system_error_code = ""
+    system_warnings: list[str] = []
+    try:
+        system_evidence = read_system(HISTORY_LOOKBACK_DAYS)
+        distinct_shapes = int(
+            system_evidence.get("coverage", {}).get("distinct_query_shapes") or 0
+        )
+        if distinct_shapes < MIN_USEFUL_QUERY_SHAPES:
+            try:
+                extended = read_system(EXTENDED_HISTORY_LOOKBACK_DAYS)
+                extended_shapes = int(
+                    extended.get("coverage", {}).get("distinct_query_shapes") or 0
+                )
+                if extended_shapes >= distinct_shapes:
+                    system_evidence = extended
+                    system_warnings.append(
+                        "Expanded query-history lookback from "
+                        f"{HISTORY_LOOKBACK_DAYS} to {EXTENDED_HISTORY_LOOKBACK_DAYS} days "
+                        f"because only {distinct_shapes} distinct query shapes were found"
+                    )
+            except Exception:
+                system_warnings.append(
+                    "Extended query-history lookback failed; retained the 30-day evidence"
+                )
+                logger.info("Extended system.query.history read failed", exc_info=True)
+
+        if int(system_evidence.get("coverage", {}).get("accepted_statements") or 0) > 0:
+            system_evidence["source_attempts"] = {
+                "system_table": "succeeded",
+                "warehouse_api": "not_attempted",
+            }
+            system_evidence["source_errors"] = {}
+            system_evidence["warnings"] = system_warnings
+            return cache(system_evidence)
+        system_warnings.append(
+            "system.query.history returned no attributable user workload; probing warehouse history"
+        )
     except Exception as exc:
         system_error_code = _safe_error_code(exc)
         logger.info("system.query.history unavailable; probing warehouse history", exc_info=True)
 
+    warehouse_status = "not_configured"
     if warehouses:
         rows, inaccessible = _rest_history_rows(w, warehouses)
         accessible = [warehouse for warehouse in warehouses if warehouse not in inaccessible]
+        warehouse_status = "failed"
         if accessible:
+            warehouse_status = "succeeded"
             evidence = normalize_history_rows(
                 rows,
                 inventory,
@@ -466,24 +782,55 @@ def collect_query_history_evidence(
                 source_scope=accessible,
                 gso_job_id=job_id,
                 service_principal_identities=identities,
+                target_space_id=target_space_id,
                 max_statements=MAX_REST_STATEMENTS,
                 inaccessible_scope=inaccessible,
             )
-            evidence.setdefault("degradation_counts", {})[
-                "system_history_unavailable"
-            ] = 1
+            if system_evidence is None:
+                evidence.setdefault("degradation_counts", {})[
+                    "system_history_unavailable"
+                ] = 1
+            else:
+                evidence.setdefault("degradation_counts", {})[
+                    "system_history_no_usable_statements"
+                ] = 1
             evidence["source_attempts"] = {
-                "system_table": "failed",
+                "system_table": (
+                    "failed" if system_evidence is None else "succeeded_no_usable_rows"
+                ),
                 "warehouse_api": "succeeded",
             }
-            evidence["source_errors"] = {
-                "system_table": system_error_code,
-            }
-            evidence["warnings"] = [
-                "system.query.history was unavailable; used warehouse query history fallback",
+            evidence["source_errors"] = (
+                {"system_table": system_error_code}
+                if system_evidence is None else {}
+            )
+            evidence["warnings"] = system_warnings + [
+                (
+                    "system.query.history was unavailable; used warehouse query history fallback"
+                    if system_evidence is None
+                    else "system.query.history had no usable rows; used warehouse query history fallback"
+                ),
             ]
-            return cache(evidence)
-    warehouse_status = "failed" if warehouses else "not_configured"
+            if int(evidence.get("coverage", {}).get("accepted_statements") or 0) > 0:
+                return cache(evidence)
+            warehouse_status = "succeeded_no_usable_rows"
+
+    if system_evidence is not None:
+        system_evidence.setdefault("degradation_counts", {})[
+            "history_no_usable_statements"
+        ] = 1
+        system_evidence["source_mode"] = "none"
+        system_evidence["source_scope"] = []
+        system_evidence["source_attempts"] = {
+            "system_table": "succeeded_no_usable_rows",
+            "warehouse_api": warehouse_status,
+        }
+        system_evidence["source_errors"] = {}
+        system_evidence["warnings"] = system_warnings + [
+            "No attributable query-history columns were found; column ranking used local evidence only"
+        ]
+        return cache(system_evidence)
+
     return {
         "contract_version": CONTRACT_VERSION,
         "inventory_hash": inventory["inventory_hash"],

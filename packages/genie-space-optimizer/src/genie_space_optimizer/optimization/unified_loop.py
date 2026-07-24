@@ -18,12 +18,10 @@ from typing import Any
 
 from genie_space_optimizer.common.config import (
     OPTIMIZER_PROMPT_MAX_CHARS,
-    PROMPT_NAME_TEMPLATE,
     UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA,
     UNIFIED_OPTIMIZER_PATCH_RULES,
     UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT,
     WELL_CURATED_SPACE_RUBRIC,
-    format_mlflow_template,
 )
 from genie_space_optimizer.common.genie_client import fetch_space_config
 from genie_space_optimizer.optimization.applier import (
@@ -37,11 +35,7 @@ from genie_space_optimizer.optimization.eval_runner import (
     build_eval_output_from_official,
     resolve_space_benchmark_qids,
 )
-from genie_space_optimizer.optimization.benchmarking import (
-    _extract_json,
-    _link_prompt_to_trace,
-    get_registered_prompt_name,
-)
+from genie_space_optimizer.optimization.benchmarking import _extract_json
 from genie_space_optimizer.optimization.leakage import (
     BenchmarkCorpus,
     canonicalize_sql,
@@ -1699,20 +1693,6 @@ def _preapply_safety_screen(
     return kept, dropped
 
 
-def _prompt_name_for_key(prompt_key: str, *, catalog: str = "", schema: str = "") -> str:
-    registered = get_registered_prompt_name(prompt_key)
-    if registered:
-        return registered
-    uc_schema = ".".join(part for part in (catalog, schema) if part)
-    if uc_schema and "." in uc_schema:
-        return format_mlflow_template(
-            PROMPT_NAME_TEMPLATE,
-            uc_schema=uc_schema,
-            judge_name=prompt_key,
-        )
-    return prompt_key
-
-
 def _start_chain_span(name: str) -> Any:
     try:
         import mlflow
@@ -1730,8 +1710,6 @@ def propose_patches(
     current_config: dict[str, Any],
     eval_result: dict[str, Any],
     reflections: list[dict[str, Any]],
-    catalog: str = "",
-    schema: str = "",
     banned_patch_types: set[str] | frozenset[str] | None = None,
 ) -> tuple[int | None, str, list[dict[str, Any]], str]:
     messages, context_stats = _llm_messages(
@@ -1741,18 +1719,12 @@ def propose_patches(
         reflections=reflections,
         banned_patch_types=banned_patch_types,
     )
-    prompt_name = _prompt_name_for_key(
-        "unified_optimizer_patch",
-        catalog=catalog,
-        schema=schema,
-    )
     with _start_chain_span("unified_optimizer_patch") as span:
-        _link_prompt_to_trace(prompt_name)
         try:
             if span is not None:
                 span.set_inputs(
                     {
-                        "prompt_name": prompt_name,
+                        "prompt_template": "unified_optimizer_patch",
                         "prompt_chars": context_stats.get("prompt_chars"),
                         "context_chars": context_stats.get("prompt_context_chars"),
                         "context_hash": context_stats.get("context_hash"),
@@ -2368,8 +2340,6 @@ def run_unified_optimization_loop(
                 current_config=current_config,
                 eval_result=best_eval,
                 reflections=reflections,
-                catalog=catalog,
-                schema=schema,
                 banned_patch_types=banned_patch_types,
             )
             hypothesis = {

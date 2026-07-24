@@ -14,7 +14,6 @@ These variables are defined in `app.yaml` and injected into the app runtime. Pla
 | Variable | Value | Description |
 |----------|-------|-------------|
 | `MLFLOW_TRACKING_URI` | `databricks` | MLflow tracking server (Databricks workspace) |
-| `MLFLOW_REGISTRY_URI` | `databricks-uc` | MLflow model registry (Unity Catalog) |
 | `MLFLOW_EXPERIMENT_ID` | `__MLFLOW_EXPERIMENT_ID__` | Experiment for tracing LLM calls. Workspace-specific; validated at startup, cleared if invalid |
 
 ### LLM Model

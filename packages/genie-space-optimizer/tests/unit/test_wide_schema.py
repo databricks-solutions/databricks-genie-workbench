@@ -142,7 +142,7 @@ def test_query_history_breaks_wide_metric_field_ties_without_overriding_hard_req
     assert plan["evidence_source_attempts"]["system_table"] == "succeeded"
 
 
-def test_descriptions_and_synonyms_do_not_make_columns_hard_user_pins():
+def test_descriptions_and_synonyms_do_not_enable_column_behavior():
     inventory = _inventory(columns=2)
     config = _config([("cat", "sch0", "table0")])
     config["_parsed_space"]["data_sources"]["tables"][0]["column_configs"] = [
@@ -163,8 +163,46 @@ def test_descriptions_and_synonyms_do_not_make_columns_hard_user_pins():
         for row in evidence["columns"]
     }
 
-    assert "USER_PIN" not in rows["column_0000"]["reason_codes"]
-    assert "USER_PIN" in rows["column_0001"]["reason_codes"]
+    assert "COLUMN_BEHAVIOR" not in rows["column_0000"]["reason_codes"]
+    assert "COLUMN_BEHAVIOR" in rows["column_0001"]["reason_codes"]
+
+
+def test_column_behavior_is_soft_and_query_history_ranks_ahead_of_it():
+    inventory = _inventory(columns=100, table_type="METRIC_VIEW")
+    config = _config([("cat", "sch0", "table0")])
+    config["_parsed_space"]["data_sources"]["tables"][0]["column_configs"] = [
+        {
+            "column_name": f"column_{index:04d}",
+            "enable_entity_matching": True,
+        }
+        for index in range(100)
+    ]
+    local = build_local_evidence(config, inventory)
+    history = {
+        "contract_version": 1,
+        "inventory_hash": inventory["inventory_hash"],
+        "source_mode": "system_table",
+        "source_scope": ["system.query.history"],
+        "coverage": {"accepted_statements": 1},
+        "degradation_counts": {},
+        "columns": [{
+            "column_key": ["cat", "sch0", "table0", "column_0099"],
+            "column_id": "`cat`.`sch0`.`table0`.`column_0099`",
+            "evidence_score": 10.0,
+        }],
+    }
+
+    plan = build_selection_plan(
+        inventory,
+        merge_query_history_evidence(local, history),
+        run_id="run-soft-behavior",
+    )
+    rows = {row["name"]: row for row in plan["assets"][0]["columns"]}
+
+    assert rows["column_0099"]["stable_rank"] == 1
+    assert rows["column_0099"]["query_history_score"] == 10.0
+    assert rows["column_0099"]["column_behavior_score"] == 1.0
+    assert plan["assets"][0]["required_overflow_count"] == 0
 
 
 def test_adaptive_revision_never_profiles_a_51st_distinct_column():
@@ -660,6 +698,67 @@ def test_history_evidence_is_aggregate_only_and_select_star_is_not_column_use():
     assert "statement_text" not in serialized
 
 
+def test_history_frequency_space_weight_and_exclusion_telemetry():
+    inventory = _inventory(columns=3)
+    now_ms = int(time.time() * 1000)
+    common = {
+        "statement_type": "SELECT",
+        "query_start_time_ms": now_ms,
+        "executed_by": "alice@example.com",
+        "query_source": {"genie_space_id": "space-1"},
+    }
+    evidence = normalize_history_rows(
+        [
+            {
+                **common,
+                "statement_text": (
+                    "SELECT column_0000 FROM cat.sch0.table0 "
+                    "WHERE column_0001 = 'first'"
+                ),
+            },
+            {
+                **common,
+                "statement_text": (
+                    "SELECT column_0000 FROM cat.sch0.table0 "
+                    "WHERE column_0001 = 'second'"
+                ),
+            },
+            {
+                **common,
+                "executed_by": "gso-app",
+                "statement_text": "SELECT column_0002 FROM cat.sch0.table0",
+            },
+            {
+                **common,
+                "executed_as": "gso-app",
+                "statement_text": "SELECT column_0002 FROM cat.sch0.table0",
+            },
+            {
+                **common,
+                "statement_type": "CREATE",
+                "statement_text": "CREATE TABLE cat.sch0.other (id INT)",
+            },
+        ],
+        inventory,
+        source_mode="system_table",
+        source_scope=["system.query.history"],
+        service_principal_identities={"gso-app"},
+        target_space_id="space-1",
+        max_statements=10,
+    )
+    rows = {row["column_key"][-1]: row for row in evidence["columns"]}
+
+    assert evidence["coverage"]["accepted_statements"] == 2
+    assert evidence["coverage"]["distinct_query_shapes"] == 1
+    assert evidence["coverage"]["target_space_statements"] == 2
+    assert evidence["degradation_counts"]["duplicate_shape"] == 1
+    assert evidence["degradation_counts"]["excluded_service_principal"] == 2
+    assert evidence["degradation_counts"]["non_select"] == 1
+    assert rows["column_0001"]["query_occurrence_count"] == 2
+    assert rows["column_0001"]["target_space_query_shape_count"] == 1
+    assert rows["column_0001"]["evidence_score"] > 10.0
+
+
 def test_cte_alias_lineage_and_ambiguous_assets_are_resolved_safely():
     inventory = _inventory(assets=2, columns=3)
     diagnostics: dict[str, int] = {}
@@ -720,9 +819,31 @@ def test_system_history_is_scoped_to_current_workspace():
         statement_execution=Execution(),
     )
 
-    assert _system_history_rows(w, "warehouse-1", run_id="run-history") == []
+    rows, telemetry = _system_history_rows(
+        w,
+        "warehouse-1",
+        run_id="run-history",
+        inventory=_inventory(columns=3),
+        target_space_id="space-1",
+        gso_job_id="job-1",
+        service_principal_identities={"gso-app"},
+    )
+    assert rows == []
+    assert telemetry["workspace_scoped"] is True
     assert len(statements) == 1
     assert "workspace_id = 123456789" in statements[0]
+    assert "statement_type = 'SELECT'" in statements[0]
+    assert "query_source.genie_space_id = 'space-1'" in statements[0]
+    assert "cat.sch0.table0" in statements[0]
+    assert "job-1" in statements[0]
+    assert "gso-app" in statements[0]
+    assert "lower(coalesce(executed_as, '')) NOT IN" in statements[0]
+    assert statements[0].index("statement_type = 'SELECT'") < statements[0].index("ORDER BY")
+    assert statements[0].index("gso-app") < statements[0].index("ORDER BY")
+    assert (
+        "CASE WHEN query_source.genie_space_id = 'space-1' THEN 0 ELSE 1 END"
+        in statements[0]
+    )
     assert "warehouse_id" not in statements[0]
 
 
@@ -730,7 +851,67 @@ def test_system_history_fails_closed_without_current_workspace_id():
     w = SimpleNamespace(get_workspace_id=lambda: None)
 
     with pytest.raises(RuntimeError, match="workspace ID"):
-        _system_history_rows(w, "warehouse-1", run_id="run-history")
+        _system_history_rows(
+            w,
+            "warehouse-1",
+            run_id="run-history",
+            inventory=_inventory(columns=3),
+        )
+
+
+def test_system_history_fetches_every_inline_result_chunk():
+    from databricks.sdk.service.sql import StatementState
+
+    names = [
+        "statement_id", "statement_text", "statement_type", "start_time",
+        "executed_by", "executed_as", "query_source", "query_tags",
+    ]
+    columns = [SimpleNamespace(name=name) for name in names]
+    first = [
+        "statement-1", "SELECT column_0000 FROM cat.sch0.table0", "SELECT",
+        "2026-01-01T00:00:00Z", "alice", "alice", "{}", "{}",
+    ]
+    second = [
+        "statement-2", "SELECT column_0001 FROM cat.sch0.table0", "SELECT",
+        "2026-01-02T00:00:00Z", "alice", "alice", "{}", "{}",
+    ]
+    fetched = []
+
+    class Execution:
+        def execute_statement(self, **_kwargs):
+            return SimpleNamespace(
+                status=SimpleNamespace(state=StatementState.SUCCEEDED),
+                statement_id="history-statement",
+                manifest=SimpleNamespace(
+                    schema=SimpleNamespace(columns=columns),
+                    total_chunk_count=2,
+                    total_row_count=2,
+                    truncated=False,
+                ),
+                result=SimpleNamespace(
+                    data_array=[first],
+                    next_chunk_index=1,
+                ),
+            )
+
+        def get_statement_result_chunk_n(self, **kwargs):
+            fetched.append(kwargs)
+            return SimpleNamespace(data_array=[second], next_chunk_index=None)
+
+    rows, telemetry = _system_history_rows(
+        SimpleNamespace(
+            get_workspace_id=lambda: 123456789,
+            statement_execution=Execution(),
+        ),
+        "warehouse-1",
+        run_id="run-history",
+        inventory=_inventory(columns=3),
+    )
+
+    assert [row["statement_id"] for row in rows] == ["statement-1", "statement-2"]
+    assert fetched == [{"statement_id": "history-statement", "chunk_index": 1}]
+    assert telemetry["chunks_fetched"] == 2
+    assert telemetry["rows_returned"] == 2
 
 
 def test_history_collection_persists_clear_degradation_diagnostics(monkeypatch):
@@ -772,6 +953,105 @@ def test_history_collection_persists_clear_degradation_diagnostics(monkeypatch):
     assert history["warnings"]
     assert plan["evidence_source_errors"] == history["source_errors"]
     assert plan["evidence_warnings"] == history["warnings"]
+
+
+def test_history_collection_expands_to_ninety_days_when_signal_is_sparse(monkeypatch):
+    inventory = _inventory(columns=3)
+    wide_schema_history._AGGREGATE_CACHE.clear()
+    lookbacks = []
+    now_ms = int(time.time() * 1000)
+
+    def fake_system_rows(*_args, lookback_days, **_kwargs):
+        lookbacks.append(lookback_days)
+        rows = []
+        if lookback_days == wide_schema_history.EXTENDED_HISTORY_LOOKBACK_DAYS:
+            rows = [{
+                "statement_text": "SELECT column_0000 FROM cat.sch0.table0",
+                "statement_type": "SELECT",
+                "query_start_time_ms": now_ms,
+                "query_source": {"genie_space_id": "space-1"},
+                "executed_by": "alice@example.com",
+            }]
+        return rows, {
+            "lookback_days": lookback_days,
+            "chunks_fetched": 1,
+            "rows_returned": len(rows),
+        }
+
+    monkeypatch.setattr(
+        wide_schema_history,
+        "_system_history_rows",
+        fake_system_rows,
+    )
+    history = wide_schema_history.collect_query_history_evidence(
+        SimpleNamespace(),
+        inventory,
+        profiling_warehouse_id="warehouse-1",
+        workload_warehouse_ids=[],
+        run_id="run-adaptive-history",
+        target_space_id="space-1",
+    )
+
+    assert lookbacks == [30, 90]
+    assert history["coverage"]["accepted_statements"] == 1
+    assert history["coverage"]["target_space_statements"] == 1
+    assert history["coverage"]["read_telemetry"]["lookback_days"] == 90
+    assert "Expanded query-history lookback" in history["warnings"][0]
+
+
+def test_history_collection_falls_back_when_system_rows_have_no_columns(monkeypatch):
+    inventory = _inventory(columns=3)
+    wide_schema_history._AGGREGATE_CACHE.clear()
+    now_ms = int(time.time() * 1000)
+
+    monkeypatch.setattr(
+        wide_schema_history,
+        "_system_history_rows",
+        lambda *_args, lookback_days, **_kwargs: (
+            [],
+            {"lookback_days": lookback_days, "rows_returned": 0},
+        ),
+    )
+    monkeypatch.setattr(
+        wide_schema_history,
+        "_rest_history_rows",
+        lambda *_args, **_kwargs: ([{
+            "statement_text": "SELECT column_0001 FROM cat.sch0.table0",
+            "query_start_time_ms": now_ms,
+            "executed_by": "alice@example.com",
+        }], []),
+    )
+
+    history = wide_schema_history.collect_query_history_evidence(
+        SimpleNamespace(),
+        inventory,
+        profiling_warehouse_id="warehouse-1",
+        workload_warehouse_ids=["workload-1"],
+        run_id="run-empty-system-fallback",
+    )
+
+    assert history["source_mode"] == "warehouse_api"
+    assert history["coverage"]["accepted_statements"] == 1
+    assert history["source_attempts"] == {
+        "system_table": "succeeded_no_usable_rows",
+        "warehouse_api": "succeeded",
+    }
+    assert history["degradation_counts"]["system_history_no_usable_statements"] == 1
+    assert "no usable rows" in history["warnings"][-1]
+
+    no_fallback = wide_schema_history.collect_query_history_evidence(
+        SimpleNamespace(),
+        inventory,
+        profiling_warehouse_id="warehouse-1",
+        workload_warehouse_ids=[],
+        run_id="run-empty-system-no-fallback",
+    )
+    assert no_fallback["source_mode"] == "none"
+    assert no_fallback["source_scope"] == []
+    assert no_fallback["source_attempts"] == {
+        "system_table": "succeeded_no_usable_rows",
+        "warehouse_api": "not_configured",
+    }
 
 
 def test_rest_history_page_size_stays_below_api_limit():

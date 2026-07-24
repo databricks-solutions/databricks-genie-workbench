@@ -1,7 +1,7 @@
 """Live benchmark preparation utilities for the four-task GSO workflow.
 
-This module contains only the benchmark generation, validation, dataset, prompt
-registration, and score-normalization helpers used by the native v2 path.
+This module contains only the benchmark generation, validation, dataset, local
+prompt-template, and score-normalization helpers used by the native v2 path.
 """
 
 from __future__ import annotations
@@ -32,16 +32,11 @@ from genie_space_optimizer.common.config import (
     BENCHMARK_CORRECTION_PROMPT,
     BENCHMARK_COVERAGE_GAP_PROMPT,
     BENCHMARK_GENERATION_PROMPT,
-    BENCHMARK_PROMPTS,
     COVERAGE_GAP_SOFT_CAP_FACTOR,
     DEFAULT_THRESHOLDS,
-    INSTRUCTION_PROMPT_ALIAS,
-    INSTRUCTION_PROMPT_NAME_TEMPLATE,
     LLM_MAX_RETRIES,
     LLM_TEMPERATURE,
     MAX_BENCHMARK_COUNT,
-    PROMPT_ALIAS,
-    PROMPT_NAME_TEMPLATE,
     TARGET_BENCHMARK_COUNT,
     format_mlflow_template,
     scoring_v2_is_legacy,
@@ -56,8 +51,6 @@ from genie_space_optimizer.common.genie_client import (
 )
 
 logger = logging.getLogger(__name__)
-
-_REGISTERED_PROMPT_NAMES: dict[str, str] = {}
 
 _PROVENANCE_PRIORITY = [
     "curated", "curated_sql_generated", "reused", "synthetic",
@@ -283,44 +276,18 @@ def _extract_json(content: str | None, *, strict: bool = False) -> dict | list |
     )
     return None
 
-def get_registered_prompt_name(judge_name: str) -> str:
-    """Return the registered prompt name for a judge/lever, or empty string."""
-    return _REGISTERED_PROMPT_NAMES.get(judge_name, "")
-
-def _link_prompt_to_trace(prompt_name: str) -> None:
-    """Load a registered prompt inside the current trace to link it.
-
-    MLflow automatically associates ``load_prompt()`` calls with the
-    active trace, making the prompt version visible in the Linked Prompts
-    tab of the trace UI.  Failures are silently ignored so scoring continues.
-    """
-    if not prompt_name:
-        return
-    try:
-        mlflow.genai.load_prompt(f"prompts:/{prompt_name}@{PROMPT_ALIAS}")
-    except Exception:
-        try:
-            mlflow.genai.load_prompt(f"prompts:/{prompt_name}@latest")
-        except Exception:
-            logger.debug("Could not load prompt '%s' for trace linking", prompt_name)
-
 def _call_llm_for_scoring(
     w: "WorkspaceClient",
     prompt: str,
     max_retries: int = LLM_MAX_RETRIES,
-    prompt_name: str = "",
 ) -> dict:
     """Call LLM via the OpenAI SDK with retry + exponential backoff.
 
     Uses the shared ``llm_client`` so that ``mlflow.openai.autolog()``
-    captures token usage, cost, and latency automatically.
-
-    If *prompt_name* is provided, loads the registered prompt first to
-    link it to the current MLflow trace (visible in Linked Prompts tab).
+    captures token usage, cost, and latency automatically. Prompt content comes
+    directly from the version-controlled local templates in ``common.config``.
     """
     from genie_space_optimizer.optimization.llm_client import call_llm
-
-    _link_prompt_to_trace(prompt_name)
 
     last_err: Exception | None = None
     for attempt in range(max_retries):
@@ -2139,255 +2106,6 @@ def _repair_hint_for_reason(reason: str) -> str:
     """
     return _REPAIR_HINTS_BY_REASON.get(reason, "")
 
-PROMPT_REGISTRY_REQUIRED_PRIVILEGES = ("CREATE FUNCTION", "EXECUTE", "MANAGE")
-
-def _is_ownership_conflict(err_msg: str) -> bool:
-    """True when MLflow can't update an existing prompt due to ownership mismatch."""
-    lowered = (err_msg or "").lower()
-    return "permission_denied" in lowered and "update prompt" in lowered
-
-def _try_drop_prompt(fqn: str) -> bool:
-    """Best-effort drop of a stale prompt (UC function) so it can be re-created.
-
-    Returns True if the drop succeeded (or the function didn't exist).
-    """
-    if "." not in fqn:
-        return False
-    try:
-        from pyspark.sql import SparkSession
-        spark = SparkSession.getActiveSession()
-        if spark is None:
-            return False
-        spark.sql(f"DROP FUNCTION IF EXISTS {fqn}")
-        logger.info("Dropped stale prompt function %s for re-creation", fqn)
-        return True
-    except Exception:
-        logger.debug("Could not drop stale prompt %s", fqn, exc_info=True)
-        return False
-
-def _classify_prompt_registration_error(message: str, uc_schema: str) -> dict[str, Any]:
-    """Classify prompt registration failure into actionable root-cause buckets."""
-    lowered = (message or "").lower()
-    permission_markers = (
-        "permission",
-        "privilege",
-        "not authorized",
-        "forbidden",
-        "insufficient",
-        "access denied",
-        "permission_denied",
-    )
-    missing_privileges = [
-        priv for priv in PROMPT_REGISTRY_REQUIRED_PRIVILEGES if priv.lower() in lowered
-    ]
-
-    if any(marker in lowered for marker in permission_markers):
-        if not missing_privileges:
-            missing_privileges = list(PROMPT_REGISTRY_REQUIRED_PRIVILEGES)
-        schema_target = uc_schema or "<catalog>.<schema>"
-        return {
-            "reason": "missing_uc_permissions",
-            "missing_privileges": missing_privileges,
-            "remediation": (
-                f"Grant {', '.join(missing_privileges)} on schema {schema_target} "
-                "to the Databricks App service principal used by job tasks."
-            ),
-        }
-
-    if (
-        "feature_disabled" in lowered
-        or ("not enabled" in lowered and ("prompt" in lowered or "registry" in lowered))
-        or ("preview" in lowered and ("prompt" in lowered or "genai" in lowered))
-    ):
-        return {
-            "reason": "feature_not_enabled",
-            "missing_privileges": [],
-            "remediation": (
-                "Enable MLflow Prompt Registry on the workspace. "
-                "Contact your workspace admin or enable the GenAI preview in workspace settings."
-            ),
-        }
-
-    if "does not exist" in lowered or "resource_does_not_exist" in lowered:
-        schema_target = uc_schema or "<catalog>.<schema>"
-        return {
-            "reason": "registry_path_not_found",
-            "missing_privileges": [],
-            "remediation": (
-                f"Verify catalog/schema exists and is accessible: {schema_target}."
-            ),
-        }
-
-    return {
-        "reason": "unknown",
-        "missing_privileges": [],
-        "remediation": (
-            "Inspect full stack trace for prompt registration failure details "
-            "and verify Prompt Registry availability."
-        ),
-    }
-
-def register_instruction_version(
-    uc_schema: str,
-    space_id: str,
-    instruction_text: str,
-    *,
-    run_id: str = "",
-    lever: int = 0,
-    iteration: int = 0,
-    accuracy: float = 0.0,
-    domain: str = "",
-) -> dict[str, Any] | None:
-    """Register the current Genie Space instruction text as a versioned prompt.
-
-    Best-effort: failures are logged but never raise, so the optimization
-    pipeline is never blocked by prompt registration issues.
-
-    Returns ``{"prompt_name": ..., "version": ...}`` on success, ``None`` otherwise.
-    """
-    if not instruction_text or not instruction_text.strip():
-        return None
-
-    safe_space_id = re.sub(r"[^a-zA-Z0-9_]+", "_", space_id or "unknown").strip("_")
-    prompt_name = format_mlflow_template(
-        INSTRUCTION_PROMPT_NAME_TEMPLATE, uc_schema=uc_schema, space_id=safe_space_id,
-    ) if uc_schema else f"genie_instructions_{safe_space_id}"
-
-    commit_msg = (
-        f"Genie instructions after lever {lever}, iteration {iteration} "
-        f"(accuracy={accuracy:.3f}, run={run_id[:12]})"
-    )
-    tags = {
-        "run_id": run_id,
-        "lever": str(lever),
-        "iteration": str(iteration),
-        "accuracy": f"{accuracy:.4f}",
-        "domain": domain,
-        "space_id": space_id,
-        "type": "genie_instructions",
-    }
-
-    def _do_register():
-        v = mlflow.genai.register_prompt(
-            name=prompt_name,
-            template=instruction_text,
-            commit_message=commit_msg,
-            tags=tags,
-        )
-        mlflow.genai.set_prompt_alias(
-            name=prompt_name,
-            alias=INSTRUCTION_PROMPT_ALIAS,
-            version=v.version,
-        )
-        return v
-
-    try:
-        version = _do_register()
-        logger.info(
-            "[Instruction Registry] %s v%s (lever=%d, iter=%d, acc=%.3f)",
-            prompt_name, version.version, lever, iteration, accuracy,
-        )
-        return {"prompt_name": prompt_name, "version": version.version}
-    except Exception as exc:
-        if _is_ownership_conflict(str(exc)) and _try_drop_prompt(prompt_name):
-            try:
-                version = _do_register()
-                logger.info(
-                    "[Instruction Registry] %s v%s (re-created after drop)",
-                    prompt_name, version.version,
-                )
-                return {"prompt_name": prompt_name, "version": version.version}
-            except Exception:
-                pass
-        classification = _classify_prompt_registration_error(
-            str(exc), uc_schema=uc_schema,
-        )
-        logger.warning(
-            "Instruction registration failed for space=%s: %s (cause=%s)",
-            space_id, str(exc)[:300], classification["reason"],
-            exc_info=True,
-        )
-        return None
-
-def register_benchmark_prompts(
-    uc_schema: str,
-    domain: str,
-    experiment_name: str,
-) -> dict[str, dict]:
-    """Register only the benchmark prompts to MLflow Prompt Registry.
-
-    Called early in preflight (before benchmark generation) so that
-    ``_call_llm_for_scoring`` can link benchmark prompts to traces.
-    """
-    mlflow.set_experiment(experiment_name)
-    registered: dict[str, dict] = {}
-    for name, template in BENCHMARK_PROMPTS.items():
-        candidates = _prompt_name_candidates(
-            uc_schema=uc_schema, domain=domain, judge_name=name,
-        )
-        for prompt_name in candidates:
-            try:
-                version = mlflow.genai.register_prompt(
-                    name=prompt_name,
-                    template=template,
-                    commit_message=f"Genie benchmark: {name} (domain: {domain})",
-                    tags={"domain": domain, "type": "benchmark"},
-                )
-                mlflow.genai.set_prompt_alias(
-                    name=prompt_name,
-                    alias=PROMPT_ALIAS,
-                    version=version.version,
-                )
-                registered[name] = {
-                    "prompt_name": prompt_name,
-                    "version": str(version.version),
-                }
-                _REGISTERED_PROMPT_NAMES[name] = prompt_name
-                logger.info(
-                    "[Benchmark Prompt Registry] %s v%s",
-                    prompt_name, version.version,
-                )
-                break
-            except Exception as exc:
-                if _is_ownership_conflict(str(exc)) and _try_drop_prompt(prompt_name):
-                    try:
-                        version = mlflow.genai.register_prompt(
-                            name=prompt_name,
-                            template=template,
-                            commit_message=f"Genie benchmark: {name} (domain: {domain})",
-                            tags={"domain": domain, "type": "benchmark"},
-                        )
-                        mlflow.genai.set_prompt_alias(
-                            name=prompt_name,
-                            alias=PROMPT_ALIAS,
-                            version=version.version,
-                        )
-                        registered[name] = {
-                            "prompt_name": prompt_name,
-                            "version": str(version.version),
-                        }
-                        _REGISTERED_PROMPT_NAMES[name] = prompt_name
-                        break
-                    except Exception:
-                        pass
-                logger.debug(
-                    "Benchmark prompt registration failed for %s name=%s",
-                    name, prompt_name, exc_info=True,
-                )
-        if name not in registered:
-            logger.warning("Could not register benchmark prompt: %s", name)
-    return registered
-
-def _prompt_name_candidates(uc_schema: str, domain: str, judge_name: str) -> list[str]:
-    """Try UC-qualified name first, then portable fallback names."""
-    safe_domain = re.sub(r"[^a-zA-Z0-9_]+", "_", domain or "default").strip("_").lower() or "default"
-    candidates: list[str] = []
-    if uc_schema:
-        candidates.append(format_mlflow_template(PROMPT_NAME_TEMPLATE, uc_schema=uc_schema, judge_name=judge_name))
-        candidates.append(f"{uc_schema}.genie_opt_{safe_domain}_{judge_name}")
-    candidates.append(f"genie_opt_{safe_domain}_{judge_name}")
-    return list(dict.fromkeys(candidates))
-
 def _find_duplicate_values(values: list[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for value in values:
@@ -3065,14 +2783,14 @@ def _attempt_sql_correction(
     allowlist: dict[str, Any],
     *,
     correction_prompt_template: str,
-    correction_prompt_registry_key: str,
+    correction_prompt_key: str,
     warehouse_id: str = "",
     repair_counters: dict[str, int] | None = None,
 ) -> list[dict]:
     """Send invalid SQL candidates back to the LLM for correction.
 
     Shared between benchmark and example-SQL generation paths. Callers
-    differ only in the prompt template + MLflow registry key — the
+    differ only in the local prompt template and stable trace key — the
     per-candidate error payload (``benchmarks_to_fix`` JSON), the
     schema context, the metadata + SQL revalidation, and the returned
     provenance are all identical. Returns corrected candidates that
@@ -3151,15 +2869,11 @@ def _attempt_sql_correction(
             try:
                 _corr_span.set_inputs({
                     "candidate_count": len(invalid_candidates),
-                    "prompt_registry_key": correction_prompt_registry_key,
-                    "prompt_name": get_registered_prompt_name(correction_prompt_registry_key),
+                    "prompt_template": correction_prompt_key,
                 })
             except Exception:
                 pass
-            response = _call_llm_for_scoring(
-                w, prompt,
-                prompt_name=get_registered_prompt_name(correction_prompt_registry_key),
-            )
+            response = _call_llm_for_scoring(w, prompt)
             try:
                 _corr_span.set_outputs({
                     "correction_count": (
@@ -3172,8 +2886,8 @@ def _attempt_sql_correction(
         corrections: list[dict] = response if isinstance(response, list) else response.get("benchmarks", [])
     except Exception:
         logger.warning(
-            "SQL correction LLM call failed (registry=%s)",
-            correction_prompt_registry_key,
+            "SQL correction LLM call failed (prompt_template=%s)",
+            correction_prompt_key,
             exc_info=True,
         )
         return []
@@ -3412,7 +3126,7 @@ def _attempt_benchmark_correction(
         invalid_candidates=invalid_benchmarks,
         catalog=catalog, schema=schema, spark=spark, allowlist=allowlist,
         correction_prompt_template=BENCHMARK_CORRECTION_PROMPT,
-        correction_prompt_registry_key="benchmark_correction",
+        correction_prompt_key="benchmark_correction",
         warehouse_id=warehouse_id,
     )
 
@@ -3776,10 +3490,7 @@ def _fill_coverage_gaps(
     )
 
     try:
-        response = _call_llm_for_scoring(
-            w, prompt,
-            prompt_name=get_registered_prompt_name("benchmark_coverage_gap"),
-        )
+        response = _call_llm_for_scoring(w, prompt)
         raw: list[dict] = response if isinstance(response, list) else response.get("benchmarks", [])
     except Exception:
         logger.warning("Coverage gap-fill LLM call failed", exc_info=True)
@@ -4040,10 +3751,7 @@ def _generate_sql_for_curated_questions(
     )
 
     try:
-        response = _call_llm_for_scoring(
-            w, prompt,
-            prompt_name=get_registered_prompt_name("curated_sql_generation"),
-        )
+        response = _call_llm_for_scoring(w, prompt)
         generated: list[dict] = (
             response if isinstance(response, list) else response.get("benchmarks", [])
         )
@@ -4322,14 +4030,11 @@ def generate_benchmarks(
             try:
                 _bench_span.set_inputs({
                     "domain": domain,
-                    "prompt_name": get_registered_prompt_name("benchmark_generation"),
+                    "prompt_template": "benchmark_generation",
                 })
             except Exception:
                 pass
-            response = _call_llm_for_scoring(
-                w, prompt,
-                prompt_name=get_registered_prompt_name("benchmark_generation"),
-            )
+            response = _call_llm_for_scoring(w, prompt)
             try:
                 _bench_span.set_outputs({
                     "raw_benchmark_count": (

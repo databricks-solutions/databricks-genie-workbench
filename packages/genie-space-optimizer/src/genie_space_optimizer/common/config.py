@@ -1726,12 +1726,6 @@ EXPERIMENT_PATH_TEMPLATE = "/Shared/genie-space-optimizer/{{ space_id }}/{{ doma
 # is Delta-only; cross-environment deploy (future) will use the official DAB
 # ``genie_space`` resource.
 
-PROMPT_NAME_TEMPLATE = "{{ uc_schema }}.genie_opt_{{ judge_name }}"
-PROMPT_ALIAS = "production"
-
-INSTRUCTION_PROMPT_NAME_TEMPLATE = "{{ uc_schema }}.genie_instructions_{{ space_id }}"
-INSTRUCTION_PROMPT_ALIAS = "latest"
-
 # ── 14. Patch DSL Constants ────────────────────────────────────────────
 
 
@@ -1841,17 +1835,6 @@ UNIFIED_OPTIMIZER_PATCH_RULES = [
     "If the fix truly needs a full query shape, use add_example_sql with a generalized adjacent example that passes the benchmark-leakage rules. Do NOT reconstruct a failing question's expected SQL with renamed aliases or reordered clauses — a near-verbatim copy of any benchmark's expected SQL is rejected as a leak before apply. Pick a DIFFERENT question over DIFFERENT columns/tables that still demonstrates the same construction primitive.",
     "Never set validation_passed; the optimizer validates SQL snippets before apply.",
 ]
-
-UNIFIED_OPTIMIZER_PATCH_PROMPT = (
-    UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT
-    + "\n\nResponse schema:\n"
-    + str(UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA)
-    + "\n\nWell-curated space rubric:\n"
-    + str(WELL_CURATED_SPACE_RUBRIC)
-    + "\n\nPatch rules:\n"
-    + "\n".join(f"- {rule}" for rule in UNIFIED_OPTIMIZER_PATCH_RULES)
-)
-
 
 # ── 15. Assessment Sources ─────────────────────────────────────────────
 
@@ -2174,26 +2157,7 @@ PATCH_TYPES = {
 
 # ── 19. Failure Taxonomy (24 types) ───────────────────────────────────
 
-# ── 20c. Benchmark Prompts (registered in MLflow for traceability) ─────
-
-BENCHMARK_PROMPTS: dict[str, str] = {
-    "unified_optimizer_patch": UNIFIED_OPTIMIZER_PATCH_PROMPT,
-    "audit_summary": AUDIT_SUMMARY_PROMPT,
-    "benchmark_generation": BENCHMARK_GENERATION_PROMPT,
-    "benchmark_correction": BENCHMARK_CORRECTION_PROMPT,
-    "benchmark_alignment_check": BENCHMARK_ALIGNMENT_CHECK_PROMPT,
-    "benchmark_quality_review": BENCHMARK_QUALITY_REVIEW_PROMPT,
-    "benchmark_coverage_gap": BENCHMARK_COVERAGE_GAP_PROMPT,
-    "curated_sql_generation": CURATED_SQL_GENERATION_PROMPT,
-    # Phase 4.R4b — example-SQL variants. Registered alongside
-    # benchmark prompts so MLflow tracing + the registry-key lookup in
-    # ``get_registered_prompt_name`` find them by the same pathway.
-    "example_sql_generation": EXAMPLE_SQL_GENERATION_PROMPT,
-    "example_sql_correction": EXAMPLE_SQL_CORRECTION_PROMPT,
-}
-
-
-# ── 20d. Phase 2.R2b — Prompt isolation assertion ──────────────────────
+# ── 20c. Phase 2.R2b — Prompt isolation assertion ──────────────────────
 #
 # Isolation invariant #2 of the unified example-SQL generator: the
 # example prompts must NOT reference any benchmark-derived template

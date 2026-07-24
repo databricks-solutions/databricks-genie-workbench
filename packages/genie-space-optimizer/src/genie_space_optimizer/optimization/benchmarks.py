@@ -723,13 +723,7 @@ def validate_question_sql_alignment(
         )
 
         try:
-            from genie_space_optimizer.optimization.benchmarking import (
-                _link_prompt_to_trace,
-                get_registered_prompt_name,
-            )
             from genie_space_optimizer.optimization.llm_client import call_llm
-
-            _link_prompt_to_trace(get_registered_prompt_name("benchmark_alignment_check"))
 
             raw, _response = call_llm(
                 None,

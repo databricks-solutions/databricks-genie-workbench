@@ -159,8 +159,7 @@ class PermissionCheckResponse(BaseModel):
 
     Shape contract for the Auto-Optimize permissions preflight. The UI's
     PermissionAlert consumes the SP and schema access fields to show
-    grant-based remediation; the /trigger endpoint no longer depends on
-    MLflow Prompt Registry availability."""
+    grant-based remediation."""
 
     sp_display_name: str
     sp_application_id: str = ""

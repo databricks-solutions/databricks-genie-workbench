@@ -168,7 +168,7 @@ For SSE endpoints, the OBO `ContextVar` is **not** cleared after `call_next` in 
 |-------|-----------|----------|
 | Lakebase | PostgreSQL (asyncpg) | `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions` |
 | Delta Tables | Unity Catalog | GSO optimization state: 12 tables under `GSO_CATALOG.GSO_SCHEMA` |
-| MLflow | Experiment Tracking | LLM call traces, benchmark evaluations, prompt registry |
+| MLflow | Experiment Tracking | LLM call traces, benchmark evaluations, evaluation datasets |
 
 Lakebase degrades gracefully to in-memory dictionaries when `LAKEBASE_HOST` is not configured, making the app functional (but non-persistent) without a database.
 
