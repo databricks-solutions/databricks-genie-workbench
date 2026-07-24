@@ -4,14 +4,16 @@ GSO v2 orchestration (Phase 7, arch §5 / progress §5 RESOLVED K=3). The old
 6-notebook shape dead-ended a failed benchmark QC into a separate
 ``benchmark_repair_prune`` job that forced a manual re-trigger. The new ``01``
 task validates → **repairs/prunes inline** → re-validates, bounded by
-``benchmark_repair_max_tries`` (default 3), and flows **unconditionally** into
-``02``. Only a benchmark that is still invalid after K tries hard-fails with
-terminal reason ``BENCHMARK_UNREPAIRABLE``.
+``benchmark_repair_max_tries`` (default 3), and flows into ``02`` when the
+valid corpus still meets the configured floor. A benchmark that is still
+invalid after K tries hard-fails with terminal reason
+``BENCHMARK_UNREPAIRABLE``; a corpus below the floor fails with
+``INSUFFICIENT_VALID_BENCHMARKS``.
 
-This module owns ONLY the bounded try-counting control loop. It reuses the
-existing Phase-2 validation/repair primitives (passed in as callables) — it
-does NOT reinvent EXPLAIN validation, benchmark synthesis, the §3.6 leakage
-guard, or the §3.5 mutation ledger.
+This module owns the bounded try-counting control loop and the final corpus
+floor guard. It reuses the existing Phase-2 validation/repair primitives
+(passed in as callables) — it does NOT reinvent EXPLAIN validation, benchmark
+synthesis, the §3.6 leakage guard, or the §3.5 mutation ledger.
 
 Try-counting semantics (progress §5 RESOLVED, arch §13.1):
 
@@ -33,11 +35,20 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
+from genie_space_optimizer.common.config import (
+    MIN_VALID_BENCHMARK_COUNT,
+    TARGET_BENCHMARK_COUNT,
+)
+
 logger = logging.getLogger(__name__)
 
 # Terminal reason raised when the benchmark set cannot be repaired within the
 # try budget. Mirrors the arch-doc hard stop (§5.1 / §6 notebook contract).
 BENCHMARK_UNREPAIRABLE = "BENCHMARK_UNREPAIRABLE"
+
+# Terminal reason used when QC succeeds for each remaining row but too few
+# valid rows survive to provide a meaningful optimization corpus.
+INSUFFICIENT_VALID_BENCHMARKS = "INSUFFICIENT_VALID_BENCHMARKS"
 
 # Bound on the inline repair loop (arch §12 ``benchmark_repair_max_tries``).
 DEFAULT_BENCHMARK_REPAIR_MAX_TRIES = 3
@@ -84,6 +95,47 @@ class BenchmarkUnrepairableError(RuntimeError):
             f"{BENCHMARK_UNREPAIRABLE}: {len(still_invalid)} benchmark "
             f"question(s) still invalid after {tries_used} repair "
             f"tr{'y' if tries_used == 1 else 'ies'}: {ids[:10]}"
+        )
+
+
+class BenchmarkCorpusTooSmallError(RuntimeError):
+    """Raised when fewer than the required valid benchmarks survive QC."""
+
+    terminal_reason = INSUFFICIENT_VALID_BENCHMARKS
+
+    def __init__(
+        self,
+        *,
+        valid_count: int,
+        minimum_count: int,
+        target_count: int,
+        context: str,
+    ) -> None:
+        self.valid_count = valid_count
+        self.minimum_count = minimum_count
+        self.target_count = target_count
+        self.context = context
+        super().__init__(
+            f"{INSUFFICIENT_VALID_BENCHMARKS}: only {valid_count} valid "
+            f"benchmark question(s) remain after {context}; at least "
+            f"{minimum_count} are required (generation target: {target_count})"
+        )
+
+
+def require_minimum_valid_benchmarks(
+    benchmarks: list[dict],
+    *,
+    minimum_count: int = MIN_VALID_BENCHMARK_COUNT,
+    target_count: int = TARGET_BENCHMARK_COUNT,
+    context: str = "quality review",
+) -> None:
+    """Fail closed when the valid corpus is below the optimization floor."""
+    if len(benchmarks) < minimum_count:
+        raise BenchmarkCorpusTooSmallError(
+            valid_count=len(benchmarks),
+            minimum_count=minimum_count,
+            target_count=target_count,
+            context=context,
         )
 
 

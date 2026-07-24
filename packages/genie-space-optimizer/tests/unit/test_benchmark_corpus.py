@@ -1,0 +1,153 @@
+"""Benchmark deduplication and direct Delta handoff contracts."""
+
+from __future__ import annotations
+
+from unittest.mock import patch
+
+from genie_space_optimizer.optimization.benchmarks import (
+    deduplicate_benchmark_corpus,
+    duplicate_rejection_mutations,
+    persist_benchmark_corpus,
+)
+
+
+def test_deduplication_uses_deterministic_retention_priority() -> None:
+    rows = [
+        {
+            "id": "synthetic-valid",
+            "question": "Revenue by month?",
+            "expected_sql": "SELECT 1",
+            "validation_status": "valid",
+            "source": "llm_generated",
+            "provenance": "synthetic",
+            "priority": "P1",
+        },
+        {
+            "id": "genie-user",
+            "question": "  [AUTO-OPTIMIZE] Revenue   by month? ",
+            "expected_sql": "",
+            "validation_status": "question_only",
+            "source": "genie_benchmark",
+            "provenance": "curated",
+            "priority": "P0",
+        },
+        {
+            "id": "valid-sql",
+            "question": "Margin by region?",
+            "expected_sql": "SELECT 2",
+            "validation_status": "valid",
+            "source": "llm_generated",
+            "provenance": "synthetic",
+            "priority": "P1",
+        },
+        {
+            "id": "curated-no-sql",
+            "question": "margin BY region?",
+            "expected_sql": "",
+            "validation_status": "question_only",
+            "source": "unknown",
+            "provenance": "curated",
+            "priority": "P0",
+        },
+        {
+            "id": "stable-first",
+            "question": "Units?",
+            "expected_sql": "",
+            "validation_status": "question_only",
+            "source": "llm_generated",
+            "provenance": "synthetic",
+            "priority": "P1",
+        },
+        {
+            "id": "stable-second",
+            "question": " units? ",
+            "expected_sql": "",
+            "validation_status": "question_only",
+            "source": "llm_generated",
+            "provenance": "synthetic",
+            "priority": "P1",
+        },
+    ]
+
+    retained, rejected = deduplicate_benchmark_corpus(rows)
+
+    assert [row["id"] for row in retained] == [
+        "genie-user",
+        "valid-sql",
+        "stable-first",
+    ]
+    by_id = {row["id"]: row for row in rejected}
+    assert by_id["synthetic-valid"]["duplicate_retained_question_id"] == "genie-user"
+    assert by_id["curated-no-sql"]["duplicate_retained_question_id"] == "valid-sql"
+    assert by_id["stable-second"]["duplicate_retained_question_id"] == "stable-first"
+    assert all(
+        row["validation_reason_code"] == "duplicate_normalized_question"
+        for row in rejected
+    )
+    mutations = duplicate_rejection_mutations(rejected)
+    assert all(row["op"] == "removed" for row in mutations)
+    assert mutations[0]["reason"] == "duplicate_normalized_question"
+    assert mutations[0]["before"]["retained_question_id"]
+
+
+def test_direct_delta_persistence_preserves_nested_handoff_schema() -> None:
+    calls: dict[str, object] = {}
+
+    class Writer:
+        def format(self, value):
+            calls["format"] = value
+            return self
+
+        def mode(self, value):
+            calls["mode"] = value
+            return self
+
+        def option(self, key, value):
+            calls[("option", key)] = value
+            return self
+
+        def saveAsTable(self, value):
+            calls["table"] = value
+
+    class Frame:
+        write = Writer()
+
+    class Spark:
+        def createDataFrame(self, records, schema):
+            calls["records"] = records
+            calls["schema"] = schema
+            return Frame()
+
+    benchmarks = [{
+        "id": "q1",
+        "question": "What is revenue?",
+        "expected_sql": "SELECT SUM(revenue) FROM cat.sch.sales",
+        "expected_asset": "TABLE",
+        "validation_status": "valid",
+        "required_tables": ["cat.sch.sales"],
+    }]
+
+    with patch(
+        "genie_space_optimizer.optimization.benchmarks.retry_delta_write",
+        side_effect=lambda operation, **_kwargs: operation(),
+    ):
+        result = persist_benchmark_corpus(
+            Spark(),
+            benchmarks,
+            "cat.sch",
+            "sales",
+            space_id="space-1",
+            catalog="cat",
+            gold_schema="sch",
+        )
+
+    assert result["record_count"] == 1
+    assert calls["format"] == "delta"
+    assert calls["mode"] == "overwrite"
+    assert calls[("option", "overwriteSchema")] == "true"
+    assert calls["table"] == "`cat`.`sch`.`genie_benchmarks_sales`"
+    record = calls["records"][0]
+    assert record["inputs"]["question_id"] == "q1"
+    assert record["inputs"]["space_id"] == "space-1"
+    assert record["expectations"]["expected_response"].startswith("SELECT SUM")
+    assert record["expectations"]["required_tables"] == ["cat.sch.sales"]

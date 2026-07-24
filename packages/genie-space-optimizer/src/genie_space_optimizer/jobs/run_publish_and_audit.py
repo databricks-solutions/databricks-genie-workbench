@@ -45,6 +45,9 @@ from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.publish import publish_and_audit
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
+    load_artifacts,
+    load_latest_artifact_record,
+    write_artifact,
     write_failure_stage_safely,
     write_stage,
 )
@@ -82,6 +85,7 @@ if target_accuracy <= 1.0:
 
 if not run_id:
     raise RuntimeError("publish_and_audit: run_id parameter is required")
+os.environ["GSO_RUN_ID"] = run_id
 
 # COMMAND ----------
 
@@ -122,6 +126,171 @@ try:
         max_attempts=max_attempts,
         source_notebook="run_publish_and_audit.py",
     )
+    _plan_record = load_latest_artifact_record(
+        spark, run_id, catalog, schema, "wide_schema_selection_plan",
+    )
+    if _plan_record is not None:
+        _plan = _plan_record["payload"]
+        from genie_space_optimizer.optimization.wide_schema_prompt import (
+            drain_prompt_telemetry,
+        )
+
+        _current_prompt_telemetry = drain_prompt_telemetry()
+        if _current_prompt_telemetry:
+            write_artifact(
+                spark,
+                run_id,
+                "wide_schema_prompt_telemetry",
+                {"stage": _TASK_KEY, "requests": _current_prompt_telemetry},
+                catalog=catalog,
+                schema=schema,
+                stage_name=_TASK_KEY,
+                source_notebook="run_publish_and_audit.py",
+                parent_artifact_id=_plan_record.get("artifact_id"),
+            )
+        _plan_rows = load_artifacts(
+            spark,
+            run_id,
+            catalog,
+            schema,
+            artifact_kind="wide_schema_selection_plan",
+        )
+        _profile_rows = load_artifacts(
+            spark,
+            run_id,
+            catalog,
+            schema,
+            artifact_kind="wide_schema_profile_telemetry",
+        )
+        _prompt_rows = load_artifacts(
+            spark,
+            run_id,
+            catalog,
+            schema,
+            artifact_kind="wide_schema_prompt_telemetry",
+        )
+        _profile_telemetry: list[dict[str, Any]] = []
+        for _raw in _profile_rows.get("artifact_json", []):
+            try:
+                _payload = json.loads(_raw) if isinstance(_raw, str) else _raw
+            except (TypeError, ValueError):
+                continue
+            if isinstance(_payload, dict):
+                _profile_telemetry.append(_payload)
+        _prompt_requests: list[dict[str, Any]] = []
+        for _raw in _prompt_rows.get("artifact_json", []):
+            try:
+                _payload = json.loads(_raw) if isinstance(_raw, str) else _raw
+            except (TypeError, ValueError):
+                continue
+            if isinstance(_payload, dict):
+                _prompt_requests.extend(
+                    request for request in _payload.get("requests") or []
+                    if isinstance(request, dict)
+                )
+        _reason_distribution: dict[str, int] = {}
+        for _asset in _plan.get("assets") or []:
+            for _column in _asset.get("columns") or []:
+                if not _column.get("active"):
+                    continue
+                for _reason in _column.get("reason_codes") or []:
+                    _reason_distribution[str(_reason)] = (
+                        _reason_distribution.get(str(_reason), 0) + 1
+                    )
+        _wide_schema_audit = {
+            "contract_version": 1,
+            "inventory_hash": _plan.get("inventory_hash"),
+            "latest_plan_hash": _plan.get("plan_hash"),
+            "latest_revision": _plan.get("revision"),
+            "plan_revision_count": int(len(_plan_rows.index)),
+            "source_mode": _plan.get("source_mode", "none"),
+            "evidence_coverage": _plan.get("evidence_coverage") or {},
+            "evidence_degradation_counts": _plan.get(
+                "evidence_degradation_counts"
+            ) or {},
+            "evidence_source_attempts": _plan.get(
+                "evidence_source_attempts"
+            ) or {},
+            "evidence_source_errors": _plan.get(
+                "evidence_source_errors"
+            ) or {},
+            "evidence_warnings": _plan.get("evidence_warnings") or [],
+            "assets": [
+                {
+                    "asset_id": _asset.get("asset_id"),
+                    "selected_count": _asset.get("selected_count", 0),
+                    "omitted_count": _asset.get("omitted_count", 0),
+                    "cumulative_value_profiled_count": _asset.get(
+                        "cumulative_value_profiled_count", 0,
+                    ),
+                    "metadata_only_count": _asset.get("metadata_only_count", 0),
+                    "required_overflow_count": _asset.get(
+                        "required_overflow_count", 0,
+                    ),
+                }
+                for _asset in _plan.get("assets") or []
+            ],
+            "reason_distribution": dict(sorted(_reason_distribution.items())),
+            "profiling": {
+                "submitted_statements": sum(
+                    int(item.get("submitted_statements") or 0)
+                    for item in _profile_telemetry
+                ),
+                "accepted_statements": sum(
+                    int(item.get("accepted_statements") or 0)
+                    for item in _profile_telemetry
+                ),
+                "cancellations": sum(
+                    int(item.get("cancellations") or 0)
+                    for item in _profile_telemetry
+                ),
+                "split_retries": sum(
+                    int(item.get("split_retries") or 0)
+                    for item in _profile_telemetry
+                ),
+                "timed_out_statements": sum(
+                    int(item.get("timed_out_statements") or 0)
+                    for item in _profile_telemetry
+                ),
+                "runs": _profile_telemetry,
+            },
+            "prompts": {
+                "request_count": len(_prompt_requests),
+                "maximum_request_chars": max(
+                    (
+                        int(item.get("final_request_chars") or 0)
+                        for item in _prompt_requests
+                    ),
+                    default=0,
+                ),
+                "request_sizes": [
+                    int(item.get("final_request_chars") or 0)
+                    for item in _prompt_requests
+                ],
+                "omitted_counts": [
+                    item.get("omitted_counts") or {}
+                    for item in _prompt_requests
+                ],
+            },
+            "ambiguity_count": sum(
+                int(value or 0)
+                for key, value in (
+                    _plan.get("evidence_degradation_counts") or {}
+                ).items()
+                if "ambigu" in str(key).casefold()
+            ),
+        }
+        write_artifact(
+            spark,
+            run_id,
+            "wide_schema_audit",
+            _wide_schema_audit,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_publish_and_audit.py",
+            parent_artifact_id=_plan_record.get("artifact_id"),
+        )
     _log(
         "Publish + audit complete",
         terminal_reason=result.get("terminal_reason"),

@@ -9,7 +9,7 @@ vi.mock("@/lib/api", () => ({
 }))
 
 import { RevertButton } from "./RunHistoryTable"
-import { hasActiveOptimizationRun } from "./runHistory"
+import { hasActiveOptimizationRun, hasRevertibleChampion } from "./runHistory"
 
 function run(overrides: Partial<GSORunSummary>): GSORunSummary {
   return {
@@ -48,5 +48,28 @@ describe("RunHistoryTable revert safety", () => {
     expect(markup).toContain("disabled")
     expect(markup).toContain("active optimization on this Space")
     expect(markup).toContain("Revert to Baseline")
+  })
+
+  it("offers an iteration-0 champion when enrichment or recovery won", () => {
+    expect(hasRevertibleChampion(run({
+      status: "APPLIED",
+      best_iteration: 0,
+      best_accuracy: 94.1,
+    }))).toBe(true)
+  })
+
+  it("does not offer a champion before one has been scored", () => {
+    expect(hasRevertibleChampion(run({
+      status: "FAILED",
+      best_iteration: null,
+      best_accuracy: null,
+    }))).toBe(false)
+  })
+
+  it("continues to offer champions from later iterations", () => {
+    expect(hasRevertibleChampion(run({
+      best_iteration: 2,
+      best_accuracy: 96,
+    }))).toBe(true)
   })
 })

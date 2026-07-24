@@ -130,13 +130,8 @@ def _strip_json_fence(raw: str) -> str:
 
 
 def _call_quality_llm(prompt: str) -> str:
-    from genie_space_optimizer.optimization.benchmarking import (
-        _link_prompt_to_trace,
-        get_registered_prompt_name,
-    )
     from genie_space_optimizer.optimization.llm_client import call_llm
 
-    _link_prompt_to_trace(get_registered_prompt_name("benchmark_quality_review"))
     raw, _response = call_llm(
         None,
         messages=[{"role": "user", "content": prompt}],
@@ -267,6 +262,7 @@ def review_benchmark_quality(
     warehouse_id: str = "",
     config: dict | None = None,
     uc_columns: list[dict] | None = None,
+    deterministic_uc_columns: list[dict] | None = None,
     uc_routines: list[dict] | None = None,
     batch_size: int = 10,
 ) -> dict[str, Any]:
@@ -279,6 +275,7 @@ def review_benchmark_quality(
     """
     config = config or {}
     uc_columns = uc_columns or []
+    deterministic_uc_columns = deterministic_uc_columns or uc_columns
     uc_routines = uc_routines or []
     findings: list[dict[str, Any]] = []
     indexed = [(_question_id(b, i), b) for i, b in enumerate(benchmarks)]
@@ -354,7 +351,10 @@ def review_benchmark_quality(
 
         allowlist = _build_metadata_allowlist(
             config=config,
-            uc_columns=uc_columns,
+            # Prompt columns and deterministic validation columns are separate
+            # contracts. Omitted inventory columns remain valid here without
+            # being copied into the semantic-review prompt below.
+            uc_columns=deterministic_uc_columns,
             uc_routines=uc_routines,
         )
         metric_views = effective_metric_view_identifiers_with_catalog(config)

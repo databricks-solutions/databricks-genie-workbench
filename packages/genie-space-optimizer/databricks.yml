@@ -69,6 +69,8 @@ resources:
           default: ""
         - name: warehouse_id
           default: ""
+        - name: workload_warehouse_ids
+          default: "[]"
       tasks:
         # Every task carries the full job-parameter set as base_parameters so
         # there is NO inter-task task-value plumbing (D9). run_id/catalog/schema
@@ -90,6 +92,7 @@ resources:
               benchmark_repair_max_tries: "{{job.parameters.benchmark_repair_max_tries}}"
               triggered_by: "{{job.parameters.triggered_by}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
+              workload_warehouse_ids: "{{job.parameters.workload_warehouse_ids}}"
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0

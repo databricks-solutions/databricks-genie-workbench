@@ -1073,7 +1073,7 @@ def _benchmarks_to_genie_format(
     """Convert optimizer benchmark dicts to Genie-native ``benchmarks.questions`` format.
 
     Published rows are plain Genie benchmark questions. The optimizer keeps
-    source/provenance metadata in the UC evaluation dataset, not in the Genie
+    source/provenance metadata in the UC Delta benchmark table, not in the Genie
     Space payload. Prioritises curated/P0 benchmarks first, then fills with
     synthetic. The ``tag_as_optimizer`` parameter is retained only for
     backward-compatible callers that still want the legacy
@@ -1355,7 +1355,7 @@ def publish_benchmarks_to_genie_space_with_report(
     (preserving any user-authored rows), and PATCHes the space via
     ``updateSpace``. Published rows are plain benchmark questions: no
     ``[auto-optimize]`` prefix and no GSO ``metadata`` payload. Provenance
-    stays in the UC evaluation dataset, where the optimizer needs it.
+    stays in the UC Delta benchmark table, where the optimizer needs it.
 
     Questions that are already mirrored in the space's ``example_question_sqls``
     are excluded — keeping the same question in both slots would restore the

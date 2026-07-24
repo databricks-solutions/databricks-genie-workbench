@@ -41,14 +41,27 @@ from genie_space_optimizer.common.genie_client import (
 from genie_space_optimizer.common.warehouse import export_warehouse_id, resolve_warehouse_id
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
-from genie_space_optimizer.optimization.benchmarks import benchmark_corpus_for_optimization
-from genie_space_optimizer.optimization.benchmarking import load_benchmarks_from_dataset
+from genie_space_optimizer.optimization.benchmarks import (
+    benchmark_corpus_for_optimization,
+    load_benchmark_corpus,
+)
 from genie_space_optimizer.optimization.preflight import _resolve_experiment_path
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
+    load_artifacts,
+    load_latest_artifact_record,
     load_latest_artifact_payload,
+    write_artifact,
     write_failure_stage_safely,
     write_stage,
+)
+from genie_space_optimizer.optimization.wide_schema import (
+    validate_inventory,
+    validate_selection_plan,
+)
+from genie_space_optimizer.optimization.wide_schema_profile import (
+    build_profiling_budget,
+    merge_profiling_budgets,
 )
 from genie_space_optimizer.optimization.unified_loop import (
     run_unified_optimization_loop,
@@ -93,6 +106,7 @@ if llm_model:
 
 if not run_id:
     raise RuntimeError("optimize: run_id parameter is required")
+os.environ["GSO_RUN_ID"] = run_id
 
 exp_name = _resolve_experiment_path(space_id=space_id, domain=domain)
 
@@ -138,7 +152,7 @@ write_stage(
 # COMMAND ----------
 
 uc_schema = f"{catalog}.{schema}"
-_all_benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
+_all_benchmarks = load_benchmark_corpus(spark, uc_schema, domain)
 benchmarks = benchmark_corpus_for_optimization(_all_benchmarks)
 if not benchmarks:
     raise RuntimeError(f"No benchmarks found in {uc_schema}.genie_benchmarks_{domain}")
@@ -159,6 +173,60 @@ prompt_matching_context = load_latest_artifact_payload(
     schema,
     "space_metadata",
 ) or {}
+
+inventory_record = load_latest_artifact_record(
+    spark, run_id, catalog, schema, "wide_schema_inventory",
+)
+if inventory_record is None:
+    raise RuntimeError("Required wide_schema_inventory artifact is missing")
+wide_schema_inventory = inventory_record["payload"]
+validate_inventory(wide_schema_inventory)
+
+plan_record = load_latest_artifact_record(
+    spark, run_id, catalog, schema, "wide_schema_selection_plan",
+)
+if plan_record is None:
+    raise RuntimeError("Required wide_schema_selection_plan artifact is missing")
+wide_schema_plan = plan_record["payload"]
+validate_selection_plan(
+    wide_schema_plan,
+    inventory_hash=wide_schema_inventory["inventory_hash"],
+)
+os.environ["GSO_WIDE_SCHEMA_INVENTORY_HASH"] = wide_schema_inventory[
+    "inventory_hash"
+]
+os.environ["GSO_WIDE_SCHEMA_PLAN_HASH"] = wide_schema_plan["plan_hash"]
+if prompt_matching_context.get("inventory_hash") not in {
+    None,
+    wide_schema_inventory["inventory_hash"],
+}:
+    raise RuntimeError("space_metadata inventory hash does not match required inventory")
+if prompt_matching_context.get("plan_hash") not in {None, wide_schema_plan["plan_hash"]}:
+    raise RuntimeError("space_metadata plan hash does not match latest selection plan")
+
+profile_artifact_rows = load_artifacts(
+    spark,
+    run_id,
+    catalog,
+    schema,
+    artifact_kind="wide_schema_profile_telemetry",
+)
+persisted_profile_telemetry: list[dict[str, Any]] = []
+for raw_profile_telemetry in profile_artifact_rows.get("artifact_json", []):
+    try:
+        profile_payload = (
+            json.loads(raw_profile_telemetry)
+            if isinstance(raw_profile_telemetry, str)
+            else raw_profile_telemetry
+        )
+    except (TypeError, ValueError):
+        continue
+    if isinstance(profile_payload, dict):
+        persisted_profile_telemetry.append(profile_payload)
+wide_schema_profile_budget = merge_profiling_budgets(
+    wide_schema_plan.get("profiling_budget") or {},
+    build_profiling_budget(persisted_profile_telemetry),
+)
 
 # COMMAND ----------
 
@@ -182,6 +250,10 @@ try:
         target_accuracy=target_accuracy,
         apply_mode=apply_mode,
         prompt_matching_context=prompt_matching_context,
+        wide_schema_inventory=wide_schema_inventory,
+        wide_schema_plan=wide_schema_plan,
+        wide_schema_parent_artifact_id=plan_record.get("artifact_id"),
+        wide_schema_profile_budget=wide_schema_profile_budget,
     )
     _log(
         "Optimize loop finished",
@@ -211,6 +283,23 @@ except Exception as exc:
         error_message=str(exc),
     )
     raise
+
+from genie_space_optimizer.optimization.wide_schema_prompt import (
+    drain_prompt_telemetry,
+)
+
+_prompt_telemetry = drain_prompt_telemetry()
+if _prompt_telemetry:
+    write_artifact(
+        spark,
+        run_id,
+        "wide_schema_prompt_telemetry",
+        {"stage": _TASK_KEY, "requests": _prompt_telemetry},
+        catalog=catalog,
+        schema=schema,
+        stage_name=_TASK_KEY,
+        source_notebook="run_optimize.py",
+    )
 
 write_stage(
     spark,

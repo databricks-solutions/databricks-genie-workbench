@@ -134,13 +134,32 @@ class SchemaAccessStatus(BaseModel):
     grant_sql: str | None = None
 
 
+class QueryHistoryWarehouseStatus(BaseModel):
+    warehouse_id: str
+    name: str
+    accessible: bool = False
+
+
+class QueryUsageSignal(BaseModel):
+    status: Literal[
+        "system_table_available",
+        "warehouse_api_available",
+        "partially_available",
+        "unavailable",
+    ] = "unavailable"
+    system_table_available: bool = False
+    warehouse_api_available: bool = False
+    warehouses: list[QueryHistoryWarehouseStatus] = Field(default_factory=list)
+    inaccessible_warehouses: list[str] = Field(default_factory=list)
+    system_grant_sql: str | None = None
+
+
 class PermissionCheckResponse(BaseModel):
     """Payload for ``GET /auto-optimize/permissions``.
 
     Shape contract for the Auto-Optimize permissions preflight. The UI's
     PermissionAlert consumes the SP and schema access fields to show
-    grant-based remediation; the /trigger endpoint no longer depends on
-    MLflow Prompt Registry availability."""
+    grant-based remediation."""
 
     sp_display_name: str
     sp_application_id: str = ""
@@ -148,3 +167,4 @@ class PermissionCheckResponse(BaseModel):
     schemas: list[SchemaAccessStatus]
     can_start: bool
     errors: list[str] = []
+    query_usage_signal: QueryUsageSignal | None = None

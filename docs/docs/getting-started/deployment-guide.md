@@ -22,14 +22,12 @@ A Databricks workspace with:
 - A SQL Warehouse (Serverless recommended)
 - A Unity Catalog with CREATE SCHEMA permission
 - Lakebase Autoscaling available (optional but recommended for persistent scan history, starred spaces, and agent sessions)
-- MLflow Prompt Registry enabled (required for Auto-Optimize judge prompts)
 - Databricks Foundation Model APIs enabled for the curated Create Agent and Auto-Optimize model list
 
 ### Enable required preview features
 
 Before installing, enable these on the Databricks **Previews** page (workspace admins manage preview toggles):
 
-- **Managed MLflow Prompt Registry** (Beta) — required for Auto-Optimize judge prompts
 - **Databricks Apps – On-Behalf-Of User Authorization** (Public Preview)
 
 :::note

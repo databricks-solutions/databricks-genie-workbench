@@ -530,9 +530,11 @@ def _load_champion_config(
 ) -> dict | None:
     """Load the champion iteration's full effective config from Delta.
 
-    Selects ``config_json`` from the single ``genie_opt_iterations`` row
+    Selects ``config_json`` from the winning ``genie_opt_iterations`` row
     stamped ``is_champion = true`` (rolled-back rows defensively excluded).
-    Returns the parsed config dict, or ``None`` when:
+    Historical recovery can stamp multiple iteration-0 rows, so ties are
+    resolved by accuracy and timestamp. Returns the parsed config dict, or
+    ``None`` when:
 
     * the table predates the Phase-4 ``config_json`` / ``is_champion`` columns
       (``UNRESOLVED_COLUMN`` — legacy run);
@@ -550,7 +552,12 @@ def _load_champion_config(
         f"WHERE run_id = '{safe_run}' "
         f"AND is_champion = true "
         f"AND (rolled_back IS NULL OR rolled_back = false) "
-        f"ORDER BY iteration DESC LIMIT 1"
+        # Recovery can leave multiple iteration-0/full rows stamped champion
+        # because champion marking historically keyed on iteration + scope.
+        # Select the actual winning row deterministically: highest score, then
+        # the latest append-only row when scores tie.
+        f"ORDER BY overall_accuracy DESC NULLS LAST, "
+        f"timestamp DESC NULLS LAST, iteration DESC LIMIT 1"
     )
     try:
         df = sql_warehouse_query(ws, warehouse_id, sql)

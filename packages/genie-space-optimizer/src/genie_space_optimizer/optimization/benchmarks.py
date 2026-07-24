@@ -1,8 +1,4 @@
-"""
-Benchmark management — loading, validation, corpus normalization, and corrections.
-
-Benchmarks are stored as MLflow evaluation datasets in UC (no YAML files).
-"""
+"""Benchmark loading, Delta persistence, validation, and normalization."""
 
 from __future__ import annotations
 
@@ -13,7 +9,8 @@ import re as _re
 from contextlib import contextmanager
 from typing import Any
 
-from genie_space_optimizer.common.config import TEMPLATE_VARIABLES
+from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT, TEMPLATE_VARIABLES
+from genie_space_optimizer.common.delta_helpers import retry_delta_write
 from genie_space_optimizer.common.genie_client import detect_asset_type
 
 logger = logging.getLogger(__name__)
@@ -148,13 +145,7 @@ def fix_mv_alias_sort_collision(sql: str) -> str:
 
 
 def _normalize_benchmark_row(row: dict) -> dict:
-    """Flatten MLflow evaluation dataset nested structs to a flat benchmark dict.
-
-    MLflow ``genai.datasets`` stores records as ``{inputs: {...}, expectations: {...}}``.
-    All downstream consumers expect flat dicts with top-level ``question``,
-    ``expected_sql``, ``id``, etc.  This function handles both formats so the
-    loader is resilient to schema changes.
-    """
+    """Flatten the persisted ``inputs``/``expectations`` structs."""
     if "inputs" not in row and "expectations" not in row:
         return row
 
@@ -185,19 +176,19 @@ def _normalize_benchmark_row(row: dict) -> dict:
     return flat
 
 
-def load_benchmarks_from_dataset(
+def load_benchmark_corpus(
     spark_or_dataset: Any,
     uc_schema: str,
     domain: str,
     _max_retries: int = 3,
 ) -> list[dict]:
-    """Load benchmarks from an MLflow evaluation dataset in UC.
+    """Load the benchmark corpus directly from its Unity Catalog Delta table.
 
     Table name convention: ``{uc_schema}.genie_benchmarks_{domain}``.
 
     Issues ``REFRESH TABLE`` before reading to avoid
     ``DELTA_SCHEMA_CHANGE_SINCE_ANALYSIS`` when the table was recently
-    dropped and recreated by the preflight task.
+    overwritten by the benchmark-QC task.
 
     Args:
         spark_or_dataset: A Spark session or a pre-loaded DataFrame/list.
@@ -210,8 +201,17 @@ def load_benchmarks_from_dataset(
     """
     table_name = f"{uc_schema}.genie_benchmarks_{domain}"
 
+    def _finalize(benchmarks: list[dict]) -> list[dict]:
+        deduped, rejected = deduplicate_benchmark_corpus(benchmarks)
+        if rejected:
+            logger.warning(
+                "Dropped %d duplicate benchmark row(s) while loading %s",
+                len(rejected), table_name,
+            )
+        return benchmark_corpus_for_optimization(deduped[:MAX_BENCHMARK_COUNT])
+
     if isinstance(spark_or_dataset, list):
-        return benchmark_corpus_for_optimization(spark_or_dataset)
+        return _finalize(spark_or_dataset)
 
     try:
         if hasattr(spark_or_dataset, "read"):
@@ -224,11 +224,8 @@ def load_benchmarks_from_dataset(
                     rows = df.collect()
                     benchmarks = [_normalize_benchmark_row(r.asDict(recursive=True)) for r in rows]
                     if rows and "inputs" in (rows[0].asDict()):
-                        logger.debug("Normalized %d benchmark rows from nested MLflow format", len(rows))
-                    from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
-                    if len(benchmarks) > MAX_BENCHMARK_COUNT:
-                        benchmarks = benchmarks[:MAX_BENCHMARK_COUNT]
-                    return benchmark_corpus_for_optimization(benchmarks)
+                        logger.debug("Normalized %d benchmark rows from nested Delta format", len(rows))
+                    return _finalize(benchmarks)
                 except Exception as read_err:
                     err_msg = str(read_err)
                     if "DELTA_SCHEMA_CHANGE_SINCE_ANALYSIS" in err_msg and attempt < _max_retries - 1:
@@ -245,10 +242,7 @@ def load_benchmarks_from_dataset(
             df = spark_or_dataset
             rows = df.collect()
             benchmarks = [_normalize_benchmark_row(r.asDict(recursive=True)) for r in rows]
-            from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
-            if len(benchmarks) > MAX_BENCHMARK_COUNT:
-                benchmarks = benchmarks[:MAX_BENCHMARK_COUNT]
-            return benchmark_corpus_for_optimization(benchmarks)
+            return _finalize(benchmarks)
     except Exception:
         logger.exception("Failed to load benchmarks from %s", table_name)
         return []
@@ -271,8 +265,8 @@ def assert_benchmark_handoff_visible(
         "Benchmark handoff mismatch before evaluation: "
         f"preflight published {expected_total} benchmark(s) for domain={domain}, "
         f"but baseline loaded {actual_total} from {table_name}. "
-        "This usually means the UC evaluation dataset table is stale or merge_records "
-        "has not become visible. Retry the load or fail before mlflow.genai.evaluate."
+        "This usually means the UC Delta benchmark table is stale or its overwrite "
+        "has not become visible. Retry the load before starting the official Genie eval run."
     )
 
 
@@ -723,13 +717,7 @@ def validate_question_sql_alignment(
         )
 
         try:
-            from genie_space_optimizer.optimization.benchmarking import (
-                _link_prompt_to_trace,
-                get_registered_prompt_name,
-            )
             from genie_space_optimizer.optimization.llm_client import call_llm
-
-            _link_prompt_to_trace(get_registered_prompt_name("benchmark_alignment_check"))
 
             raw, _response = call_llm(
                 None,
@@ -1038,6 +1026,122 @@ def benchmark_corpus_for_optimization(benchmarks: list[dict] | None) -> list[dic
     return corpus
 
 
+_USER_AUTHORED_SOURCES = frozenset({
+    "genie_benchmark",
+    "genie_space",
+    "sample_question",
+    "user",
+    "user_authored",
+})
+_CURATED_PROVENANCE = frozenset({"curated", "curated_sql_generated"})
+
+
+def normalize_benchmark_question(question: Any) -> str:
+    """Return the canonical exact-dedup key for a benchmark question."""
+    text = str(question or "").strip()
+    prefix = "[auto-optimize] "
+    if text.casefold().startswith(prefix):
+        text = text[len(prefix):]
+    return _re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _benchmark_id(benchmark: dict) -> str:
+    return str(benchmark.get("id") or benchmark.get("question_id") or "")
+
+
+def _duplicate_retention_priority(benchmark: dict, index: int) -> tuple[int, int, int, int]:
+    """Rank duplicate candidates without changing stable input ordering."""
+    source = str(benchmark.get("source") or "").strip().casefold()
+    provenance = str(benchmark.get("provenance") or "").strip().casefold()
+    priority = str(benchmark.get("priority") or "").strip().upper()
+    status = str(benchmark.get("validation_status") or "").strip().casefold()
+    has_valid_sql = bool(str(benchmark.get("expected_sql") or "").strip()) and status == "valid"
+    user_authored = source in _USER_AUTHORED_SOURCES
+    curated_or_p0 = provenance in _CURATED_PROVENANCE or priority == "P0"
+    return (
+        int(user_authored),
+        int(has_valid_sql),
+        int(curated_or_p0),
+        -index,
+    )
+
+
+def deduplicate_benchmark_corpus(
+    benchmarks: list[dict] | None,
+) -> tuple[list[dict], list[dict]]:
+    """Keep one deterministic winner per normalized question.
+
+    Winner priority is user/Genie-authored, then SQL-valid, then curated/P0,
+    then stable input order. Rejected rows carry the retained question id and
+    normalized key so callers can persist useful provenance.
+    """
+    rows = [dict(row) for row in benchmarks or []]
+    grouped: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        key = normalize_benchmark_question(row.get("question"))
+        if key:
+            grouped.setdefault(key, []).append(index)
+
+    winner_by_key = {
+        key: max(indices, key=lambda index: _duplicate_retention_priority(rows[index], index))
+        for key, indices in grouped.items()
+    }
+    winner_indices = set(winner_by_key.values())
+    retained = [
+        row
+        for index, row in enumerate(rows)
+        if index in winner_indices
+        or not normalize_benchmark_question(row.get("question"))
+    ]
+    rejected: list[dict] = []
+    for key, indices in grouped.items():
+        winner_index = winner_by_key[key]
+        retained_id = _benchmark_id(rows[winner_index])
+        for index in indices:
+            if index == winner_index:
+                continue
+            duplicate = dict(rows[index])
+            duplicate["validation_status"] = "excluded"
+            duplicate["validation_reason_code"] = "duplicate_normalized_question"
+            duplicate["validation_error"] = (
+                "Duplicate normalized question; retained "
+                f"question_id={retained_id or '(missing)'}"
+            )
+            duplicate["duplicate_retained_question_id"] = retained_id
+            duplicate["duplicate_normalized_question"] = key
+            rejected.append(duplicate)
+
+    if rejected:
+        logger.warning(
+            "Rejected %d duplicate benchmark candidate(s) by normalized question",
+            len(rejected),
+        )
+    return retained, rejected
+
+
+def duplicate_rejection_mutations(rejected: list[dict]) -> list[dict]:
+    """Build mutation-ledger rows for normalized-question duplicates."""
+    return [
+        {
+            "question_id": duplicate.get("id", duplicate.get("question_id", "")),
+            "op": "removed",
+            "before": {
+                "question": duplicate.get("question", ""),
+                "sql": duplicate.get("expected_sql", ""),
+                "retained_question_id": duplicate.get(
+                    "duplicate_retained_question_id", "",
+                ),
+                "normalized_question": duplicate.get(
+                    "duplicate_normalized_question", "",
+                ),
+            },
+            "after": None,
+            "reason": "duplicate_normalized_question",
+        }
+        for duplicate in rejected
+    ]
+
+
 def assign_splits(
     benchmarks: list[dict],
     train_ratio: float = 1.0,
@@ -1051,21 +1155,33 @@ def assign_splits(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 4. MLflow Record Building
+# 4. Delta Handoff Record Building
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def build_eval_records(benchmarks: list[dict]) -> list[dict]:
-    """Convert benchmarks to MLflow evaluation record format.
+def build_benchmark_handoff_records(
+    benchmarks: list[dict],
+    *,
+    space_id: str = "",
+    catalog: str = "",
+    gold_schema: str = "",
+) -> list[dict]:
+    """Convert benchmarks to the stable nested Delta handoff schema.
 
-    Each record has ``inputs`` (question, question_id) and ``expectations``
-    (expected_sql, expected_asset, expected_facts, required_tables, etc.).
+    Each record has ``inputs`` (question, question_id, expected_sql) and
+    ``expectations`` (expected_response, expected_asset, required tables, etc.).
     """
     _VALID_ASSET_TYPES = frozenset({"MV", "TVF", "TABLE"})
+
+    def _string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if item is not None]
+
     records: list[dict] = []
     for b in benchmark_corpus_for_optimization(benchmarks):
         question = b.get("question", "")
-        qid = b.get("question_id") or hashlib.md5(
+        qid = b.get("id") or b.get("question_id") or hashlib.md5(
             question.encode()
         ).hexdigest()[:8]
 
@@ -1080,21 +1196,128 @@ def build_eval_records(benchmarks: list[dict]) -> list[dict]:
         records.append(
             {
                 "inputs": {
-                    "question": question,
-                    "question_id": qid,
+                    "question": str(question or ""),
+                    "question_id": str(qid or ""),
+                    "space_id": str(space_id or ""),
+                    "expected_sql": str(b.get("expected_sql") or ""),
+                    "catalog": str(catalog or ""),
+                    "gold_schema": str(gold_schema or ""),
+                    "order_sensitive": bool(b.get("order_sensitive", False)),
                 },
                 "expectations": {
-                    "expected_sql": b.get("expected_sql", ""),
+                    "expected_response": str(b.get("expected_sql") or ""),
                     "expected_asset": _asset,
-                    "expected_facts": b.get("expected_facts", []),
-                    "required_tables": b.get("required_tables", []),
-                    "required_columns": b.get("required_columns", []),
-                    "category": b.get("category", ""),
-                    "split": b.get("split", "full"),
+                    "expected_facts": _string_list(b.get("expected_facts")),
+                    "required_tables": _string_list(b.get("required_tables")),
+                    "required_columns": _string_list(b.get("required_columns")),
+                    "category": str(b.get("category") or ""),
+                    "source": str(b.get("source") or ""),
+                    "provenance": str(b.get("provenance") or ""),
+                    "validation_status": str(b.get("validation_status") or ""),
+                    "validation_reason_code": str(b.get("validation_reason_code") or ""),
+                    "validation_error": (
+                        str(b.get("validation_error"))
+                        if b.get("validation_error") is not None
+                        else None
+                    ),
+                    "correction_source": str(b.get("correction_source") or ""),
+                    "temporal_stale": bool(b.get("temporal_stale", False)),
+                    "asset_fingerprint": str(b.get("asset_fingerprint") or ""),
+                    "split": str(b.get("split") or "full"),
                 },
             }
         )
     return records
+
+
+def persist_benchmark_corpus(
+    spark: Any,
+    benchmarks: list[dict],
+    uc_schema: str,
+    domain: str,
+    *,
+    space_id: str = "",
+    catalog: str = "",
+    gold_schema: str = "",
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
+) -> dict[str, Any]:
+    """Atomically overwrite the run handoff table using Spark/Delta only."""
+    deduped, rejected_duplicates = deduplicate_benchmark_corpus(benchmarks)
+    if len(deduped) > max_benchmark_count:
+        logger.warning(
+            "Truncated benchmark Delta handoff from %d to %d rows",
+            len(deduped), max_benchmark_count,
+        )
+        deduped = deduped[:max_benchmark_count]
+    corpus = benchmark_corpus_for_optimization(deduped)
+    records = build_benchmark_handoff_records(
+        corpus,
+        space_id=space_id,
+        catalog=catalog,
+        gold_schema=gold_schema,
+    )
+    question_ids = [record["inputs"]["question_id"] for record in records]
+    if len(question_ids) != len(set(question_ids)):
+        raise RuntimeError(
+            f"Duplicate benchmark question_id values before Delta persistence: {question_ids}"
+        )
+
+    # A DDL schema string works with classic Spark and Spark Connect while
+    # keeping this module importable in the lightweight offline test env.
+    schema = """
+        inputs STRUCT<
+            question_id: STRING,
+            question: STRING,
+            space_id: STRING,
+            expected_sql: STRING,
+            catalog: STRING,
+            gold_schema: STRING,
+            order_sensitive: BOOLEAN
+        >,
+        expectations STRUCT<
+            expected_response: STRING,
+            expected_asset: STRING,
+            expected_facts: ARRAY<STRING>,
+            required_tables: ARRAY<STRING>,
+            required_columns: ARRAY<STRING>,
+            category: STRING,
+            source: STRING,
+            provenance: STRING,
+            validation_status: STRING,
+            validation_reason_code: STRING,
+            validation_error: STRING,
+            correction_source: STRING,
+            temporal_stale: BOOLEAN,
+            asset_fingerprint: STRING,
+            split: STRING
+        >
+    """
+    frame = spark.createDataFrame(records, schema=schema)
+    table_name = f"{uc_schema}.genie_benchmarks_{domain}"
+    quoted_table_name = _quote_identifier_fqn(table_name)
+
+    def _overwrite() -> None:
+        (
+            frame.write
+            .format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .saveAsTable(quoted_table_name)
+        )
+
+    retry_delta_write(
+        _overwrite,
+        operation_name="benchmark_corpus.overwrite",
+        table_name=table_name,
+    )
+    logger.info("Persisted %d benchmark rows directly to %s", len(records), table_name)
+    return {
+        "table_name": table_name,
+        "input_count": len(benchmarks),
+        "record_count": len(records),
+        "unique_question_id_count": len(set(question_ids)),
+        "rejected_duplicates": rejected_duplicates,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════

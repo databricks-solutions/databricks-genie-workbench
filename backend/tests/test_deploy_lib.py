@@ -21,7 +21,14 @@ from scripts.deploy_lib.gso_job import (
 )
 from scripts.deploy_lib.lakebase import ensure_lakebase, get_database_resource
 from scripts.deploy_lib.uc import update_grants
-from scripts.deploy_lib.workspace_source import mkdirs, should_copy, upload_source_notebook, workspace_api_path
+from scripts.deploy_lib.workspace_source import (
+    mkdirs,
+    prepare_workspace_source,
+    should_copy,
+    upload_source_notebook,
+    validate_python_dependency_sources,
+    workspace_api_path,
+)
 
 
 class FakeApiClient:
@@ -250,6 +257,42 @@ def test_workspace_source_inclusion_rules(tmp_path):
     assert not should_copy(repo / "notebooks/install.py", repo)
     assert not should_copy(repo / "frontend/node_modules/pkg/index.js", repo)
     assert not should_copy(repo / "packages/genie-space-optimizer/tests/test_x.py", repo)
+
+
+def test_workspace_source_rejects_private_python_registry_before_upload(tmp_path):
+    repo = tmp_path / "repo"
+    package = repo / "packages" / "genie-space-optimizer"
+    package.mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+    (repo / "uv.lock").write_text(
+        'source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }\n'
+    )
+    (package / "pyproject.toml").write_text("[project]\nname = 'package'\n")
+
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="warehouse-1",
+        repo_root=str(repo),
+    )
+    w = FakeWorkspaceClient()
+
+    with pytest.raises(ValueError, match=r"uv\.lock.*https://pypi\.org/simple"):
+        prepare_workspace_source(w, cfg, "me@example.com")
+
+    assert w.api_client.calls == []
+
+
+def test_workspace_source_accepts_public_pypi_dependency_metadata(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+    (repo / "uv.lock").write_text(
+        'source = { registry = "https://pypi.org/simple" }\n'
+        'url = "https://files.pythonhosted.org/packages/example.whl"\n'
+    )
+
+    validate_python_dependency_sources(repo)
 
 
 def test_workspace_api_path_normalizes_workspace_prefix():

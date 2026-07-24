@@ -36,6 +36,10 @@ from genie_space_optimizer.optimization.state import (
     write_patch,
     write_stage,
 )
+from genie_space_optimizer.optimization.wide_schema import (
+    _identifier_parts,
+    normalize_component,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,7 @@ _STAGE = "SPACE_QUALITY_ENRICHMENT"
 _TASK_KEY = "space_quality_enrichment"
 _INSTRUCTION_SEED_THRESHOLD = 50
 _MAX_SOURCE_NAMES = 6
+_MAX_PROMPT_COLUMNS_PER_ASSET = 50
 _PROMPT_MATCHING_CONTEXT_VERSION = 1
 
 
@@ -53,7 +58,12 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
     only needs row counts and cardinalities, so the artifact deliberately drops
     those values while retaining UC types, RLS verdicts, and asset semantics.
     """
+    # ``_uc_columns`` is expected to be the active wide-schema projection.
+    # Keep a defensive per-asset cap here because this function is also used by
+    # legacy and replay paths that may attach an older, complete UC snapshot.
     uc_columns: list[dict[str, Any]] = []
+    columns_per_asset: dict[tuple[str, str, str], int] = {}
+    omitted_columns = 0
     for raw in config.get("_uc_columns") or []:
         if not isinstance(raw, dict):
             continue
@@ -61,27 +71,81 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
         table_name = str(raw.get("table_name") or "").strip()
         if not column_name or not table_name:
             continue
-        uc_columns.append({
+        asset_key = (
+            str(raw.get("catalog_name") or "").strip().casefold(),
+            str(raw.get("schema_name") or "").strip().casefold(),
+            table_name.casefold(),
+        )
+        if columns_per_asset.get(asset_key, 0) >= _MAX_PROMPT_COLUMNS_PER_ASSET:
+            omitted_columns += 1
+            continue
+        columns_per_asset[asset_key] = columns_per_asset.get(asset_key, 0) + 1
+        projected_column = {
             "catalog_name": str(raw.get("catalog_name") or "").strip(),
             "schema_name": str(raw.get("schema_name") or "").strip(),
             "table_name": table_name,
             "column_name": column_name,
             "data_type": str(raw.get("data_type") or "").strip(),
-        })
-    uc_columns.sort(key=lambda col: (
-        col["catalog_name"],
-        col["schema_name"],
-        col["table_name"],
-        col["column_name"],
-    ))
+        }
+        if raw.get("stable_rank") is not None:
+            projected_column["stable_rank"] = raw["stable_rank"]
+        if raw.get("reason_codes"):
+            projected_column["reason_codes"] = copy.deepcopy(raw["reason_codes"])
+        if raw.get("profile_status") is not None:
+            projected_column["profile_status"] = raw["profile_status"]
+        uc_columns.append(projected_column)
+    by_asset: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for column in uc_columns:
+        key = (
+            column["catalog_name"],
+            column["schema_name"],
+            column["table_name"],
+        )
+        by_asset.setdefault(key, []).append(column)
+    for columns in by_asset.values():
+        columns.sort(key=lambda column: (
+            int(column.get("stable_rank") or 999999),
+            column["column_name"],
+        ))
+    uc_columns = []
+    offset = 0
+    while True:
+        added = False
+        for key in sorted(by_asset):
+            columns = by_asset[key]
+            if offset < len(columns):
+                uc_columns.append(columns[offset])
+                added = True
+        if not added:
+            break
+        offset += 1
+
+    active_columns_by_asset: dict[tuple[str, str, str], set[str]] = {}
+    for column in uc_columns:
+        asset_key = (
+            normalize_component(column.get("catalog_name")),
+            normalize_component(column.get("schema_name")),
+            normalize_component(column.get("table_name")),
+        )
+        column_name = normalize_component(column.get("column_name"))
+        if all(asset_key) and column_name:
+            active_columns_by_asset.setdefault(asset_key, set()).add(column_name)
+    has_active_projection = isinstance(config.get("_uc_columns"), list)
 
     data_profile: dict[str, Any] = {}
     for identifier, raw_table in (config.get("_data_profile") or {}).items():
         if not isinstance(raw_table, dict):
             continue
+        asset_key = _identifier_parts(identifier)
+        allowed_columns = active_columns_by_asset.get(asset_key, set())
         columns: dict[str, Any] = {}
         for column_name, raw_column in (raw_table.get("columns") or {}).items():
             if not isinstance(raw_column, dict):
+                continue
+            if (
+                has_active_projection
+                and normalize_component(column_name) not in allowed_columns
+            ):
                 continue
             cardinality = raw_column.get("cardinality")
             if cardinality is None:
@@ -117,6 +181,12 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
         "data_profile": data_profile,
         "rls_audit": rls_audit,
         "asset_semantics": asset_semantics,
+        "inventory_hash": config.get("_wide_schema_inventory_hash"),
+        "plan_hash": config.get("_wide_schema_plan_hash"),
+        "omitted_context_summary": {
+            "columns_omitted_by_handoff_cap": omitted_columns,
+            "full_inventory_columns": config.get("_wide_schema_inventory_column_count"),
+        },
     }
 
 
@@ -131,6 +201,11 @@ def apply_prompt_matching_context(
     config["_data_profile"] = copy.deepcopy(context.get("data_profile") or {})
     config["_rls_audit"] = copy.deepcopy(context.get("rls_audit") or {})
     config["_asset_semantics"] = copy.deepcopy(context.get("asset_semantics") or {})
+    config["_wide_schema_inventory_hash"] = context.get("inventory_hash")
+    config["_wide_schema_plan_hash"] = context.get("plan_hash")
+    config["_wide_schema_omitted_context_summary"] = copy.deepcopy(
+        context.get("omitted_context_summary") or {}
+    )
     return config
 
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pandas as pd
 
 from genie_space_optimizer.optimization import state
@@ -45,3 +48,33 @@ def test_load_latest_artifact_payload_rejects_non_object(monkeypatch) -> None:
         "sch",
         "space_metadata",
     ) is None
+
+
+def test_write_artifact_uses_byte_preserving_json_transport(monkeypatch) -> None:
+    captured: dict = {}
+
+    def _capture(_spark, _catalog, _schema, _table, row, **kwargs) -> None:
+        captured["row"] = row
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(state, "insert_row", _capture)
+    payload = {
+        "description": "O'Brien\\nSnowman: ☃",
+        "expression": r"CASE WHEN path = 'C:\\tmp' THEN 1 END",
+    }
+
+    artifact_id = state.write_artifact(
+        object(),
+        "run",
+        "wide_schema_inventory",
+        payload,
+        catalog="cat",
+        schema="sch",
+        stage_name="intake_and_snapshot",
+    )
+
+    raw = captured["row"]["artifact_json"]
+    assert artifact_id == captured["row"]["artifact_id"]
+    assert json.loads(raw) == payload
+    assert captured["row"]["content_hash"] == hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    assert captured["kwargs"] == {"base64_string_columns": {"artifact_json"}}

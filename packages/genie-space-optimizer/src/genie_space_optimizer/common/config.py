@@ -155,7 +155,7 @@ without a code revert."""
 #   ``on``      — new corrected scoring (default).
 #   ``shadow``  — run both old and new paths; headline is the new value
 #                 but the legacy value is logged as ``shadow.<judge>.<metric>``
-#                 for side-by-side comparison in MLflow.
+#                 in optimization telemetry for side-by-side comparison.
 #   ``off``     — legacy kill-switch. Byte-identical to pre-PR behavior.
 #
 # ``GSO_APPLY_QUALITY_INSTRUCTIONS`` gates the Group-D applier changes
@@ -305,6 +305,11 @@ else:
 than this many questions, regardless of how many are generated or loaded.
 With the V2 default the assessed corpus is exactly 30 questions. Flip
 GSO_NEW_SIZING=0 to restore the legacy 24/29 values."""
+
+MIN_VALID_BENCHMARK_COUNT = 15
+"""Hard floor for the quality-reviewed benchmark corpus. Generation still
+aims for ``TARGET_BENCHMARK_COUNT`` (30 by default), but optimization may
+proceed with a smaller corpus as long as at least 15 valid questions remain."""
 
 BENCHMARK_WINDOW_MIN = int(os.environ.get("GSO_BENCHMARK_WINDOW_MIN", "30") or "30")
 """GSO v2 (D8) — lower bound of the working benchmark window. At preflight,
@@ -1711,7 +1716,7 @@ for the fat JSON stage-level blobs that don't fit a per-attempt scored row:
 Backed by ``ddl._GENIE_OPT_ARTIFACTS_DDL`` and written via
 ``state.write_artifact``."""
 
-# ── 13. MLflow Conventions ─────────────────────────────────────────────
+# ── 13. Trace Destination Convention ──────────────────────────────────
 
 EXPERIMENT_PATH_TEMPLATE = "/Shared/genie-space-optimizer/{{ space_id }}/{{ domain }}"
 
@@ -1720,12 +1725,6 @@ EXPERIMENT_PATH_TEMPLATE = "/Shared/genie-space-optimizer/{{ space_id }}/{{ doma
 # the MLflow LoggedModel + UC Model Registry + cross-env deploy paths. Tracking
 # is Delta-only; cross-environment deploy (future) will use the official DAB
 # ``genie_space`` resource.
-
-PROMPT_NAME_TEMPLATE = "{{ uc_schema }}.genie_opt_{{ judge_name }}"
-PROMPT_ALIAS = "production"
-
-INSTRUCTION_PROMPT_NAME_TEMPLATE = "{{ uc_schema }}.genie_instructions_{{ space_id }}"
-INSTRUCTION_PROMPT_ALIAS = "latest"
 
 # ── 14. Patch DSL Constants ────────────────────────────────────────────
 
@@ -1836,17 +1835,6 @@ UNIFIED_OPTIMIZER_PATCH_RULES = [
     "If the fix truly needs a full query shape, use add_example_sql with a generalized adjacent example that passes the benchmark-leakage rules. Do NOT reconstruct a failing question's expected SQL with renamed aliases or reordered clauses — a near-verbatim copy of any benchmark's expected SQL is rejected as a leak before apply. Pick a DIFFERENT question over DIFFERENT columns/tables that still demonstrates the same construction primitive.",
     "Never set validation_passed; the optimizer validates SQL snippets before apply.",
 ]
-
-UNIFIED_OPTIMIZER_PATCH_PROMPT = (
-    UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT
-    + "\n\nResponse schema:\n"
-    + str(UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA)
-    + "\n\nWell-curated space rubric:\n"
-    + str(WELL_CURATED_SPACE_RUBRIC)
-    + "\n\nPatch rules:\n"
-    + "\n".join(f"- {rule}" for rule in UNIFIED_OPTIMIZER_PATCH_RULES)
-)
-
 
 # ── 15. Assessment Sources ─────────────────────────────────────────────
 
@@ -2169,26 +2157,7 @@ PATCH_TYPES = {
 
 # ── 19. Failure Taxonomy (24 types) ───────────────────────────────────
 
-# ── 20c. Benchmark Prompts (registered in MLflow for traceability) ─────
-
-BENCHMARK_PROMPTS: dict[str, str] = {
-    "unified_optimizer_patch": UNIFIED_OPTIMIZER_PATCH_PROMPT,
-    "audit_summary": AUDIT_SUMMARY_PROMPT,
-    "benchmark_generation": BENCHMARK_GENERATION_PROMPT,
-    "benchmark_correction": BENCHMARK_CORRECTION_PROMPT,
-    "benchmark_alignment_check": BENCHMARK_ALIGNMENT_CHECK_PROMPT,
-    "benchmark_quality_review": BENCHMARK_QUALITY_REVIEW_PROMPT,
-    "benchmark_coverage_gap": BENCHMARK_COVERAGE_GAP_PROMPT,
-    "curated_sql_generation": CURATED_SQL_GENERATION_PROMPT,
-    # Phase 4.R4b — example-SQL variants. Registered alongside
-    # benchmark prompts so MLflow tracing + the registry-key lookup in
-    # ``get_registered_prompt_name`` find them by the same pathway.
-    "example_sql_generation": EXAMPLE_SQL_GENERATION_PROMPT,
-    "example_sql_correction": EXAMPLE_SQL_CORRECTION_PROMPT,
-}
-
-
-# ── 20d. Phase 2.R2b — Prompt isolation assertion ──────────────────────
+# ── 20c. Phase 2.R2b — Prompt isolation assertion ──────────────────────
 #
 # Isolation invariant #2 of the unified example-SQL generator: the
 # example prompts must NOT reference any benchmark-derived template

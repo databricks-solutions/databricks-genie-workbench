@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_artifacts (
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
     stage_name          STRING                 COMMENT 'Notebook or stage that wrote the artifact (intake_and_snapshot, benchmark_qc_and_repair, ...)',
     iteration           INT                    COMMENT 'Iteration number, when applicable (NULL for run-level artifacts)',
-    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | space_metadata | benchmark_qc | space_quality_enrichment | publish_record',
+    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | wide_schema_inventory | wide_schema_evidence | wide_schema_selection_plan | wide_schema_profile_telemetry | wide_schema_prompt_telemetry | wide_schema_audit | space_metadata | benchmark_qc | space_quality_enrichment | publish_record',
     artifact_json       STRING                 COMMENT 'JSON payload for the artifact (enough to reconstruct the pass without notebook-local state)',
     content_hash        STRING                 COMMENT 'Hash of artifact_json for dedupe / idempotency / replay safety',
     parent_artifact_id  STRING                 COMMENT 'Lineage pointer to the artifact this one derives from',
@@ -182,7 +182,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_artifacts (
 )
 USING DELTA
 PARTITIONED BY (run_id)
-COMMENT 'GSO v2 (arch §7.1) generic Delta handoff table for stage-level JSON blobs (run_manifest, space_metadata, benchmark_qc, space_quality_enrichment, publish_record)'
+COMMENT 'GSO v2 generic Delta handoff table for stage-level JSON blobs, including immutable wide-schema inventory and append-only selection-plan revisions'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
     'delta.autoOptimize.autoCompact' = 'true',

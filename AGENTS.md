@@ -68,7 +68,6 @@ backend/
     _validators.py         # Shared FastAPI path-param validators (e.g. RunId — uuid4-enforced)
   services/
     auth.py                # OBO auth (ContextVar), SP fallback, WorkspaceClient mgmt
-    prompt_registry.py     # Thin re-export of genie_space_optimizer.common.prompt_registry (shared probe — see Key Patterns)
     genie_client.py        # Databricks Genie API (fetch space, list spaces, query for SQL)
     scanner.py             # Rule-based IQ scoring engine (0-12, 12 checks, 3-tier maturity, UC-enriched)
     fix_agent.py           # LLM agent (Quick Fix in UI) that generates JSON patches and applies via Genie API
@@ -223,7 +222,6 @@ git add package.json package-lock.json
 ## Gotchas
 
 - **`CLAUDE.md` is a symlink to `AGENTS.md`** — one source of truth shared by Claude Code and other agent tools. Edit `AGENTS.md`; never replace the symlink with a separate file.
-- **`backend/services/prompt_registry.py` is a re-export** — the real implementation lives in `genie_space_optimizer.common.prompt_registry` so the GSO job (no `backend` on its path) and the Workbench webapp share one source of truth. Import from either path; edit the GSO copy.
 - **frontend/dist/ is gitignored but NOT databricksignored** — the built React app must be synced to workspace for deployment. Build before `databricks sync`.
 - **`.databricksignore` excludes `*.md`** but explicitly re-includes `backend/references/schema.md` (needed at runtime by create agent and analysis prompts).
 - **OBO ContextVar and streaming** — for SSE endpoints, the ContextVar is NOT cleared after `call_next` because the response streams lazily. Streaming handlers stash the token on `request.state` and re-set it inside the generator.

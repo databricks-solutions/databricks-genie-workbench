@@ -7,12 +7,17 @@ import json
 import logging
 import os
 import re
-from typing import Any, Callable, TypeVar
+from typing import Annotated, Any, Callable, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from backend.models import PermissionCheckResponse, SchemaAccessStatus
+from backend.models import (
+    PermissionCheckResponse,
+    QueryHistoryWarehouseStatus,
+    QueryUsageSignal,
+    SchemaAccessStatus,
+)
 from backend.routers._validators import RunId, SpaceId
 
 from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
@@ -149,6 +154,9 @@ class TriggerRequest(BaseModel):
     # native patch/eval loop. The loop stops at whichever comes first.
     target_accuracy: float | None = Field(None, ge=0.0, le=1.0)
     max_attempts: int | None = Field(None, ge=1, le=20)
+    workload_warehouse_ids: list[
+        Annotated[str, Field(pattern=r"^[0-9a-zA-Z_-]{1,128}$")]
+    ] = Field(default_factory=list, max_length=20)
 
 
 # PermissionCheckResponse + SchemaAccessStatus now live in `backend.models`
@@ -306,7 +314,7 @@ def _select_iterations_delta(run_id: str) -> list[dict]:
     """
     global _iterations_schema_legacy
     table = _delta_table("genie_opt_iterations")
-    order = f"WHERE run_id = '{run_id}' ORDER BY iteration ASC"
+    order = f"WHERE run_id = '{run_id}' ORDER BY iteration ASC, timestamp ASC"
 
     if _iterations_schema_legacy is True:
         return _delta_query(f"SELECT {_ITER_COLS_LEGACY} FROM {table} {order}")
@@ -524,8 +532,8 @@ _safe_json_parse = safe_json_parse
 
 
 # Bug #2 — canonical per-iteration accuracy derivation lives in
-# `genie_space_optimizer.common.accuracy.derived_accuracy` (mirrors the
-# prompt-registry pattern: one implementation, thin re-exports at the edge).
+# `genie_space_optimizer.common.accuracy.derived_accuracy` with a thin
+# router-local compatibility wrapper.
 # Calls here pass this module's logger so drift lines keep showing up under
 # `backend.routers.auto_optimize`, preserving existing log-scraping rules
 # and the caplog-scoped unit tests in `test_auto_optimize_router.py`.
@@ -1274,6 +1282,81 @@ async def check_permissions(space_id: SpaceId):
     all_read = all(s.read_granted for s in schemas) if schemas else True
     can_start = sp_has_manage and all_read
 
+    system_history_available = False
+    try:
+        from databricks.sdk.service.sql import Disposition, Format, StatementState
+        from genie_space_optimizer.common.query_tags import gso_query_tags
+
+        gso_config = _build_gso_config()
+        if gso_config.warehouse_id:
+            probe = sp_ws.statement_execution.execute_statement(
+                warehouse_id=gso_config.warehouse_id,
+                statement="SELECT 1 FROM system.query.history LIMIT 1",
+                wait_timeout="10s",
+                disposition=Disposition.INLINE,
+                format=Format.JSON_ARRAY,
+                query_tags=gso_query_tags(purpose="history_collection"),
+            )
+            system_history_available = bool(
+                probe.status and probe.status.state == StatementState.SUCCEEDED
+            )
+    except Exception:
+        logger.info("System query history is not available to the GSO SP")
+
+    workload_warehouses: list[QueryHistoryWarehouseStatus] = []
+    try:
+        sp_visible_warehouse_ids = {
+            str(getattr(warehouse, "id", "") or "").strip()
+            for warehouse in sp_ws.warehouses.list()
+            if str(getattr(warehouse, "id", "") or "").strip()
+        }
+        for warehouse in get_workspace_client().warehouses.list():
+            warehouse_id = str(getattr(warehouse, "id", "") or "").strip()
+            if not warehouse_id:
+                continue
+            workload_warehouses.append(QueryHistoryWarehouseStatus(
+                warehouse_id=warehouse_id,
+                name=str(getattr(warehouse, "name", "") or warehouse_id),
+                accessible=warehouse_id in sp_visible_warehouse_ids,
+            ))
+    except Exception:
+        logger.info("Warehouse query-history discovery is unavailable", exc_info=True)
+
+    accessible_warehouses = [
+        warehouse for warehouse in workload_warehouses if warehouse.accessible
+    ]
+    inaccessible_warehouses = [
+        warehouse.name for warehouse in workload_warehouses
+        if not warehouse.accessible
+    ]
+    query_signal = QueryUsageSignal(
+        status=(
+            "system_table_available"
+            if system_history_available
+            else "partially_available"
+            if accessible_warehouses and inaccessible_warehouses
+            else "warehouse_api_available"
+            if accessible_warehouses
+            else "unavailable"
+        ),
+        system_table_available=system_history_available,
+        warehouse_api_available=bool(accessible_warehouses),
+        warehouses=workload_warehouses,
+        inaccessible_warehouses=inaccessible_warehouses,
+        system_grant_sql=(
+            None
+            if system_history_available
+            else (
+                "GRANT USE CATALOG ON CATALOG system TO "
+                f"`{sp_application_id or '<gso-service-principal>'}`;\n"
+                "GRANT USE SCHEMA ON SCHEMA system.query TO "
+                f"`{sp_application_id or '<gso-service-principal>'}`;\n"
+                "GRANT SELECT ON TABLE system.query.history TO "
+                f"`{sp_application_id or '<gso-service-principal>'}`;"
+            )
+        ),
+    )
+
     return PermissionCheckResponse(
         sp_display_name=sp_display_name,
         sp_application_id=sp_application_id,
@@ -1281,6 +1364,7 @@ async def check_permissions(space_id: SpaceId):
         schemas=schemas,
         can_start=can_start,
         errors=errors,
+        query_usage_signal=query_signal,
     )
 
 
@@ -1313,6 +1397,7 @@ async def trigger(body: TriggerRequest, request: Request):
             levers=body.levers,
             target_accuracy=body.target_accuracy,
             max_attempts=body.max_attempts,
+            workload_warehouse_ids=body.workload_warehouse_ids,
         )
         # Echo the resolved knobs (request value or the job default) so the UI
         # can confirm what the run will use without re-reading the job config.
@@ -1678,7 +1763,7 @@ async def get_run(run_id: RunId):
             _dr = await _delta_query_async(
                 f"SELECT rows_json FROM {_delta_table('genie_opt_iterations')} "
                 f"WHERE run_id = '{run_id}' AND iteration = 0 AND eval_scope = 'full' "
-                f"AND rows_json IS NOT NULL LIMIT 1"
+                f"AND rows_json IS NOT NULL ORDER BY timestamp ASC LIMIT 1"
             )
             rows_json_str = _dr[0]["rows_json"] if _dr else None
         if rows_json_str:
@@ -2205,6 +2290,11 @@ def _attempt_row_sort_key(r: dict) -> tuple:
     return (_safe_int(r.get("iteration")) or 0, str(r.get("timestamp") or ""))
 
 
+def _evaluation_event_sort_key(r: dict) -> tuple:
+    """Chronological key for recovering append-only iteration-0 evaluations."""
+    return (str(r.get("timestamp") or ""), _safe_int(r.get("iteration")) or 0)
+
+
 def _dedup_attempt_rows(loop_rows: list[dict]) -> list[dict]:
     """One authoritative full-benchmark row per ``attempt_no`` (B1).
 
@@ -2220,17 +2310,65 @@ def _dedup_attempt_rows(loop_rows: list[dict]) -> list[dict]:
     excluding it here keeps ``attempts[]`` to real patch attempts (≥1) and stops
     a duplicate "Baseline" row from rendering in the Attempt Ledger/Ladder.
     """
+    eligible = [
+        r for r in loop_rows
+        if str(r.get("eval_scope") or "").lower() in _FULL_BENCHMARK_SCOPES
+    ]
+
+    # The append-only iteration table can contain multiple iteration-0/full
+    # rows when an Optimize task is repaired or re-entered. The earliest row is
+    # the true baseline. Later timestamped rows are real official evaluations
+    # and must appear in the ladder instead of being discarded with baseline.
+    baseline_rows = [
+        r for r in eligible
+        if (_safe_int(r.get("attempt_no")) in {None, 0})
+        and (_safe_int(r.get("iteration")) or 0) == 0
+        and str(r.get("eval_scope") or "").lower() == "full"
+    ]
+    baseline_rows.sort(key=_evaluation_event_sort_key)
+    baseline = baseline_rows[0] if baseline_rows else None
+    recovered = [
+        r for r in baseline_rows[1:]
+        if str(r.get("timestamp") or "")
+        and _evaluation_event_sort_key(r) != _evaluation_event_sort_key(baseline or {})
+    ]
+
     by_attempt: dict[int, dict] = {}
-    for r in loop_rows:
+    for r in eligible:
         attempt_no = _safe_int(r.get("attempt_no"))
         if attempt_no is None or attempt_no == 0:
-            continue
-        if str(r.get("eval_scope") or "").lower() not in _FULL_BENCHMARK_SCOPES:
             continue
         existing = by_attempt.get(attempt_no)
         if existing is None or _attempt_row_sort_key(r) > _attempt_row_sort_key(existing):
             by_attempt[attempt_no] = r
-    return [by_attempt[k] for k in sorted(by_attempt)]
+
+    next_attempt_no = max(by_attempt, default=0) + 1
+    for source in recovered:
+        row = dict(source)
+        row["attempt_no"] = next_attempt_no
+        row["attempt_mode"] = "enrichment"
+        if str(row.get("decision") or "").lower() in {"", "baseline"}:
+            row["decision"] = "accept"
+        if str(row.get("decision_reason") or "").lower() in {"", "baseline"}:
+            row["decision_reason"] = "post-baseline evaluation recovered from task re-entry"
+        by_attempt[next_attempt_no] = row
+        next_attempt_no += 1
+
+    rows = [by_attempt[k] for k in sorted(by_attempt)]
+    # A run-scoped champion UPDATE can flag every duplicate iteration-0 row.
+    # Among returned attempts, retain only the highest flagged row as champion;
+    # if the omitted earliest baseline is strictly higher, no attempt is marked
+    # and the frontend correctly treats baseline as champion.
+    flagged_pool = [
+        row
+        for row in ([baseline] if baseline else []) + rows
+        if _safe_bool(row.get("is_champion"))
+    ]
+    if flagged_pool:
+        champion = max(flagged_pool, key=lambda r: _safe_float(r.get("overall_accuracy")) or 0.0)
+        for row in rows:
+            row["is_champion"] = row is champion
+    return rows
 
 
 def _build_attempt(lr: dict) -> dict:
@@ -2560,13 +2698,14 @@ async def _load_iteration_rows_json(run_id: str, iteration: int) -> str | None:
         logger.info("Lakebase returned no rows_json for run=%s iter=%s, trying Delta", run_id, iteration)
         delta_rows = _delta_query(
             f"SELECT rows_json FROM {_delta_table('genie_opt_iterations')} "
-            f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND eval_scope = 'full' LIMIT 1"
+            f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND eval_scope = 'full' "
+            f"ORDER BY timestamp ASC LIMIT 1"
         )
         if not delta_rows:
             delta_rows = _delta_query(
                 f"SELECT rows_json FROM {_delta_table('genie_opt_iterations')} "
                 f"WHERE run_id = '{run_id}' AND iteration = {iteration} "
-                f"AND rows_json IS NOT NULL LIMIT 1"
+                f"AND rows_json IS NOT NULL ORDER BY timestamp ASC LIMIT 1"
             )
         rows_json_str = delta_rows[0]["rows_json"] if delta_rows else None
     return rows_json_str

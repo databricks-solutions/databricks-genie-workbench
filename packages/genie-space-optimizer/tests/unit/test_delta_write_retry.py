@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 
@@ -160,6 +161,35 @@ def test_insert_and_update_row_preserve_nested_json_escapes(
 
     assert f"'{expected}'" in statements[0]
     assert f"config_snapshot = '{expected}'" in statements[1]
+
+
+def test_insert_row_can_transport_string_bytes_without_sql_literal_escaping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statements: list[str] = []
+    monkeypatch.setattr(
+        delta_helpers,
+        "execute_delta_write_with_retry",
+        lambda _spark, stmt, **_kwargs: statements.append(stmt),
+    )
+    payload = json.dumps({
+        "description": "O'Brien\\nSnowman: ☃",
+        "expression": r"CASE WHEN path = 'C:\\tmp' THEN 1 END",
+    })
+    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+    delta_helpers.insert_row(
+        object(),
+        "cat",
+        "sch",
+        "tbl",
+        {"artifact_json": payload, "artifact_kind": "wide_schema_inventory"},
+        base64_string_columns={"artifact_json"},
+    )
+
+    assert f"CAST(unbase64('{encoded}') AS STRING)" in statements[0]
+    assert payload not in statements[0]
+    assert "'wide_schema_inventory'" in statements[0]
 
 
 def test_retry_delta_write_raises_final_conflict_after_attempts() -> None:

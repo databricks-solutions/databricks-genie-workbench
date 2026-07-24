@@ -40,7 +40,7 @@ flowchart TB
             end
             subgraph eRow2[" "]
                 direction LR
-                lb["Lakebase"] ~~~ mlflow["MLflow"] ~~~ delta["Delta (GSO state)"]
+                lb["Lakebase"] ~~~ mlflow["MLflow (tracing only)"] ~~~ delta["Delta (GSO state + benchmark corpus)"]
             end
             eRow1 ~~~ eRow2
         end
@@ -167,8 +167,8 @@ For SSE endpoints, the OBO `ContextVar` is **not** cleared after `call_next` in 
 | Store | Technology | Contents |
 |-------|-----------|----------|
 | Lakebase | PostgreSQL (asyncpg) | `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions` |
-| Delta Tables | Unity Catalog | GSO optimization state: 12 tables under `GSO_CATALOG.GSO_SCHEMA` |
-| MLflow | Experiment Tracking | LLM call traces, benchmark evaluations, prompt registry |
+| Delta Tables | Unity Catalog | GSO optimization state plus the direct `genie_benchmarks_<domain>` corpus handoff under `GSO_CATALOG.GSO_SCHEMA` |
+| MLflow | Tracing | LLM call traces only; no Dataset, run-tracking, model-registry, or evaluation dependency |
 
 Lakebase degrades gracefully to in-memory dictionaries when `LAKEBASE_HOST` is not configured, making the app functional (but non-persistent) without a database.
 

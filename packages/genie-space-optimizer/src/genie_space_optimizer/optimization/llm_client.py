@@ -115,6 +115,7 @@ def call_llm(
     temperature: float = LLM_TEMPERATURE,
     max_tokens: int | None = None,
     response_format: dict[str, Any] | None = None,
+    prompt_metadata: dict[str, Any] | None = None,
 ) -> tuple[str, Any]:
     """Call an LLM via the OpenAI SDK with retry + exponential backoff.
 
@@ -128,6 +129,17 @@ def call_llm(
     not sent to Databricks, because some supported reasoning/frontier
     endpoints reject the parameter.
     """
+    from genie_space_optimizer.optimization.wide_schema_prompt import fit_messages
+
+    messages, pack_stats = fit_messages(messages)
+    if prompt_metadata:
+        pack_stats.update({
+            key: value
+            for key, value in prompt_metadata.items()
+            if key in {"plan_hash", "inventory_hash", "included_counts", "omitted_counts"}
+        })
+    logger.info("GSO LLM request packed: %s", pack_stats)
+
     client = get_openai_client(w)
     model = get_llm_endpoint()
 
@@ -153,6 +165,10 @@ def call_llm(
             content = response.choices[0].message.content
             if not content or not content.strip():
                 raise ValueError("LLM response content is empty")
+            try:
+                response._gso_prompt_pack_stats = pack_stats
+            except Exception:
+                pass
             return str(content).strip(), response
         except Exception as exc:
             if response_format is not None and not retried_without_response_format:

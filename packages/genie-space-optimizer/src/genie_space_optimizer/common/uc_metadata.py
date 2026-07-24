@@ -30,7 +30,26 @@ def parse_table_identifier(identifier: str) -> tuple[str, str, str]:
     Identifiers come from the Genie Space API ``data_sources.tables[].identifier``
     and are typically fully-qualified: ``catalog.schema.table``.
     """
-    parts = identifier.replace("`", "").split(".")
+    parts: list[str] = []
+    current: list[str] = []
+    quoted = False
+    index = 0
+    raw = str(identifier or "").strip()
+    while index < len(raw):
+        char = raw[index]
+        if char == "`":
+            if quoted and index + 1 < len(raw) and raw[index + 1] == "`":
+                current.append("`")
+                index += 2
+                continue
+            quoted = not quoted
+        elif char == "." and not quoted:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    parts.append("".join(current))
     if len(parts) == 3:
         return parts[0], parts[1], parts[2]
     if len(parts) == 2:
@@ -101,7 +120,9 @@ def get_columns_for_tables_rest(
             continue
         if not table_info.columns:
             continue
-        for col in table_info.columns:
+        table_type = getattr(table_info, "table_type", None)
+        table_type = getattr(table_type, "value", table_type) or ""
+        for ordinal, col in enumerate(table_info.columns, start=1):
             rows.append({
                 "catalog_name": cat,
                 "schema_name": sch,
@@ -109,6 +130,8 @@ def get_columns_for_tables_rest(
                 "column_name": getattr(col, "name", ""),
                 "data_type": getattr(col, "type_text", ""),
                 "comment": getattr(col, "comment", None) or "",
+                "ordinal_position": ordinal,
+                "table_type": str(table_type),
             })
     summary = (
         f"[UC_METADATA] REST get_columns_for_tables_rest: "
@@ -271,15 +294,18 @@ def get_columns_for_tables(
         safe_tables = ", ".join(f"'{t.replace(chr(39), chr(39)+chr(39))}'" for t in tables)
         unions.append(
             f"SELECT '{cat}' AS catalog_name, '{sch}' AS schema_name, "
-            f"table_name, column_name, data_type, comment "
-            f"FROM {cat}.information_schema.columns "
-            f"WHERE table_schema = '{sch}' AND table_name IN ({safe_tables})"
+            f"c.table_name, c.column_name, c.data_type, c.comment, c.ordinal_position, t.table_type "
+            f"FROM {cat}.information_schema.columns c "
+            f"LEFT JOIN {cat}.information_schema.tables t "
+            f"ON c.table_catalog = t.table_catalog AND c.table_schema = t.table_schema AND c.table_name = t.table_name "
+            f"WHERE c.table_schema = '{sch}' AND c.table_name IN ({safe_tables})"
         )
     if not unions:
         return spark.sql(
             "SELECT CAST(NULL AS STRING) AS catalog_name, CAST(NULL AS STRING) AS schema_name, "
             "CAST(NULL AS STRING) AS table_name, CAST(NULL AS STRING) AS column_name, "
-            "CAST(NULL AS STRING) AS data_type, CAST(NULL AS STRING) AS comment WHERE 1=0"
+            "CAST(NULL AS STRING) AS data_type, CAST(NULL AS STRING) AS comment, "
+            "CAST(NULL AS INT) AS ordinal_position, CAST(NULL AS STRING) AS table_type WHERE 1=0"
         )
     return spark.sql(" UNION ALL ".join(unions))
 
@@ -418,9 +444,11 @@ def get_columns(spark: SparkSession, catalog: str, schema: str) -> DataFrame:
     Returns columns: ``table_name``, ``column_name``, ``data_type``, ``comment``.
     """
     return spark.sql(
-        f"SELECT table_name, column_name, data_type, comment "
-        f"FROM {catalog}.information_schema.columns "
-        f"WHERE table_schema = '{schema}'"
+        f"SELECT c.table_name, c.column_name, c.data_type, c.comment, c.ordinal_position, t.table_type "
+        f"FROM {catalog}.information_schema.columns c "
+        f"LEFT JOIN {catalog}.information_schema.tables t "
+        f"ON c.table_catalog = t.table_catalog AND c.table_schema = t.table_schema AND c.table_name = t.table_name "
+        f"WHERE c.table_schema = '{schema}'"
     )
 
 

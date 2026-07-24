@@ -36,6 +36,7 @@ def sql_warehouse_query(
     """Execute SQL via the Statement Execution API and return a pandas DataFrame."""
     import pandas as pd
     from databricks.sdk.service.sql import Disposition, Format, StatementState
+    from genie_space_optimizer.common.query_tags import gso_query_tags
 
     resp = ws.statement_execution.execute_statement(
         warehouse_id=warehouse_id,
@@ -43,6 +44,7 @@ def sql_warehouse_query(
         wait_timeout="50s",
         disposition=Disposition.INLINE,
         format=Format.JSON_ARRAY,
+        query_tags=gso_query_tags(purpose="optimization"),
     )
     if resp.status and resp.status.state == StatementState.SUCCEEDED:
         manifest_schema = resp.manifest.schema if resp.manifest else None
@@ -66,11 +68,13 @@ def sql_warehouse_execute(
 ) -> None:
     """Execute a DML/DDL statement via the SQL warehouse (no result expected)."""
     from databricks.sdk.service.sql import StatementState
+    from genie_space_optimizer.common.query_tags import gso_query_tags
 
     resp = ws.statement_execution.execute_statement(
         warehouse_id=warehouse_id,
         statement=sql,
         wait_timeout="50s",
+        query_tags=gso_query_tags(purpose="optimization"),
     )
     if resp.status and resp.status.state != StatementState.SUCCEEDED:
         error_msg = ""
@@ -286,7 +290,7 @@ def wh_create_run(
 
     # GSO v2 Phase 5 (D3): the ``experiment_name`` column was scrubbed; the
     # surviving MLflow tracing self-resolves a deterministic experiment path in
-    # ``preflight_setup_experiment`` (no pointer column needed).
+    # ``preflight_persist_benchmark_corpus`` (no pointer column needed).
     sql = (
         f"INSERT INTO {catalog}.{schema}.genie_opt_runs "
         f"(run_id, space_id, domain, catalog, uc_schema, status, started_at, "

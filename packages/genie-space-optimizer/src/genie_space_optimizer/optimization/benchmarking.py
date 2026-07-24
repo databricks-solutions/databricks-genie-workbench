@@ -1,7 +1,7 @@
 """Live benchmark preparation utilities for the four-task GSO workflow.
 
-This module contains only the benchmark generation, validation, dataset, prompt
-registration, and score-normalization helpers used by the native v2 path.
+This module contains only the benchmark generation, validation, dataset, local
+prompt-template, and score-normalization helpers used by the native v2 path.
 """
 
 from __future__ import annotations
@@ -32,22 +32,15 @@ from genie_space_optimizer.common.config import (
     BENCHMARK_CORRECTION_PROMPT,
     BENCHMARK_COVERAGE_GAP_PROMPT,
     BENCHMARK_GENERATION_PROMPT,
-    BENCHMARK_PROMPTS,
     COVERAGE_GAP_SOFT_CAP_FACTOR,
     DEFAULT_THRESHOLDS,
-    INSTRUCTION_PROMPT_ALIAS,
-    INSTRUCTION_PROMPT_NAME_TEMPLATE,
     LLM_MAX_RETRIES,
     LLM_TEMPERATURE,
     MAX_BENCHMARK_COUNT,
-    PROMPT_ALIAS,
-    PROMPT_NAME_TEMPLATE,
     TARGET_BENCHMARK_COUNT,
     format_mlflow_template,
     scoring_v2_is_legacy,
 )
-
-from genie_space_optimizer.common.delta_helpers import retry_delta_write
 
 from genie_space_optimizer.common.genie_client import (
     detect_asset_type,
@@ -56,8 +49,6 @@ from genie_space_optimizer.common.genie_client import (
 )
 
 logger = logging.getLogger(__name__)
-
-_REGISTERED_PROMPT_NAMES: dict[str, str] = {}
 
 _PROVENANCE_PRIORITY = [
     "curated", "curated_sql_generated", "reused", "synthetic",
@@ -283,44 +274,18 @@ def _extract_json(content: str | None, *, strict: bool = False) -> dict | list |
     )
     return None
 
-def get_registered_prompt_name(judge_name: str) -> str:
-    """Return the registered prompt name for a judge/lever, or empty string."""
-    return _REGISTERED_PROMPT_NAMES.get(judge_name, "")
-
-def _link_prompt_to_trace(prompt_name: str) -> None:
-    """Load a registered prompt inside the current trace to link it.
-
-    MLflow automatically associates ``load_prompt()`` calls with the
-    active trace, making the prompt version visible in the Linked Prompts
-    tab of the trace UI.  Failures are silently ignored so scoring continues.
-    """
-    if not prompt_name:
-        return
-    try:
-        mlflow.genai.load_prompt(f"prompts:/{prompt_name}@{PROMPT_ALIAS}")
-    except Exception:
-        try:
-            mlflow.genai.load_prompt(f"prompts:/{prompt_name}@latest")
-        except Exception:
-            logger.debug("Could not load prompt '%s' for trace linking", prompt_name)
-
 def _call_llm_for_scoring(
     w: "WorkspaceClient",
     prompt: str,
     max_retries: int = LLM_MAX_RETRIES,
-    prompt_name: str = "",
 ) -> dict:
     """Call LLM via the OpenAI SDK with retry + exponential backoff.
 
     Uses the shared ``llm_client`` so that ``mlflow.openai.autolog()``
-    captures token usage, cost, and latency automatically.
-
-    If *prompt_name* is provided, loads the registered prompt first to
-    link it to the current MLflow trace (visible in Linked Prompts tab).
+    captures token usage, cost, and latency automatically. Prompt content comes
+    directly from the version-controlled local templates in ``common.config``.
     """
     from genie_space_optimizer.optimization.llm_client import call_llm
-
-    _link_prompt_to_trace(prompt_name)
 
     last_err: Exception | None = None
     for attempt in range(max_retries):
@@ -1913,6 +1878,7 @@ def _execute_sql_via_warehouse(
     Raises ``RuntimeError`` on failure with the warehouse error message.
     """
     from databricks.sdk.service.sql import Disposition, Format, StatementState
+    from genie_space_optimizer.common.query_tags import gso_query_tags
 
     resp = w.statement_execution.execute_statement(
         warehouse_id=warehouse_id,
@@ -1922,6 +1888,7 @@ def _execute_sql_via_warehouse(
         wait_timeout=wait_timeout,
         disposition=Disposition.INLINE,
         format=Format.JSON_ARRAY,
+        query_tags=gso_query_tags(purpose="benchmark_validation"),
     )
     if resp.status and resp.status.state == StatementState.SUCCEEDED:
         manifest_schema = resp.manifest.schema if resp.manifest else None
@@ -2136,426 +2103,6 @@ def _repair_hint_for_reason(reason: str) -> str:
     fix instead of guessing from the raw error string.
     """
     return _REPAIR_HINTS_BY_REASON.get(reason, "")
-
-PROMPT_REGISTRY_REQUIRED_PRIVILEGES = ("CREATE FUNCTION", "EXECUTE", "MANAGE")
-
-def _is_ownership_conflict(err_msg: str) -> bool:
-    """True when MLflow can't update an existing prompt due to ownership mismatch."""
-    lowered = (err_msg or "").lower()
-    return "permission_denied" in lowered and "update prompt" in lowered
-
-def _try_drop_prompt(fqn: str) -> bool:
-    """Best-effort drop of a stale prompt (UC function) so it can be re-created.
-
-    Returns True if the drop succeeded (or the function didn't exist).
-    """
-    if "." not in fqn:
-        return False
-    try:
-        from pyspark.sql import SparkSession
-        spark = SparkSession.getActiveSession()
-        if spark is None:
-            return False
-        spark.sql(f"DROP FUNCTION IF EXISTS {fqn}")
-        logger.info("Dropped stale prompt function %s for re-creation", fqn)
-        return True
-    except Exception:
-        logger.debug("Could not drop stale prompt %s", fqn, exc_info=True)
-        return False
-
-def _classify_prompt_registration_error(message: str, uc_schema: str) -> dict[str, Any]:
-    """Classify prompt registration failure into actionable root-cause buckets."""
-    lowered = (message or "").lower()
-    permission_markers = (
-        "permission",
-        "privilege",
-        "not authorized",
-        "forbidden",
-        "insufficient",
-        "access denied",
-        "permission_denied",
-    )
-    missing_privileges = [
-        priv for priv in PROMPT_REGISTRY_REQUIRED_PRIVILEGES if priv.lower() in lowered
-    ]
-
-    if any(marker in lowered for marker in permission_markers):
-        if not missing_privileges:
-            missing_privileges = list(PROMPT_REGISTRY_REQUIRED_PRIVILEGES)
-        schema_target = uc_schema or "<catalog>.<schema>"
-        return {
-            "reason": "missing_uc_permissions",
-            "missing_privileges": missing_privileges,
-            "remediation": (
-                f"Grant {', '.join(missing_privileges)} on schema {schema_target} "
-                "to the Databricks App service principal used by job tasks."
-            ),
-        }
-
-    if (
-        "feature_disabled" in lowered
-        or ("not enabled" in lowered and ("prompt" in lowered or "registry" in lowered))
-        or ("preview" in lowered and ("prompt" in lowered or "genai" in lowered))
-    ):
-        return {
-            "reason": "feature_not_enabled",
-            "missing_privileges": [],
-            "remediation": (
-                "Enable MLflow Prompt Registry on the workspace. "
-                "Contact your workspace admin or enable the GenAI preview in workspace settings."
-            ),
-        }
-
-    if "does not exist" in lowered or "resource_does_not_exist" in lowered:
-        schema_target = uc_schema or "<catalog>.<schema>"
-        return {
-            "reason": "registry_path_not_found",
-            "missing_privileges": [],
-            "remediation": (
-                f"Verify catalog/schema exists and is accessible: {schema_target}."
-            ),
-        }
-
-    return {
-        "reason": "unknown",
-        "missing_privileges": [],
-        "remediation": (
-            "Inspect full stack trace for prompt registration failure details "
-            "and verify Prompt Registry availability."
-        ),
-    }
-
-def register_instruction_version(
-    uc_schema: str,
-    space_id: str,
-    instruction_text: str,
-    *,
-    run_id: str = "",
-    lever: int = 0,
-    iteration: int = 0,
-    accuracy: float = 0.0,
-    domain: str = "",
-) -> dict[str, Any] | None:
-    """Register the current Genie Space instruction text as a versioned prompt.
-
-    Best-effort: failures are logged but never raise, so the optimization
-    pipeline is never blocked by prompt registration issues.
-
-    Returns ``{"prompt_name": ..., "version": ...}`` on success, ``None`` otherwise.
-    """
-    if not instruction_text or not instruction_text.strip():
-        return None
-
-    safe_space_id = re.sub(r"[^a-zA-Z0-9_]+", "_", space_id or "unknown").strip("_")
-    prompt_name = format_mlflow_template(
-        INSTRUCTION_PROMPT_NAME_TEMPLATE, uc_schema=uc_schema, space_id=safe_space_id,
-    ) if uc_schema else f"genie_instructions_{safe_space_id}"
-
-    commit_msg = (
-        f"Genie instructions after lever {lever}, iteration {iteration} "
-        f"(accuracy={accuracy:.3f}, run={run_id[:12]})"
-    )
-    tags = {
-        "run_id": run_id,
-        "lever": str(lever),
-        "iteration": str(iteration),
-        "accuracy": f"{accuracy:.4f}",
-        "domain": domain,
-        "space_id": space_id,
-        "type": "genie_instructions",
-    }
-
-    def _do_register():
-        v = mlflow.genai.register_prompt(
-            name=prompt_name,
-            template=instruction_text,
-            commit_message=commit_msg,
-            tags=tags,
-        )
-        mlflow.genai.set_prompt_alias(
-            name=prompt_name,
-            alias=INSTRUCTION_PROMPT_ALIAS,
-            version=v.version,
-        )
-        return v
-
-    try:
-        version = _do_register()
-        logger.info(
-            "[Instruction Registry] %s v%s (lever=%d, iter=%d, acc=%.3f)",
-            prompt_name, version.version, lever, iteration, accuracy,
-        )
-        return {"prompt_name": prompt_name, "version": version.version}
-    except Exception as exc:
-        if _is_ownership_conflict(str(exc)) and _try_drop_prompt(prompt_name):
-            try:
-                version = _do_register()
-                logger.info(
-                    "[Instruction Registry] %s v%s (re-created after drop)",
-                    prompt_name, version.version,
-                )
-                return {"prompt_name": prompt_name, "version": version.version}
-            except Exception:
-                pass
-        classification = _classify_prompt_registration_error(
-            str(exc), uc_schema=uc_schema,
-        )
-        logger.warning(
-            "Instruction registration failed for space=%s: %s (cause=%s)",
-            space_id, str(exc)[:300], classification["reason"],
-            exc_info=True,
-        )
-        return None
-
-def register_benchmark_prompts(
-    uc_schema: str,
-    domain: str,
-    experiment_name: str,
-) -> dict[str, dict]:
-    """Register only the benchmark prompts to MLflow Prompt Registry.
-
-    Called early in preflight (before benchmark generation) so that
-    ``_call_llm_for_scoring`` can link benchmark prompts to traces.
-    """
-    mlflow.set_experiment(experiment_name)
-    registered: dict[str, dict] = {}
-    for name, template in BENCHMARK_PROMPTS.items():
-        candidates = _prompt_name_candidates(
-            uc_schema=uc_schema, domain=domain, judge_name=name,
-        )
-        for prompt_name in candidates:
-            try:
-                version = mlflow.genai.register_prompt(
-                    name=prompt_name,
-                    template=template,
-                    commit_message=f"Genie benchmark: {name} (domain: {domain})",
-                    tags={"domain": domain, "type": "benchmark"},
-                )
-                mlflow.genai.set_prompt_alias(
-                    name=prompt_name,
-                    alias=PROMPT_ALIAS,
-                    version=version.version,
-                )
-                registered[name] = {
-                    "prompt_name": prompt_name,
-                    "version": str(version.version),
-                }
-                _REGISTERED_PROMPT_NAMES[name] = prompt_name
-                logger.info(
-                    "[Benchmark Prompt Registry] %s v%s",
-                    prompt_name, version.version,
-                )
-                break
-            except Exception as exc:
-                if _is_ownership_conflict(str(exc)) and _try_drop_prompt(prompt_name):
-                    try:
-                        version = mlflow.genai.register_prompt(
-                            name=prompt_name,
-                            template=template,
-                            commit_message=f"Genie benchmark: {name} (domain: {domain})",
-                            tags={"domain": domain, "type": "benchmark"},
-                        )
-                        mlflow.genai.set_prompt_alias(
-                            name=prompt_name,
-                            alias=PROMPT_ALIAS,
-                            version=version.version,
-                        )
-                        registered[name] = {
-                            "prompt_name": prompt_name,
-                            "version": str(version.version),
-                        }
-                        _REGISTERED_PROMPT_NAMES[name] = prompt_name
-                        break
-                    except Exception:
-                        pass
-                logger.debug(
-                    "Benchmark prompt registration failed for %s name=%s",
-                    name, prompt_name, exc_info=True,
-                )
-        if name not in registered:
-            logger.warning("Could not register benchmark prompt: %s", name)
-    return registered
-
-def _prompt_name_candidates(uc_schema: str, domain: str, judge_name: str) -> list[str]:
-    """Try UC-qualified name first, then portable fallback names."""
-    safe_domain = re.sub(r"[^a-zA-Z0-9_]+", "_", domain or "default").strip("_").lower() or "default"
-    candidates: list[str] = []
-    if uc_schema:
-        candidates.append(format_mlflow_template(PROMPT_NAME_TEMPLATE, uc_schema=uc_schema, judge_name=judge_name))
-        candidates.append(f"{uc_schema}.genie_opt_{safe_domain}_{judge_name}")
-    candidates.append(f"genie_opt_{safe_domain}_{judge_name}")
-    return list(dict.fromkeys(candidates))
-
-def _find_duplicate_values(values: list[str]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for value in values:
-        counts[value] = counts.get(value, 0) + 1
-    return {value: count for value, count in counts.items() if value and count > 1}
-
-def _summarize_duplicate_records(
-    records: list[dict],
-    *,
-    field: str,
-    max_items: int = 5,
-) -> str:
-    examples: list[str] = []
-    for record in records:
-        inputs = record.get("inputs", {})
-        question_id = str(inputs.get("question_id", "") or "")
-        question = str(inputs.get("question", "") or "")
-        value = str(inputs.get(field, "") or "")
-        if field == "_normalized_question":
-            value = question.lower().strip()
-        examples.append(f"{field}={value!r} question_id={question_id!r} question={question[:80]!r}")
-        if len(examples) >= max_items:
-            break
-    return "; ".join(examples)
-
-def create_evaluation_dataset(
-    spark: SparkSession,
-    benchmarks: list[dict],
-    uc_schema: str,
-    domain: str,
-    space_id: str = "",
-    catalog: str = "",
-    gold_schema: str = "",
-    experiment_id: str = "",
-    *,
-    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
-) -> dict[str, Any]:
-    """Create or update the MLflow UC evaluation dataset from benchmarks.
-
-    Uses ``merge_records`` (upsert by question_id) to preserve version history
-    rather than dropping and recreating each run.
-
-    Pass *experiment_id* to link the dataset to the experiment so it appears
-    in the experiment's Datasets tab in the UI.
-    """
-    uc_table_name = f"{uc_schema}.genie_benchmarks_{domain}"
-    exp_ids = [experiment_id] if experiment_id else None
-    try:
-        try:
-            eval_dataset = mlflow.genai.datasets.get_dataset(name=uc_table_name)
-            logger.info("Reusing existing evaluation dataset: %s", uc_table_name)
-        except Exception:
-            create_kwargs: dict[str, Any] = {"name": uc_table_name}
-            if exp_ids:
-                create_kwargs["experiment_id"] = exp_ids
-            eval_dataset = mlflow.genai.datasets.create_dataset(**create_kwargs)
-            logger.info(
-                "Created new evaluation dataset: %s (experiment_id=%s)",
-                uc_table_name, exp_ids,
-            )
-        if len(benchmarks) > max_benchmark_count:
-            benchmarks = _truncate_benchmarks(benchmarks, max_benchmark_count)
-        from genie_space_optimizer.optimization.benchmarks import (
-            benchmark_corpus_for_optimization,
-        )
-        benchmarks = benchmark_corpus_for_optimization(benchmarks)
-        records = []
-        for b in benchmarks:
-            _expected_sql = b.get("expected_sql", "")
-            expectations = {
-                "expected_response": _expected_sql,
-                "expected_asset": _normalize_expected_asset(
-                    b.get("expected_asset", "TABLE"),
-                    _expected_sql,
-                    hint=b.get("expected_asset_hint"),
-                ),
-                "category": b.get("category", ""),
-                "source": b.get("source", ""),
-                "provenance": b.get("provenance", ""),
-                "validation_status": b.get("validation_status", ""),
-                "validation_reason_code": b.get("validation_reason_code", ""),
-                "validation_error": b.get("validation_error", ""),
-                "correction_source": b.get("correction_source", ""),
-                "required_tables": b.get("required_tables", []),
-                "required_columns": b.get("required_columns", []),
-                "temporal_stale": b.get("temporal_stale", False),
-                "asset_fingerprint": b.get("asset_fingerprint", ""),
-                "split": b.get("split", "full"),
-            }
-            expectations = {k: v for k, v in expectations.items() if v is not None}
-            records.append(
-                {
-                    "inputs": {
-                        "question_id": b.get("id", ""),
-                        "question": b["question"],
-                        "space_id": space_id,
-                        "expected_sql": b.get("expected_sql", ""),
-                        "catalog": catalog,
-                        "gold_schema": gold_schema,
-                        "order_sensitive": bool(b.get("order_sensitive", False)),
-                    },
-                    "expectations": expectations,
-                }
-            )
-        if len(records) > max_benchmark_count:
-            records = _truncate_benchmarks(
-                [{"provenance": r.get("expectations", {}).get("provenance", "other"), **r} for r in records],
-                max_benchmark_count,
-            )
-            for r in records:
-                r.pop("provenance", None)
-
-        question_ids = [
-            str(r.get("inputs", {}).get("question_id", "") or "").strip()
-            for r in records
-        ]
-        duplicate_qids = _find_duplicate_values(question_ids)
-        if duplicate_qids:
-            duplicate_records = [
-                r for r in records
-                if str(r.get("inputs", {}).get("question_id", "") or "").strip() in duplicate_qids
-            ]
-            raise RuntimeError(
-                "Duplicate benchmark question_id values before MLflow merge_records "
-                f"for {uc_table_name}: {duplicate_qids}. "
-                f"Examples: {_summarize_duplicate_records(duplicate_records, field='question_id')}"
-            )
-
-        normalized_questions = [
-            str(r.get("inputs", {}).get("question", "") or "").lower().strip()
-            for r in records
-        ]
-        duplicate_questions = _find_duplicate_values(normalized_questions)
-        if duplicate_questions:
-            duplicate_records = [
-                r for r in records
-                if str(r.get("inputs", {}).get("question", "") or "").lower().strip() in duplicate_questions
-            ]
-            raise RuntimeError(
-                "Duplicate benchmark question text before MLflow merge_records "
-                f"for {uc_table_name}: {list(duplicate_questions)[:5]}. "
-                f"Examples: {_summarize_duplicate_records(duplicate_records, field='_normalized_question')}"
-            )
-
-        retry_delta_write(
-            lambda: eval_dataset.merge_records(records),
-            operation_name="evaluation_dataset.merge_records",
-            table_name=uc_table_name,
-        )
-        logger.info("UC Evaluation Dataset: %s (%d records merged)", uc_table_name, len(records))
-        return {
-            "dataset": eval_dataset,
-            "table_name": uc_table_name,
-            "input_count": len(benchmarks),
-            "record_count": len(records),
-            "unique_question_id_count": len(set(question_ids)),
-        }
-    except Exception:
-        logger.exception("UC dataset creation failed for %s", uc_table_name)
-        raise
-
-def _drop_benchmark_table(spark: SparkSession, uc_table_name: str) -> None:
-    """Best-effort DROP of the benchmark table to clear stale rows."""
-    try:
-        parts = uc_table_name.split(".")
-        quoted = ".".join(f"`{p.strip('`')}`" for p in parts)
-        spark.sql(f"DROP TABLE IF EXISTS {quoted}")
-        logger.info("Dropped stale benchmark table %s", uc_table_name)
-    except Exception:
-        logger.warning("Could not drop benchmark table %s (may not exist)", uc_table_name, exc_info=True)
 
 AUTO_OPTIMIZE_TAG_PREFIX = "[auto-optimize] "
 
@@ -3063,14 +2610,14 @@ def _attempt_sql_correction(
     allowlist: dict[str, Any],
     *,
     correction_prompt_template: str,
-    correction_prompt_registry_key: str,
+    correction_prompt_key: str,
     warehouse_id: str = "",
     repair_counters: dict[str, int] | None = None,
 ) -> list[dict]:
     """Send invalid SQL candidates back to the LLM for correction.
 
     Shared between benchmark and example-SQL generation paths. Callers
-    differ only in the prompt template + MLflow registry key — the
+    differ only in the local prompt template and stable trace key — the
     per-candidate error payload (``benchmarks_to_fix`` JSON), the
     schema context, the metadata + SQL revalidation, and the returned
     provenance are all identical. Returns corrected candidates that
@@ -3149,15 +2696,11 @@ def _attempt_sql_correction(
             try:
                 _corr_span.set_inputs({
                     "candidate_count": len(invalid_candidates),
-                    "prompt_registry_key": correction_prompt_registry_key,
-                    "prompt_name": get_registered_prompt_name(correction_prompt_registry_key),
+                    "prompt_template": correction_prompt_key,
                 })
             except Exception:
                 pass
-            response = _call_llm_for_scoring(
-                w, prompt,
-                prompt_name=get_registered_prompt_name(correction_prompt_registry_key),
-            )
+            response = _call_llm_for_scoring(w, prompt)
             try:
                 _corr_span.set_outputs({
                     "correction_count": (
@@ -3170,8 +2713,8 @@ def _attempt_sql_correction(
         corrections: list[dict] = response if isinstance(response, list) else response.get("benchmarks", [])
     except Exception:
         logger.warning(
-            "SQL correction LLM call failed (registry=%s)",
-            correction_prompt_registry_key,
+            "SQL correction LLM call failed (prompt_template=%s)",
+            correction_prompt_key,
             exc_info=True,
         )
         return []
@@ -3410,7 +2953,7 @@ def _attempt_benchmark_correction(
         invalid_candidates=invalid_benchmarks,
         catalog=catalog, schema=schema, spark=spark, allowlist=allowlist,
         correction_prompt_template=BENCHMARK_CORRECTION_PROMPT,
-        correction_prompt_registry_key="benchmark_correction",
+        correction_prompt_key="benchmark_correction",
         warehouse_id=warehouse_id,
     )
 
@@ -3774,10 +3317,7 @@ def _fill_coverage_gaps(
     )
 
     try:
-        response = _call_llm_for_scoring(
-            w, prompt,
-            prompt_name=get_registered_prompt_name("benchmark_coverage_gap"),
-        )
+        response = _call_llm_for_scoring(w, prompt)
         raw: list[dict] = response if isinstance(response, list) else response.get("benchmarks", [])
     except Exception:
         logger.warning("Coverage gap-fill LLM call failed", exc_info=True)
@@ -4038,10 +3578,7 @@ def _generate_sql_for_curated_questions(
     )
 
     try:
-        response = _call_llm_for_scoring(
-            w, prompt,
-            prompt_name=get_registered_prompt_name("curated_sql_generation"),
-        )
+        response = _call_llm_for_scoring(w, prompt)
         generated: list[dict] = (
             response if isinstance(response, list) else response.get("benchmarks", [])
         )
@@ -4320,14 +3857,11 @@ def generate_benchmarks(
             try:
                 _bench_span.set_inputs({
                     "domain": domain,
-                    "prompt_name": get_registered_prompt_name("benchmark_generation"),
+                    "prompt_template": "benchmark_generation",
                 })
             except Exception:
                 pass
-            response = _call_llm_for_scoring(
-                w, prompt,
-                prompt_name=get_registered_prompt_name("benchmark_generation"),
-            )
+            response = _call_llm_for_scoring(w, prompt)
             try:
                 _bench_span.set_outputs({
                     "raw_benchmark_count": (
@@ -4814,133 +4348,3 @@ def generate_benchmarks(
         len(raw_benchmarks),
     )
     return all_benchmarks
-
-def load_benchmarks_from_dataset(
-    spark: SparkSession,
-    uc_schema: str,
-    domain: str,
-    _max_retries: int = 3,
-) -> list[dict]:
-    """Load benchmarks from an existing MLflow UC evaluation dataset table.
-
-    Issues ``REFRESH TABLE`` before reading to avoid
-    ``DELTA_SCHEMA_CHANGE_SINCE_ANALYSIS`` when the upstream preflight task
-    drops and recreates the table in the same job run.
-    """
-    table_name = f"{uc_schema}.genie_benchmarks_{domain}"
-    try:
-        parts = uc_schema.split(".", 1)
-        if len(parts) != 2:
-            raise ValueError(f"Invalid uc_schema: {uc_schema}")
-        catalog, schema = parts
-        table = f"genie_benchmarks_{domain}"
-
-        def _q(identifier: str) -> str:
-            return f"`{identifier.replace('`', '``')}`"
-
-        quoted_table_name = f"{_q(catalog)}.{_q(schema)}.{_q(table)}"
-
-        try:
-            _exists_df = spark.sql(
-                f"SHOW TABLES IN {_q(catalog)}.{_q(schema)} LIKE '{table}'"
-            )
-            if _exists_df.count() == 0:
-                logger.info("Benchmark table %s does not exist yet — skipping load", table_name)
-                return []
-        except Exception:
-            pass
-
-        df = None
-        last_err: Exception | None = None
-        for attempt in range(_max_retries):
-            try:
-                from genie_space_optimizer.common.delta_helpers import _safe_refresh
-                _safe_refresh(spark, quoted_table_name)
-                df = spark.sql(f"SELECT * FROM {quoted_table_name}").toPandas()
-                break
-            except Exception as read_err:
-                last_err = read_err
-                err_msg = str(read_err)
-                if "DELTA_SCHEMA_CHANGE_SINCE_ANALYSIS" in err_msg and attempt < _max_retries - 1:
-                    import time as _time
-                    wait = 5 * (attempt + 1)
-                    logger.warning(
-                        "Delta schema change on attempt %d/%d for %s — retrying in %ds",
-                        attempt + 1, _max_retries, table_name, wait,
-                    )
-                    _time.sleep(wait)
-                    continue
-                raise
-
-        if df is None:
-            raise last_err or RuntimeError(f"Failed to read {table_name} after {_max_retries} attempts")
-
-        benchmarks: list[dict] = []
-        for _, row in df.iterrows():
-            inputs = row.get("inputs", {})
-            expectations = row.get("expectations", {})
-            if isinstance(inputs, str):
-                inputs = json.loads(inputs)
-            if isinstance(expectations, str):
-                expectations = json.loads(expectations)
-            if not isinstance(inputs, dict):
-                inputs = {}
-            if not isinstance(expectations, dict):
-                expectations = {}
-
-            _cb_esql = inputs.get("expected_sql", expectations.get("expected_response", ""))
-            benchmarks.append(
-                {
-                    "id": inputs.get("question_id", ""),
-                    "question": inputs.get("question", ""),
-                    "expected_sql": _cb_esql,
-                    "expected_asset": _normalize_expected_asset(
-                        expectations.get("expected_asset") or inputs.get("expected_asset", "TABLE"),
-                        _cb_esql,
-                    ),
-                    "category": expectations.get("category", ""),
-                    "required_tables": expectations.get("required_tables", []),
-                    "required_columns": expectations.get("required_columns", []),
-                    "expected_facts": expectations.get("expected_facts", []),
-                    "source": expectations.get("source") or "",
-                    "provenance": expectations.get("provenance") or "",
-                    "asset_fingerprint": expectations.get("asset_fingerprint", ""),
-                    "validation_status": expectations.get("validation_status", ""),
-                    "validation_reason_code": expectations.get("validation_reason_code", ""),
-                    "validation_error": expectations.get("validation_error"),
-                    "correction_source": expectations.get("correction_source", ""),
-                    "split": expectations.get("split", "full"),
-                }
-            )
-        pre_dedup = len(benchmarks)
-        _seen: set[str] = set()
-        deduped: list[dict] = []
-        for b in benchmarks:
-            key = str(b.get("question", "")).lower().strip()
-            if key in _seen:
-                continue
-            _seen.add(key)
-            deduped.append(b)
-        if len(deduped) < pre_dedup:
-            logger.warning(
-                "Dropped %d duplicate benchmark(s) by question text when loading from %s",
-                pre_dedup - len(deduped), table_name,
-            )
-        benchmarks = deduped
-
-        from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
-        if len(benchmarks) > MAX_BENCHMARK_COUNT:
-            benchmarks = _truncate_benchmarks(benchmarks, MAX_BENCHMARK_COUNT)
-        from genie_space_optimizer.optimization.benchmarks import (
-            benchmark_corpus_for_optimization,
-        )
-        benchmarks = benchmark_corpus_for_optimization(benchmarks)
-
-        logger.info("Loaded %d benchmarks from %s", len(benchmarks), table_name)
-        return benchmarks
-    except Exception as exc:
-        if "TABLE_OR_VIEW_NOT_FOUND" in str(exc):
-            logger.info("Benchmark table %s does not exist yet — will generate", table_name)
-        else:
-            logger.exception("Failed to load benchmarks from %s", table_name)
-        return []

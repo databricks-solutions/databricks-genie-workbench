@@ -45,8 +45,10 @@ src/genie_space_optimizer/
     utils.py         Shared numeric/JSON coercion helpers
 ```
 
-`common/prompt_registry.py` remains the single source of truth for the MLflow
-Prompt Registry probe used by both the job and Workbench.
+Prompt templates are version-controlled in `common/config.py`. GSO uses MLflow
+only for tracing (`set_experiment`, OpenAI autologging, and spans). Benchmark
+corpora are persisted directly to Delta; there is no MLflow Dataset, Prompt
+Registry, run-tracking, model-registry, or evaluation runtime dependency.
 
 ## Persistence rules
 
@@ -56,6 +58,8 @@ Prompt Registry probe used by both the job and Workbench.
 - New iteration fields must be added to DDL, the additive migration list,
   `state.write_iteration`, the Workbench API model, and tests together.
 - `genie_opt_benchmark_mutations` is the supported benchmark-change ledger.
+- `genie_benchmarks_<domain>` is the direct Delta benchmark handoff consumed by
+  the Optimize task. Preserve its nested `inputs` / `expectations` schema.
 
 ## Evaluation and leakage
 

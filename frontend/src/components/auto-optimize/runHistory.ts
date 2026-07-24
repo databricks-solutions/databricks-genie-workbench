@@ -6,6 +6,25 @@ export function hasActiveOptimizationRun(runs: GSORunSummary[]): boolean {
   return runs.some((run) => ACTIVE_RUN_STATUSES.has(run.status.toUpperCase()))
 }
 
+/**
+ * Whether a run points at a scored champion that can be offered as a revert
+ * target. Iteration 0 is valid here: proactive enrichment and Optimize-task
+ * recovery can produce a champion at iteration 0 that is distinct from the
+ * pre-run baseline snapshot. A null iteration/accuracy means no champion was
+ * established yet.
+ */
+export function hasRevertibleChampion(run: GSORunSummary): boolean {
+  const iteration = run.best_iteration
+  const accuracy = run.best_accuracy
+  return (
+    typeof iteration === "number"
+    && Number.isFinite(iteration)
+    && iteration >= 0
+    && typeof accuracy === "number"
+    && Number.isFinite(accuracy)
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers for the GSO v2 optimization history table (Phase 14, item 3).
 // Kept out of RunHistoryTable.tsx so the component file stays react-refresh

@@ -308,6 +308,7 @@ export interface GSOTriggerRequest {
   // The run stops at whichever comes first.
   target_accuracy?: number | null
   max_attempts?: number | null
+  workload_warehouse_ids?: string[]
 }
 
 export interface GSOTriggerResponse {
@@ -338,10 +339,10 @@ export interface GSORunStatus {
   // since regressions don't get posted) and ``optimizedScore`` is null while
   // no full-scope iteration > 0 has been evaluated yet.
   optimizedScore: number | null
-  // ``0`` means baseline was retained (no iter > 0 strictly improved on it,
-  // or optimization is still running). ``N > 0`` is the iteration that
-  // actually achieved ``optimizedScore``. ``null`` if there's no baseline at
-  // all yet.
+  // ``0`` can mean the baseline was retained, optimization is still running,
+  // or proactive enrichment / recovery produced the winning config without a
+  // later lever iteration. ``N > 0`` is the lever iteration that achieved
+  // ``optimizedScore``. ``null`` if there's no baseline at all yet.
   bestIteration: number | null
   convergenceReason: string | null
   // GSO v2 — typed loop terminal reason (null for legacy free-text reasons /
@@ -786,4 +787,14 @@ export interface GSOPermissionCheck {
   schemas: GSOSchemaAccessStatus[]
   can_start: boolean
   errors: string[]
+  query_usage_signal?: GSOQueryUsageSignal | null
+}
+
+export interface GSOQueryUsageSignal {
+  status: "system_table_available" | "warehouse_api_available" | "partially_available" | "unavailable"
+  system_table_available: boolean
+  warehouse_api_available: boolean
+  warehouses: { warehouse_id: string; name: string; accessible: boolean }[]
+  inaccessible_warehouses: string[]
+  system_grant_sql: string | null
 }

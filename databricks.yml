@@ -99,6 +99,8 @@ resources:
           default: ""
         - name: warehouse_id
           default: ""
+        - name: workload_warehouse_ids
+          default: "[]"
         - name: llm_model
           default: ${var.llm_model}
       # Every task carries its job-parameter subset as base_parameters so there
@@ -123,6 +125,7 @@ resources:
               benchmark_repair_max_tries: "{{job.parameters.benchmark_repair_max_tries}}"
               triggered_by: "{{job.parameters.triggered_by}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
+              workload_warehouse_ids: "{{job.parameters.workload_warehouse_ids}}"
               llm_model: "{{job.parameters.llm_model}}"
           environment_key: default
           timeout_seconds: 14400

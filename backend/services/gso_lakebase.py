@@ -133,7 +133,7 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
             rows = await conn.fetch(
                 f"""SELECT {cols} FROM {_tbl('genie_opt_iterations')}
                    WHERE run_id = $1
-                   ORDER BY iteration ASC""",
+                   ORDER BY iteration ASC, timestamp ASC""",
                 run_id,
             )
             return [dict(r) for r in rows]
@@ -178,7 +178,8 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
             if eval_scope is not None:
                 row = await conn.fetchrow(
                     f"SELECT rows_json FROM {tbl} "
-                    "WHERE run_id = $1 AND iteration = $2 AND eval_scope = $3",
+                    "WHERE run_id = $1 AND iteration = $2 AND eval_scope = $3 "
+                    "ORDER BY timestamp ASC LIMIT 1",
                     run_id,
                     iteration,
                     eval_scope,
@@ -186,7 +187,8 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
             else:
                 row = await conn.fetchrow(
                     f"SELECT rows_json FROM {tbl} "
-                    "WHERE run_id = $1 AND iteration = $2 AND rows_json IS NOT NULL",
+                    "WHERE run_id = $1 AND iteration = $2 AND rows_json IS NOT NULL "
+                    "ORDER BY timestamp ASC LIMIT 1",
                     run_id,
                     iteration,
                 )

@@ -50,14 +50,8 @@ from typing import TYPE_CHECKING, Any
 from genie_space_optimizer.common.config import (
     AUDIT_SUMMARY_PROMPT,
     LEVER_NAMES,
-    PROMPT_NAME_TEMPLATE,
-    format_mlflow_template,
 )
 from genie_space_optimizer.optimization.champion import select_champion_row
-from genie_space_optimizer.optimization.benchmarking import (
-    _link_prompt_to_trace,
-    get_registered_prompt_name,
-)
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.models import promote_best_model
 from genie_space_optimizer.optimization.scan_snapshots import run_postflight_scan
@@ -277,16 +271,21 @@ def build_improvement_trajectory(scored_iters: list[dict]) -> list[dict]:
     accuracy lift over the iteration-0 ``eval_scope='full'`` baseline.
     """
     ordered = sorted(scored_iters, key=_trajectory_sort_key)
-    # Baseline is the iteration-0 full row (matches report.py / promote_best_model);
-    # never the coverage enrichment row that may also live at iteration 0.
-    baseline_acc: float | None = next(
-        (
-            _as_float(r.get("overall_accuracy"))
-            for r in scored_iters
-            if _is_baseline_row(r)
-        ),
-        None,
+    # Baseline is the EARLIEST iteration-0 full row. A repaired/re-entered
+    # Optimize task can append a later full row at iteration 0; preserve that
+    # second official evaluation as a pre-loop improvement rung.
+    baseline_candidates = sorted(
+        (r for r in scored_iters if _is_baseline_row(r)),
+        key=lambda r: str(r.get("timestamp") or ""),
     )
+    baseline_row = baseline_candidates[0] if baseline_candidates else None
+    baseline_acc = _as_float(baseline_row.get("overall_accuracy")) if baseline_row else None
+    used_attempt_nos = {
+        attempt_no
+        for row in scored_iters
+        if (attempt_no := _as_int(row.get("attempt_no"))) is not None and attempt_no > 0
+    }
+    next_recovered_attempt = 1
     trajectory: list[dict] = []
     for row in ordered:
         iteration = _as_int(row.get("iteration"))
@@ -296,18 +295,33 @@ def build_improvement_trajectory(scored_iters: list[dict]) -> list[dict]:
             if (acc is not None and baseline_acc is not None)
             else None
         )
+        is_baseline = row is baseline_row
+        attempt_no = _as_int(row.get("attempt_no"))
         mode = row.get("attempt_mode")
-        if not mode and _is_baseline_row(row):
+        decision = row.get("decision")
+        if is_baseline:
+            mode = "baseline"
+            attempt_no = None
+        elif _is_baseline_row(row) and (attempt_no is None or attempt_no == 0):
+            while next_recovered_attempt in used_attempt_nos:
+                next_recovered_attempt += 1
+            attempt_no = next_recovered_attempt
+            used_attempt_nos.add(attempt_no)
+            next_recovered_attempt += 1
+            mode = "enrichment"
+            if str(decision or "").lower() in {"", "baseline"}:
+                decision = "accept"
+        elif not mode and _is_baseline_row(row):
             mode = "baseline"
         trajectory.append({
             "iteration": iteration,
-            "attempt_no": _as_int(row.get("attempt_no")),
+            "attempt_no": attempt_no,
             "attempt_mode": mode,
             "eval_scope": row.get("eval_scope"),
             "accuracy": acc,
             "delta_vs_baseline": delta,
             "best_accuracy": _as_float(row.get("best_accuracy")),
-            "decision": row.get("decision"),
+            "decision": decision,
             "rolled_back": _is_rolled_back(row),
             "is_champion": _is_champion_flag(row),
         })
@@ -641,20 +655,6 @@ def as_audit_context(
 # ── LLM audit summary (best-effort / non-fatal) ─────────────────────────────
 
 
-def _prompt_name_for_key(prompt_key: str, *, catalog: str = "", schema: str = "") -> str:
-    registered = get_registered_prompt_name(prompt_key)
-    if registered:
-        return registered
-    uc_schema = ".".join(part for part in (catalog, schema) if part)
-    if uc_schema and "." in uc_schema:
-        return format_mlflow_template(
-            PROMPT_NAME_TEMPLATE,
-            uc_schema=uc_schema,
-            judge_name=prompt_key,
-        )
-    return prompt_key
-
-
 def _start_chain_span(name: str) -> Any:
     try:
         import mlflow
@@ -668,8 +668,6 @@ def _start_chain_span(name: str) -> Any:
 def build_audit_summary(
     w: "WorkspaceClient | None",
     audit_context: dict,
-    *,
-    prompt_name: str = "",
 ) -> tuple[str | None, str | None]:
     """Generate the short human-readable audit summary via the LLM.
 
@@ -685,14 +683,12 @@ def build_audit_summary(
             {"role": "user", "content": user_payload},
         ]
         context_hash = hashlib.sha256(user_payload.encode("utf-8")).hexdigest()
-        prompt_name = prompt_name or _prompt_name_for_key("audit_summary")
         with _start_chain_span("audit_summary") as span:
-            _link_prompt_to_trace(prompt_name)
             try:
                 if span is not None:
                     span.set_inputs(
                         {
-                            "prompt_name": prompt_name,
+                            "prompt_template": "audit_summary",
                             "audit_context_hash": context_hash,
                             "audit_context_chars": len(user_payload),
                             "audit_context_field_count": len(audit_context),
@@ -857,15 +853,7 @@ def publish_and_audit(
         target_accuracy=target_accuracy,
         max_attempts=max_attempts,
     )
-    audit_summary, summary_concern = build_audit_summary(
-        w,
-        audit_context,
-        prompt_name=_prompt_name_for_key(
-            "audit_summary",
-            catalog=catalog,
-            schema=schema,
-        ),
-    )
+    audit_summary, summary_concern = build_audit_summary(w, audit_context)
     if summary_concern:
         concerns.append(summary_concern)
 

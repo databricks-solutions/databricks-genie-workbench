@@ -1,6 +1,6 @@
 import { useState } from "react"
 import type { LucideIcon } from "lucide-react"
-import { AlertTriangle, ListChecks, Rocket, Target } from "lucide-react"
+import { AlertTriangle, Database, ListChecks, Rocket, Target } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { triggerAutoOptimize } from "@/lib/api"
@@ -39,6 +39,7 @@ const LEVERS = [
 // Job defaults (databricks.yml): target_accuracy 0.90, max_attempts 3.
 const DEFAULT_TARGET_PERCENT = "90"
 const DEFAULT_MAX_ATTEMPTS = "3"
+const MAX_WORKLOAD_WAREHOUSES = 20
 
 // Shared pillar header — icon + label, matching ModelPicker's own label row so
 // all three columns read as equal choices (previously only Model had an icon).
@@ -57,6 +58,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
   const [targetPercent, setTargetPercent] = useState(DEFAULT_TARGET_PERCENT)
   const [maxAttemptsInput, setMaxAttemptsInput] = useState(DEFAULT_MAX_ATTEMPTS)
+  const [workloadWarehouseIds, setWorkloadWarehouseIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -92,6 +94,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           selectedModel,
           targetAccuracy,
           maxAttempts,
+          workloadWarehouseIds: Array.from(workloadWarehouseIds).sort(),
         }),
       )
       onStarted(result.runId)
@@ -211,6 +214,76 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
         {/* Alerts + launch — a full-width footer separated by a hairline so the
             CTA reads as the form's conclusion, not an orphan under one column. */}
         <div className="space-y-4 border-t border-default pt-4">
+          {permissions?.query_usage_signal && (
+            <div className="rounded-lg border border-default bg-surface-subtle px-4 py-3 space-y-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-primary">
+                <Database className="h-4 w-4 text-accent" />
+                Query usage signal
+              </div>
+              {permissions.query_usage_signal.system_table_available ? (
+                <p className="text-xs text-muted">System query history available. GSO will use aggregated human-query behavior for column ranking.</p>
+              ) : permissions.query_usage_signal.warehouses.length > 0 ? (
+                <>
+                  <p className="text-xs text-muted">
+                    {permissions.query_usage_signal.status === "partially_available"
+                      ? `Partially available. CAN VIEW is still needed for: ${permissions.query_usage_signal.inaccessible_warehouses.join(", ")}.`
+                      : permissions.query_usage_signal.warehouse_api_available
+                        ? "Warehouse query history available."
+                        : "Warehouse query history unavailable until CAN VIEW is granted."}
+                    {" "}Optionally select representative workload warehouses; missing access never blocks optimization.
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {permissions.query_usage_signal.warehouses.map((warehouse) => (
+                      <label key={warehouse.warehouse_id} className="flex items-center gap-2 text-xs text-primary">
+                        <Checkbox
+                          checked={workloadWarehouseIds.has(warehouse.warehouse_id)}
+                          onCheckedChange={() => setWorkloadWarehouseIds((previous) => {
+                            const next = new Set(previous)
+                            if (next.has(warehouse.warehouse_id)) next.delete(warehouse.warehouse_id)
+                            else if (next.size < MAX_WORKLOAD_WAREHOUSES) next.add(warehouse.warehouse_id)
+                            return next
+                          })}
+                          disabled={loading || hasActiveRun}
+                        />
+                        <span className="truncate" title={warehouse.name}>
+                          {warehouse.name}{warehouse.accessible ? "" : " (CAN VIEW needed)"}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted">
+                    The GSO service principal needs CAN VIEW on each selected warehouse: <span className="font-mono">{permissions.sp_application_id || permissions.sp_display_name}</span>.
+                  </p>
+                  {permissions.query_usage_signal.warehouses.some(
+                    (warehouse) => workloadWarehouseIds.has(warehouse.warehouse_id) && !warehouse.accessible,
+                  ) && (
+                    <textarea
+                      readOnly
+                      aria-label="Warehouse query history permission instructions"
+                      value={permissions.query_usage_signal.warehouses
+                        .filter((warehouse) => workloadWarehouseIds.has(warehouse.warehouse_id) && !warehouse.accessible)
+                        .map((warehouse) => `Grant CAN VIEW on SQL warehouse "${warehouse.name}" to service principal "${permissions.sp_application_id || permissions.sp_display_name}".`)
+                        .join("\n")}
+                      className="min-h-20 w-full resize-y rounded-md border border-default bg-surface p-2 font-mono text-xs text-primary"
+                    />
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-muted">Query history unavailable. GSO will continue with configuration, benchmark, and metadata evidence.</p>
+              )}
+              {!permissions.query_usage_signal.system_table_available && permissions.query_usage_signal.system_grant_sql && (
+                <details className="text-xs text-muted">
+                  <summary className="cursor-pointer font-medium text-primary">System query history grants</summary>
+                  <textarea
+                    readOnly
+                    value={permissions.query_usage_signal.system_grant_sql}
+                    aria-label="System query history grants"
+                    className="mt-2 min-h-24 w-full resize-y rounded-md border border-default bg-surface p-2 font-mono text-xs text-primary"
+                  />
+                </details>
+              )}
+            </div>
+          )}
           {/* Health Issues */}
           {hasHealthIssues && (
             <div className="rounded-lg bg-danger/10 border border-danger/20 px-4 py-3 space-y-1">

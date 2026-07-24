@@ -149,6 +149,17 @@ def _traced_llm_call(
                 if system_msg and system_msg.strip():
                     messages.append({"role": "system", "content": system_msg})
                 messages.append({"role": "user", "content": prompt})
+                from genie_space_optimizer.optimization.wide_schema_prompt import fit_messages
+
+                messages, pack_stats = fit_messages(messages)
+                span.set_inputs({
+                    "model": model,
+                    "temperature_requested": temperature,
+                    "temperature_sent": False,
+                    "prompt_chars": len(prompt),
+                    "complete_request_chars": pack_stats["final_request_chars"],
+                    "prompt_omitted_counts": pack_stats["omitted_counts"],
+                })
                 call_kwargs: dict[str, Any] = {
                     "model": model,
                     "messages": messages,

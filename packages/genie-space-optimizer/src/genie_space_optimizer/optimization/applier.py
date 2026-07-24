@@ -3957,6 +3957,9 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
         return False
 
     try:
+        from genie_space_optimizer.common.query_tags import gso_query_tags
+
+        _query_tags = gso_query_tags(purpose="optimization")
         if patch_type == "update_column_description":
             table = cmd.get("table", "")
             column = cmd.get("column", "")
@@ -3971,6 +3974,7 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
                     statement=f"ALTER TABLE {table} ALTER COLUMN {column} COMMENT '{escaped}'",
                     warehouse_id=warehouse_id,
                     wait_timeout="30s",
+                    query_tags=_query_tags,
                 )
                 return True
             if table and column and new_text:
@@ -3979,6 +3983,7 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
                     statement=f"ALTER TABLE {table} ALTER COLUMN {column} COMMENT '{escaped}'",
                     warehouse_id=warehouse_id,
                     wait_timeout="30s",
+                    query_tags=_query_tags,
                 )
                 return True
         if patch_type == "update_description":
@@ -3990,6 +3995,7 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
                     statement=f"COMMENT ON TABLE {table} IS '{escaped}'",
                     warehouse_id=warehouse_id,
                     wait_timeout="30s",
+                    query_tags=_query_tags,
                 )
                 return True
         if patch_type == "update_tvf_sql":
@@ -3999,6 +4005,7 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
                     statement=new_sql,
                     warehouse_id=warehouse_id,
                     wait_timeout="60s",
+                    query_tags=_query_tags,
                 )
                 return True
     except Exception:

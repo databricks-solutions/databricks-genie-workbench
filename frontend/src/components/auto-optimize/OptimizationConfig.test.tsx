@@ -99,8 +99,23 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
       llm_model: "claude-opus",
       target_accuracy: 0.9,
       max_attempts: 3,
+      workload_warehouse_ids: [],
     })
     expect(req.target_accuracy).toBeLessThanOrEqual(1)
+  })
+
+  it("forwards workload warehouses for optional query-history evidence", () => {
+    const req = buildOptimizationTriggerRequest({
+      spaceId: "space-1",
+      applyMode: "genie_config",
+      selectedLevers: new Set([1]),
+      selectedModel: null,
+      targetAccuracy: 0.9,
+      maxAttempts: 3,
+      workloadWarehouseIds: ["warehouse-b", "warehouse-a"],
+    })
+
+    expect(req.workload_warehouse_ids).toEqual(["warehouse-b", "warehouse-a"])
   })
 
   it("never includes retired lever 0 in the levers payload", () => {

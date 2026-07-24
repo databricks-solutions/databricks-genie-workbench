@@ -1236,6 +1236,12 @@ def write_benchmark_mutations(
 # genie_opt_iterations / genie_opt_patches / genie_eval_lever_loop_decisions.
 ARTIFACT_KINDS: tuple[str, ...] = (
     "run_manifest",
+    "wide_schema_inventory",
+    "wide_schema_evidence",
+    "wide_schema_selection_plan",
+    "wide_schema_audit",
+    "wide_schema_profile_telemetry",
+    "wide_schema_prompt_telemetry",
     "space_metadata",
     "benchmark_qc",
     "space_quality_enrichment",
@@ -1305,7 +1311,14 @@ def write_artifact(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        insert_row(spark, catalog, schema, TABLE_ARTIFACTS, payload_row)
+        insert_row(
+            spark,
+            catalog,
+            schema,
+            TABLE_ARTIFACTS,
+            payload_row,
+            base64_string_columns={"artifact_json"},
+        )
         logger.info(
             "Wrote %s artifact %s for run %s", artifact_kind, artifact_id, run_id,
         )
@@ -1376,6 +1389,87 @@ def load_latest_artifact_payload(
         )
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def load_latest_artifact_record(
+    spark: SparkSession,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    artifact_kind: str,
+) -> dict[str, Any] | None:
+    """Load and content-hash verify the newest artifact row.
+
+    Unlike :func:`load_latest_artifact_payload`, this helper is strict: malformed
+    JSON or a hash mismatch raises because wide-schema inventory and plan
+    handoffs are required deterministic state.
+    """
+    import hashlib
+
+    rows = load_artifacts(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        artifact_kind=artifact_kind,
+    )
+    if rows.empty:
+        return None
+    row = rows.iloc[0].to_dict()
+    raw = row.get("artifact_json")
+    if not isinstance(raw, str) or not raw.strip():
+        raise RuntimeError(f"Artifact {artifact_kind} for run {run_id} has no JSON payload")
+    actual_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    if str(row.get("content_hash") or "") != actual_hash:
+        raise RuntimeError(f"Artifact {artifact_kind} for run {run_id} failed content-hash verification")
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Artifact {artifact_kind} for run {run_id} contains invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Artifact {artifact_kind} for run {run_id} is not a JSON object")
+    row["payload"] = payload
+    return row
+
+
+def write_required_artifact(
+    spark: SparkSession,
+    run_id: str,
+    artifact_kind: str,
+    payload: dict[str, Any],
+    *,
+    catalog: str,
+    schema: str,
+    stage_name: str,
+    source_notebook: str,
+    iteration: int | None = None,
+    parent_artifact_id: str | None = None,
+) -> dict[str, Any]:
+    """Write, read back, and hash-verify a required notebook handoff."""
+    artifact_id = write_artifact(
+        spark,
+        run_id,
+        artifact_kind,
+        payload,
+        catalog=catalog,
+        schema=schema,
+        stage_name=stage_name,
+        iteration=iteration,
+        source_notebook=source_notebook,
+        parent_artifact_id=parent_artifact_id,
+    )
+    if not artifact_id:
+        raise RuntimeError(f"Required artifact {artifact_kind} could not be persisted")
+    record = load_latest_artifact_record(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        artifact_kind,
+    )
+    if record is None or record.get("artifact_id") != artifact_id:
+        raise RuntimeError(f"Required artifact {artifact_kind} could not be read back")
+    return record
 
 
 # ── Read Functions ───────────────────────────────────────────────────────

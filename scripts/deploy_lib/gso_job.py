@@ -43,7 +43,7 @@ TASKS = [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "levers", "max_attempts", "target_accuracy",
             "benchmark_repair_max_tries", "triggered_by",
-            "warehouse_id", "llm_model",
+            "warehouse_id", "workload_warehouse_ids", "llm_model",
         ],
     ),
     (
@@ -95,6 +95,7 @@ JOB_PARAMETERS = {
     "benchmark_repair_max_tries": "3",
     "triggered_by": "",
     "warehouse_id": "",
+    "workload_warehouse_ids": "[]",
     "llm_model": "",
 }
 

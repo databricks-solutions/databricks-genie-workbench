@@ -317,6 +317,33 @@ def test_trigger_rejects_malformed_space_id(client) -> None:
     assert resp.status_code == 422
 
 
+def test_trigger_forwards_workload_warehouse_ids(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
+    )
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    fake_result = MagicMock(
+        run_id="run-workloads", job_run_id=1, job_url=None, status="QUEUED",
+    )
+    with patch.object(
+        auto_optimize, "trigger_optimization", return_value=fake_result,
+    ) as trigger_mock:
+        response = client.post(
+            "/api/auto-optimize/trigger",
+            json={
+                "space_id": "space-abc",
+                "workload_warehouse_ids": ["wh-a", "wh-b"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert trigger_mock.call_args.kwargs["workload_warehouse_ids"] == [
+        "wh-a", "wh-b",
+    ]
+
+
 # ── Bug #2 — derived accuracy ───────────────────────────────────────────
 
 
@@ -1102,6 +1129,52 @@ def test_status_endpoint_is_four_steps_and_typed_terminal_reason(monkeypatch) ->
     assert body["convergenceReason"] == "TARGET_REACHED"
 
 
+def test_status_keeps_earliest_iteration_zero_as_baseline(monkeypatch) -> None:
+    async def fake_run(_rid):
+        return {
+            "run_id": _RUN, "space_id": "space-1", "status": "CONVERGED",
+            "convergence_reason": "TARGET_REACHED",
+        }
+
+    async def empty(_rid):
+        return []
+
+    async def duplicate_iteration_zero(_rid):
+        return [
+            {
+                "iteration": 0, "eval_scope": "full",
+                "timestamp": "2026-07-23T11:12:00+00:00",
+                "overall_accuracy": 88.24, "correct_count": 15,
+                "evaluated_count": 17, "rolled_back": False,
+            },
+            {
+                "iteration": 0, "eval_scope": "full",
+                "timestamp": "2026-07-23T11:22:00+00:00",
+                "overall_accuracy": 94.12, "correct_count": 16,
+                "evaluated_count": 17, "rolled_back": False,
+            },
+        ]
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", fake_run)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_stages", empty)
+    monkeypatch.setattr(
+        auto_optimize.gso_lakebase,
+        "load_gso_iterations",
+        duplicate_iteration_zero,
+    )
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [])
+    monkeypatch.setattr(auto_optimize, "_resolve_run_knobs", lambda _run: (0.9, 3))
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/status")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["baselineScore"] == 88.24
+    assert body["optimizedScore"] == 94.12
+    assert body["bestIteration"] == 0
+
+
 def test_status_endpoint_uses_latest_downstream_task_for_current_step(monkeypatch) -> None:
     async def fake_run(_rid):
         return {"run_id": _RUN, "space_id": "space-1", "status": "IN_PROGRESS"}
@@ -1503,6 +1576,42 @@ def test_loop_state_endpoint_does_not_treat_false_string_as_rolled_back(monkeypa
     assert attempts[0]["isChampion"] is True
     assert attempts[1]["rolledBack"] is True
     assert attempts[1]["isChampion"] is False
+
+
+def test_loop_state_recovers_later_iteration_zero_as_enrichment_attempt(monkeypatch) -> None:
+    loop_rows = [
+        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 88.24,
+         "timestamp": "2026-07-23T11:12:00+00:00", "attempt_no": 0,
+         "attempt_mode": "baseline", "best_accuracy": 88.24,
+         "decision": "accept", "decision_reason": "baseline",
+         "is_champion": True, "target_accuracy": 90.0, "max_attempts": 3},
+        {"iteration": 0, "eval_scope": "full", "overall_accuracy": 94.12,
+         "timestamp": "2026-07-23T11:22:00+00:00", "attempt_no": 0,
+         "attempt_mode": "baseline", "best_accuracy": 94.12,
+         "decision": "accept", "decision_reason": "baseline",
+         "is_champion": True, "terminal_reason": "TARGET_REACHED",
+         "target_accuracy": 90.0, "max_attempts": 3},
+    ]
+    monkeypatch.setattr(
+        auto_optimize,
+        "_select_loop_state_delta",
+        lambda _rid: [dict(r) for r in loop_rows],
+    )
+
+    client = _gso_client(monkeypatch)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN}/loop-state")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert len(body["attempts"]) == 1
+    recovered = body["attempts"][0]
+    assert recovered["attemptNo"] == 1
+    assert recovered["attemptMode"] == "enrichment"
+    assert recovered["accuracy"] == 94.12
+    assert recovered["decision"] == "accept"
+    assert recovered["isChampion"] is True
+    assert body["loopState"]["bestAccuracy"] == 94.12
+    assert body["loopState"]["attemptCount"] == 1
 
 
 def test_loop_state_endpoint_empty_for_legacy_run(monkeypatch) -> None:
