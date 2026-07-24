@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-SELECTOR_VERSION = "wide_schema_selector_v1"
+SELECTOR_VERSION = "wide_schema_selector_v2"
 CONTRACT_VERSION = 1
 
 MAX_ACTIVE_COLUMNS_PER_ASSET = 50
@@ -51,12 +51,30 @@ PRIORITY_BY_REASON = {
     "CONFIG_SQL": 2,
     "JOIN_KEY": 2,
     "USER_PIN": 2,
-    "METRIC_FIELD": 2,
+    "METRIC_FIELD": 3,
     "QUERY_HISTORY": 3,
     "SEMANTIC_MATCH": 4,
     "STRUCTURAL_COVERAGE": 5,
     "EXPLORATION": 6,
 }
+
+HARD_REQUIRED_REASONS = frozenset({
+    "REPAIR_FAILURE",
+    "BENCHMARK_SQL",
+    "CONFIG_SQL",
+    "JOIN_KEY",
+    "USER_PIN",
+})
+
+# These settings explicitly request column-level value behavior. Descriptions
+# and synonyms are valuable Genie metadata, but are too common to mean that a
+# column must consume one of the bounded profiling slots.
+USER_PIN_FIELDS = (
+    "enable_entity_matching",
+    "enable_format_assistance",
+    "build_value_dictionary",
+    "get_example_values",
+)
 
 QUERY_ROLE_WEIGHTS = {
     "join": 6.0,
@@ -791,7 +809,7 @@ def build_local_evidence(config: dict[str, Any], inventory: dict[str, Any]) -> d
     for key, cfg in _column_config_index(config).items():
         if key not in evidence:
             continue
-        if any(cfg.get(field) for field in ("description", "synonyms", "enable_entity_matching", "enable_format_assistance", "build_value_dictionary", "get_example_values")):
+        if any(cfg.get(field) for field in USER_PIN_FIELDS):
             evidence[key]["reason_codes"].add("USER_PIN")
             evidence[key]["scores"]["USER_PIN"] += 1.0
         if columns[key].get("metric_role") in {"measure", "dimension"}:
@@ -888,6 +906,9 @@ def merge_query_history_evidence(local: dict[str, Any], history: dict[str, Any])
     merged["source_scope"] = copy.deepcopy(history.get("source_scope") or [])
     merged["coverage"] = copy.deepcopy(history.get("coverage") or {})
     merged["degradation_counts"] = copy.deepcopy(history.get("degradation_counts") or {})
+    merged["source_attempts"] = copy.deepcopy(history.get("source_attempts") or {})
+    merged["source_errors"] = copy.deepcopy(history.get("source_errors") or {})
+    merged["warnings"] = copy.deepcopy(history.get("warnings") or [])
     return merged
 
 
@@ -927,8 +948,23 @@ def build_selection_plan(
             item = evidence_by_key.get(key, {})
             reasons = list(item.get("reason_codes") or ["STRUCTURAL_COVERAGE"])
             scores = item.get("scores") or {}
-            priority = min(PRIORITY_BY_REASON.get(reason, 5) for reason in reasons)
-            score = sum(float(value or 0.0) for reason, value in scores.items() if PRIORITY_BY_REASON.get(reason, 5) == priority)
+            hard_reasons = [
+                reason for reason in reasons
+                if reason in HARD_REQUIRED_REASONS
+            ]
+            priority = min(
+                (PRIORITY_BY_REASON[reason] for reason in hard_reasons),
+                default=3,
+            )
+            hard_score = sum(
+                float(scores.get(reason) or 0.0)
+                for reason in hard_reasons
+                if PRIORITY_BY_REASON[reason] == priority
+            )
+            history_score = float(scores.get("QUERY_HISTORY") or 0.0)
+            metric_score = float(scores.get("METRIC_FIELD") or 0.0)
+            semantic_score = float(scores.get("SEMANTIC_MATCH") or 0.0)
+            structural_score = float(scores.get("STRUCTURAL_COVERAGE") or 0.0)
             ranked.append({
                 "column_key": list(key),
                 "column_id": column["column_id"],
@@ -937,15 +973,33 @@ def build_selection_plan(
                 "metric_role": column.get("metric_role"),
                 "constraint_roles": copy.deepcopy(column.get("constraint_roles") or []),
                 "priority": priority,
-                "evidence_score": score,
+                "evidence_score": sum(
+                    float(value or 0.0) for value in scores.values()
+                ),
+                "hard_evidence_score": hard_score,
+                "query_history_score": history_score,
+                "metric_field_score": metric_score,
+                "semantic_score": semantic_score,
+                "structural_score": structural_score,
                 "reason_codes": reasons,
                 "structural_category": _structural_category(column),
             })
-        ranked.sort(key=lambda item: (item["priority"], -item["evidence_score"], item["column_id"]))
+        ranked.sort(key=lambda item: (
+            item["priority"],
+            -item["hard_evidence_score"],
+            -item["query_history_score"],
+            -item["metric_field_score"],
+            -item["semantic_score"],
+            -item["structural_score"],
+            item["column_id"],
+        ))
         for index, item in enumerate(ranked, start=1):
             item["stable_rank"] = index
 
-        directly_required = [item for item in ranked if item["priority"] <= 2]
+        directly_required = [
+            item for item in ranked
+            if HARD_REQUIRED_REASONS & set(item["reason_codes"])
+        ]
         required_overflow_count = max(0, len(directly_required) - MAX_ACTIVE_COLUMNS_PER_ASSET)
         selected: list[dict[str, Any]] = directly_required[:MAX_ACTIVE_COLUMNS_PER_ASSET]
         selected_ids = {item["column_id"] for item in selected}
@@ -1036,6 +1090,13 @@ def build_selection_plan(
         "evidence_degradation_counts": copy.deepcopy(
             evidence.get("degradation_counts") or {}
         ),
+        "evidence_source_attempts": copy.deepcopy(
+            evidence.get("source_attempts") or {}
+        ),
+        "evidence_source_errors": copy.deepcopy(
+            evidence.get("source_errors") or {}
+        ),
+        "evidence_warnings": copy.deepcopy(evidence.get("warnings") or []),
         "profiling_budget": {
             "submitted_statements": 0,
             "elapsed_ms": 0,

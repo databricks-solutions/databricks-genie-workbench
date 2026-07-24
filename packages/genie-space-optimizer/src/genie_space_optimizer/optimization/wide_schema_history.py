@@ -7,6 +7,7 @@ import copy
 import json
 import logging
 import os
+import re
 import time
 import threading
 from collections import defaultdict, deque
@@ -35,6 +36,7 @@ _AGGREGATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _AGGREGATE_CACHE_LOCK = threading.Lock()
 
 _RECENCY = ((7, "0_7_days", 1.0), (14, "8_14_days", 0.5), (30, "15_30_days", 0.25))
+_ERROR_CODE_RE = re.compile(r"\[([A-Z][A-Z0-9_.-]+)\]")
 
 
 def _query_tags(run_id: str, purpose: str = "history_collection") -> list[Any]:
@@ -51,6 +53,20 @@ def _response_rows(response: Any) -> list[dict[str, Any]]:
     return [dict(zip(names, row)) for row in data]
 
 
+def _safe_error_code(error: Any) -> str:
+    """Return a bounded diagnostic code without persisting error text."""
+    if error is None:
+        return "UNKNOWN_ERROR"
+    for attribute in ("error_code", "code"):
+        value = getattr(error, attribute, None)
+        if value:
+            return str(value)[:128]
+    match = _ERROR_CODE_RE.search(str(error))
+    if match:
+        return match.group(1)[:128]
+    return type(error).__name__[:128]
+
+
 def _system_history_rows(w: Any, warehouse_id: str, *, run_id: str) -> list[dict[str, Any]]:
     from databricks.sdk.service.sql import Disposition, Format, StatementState
 
@@ -65,23 +81,12 @@ def _system_history_rows(w: Any, warehouse_id: str, *, run_id: str) -> list[dict
             "current workspace ID is required to scope system.query.history"
         )
 
-    probe = w.statement_execution.execute_statement(
-        warehouse_id=warehouse_id,
-        statement="SELECT 1 FROM system.query.history LIMIT 1",
-        wait_timeout="50s",
-        disposition=Disposition.INLINE,
-        format=Format.JSON_ARRAY,
-        query_tags=_query_tags(run_id),
-    )
-    if not probe.status or probe.status.state != StatementState.SUCCEEDED:
-        raise RuntimeError("system.query.history probe failed")
     statement = f"""
         SELECT
           statement_id,
           statement_text,
           start_time,
           executed_by,
-          warehouse_id,
           query_source,
           query_tags
         FROM system.query.history
@@ -100,7 +105,12 @@ def _system_history_rows(w: Any, warehouse_id: str, *, run_id: str) -> list[dict
         query_tags=_query_tags(run_id),
     )
     if not response.status or response.status.state != StatementState.SUCCEEDED:
-        raise RuntimeError("system.query.history bounded read failed")
+        code = _safe_error_code(
+            response.status.error if response.status else None
+        )
+        raise RuntimeError(
+            f"system.query.history bounded read failed [{code}]"
+        )
     return _response_rows(response)
 
 
@@ -425,7 +435,7 @@ def collect_query_history_evidence(
 
     try:
         system_rows = _system_history_rows(w, profiling_warehouse_id, run_id=run_id)
-        return cache(normalize_history_rows(
+        evidence = normalize_history_rows(
             system_rows,
             inventory,
             source_mode="system_table",
@@ -433,15 +443,23 @@ def collect_query_history_evidence(
             gso_job_id=job_id,
             service_principal_identities=identities,
             max_statements=MAX_SYSTEM_STATEMENTS,
-        ))
-    except Exception:
+        )
+        evidence["source_attempts"] = {
+            "system_table": "succeeded",
+            "warehouse_api": "not_attempted",
+        }
+        evidence["source_errors"] = {}
+        evidence["warnings"] = []
+        return cache(evidence)
+    except Exception as exc:
+        system_error_code = _safe_error_code(exc)
         logger.info("system.query.history unavailable; probing warehouse history", exc_info=True)
 
     if warehouses:
         rows, inaccessible = _rest_history_rows(w, warehouses)
         accessible = [warehouse for warehouse in warehouses if warehouse not in inaccessible]
         if accessible:
-            return cache(normalize_history_rows(
+            evidence = normalize_history_rows(
                 rows,
                 inventory,
                 source_mode="warehouse_api",
@@ -450,14 +468,51 @@ def collect_query_history_evidence(
                 service_principal_identities=identities,
                 max_statements=MAX_REST_STATEMENTS,
                 inaccessible_scope=inaccessible,
-            ))
+            )
+            evidence.setdefault("degradation_counts", {})[
+                "system_history_unavailable"
+            ] = 1
+            evidence["source_attempts"] = {
+                "system_table": "failed",
+                "warehouse_api": "succeeded",
+            }
+            evidence["source_errors"] = {
+                "system_table": system_error_code,
+            }
+            evidence["warnings"] = [
+                "system.query.history was unavailable; used warehouse query history fallback",
+            ]
+            return cache(evidence)
+    warehouse_status = "failed" if warehouses else "not_configured"
     return {
         "contract_version": CONTRACT_VERSION,
         "inventory_hash": inventory["inventory_hash"],
         "source_mode": "none",
         "source_scope": [],
-        "coverage": {"accepted_statements": 0, "inaccessible_scope": warehouses},
-        "degradation_counts": {"history_unavailable": 1},
+        "coverage": {
+            "accepted_statements": 0,
+            "inaccessible_scope": warehouses,
+        },
+        "degradation_counts": {
+            "history_unavailable": 1,
+            "system_history_unavailable": 1,
+            f"warehouse_history_{warehouse_status}": 1,
+        },
+        "source_attempts": {
+            "system_table": "failed",
+            "warehouse_api": warehouse_status,
+        },
+        "source_errors": {
+            "system_table": system_error_code,
+            **(
+                {"warehouse_api": "INACCESSIBLE"}
+                if warehouse_status == "failed"
+                else {}
+            ),
+        },
+        "warnings": [
+            "Query-history evidence was unavailable; column ranking used local evidence only",
+        ],
         "columns": [],
     }
 

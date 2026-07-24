@@ -208,6 +208,13 @@ try:
             "evidence_degradation_counts": _plan.get(
                 "evidence_degradation_counts"
             ) or {},
+            "evidence_source_attempts": _plan.get(
+                "evidence_source_attempts"
+            ) or {},
+            "evidence_source_errors": _plan.get(
+                "evidence_source_errors"
+            ) or {},
+            "evidence_warnings": _plan.get("evidence_warnings") or [],
             "assets": [
                 {
                     "asset_id": _asset.get("asset_id"),

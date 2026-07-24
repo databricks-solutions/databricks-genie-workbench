@@ -279,6 +279,7 @@ try:
         assets=len(_inventory.get("assets") or []),
         columns=sum(len(asset.get("columns") or []) for asset in _inventory.get("assets") or []),
         history_source=_wide_schema_evidence.get("source_mode"),
+        history_warnings=_wide_schema_evidence.get("warnings") or [],
     )
 except Exception as exc:
     _banner("Wide-Schema Inventory FAILED")

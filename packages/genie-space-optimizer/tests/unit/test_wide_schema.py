@@ -15,6 +15,7 @@ from genie_space_optimizer.optimization.wide_schema import (
     build_local_evidence,
     build_selection_plan,
     collect_inventory,
+    merge_query_history_evidence,
     project_full_inventory,
     revise_plan_for_column,
     revise_plan_with_profile_outcomes,
@@ -87,6 +88,83 @@ def test_five_thousand_column_inventory_is_complete_and_plan_is_bounded():
     assert plan["assets"][0]["active_count"] == 45
     assert plan["assets"][0]["active_count"] <= MAX_ACTIVE_COLUMNS_PER_ASSET
     assert plan["assets"][0]["omitted_count"] == 4_955
+
+
+def test_query_history_breaks_wide_metric_field_ties_without_overriding_hard_requirements():
+    inventory = _inventory(columns=1_000, table_type="METRIC_VIEW")
+    config = _config([("cat", "sch0", "table0")])
+    config["_parsed_space"]["instructions"] = {
+        "sql": "SELECT column_0000 FROM cat.sch0.table0",
+    }
+    local = build_local_evidence(config, inventory)
+    history = {
+        "contract_version": 1,
+        "inventory_hash": inventory["inventory_hash"],
+        "source_mode": "system_table",
+        "source_scope": ["system.query.history"],
+        "coverage": {"accepted_statements": 2},
+        "degradation_counts": {},
+        "source_attempts": {
+            "system_table": "succeeded",
+            "warehouse_api": "not_attempted",
+        },
+        "source_errors": {},
+        "warnings": [],
+        "columns": [
+            {
+                "column_key": ["cat", "sch0", "table0", "column_0999"],
+                "column_id": "cat.sch0.table0.column_0999",
+                "evidence_score": 20.0,
+            },
+            {
+                "column_key": ["cat", "sch0", "table0", "column_0500"],
+                "column_id": "cat.sch0.table0.column_0500",
+                "evidence_score": 10.0,
+            },
+        ],
+    }
+
+    evidence = merge_query_history_evidence(local, history)
+    plan = build_selection_plan(inventory, evidence, run_id="run-history-ranking")
+    rows = {
+        row["name"]: row
+        for row in plan["assets"][0]["columns"]
+    }
+
+    assert rows["column_0000"]["stable_rank"] == 1
+    assert rows["column_0000"]["priority"] == 2
+    assert rows["column_0999"]["stable_rank"] == 2
+    assert rows["column_0999"]["query_history_score"] == 20.0
+    assert rows["column_0500"]["stable_rank"] == 3
+    assert rows["column_0999"]["active"] is True
+    assert plan["assets"][0]["active_count"] == 45
+    assert plan["assets"][0]["required_overflow_count"] == 0
+    assert plan["evidence_source_attempts"]["system_table"] == "succeeded"
+
+
+def test_descriptions_and_synonyms_do_not_make_columns_hard_user_pins():
+    inventory = _inventory(columns=2)
+    config = _config([("cat", "sch0", "table0")])
+    config["_parsed_space"]["data_sources"]["tables"][0]["column_configs"] = [
+        {
+            "column_name": "column_0000",
+            "description": "Important business metadata",
+            "synonyms": ["business field"],
+        },
+        {
+            "column_name": "column_0001",
+            "enable_entity_matching": True,
+        },
+    ]
+
+    evidence = build_local_evidence(config, inventory)
+    rows = {
+        row["column_key"][-1]: row
+        for row in evidence["columns"]
+    }
+
+    assert "USER_PIN" not in rows["column_0000"]["reason_codes"]
+    assert "USER_PIN" in rows["column_0001"]["reason_codes"]
 
 
 def test_adaptive_revision_never_profiles_a_51st_distinct_column():
@@ -643,7 +721,9 @@ def test_system_history_is_scoped_to_current_workspace():
     )
 
     assert _system_history_rows(w, "warehouse-1", run_id="run-history") == []
-    assert "workspace_id = 123456789" in statements[1]
+    assert len(statements) == 1
+    assert "workspace_id = 123456789" in statements[0]
+    assert "warehouse_id" not in statements[0]
 
 
 def test_system_history_fails_closed_without_current_workspace_id():
@@ -651,6 +731,47 @@ def test_system_history_fails_closed_without_current_workspace_id():
 
     with pytest.raises(RuntimeError, match="workspace ID"):
         _system_history_rows(w, "warehouse-1", run_id="run-history")
+
+
+def test_history_collection_persists_clear_degradation_diagnostics(monkeypatch):
+    inventory = _inventory(columns=3)
+    wide_schema_history._AGGREGATE_CACHE.clear()
+    monkeypatch.setattr(
+        wide_schema_history,
+        "_system_history_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "[UNRESOLVED_COLUMN.WITH_SUGGESTION] warehouse_id is unavailable"
+            )
+        ),
+    )
+
+    history = wide_schema_history.collect_query_history_evidence(
+        SimpleNamespace(),
+        inventory,
+        profiling_warehouse_id="warehouse-1",
+        workload_warehouse_ids=[],
+        run_id="run-history-unavailable",
+    )
+    evidence = merge_query_history_evidence(
+        build_local_evidence(_config([("cat", "sch0", "table0")]), inventory),
+        history,
+    )
+    plan = build_selection_plan(inventory, evidence, run_id="run-history-unavailable")
+
+    assert history["source_mode"] == "none"
+    assert history["source_attempts"] == {
+        "system_table": "failed",
+        "warehouse_api": "not_configured",
+    }
+    assert history["degradation_counts"]["history_unavailable"] == 1
+    assert history["source_errors"] == {
+        "system_table": "UNRESOLVED_COLUMN.WITH_SUGGESTION",
+    }
+    assert "warehouse_id" not in json.dumps(history)
+    assert history["warnings"]
+    assert plan["evidence_source_errors"] == history["source_errors"]
+    assert plan["evidence_warnings"] == history["warnings"]
 
 
 def test_rest_history_page_size_stays_below_api_limit():
