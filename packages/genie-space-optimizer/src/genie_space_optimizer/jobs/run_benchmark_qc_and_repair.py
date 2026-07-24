@@ -60,6 +60,10 @@ from genie_space_optimizer.optimization.benchmark_repair import (
     require_minimum_valid_benchmarks,
     run_bounded_benchmark_repair,
 )
+from genie_space_optimizer.optimization.benchmarks import (
+    deduplicate_benchmark_corpus,
+    duplicate_rejection_mutations,
+)
 from genie_space_optimizer.optimization.benchmark_quality import (
     QUALITY_REVIEW_VERSION,
     review_benchmark_quality,
@@ -70,7 +74,7 @@ from genie_space_optimizer.optimization.preflight import (
     preflight_fetch_config,
     preflight_generate_benchmarks,
     preflight_push_benchmarks_to_space,
-    preflight_setup_experiment,
+    preflight_persist_benchmark_corpus,
 )
 from genie_space_optimizer.optimization.space_quality_enrichment import (
     build_prompt_matching_context,
@@ -81,6 +85,7 @@ from genie_space_optimizer.optimization.state import (
     load_latest_artifact_payload,
     load_latest_artifact_record,
     write_artifact,
+    write_benchmark_mutations,
     write_failure_stage_safely,
     write_required_artifact,
     write_stage,
@@ -379,6 +384,15 @@ try:
         target_benchmark_count=effective_target, max_benchmark_count=effective_max,
     )
     _benchmarks = ctx_bench["benchmarks"]
+    _duplicate_rejections = list(ctx_bench.get("duplicate_rejections") or [])
+    if _duplicate_rejections:
+        write_benchmark_mutations(
+            spark,
+            run_id,
+            duplicate_rejection_mutations(_duplicate_rejections),
+            catalog=catalog,
+            schema=schema,
+        )
     _log("Initial benchmarks", count=len(_benchmarks), regenerated=ctx_bench["regenerated"])
 except Exception as exc:
     _banner("Benchmark Generation FAILED")
@@ -637,6 +651,16 @@ try:
         max_tries=benchmark_repair_max_tries,
     )
     _benchmarks = outcome.benchmarks
+    _benchmarks, _post_repair_duplicates = deduplicate_benchmark_corpus(_benchmarks)
+    _duplicate_rejections.extend(_post_repair_duplicates)
+    if _post_repair_duplicates:
+        write_benchmark_mutations(
+            spark,
+            run_id,
+            duplicate_rejection_mutations(_post_repair_duplicates),
+            catalog=catalog,
+            schema=schema,
+        )
     _repair_tries_used = outcome.tries_used
     _repaired_ids = outcome.repaired_ids
     _repair_sweeps = outcome.sweeps
@@ -676,6 +700,20 @@ except BenchmarkCorpusTooSmallError as exc:
         minimum_count=exc.minimum_count,
         target_count=exc.target_count,
     )
+
+if _repair_failed:
+    _benchmarks, _failed_repair_duplicates = deduplicate_benchmark_corpus(
+        _benchmarks,
+    )
+    _duplicate_rejections.extend(_failed_repair_duplicates)
+    if _failed_repair_duplicates:
+        write_benchmark_mutations(
+            spark,
+            run_id,
+            duplicate_rejection_mutations(_failed_repair_duplicates),
+            catalog=catalog,
+            schema=schema,
+        )
 
 # COMMAND ----------
 
@@ -717,21 +755,19 @@ if not _repair_failed and _benchmarks:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Persist the evaluation dataset + experiment
+# MAGIC ## Persist the Delta benchmark handoff + configure tracing
 
 # COMMAND ----------
 
-_experiment_name = None
 _persisted_count = len(_benchmarks)
 if not _repair_failed and _benchmarks:
     try:
-        ctx_exp = preflight_setup_experiment(
+        ctx_handoff = preflight_persist_benchmark_corpus(
             w, spark, run_id, space_id, catalog, schema, _domain,
-            _config, _benchmarks, _uc_columns, _uc_tags, _uc_routines,
-            _genie_table_refs, None, max_benchmark_count=effective_max,
+            _config, _benchmarks, _genie_table_refs, None,
+            max_benchmark_count=effective_max,
         )
-        _experiment_name = ctx_exp.get("experiment_name")
-        _persisted_count = int(ctx_exp.get("benchmark_count", len(_benchmarks)))
+        _persisted_count = int(ctx_handoff.get("benchmark_count", len(_benchmarks)))
     except Exception as exc:
         _banner("Experiment / Dataset Setup FAILED")
         _log("Failure", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
@@ -796,7 +832,8 @@ _qc_payload: dict[str, Any] = {
             for result in _final_quality_results
             if result.get("disposition") == "warning"
         ),
-        "excluded": len(_rejected_benchmarks_by_id),
+        "excluded": len(_rejected_benchmarks_by_id) + len(_duplicate_rejections),
+        "duplicate_normalized_question": len(_duplicate_rejections),
         "review_not_run": sum(
             1
             for f in _quality_findings_by_key.values()
@@ -813,6 +850,16 @@ _qc_payload: dict[str, Any] = {
         }
         for f in _quality_findings_by_key.values()
         if f.get("proposed_question") or f.get("proposed_sql")
+    ],
+    "duplicate_rejections": [
+        {
+            "question_id": duplicate.get("id", duplicate.get("question_id", "")),
+            "question": duplicate.get("question", ""),
+            "normalized_question": duplicate.get("duplicate_normalized_question", ""),
+            "retained_question_id": duplicate.get("duplicate_retained_question_id", ""),
+            "reason": "duplicate_normalized_question",
+        }
+        for duplicate in _duplicate_rejections
     ],
     # GT-correction candidates folded in here (retired
     # genie_eval_gt_correction_candidates table — §7 reconciliation).

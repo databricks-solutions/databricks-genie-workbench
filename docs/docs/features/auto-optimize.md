@@ -50,6 +50,18 @@ trusted, warning, and excluded counts alongside the mutation ledger. Long
 mutation groups are disclosures; **Added** starts collapsed so generated
 benchmark SQL does not dominate the run page.
 
+Before review, and again after any repair or regeneration sweep, GSO
+deduplicates normalized question text. The deterministic winner order is:
+user/Genie-authored, SQL-valid, curated/P0, then stable input order. Every
+rejected duplicate is recorded as a `removed` mutation with reason
+`duplicate_normalized_question`; `benchmark_qc` also records the retained
+question id.
+
+The final corpus is written directly to
+`genie_benchmarks_<domain>` as a Delta table with nested `inputs` and
+`expectations` structs. MLflow is not used for dataset persistence, run
+tracking, model registration, or evaluation; it is used only for LLM tracing.
+
 ## Optimization loop
 
 The Optimize task uses a full-benchmark hill-climbing loop:
@@ -86,9 +98,20 @@ The strategist selects from the configured levers for each attempt:
 
 Before baseline evaluation, a narrow Space-quality phase may also fill low-risk curation gaps such as an empty top-level Space description, thin instructions, and prompt-matching flags. Format assistance is enabled on visible columns, while entity matching is allocated deterministically to eligible string columns using UC types, cardinality, benchmark references, and RLS safeguards. These flags are not proposed by the LLM lever loop. The post-enrichment description is persisted separately because Genie stores `description` as Space metadata, outside `serialized_space`.
 
+For wide schemas, column ranking can use workspace-scoped
+`system.query.history` after filtering to finished `SELECT` statements that
+reference configured assets and excluding the GSO service principal. Two
+strict Databricks-generated profiling signatures are also excluded: the
+`WITH SampledData` null/distinct-count batch and the exploded
+`approx_top_k(...).item.item AS value` query. Ordinary CTEs and ordinary
+`approx_top_k` analytics remain eligible.
+
 ## Evaluation and leakage safety
 
-Current runs use Genie's native benchmark evaluation surface and persist the official evaluation run identifiers, status, question counts, correctness counts, and needs-review counts. Headline accuracy is `num_correct / num_questions` for native evaluation rows.
+Current runs use Genie's native benchmark Eval-Run API as the sole evaluation
+harness and persist the official evaluation run identifiers, status, question
+counts, correctness counts, and needs-review counts. Headline accuracy is
+`num_correct / num_questions` for native evaluation rows.
 
 Benchmark expected SQL is evaluation truth and must never become inference-visible configuration. The optimizer's leakage firewall blocks patches that copy or closely echo benchmark answer material into instructions, examples, descriptions, or other Space content.
 
@@ -135,6 +158,7 @@ The main current-run sources of truth are:
 | `genie_opt_iterations` | Baseline/attempt evaluation and controller state |
 | `genie_opt_patches` | Applied and rolled-back patch records |
 | `genie_opt_benchmark_mutations` | Benchmark QC additions, removals, and changes |
+| `genie_benchmarks_<domain>` | Direct Delta handoff of the deduplicated benchmark corpus to Optimize |
 | `genie_opt_artifacts` | `run_manifest`, `benchmark_qc`, `space_quality_enrichment`, and `publish_record` payloads |
 | `genie_opt_scan_snapshots` | Optional paired preflight/postflight IQ snapshots |
 

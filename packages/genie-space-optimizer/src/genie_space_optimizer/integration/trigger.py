@@ -188,7 +188,7 @@ def trigger_optimization(
 
     # GSO v2 Phase 5 (D3): the ``experiment_name`` pointer column was scrubbed.
     # The job self-resolves a deterministic MLflow experiment path from
-    # (space_id, domain) in ``preflight_setup_experiment``, so re-runs land in
+    # (space_id, domain) in ``preflight_persist_benchmark_corpus``, so re-runs land in
     # the same experiment without carrying a prior pointer forward.
 
     run_id = str(uuid.uuid4())

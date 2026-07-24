@@ -290,7 +290,7 @@ def wh_create_run(
 
     # GSO v2 Phase 5 (D3): the ``experiment_name`` column was scrubbed; the
     # surviving MLflow tracing self-resolves a deterministic experiment path in
-    # ``preflight_setup_experiment`` (no pointer column needed).
+    # ``preflight_persist_benchmark_corpus`` (no pointer column needed).
     sql = (
         f"INSERT INTO {catalog}.{schema}.genie_opt_runs "
         f"(run_id, space_id, domain, catalog, uc_schema, status, started_at, "

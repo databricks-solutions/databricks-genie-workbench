@@ -170,6 +170,11 @@ def _system_history_statement(
     lookback_days: int,
 ) -> str:
     normalized_sql = "lower(replace(coalesce(statement_text, ''), '`', ''))"
+    tokenized_sql = (
+        "lower(trim(regexp_replace("
+        "replace(coalesce(statement_text, ''), '`', ''), "
+        "'[^A-Za-z0-9_]+', ' ')))"
+    )
     relevance = [_asset_relevance_predicate(inventory)]
     if target_space_id:
         relevance.insert(
@@ -210,6 +215,18 @@ def _system_history_statement(
         exclusions.append(
             f"instr({normalized_sql}, {_sql_literal(marker)}) = 0"
         )
+    exclusions.extend((
+        "NOT ("
+        f"instr({tokenized_sql}, 'with sampleddata') > 0 "
+        f"AND instr({tokenized_sql}, 'sample_size') > 0 "
+        f"AND instr({tokenized_sql}, '_null_count') > 0 "
+        f"AND instr({tokenized_sql}, '_distinct_count') > 0"
+        ")",
+        "NOT ("
+        f"instr({tokenized_sql}, 'approx_top_k ') > 0 "
+        f"AND instr({tokenized_sql}, 'item item as value') > 0"
+        ")",
+    ))
     order_by = "start_time DESC"
     if target_space_id:
         order_by = (
@@ -297,6 +314,7 @@ def _system_history_rows(
         "workspace_scoped": True,
         "server_side_select_filter": True,
         "server_side_gso_filter": True,
+        "server_side_generated_profile_filter": True,
         "server_side_relevance_filter": True,
         "target_space_scoped": bool(target_space_id),
         "target_space_prioritized": bool(target_space_id),
@@ -445,6 +463,27 @@ def _legacy_gso_shape(sql: str) -> bool:
     return any(marker in normalized for marker in markers)
 
 
+def _databricks_generated_profile_shape(sql: str) -> str | None:
+    """Identify only the two known Databricks-generated profiling shapes."""
+    normalized = str(sql or "").replace("`", "").casefold()
+    sampled_profile = (
+        bool(re.search(r"\bwith\s+sampleddata\b", normalized))
+        and "sample_size" in normalized
+        and "_null_count" in normalized
+        and "_distinct_count" in normalized
+    )
+    if sampled_profile:
+        return "excluded_databricks_sample_profile"
+
+    top_k_profile = (
+        bool(re.search(r"\bapprox_top_k\s*\(", normalized))
+        and bool(re.search(r"\bitem\s*\.\s*item\s+as\s+value\b", normalized))
+    )
+    if top_k_profile:
+        return "excluded_databricks_top_k_profile"
+    return None
+
+
 def _exclusion_reason(
     row: dict[str, Any],
     sql: str,
@@ -471,6 +510,9 @@ def _exclusion_reason(
         return "excluded_service_principal"
     if _legacy_gso_shape(sql):
         return "excluded_legacy_gso_shape"
+    generated_profile_reason = _databricks_generated_profile_shape(sql)
+    if generated_profile_reason:
+        return generated_profile_reason
     return None
 
 

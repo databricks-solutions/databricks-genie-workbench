@@ -41,8 +41,10 @@ from genie_space_optimizer.common.genie_client import (
 from genie_space_optimizer.common.warehouse import export_warehouse_id, resolve_warehouse_id
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
-from genie_space_optimizer.optimization.benchmarks import benchmark_corpus_for_optimization
-from genie_space_optimizer.optimization.benchmarking import load_benchmarks_from_dataset
+from genie_space_optimizer.optimization.benchmarks import (
+    benchmark_corpus_for_optimization,
+    load_benchmark_corpus,
+)
 from genie_space_optimizer.optimization.preflight import _resolve_experiment_path
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
@@ -150,7 +152,7 @@ write_stage(
 # COMMAND ----------
 
 uc_schema = f"{catalog}.{schema}"
-_all_benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
+_all_benchmarks = load_benchmark_corpus(spark, uc_schema, domain)
 benchmarks = benchmark_corpus_for_optimization(_all_benchmarks)
 if not benchmarks:
     raise RuntimeError(f"No benchmarks found in {uc_schema}.genie_benchmarks_{domain}")

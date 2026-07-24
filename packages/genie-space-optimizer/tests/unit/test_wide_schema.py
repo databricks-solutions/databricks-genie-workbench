@@ -759,6 +759,65 @@ def test_history_frequency_space_weight_and_exclusion_telemetry():
     assert rows["column_0001"]["evidence_score"] > 10.0
 
 
+def test_databricks_generated_profile_shapes_are_excluded_without_broad_false_positives():
+    inventory = _inventory(columns=3)
+    now_ms = int(time.time() * 1000)
+    common = {
+        "statement_type": "SELECT",
+        "query_start_time_ms": now_ms,
+        "executed_by": "alice@example.com",
+    }
+    evidence = normalize_history_rows(
+        [
+            {
+                **common,
+                "statement_text": (
+                    "WITH SampledData AS (SELECT column_0000 FROM cat.sch0.table0) "
+                    "SELECT COUNT(*) AS sample_size, "
+                    "COUNT_IF(column_0000 IS NULL) AS _null_count, "
+                    "COUNT(DISTINCT column_0000) AS _distinct_count FROM SampledData"
+                ),
+            },
+            {
+                **common,
+                "statement_text": (
+                    "SELECT item.item AS value FROM "
+                    "(SELECT approx_top_k(column_0001, 10) AS items "
+                    "FROM cat.sch0.table0) src "
+                    "LATERAL VIEW explode(items) exploded AS item"
+                ),
+            },
+            {
+                **common,
+                "statement_text": (
+                    "WITH SampledData AS (SELECT column_0000 FROM cat.sch0.table0) "
+                    "SELECT column_0000 FROM SampledData"
+                ),
+            },
+            {
+                **common,
+                "statement_text": (
+                    "SELECT approx_top_k(column_0002, 5) AS popular_values "
+                    "FROM cat.sch0.table0"
+                ),
+            },
+        ],
+        inventory,
+        source_mode="system_table",
+        source_scope=["system.query.history"],
+        max_statements=10,
+    )
+
+    assert evidence["coverage"]["accepted_statements"] == 2
+    assert evidence["degradation_counts"]["excluded_databricks_sample_profile"] == 1
+    assert evidence["degradation_counts"]["excluded_databricks_top_k_profile"] == 1
+    assert evidence["degradation_counts"]["gso_excluded"] == 2
+    assert {row["column_key"][-1] for row in evidence["columns"]} == {
+        "column_0000",
+        "column_0002",
+    }
+
+
 def test_cte_alias_lineage_and_ambiguous_assets_are_resolved_safely():
     inventory = _inventory(assets=2, columns=3)
     diagnostics: dict[str, int] = {}
@@ -838,6 +897,12 @@ def test_system_history_is_scoped_to_current_workspace():
     assert "job-1" in statements[0]
     assert "gso-app" in statements[0]
     assert "lower(coalesce(executed_as, '')) NOT IN" in statements[0]
+    assert "with sampleddata" in statements[0]
+    assert "_null_count" in statements[0]
+    assert "_distinct_count" in statements[0]
+    assert "approx_top_k " in statements[0]
+    assert "item item as value" in statements[0]
+    assert telemetry["server_side_generated_profile_filter"] is True
     assert statements[0].index("statement_type = 'SELECT'") < statements[0].index("ORDER BY")
     assert statements[0].index("gso-app") < statements[0].index("ORDER BY")
     assert (

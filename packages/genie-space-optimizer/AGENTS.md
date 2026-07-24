@@ -46,8 +46,9 @@ src/genie_space_optimizer/
 ```
 
 Prompt templates are version-controlled in `common/config.py`. GSO uses MLflow
-for experiment tracking, traces, and evaluation datasets, but has no MLflow
-Prompt Registry runtime or permission dependency.
+only for tracing (`set_experiment`, OpenAI autologging, and spans). Benchmark
+corpora are persisted directly to Delta; there is no MLflow Dataset, Prompt
+Registry, run-tracking, model-registry, or evaluation runtime dependency.
 
 ## Persistence rules
 
@@ -57,6 +58,8 @@ Prompt Registry runtime or permission dependency.
 - New iteration fields must be added to DDL, the additive migration list,
   `state.write_iteration`, the Workbench API model, and tests together.
 - `genie_opt_benchmark_mutations` is the supported benchmark-change ledger.
+- `genie_benchmarks_<domain>` is the direct Delta benchmark handoff consumed by
+  the Optimize task. Preserve its nested `inputs` / `expectations` schema.
 
 ## Evaluation and leakage
 

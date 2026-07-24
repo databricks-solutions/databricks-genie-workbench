@@ -426,14 +426,14 @@ class TestPreflightValidateBenchmarks:
 
 
 # ---------------------------------------------------------------------------
-# preflight_setup_experiment
+# preflight_persist_benchmark_corpus
 # ---------------------------------------------------------------------------
 
-class TestPreflightSetupExperiment:
-    """Tests for preflight_setup_experiment (step 6).
+class TestPreflightPersistBenchmarkCorpus:
+    """Tests for preflight_persist_benchmark_corpus (step 6).
 
     All tests share the same decorator stack to mock out external
-    dependencies (MLflow, state writes, benchmark operations).
+    dependencies (MLflow tracing, state writes, benchmark operations).
     """
 
     _COMMON_PATCHES = [
@@ -443,13 +443,14 @@ class TestPreflightSetupExperiment:
         "genie_space_optimizer.optimization.preflight.mlflow",
         "genie_space_optimizer.optimization.preflight._flag_stale_temporal_benchmarks",
         "genie_space_optimizer.optimization.preflight.compute_asset_fingerprint",
-        "genie_space_optimizer.optimization.preflight._drop_benchmark_table",
-        "genie_space_optimizer.optimization.preflight.create_evaluation_dataset",
+        "genie_space_optimizer.optimization.preflight.persist_benchmark_corpus",
     ]
 
     def _call_setup(self, mock_spark=None, catalog="cat", schema="gold", **extra_mocks):
-        """Helper: invoke preflight_setup_experiment with all deps mocked."""
-        from genie_space_optimizer.optimization.preflight import preflight_setup_experiment
+        """Invoke preflight_persist_benchmark_corpus with external deps mocked."""
+        from genie_space_optimizer.optimization.preflight import (
+            preflight_persist_benchmark_corpus,
+        )
 
         if mock_spark is None:
             mock_spark = MagicMock(name="spark")
@@ -461,28 +462,22 @@ class TestPreflightSetupExperiment:
             patch(self._COMMON_PATCHES[3]) as mock_mlflow,
             patch(self._COMMON_PATCHES[4]),
             patch(self._COMMON_PATCHES[5], return_value="fp123"),
-            patch(self._COMMON_PATCHES[6]) as mock_drop,
-            patch(self._COMMON_PATCHES[7]) as mock_create_ds,
+            patch(self._COMMON_PATCHES[6]) as mock_persist,
         ):
-            mock_exp = MagicMock()
-            mock_exp.experiment_id = "exp-123"
-            mock_mlflow.get_experiment_by_name.return_value = mock_exp
-
             for k, v in extra_mocks.items():
-                if k == "drop_side_effect":
-                    mock_drop.side_effect = v
-                elif k == "create_ds_side_effect":
-                    mock_create_ds.side_effect = v
+                if k == "persist_side_effect":
+                    mock_persist.side_effect = v
+                elif k == "trace_side_effect":
+                    mock_mlflow.set_experiment.side_effect = v
 
-            result = preflight_setup_experiment(
+            result = preflight_persist_benchmark_corpus(
                 MagicMock(), mock_spark, "run-1", "space-1", catalog, schema, "default",
                 {"_parsed_space": {}}, [{"question": "q1"}],
-                [], [], [], [],
+                [],
             )
         return result
 
-    @patch("genie_space_optimizer.optimization.preflight.create_evaluation_dataset")
-    @patch("genie_space_optimizer.optimization.preflight._drop_benchmark_table")
+    @patch("genie_space_optimizer.optimization.preflight.persist_benchmark_corpus")
     @patch("genie_space_optimizer.optimization.preflight.compute_asset_fingerprint", return_value="fp123")
     @patch("genie_space_optimizer.optimization.preflight._flag_stale_temporal_benchmarks")
     @patch("genie_space_optimizer.optimization.preflight.mlflow")
@@ -490,29 +485,24 @@ class TestPreflightSetupExperiment:
     @patch("genie_space_optimizer.optimization.preflight._resolve_experiment_path", return_value="/exp/path")
     @patch("genie_space_optimizer.optimization.preflight.write_stage")
     def test_returns_expected_keys(self, mock_ws, mock_resolve, mock_dir, mock_mlflow,
-                                    mock_flag, mock_fp, mock_drop, mock_create_ds):
-        from genie_space_optimizer.optimization.preflight import preflight_setup_experiment
+                                    mock_flag, mock_fp, mock_persist):
+        from genie_space_optimizer.optimization.preflight import (
+            preflight_persist_benchmark_corpus,
+        )
 
-        mock_exp = MagicMock()
-        mock_exp.experiment_id = "exp-123"
-        mock_mlflow.get_experiment_by_name.return_value = mock_exp
-
-        result = preflight_setup_experiment(
+        result = preflight_persist_benchmark_corpus(
             MagicMock(), MagicMock(), "run-1", "space-1", "cat", "gold", "default",
             {"_parsed_space": {}}, [{"question": "q1"}],
-            [], [], [], [],
+            [],
         )
         assert set(result.keys()) == {
-            "model_id", "experiment_name", "experiment_id",
-            "benchmark_count", "evaluation_dataset",
+            "experiment_name", "benchmark_count", "benchmark_corpus",
         }
-        assert result["model_id"] is None
         assert result["experiment_name"] == "/exp/path"
 
-    def test_returns_writer_benchmark_count_from_create_dataset(self):
-        """preflight_setup_experiment exposes writer count for downstream task values."""
+    def test_returns_writer_benchmark_count_from_delta_persist(self):
+        """The handoff step exposes the writer count to downstream tasks."""
         writer_result = {
-            "dataset": object(),
             "table_name": "cat.gold.genie_benchmarks_default",
             "input_count": 30,
             "record_count": 24,
@@ -520,11 +510,25 @@ class TestPreflightSetupExperiment:
         }
 
         result = self._call_setup(
-            create_ds_side_effect=lambda *a, **kw: writer_result,
+            persist_side_effect=lambda *a, **kw: writer_result,
         )
 
         assert result["benchmark_count"] == 24
-        assert result["evaluation_dataset"] == writer_result
+        assert result["benchmark_corpus"] == writer_result
+
+    def test_trace_setup_failure_does_not_block_delta_handoff(self):
+        writer_result = {
+            "table_name": "cat.gold.genie_benchmarks_default",
+            "record_count": 1,
+        }
+
+        result = self._call_setup(
+            trace_side_effect=RuntimeError("experiment unavailable"),
+            persist_side_effect=lambda *a, **kw: writer_result,
+        )
+
+        assert result["benchmark_count"] == 1
+        assert result["benchmark_corpus"] == writer_result
 
     def test_sets_sql_context_with_use_catalog_and_schema(self):
         """USE CATALOG / USE SCHEMA must be issued with the correct values."""
@@ -539,8 +543,8 @@ class TestPreflightSetupExperiment:
         assert "psk" in use_catalog[0]
         assert "genie_space_optimizer" in use_schema[0]
 
-    def test_sql_context_set_before_drop_and_create(self):
-        """_set_sql_context must run before _drop_benchmark_table and create_evaluation_dataset."""
+    def test_sql_context_set_before_delta_persist(self):
+        """_set_sql_context must run before the direct Delta overwrite."""
         call_order = []
 
         with patch(
@@ -548,16 +552,13 @@ class TestPreflightSetupExperiment:
             side_effect=lambda *a, **kw: call_order.append("set_sql_context"),
         ):
             self._call_setup(
-                drop_side_effect=lambda *a, **kw: call_order.append("drop_benchmark_table"),
-                create_ds_side_effect=lambda *a, **kw: call_order.append("create_evaluation_dataset"),
+                persist_side_effect=lambda *a, **kw: call_order.append("persist_benchmark_corpus"),
             )
 
         assert "set_sql_context" in call_order, \
             f"_set_sql_context was not called; order={call_order}"
-        assert call_order.index("set_sql_context") < call_order.index("drop_benchmark_table"), \
-            f"_set_sql_context must precede _drop_benchmark_table; order={call_order}"
-        assert call_order.index("set_sql_context") < call_order.index("create_evaluation_dataset"), \
-            f"_set_sql_context must precede create_evaluation_dataset; order={call_order}"
+        assert call_order.index("set_sql_context") < call_order.index("persist_benchmark_corpus"), \
+            f"_set_sql_context must precede persist_benchmark_corpus; order={call_order}"
 
     def test_sql_context_receives_correct_catalog_and_schema(self):
         """_set_sql_context must receive the catalog and schema arguments unchanged."""

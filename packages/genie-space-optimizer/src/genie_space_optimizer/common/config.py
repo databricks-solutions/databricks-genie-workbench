@@ -155,7 +155,7 @@ without a code revert."""
 #   ``on``      — new corrected scoring (default).
 #   ``shadow``  — run both old and new paths; headline is the new value
 #                 but the legacy value is logged as ``shadow.<judge>.<metric>``
-#                 for side-by-side comparison in MLflow.
+#                 in optimization telemetry for side-by-side comparison.
 #   ``off``     — legacy kill-switch. Byte-identical to pre-PR behavior.
 #
 # ``GSO_APPLY_QUALITY_INSTRUCTIONS`` gates the Group-D applier changes
@@ -1716,7 +1716,7 @@ for the fat JSON stage-level blobs that don't fit a per-attempt scored row:
 Backed by ``ddl._GENIE_OPT_ARTIFACTS_DDL`` and written via
 ``state.write_artifact``."""
 
-# ── 13. MLflow Conventions ─────────────────────────────────────────────
+# ── 13. Trace Destination Convention ──────────────────────────────────
 
 EXPERIMENT_PATH_TEMPLATE = "/Shared/genie-space-optimizer/{{ space_id }}/{{ domain }}"
 

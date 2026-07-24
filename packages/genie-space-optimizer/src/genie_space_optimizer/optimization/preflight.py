@@ -2,8 +2,8 @@
 Preflight logic for intake, metadata discovery, and benchmark preparation.
 
 Fetches Genie Space config, UC metadata, loads or generates benchmarks,
-validates SQL, configures MLflow experiment tracking, and prepares the initial
-benchmark dataset.
+validates SQL, configures MLflow tracing, and prepares the initial benchmark
+Delta handoff.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ from genie_space_optimizer.common.genie_schema import (
     SerializedSpaceValidationError,
     validate_serialized_space,
 )
-from genie_space_optimizer.common.mlflow_names import default_tags, preflight_run_name
 from genie_space_optimizer.common.uc_metadata import (
     extract_genie_space_table_refs,
     get_columns,
@@ -49,18 +48,21 @@ from genie_space_optimizer.common.uc_metadata import (
     get_tags_for_tables,
     get_tags_for_tables_rest,
 )
-from genie_space_optimizer.optimization.benchmarks import validate_benchmarks
+from genie_space_optimizer.optimization.benchmarks import (
+    deduplicate_benchmark_corpus,
+    duplicate_rejection_mutations,
+    load_benchmark_corpus,
+    persist_benchmark_corpus,
+    validate_benchmarks,
+)
 from genie_space_optimizer.optimization.benchmark_repair import (
     require_minimum_valid_benchmarks,
 )
 from genie_space_optimizer.optimization.benchmarking import (
-    _drop_benchmark_table,
     _flag_stale_temporal_benchmarks,
     _set_sql_context,
-    create_evaluation_dataset,
     extract_genie_space_benchmarks,
     generate_benchmarks,
-    load_benchmarks_from_dataset,
 )
 from genie_space_optimizer.optimization.state import (
     load_run,
@@ -2086,36 +2088,23 @@ def preflight_generate_benchmarks(
     try:
         _ensure_experiment_parent_dir(w, experiment_name)
         mlflow.set_experiment(experiment_name)
+        mlflow.openai.autolog()
     except Exception:
-        logger.warning("MLflow experiment setup failed", exc_info=True)
+        logger.warning("MLflow trace setup failed", exc_info=True)
 
-    with mlflow.start_run(run_name=preflight_run_name(run_id)) as _bench_run:
-        _pf_tags = default_tags(
-            run_id,
-            space_id=space_id,
-            stage="benchmark_generation",
-            iteration=0,
-        )
-        _pf_tags["genie.domain"] = domain
-        mlflow.set_tags(_pf_tags)
-
-        benchmarks, _benchmarks_regenerated = _load_or_generate_benchmarks(
-            w, spark, config, uc_columns, uc_tags, uc_routines,
-            domain, catalog, schema, uc_schema, run_id,
-            warehouse_id=warehouse_id,
-            target_benchmark_count=target_benchmark_count,
-            max_benchmark_count=max_benchmark_count,
-        )
-
-        mlflow.log_params({
-            "benchmark_count": len(benchmarks),
-            "regenerated": _benchmarks_regenerated,
-        })
+    benchmarks, _benchmarks_regenerated = _load_or_generate_benchmarks(
+        w, spark, config, uc_columns, uc_tags, uc_routines,
+        domain, catalog, schema, uc_schema, run_id,
+        warehouse_id=warehouse_id,
+        target_benchmark_count=target_benchmark_count,
+        max_benchmark_count=max_benchmark_count,
+    )
+    benchmarks, duplicate_rejections = deduplicate_benchmark_corpus(benchmarks)
 
     _lines = [_pf_section("PREFLIGHT — BENCHMARK GENERATION")]
     _lines.append(_pf_kv("Benchmarks loaded", len(benchmarks)))
     _lines.append(_pf_kv("Regenerated", _benchmarks_regenerated))
-    _lines.append(_pf_kv("MLflow run", _bench_run.info.run_id))
+    _lines.append(_pf_kv("Duplicate candidates rejected", len(duplicate_rejections)))
     _lines.append(_pf_bar())
     for bm in benchmarks[:10]:
         _bq = str(bm.get("question", ""))[:80]
@@ -2126,7 +2115,11 @@ def preflight_generate_benchmarks(
     _lines.append(_pf_bar())
     print("\n".join(_lines))
 
-    return {"benchmarks": benchmarks, "regenerated": _benchmarks_regenerated}
+    return {
+        "benchmarks": benchmarks,
+        "regenerated": _benchmarks_regenerated,
+        "duplicate_rejections": duplicate_rejections,
+    }
 
 
 def preflight_validate_benchmarks(
@@ -2763,6 +2756,14 @@ def preflight_push_benchmarks_to_space(
             "before": {
                 "question": r.get("question", ""),
                 "sql": r.get("expected_sql", ""),
+                **(
+                    {
+                        "retained_question_id": r.get("duplicate_retained_question_id", ""),
+                        "normalized_question": r.get("duplicate_normalized_question", ""),
+                    }
+                    if r.get("validation_reason_code") == "duplicate_normalized_question"
+                    else {}
+                ),
             },
             "after": None,
             "reason": r.get("validation_reason_code") or "validation_pruned",
@@ -2834,7 +2835,7 @@ def preflight_push_benchmarks_to_space(
     }
 
 
-def preflight_setup_experiment(
+def preflight_persist_benchmark_corpus(
     w: "WorkspaceClient",
     spark: "SparkSession",
     run_id: str,
@@ -2844,17 +2845,14 @@ def preflight_setup_experiment(
     domain: str,
     config: dict,
     benchmarks: list[dict],
-    uc_columns: list[dict],
-    uc_tags: list[dict],
-    uc_routines: list[dict],
     genie_table_refs: list,
     experiment_name: str | None = None,
     *,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict:
-    """Sub-step 6: Configure the MLflow experiment and evaluation dataset.
+    """Sub-step 6: Configure tracing and persist the Delta benchmark handoff.
 
-    Returns experiment and persisted evaluation-dataset metadata.
+    Returns trace-destination and persisted benchmark-corpus metadata.
     """
     uc_schema = f"{catalog}.{schema}"
     _set_sql_context(spark, catalog, schema)
@@ -2862,31 +2860,18 @@ def preflight_setup_experiment(
     if experiment_name is None:
         experiment_name = _resolve_experiment_path(space_id=space_id, domain=domain)
 
-    _ensure_experiment_parent_dir(w, experiment_name)
     try:
+        _ensure_experiment_parent_dir(w, experiment_name)
         mlflow.set_experiment(experiment_name)
+        mlflow.openai.autolog()
     except Exception as exc:
-        raise RuntimeError(
-            f"Cannot create MLflow experiment at {experiment_name}: {exc}"
-        ) from exc
-    exp = mlflow.get_experiment_by_name(experiment_name)
-    experiment_id = exp.experiment_id if exp else ""
-    logger.info("Experiment: %s (id=%s)", experiment_name, experiment_id)
-
-    try:
-        from genie_space_optimizer import __version__ as _pipeline_version
-    except ImportError:
-        _pipeline_version = "0.0.0"
-    try:
-        mlflow.set_experiment_tags({
-            "genie.space_id": space_id,
-            "genie.domain": domain,
-            "genie.pipeline_version": _pipeline_version,
-            "genie.catalog": catalog,
-            "genie.schema": schema,
-        })
-    except Exception:
-        logger.debug("Failed to set experiment-level tags", exc_info=True)
+        logger.warning(
+            "MLflow tracing unavailable at %s; continuing without traces: %s",
+            experiment_name,
+            exc,
+        )
+    else:
+        logger.info("MLflow trace destination: %s", experiment_name)
 
     import os as _os
     _wh_id = _os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
@@ -2900,27 +2885,31 @@ def preflight_setup_experiment(
 
     _uc_table = f"{uc_schema}.genie_benchmarks_{domain}"
     logger.info(
-        "Dropping benchmark table %s before persist to eliminate stale duplicates "
+        "Overwriting benchmark Delta handoff %s "
         "(benchmarks=%d, asset_fingerprint=%s)",
         _uc_table, len(benchmarks), _asset_fp,
     )
-    _drop_benchmark_table(spark, _uc_table)
-
-    eval_dataset_write = create_evaluation_dataset(
+    corpus_write = persist_benchmark_corpus(
         spark, benchmarks, uc_schema, domain,
         space_id=space_id, catalog=catalog, gold_schema=schema,
-        experiment_id=experiment_id,
         max_benchmark_count=max_benchmark_count,
     )
-    if not isinstance(eval_dataset_write, dict):
-        eval_dataset_write = {}
-    benchmark_count = int(eval_dataset_write.get("record_count", len(benchmarks)))
+    if not isinstance(corpus_write, dict):
+        corpus_write = {}
+    benchmark_count = int(corpus_write.get("record_count", len(benchmarks)))
+    late_duplicates = list(corpus_write.get("rejected_duplicates") or [])
+    if late_duplicates:
+        write_benchmark_mutations(
+            spark,
+            run_id,
+            duplicate_rejection_mutations(late_duplicates),
+            catalog=catalog,
+            schema=schema,
+        )
 
-    _lines = [_pf_section("PREFLIGHT — EXPERIMENT & MODEL SETUP")]
-    _lines.append(_pf_kv("Experiment", experiment_name))
-    _lines.append(_pf_kv("Experiment ID", experiment_id))
-    _lines.append(_pf_kv("Model creation", "deferred to baseline eval"))
-    _lines.append(_pf_kv("Eval dataset", f"synced ({benchmark_count} persisted valid benchmarks)"))
+    _lines = [_pf_section("PREFLIGHT — TRACE & BENCHMARK HANDOFF")]
+    _lines.append(_pf_kv("Trace destination", experiment_name))
+    _lines.append(_pf_kv("Benchmark Delta table", f"synced ({benchmark_count} persisted valid benchmarks)"))
     _lines.append(_pf_bar())
     print("\n".join(_lines))
 
@@ -2941,17 +2930,14 @@ def preflight_setup_experiment(
             "instruction_count": _instr_count,
             "benchmark_count": benchmark_count,
             "experiment_name": experiment_name,
-            "model_id": None,
         },
         catalog=catalog, schema=schema,
     )
 
     return {
-        "model_id": None,
         "experiment_name": experiment_name,
-        "experiment_id": experiment_id,
         "benchmark_count": benchmark_count,
-        "evaluation_dataset": eval_dataset_write,
+        "benchmark_corpus": corpus_write,
     }
 
 
@@ -2984,7 +2970,7 @@ def _load_or_generate_benchmarks(
          (``benchmarks.questions`` and ``config.sample_questions``).
          ``example_question_sqls`` are training examples and are excluded
          from the benchmark corpus.
-      2. Try loading previously persisted benchmarks from UC dataset.
+      2. Try loading previously persisted benchmarks from the UC Delta table.
          If enough exist AND they already include the curated ones, reuse them.
       3. Otherwise, generate synthetic benchmarks via LLM to augment the curated set.
     """
@@ -3011,7 +2997,7 @@ def _load_or_generate_benchmarks(
         f"({curated_with_sql} with SQL, {curated_question_only} question-only)"
     )
 
-    existing = load_benchmarks_from_dataset(spark, uc_schema, domain)
+    existing = load_benchmark_corpus(spark, uc_schema, domain)
     if existing and len(existing) >= MIN_VALID_BENCHMARK_COUNT:
         validation_results = validate_benchmarks(
             existing, spark, catalog=catalog, gold_schema=schema,
