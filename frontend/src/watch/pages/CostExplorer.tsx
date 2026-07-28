@@ -4,6 +4,7 @@ import { ExternalLink, RefreshCw } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Stat } from '@/watch/components/Stat'
 import { LineChart } from '@/watch/components/LineChart'
+import { CostScopeNote } from '@/watch/components/CostScopeNote'
 import * as api from '@/watch/lib/api'
 import type { CostTopSpender, HealthStatus, WorkspaceOverview } from '@/watch/types/api'
 import { formatInt, formatUsd } from '@/watch/lib/format'
@@ -88,11 +89,13 @@ export function CostExplorer({ onOpenSpace }: Props) {
         </div>
       </div>
 
+      <CostScopeNote />
+
       <div className={`grid grid-cols-2 gap-3 transition-opacity sm:grid-cols-3 lg:grid-cols-6 ${overviewLoading ? 'opacity-50' : ''}`}>
         <Stat label="Active spaces" value={overview ? formatInt(overview.active_spaces) : '—'} />
         <Stat label="Queries" value={overview ? formatInt(overview.total_queries) : '—'} />
         <Stat label="Distinct users" value={overview ? formatInt(overview.distinct_users) : '—'} />
-        <Stat label="Approx cost" value={overview ? formatUsd(overview.approx_usd) : '—'} />
+        <Stat label="Approx cost total (SQL WH)" value={overview ? formatUsd(overview.approx_usd) : '—'} />
         <Stat label="Pos. feedback" value={overview ? formatInt(overview.feedback_pos) : '—'} />
         <Stat label="Neg. feedback" value={overview ? formatInt(overview.feedback_neg) : '—'} />
       </div>
@@ -123,7 +126,7 @@ export function CostExplorer({ onOpenSpace }: Props) {
                 Queries
               </Th>
               <Th onClick={() => toggleSort('approx_usd')} active={sortKey === 'approx_usd'} dir={sortDir} align="right">
-                Approx USD
+                Approx cost (SQL WH)
               </Th>
               <th className="px-4 py-2 w-8" />
             </tr>

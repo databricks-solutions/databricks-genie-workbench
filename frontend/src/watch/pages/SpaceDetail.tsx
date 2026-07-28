@@ -16,6 +16,7 @@ import { genieSpaceUrl } from '@/watch/lib/genie'
 import { Stat } from '@/watch/components/Stat'
 import { SimpleBars } from '@/watch/components/SimpleBars'
 import { LoadingCard } from '@/watch/components/LoadingCard'
+import { CostScopeNote } from '@/watch/components/CostScopeNote'
 
 interface Props {
   spaceId: string
@@ -242,6 +243,8 @@ function CostTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: number 
 
   return (
     <div className="space-y-4">
+      <CostScopeNote />
+
       <Card className="border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-400">
         <AlertCircle className="mr-1 inline" size={14} />
         Cost is approximate. Databricks bills warehouses, not queries — we apportion warehouse-day cost
@@ -250,12 +253,12 @@ function CostTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: number 
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Stat label="Queries (30d)" value={formatInt(data.total_query_count)} />
-        <Stat label="Approx cost (30d)" value={formatUsd(data.total_approx_usd)} />
+        <Stat label="Approx cost total (SQL WH, 30d)" value={formatUsd(data.total_approx_usd)} />
         <Stat label="DBUs (30d)" value={data.total_approx_dbus != null ? data.total_approx_dbus.toFixed(2) : '—'} />
       </div>
 
       <Card className="p-4">
-        <h3 className="mb-2 text-sm font-medium uppercase text-muted">Daily approx cost (USD)</h3>
+        <h3 className="mb-2 text-sm font-medium uppercase text-muted">Daily approx cost (SQL WH)</h3>
         <SimpleBars
           data={data.time_series.map(p => ({ x: formatDay(p.day), y: p.approx_usd || 0 }))}
           formatY={(v: number) => formatUsd(v)}
@@ -269,7 +272,7 @@ function CostTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: number 
             <tr>
               <th className="py-1">Warehouse</th>
               <th>Queries</th>
-              <th>Approx USD</th>
+              <th>Approx cost (SQL WH)</th>
             </tr>
           </thead>
           <tbody>
@@ -309,7 +312,7 @@ function CostTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: number 
                 <th>User</th>
                 <th>Queries</th>
                 <th>Last query</th>
-                <th className="text-right">Approx USD</th>
+                <th className="text-right">Approx cost (SQL WH)</th>
               </tr>
             </thead>
             <tbody>
