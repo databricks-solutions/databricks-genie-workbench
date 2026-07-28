@@ -94,7 +94,7 @@ export function SpacesList({ onOpenSpace }: Props) {
   function exportCsv() {
     if (!data) return
     const header = [
-      'space_id', 'title', 'owner_email', 'queries_7d', 'cost_7d_usd',
+      'space_id', 'title', 'owner_email', 'queries_7d', 'cost_sql_wh_7d_usd',
       'feedback_pos_7d', 'feedback_neg_7d', 'last_query_at',
     ]
     const rows = filtered.map(s => [
@@ -180,7 +180,7 @@ export function SpacesList({ onOpenSpace }: Props) {
               <Th onClick={() => toggleSort('title')} active={sortKey === 'title'} dir={sortDir}>Space</Th>
               <Th>Owner</Th>
               <Th onClick={() => toggleSort('queries_7d')} active={sortKey === 'queries_7d'} dir={sortDir} align="right">Queries ({days}d)</Th>
-              <Th onClick={() => toggleSort('cost_7d_usd')} active={sortKey === 'cost_7d_usd'} dir={sortDir} align="right">Cost ({days}d)</Th>
+              <Th onClick={() => toggleSort('cost_7d_usd')} active={sortKey === 'cost_7d_usd'} dir={sortDir} align="right">Cost (SQL WH, {days}d)</Th>
               <Th onClick={() => toggleSort('feedback')} active={sortKey === 'feedback'} dir={sortDir} align="right">Feedback ({days}d)</Th>
               <Th onClick={() => toggleSort('last_query_at')} active={sortKey === 'last_query_at'} dir={sortDir}>Last query</Th>
               <th className="w-8" />

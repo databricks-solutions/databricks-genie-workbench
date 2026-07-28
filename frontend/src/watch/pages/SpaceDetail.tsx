@@ -252,9 +252,9 @@ function CostTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: number 
       </Card>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <Stat label="Queries (30d)" value={formatInt(data.total_query_count)} />
-        <Stat label="Approx cost total (SQL WH, 30d)" value={formatUsd(data.total_approx_usd)} />
-        <Stat label="DBUs (30d)" value={data.total_approx_dbus != null ? data.total_approx_dbus.toFixed(2) : '—'} />
+        <Stat label={`Queries (${data.days}d)`} value={formatInt(data.total_query_count)} />
+        <Stat label={`Approx cost total (SQL WH, ${data.days}d)`} value={formatUsd(data.total_approx_usd)} />
+        <Stat label={`DBUs (${data.days}d)`} value={data.total_approx_dbus != null ? data.total_approx_dbus.toFixed(2) : '—'} />
       </div>
 
       <Card className="p-4">
