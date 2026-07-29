@@ -171,6 +171,44 @@ def _parsed_space(config: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(config)
 
 
+def _read_observed_config_after_evaluation(
+    w: Any,
+    space_id: str,
+    *,
+    run_id: str,
+    iteration: int,
+) -> dict[str, Any] | None:
+    """Read Genie's settled serialized_space after native evaluation.
+
+    Genie normalizes some valid PATCH payloads asynchronously. An immediate
+    GET can therefore echo the submitted representation even though a later
+    GET returns canonicalized SQL literals and instruction fragments. Native
+    evaluation provides a natural settling window; capture only after it
+    completes, immediately before the iteration row is persisted.
+
+    Failure remains non-fatal. A NULL observation makes version matching
+    inconclusive instead of creating a false external-drift warning.
+    """
+    try:
+        observed = _parsed_space(fetch_space_config(w, space_id))
+        if observed:
+            logger.info(
+                "Captured settled Genie config for run %s iteration %d",
+                run_id,
+                iteration,
+            )
+            return observed
+    except Exception:
+        logger.warning(
+            "Could not capture settled Genie config for run %s iteration %d; "
+            "version history will be incomplete",
+            run_id,
+            iteration,
+            exc_info=True,
+        )
+    return None
+
+
 def _stable_config_id(config: dict[str, Any]) -> str:
     try:
         payload = json.dumps(config, sort_keys=True, default=str)
@@ -2190,25 +2228,21 @@ def run_unified_optimization_loop(
         )
         current_config = attach_top_level_description(_parsed_space(raw_config), raw_config)
 
-    # Baseline identity must come from an authoritative GET too: the quality
-    # enrichment step can PATCH the space before iteration 0. Do not substitute
-    # the local working copy when this read fails; NULL observed history is the
-    # signal that downstream drift detection must fail open.
-    observed_baseline_config: dict[str, Any] | None = None
-    try:
-        observed_baseline_config = _parsed_space(fetch_space_config(w, space_id))
-    except Exception:
-        logger.warning(
-            "Could not read back baseline Genie config for run %s; version history will be incomplete",
-            run_id,
-            exc_info=True,
-        )
     benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
 
     baseline_eval = _native_eval(
         w,
         space_id=space_id,
         benchmarks=benchmarks,
+        iteration=0,
+    )
+    # Quality enrichment can PATCH immediately before iteration 0. Capture
+    # after native evaluation so Genie's asynchronous normalization has time
+    # to settle; an immediate GET can still return the submitted form.
+    observed_baseline_config = _read_observed_config_after_evaluation(
+        w,
+        space_id,
+        run_id=run_id,
         iteration=0,
     )
     best_accuracy = _metric(baseline_eval.get("overall_accuracy"))
@@ -2559,7 +2593,21 @@ def run_unified_optimization_loop(
         submitted_candidate_config = copy.deepcopy(
             apply_log.get("post_snapshot") or current_config
         )
-        observed_candidate_config = apply_log.get("observed_post_snapshot")
+        candidate_eval = _native_eval(
+            w,
+            space_id=space_id,
+            benchmarks=benchmarks,
+            iteration=iteration,
+        )
+        # Do not trust an immediate post-PATCH GET: Genie may still be serving
+        # the submitted representation. The native evaluation is read-only and
+        # provides a settling window before this authoritative capture.
+        observed_candidate_config = _read_observed_config_after_evaluation(
+            w,
+            space_id,
+            run_id=run_id,
+            iteration=iteration,
+        )
         candidate_config = copy.deepcopy(
             observed_candidate_config or submitted_candidate_config
         )
@@ -2577,12 +2625,6 @@ def run_unified_optimization_loop(
                 candidate_config[runtime_key] = copy.deepcopy(
                     current_config[runtime_key]
                 )
-        candidate_eval = _native_eval(
-            w,
-            space_id=space_id,
-            benchmarks=benchmarks,
-            iteration=iteration,
-        )
         candidate_accuracy = _metric(candidate_eval.get("overall_accuracy"))
 
         write_iteration(
