@@ -4,7 +4,8 @@ Reverts the **live Genie Agent** to a chosen configuration captured during a
 past optimization run:
 
 * ``target="champion"`` — the run's champion iteration config
-  (``genie_opt_iterations.config_json`` where ``is_champion = true``). This is
+  (authoritative ``observed_config_json`` with legacy ``config_json`` fallback,
+  where ``is_champion = true``). This is
   the winning optimized config (or the baseline when the baseline was the
   champion — though in that case the caller usually offers the baseline
   button only).
@@ -125,7 +126,7 @@ def revert_optimization(
         target_description = _load_champion_description(
             sp_ws, config.warehouse_id, config.catalog, config.schema_name, run_id,
         )
-        source = "champion iteration (genie_opt_iterations.config_json)"
+        source = "champion iteration (genie_opt_iterations observed/config JSON)"
         missing_hint = (
             "This run's champion configuration is not available "
             "(the iteration config was not captured). "
@@ -530,8 +531,10 @@ def _load_champion_config(
 ) -> dict | None:
     """Load the champion iteration's full effective config from Delta.
 
-    Selects ``config_json`` from the winning ``genie_opt_iterations`` row
-    stamped ``is_champion = true`` (rolled-back rows defensively excluded).
+    Selects the authoritative ``observed_config_json`` from the winning
+    ``genie_opt_iterations`` row stamped ``is_champion = true`` (rolled-back
+    rows defensively excluded), falling back to submitted ``config_json`` for
+    legacy rows.
     Historical recovery can stamp multiple iteration-0 rows, so ties are
     resolved by accuracy and timestamp. Returns the parsed config dict, or
     ``None`` when:
@@ -548,7 +551,7 @@ def _load_champion_config(
     safe_run = run_id.replace("'", "''")
     table = f"{catalog}.{schema_name}.genie_opt_iterations"
     sql = (
-        f"SELECT config_json FROM {table} "
+        f"SELECT observed_config_json, config_json FROM {table} "
         f"WHERE run_id = '{safe_run}' "
         f"AND is_champion = true "
         f"AND (rolled_back IS NULL OR rolled_back = false) "
@@ -563,21 +566,33 @@ def _load_champion_config(
         df = sql_warehouse_query(ws, warehouse_id, sql)
     except Exception as exc:
         if _looks_like_legacy_schema_error(exc):
-            logger.info(
-                "gso.revert.no_champion_col genie_opt_iterations is missing the "
-                "Phase-4 config_json/is_champion columns for run %s. err=%s",
-                run_id, str(exc)[:160],
+            # observed_config_json is additive. Retry the legacy projection so
+            # historical champions remain revertible; a table that also lacks
+            # config_json/is_champion will fail this query and return None.
+            try:
+                df = sql_warehouse_query(
+                    ws, warehouse_id, sql.replace(
+                        "observed_config_json, config_json", "config_json",
+                    ),
+                )
+            except Exception as legacy_exc:
+                logger.info(
+                    "gso.revert.no_champion_col genie_opt_iterations is missing "
+                    "champion config columns for run %s. err=%s",
+                    run_id, str(legacy_exc)[:160],
+                )
+                return None
+        else:
+            logger.warning(
+                "gso.revert.champion_query_failed run=%s err=%s",
+                run_id, str(exc)[:200], exc_info=True,
             )
             return None
-        logger.warning(
-            "gso.revert.champion_query_failed run=%s err=%s",
-            run_id, str(exc)[:200], exc_info=True,
-        )
-        return None
 
     if df is None or df.empty:
         return None
-    raw = df.iloc[0].to_dict().get("config_json")
+    row = df.iloc[0].to_dict()
+    raw = row.get("observed_config_json") or row.get("config_json")
     if raw is None:
         return None
     # sql_warehouse_query may hand back a Databricks SDK ScalarDbValue / similar
@@ -597,6 +612,7 @@ def _load_champion_config(
 _LEGACY_COL_ERROR_MARKERS = (
     "UNRESOLVED_COLUMN",
     "cannot resolve",
+    "observed_config_json",
     "config_json",
     "is_champion",
 )

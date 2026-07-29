@@ -42,6 +42,7 @@ def _run_row(
     *,
     started_at: str,
     status: str = "CONVERGED",
+    best_iteration: int | None = 0,
     best_accuracy: str | None = "80.0",
     config_snapshot: str | None = None,
 ) -> dict:
@@ -49,6 +50,7 @@ def _run_row(
         "run_id": run_id,
         "started_at": started_at,
         "status": status,
+        "best_iteration": best_iteration,
         "best_accuracy": best_accuracy,
         "config_snapshot": config_snapshot,
     }
@@ -189,13 +191,13 @@ def test_zombie_run_reconciled_then_matching_proceeds(client, monkeypatch) -> No
     assert data["current"]["target"] == "baseline"
 
 
-def test_runs_without_matchable_configs_returns_no_known_versions(client, monkeypatch) -> None:
+def test_runs_without_matchable_configs_returns_history_incomplete(client, monkeypatch) -> None:
     _stub_delta(
         monkeypatch,
         runs=[_run_row("r1", started_at="2026-07-01 10:00:00", config_snapshot=None)],
     )
     resp = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version")
-    assert resp.json()["status"] == "no_known_versions"
+    assert resp.json()["status"] == "history_incomplete"
 
 
 def test_matched_baseline(client, monkeypatch) -> None:
@@ -222,7 +224,11 @@ def test_matched_champion(client, monkeypatch) -> None:
         monkeypatch,
         runs=[_run_row("r1", started_at="2026-07-01 10:00:00",
                        config_snapshot=_snapshot_wrapper(_space()))],
-        champions=[{"run_id": "r1", "config_json": json.dumps(live)}],
+        champions=[{
+            "run_id": "r1",
+            "config_json": json.dumps(_space(instruction="Submitted representation")),
+            "observed_config_json": json.dumps(live),
+        }],
     )
     _stub_live(monkeypatch, live)
     resp = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version")
@@ -233,10 +239,16 @@ def test_matched_champion(client, monkeypatch) -> None:
 
 
 def test_drifted_when_live_matches_nothing(client, monkeypatch) -> None:
+    known = _space()
     _stub_delta(
         monkeypatch,
         runs=[_run_row("r1", started_at="2026-07-01 10:00:00",
-                       config_snapshot=_snapshot_wrapper(_space()))],
+                       config_snapshot=_snapshot_wrapper(known))],
+        champions=[{
+            "run_id": "r1",
+            "config_json": json.dumps(known),
+            "observed_config_json": json.dumps(known),
+        }],
     )
     _stub_live(monkeypatch, _space(instruction="Edited in the Genie UI"),
                update_time="2026-07-28T16:00:00Z")
@@ -245,6 +257,82 @@ def test_drifted_when_live_matches_nothing(client, monkeypatch) -> None:
     assert data["status"] == "drifted"
     assert data["current"] is None
     assert data["live_update_time"] == "2026-07-28T16:00:00Z"
+
+
+def test_missing_observed_champion_makes_non_match_inconclusive(client, monkeypatch) -> None:
+    """Regression: a submitted champion can differ from Genie's GET
+    representation even when no user edited the space."""
+    submitted = _space(instruction="PURPOSE:\n- Answer banking questions")
+    live = _space()
+    live["instructions"]["text_instructions"][0]["content"] = [
+        "PURPOSE:\n",
+        "- Answer banking questions",
+    ]
+    _stub_delta(
+        monkeypatch,
+        runs=[_run_row(
+            "r1",
+            started_at="2026-07-01 10:00:00",
+            config_snapshot=_snapshot_wrapper(_space(instruction="Baseline")),
+        )],
+        champions=[{
+            "run_id": "r1",
+            "config_json": json.dumps(submitted),
+            "observed_config_json": None,
+        }],
+    )
+    _stub_live(monkeypatch, live)
+
+    data = client.get(
+        f"/api/auto-optimize/spaces/{SPACE_ID}/current-version"
+    ).json()
+    assert data["status"] == "history_incomplete"
+    assert data["current"] is None
+
+
+def test_legacy_schema_can_still_produce_positive_champion_match(client, monkeypatch) -> None:
+    champion = _space(instruction="Legacy champion")
+    runs = [_run_row(
+        "r1",
+        started_at="2026-07-01 10:00:00",
+        config_snapshot=_snapshot_wrapper(_space()),
+    )]
+
+    def fake(sql: str, *, strict: bool = False) -> list[dict]:
+        if "genie_opt_iterations" in sql and "observed_config_json" in sql:
+            raise RuntimeError("UNRESOLVED_COLUMN: observed_config_json")
+        if "genie_opt_iterations" in sql:
+            return [{"run_id": "r1", "config_json": json.dumps(champion)}]
+        if "genie_opt_runs" in sql:
+            return runs
+        return []
+
+    monkeypatch.setattr(auto_optimize, "_delta_query", fake)
+    _stub_live(monkeypatch, champion)
+    data = client.get(
+        f"/api/auto-optimize/spaces/{SPACE_ID}/current-version"
+    ).json()
+    assert data["status"] == "matched"
+    assert data["current"]["target"] == "champion"
+
+
+def test_champion_query_failure_is_unavailable_not_drifted(client, monkeypatch) -> None:
+    runs = [_run_row(
+        "r1",
+        started_at="2026-07-01 10:00:00",
+        config_snapshot=_snapshot_wrapper(_space()),
+    )]
+
+    def fake(sql: str, *, strict: bool = False) -> list[dict]:
+        if "genie_opt_iterations" in sql:
+            raise RuntimeError("warehouse unavailable")
+        if "genie_opt_runs" in sql:
+            return runs
+        return []
+
+    monkeypatch.setattr(auto_optimize, "_delta_query", fake)
+    resp = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version")
+    assert resp.json()["status"] == "unavailable"
 
 
 def test_unavailable_when_live_fetch_fails(client, monkeypatch) -> None:
@@ -270,7 +358,11 @@ def test_multi_match_picks_most_recent_and_lists_equivalents(client, monkeypatch
             _run_row("r1", started_at="2026-07-01 10:00:00",
                      config_snapshot=_snapshot_wrapper(_space())),
         ],
-        champions=[{"run_id": "r1", "config_json": json.dumps(space)}],
+        champions=[{
+            "run_id": "r1",
+            "config_json": json.dumps(space),
+            "observed_config_json": json.dumps(space),
+        }],
     )
     _stub_live(monkeypatch, space)
     resp = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version")

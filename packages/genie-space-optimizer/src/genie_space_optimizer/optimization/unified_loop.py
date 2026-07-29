@@ -2189,6 +2189,20 @@ def run_unified_optimization_loop(
             exc_info=True,
         )
         current_config = attach_top_level_description(_parsed_space(raw_config), raw_config)
+
+    # Baseline identity must come from an authoritative GET too: the quality
+    # enrichment step can PATCH the space before iteration 0. Do not substitute
+    # the local working copy when this read fails; NULL observed history is the
+    # signal that downstream drift detection must fail open.
+    observed_baseline_config: dict[str, Any] | None = None
+    try:
+        observed_baseline_config = _parsed_space(fetch_space_config(w, space_id))
+    except Exception:
+        logger.warning(
+            "Could not read back baseline Genie config for run %s; version history will be incomplete",
+            run_id,
+            exc_info=True,
+        )
     benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
 
     baseline_eval = _native_eval(
@@ -2225,6 +2239,7 @@ def run_unified_optimization_loop(
         eval_scope=FULL,
         reflection_json={"phase": "baseline"},
         config_snapshot=current_config,
+        observed_config_snapshot=observed_baseline_config,
         loop_state=_loop_state(
             attempt_no=0,
             attempt_mode="baseline",
@@ -2541,12 +2556,19 @@ def run_unified_optimization_loop(
                 schema,
             )
 
-        candidate_config = copy.deepcopy(apply_log.get("post_snapshot") or current_config)
+        submitted_candidate_config = copy.deepcopy(
+            apply_log.get("post_snapshot") or current_config
+        )
+        observed_candidate_config = apply_log.get("observed_post_snapshot")
+        candidate_config = copy.deepcopy(
+            observed_candidate_config or submitted_candidate_config
+        )
         for runtime_key in (
             "_uc_columns",
             "_data_profile",
             "_rls_audit",
             "_asset_semantics",
+            "_gso_top_level_description",
             "_wide_schema_inventory_hash",
             "_wide_schema_plan_hash",
             "_wide_schema_inventory_column_count",
@@ -2578,7 +2600,8 @@ def run_unified_optimization_loop(
                 "applied_count": len(applied_entries),
                 "dropped_patches": apply_log.get("dropped_patches") or [],
             },
-            config_snapshot=candidate_config,
+            config_snapshot=submitted_candidate_config,
+            observed_config_snapshot=observed_candidate_config,
             loop_state=_loop_state(
                 attempt_no=iteration,
                 attempt_mode="llm_patch",

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { RotateCcw, Loader2, AlertCircle, AlertTriangle, CheckCircle2, Trophy, History } from "lucide-react"
+import { RotateCcw, Loader2, AlertCircle, AlertTriangle, CheckCircle2, Trophy, History, Info } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -100,6 +100,9 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
           <>
           {currentVersion?.status === "drifted" && (
             <DriftBanner liveUpdateTime={currentVersion.live_update_time} />
+          )}
+          {currentVersion?.status === "history_incomplete" && (
+            <HistoryIncompleteBanner />
           )}
           <Table>
             <TableHeader>
@@ -403,6 +406,19 @@ export function DriftBanner({ liveUpdateTime }: { liveUpdateTime?: string | null
       <p>
         The live agent configuration doesn&rsquo;t match any known optimization version
         &mdash; it was changed outside Auto-Optimize{when ? ` (last modified ${when})` : ""}.
+      </p>
+    </div>
+  )
+}
+
+/** Neutral notice for legacy/partial history where external drift is unknown. */
+export function HistoryIncompleteBanner() {
+  return (
+    <div className="mb-3 flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+      <Info className="mt-0.5 h-4 w-4 shrink-0" />
+      <p>
+        Some optimization versions predate authoritative configuration capture,
+        so the current live version can&rsquo;t be determined reliably.
       </p>
     </div>
   )

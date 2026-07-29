@@ -9,7 +9,7 @@ vi.mock("@/lib/api", () => ({
   ApiError: class ApiError extends Error {},
 }))
 
-import { DriftBanner, LiveVersionBadge, RevertButton } from "./RunHistoryTable"
+import { DriftBanner, HistoryIncompleteBanner, LiveVersionBadge, RevertButton } from "./RunHistoryTable"
 import { hasActiveOptimizationRun, hasRevertibleChampion } from "./runHistory"
 
 function run(overrides: Partial<GSORunSummary>): GSORunSummary {
@@ -141,5 +141,13 @@ describe("DriftBanner", () => {
     })
     expect(markup).toContain("last modified")
     expect(markup).toContain(expectedDate)
+  })
+})
+
+describe("HistoryIncompleteBanner", () => {
+  it("does not claim the config changed outside Auto-Optimize", () => {
+    const markup = renderToStaticMarkup(<HistoryIncompleteBanner />)
+    expect(markup).toContain("determined reliably")
+    expect(markup).not.toContain("changed outside Auto-Optimize")
   })
 })

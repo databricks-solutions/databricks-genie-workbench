@@ -4023,6 +4023,40 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
+def _read_back_serialized_space(
+    w: WorkspaceClient,
+    space_id: str,
+) -> dict[str, Any] | None:
+    """Return the authoritative post-PATCH serialized_space.
+
+    Genie can normalize a valid PATCH payload before persisting it (for
+    example, splitting instruction content into string fragments or
+    canonicalizing SQL literals). A successful PATCH therefore proves the
+    mutation landed, but the submitted dict is not necessarily the exact
+    representation a later GET returns. Read it back once after the final
+    PATCH so version history records observed state. Failure is deliberately
+    non-fatal: optimization can continue, while the missing observation keeps
+    drift detection fail-open.
+    """
+    try:
+        fetched = fetch_space_config(w, space_id)
+        parsed = fetched.get("_parsed_space")
+        if isinstance(parsed, dict) and parsed:
+            logger.info("Read back persisted Genie config for space %s", space_id)
+            return copy.deepcopy(parsed)
+        logger.warning(
+            "Post-PATCH read-back for space %s had no parsed serialized_space",
+            space_id,
+        )
+    except Exception:
+        logger.warning(
+            "Post-PATCH read-back failed for space %s; version history will be incomplete",
+            space_id,
+            exc_info=True,
+        )
+    return None
+
+
 def apply_patch_set(
     w: WorkspaceClient | None,
     space_id: str,
@@ -4522,10 +4556,15 @@ def apply_patch_set(
                 exc_info=True,
             )
 
+    observed_post_snapshot = None
+    if w is not None and patch_deployed and config_applied:
+        observed_post_snapshot = _read_back_serialized_space(w, space_id)
+
     return {
         "space_id": space_id,
         "pre_snapshot": pre_snapshot,
         "post_snapshot": copy.deepcopy(config),
+        "observed_post_snapshot": observed_post_snapshot,
         "applied": applied,
         "queued_high": queued_high,
         "rollback_commands": rollback_commands,

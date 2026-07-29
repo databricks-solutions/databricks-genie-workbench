@@ -359,6 +359,7 @@ export interface GSORunSummary {
 export type CurrentVersionStatus =
   | "matched"
   | "drifted"
+  | "history_incomplete"
   | "no_known_versions"
   | "unavailable"
   | "optimization_in_progress"

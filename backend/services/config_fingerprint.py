@@ -2,10 +2,11 @@
 
 Powers the Auto-Optimize "current version" check: given the live space config
 and every config captured by past optimization runs (run baselines in
-``genie_opt_runs.config_snapshot``, champion iteration configs in
-``genie_opt_iterations.config_json``), a fingerprint match answers *"which
-known optimization version is the live agent on right now?"* — and a non-match
-means the config was changed outside Auto-Optimize.
+``genie_opt_runs.config_snapshot``, champion API observations in
+``genie_opt_iterations.observed_config_json``), a fingerprint match answers
+*"which known optimization version is the live agent on right now?"*. A
+non-match proves external drift only when all expected versions have an
+authoritative observation; submitted-only legacy history is inconclusive.
 
 Fingerprint contract (all three steps matter equally):
 
@@ -46,8 +47,8 @@ def unwrap_serialized_space(config: Any) -> dict | None:
     * full Genie GET response — ``{"serialized_space": "<json string>" | {...}}``;
     * ``{"_parsed_space": {...}}`` — GSO's fetch stashes a parsed copy under
       this key (``common/genie_client.py``);
-    * bare serialized_space dict — champion ``config_json`` rows and already-
-      parsed live configs.
+    * bare serialized_space dict — champion submitted/observed JSON rows and
+      already-parsed live configs.
 
     The pristine ``serialized_space`` payload is preferred over
     ``_parsed_space`` when both exist: preflight mutates the parsed copy in
@@ -140,8 +141,7 @@ def config_fingerprint(config: Any) -> str | None:
     """SHA-256 fingerprint of a stored/live Genie Agent config.
 
     Accepts any of the shapes handled by :func:`unwrap_serialized_space`
-    (including the raw JSON string form of ``config_snapshot`` / ``config_json``
-    as returned by Delta reads). Returns ``None`` when the value cannot be
+    (including raw JSON strings returned by Delta reads). Returns ``None`` when the value cannot be
     reduced to a serialized_space object.
     """
     if isinstance(config, str):

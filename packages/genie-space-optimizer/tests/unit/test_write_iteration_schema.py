@@ -96,6 +96,38 @@ def test_write_iteration_persists_native_eval_metadata(mock_spark_iter) -> None:
     assert "false, 2, 'er-12345', 'DONE'," in sql
 
 
+def test_write_iteration_persists_submitted_and_observed_configs(mock_spark_iter) -> None:
+    submitted = {
+        "version": 2,
+        "instructions": {"text_instructions": [{"id": "a", "content": ["one block"]}]},
+    }
+    observed = {
+        "version": 2,
+        "instructions": {"text_instructions": [{"id": "a", "content": ["one ", "block"]}]},
+    }
+    write_iteration(
+        mock_spark_iter,
+        run_id="run-observed",
+        iteration=1,
+        eval_result={
+            "overall_accuracy": 90.0,
+            "total_questions": 10,
+            "correct_count": 9,
+            "scores": {},
+            "thresholds_met": True,
+        },
+        config_snapshot=submitted,
+        observed_config_snapshot=observed,
+        catalog="cat",
+        schema="sch",
+    )
+
+    sql = _insert_sql(mock_spark_iter)
+    assert "config_json, observed_config_json, is_champion" in sql
+    assert "one block" in sql
+    assert '"content": ["one ", "block"]' in sql
+
+
 def test_write_iteration_accepts_enrichment_scope(mock_spark_iter) -> None:
     write_iteration(
         mock_spark_iter,

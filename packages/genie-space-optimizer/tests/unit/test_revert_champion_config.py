@@ -161,6 +161,30 @@ def test_champion_lookup_disambiguates_duplicate_iteration_zero_rows(monkeypatch
     assert "timestamp DESC NULLS LAST" in captured_sql[0]
 
 
+def test_champion_lookup_prefers_api_observed_config(monkeypatch) -> None:
+    submitted = _champion_config()
+    submitted["serialized_space"]["instructions"]["text_instructions"][0]["content"] = "submitted"
+    observed = _champion_config()
+    observed["serialized_space"]["instructions"]["text_instructions"][0]["content"] = [
+        "observed ",
+        "by API",
+    ]
+    monkeypatch.setattr(
+        revert,
+        "sql_warehouse_query",
+        lambda *_a, **_k: pd.DataFrame([{
+            "config_json": json.dumps(submitted),
+            "observed_config_json": json.dumps(observed),
+        }]),
+    )
+
+    result = revert._load_champion_config(
+        _ws(), "warehouse-1", "catalog", "schema", "run-observed",
+    )
+
+    assert result == observed
+
+
 def test_revert_champion_backfills_version_for_legacy_projected_config(monkeypatch) -> None:
     """Legacy config_json rows projected a parsed serialized_space but dropped
     the required top-level version. Revert repairs that shape before PATCH."""

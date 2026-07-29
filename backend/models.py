@@ -189,6 +189,8 @@ class CurrentVersionResponse(BaseModel):
       most recent; ``also_matches`` lists byte-identical equivalents);
     * ``drifted`` — known versions exist but none match → the config was
       changed outside Auto-Optimize;
+    * ``history_incomplete`` — at least one expected baseline/champion lacks
+      an authoritative API-observed capture, so a non-match is inconclusive;
     * ``no_known_versions`` — no runs with captured configs (nothing to
       compare); ``unavailable`` — the check itself failed (fail-open, the UI
       renders nothing); ``optimization_in_progress`` — an active run is
@@ -198,6 +200,7 @@ class CurrentVersionResponse(BaseModel):
     status: Literal[
         "matched",
         "drifted",
+        "history_incomplete",
         "no_known_versions",
         "unavailable",
         "optimization_in_progress",

@@ -311,6 +311,7 @@ _LEGACY_COL_ERROR_MARKERS = (
     "evaluated_count",
     "excluded_count",
     "rolled_back",
+    "observed_config_json",
 )
 
 
@@ -2062,8 +2063,9 @@ async def revert_run(
     """Revert the live Genie Agent to a past run's captured configuration.
 
     Re-PATCHes the live space with the run's captured config. ``target=champion``
-    uses the champion iteration's ``config_json`` (the winning optimized
-    config); ``target=baseline`` uses the run's ``config_snapshot`` (the
+    uses the champion iteration's authoritative observed config (with legacy
+    ``config_json`` fallback); ``target=baseline`` uses the run's
+    ``config_snapshot`` (the
     pre-run serialized space, i.e. what the space looked like before this
     optimization ran). Unlike ``/discard``, this is a pure config rollback —
     the run's own status is left untouched, so any past history entry can be
@@ -2100,17 +2102,16 @@ async def revert_run(
 #
 # Answers the History tab's "which version is the agent on right now?" question:
 # the live serialized_space is fingerprinted and compared against every config
-# captured by past runs (baselines + champions). A match badges that run; no
-# match means the config was changed outside Auto-Optimize. Fail-open
-# throughout: any error yields ``unavailable``/``no_known_versions`` so the UI
-# never shows a false drift warning.
+# captured by past runs (baselines + champions). A match badges that run; a
+# non-match becomes ``drifted`` only when all expected captures are
+# authoritative. Partial/legacy history returns ``history_incomplete``.
 
 # Statuses in which the optimize loop may be mutating the live space — matching
 # during one of these would be noise (mirrors revert's guard set).
 _ACTIVE_RUN_STATUSES = {"QUEUED", "IN_PROGRESS", "RUNNING"}
 
 _RUNS_SELECT_COLS = (
-    "run_id, started_at, status, best_accuracy, config_snapshot, job_run_id"
+    "run_id, started_at, status, best_iteration, best_accuracy, config_snapshot, job_run_id"
 )
 
 # Short-TTL cache for the live-space fingerprint (a Genie API call), keyed by
@@ -2254,13 +2255,12 @@ def _reconcile_zombie_runs(space_id: str, runs_rows: list[dict]) -> list[dict]:
 async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
     """Report which known optimization version the live Genie Agent matches.
 
-    Fingerprints the live ``serialized_space`` and every captured run config
-    (``genie_opt_runs.config_snapshot`` baselines + champion
-    ``genie_opt_iterations.config_json``) and compares. ``matched`` badges the
-    most recent matching version (byte-identical equivalents in
-    ``also_matches``); ``drifted`` means the config was changed outside
-    Auto-Optimize. Read-only; Delta reads use the app SP (internal optimizer
-    state), the live fetch is OBO with SP fallback.
+    Fingerprints the live ``serialized_space`` and every captured run config.
+    Champion identity prefers the authoritative post-PATCH
+    ``observed_config_json``; submitted ``config_json`` remains usable for a
+    safe positive legacy match, but its absence/mismatch can never prove
+    external drift. ``drifted`` is returned only when every expected baseline
+    and champion has an authoritative, fingerprintable capture.
     """
     if not _is_configured():
         return CurrentVersionResponse(status="no_known_versions")
@@ -2268,15 +2268,11 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
     if not config.warehouse_id:
         return CurrentVersionResponse(status="no_known_versions")
 
-    # The champions query joins runs on space_id, making it independent of the
-    # runs query — run both concurrently. Each warehouse statement can block up
-    # to its 50s wait_timeout, so serializing them would push worst-case
-    # latency past the frontend's fetch timeout. Legacy tables missing the
-    # Phase-4 config_json / is_champion / rolled_back columns fail the
-    # champions query (fail-open in _delta_query), leaving baselines still
-    # matchable.
+    # Run both warehouse reads concurrently. Strict mode is important here:
+    # swallowing a champion query failure as [] would make a partial history
+    # look complete and recreate the false-drift bug this endpoint guards.
     champions_sql = (
-        f"SELECT i.run_id, i.config_json "
+        f"SELECT i.run_id, i.config_json, i.observed_config_json "
         f"FROM {_delta_table('genie_opt_iterations')} i "
         f"INNER JOIN {_delta_table('genie_opt_runs')} r "
         f"ON i.run_id = r.run_id "
@@ -2289,10 +2285,47 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
         f"ORDER BY i.overall_accuracy DESC NULLS LAST, "
         f"i.timestamp DESC NULLS LAST, i.iteration DESC) = 1"
     )
-    runs_rows, champion_rows = await asyncio.gather(
-        _delta_query_async(_runs_select_sql(space_id)),
-        _delta_query_async(champions_sql),
+    runs_result, champions_result = await asyncio.gather(
+        _delta_query_async(_runs_select_sql(space_id), strict=True),
+        _delta_query_async(champions_sql, strict=True),
+        return_exceptions=True,
     )
+
+    if isinstance(runs_result, BaseException):
+        logger.warning(
+            "current-version runs query failed for %s: %s",
+            space_id, runs_result,
+        )
+        return CurrentVersionResponse(status="unavailable")
+    runs_rows = runs_result
+
+    history_complete = True
+    if isinstance(champions_result, BaseException):
+        if not _looks_like_legacy_schema_error(champions_result):
+            logger.warning(
+                "current-version champion query failed for %s: %s",
+                space_id, champions_result,
+            )
+            return CurrentVersionResponse(status="unavailable")
+        # Pre-migration tables have no observed_config_json. Keep exact legacy
+        # matches working, but remember that a non-match is inconclusive.
+        history_complete = False
+        legacy_champions_sql = champions_sql.replace(
+            "i.config_json, i.observed_config_json",
+            "i.config_json",
+        )
+        try:
+            champion_rows = await _delta_query_async(
+                legacy_champions_sql, strict=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "current-version legacy champion query failed for %s: %s",
+                space_id, exc, exc_info=True,
+            )
+            return CurrentVersionResponse(status="unavailable")
+    else:
+        champion_rows = champions_result
 
     if _has_active_run(runs_rows):
         runs_rows = await _offload(_reconcile_zombie_runs, space_id, runs_rows)
@@ -2318,16 +2351,40 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
             )
         )
 
+    champion_by_run = {
+        str(row.get("run_id")): row
+        for row in champion_rows
+        if row.get("run_id")
+    }
+
     for run_id, row in run_by_id.items():
-        _record(config_fingerprint(row.get("config_snapshot")), run_id, "baseline")
+        baseline_fp = config_fingerprint(row.get("config_snapshot"))
+        _record(baseline_fp, run_id, "baseline")
+        if baseline_fp is None:
+            history_complete = False
+
+        # A completed iteration selection must have one champion capture. Runs
+        # that failed before selecting any iteration legitimately have only a
+        # baseline version.
+        if _safe_int(row.get("best_iteration")) is not None and run_id not in champion_by_run:
+            history_complete = False
 
     for row in champion_rows:
         run_id = str(row.get("run_id") or "")
         if run_id:
-            _record(config_fingerprint(row.get("config_json")), run_id, "champion")
+            observed_fp = config_fingerprint(row.get("observed_config_json"))
+            if observed_fp is not None:
+                _record(observed_fp, run_id, "champion")
+            else:
+                history_complete = False
+                # Positive equality with a submitted legacy config is still
+                # trustworthy; only a non-match is inconclusive.
+                _record(config_fingerprint(row.get("config_json")), run_id, "champion")
 
     if not matches_by_fp:
-        return CurrentVersionResponse(status="no_known_versions")
+        return CurrentVersionResponse(
+            status="history_incomplete" if not history_complete else "no_known_versions"
+        )
 
     live_fp, live_update_time = await _offload(
         _live_space_fingerprint, space_id, _principal_key()
@@ -2337,6 +2394,10 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
 
     matches = matches_by_fp.get(live_fp)
     if not matches:
+        if not history_complete:
+            return CurrentVersionResponse(
+                status="history_incomplete", live_update_time=live_update_time,
+            )
         return CurrentVersionResponse(status="drifted", live_update_time=live_update_time)
 
     # Multi-match means byte-identical configs (e.g. run 2's baseline IS run

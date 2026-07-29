@@ -214,8 +214,10 @@ _REQUIRED_ITERATION_COLUMNS = (
     "evaluated_count",
     "excluded_count",
     "reflection_json",
-    # GSO v2 Phase 4 (D3): write_iteration emits both columns on every row.
+    # Version contract: write_iteration emits submitted, observed, and
+    # champion-marker columns on every row.
     "config_json",
+    "observed_config_json",
     "is_champion",
     # GSO v2 Phase 6: native official eval-run metadata (assessment contract).
     "num_needs_review",
@@ -565,7 +567,8 @@ def write_eval_heartbeat(
 
 
 # GSO v2 Phase 4 (D3): whitelist of documented Genie ``serialized_space`` keys
-# persisted into ``genie_opt_iterations.config_json``.
+# persisted into ``genie_opt_iterations.config_json`` and
+# ``observed_config_json``.
 #
 # This is INTENTIONALLY DIFFERENT from ``models._SAFE_SPACE_CONFIG_KEYS``
 # (the MLflow artifact projection) — it is not a mirror:
@@ -790,6 +793,7 @@ def write_iteration(
     eval_scope: str = "full",
     reflection_json: dict | None = None,
     config_snapshot: dict | None = None,
+    observed_config_snapshot: dict | None = None,
     loop_state: dict | None = None,
     rolled_back: bool = False,
 ) -> None:
@@ -843,17 +847,21 @@ def write_iteration(
     if _evaluated_count is None:
         _evaluated_count = _total_questions
     _excluded_count = int(eval_result.get("excluded_count", 0) or 0)
-    # GSO v2 Phase 4 (D3): capture the FULL effective config in force for
-    # this iteration. ``config_snapshot`` may be the raw fetched config or an
-    # already-parsed space dict; ``_project_config_for_iteration`` normalizes
-    # both to a whitelisted, cycle-safe Genie-domain projection. When the
-    # caller does not pass a snapshot, the column is written NULL. ``is_champion``
-    # is always written ``false`` here; the champion is stamped later by
-    # ``mark_champion_iteration`` reusing the existing best-iteration
-    # selection.
+    # Preserve both sides of the PATCH contract. ``config_json`` is the
+    # submitted/local candidate for audit and legacy revert compatibility;
+    # ``observed_config_json`` is the authoritative serialized_space returned
+    # by a post-write GET. The API can normalize string fragments and SQL text,
+    # so only the observed form is strong enough to prove version identity.
+    # A missing read-back stays NULL and makes history incomplete rather than
+    # causing a false external-drift claim.
     _config_payload = (
         _project_config_for_iteration(config_snapshot)
         if config_snapshot is not None
+        else None
+    )
+    _observed_config_payload = (
+        _project_config_for_iteration(observed_config_snapshot)
+        if observed_config_snapshot is not None
         else None
     )
 
@@ -880,7 +888,7 @@ def write_iteration(
         "thresholds_met, rows_json, reflection_json, "
         "evaluated_count, excluded_count, "
         "rolled_back, "
-        "config_json, is_champion, "
+        "config_json, observed_config_json, is_champion, "
         "num_needs_review, eval_run_id, eval_run_status, "
         + _loop_state_cols
     )
@@ -904,6 +912,7 @@ def write_iteration(
             str(_excluded_count),
             "true" if rolled_back else "false",
             _opt_json(_config_payload) if _config_payload else "NULL",
+            _opt_json(_observed_config_payload) if _observed_config_payload else "NULL",
             "false",
             str(_num_needs_review) if _num_needs_review is not None else "NULL",
             f"'{_esc(str(_eval_run_id))}'" if _eval_run_id is not None else "NULL",
