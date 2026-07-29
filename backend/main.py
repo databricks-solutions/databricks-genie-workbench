@@ -2,7 +2,7 @@
 Genie Workbench - Main entry point.
 
 Unified Databricks Genie Agent management platform combining:
-- GenieRx: Deep LLM analysis, optimization suggestions, fix agent
+- GenieRx: Deep LLM analysis, optimization suggestions
 - GenieIQ: Org-wide IQ scoring, Lakebase persistence, admin dashboard
 """
 

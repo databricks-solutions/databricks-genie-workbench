@@ -85,29 +85,6 @@ export interface StarToggleRequest {
   starred: boolean
 }
 
-export interface FixPatch {
-  field_path: string
-  old_value: unknown
-  new_value: unknown
-  rationale: string
-}
-
-export interface FixAgentEvent {
-  status: "thinking" | "patch" | "skipped" | "applying" | "complete" | "error"
-  message?: string
-  field_path?: string
-  old_value?: unknown
-  new_value?: unknown
-  rationale?: string
-  patches_applied?: number
-  summary?: string
-  diff?: {
-    patches: FixPatch[]
-    original_config?: Record<string, unknown>
-    updated_config?: Record<string, unknown>
-  }
-}
-
 export interface AdminDashboardStats {
   total_spaces: number
   scanned_spaces: number
@@ -374,6 +351,33 @@ export interface GSORunSummary {
    * Absent on older backends — treat undefined as "unknown / optimistic" so
    * the Revert button still renders (the backend will 409 if truly missing). */
   has_config_snapshot?: boolean
+}
+
+// ── Current version (fingerprint match of live config vs known run versions) ─
+// Mirrors `CurrentVersionResponse` in backend/models.py — keep in sync.
+
+export type CurrentVersionStatus =
+  | "matched"
+  | "drifted"
+  | "no_known_versions"
+  | "unavailable"
+  | "optimization_in_progress"
+
+export interface VersionMatch {
+  run_id: string
+  target: "baseline" | "champion"
+  started_at?: string | null
+  best_accuracy?: number | null
+}
+
+export interface CurrentVersionResponse {
+  status: CurrentVersionStatus
+  /** Most recent matching version when status === "matched". */
+  current?: VersionMatch | null
+  /** Byte-identical equivalent versions (e.g. run 2's baseline = run 1's champion). */
+  also_matches?: VersionMatch[]
+  /** Live space update_time when known — used by the drift banner. */
+  live_update_time?: string | null
 }
 
 export interface GSOPipelineStep {

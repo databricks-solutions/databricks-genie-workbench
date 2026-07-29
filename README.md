@@ -6,7 +6,6 @@ Use it to:
 
 - Create Genie Agents from business requirements and Unity Catalog data sources
 - Score Genie Agent quality with an instant rule-based IQ scan
-- Apply quick fixes to existing spaces
 - Run benchmark-driven optimization through the Auto-Optimize pipeline
 - Track scan history, starred spaces, sessions, and optimization state
 

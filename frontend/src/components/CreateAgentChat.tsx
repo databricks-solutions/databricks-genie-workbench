@@ -147,12 +147,6 @@ const STEPS = [
   { key: "create", label: "Create Agent", Icon: Rocket, backtrackMsg: "" },
 ] as const
 
-const FIX_STEPS = [
-  { key: "analyze", label: "Analyze Issues", Icon: Search },
-  { key: "update_config", label: "Update Config", Icon: Settings },
-  { key: "apply", label: "Apply Changes", Icon: Rocket },
-] as const
-
 function currentStep(p: BuildProgress): number {
   if (p.spaceId) return 7
   if (p.configReady) return 6
@@ -352,7 +346,6 @@ function groupMessages(msgs: AgentChatMessage[]): RenderItem[] {
 
 export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const restored = useRef(loadState())
-  const prefillSpaceIdRef = useRef<string | null>(null)
 
   const [messages, setMessages] = useState<AgentChatMessage[]>(restored.current?.messages ?? [])
   const [input, setInput] = useState("")
@@ -378,10 +371,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [expandedTableId, setExpandedTableId] = useState<string | null>(null)
   const [elementSearch, setElementSearch] = useState<Record<string, string>>({})
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null)
-  const [fixMode, setFixMode] = useState(false)
-  const fixModeRef = useRef(false)
-  const [fixStep, setFixStep] = useState(0) // 0=analyze, 1=update_config, 2=apply, 3=done
-  const [fixResult, setFixResult] = useState<{ spaceId: string; url: string } | null>(null)
   const queuedMessageRef = useRef<string | null>(null)
   const [preflight, setPreflight] = useState<{ warehouses_available: boolean; obo_enabled: boolean; app_name: string } | null>(null)
   const [selectedModel, setSelectedModel] = useState<string | null>(restored.current?.selectedModel ?? null)
@@ -461,10 +450,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setElementSearch({})
     setShowClearConfirm(false)
     setInput("")
-    setFixMode(false)
-    fixModeRef.current = false
-    setFixStep(0)
-    setFixResult(null)
     setSelectedModel(null)
     sessionStorage.removeItem(STORAGE_KEY)
   }
@@ -542,10 +527,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         )
       }
 
-      // Pass spaceId on the first message (new session) for fix/update flows
-      const spaceIdForRequest = !sessionIdRef.current ? prefillSpaceIdRef.current : null
-      if (spaceIdForRequest) prefillSpaceIdRef.current = null
-
       stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, selections ?? null, {
         onSession: (sid) => { sessionIdRef.current = sid; setSessionId(sid); reconnectCountRef.current = 0 },
         onStep: () => {},
@@ -554,12 +535,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         },
         onToolCall: (tool, args) => {
           setAgentStatus(getStatusText(tool, args))
-
-          // Advance fix-mode progress
-          if (fixModeRef.current) {
-            if (tool === "update_config") setFixStep((s) => Math.max(s, 1))
-            else if (tool === "update_space") setFixStep((s) => Math.max(s, 2))
-          }
 
           // Finalize any in-flight streaming message before showing tool calls
           if (streamingMsgIdRef.current) {
@@ -778,10 +753,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
               updated_space: { space_id: spaceId, url },
             },
           ])
-          if (fixModeRef.current) {
-            setFixStep(3)
-            setFixResult({ spaceId, url })
-          }
         },
         onError: (message) => {
           setAgentStatus(null)
@@ -858,7 +829,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             requestAnimationFrame(() => sendMessage(pending))
           }
         },
-      }, spaceIdForRequest, selectedModel)
+      }, null, selectedModel)
     },
     [sessionId, isStreaming, selectedModel],
   )
@@ -2651,7 +2622,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       <div className="px-4 py-3 border-b border-default">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-primary uppercase tracking-wide">
-            {fixMode ? "Fix Progress" : "Build Progress"}
+            Build Progress
           </span>
           {messages.length > 0 && (
             <button
@@ -2668,38 +2639,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
-        {/* Steps — fix mode vs create mode */}
-        {fixMode ? FIX_STEPS.map((s, i) => {
-          const done = i < fixStep
-          const active = i === fixStep && fixStep < 3
-          const { Icon } = s
-
-          return (
-            <div key={s.key} className="flex gap-3">
-              <div className="flex flex-col items-center">
-                <div
-                  className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    done
-                      ? "bg-emerald-500/20 text-emerald-500"
-                      : active
-                        ? "bg-accent/15 text-accent ring-2 ring-accent/40"
-                        : "bg-elevated text-muted"
-                  }`}
-                >
-                  {done ? <Check className="w-3 h-3" /> : <Icon className="w-3 h-3" />}
-                </div>
-                {i < FIX_STEPS.length - 1 && (
-                  <div className={`w-px flex-1 min-h-4 my-0.5 ${done ? "bg-emerald-500/40" : "bg-[var(--border-color)]"}`} />
-                )}
-              </div>
-              <div className="pb-3 flex-1 min-w-0">
-                <span className={`text-xs font-medium ${done ? "text-emerald-500" : active ? "text-accent" : "text-muted"}`}>
-                  {s.label}
-                </span>
-              </div>
-            </div>
-          )
-        }) : STEPS.map((s, i) => {
+        {/* Steps */}
+        {STEPS.map((s, i) => {
           const done = i < step
           const active = i === step
           const canBacktrack = done && !isStreaming && !!s.backtrackMsg
@@ -2925,26 +2866,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       </button>
 
       {/* Panel footer — agent links */}
-      {fixMode && fixResult ? (
-        <div className="border-t border-default px-4 py-3 flex gap-2">
-          <a
-            href={fixResult.url}
-            target="_blank"
-            rel="noreferrer"
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-accent bg-accent/5 border border-accent/20 rounded-lg hover:bg-accent/10 transition-colors"
-          >
-            <ExternalLink className="w-3 h-3" />
-            Open Agent
-          </a>
-          <button
-            onClick={() => onCreated(fixResult.spaceId, "", fixResult.url, "score")}
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-secondary border border-default rounded-lg hover:bg-elevated transition-colors"
-          >
-            <BarChart3 className="w-3 h-3" />
-            Re-scan
-          </button>
-        </div>
-      ) : progress.spaceId && progress.spaceUrl ? (
+      {progress.spaceId && progress.spaceUrl ? (
         <div className="border-t border-default px-4 py-3 flex gap-2">
           <a
             href={progress.spaceUrl}

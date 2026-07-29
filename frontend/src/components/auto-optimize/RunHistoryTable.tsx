@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { RotateCcw, Loader2, AlertCircle, CheckCircle2, Trophy, History } from "lucide-react"
+import { RotateCcw, Loader2, AlertCircle, AlertTriangle, CheckCircle2, Trophy, History } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -10,14 +10,14 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table"
-import { getAutoOptimizeRunsForSpace, revertAutoOptimizeRun, ApiError } from "@/lib/api"
+import { getAutoOptimizeRunsForSpace, getCurrentVersion, revertAutoOptimizeRun, ApiError } from "@/lib/api"
 import {
   championAccuracyText,
   hasActiveOptimizationRun,
   hasRevertibleChampion,
   humanizeTerminalReason,
 } from "@/components/auto-optimize/runHistory"
-import type { GSORunSummary } from "@/types"
+import type { CurrentVersionResponse, GSORunSummary, VersionMatch } from "@/types"
 
 interface RunHistoryTableProps {
   spaceId: string
@@ -43,6 +43,7 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
 export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) {
   const [runs, setRuns] = useState<GSORunSummary[]>([])
   const [loading, setLoading] = useState(true)
+  const [currentVersion, setCurrentVersion] = useState<CurrentVersionResponse | null>(null)
   const hasActiveRun = hasActiveOptimizationRun(runs)
 
   useEffect(() => {
@@ -57,6 +58,15 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
+    // Independent fetch — the table renders immediately; the live-version
+    // badge resolves when the fingerprint check completes.
+    getCurrentVersion(spaceId)
+      .then((res) => {
+        if (!cancelled) setCurrentVersion(res)
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentVersion(null)
+      })
     return () => {
       cancelled = true
     }
@@ -66,7 +76,15 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
     getAutoOptimizeRunsForSpace(spaceId)
       .then(setRuns)
       .catch(() => setRuns([]))
+    // The backend invalidates its live-fingerprint cache on revert, so this
+    // refetch moves the badge to the reverted row immediately.
+    getCurrentVersion(spaceId)
+      .then(setCurrentVersion)
+      .catch(() => setCurrentVersion(null))
   }
+
+  const liveMatch =
+    currentVersion?.status === "matched" ? currentVersion.current ?? null : null
 
   return (
     <Card>
@@ -79,6 +97,10 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
         ) : runs.length === 0 ? (
           <p className="text-muted text-sm py-4">No optimization runs yet.</p>
         ) : (
+          <>
+          {currentVersion?.status === "drifted" && (
+            <DriftBanner liveUpdateTime={currentVersion.live_update_time} />
+          )}
           <Table>
             <TableHeader>
               <TableRow>
@@ -106,9 +128,17 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                       : "—"}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={STATUS_VARIANT[run.status] ?? "secondary"}>
-                      {run.status}
-                    </Badge>
+                    <div className="flex flex-col items-start gap-1">
+                      <Badge variant={STATUS_VARIANT[run.status] ?? "secondary"}>
+                        {run.status}
+                      </Badge>
+                      {liveMatch?.run_id === run.run_id && (
+                        <LiveVersionBadge
+                          current={liveMatch}
+                          equivalents={currentVersion?.also_matches ?? []}
+                        />
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell
                     className="text-sm text-muted max-w-[14rem] truncate"
@@ -162,6 +192,7 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
               ))}
             </TableBody>
           </Table>
+          </>
         )}
       </CardContent>
     </Card>
@@ -313,5 +344,66 @@ export function RevertButton({ run, target, disabled, onReverted }: RevertButton
       {REVERT_ICON[target]}
       {REVERT_LABEL[target]}
     </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Current-version indicators (live-config fingerprint match)
+// ---------------------------------------------------------------------------
+
+function formatMatchDate(iso?: string | null): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  return isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+}
+
+/**
+ * Green pill on the history row whose captured config the live agent currently
+ * matches ("Live — baseline" / "Live — champion"). Byte-identical equivalents
+ * (e.g. run 2's baseline IS run 1's champion) are listed in the tooltip.
+ */
+export function LiveVersionBadge({
+  current,
+  equivalents,
+}: {
+  current: VersionMatch
+  equivalents: VersionMatch[]
+}) {
+  const equivText = equivalents.length
+    ? ` Identical to: ${equivalents
+        .map((m) => {
+          const when = formatMatchDate(m.started_at)
+          return `${m.target} of the ${when ? `${when} ` : ""}run`
+        })
+        .join("; ")}.`
+    : ""
+  return (
+    <Badge
+      variant="success"
+      className="gap-1.5"
+      title={`The live agent configuration currently matches this run's ${current.target} config.${equivText}`}
+    >
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
+      Live — {current.target}
+    </Badge>
+  )
+}
+
+/**
+ * Amber warning shown when the live agent config matches no known optimization
+ * version — i.e. it was changed outside Auto-Optimize (Genie UI, API, …).
+ */
+export function DriftBanner({ liveUpdateTime }: { liveUpdateTime?: string | null }) {
+  const when = formatMatchDate(liveUpdateTime)
+  return (
+    <div className="mb-3 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <p>
+        The live agent configuration doesn&rsquo;t match any known optimization version
+        &mdash; it was changed outside Auto-Optimize{when ? ` (last modified ${when})` : ""}.
+      </p>
+    </div>
   )
 }

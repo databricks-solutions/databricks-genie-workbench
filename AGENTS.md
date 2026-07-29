@@ -54,13 +54,13 @@ python tests/test_e2e_deployed.py
 backend/
   main.py                  # FastAPI app entry point, OBO middleware, static file serving
   models.py                # All Pydantic models (shared between routers/services)
-  prompts.py               # Prompt templates for analysis/fix agent
+  prompts.py               # Prompt templates for the create agent
   genie_creator.py         # Genie Agent creation logic (API calls, config assembly)
   sql_executor.py          # SQL execution via Databricks SQL warehouse
   _telemetry.py            # Databricks SDK telemetry constants (PRODUCT_VERSION — keep in sync with pyproject.toml)
   routers/
     analysis.py            # /api/space/* (fetch, parse), /api/settings, /api/models, /api/debug/auth
-    spaces.py              # /api/spaces/* (list, scan, history, star, fix)
+    spaces.py              # /api/spaces/* (list, scan, history, star)
     admin.py               # /api/admin/* (dashboard, leaderboard, alerts)
     auth.py                # /api/auth/me
     create.py              # /api/create/* (agent chat, UC discovery, wizard)
@@ -70,7 +70,6 @@ backend/
     auth.py                # OBO auth (ContextVar), SP fallback, WorkspaceClient mgmt
     genie_client.py        # Databricks Genie API (fetch space, list spaces, query for SQL)
     scanner.py             # Rule-based IQ scoring engine (0-12, 12 checks, 3-tier maturity, UC-enriched)
-    fix_agent.py           # LLM agent (Quick Fix in UI) that generates JSON patches and applies via Genie API
     create_agent.py        # Multi-turn LLM agent for creating new Genie Agents
     create_agent_session.py # Session persistence for create agent (Lakebase)
     create_agent_tools.py  # Tool definitions for create agent (UC discovery, SQL, etc.)
@@ -87,7 +86,7 @@ backend/
   prompts/                 # Prompt templates for analysis
   prompts_create/          # Prompt templates for create agent (multi-file, modular)
   references/schema.md     # Genie Agent JSON schema reference
-  tests/                   # Offline pytest unit suite (scanner, fix/create agent, llm_utils, sql validation) — run via ./scripts/test.sh
+  tests/                   # Offline pytest unit suite (scanner, create agent, llm_utils, sql validation) — run via ./scripts/test.sh
 scripts/
   install.sh               # Guided first-time setup (creates .env.deploy, provisions resources)
   deploy.sh                # Build + bundle deploy (job) + app deploy (idempotent)
@@ -106,7 +105,7 @@ frontend/
     App.tsx                # Root: five views — SpaceList | SpaceDetail | AdminDashboard | CreateSpace | HowItWorks
     lib/api.ts             # All API calls (fetch, SSE streaming helpers)
     types/index.ts         # TypeScript types mirroring backend Pydantic models
-    components/            # UI components (analysis, optimization, fix agent, etc.)
+    components/            # UI components (analysis, optimization, etc.)
       auto-optimize/       # GSO pipeline UI (24 components: config, run history, patches, scores, etc.)
     pages/                 # SpaceList, SpaceDetail, AdminDashboard, HowItWorks, HistoryTab, IQScoreTab
     watch/                 # GenieWatch UI (own api.ts/types), lazy-loaded as AdminDashboard sub-tabs
@@ -123,11 +122,9 @@ packages/
 On Databricks Apps, user identity flows via `x-forwarded-access-token` header. `OBOAuthMiddleware` in `main.py` stores the token in a `ContextVar`. All services call `get_workspace_client()` which returns the OBO client if set, otherwise the SP singleton. Some Genie API calls require SP auth (missing `genie` OAuth scope) — see `_is_scope_error()` fallback in `genie_client.py`.
 
 ### SSE Streaming
-Two endpoints use `StreamingResponse` with `text/event-stream`:
-- `/api/spaces/{id}/fix` — fix agent patches (10s keepalive)
-- `/api/create/agent/chat` — multi-turn agent with typed events (session, step, thinking, tool_call, tool_result, message_delta, message, created, updated, heartbeat, error, done) and 15s keepalive
+`/api/create/agent/chat` uses `StreamingResponse` with `text/event-stream` — a multi-turn agent with typed events (session, step, thinking, tool_call, tool_result, message_delta, message, created, updated, heartbeat, error, done) and 15s keepalive.
 
-Frontend consumes these via manual `fetch` + `ReadableStream` in `lib/api.ts` (not EventSource). Buffer splitting on `\n\n`.
+The frontend consumes it via manual `fetch` + `ReadableStream` in `lib/api.ts` (not EventSource). Buffer splitting on `\n\n`.
 
 ### Lakebase Persistence
 `services/lakebase.py` uses asyncpg with graceful fallback to in-memory dicts when `LAKEBASE_HOST` is not set. Supports both provisioned Lakebase and Lakebase Autoscaling — for autoscaling, uses `client.postgres.get_endpoint()` to resolve DNS and `client.postgres.generate_database_credential()` for OAuth tokens. Schema and tables are created by the app at startup via `_ensure_schema()` (the SP owns everything it creates). Lakebase project, SP role, and database-level grants (CONNECT, CREATE) are automated by `scripts/setup_lakebase.py` for the local terminal path and by `scripts.deploy_lib.lakebase` for the notebook path.
@@ -141,9 +138,8 @@ All LLM calls go through Databricks model serving endpoints using OpenAI-compati
 ### Analysis
 IQ Scan (`scanner.py`) is the only analysis path — rule-based, instant, 0-12 score with 12 checks and 3-tier maturity (Not Ready / Ready to Optimize / Trusted). Before scoring, `scan_space()` enriches the config with upstream Unity Catalog table/column descriptions so checks 2–3 reflect metadata that exists in UC even if not inlined in the Genie Agent config. `routers/analysis.py` only handles space fetching/parsing and settings — it does not perform analysis.
 
-### Two Separate Optimization Paths
-- **Quick Fix** (`fix_agent.py`): triggered from scan findings, auto-applies JSON patches
-- **Auto-Optimize** (`auto_optimize.py` + GSO engine in `packages/genie-space-optimizer/`): full benchmark-driven optimization pipeline. They're independent.
+### Auto-Optimize
+`auto_optimize.py` + the GSO engine in `packages/genie-space-optimizer/` implement the benchmark-driven optimization pipeline. (The legacy Quick Fix path — an LLM fix agent applying JSON patches from scan findings — was removed; Auto-Optimize is the only optimization path.)
 
 ## Environment Variables
 
@@ -226,7 +222,6 @@ git add package.json package-lock.json
 - **`.databricksignore` excludes `*.md`** but explicitly re-includes `backend/references/schema.md` (needed at runtime by create agent and analysis prompts).
 - **OBO ContextVar and streaming** — for SSE endpoints, the ContextVar is NOT cleared after `call_next` because the response streams lazily. Streaming handlers stash the token on `request.state` and re-set it inside the generator.
 - **IQ Scan is the only analysis path** — `scanner.py` runs 12 rule-based checks via `/api/spaces/{id}/scan`. `routers/analysis.py` only handles space fetching/parsing (`/api/space/fetch`, `/api/space/parse`) and settings — it does not perform analysis.
-- **Two separate optimization paths** — Quick Fix (`fix_agent.py`, from scan findings, auto-applies JSON patches) and Auto-Optimize (`auto_optimize.py` + GSO engine in `packages/genie-space-optimizer/`, full benchmark-driven optimization pipeline). They're independent.
 - **Vite proxy** — dev frontend at :5173 proxies `/api` to :8000. In production, FastAPI serves static files from `frontend/dist/` directly.
 - **Python 3.11+** required (`pyproject.toml`). Uses `uv` for dependency management (`uv.lock` present).
 - **Root `package.json`** exists solely as a build hook for Databricks Apps. `postinstall` is a no-op. `build` checks for pre-built `frontend/dist/index.html` — if present (uploaded by `deploy.sh`), skips the rebuild; if dist is missing, runs `cd frontend && npm ci && npm run build`. This keeps CLI deploy fast while allowing workspace-folder deploys from fresh clones.
@@ -310,11 +305,11 @@ sync (e.g. `docs/docs/features/create-agent.md` supersedes
 
 **Before modifying any Genie Agent configuration, schema handling, or space creation/optimization code, you MUST `WebFetch` and read the relevant references below.**
 
-- **Genie Agent `serialized_space` schema**: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field — authoritative field names for the Genie API. The fix agent prompt (`backend/prompts.py`) and local schema reference (`backend/references/schema.md`) must match this.
-  - Read before modifying: `fix_agent.py`, `create_agent.py`, `genie_client.py`, `references/schema.md`
-- **Genie Agent validation rules**: https://docs.databricks.com/aws/en/genie/conversation-api#validation-rules-for-serialized_space — ID format (32-char lowercase hex), sorting requirements, uniqueness constraints, size limits. The fix agent (`backend/services/fix_agent.py`) sanitizes IDs via `_sanitize_ids()` before applying patches.
-  - Read before modifying: `fix_agent.py` (`_sanitize_ids`), `genie_creator.py`, `create_agent_tools.py`
+- **Genie Agent `serialized_space` schema**: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field — authoritative field names for the Genie API. The create agent prompts (`backend/prompts.py`, `backend/prompts_create/`) and local schema reference (`backend/references/schema.md`) must match this.
+  - Read before modifying: `create_agent.py`, `genie_client.py`, `references/schema.md`
+- **Genie Agent validation rules**: https://docs.databricks.com/aws/en/genie/conversation-api#validation-rules-for-serialized_space — ID format (32-char lowercase hex), sorting requirements, uniqueness constraints, size limits.
+  - Read before modifying: `genie_creator.py`, `create_agent_tools.py`
 - **Genie Agent best practices**: https://docs.databricks.com/aws/en/genie/best-practices — official guidance on space design, table selection, instructions, and SQL snippets.
   - Read before modifying: `scanner.py` (scoring rules), `prompts_create/`, `plan_builder.py`
-- **GSL instruction schema (near-term)**: `docs/archives/gsl-instruction-schema.md` — section vocabulary and format rules for `instructions.text_instructions[0].content` that the Create Agent and Fix Agent must follow. You MUST read this before modifying Create Agent or Fix Agent prompts.
-  - Read before modifying: `backend/services/plan_builder.py` (Create Agent parallel-generation prompts), `backend/prompts_create/_plan.py` (Create Agent plan-step prompt template), `backend/prompts.py` (Fix Agent prompt), `backend/services/fix_agent.py`, `backend/services/create_agent_tools.py`
+- **GSL instruction schema (near-term)**: `docs/archives/gsl-instruction-schema.md` — section vocabulary and format rules for `instructions.text_instructions[0].content` that the Create Agent must follow. You MUST read this before modifying Create Agent prompts.
+  - Read before modifying: `backend/services/plan_builder.py` (Create Agent parallel-generation prompts), `backend/prompts_create/_plan.py` (Create Agent plan-step prompt template), `backend/services/create_agent_tools.py`

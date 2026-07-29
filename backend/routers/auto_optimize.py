@@ -3,25 +3,31 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
+import time
 from typing import Annotated, Any, Callable, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from backend.models import (
+    CurrentVersionResponse,
     PermissionCheckResponse,
     QueryHistoryWarehouseStatus,
     QueryUsageSignal,
     SchemaAccessStatus,
+    VersionMatch,
 )
 from backend.routers._validators import RunId, SpaceId
 
 from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
 from backend.services import gso_lakebase
+from backend.services.config_fingerprint import config_fingerprint
+from backend.services.genie_client import get_genie_space
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.common.accuracy import (
@@ -2010,6 +2016,7 @@ async def apply_run(run_id: RunId):
 
     try:
         result = apply_optimization(run_id, ws, config)
+        _invalidate_live_fingerprint_for_run(run_id)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -2029,6 +2036,7 @@ async def discard_run(run_id: RunId):
 
     try:
         result = discard_optimization(run_id, ws, sp_ws, config)
+        _invalidate_live_fingerprint_for_run(run_id)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -2073,6 +2081,7 @@ async def revert_run(
 
     try:
         result = revert_optimization(run_id, ws, sp_ws, config, target=target)
+        _invalidate_live_fingerprint_for_run(run_id)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -2083,6 +2092,262 @@ async def revert_run(
     except Exception as e:
         logger.exception("Failed to revert to run %s: %s", run_id, e)
         raise HTTPException(status_code=500, detail="Failed to revert the Genie Agent.")
+
+
+# ---------------------------------------------------------------------------
+# Current version — live-config fingerprint matching
+# ---------------------------------------------------------------------------
+#
+# Answers the History tab's "which version is the agent on right now?" question:
+# the live serialized_space is fingerprinted and compared against every config
+# captured by past runs (baselines + champions). A match badges that run; no
+# match means the config was changed outside Auto-Optimize. Fail-open
+# throughout: any error yields ``unavailable``/``no_known_versions`` so the UI
+# never shows a false drift warning.
+
+# Statuses in which the optimize loop may be mutating the live space — matching
+# during one of these would be noise (mirrors revert's guard set).
+_ACTIVE_RUN_STATUSES = {"QUEUED", "IN_PROGRESS", "RUNNING"}
+
+_RUNS_SELECT_COLS = (
+    "run_id, started_at, status, best_accuracy, config_snapshot, job_run_id"
+)
+
+# Short-TTL cache for the live-space fingerprint (a Genie API call), keyed by
+# space AND principal: the fetch runs under the caller's OBO identity, so a
+# space-only key would let one user's cached result bypass another user's
+# Genie access check. The badge must move immediately after an app-initiated
+# mutation, so apply/discard/revert invalidate all principals' entries for the
+# space on success; external edits surface within the TTL.
+_LIVE_FP_CACHE_TTL_S = 60.0
+_live_fp_cache: dict[str, tuple[float, str, str | None]] = {}
+
+
+def _principal_key() -> str:
+    """Stable per-principal cache-key component derived from the caller's token.
+
+    Hashing the token avoids an extra identity API call per request. SP-
+    identity contexts (no OBO token) share one "sp" entry — same identity, so
+    no authorization boundary is crossed.
+    """
+    try:
+        token = get_workspace_client().config.token
+    except Exception:
+        token = None
+    if not token:
+        return "sp"
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _invalidate_live_fingerprint(space_id: str) -> None:
+    """Drop every principal's cached live fingerprint for a space."""
+    prefix = f"{space_id}:"
+    for key in [k for k in _live_fp_cache if k.startswith(prefix)]:
+        _live_fp_cache.pop(key, None)
+
+
+def _invalidate_live_fingerprint_for_run(run_id: str) -> None:
+    """Resolve the run's space and clear its cached live fingerprint."""
+    safe_run = run_id.replace("'", "''")
+    rows = _delta_query(
+        f"SELECT space_id FROM {_delta_table('genie_opt_runs')} "
+        f"WHERE run_id = '{safe_run}' LIMIT 1"
+    )
+    if rows and rows[0].get("space_id"):
+        _invalidate_live_fingerprint(str(rows[0]["space_id"]))
+
+
+def _live_space_fingerprint(
+    space_id: str, principal: str,
+) -> tuple[str | None, str | None]:
+    """Return ``(fingerprint, update_time)`` for the live space.
+
+    Uses the OBO client with SP fallback (via ``get_genie_space``), cached for
+    ``_LIVE_FP_CACHE_TTL_S`` per (space, principal) so History-tab polling
+    doesn't hammer the Genie API. Failures and unparseable configs return
+    ``(None, None)`` and are not cached — a transient error must not hide the
+    badge for a whole TTL.
+    """
+    key = f"{space_id}:{principal}"
+    hit = _live_fp_cache.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1], hit[2]
+    try:
+        snapshot = get_genie_space(space_id)
+    except Exception as exc:
+        logger.info("current-version live fetch failed for %s: %s", space_id, exc)
+        return None, None
+    fingerprint = config_fingerprint(snapshot)
+    if fingerprint is None:
+        logger.info("current-version live config for %s is not fingerprintable", space_id)
+        return None, None
+    update_time = snapshot.get("update_time") if isinstance(snapshot, dict) else None
+    update_time_str = str(update_time) if update_time else None
+    _live_fp_cache[key] = (time.time() + _LIVE_FP_CACHE_TTL_S, fingerprint, update_time_str)
+    return fingerprint, update_time_str
+
+
+def _has_active_run(runs_rows: list[dict]) -> bool:
+    return any(
+        str(r.get("status") or "").upper() in _ACTIVE_RUN_STATUSES
+        for r in runs_rows
+    )
+
+
+def _runs_select_sql(space_id: str) -> str:
+    return (
+        f"SELECT {_RUNS_SELECT_COLS} FROM {_delta_table('genie_opt_runs')} "
+        f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
+    )
+
+
+def _reconcile_zombie_runs(space_id: str, runs_rows: list[dict]) -> list[dict]:
+    """Reconcile stale QUEUED/IN_PROGRESS rows against the Jobs API.
+
+    Mirrors the /active-run endpoint: rows whose jobs actually terminated are
+    stamped terminal, so a zombie run cannot suppress current-version matching
+    forever. All reconciliation writes run as the app SP — internal optimizer
+    state is SP-owned, so the OBO caller's UC grants must not decide whether
+    zombies get cleared (same convention as the revert path).
+
+    Latency-bounded: the reconcile DataFrame is built from the already-fetched
+    rows (no second full scan), and the post-reconcile re-read pulls only
+    run_id/status — config snapshots are megabytes and don't change on a
+    terminal flip. On any failure the original rows are returned
+    (conservative — the run keeps being treated as active).
+    """
+    try:
+        import pandas as pd
+
+        from genie_space_optimizer.common.warehouse import wh_reconcile_active_runs
+
+        config = _build_gso_config()
+        sp_ws = get_service_principal_client()
+        changed = wh_reconcile_active_runs(
+            sp_ws, sp_ws, config.warehouse_id, pd.DataFrame(runs_rows),
+            config.catalog, config.schema_name,
+        )
+        if not changed:
+            return runs_rows
+        # Zombies were stamped — refresh statuses only and merge into the rows
+        # we already hold (a full re-read would re-pull every config_snapshot).
+        fresh_status = {
+            str(r.get("run_id")): str(r.get("status") or "")
+            for r in _delta_query(
+                f"SELECT run_id, status FROM {_delta_table('genie_opt_runs')} "
+                f"WHERE space_id = '{space_id}'"
+            )
+        }
+        return [
+            {**row, "status": fresh_status.get(str(row.get("run_id") or ""), row.get("status"))}
+            for row in runs_rows
+        ]
+    except Exception as exc:
+        logger.warning(
+            "current-version zombie reconcile failed for %s: %s",
+            space_id, exc, exc_info=True,
+        )
+        return runs_rows
+
+
+@router.get("/spaces/{space_id}/current-version")
+async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
+    """Report which known optimization version the live Genie Agent matches.
+
+    Fingerprints the live ``serialized_space`` and every captured run config
+    (``genie_opt_runs.config_snapshot`` baselines + champion
+    ``genie_opt_iterations.config_json``) and compares. ``matched`` badges the
+    most recent matching version (byte-identical equivalents in
+    ``also_matches``); ``drifted`` means the config was changed outside
+    Auto-Optimize. Read-only; Delta reads use the app SP (internal optimizer
+    state), the live fetch is OBO with SP fallback.
+    """
+    if not _is_configured():
+        return CurrentVersionResponse(status="no_known_versions")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return CurrentVersionResponse(status="no_known_versions")
+
+    # The champions query joins runs on space_id, making it independent of the
+    # runs query — run both concurrently. Each warehouse statement can block up
+    # to its 50s wait_timeout, so serializing them would push worst-case
+    # latency past the frontend's fetch timeout. Legacy tables missing the
+    # Phase-4 config_json / is_champion / rolled_back columns fail the
+    # champions query (fail-open in _delta_query), leaving baselines still
+    # matchable.
+    champions_sql = (
+        f"SELECT i.run_id, i.config_json "
+        f"FROM {_delta_table('genie_opt_iterations')} i "
+        f"INNER JOIN {_delta_table('genie_opt_runs')} r "
+        f"ON i.run_id = r.run_id "
+        f"WHERE r.space_id = '{space_id}' "
+        f"AND i.is_champion = true "
+        f"AND (i.rolled_back IS NULL OR i.rolled_back = false) "
+        # Champion ties are resolved like the revert path: highest accuracy,
+        # then the latest append-only row.
+        f"QUALIFY row_number() OVER (PARTITION BY i.run_id "
+        f"ORDER BY i.overall_accuracy DESC NULLS LAST, "
+        f"i.timestamp DESC NULLS LAST, i.iteration DESC) = 1"
+    )
+    runs_rows, champion_rows = await asyncio.gather(
+        _delta_query_async(_runs_select_sql(space_id)),
+        _delta_query_async(champions_sql),
+    )
+
+    if _has_active_run(runs_rows):
+        runs_rows = await _offload(_reconcile_zombie_runs, space_id, runs_rows)
+    if _has_active_run(runs_rows):
+        return CurrentVersionResponse(status="optimization_in_progress")
+    if not runs_rows:
+        return CurrentVersionResponse(status="no_known_versions")
+
+    run_by_id = {str(r.get("run_id")): r for r in runs_rows if r.get("run_id")}
+    matches_by_fp: dict[str, list[VersionMatch]] = {}
+
+    def _record(fingerprint: str | None, run_id: str, target: str) -> None:
+        if not fingerprint:
+            return
+        row = run_by_id.get(run_id) or {}
+        started_at = row.get("started_at")
+        matches_by_fp.setdefault(fingerprint, []).append(
+            VersionMatch(
+                run_id=run_id,
+                target=target,  # type: ignore[arg-type]
+                started_at=str(started_at) if started_at else None,
+                best_accuracy=_safe_float(row.get("best_accuracy")),
+            )
+        )
+
+    for run_id, row in run_by_id.items():
+        _record(config_fingerprint(row.get("config_snapshot")), run_id, "baseline")
+
+    for row in champion_rows:
+        run_id = str(row.get("run_id") or "")
+        if run_id:
+            _record(config_fingerprint(row.get("config_json")), run_id, "champion")
+
+    if not matches_by_fp:
+        return CurrentVersionResponse(status="no_known_versions")
+
+    live_fp, live_update_time = await _offload(
+        _live_space_fingerprint, space_id, _principal_key()
+    )
+    if live_fp is None:
+        return CurrentVersionResponse(status="unavailable")
+
+    matches = matches_by_fp.get(live_fp)
+    if not matches:
+        return CurrentVersionResponse(status="drifted", live_update_time=live_update_time)
+
+    # Multi-match means byte-identical configs (e.g. run 2's baseline IS run
+    # 1's champion) — badge the most recent, list the rest as equivalents.
+    matches.sort(key=lambda m: m.started_at or "", reverse=True)
+    return CurrentVersionResponse(
+        status="matched",
+        current=matches[0],
+        also_matches=matches[1:],
+        live_update_time=live_update_time,
+    )
 
 
 @router.get("/spaces/{space_id}/active-run")

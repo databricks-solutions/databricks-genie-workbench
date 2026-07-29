@@ -14,7 +14,6 @@ import type {
   LeaderboardEntry,
   AlertItem,
   CurrentUser,
-  FixAgentEvent,
   UcCatalog,
   UcSchema,
   UcTable,
@@ -34,6 +33,7 @@ import type {
   GSOBenchmarkChanges,
   GSOLoopStateResponse,
   GSOPublishRecordResponse,
+  CurrentVersionResponse,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -41,6 +41,12 @@ const API_BASE = "/api"
 // Request timeout values (in milliseconds)
 const DEFAULT_TIMEOUT = 30_000 // 30 seconds for most requests
 const LONG_TIMEOUT = 300_000 // 5 minutes for LLM operations (optimization can be slow)
+// Warehouse statements can block up to their 50s server-side wait_timeout.
+// Current-version's worst path is two sequential statements (the concurrent
+// runs/champions pair, then a status re-read after zombie reconciliation) plus
+// Jobs-API calls — 120s covers it where the 30s default would silently lose
+// the badge on a cold warehouse.
+const CURRENT_VERSION_TIMEOUT = 120_000
 
 class ApiError extends Error {
   status: number
@@ -252,50 +258,6 @@ export async function getAlerts(): Promise<AlertItem[]> {
 
 export async function getCurrentUser(): Promise<CurrentUser> {
   return fetchWithTimeout<CurrentUser>(`${API_BASE}/auth/me`, {}, DEFAULT_TIMEOUT)
-}
-
-export function streamFixAgent(
-  spaceId: string,
-  findings: string[],
-  spaceConfig: Record<string, unknown>,
-  onEvent: (event: FixAgentEvent) => void,
-  onError: (error: Error) => void
-): () => void {
-  const abortController = new AbortController()
-
-  fetch(`${API_BASE}/spaces/${spaceId}/fix`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ space_id: spaceId, findings, space_config: spaceConfig }),
-    signal: abortController.signal,
-  })
-    .then(async (response) => {
-      if (!response.ok) throw new ApiError("Fix agent request failed", response.status)
-      const reader = response.body?.getReader()
-      if (!reader) throw new Error("No response body")
-      const decoder = new TextDecoder()
-      let buffer = ""
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n\n")
-        buffer = lines.pop() || ""
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const event = JSON.parse(line.slice(6)) as FixAgentEvent
-              onEvent(event)
-            } catch { /* ignore */ }
-          }
-        }
-      }
-    })
-    .catch((error) => {
-      if (error.name !== "AbortError") onError(error)
-    })
-
-  return () => abortController.abort()
 }
 
 // ── Create Wizard ────────────────────────────────────────────────────────────
@@ -527,6 +489,19 @@ export async function getActiveRunForSpace(
 
 export async function getAutoOptimizeRunsForSpace(spaceId: string): Promise<GSORunSummary[]> {
   return fetchWithTimeout<GSORunSummary[]>(`${API_BASE}/auto-optimize/spaces/${spaceId}/runs`)
+}
+
+/**
+ * Which known optimization version the live agent currently matches
+ * (fingerprint of live config vs run baselines/champions). Fail-open on the
+ * backend: "unavailable" / "no_known_versions" mean "show nothing".
+ */
+export async function getCurrentVersion(spaceId: string): Promise<CurrentVersionResponse> {
+  return fetchWithTimeout<CurrentVersionResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/current-version`,
+    {},
+    CURRENT_VERSION_TIMEOUT
+  )
 }
 
 export async function getAutoOptimizeIterations(runId: string): Promise<GSOIterationResult[]> {

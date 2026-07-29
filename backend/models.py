@@ -58,13 +58,6 @@ class StarToggleRequest(BaseModel):
     starred: bool
 
 
-class FixRequest(BaseModel):
-    """Request to run the AI fix agent on a space."""
-    space_id: str = Field(..., min_length=1, max_length=64)
-    findings: list[str] = Field(default_factory=list)
-    space_config: dict = Field(default_factory=dict)
-
-
 class AdminDashboardStats(BaseModel):
     """Org-wide statistics for the admin dashboard."""
     total_spaces: int
@@ -168,3 +161,47 @@ class PermissionCheckResponse(BaseModel):
     can_start: bool
     errors: list[str] = []
     query_usage_signal: QueryUsageSignal | None = None
+
+
+# ── Auto-Optimize current version ────────────────────────────────────────
+# Mirrored on the frontend as `CurrentVersionResponse` in
+# `frontend/src/types/index.ts`. Both halves must stay in sync — update
+# together (see AGENTS.md §Models).
+
+
+class VersionMatch(BaseModel):
+    """One known optimization version whose fingerprint matches the live config."""
+
+    run_id: str
+    target: Literal["baseline", "champion"]
+    started_at: str | None = None
+    best_accuracy: float | None = None
+
+
+class CurrentVersionResponse(BaseModel):
+    """Payload for ``GET /auto-optimize/spaces/{space_id}/current-version``.
+
+    Answers "which known optimization version is the live agent on?" by
+    fingerprint-matching the live ``serialized_space`` against every captured
+    run baseline / champion config:
+
+    * ``matched`` — live config equals ≥1 known version (``current`` is the
+      most recent; ``also_matches`` lists byte-identical equivalents);
+    * ``drifted`` — known versions exist but none match → the config was
+      changed outside Auto-Optimize;
+    * ``no_known_versions`` — no runs with captured configs (nothing to
+      compare); ``unavailable`` — the check itself failed (fail-open, the UI
+      renders nothing); ``optimization_in_progress`` — an active run is
+      mutating the live config, so matching would be noise.
+    """
+
+    status: Literal[
+        "matched",
+        "drifted",
+        "no_known_versions",
+        "unavailable",
+        "optimization_in_progress",
+    ]
+    current: VersionMatch | None = None
+    also_matches: list[VersionMatch] = []
+    live_update_time: str | None = None

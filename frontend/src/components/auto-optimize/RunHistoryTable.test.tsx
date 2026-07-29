@@ -1,14 +1,15 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
-import type { GSORunSummary } from "@/types"
+import type { GSORunSummary, VersionMatch } from "@/types"
 
 vi.mock("@/lib/api", () => ({
   getAutoOptimizeRunsForSpace: vi.fn(() => Promise.resolve([])),
+  getCurrentVersion: vi.fn(() => Promise.resolve({ status: "no_known_versions" })),
   revertAutoOptimizeRun: vi.fn(),
   ApiError: class ApiError extends Error {},
 }))
 
-import { RevertButton } from "./RunHistoryTable"
+import { DriftBanner, LiveVersionBadge, RevertButton } from "./RunHistoryTable"
 import { hasActiveOptimizationRun, hasRevertibleChampion } from "./runHistory"
 
 function run(overrides: Partial<GSORunSummary>): GSORunSummary {
@@ -71,5 +72,74 @@ describe("RunHistoryTable revert safety", () => {
       best_iteration: 2,
       best_accuracy: 96,
     }))).toBe(true)
+  })
+})
+
+// ── Current-version indicators ──────────────────────────────────────────
+
+function match(overrides: Partial<VersionMatch>): VersionMatch {
+  return {
+    run_id: "run-1",
+    target: "baseline",
+    started_at: "2026-07-13T00:00:00Z",
+    best_accuracy: 90,
+    ...overrides,
+  }
+}
+
+describe("LiveVersionBadge", () => {
+  it("labels the live baseline and champion", () => {
+    const baseline = renderToStaticMarkup(
+      <LiveVersionBadge current={match({ target: "baseline" })} equivalents={[]} />,
+    )
+    expect(baseline).toContain("Live — baseline")
+
+    const champion = renderToStaticMarkup(
+      <LiveVersionBadge current={match({ target: "champion" })} equivalents={[]} />,
+    )
+    expect(champion).toContain("Live — champion")
+  })
+
+  it("explains the match in the tooltip", () => {
+    const markup = renderToStaticMarkup(
+      <LiveVersionBadge current={match({ target: "baseline" })} equivalents={[]} />,
+    )
+    expect(markup).toContain("currently matches this run&#x27;s baseline config")
+  })
+
+  it("lists byte-identical equivalents in the tooltip", () => {
+    const markup = renderToStaticMarkup(
+      <LiveVersionBadge
+        current={match({ run_id: "run-2", target: "baseline", started_at: "2026-07-20T00:00:00Z" })}
+        equivalents={[match({ run_id: "run-1", target: "champion", started_at: "2026-07-13T00:00:00Z" })]}
+      />,
+    )
+    const expectedDate = new Date("2026-07-13T00:00:00Z").toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })
+    expect(markup).toContain("Identical to:")
+    expect(markup).toContain("champion of the")
+    expect(markup).toContain(expectedDate)
+  })
+})
+
+describe("DriftBanner", () => {
+  it("warns that the config changed outside Auto-Optimize", () => {
+    const markup = renderToStaticMarkup(<DriftBanner liveUpdateTime={null} />)
+    expect(markup).toContain("changed outside Auto-Optimize")
+    expect(markup).not.toContain("last modified")
+  })
+
+  it("includes the last-modified date when known", () => {
+    const markup = renderToStaticMarkup(<DriftBanner liveUpdateTime="2026-07-28T16:00:00Z" />)
+    const expectedDate = new Date("2026-07-28T16:00:00Z").toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })
+    expect(markup).toContain("last modified")
+    expect(markup).toContain(expectedDate)
   })
 })

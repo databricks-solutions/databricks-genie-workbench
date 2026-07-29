@@ -1,6 +1,6 @@
 # Demo Data Notebooks
 
-These Databricks notebooks generate fictional Unity Catalog datasets for Genie Workbench demos and evaluation. They are useful when users want to try Create Agent, IQ Scan, Quick Fix, or Auto-Optimize but do not have a ready dataset.
+These Databricks notebooks generate fictional Unity Catalog datasets for Genie Workbench demos and evaluation. They are useful when users want to try Create Agent, IQ Scan, or Auto-Optimize but do not have a ready dataset.
 
 Run them from a Databricks workspace. They are Databricks notebook source files and are not intended for local execution.
 
