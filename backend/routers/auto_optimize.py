@@ -2307,8 +2307,8 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
                 space_id, champions_result,
             )
             return CurrentVersionResponse(status="unavailable")
-        # Pre-migration tables have no observed_config_json. Keep exact legacy
-        # matches working, but remember that a non-match is inconclusive.
+        # Pre-migration tables have no observed_config_json. Keep safe semantic
+        # legacy matches working, but remember that a non-match is inconclusive.
         history_complete = False
         legacy_champions_sql = champions_sql.replace(
             "i.config_json, i.observed_config_json",
@@ -2377,8 +2377,8 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
                 _record(observed_fp, run_id, "champion")
             else:
                 history_complete = False
-                # Positive equality with a submitted legacy config is still
-                # trustworthy; only a non-match is inconclusive.
+                # Positive semantic equality with a submitted legacy config is
+                # still trustworthy; only a non-match is inconclusive.
                 _record(config_fingerprint(row.get("config_json")), run_id, "champion")
 
     if not matches_by_fp:
@@ -2400,8 +2400,8 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
             )
         return CurrentVersionResponse(status="drifted", live_update_time=live_update_time)
 
-    # Multi-match means byte-identical configs (e.g. run 2's baseline IS run
-    # 1's champion) — badge the most recent, list the rest as equivalents.
+    # Multi-match means semantically equivalent configs (e.g. run 2's baseline
+    # IS run 1's champion) — badge the most recent, list the rest as equivalents.
     matches.sort(key=lambda m: m.started_at or "", reverse=True)
     return CurrentVersionResponse(
         status="matched",

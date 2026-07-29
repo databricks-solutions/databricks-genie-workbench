@@ -259,9 +259,8 @@ def test_drifted_when_live_matches_nothing(client, monkeypatch) -> None:
     assert data["live_update_time"] == "2026-07-28T16:00:00Z"
 
 
-def test_missing_observed_champion_makes_non_match_inconclusive(client, monkeypatch) -> None:
-    """Regression: a submitted champion can differ from Genie's GET
-    representation even when no user edited the space."""
+def test_missing_observed_champion_can_match_semantically(client, monkeypatch) -> None:
+    """Legacy submitted configs remain usable across fragment normalization."""
     submitted = _space(instruction="PURPOSE:\n- Answer banking questions")
     live = _space()
     live["instructions"]["text_instructions"][0]["content"] = [
@@ -286,8 +285,8 @@ def test_missing_observed_champion_makes_non_match_inconclusive(client, monkeypa
     data = client.get(
         f"/api/auto-optimize/spaces/{SPACE_ID}/current-version"
     ).json()
-    assert data["status"] == "history_incomplete"
-    assert data["current"] is None
+    assert data["status"] == "matched"
+    assert data["current"]["target"] == "champion"
 
 
 def test_legacy_schema_can_still_produce_positive_champion_match(client, monkeypatch) -> None:

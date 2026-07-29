@@ -186,7 +186,7 @@ class CurrentVersionResponse(BaseModel):
     run baseline / champion config:
 
     * ``matched`` — live config equals ≥1 known version (``current`` is the
-      most recent; ``also_matches`` lists byte-identical equivalents);
+      most recent; ``also_matches`` lists semantically equivalent versions);
     * ``drifted`` — known versions exist but none match → the config was
       changed outside Auto-Optimize;
     * ``history_incomplete`` — at least one expected baseline/champion lacks

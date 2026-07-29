@@ -124,6 +124,28 @@ def test_canonicalize_preserves_non_id_array_order() -> None:
     assert questions == [["b"], ["a"]]
 
 
+def test_canonicalize_joins_content_and_sql_fragments() -> None:
+    submitted = {
+        "instructions": {
+            "text_instructions": [{"id": "a1", "content": ["PURPOSE:\n- Help"]}],
+            "sql_snippets": {
+                "filters": [{"id": "f1", "sql": ["region = ", "Enterprise"]}],
+            },
+        },
+    }
+    observed = {
+        "instructions": {
+            "text_instructions": [
+                {"id": "a1", "content": ["PURPOSE:\n", "- Help"]},
+            ],
+            "sql_snippets": {
+                "filters": [{"id": "f1", "sql": ["region = Enterprise"]}],
+            },
+        },
+    }
+    assert canonicalize(submitted) == canonicalize(observed)
+
+
 # ── config_fingerprint ───────────────────────────────────────────────────
 
 
@@ -173,6 +195,76 @@ def test_fingerprint_ignores_id_array_order() -> None:
 def test_fingerprint_changes_on_meaningful_edit() -> None:
     assert config_fingerprint(_space(instruction="Be helpful")) != config_fingerprint(
         _space(instruction="Be terse")
+    )
+
+
+def test_fingerprint_ignores_genie_fragment_and_boundary_quote_normalization() -> None:
+    """Regression for live space 01f18ba0a8ce102ea2fbae1ffee6d600."""
+    submitted = {
+        "version": 2,
+        "data_sources": {"tables": [{"identifier": "cat.sch.t1"}]},
+        "instructions": {
+            "text_instructions": [
+                {
+                    "id": "a1",
+                    "content": [
+                        "PURPOSE:\n- Highest churn risk means the segment with "
+                        "the most churn events.\n",
+                    ],
+                }
+            ],
+            "sql_snippets": {
+                "filters": [
+                    {
+                        "id": "f1",
+                        "sql": ["cat.sch.t1.`Segment` = Enterprise"],
+                    }
+                ],
+                "expressions": [
+                    {
+                        "id": "e1",
+                        "sql": ["date_format(cat.sch.t1.`Month`, yyyy-MM)"],
+                    }
+                ],
+            },
+        },
+    }
+    live = {
+        "version": 2,
+        "data_sources": {"tables": [{"identifier": "cat.sch.t1"}]},
+        "instructions": {
+            "text_instructions": [
+                {
+                    "id": "a1",
+                    "content": [
+                        "PURPOSE:\n",
+                        "- 'Highest churn risk' means the segment with the most "
+                        "churn events.\n",
+                    ],
+                }
+            ],
+            "sql_snippets": {
+                "filters": [
+                    {
+                        "id": "f1",
+                        "sql": ["cat.sch.t1.`Segment` = 'Enterprise'"],
+                    }
+                ],
+                "expressions": [
+                    {
+                        "id": "e1",
+                        "sql": ["date_format(cat.sch.t1.`Month`, 'yyyy-MM')"],
+                    }
+                ],
+            },
+        },
+    }
+    assert config_fingerprint(submitted) == config_fingerprint(live)
+
+
+def test_fingerprint_preserves_apostrophes_inside_words() -> None:
+    assert config_fingerprint(_space(instruction="customer's revenue")) != (
+        config_fingerprint(_space(instruction="customers revenue"))
     )
 
 
