@@ -41,6 +41,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auto-optimize")
 
+
+def _genie_benchmark_url(
+    host: str | None,
+    space_id: str | None,
+    workspace_id: int | str | None = None,
+) -> str | None:
+    """Build a Databricks UI deep link to a Genie Agent's Benchmarks tab."""
+    if not host or not space_id:
+        return None
+    url = f"{host.rstrip('/')}/genie/rooms/{space_id}/benchmarks"
+    if workspace_id is not None and str(workspace_id):
+        url += f"?o={workspace_id}"
+    return url
+
 # Lightweight column list for iterations queries — excludes rows_json (megabytes per row).
 # Bug #2: evaluated_count / excluded_count MUST be
 # included so the frontend can compute `accuracy = correct / evaluated` without
@@ -875,10 +889,11 @@ def _build_step_io(
         failed_count = bad_count
         # Native eval-run surfacing (reuses the StepDetailContent
         # evaluationRunUrl hook). The benchmark eval ran on the live Genie
-        # Space, so link the room; the SDK exposes no per-eval-run deep link.
+        # Agent, so link its Benchmarks tab; the SDK exposes no per-eval-run
+        # deep link.
         host = get_databricks_host()
         space_id = run_data.get("space_id")
-        evaluation_run_url = f"{host}/genie/rooms/{space_id}" if host and space_id else None
+        evaluation_run_url = _genie_benchmark_url(host, space_id)
         return (
             {"benchmarkCount": total_questions, "iteration": 0},
             {
@@ -1194,7 +1209,7 @@ async def health():
 
 @router.get("/permissions/{space_id}")
 async def check_permissions(space_id: SpaceId):
-    """Pre-check SP and UC permissions for a Genie Space before optimization."""
+    """Pre-check SP and UC permissions for a Genie Agent before optimization."""
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
@@ -1233,7 +1248,7 @@ async def check_permissions(space_id: SpaceId):
         obo_ws = get_workspace_client()
         sp_has_manage = sp_can_manage_space(obo_ws, space_id, sp_aliases, sp_client=sp_ws)
     except Exception as exc:
-        errors.append(f"Could not check Genie Space access: {exc}")
+        errors.append(f"Could not check Genie Agent access: {exc}")
         logger.warning("Could not check SP space access for %s", space_id, exc_info=True)
 
     # Extract table refs from space config and probe data access
@@ -1370,7 +1385,7 @@ async def check_permissions(space_id: SpaceId):
 
 @router.post("/trigger")
 async def trigger(body: TriggerRequest, request: Request):
-    """Trigger an optimization run for a Genie Space."""
+    """Trigger an optimization run for a Genie Agent."""
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured. Set GSO_CATALOG and GSO_JOB_ID.")
 
@@ -1834,10 +1849,7 @@ async def get_run(run_id: RunId):
     space_id = run.get("space_id", "")
     links = []
 
-    if host and space_id:
-        links.append({"label": "Genie Benchmark UI", "url": f"{host}/genie/rooms/{space_id}", "category": "genie"})
-
-    # Resolve workspace_id once for ?o= parameter on deep links
+    # Resolve workspace_id once for ?o= parameter on deep links.
     workspace_id = None
     if host:
         try:
@@ -1845,6 +1857,10 @@ async def get_run(run_id: RunId):
             workspace_id = await _offload(ws.get_workspace_id)
         except Exception:
             pass
+
+    benchmark_url = _genie_benchmark_url(host, space_id, workspace_id)
+    if benchmark_url:
+        links.append({"label": "Genie Agent Benchmarks", "url": benchmark_url, "category": "genie"})
 
     job_run_id = run.get("job_run_id")
     job_id = run.get("job_id") or config.job_id
@@ -1988,7 +2004,7 @@ async def list_levers():
 
 @router.post("/runs/{run_id}/apply")
 async def apply_run(run_id: RunId):
-    """Apply an optimization run's results to the Genie Space."""
+    """Apply an optimization run's results to the Genie Agent."""
     ws = get_workspace_client()
     config = _build_gso_config()
 
@@ -2035,7 +2051,7 @@ async def revert_run(
         "(the run's pre-run config snapshot).",
     ),
 ):
-    """Revert the live Genie Space to a past run's captured configuration.
+    """Revert the live Genie Agent to a past run's captured configuration.
 
     Re-PATCHes the live space with the run's captured config. ``target=champion``
     uses the champion iteration's ``config_json`` (the winning optimized
@@ -2066,7 +2082,7 @@ async def revert_run(
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception("Failed to revert to run %s: %s", run_id, e)
-        raise HTTPException(status_code=500, detail="Failed to revert the Genie Space.")
+        raise HTTPException(status_code=500, detail="Failed to revert the Genie Agent.")
 
 
 @router.get("/spaces/{space_id}/active-run")

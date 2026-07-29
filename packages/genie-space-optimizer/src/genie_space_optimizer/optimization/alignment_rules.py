@@ -7,7 +7,7 @@ but expensive: every benchmark eats an LLM round-trip.
 
 Some misalignment classes are cheap to detect via string match — e.g.
 "the SQL filters on column X but the question never mentions any of the
-synonyms for X". For Genie Spaces that have well-known business flags
+synonyms for X". For Genie Agents that have well-known business flags
 (default same-store filter, default region filter, etc.), a deterministic
 shortcut is worth the saved LLM cost AND yields more deterministic
 behavior across runs.

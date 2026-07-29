@@ -17,7 +17,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| <span className="badge badge--info">POST</span> | `/api/space/fetch` | <span className="badge badge--info">OBO → SP</span> | Fetch serialized Genie Space by ID |
+| <span className="badge badge--info">POST</span> | `/api/space/fetch` | <span className="badge badge--info">OBO → SP</span> | Fetch serialized Genie Agent by ID |
 | <span className="badge badge--info">POST</span> | `/api/space/parse` | <span className="badge badge--secondary">None</span> | Parse pasted Genie API JSON (client-side data, no auth needed) |
 | <span className="badge badge--success">GET</span> | `/api/debug/auth` | <span className="badge badge--primary">OBO</span> | Dev-only auth debug endpoint (404 on Databricks Apps) |
 | <span className="badge badge--success">GET</span> | `/api/settings` | <span className="badge badge--secondary">None</span> | Read-only app settings (LLM model, warehouse, host) |
@@ -26,7 +26,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| <span className="badge badge--success">GET</span> | `/api/spaces` | <span className="badge badge--info">OBO → SP</span> | List Genie Spaces with IQ scores, starred sort, filters |
+| <span className="badge badge--success">GET</span> | `/api/spaces` | <span className="badge badge--info">OBO → SP</span> | List Genie Agents with IQ scores, starred sort, filters |
 | <span className="badge badge--success">GET</span> | `/api/spaces/{space_id}` | <span className="badge badge--primary">OBO</span> | Space metadata + latest scan + star status |
 | <span className="badge badge--info">POST</span> | `/api/spaces/{space_id}/scan` | <span className="badge badge--primary">OBO</span> | Run IQ scan and persist result to Lakebase |
 | <span className="badge badge--success">GET</span> | `/api/spaces/{space_id}/history` | <span className="badge badge--primary">OBO</span> | Scan + auto-optimize run history for a space |
@@ -56,7 +56,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 | <span className="badge badge--success">GET</span> | `/api/create/discover/tables` | <span className="badge badge--primary">OBO</span> | List tables in a catalog.schema |
 | <span className="badge badge--success">GET</span> | `/api/create/discover/columns` | <span className="badge badge--primary">OBO</span> | List columns for a table |
 | <span className="badge badge--info">POST</span> | `/api/create/validate` | <span className="badge badge--primary">OBO</span> | Validate serialized space config (errors/warnings) |
-| <span className="badge badge--info">POST</span> | `/api/create` | <span className="badge badge--primary">OBO</span> | Create Genie Space from wizard payload |
+| <span className="badge badge--info">POST</span> | `/api/create` | <span className="badge badge--primary">OBO</span> | Create Genie Agent from wizard payload |
 | <span className="badge badge--info">POST</span> | `/api/create/agent/chat` | <span className="badge badge--primary">OBO</span> | **SSE** — Create agent conversational flow |
 | <span className="badge badge--success">GET</span> | `/api/create/agent/sessions/{session_id}` | <span className="badge badge--primary">OBO</span> | Load agent session for refresh/reconnect |
 | <span className="badge badge--danger">DELETE</span> | `/api/create/agent/sessions/{session_id}` | <span className="badge badge--primary">OBO</span> | Delete agent session |
@@ -71,7 +71,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}` | <span className="badge badge--secondary">SP</span> | Full run detail: stages, steps, levers, links |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/status` | <span className="badge badge--secondary">SP</span> | Lightweight status poll: steps, scores |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/levers` | <span className="badge badge--secondary">None</span> | List optimization lever definitions |
-| <span className="badge badge--info">POST</span> | `/api/auto-optimize/runs/{run_id}/apply` | <span className="badge badge--primary">OBO</span> | Apply optimization results to the Genie Space |
+| <span className="badge badge--info">POST</span> | `/api/auto-optimize/runs/{run_id}/apply` | <span className="badge badge--primary">OBO</span> | Apply optimization results to the Genie Agent |
 | <span className="badge badge--info">POST</span> | `/api/auto-optimize/runs/{run_id}/discard` | <span className="badge badge--warning">Mixed</span> | Discard run / rollback changes |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/spaces/{space_id}/active-run` | <span className="badge badge--secondary">SP</span> | Check for QUEUED/IN_PROGRESS run |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/spaces/{space_id}/runs` | <span className="badge badge--secondary">SP</span> | List optimization runs for a space |

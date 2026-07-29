@@ -9,8 +9,8 @@ interface PermRow {
 
 const rows: PermRow[] = [
   { operation: "Browse Unity Catalog", identity: "user" },
-  { operation: "Query Genie Spaces", identity: "user", note: "Falls back to SP if scope missing" },
-  { operation: "Create Genie Space", identity: "user" },
+  { operation: "Query Genie Agents", identity: "user", note: "Falls back to SP if scope missing" },
+  { operation: "Create Genie Agent", identity: "user" },
   { operation: "IQ Scan (Score)", identity: "user" },
   { operation: "Trigger Auto-Optimize", identity: "both", note: "User triggers, SP executes job" },
   { operation: "Run Optimization Job", identity: "service-principal" },
@@ -34,7 +34,7 @@ export function PermissionDiagram({ className }: { className?: string }) {
             </div>
           </div>
           <div className="space-y-2">
-            {["Browse catalogs & schemas", "List & query Genie Spaces", "Create new Genie Spaces", "Score spaces (IQ Scan)", "Trigger optimization"].map(
+            {["Browse catalogs & schemas", "List & query Genie Agents", "Create new Genie Agents", "Score agents (IQ Scan)", "Trigger optimization"].map(
               (item) => (
                 <div key={item} className="flex items-center gap-2 text-sm text-secondary">
                   <div className="h-1.5 w-1.5 rounded-full bg-accent shrink-0" />

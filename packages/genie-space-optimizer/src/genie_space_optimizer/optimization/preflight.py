@@ -1,7 +1,7 @@
 """
 Preflight logic for intake, metadata discovery, and benchmark preparation.
 
-Fetches Genie Space config, UC metadata, loads or generates benchmarks,
+Fetches Genie Agent config, UC metadata, loads or generates benchmarks,
 validates SQL, configures MLflow tracing, and prepares the initial benchmark
 Delta handoff.
 """
@@ -188,9 +188,9 @@ def check_dim_date_staleness(
 
 
 def compute_asset_fingerprint(config: dict) -> str:
-    """Compute a short hash over the sorted table/view/function refs in the Genie Space config.
+    """Compute a short hash over the sorted table/view/function refs in the Genie Agent config.
 
-    Used to detect when the Genie Space schema has changed (tables added or
+    Used to detect when the Genie Agent schema has changed (tables added or
     removed) between benchmark runs so stale benchmarks are regenerated.
     """
     import hashlib
@@ -247,7 +247,7 @@ def _collect_or_empty(fetch_fn: Any, label: str) -> tuple[list[dict], str | None
 
 
 def _resolve_experiment_path(*, space_id: str, domain: str) -> str:
-    """Return a stable, app-owned experiment path for this Genie Space.
+    """Return a stable, app-owned experiment path for this Genie Agent.
 
     Experiments live under ``/Shared/genie-space-optimizer/<space_id>/<domain>``
     so the SP can create them without OBO and each space gets its own experiment.
@@ -539,7 +539,7 @@ def _collect_data_profile(
     catalog: str = "",
     schema: str = "",
 ) -> tuple[dict[str, dict], list[str]]:
-    """Profile actual data values for Genie Space tables.
+    """Profile actual data values for Genie Agent tables.
 
     For each table (up to *max_tables*) runs a single TABLESAMPLE-bounded
     SQL query that collects per-column cardinality, distinct values
@@ -980,7 +980,7 @@ def preflight_fetch_config(
     domain: str,
     apply_mode: str = "genie_config",
 ) -> dict:
-    """Sub-step 1: Load Genie Space config from snapshot or API.
+    """Sub-step 1: Load Genie Agent config from snapshot or API.
 
     Returns a context dict with keys: config, snapshot, genie_table_refs,
     domain, apply_mode, configured_cols.
@@ -1053,7 +1053,7 @@ def preflight_fetch_config(
     genie_table_refs = extract_genie_space_table_refs(config)
     if genie_table_refs:
         logger.info(
-            "Genie space references %d data assets across schemas: %s",
+            "Genie Agent references %d data assets across schemas: %s",
             len(genie_table_refs),
             sorted({f"{c}.{s}" for c, s, _ in genie_table_refs if c and s}),
         )
@@ -1165,7 +1165,7 @@ def preflight_run_iq_scan(
     *,
     recommended_levers_from_cta: list[int] | None = None,
 ) -> dict:
-    """Sub-step 1.5: Run a fresh IQ Scan against the Genie Space snapshot.
+    """Sub-step 1.5: Run a fresh IQ Scan against the Genie Agent snapshot.
 
     Enforces the two scan-derived gates (no-data-source hard-block, benchmark warn),
     persists a snapshot row, and returns a narrowed summary for the strategist
@@ -1254,7 +1254,7 @@ def preflight_run_iq_scan(
                 s for s in next_steps
                 if "table or metric view" in str(s).lower()
             ),
-            "Add at least one table or metric view to your Genie Space",
+            "Add at least one table or metric view to your Genie Agent",
         )
         write_stage(
             spark, run_id, "PREFLIGHT_IQ_SCAN_NO_DATA_SOURCES", "FAILED",
@@ -2440,7 +2440,7 @@ def preflight_validate_benchmarks(
     if len(benchmarks) < MIN_VALID_BENCHMARK_COUNT:
         logger.warning(
             "Only %d valid benchmarks after filtering (min %d). "
-            "Re-generating from scratch using Genie space assets.",
+            "Re-generating from scratch using Genie Agent assets.",
             len(benchmarks), MIN_VALID_BENCHMARK_COUNT,
         )
         genie_benchmarks_regen = extract_genie_space_benchmarks(
@@ -2958,7 +2958,7 @@ def _load_or_generate_benchmarks(
     target_benchmark_count: int = TARGET_BENCHMARK_COUNT,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> tuple[list[dict], bool]:
-    """Load existing benchmarks or generate new ones from Genie space + LLM.
+    """Load existing benchmarks or generate new ones from Genie Agent + LLM.
 
     Returns:
         A tuple of (benchmarks, regenerated) where *regenerated* is ``True``
@@ -2966,7 +2966,7 @@ def _load_or_generate_benchmarks(
         the stale UC table before persisting) and ``False`` for REUSE / TOP-UP.
 
     Strategy:
-      1. Extract benchmark questions from the Genie Space config
+      1. Extract benchmark questions from the Genie Agent config
          (``benchmarks.questions`` and ``config.sample_questions``).
          ``example_question_sqls`` are training examples and are excluded
          from the benchmark corpus.
@@ -2993,7 +2993,7 @@ def _load_or_generate_benchmarks(
     print(
         f"\n-- BENCHMARK LOADING " + "-" * 31 + "\n"
         f"  Target count: {target_benchmark_count}\n"
-        f"  Curated from Genie Space: {len(genie_benchmarks)} "
+        f"  Curated from Genie Agent: {len(genie_benchmarks)} "
         f"({curated_with_sql} with SQL, {curated_question_only} question-only)"
     )
 
@@ -3174,7 +3174,7 @@ def _load_or_generate_benchmarks(
                 + "-" * 52
             )
             logger.info(
-                "UC dataset has %d valid benchmarks but missing %d curated Genie space questions. "
+                "UC dataset has %d valid benchmarks but missing %d curated Genie Agent questions. "
                 "Re-generating to include them.",
                 len(valid_existing), len(missing_curated),
             )
@@ -3197,7 +3197,7 @@ def _load_or_generate_benchmarks(
         )
 
     logger.info(
-        "Generating benchmarks: %d curated from Genie space + synthetic to reach %d",
+        "Generating benchmarks: %d curated from Genie Agent + synthetic to reach %d",
         len(genie_benchmarks), target_benchmark_count,
     )
     write_stage(

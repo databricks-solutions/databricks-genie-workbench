@@ -1,4 +1,4 @@
-"""Spaces router - org-wide Genie Space listing with IQ scoring."""
+"""Spaces router - org-wide Genie Agent listing with IQ scoring."""
 
 import asyncio
 import logging
@@ -39,11 +39,11 @@ router = APIRouter(prefix="/api")
 @router.get("/spaces")
 async def list_spaces(
     search: Optional[str] = Query(None, description="Filter by display name"),
-    starred_only: bool = Query(False, description="Only show starred spaces"),
+    starred_only: bool = Query(False, description="Only show starred agents"),
     min_score: Optional[int] = Query(None, ge=0, le=100),
     max_score: Optional[int] = Query(None, ge=0, le=100),
 ) -> list[SpaceListItem]:
-    """List all Genie Spaces with their IQ scores.
+    """List all Genie Agents with their IQ scores.
 
     Fetches space list from Databricks API and enriches with stored IQ scores.
     """
@@ -51,8 +51,8 @@ async def list_spaces(
         try:
             raw_spaces = list_genie_spaces()
         except Exception as e:
-            logger.error(f"Failed to list Genie Spaces: {e}")
-            raise HTTPException(status_code=500, detail="Failed to fetch Genie Spaces from Databricks")
+            logger.error(f"Failed to list Genie Agents: {e}")
+            raise HTTPException(status_code=500, detail="Failed to fetch Genie Agents from Databricks")
 
         client = get_workspace_client()
         host = (client.config.host or "").rstrip("/")
@@ -117,8 +117,8 @@ async def list_spaces(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Failed to list spaces: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list spaces")
+        logger.exception(f"Failed to list agents: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list agents")
 
 
 @router.get("/spaces/{space_id}")
@@ -158,13 +158,13 @@ async def get_space_detail(space_id: SpaceId) -> dict:
             "is_starred": starred,
         }
     except Exception as e:
-        logger.exception(f"Failed to get space detail: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get space detail")
+        logger.exception(f"Failed to get agent detail: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get agent detail")
 
 
 @router.post("/spaces/{space_id}/scan")
 async def trigger_scan(space_id: SpaceId) -> ScanResult:
-    """Trigger an IQ scan for a Genie Space and persist results."""
+    """Trigger an IQ scan for a Genie Agent and persist results."""
     try:
         scan_data = await scan_space(space_id)
 
@@ -193,7 +193,7 @@ async def get_history(
     space_id: SpaceId,
     days: int = Query(30, ge=1, le=365),
 ) -> dict:
-    """Get unified score + optimization history for a Genie Space."""
+    """Get unified score + optimization history for a Genie Agent."""
     try:
         scans, opt_runs = await asyncio.gather(
             get_score_history(space_id, days=days),
@@ -218,7 +218,7 @@ async def get_history(
 
 @router.put("/spaces/{space_id}/star")
 async def toggle_star(space_id: SpaceId, request: StarToggleRequest) -> dict:
-    """Toggle star status for a Genie Space."""
+    """Toggle star status for a Genie Agent."""
     try:
         await star_space(space_id, request.starred)
         return {"space_id": space_id, "starred": request.starred}

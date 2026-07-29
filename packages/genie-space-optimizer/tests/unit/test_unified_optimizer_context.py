@@ -221,11 +221,11 @@ def test_llm_messages_include_quality_rubric_and_scan_context() -> None:
         item["label"]
         for item in user["well_curated_space_rubric"]["config_quality_checks"]
     }
-    assert "Space description" in labels
+    assert "Agent description" in labels
     assert "SQL guidance artifacts" in labels
     failed = {
         item["label"]
         for item in user["space_quality_scan"]["failed_checks"]
     }
-    assert "Space description" in failed
+    assert "Agent description" in failed
     assert "SQL guidance artifacts" in failed

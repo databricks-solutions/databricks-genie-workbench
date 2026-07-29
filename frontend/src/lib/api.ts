@@ -141,7 +141,7 @@ async function fetchWithTimeout<T>(
 }
 
 /**
- * Fetch a Genie Space by ID.
+ * Fetch a Genie Agent by ID.
  */
 export async function fetchSpace(
   genieSpaceId: string
@@ -158,7 +158,7 @@ export async function fetchSpace(
 }
 
 /**
- * Parse pasted Genie Space JSON.
+ * Parse pasted Genie Agent JSON.
  */
 export async function parseSpaceJson(
   jsonContent: string
@@ -566,7 +566,7 @@ export async function getAutoOptimizePatches(runId: string): Promise<GSOPatch[]>
 }
 
 // GSO v2 Phase 6 (§3.5) — benchmark provenance ledger (added/removed/changed
-// questions GSO made in the live Genie Space). GSO v2 (item 7): the response
+// questions GSO made in the live Genie Agent). GSO v2 (item 7): the response
 // also carries `qc` (30–40 window status, repair tries, validity findings).
 export async function getAutoOptimizeBenchmarkChanges(runId: string): Promise<GSOBenchmarkChanges | null> {
   try {

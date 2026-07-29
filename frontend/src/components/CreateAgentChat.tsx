@@ -143,8 +143,8 @@ const STEPS = [
   { key: "inspection", label: "Inspection", Icon: Search, backtrackMsg: "Let's re-inspect the data. I want to review quality or profiles again." },
   { key: "profiling", label: "Profiling", Icon: BarChart3, backtrackMsg: "Let's re-assess data readiness against my business questions." },
   { key: "plan", label: "Plan", Icon: ListChecks, backtrackMsg: "Let's go back to the plan. I want to adjust questions, instructions, or benchmarks." },
-  { key: "config", label: "Configuration", Icon: Settings, backtrackMsg: "Let's revisit the configuration before creating the space." },
-  { key: "create", label: "Create Space", Icon: Rocket, backtrackMsg: "" },
+  { key: "config", label: "Configuration", Icon: Settings, backtrackMsg: "Let's revisit the configuration before creating the agent." },
+  { key: "create", label: "Create Agent", Icon: Rocket, backtrackMsg: "" },
 ] as const
 
 const FIX_STEPS = [
@@ -527,8 +527,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           case "generate_config": return "Generating configuration..."
           case "update_config": return "Updating configuration..."
           case "validate_config": return "Validating configuration..."
-          case "create_space": return "Creating space..."
-          case "update_space": return "Updating space..."
+          case "create_space": return "Creating agent..."
+          case "update_space": return "Updating agent..."
           default: return "Working..."
         }
       }
@@ -961,7 +961,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     if (!titleDraft.trim()) return
     setProgress((p) => ({ ...p, title: titleDraft.trim() }))
     setEditingTitle(false)
-    sendMessage(`The space name should be "${titleDraft.trim()}"`)
+    sendMessage(`The agent name should be "${titleDraft.trim()}"`)
 
   }
 
@@ -1421,7 +1421,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   const approvePlanAndCreate = () => {
     if (!editedPlan) return
-    sendMessage("Plan approved — go ahead and create the space.", {
+    sendMessage("Plan approved — go ahead and create the agent.", {
       edited_plan: editedPlan,
       action: "create",
       display_name: progress.title || undefined,
@@ -1438,7 +1438,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     const dataSourceCount = plan.tables.length + plan.metric_views.length
 
     const PLAN_SECTIONS: { key: string; label: string; description: string; Icon: typeof MessageSquare; count: number }[] = [
-      { key: "sample_questions", label: "Sample Questions", description: "Click-to-ask suggestions shown to users in the Genie Space UI", Icon: MessageSquare, count: plan.sample_questions.length },
+      { key: "sample_questions", label: "Sample Questions", description: "Click-to-ask suggestions shown to users in the Genie Agent UI", Icon: MessageSquare, count: plan.sample_questions.length },
       { key: "text_instructions", label: "Text Instructions", description: "Business rules and domain context that guide how Genie interprets questions", Icon: FileText, count: plan.text_instructions.trim() ? 1 : 0 },
       { key: "join_specs", label: "Joins", description: "Table relationships so Genie can combine data across tables", Icon: Link2, count: plan.join_specs.length },
       { key: "sql_expressions", label: "SQL Expressions", description: "Reusable measures, filters, and dimensions for common calculations", Icon: Code2, count: sqlExpressionCount },
@@ -2535,7 +2535,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             <Check className="w-4 h-4 text-emerald-500" />
           </div>
           <div>
-            <p className="text-sm font-semibold text-primary">Space Created</p>
+            <p className="text-sm font-semibold text-primary">Agent Created</p>
             <p className="text-xs text-muted">{space.display_name}</p>
           </div>
         </div>
@@ -2547,13 +2547,13 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-white rounded-lg text-xs font-medium hover:bg-accent/90 transition-colors"
           >
             <ExternalLink className="w-3 h-3" />
-            Open Genie Space
+            Open Genie Agent
           </a>
           <button
             onClick={() => onCreated(space.space_id, space.display_name, space.url)}
             className="flex items-center gap-1.5 px-3 py-1.5 border border-default text-secondary rounded-lg text-xs font-medium hover:bg-elevated transition-colors"
           >
-            Diagnose Space
+            Diagnose Agent
           </button>
         </div>
       </div>
@@ -2568,7 +2568,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             <Check className="w-4 h-4 text-emerald-500" />
           </div>
           <div>
-            <p className="text-sm font-semibold text-primary">Space Updated</p>
+            <p className="text-sm font-semibold text-primary">Agent Updated</p>
             <p className="text-xs text-muted">Fixes have been applied successfully</p>
           </div>
         </div>
@@ -2580,7 +2580,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-white rounded-lg text-xs font-medium hover:bg-accent/90 transition-colors"
           >
             <ExternalLink className="w-3 h-3" />
-            Open Genie Space
+            Open Genie Agent
           </a>
           <button
             onClick={() => onCreated(space.space_id, "", space.url, "score")}
@@ -2759,7 +2759,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                             if (e.key === "Escape") setEditingTitle(false)
                           }}
                           autoFocus
-                          placeholder="Space name"
+                          placeholder="Agent name"
                           className="flex-1 text-xs border border-accent/40 rounded px-2 py-1 bg-surface text-primary focus:outline-none"
                         />
                         <button
@@ -2900,7 +2900,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                       className="flex items-center gap-1 text-[10px] text-accent hover:underline"
                     >
                       <ExternalLink className="w-2.5 h-2.5" />
-                      Open space
+                      Open agent
                     </a>
                   </div>
                 )}
@@ -2924,7 +2924,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         )}
       </button>
 
-      {/* Panel footer — space links */}
+      {/* Panel footer — agent links */}
       {fixMode && fixResult ? (
         <div className="border-t border-default px-4 py-3 flex gap-2">
           <a
@@ -2934,7 +2934,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-accent bg-accent/5 border border-accent/20 rounded-lg hover:bg-accent/10 transition-colors"
           >
             <ExternalLink className="w-3 h-3" />
-            Open Space
+            Open Agent
           </a>
           <button
             onClick={() => onCreated(fixResult.spaceId, "", fixResult.url, "score")}
@@ -2953,13 +2953,13 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-accent bg-accent/5 border border-accent/20 rounded-lg hover:bg-accent/10 transition-colors"
           >
             <ExternalLink className="w-3 h-3" />
-            Open Space
+            Open Agent
           </a>
           <button
             onClick={() => onCreated(progress.spaceId, progress.spaceDisplayName, progress.spaceUrl)}
             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-secondary border border-default rounded-lg hover:bg-elevated transition-colors"
           >
-            Diagnose Space
+            Diagnose Agent
           </button>
         </div>
       ) : null}
@@ -2976,7 +2976,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         {preflight && !preflight.warehouses_available && (
           <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-600 dark:text-amber-400">
             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-            <span>No Pro or Serverless SQL warehouse found — space creation will fail.</span>
+            <span>No Pro or Serverless SQL warehouse found — agent creation will fail.</span>
             <Tooltip
               side="bottom"
               className="w-80 text-left leading-relaxed"
@@ -3006,7 +3006,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                 <Sparkles className="w-6 h-6 text-accent" />
               </div>
               <h3 className="text-lg font-semibold text-primary mb-2">
-                Create a Genie Space
+                Create a Genie Agent
               </h3>
               <p className="text-sm text-muted max-w-md mb-6">
                 Describe what you want to build and the AI agent will guide you through — or
@@ -3014,8 +3014,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
               </p>
               <div className="flex flex-wrap gap-2 justify-center">
                 {[
-                  "Build a space for NYC taxi trip analysis using samples.nyctaxi",
-                  "Create a sales analytics space from samples.tpch",
+                  "Build an agent for NYC taxi trip analysis using samples.nyctaxi",
+                  "Create a sales analytics agent from samples.tpch",
                   "Explore retail data with samples.tpcds",
                 ].map((q) => (
                   <button
@@ -3076,7 +3076,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                 ? queuedMessage
                   ? "Edit your queued message or type a new one..."
                   : "Type to queue a message for when the agent finishes..."
-                : "Describe your Genie space or answer a question..."
+                : "Describe your Genie Agent or answer a question..."
             }
             rows={1}
             className="block w-full resize-none rounded-t-xl bg-transparent px-4 pb-2 pt-3 text-sm text-primary placeholder:text-muted focus:outline-none"

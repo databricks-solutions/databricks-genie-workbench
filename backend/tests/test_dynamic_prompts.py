@@ -118,7 +118,7 @@ def test_assemble_requirements():
     session = _make_session()
     prompt = assemble_system_prompt(session, SCHEMA_REF)
 
-    assert "expert Databricks Genie Space creation agent" in prompt
+    assert "expert Databricks Genie Agent creation agent" in prompt
     assert "Gather Requirements" in prompt
     assert "Discovery" not in prompt or "Adjacent Steps" in prompt
     assert "Schema Reference" in prompt

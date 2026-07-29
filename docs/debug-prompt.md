@@ -21,7 +21,7 @@ This prompt ships with no workspace, space, or run baked in. Supply your own val
 
 - **`<WORKSPACE_ID>`**: Databricks workspace id. Use this when opening workspace links (`?o=<WORKSPACE_ID>`).
 - **`<WORKSPACE_HOST>`**: optional Databricks workspace host, e.g. `https://your-workspace.cloud.databricks.com`, if you want API/UI links.
-- **`<SPACE_ID>`**: the Genie Space that was optimized.
+- **`<SPACE_ID>`**: the Genie Agent that was optimized.
 - **`<RUN_ID>`**: the optimizer run to investigate.
 - **`<LOG_CATALOG>`**: Unity Catalog catalog that holds the GSO log schema.
 - **`<LOG_SCHEMA>`**: schema that holds the GSO log tables. Do not assume it is named `genie_space_optimizer`.
@@ -196,7 +196,7 @@ ORDER BY iteration, eval_scope
 - Higher iterations are lever-loop eval results.
 - `is_champion = true` marks the promoted row.
 - `terminal_reason` on the champion row is authoritative and is copied to `genie_opt_runs.convergence_reason` by publish.
-- `config_json` is the full effective Genie Space config for that attempt.
+- `config_json` is the full effective Genie Agent config for that attempt.
 - `best_config_version_id`, `current_hypothesis`, `do_not_repeat`, and `next_hypothesis` are the loop-state breadcrumbs that explain why the run kept going or stopped.
 - `eval_run_id` / `eval_run_status` appear when the native eval runner was used.
 

@@ -1,4 +1,4 @@
-"""AI Fix Agent - applies targeted fixes to Genie Space configurations.
+"""AI Fix Agent - applies targeted fixes to Genie Agent configurations.
 
 Addresses each finding individually with a separate LLM call, then applies
 all patches together in a single Databricks API call. This avoids token-limit
@@ -47,7 +47,7 @@ _VALID_FIELDS: frozenset[str] = frozenset({
 
 
 class FixAgent:
-    """AI agent that applies fixes to Genie Space configurations."""
+    """AI agent that applies fixes to Genie Agent configurations."""
 
     def __init__(self):
         self.model = get_llm_model()
@@ -188,7 +188,7 @@ class FixAgent:
 
             # Apply all patches at once to Databricks
             if applied_patches:
-                yield {"status": "applying", "message": f"Applying {len(applied_patches)} fix(es) to space configuration..."}
+                yield {"status": "applying", "message": f"Applying {len(applied_patches)} fix(es) to agent configuration..."}
                 try:
                     await _apply_config_to_databricks(space_id, applied_patches)
                     yield {

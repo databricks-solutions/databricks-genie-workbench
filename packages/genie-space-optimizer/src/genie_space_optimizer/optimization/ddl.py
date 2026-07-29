@@ -12,7 +12,7 @@ from genie_space_optimizer.common.config import (
 _GENIE_OPT_RUNS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_runs (
     run_id              STRING        NOT NULL COMMENT 'UUID for this optimization run',
-    space_id            STRING        NOT NULL COMMENT 'Genie Space ID being optimized',
+    space_id            STRING        NOT NULL COMMENT 'Genie Agent ID being optimized',
     domain              STRING        NOT NULL COMMENT 'Domain name (e.g. revenue_property)',
     catalog             STRING        NOT NULL COMMENT 'Unity Catalog name',
     uc_schema           STRING        NOT NULL COMMENT 'UC schema (catalog.schema format)',
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_runs (
     best_iteration      INT                    COMMENT 'Iteration number with highest accuracy',
     best_accuracy       DOUBLE                 COMMENT 'Best overall accuracy achieved (0-100)',
     convergence_reason  STRING                 COMMENT 'Why the run stopped (threshold_met|plateau|max_iterations|error)',
-    config_snapshot     STRING                 COMMENT 'JSON: Genie Space config at run start',
+    config_snapshot     STRING                 COMMENT 'JSON: Genie Agent config at run start',
     triggered_by        STRING                 COMMENT 'User email who initiated the run',
     warehouse_id        STRING                 COMMENT 'SQL warehouse ID resolved at preflight; used by lever_loop / finalize / deploy as a Delta-fallback for the preflight taskValue when Repair Run drops in-memory state',
     max_benchmark_count INT                    COMMENT 'Effective max benchmark count computed by preflight; Delta-fallback for the preflight.max_benchmark_count taskValue',
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_runs (
 )
 USING DELTA
 PARTITIONED BY (space_id)
-COMMENT 'Genie Space optimization runs - one row per optimization attempt'
+COMMENT 'Genie Agent optimization runs - one row per optimization attempt'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
     'delta.autoOptimize.autoCompact' = 'true',
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     rolled_back         BOOLEAN       DEFAULT false COMMENT 'Tier 1.1: true if this iteration was rolled back by the accept/rollback gate. Readers that represent current state must filter this out (see _get_baseline_and_best_accuracy, promote_best_model, load_latest_full_iteration).',
     rolled_back_at      TIMESTAMP              COMMENT 'Tier 1.1: timestamp of rollback',
     rollback_reason     STRING                 COMMENT 'Tier 1.1: human-readable rollback reason (mirrors genie_opt_patches.rollback_reason)',
-    config_json         STRING                 COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Space config in force for THIS iteration (baseline iter 0, patch/eval iterations 1..N). Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.',
+    config_json         STRING                 COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Agent config in force for THIS iteration (baseline iter 0, patch/eval iterations 1..N). Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.',
     is_champion         BOOLEAN       DEFAULT false COMMENT 'GSO v2 Phase 4 (D3): true on the single champion iteration row (the best iteration as chosen by the existing Delta-driven selection in promote_best_model). Marked in Delta only — NO UC model registration.',
     num_needs_review    INT                    COMMENT 'Count of per-question rows whose official assessment is NEEDS_REVIEW (neither GOOD nor BAD).',
     eval_run_id         STRING                 COMMENT 'GSO v2 Phase 6: native Genie benchmark eval-run id for this iteration (from the official EvalRunner). Surfaced so the UI can reference the underlying eval run. NULL on the legacy in-process path.',
@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_patches (
 )
 USING DELTA
 PARTITIONED BY (run_id)
-COMMENT 'Patch audit trail - every metadata change applied to Genie Space'
+COMMENT 'Patch audit trail - every metadata change applied to Genie Agent'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
     'delta.autoOptimize.autoCompact' = 'true',
@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_benchmark_mutations (
 )
 USING DELTA
 PARTITIONED BY (run_id)
-COMMENT 'GSO v2 provenance ledger — every benchmark question GSO added/removed/changed in the live Genie Space'
+COMMENT 'GSO v2 provenance ledger — every benchmark question GSO added/removed/changed in the live Genie Agent'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
     'delta.autoOptimize.autoCompact' = 'true',
@@ -212,7 +212,7 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_PATCHES, "applied_patch_detail", "STRING COMMENT 'T2.13: human-readable detail describing the applied transformation (e.g. section_name for update_instruction_section, or a note when a rewrite_instruction was split into children).'"),
     (TABLE_RUNS, "warehouse_id", "STRING COMMENT 'SQL warehouse ID resolved at preflight; Delta-fallback for the preflight.warehouse_id taskValue'"),
     (TABLE_RUNS, "max_benchmark_count", "INT COMMENT 'Effective max benchmark count; Delta-fallback for the preflight.max_benchmark_count taskValue'"),
-    (TABLE_ITERATIONS, "config_json", "STRING COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Space config in force for this iteration. Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.'"),
+    (TABLE_ITERATIONS, "config_json", "STRING COMMENT 'GSO v2 Phase 4 (D3): JSON of the FULL effective Genie Agent config in force for this iteration. Whitelisted Genie-domain projection (optimizer-internal _* keys dropped). Delta is the sole config/version store; CDF gives versioned history.'"),
     (TABLE_ITERATIONS, "is_champion", "BOOLEAN DEFAULT false COMMENT 'GSO v2 Phase 4 (D3): true on the single champion iteration row (best iteration per the existing Delta-driven selection in promote_best_model). Marked in Delta only — NO UC model registration.'"),
     (TABLE_ITERATIONS, "num_needs_review", "INT COMMENT 'Count of per-question rows whose official assessment is NEEDS_REVIEW.'"),
     (TABLE_ITERATIONS, "eval_run_id", "STRING COMMENT 'GSO v2 Phase 6: native Genie benchmark eval-run id for this iteration (from the official EvalRunner). NULL on the legacy in-process path.'"),

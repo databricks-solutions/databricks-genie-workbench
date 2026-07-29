@@ -202,7 +202,7 @@ async def load_gso_benchmark_mutations(run_id: str) -> list[dict]:
     """Load the benchmark provenance ledger for a run (GSO v2 Phase 6, §3.5).
 
     Rows record every benchmark question GSO added / removed / changed (or
-    recommended for prune) in the live Genie Space. Synced reads are disabled
+    recommended for prune) in the live Genie Agent. Synced reads are disabled
     today, so this falls through to the Delta SQL-warehouse fallback in the
     router.
     """

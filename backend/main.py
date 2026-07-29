@@ -1,7 +1,7 @@
 """
 Genie Workbench - Main entry point.
 
-Unified Databricks Genie Space management platform combining:
+Unified Databricks Genie Agent management platform combining:
 - GenieRx: Deep LLM analysis, optimization suggestions, fix agent
 - GenieIQ: Org-wide IQ scoring, Lakebase persistence, admin dashboard
 """
@@ -134,7 +134,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(
     title="Genie Workbench",
-    description="Unified Databricks Genie Space management platform",
+    description="Unified Databricks Genie Agent management platform",
     version="1.0.0",
 )
 

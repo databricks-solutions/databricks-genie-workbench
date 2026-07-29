@@ -6,7 +6,7 @@ Two pieces of the optimizer rely on table-naming conventions:
    compact "domain" qualifier from identifiers like ``mv_<domain>_*``
    so display names like ``Month-to-Date Filter`` get prefixed (e.g.
    ``ORDERS Month-to-Date Filter``) when multiple fact tables in the
-   same Genie Space could plausibly share a generic concept.
+   same Genie Agent could plausibly share a generic concept.
 2. Identifier stem promotion (``preflight_synthesis.py``) — registers
    "soft stems" by stripping known leaf prefixes (``mv_``, ``vw_``,
    ``f_``, ``d_``, …) so the LLM emitting ``FROM dim_date`` can be

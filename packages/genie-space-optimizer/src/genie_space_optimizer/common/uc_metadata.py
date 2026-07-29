@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 def parse_table_identifier(identifier: str) -> tuple[str, str, str]:
-    """Parse a Genie space table identifier into (catalog, schema, table).
+    """Parse a Genie Agent table identifier into (catalog, schema, table).
 
-    Identifiers come from the Genie Space API ``data_sources.tables[].identifier``
+    Identifiers come from the Genie Agent API ``data_sources.tables[].identifier``
     and are typically fully-qualified: ``catalog.schema.table``.
     """
     parts: list[str] = []
@@ -60,7 +60,7 @@ def parse_table_identifier(identifier: str) -> tuple[str, str, str]:
 def extract_genie_space_table_refs(
     config: dict[str, Any],
 ) -> list[tuple[str, str, str]]:
-    """Extract (catalog, schema, table) from a Genie Space config.
+    """Extract (catalog, schema, table) from a Genie Agent config.
 
     Reads ``_tables``, ``_metric_views``, and ``_functions`` keys
     produced by ``fetch_space_config()``.
@@ -279,7 +279,7 @@ def get_columns_for_tables(
     spark: "SparkSession",
     refs: list[tuple[str, str, str]],
 ) -> "DataFrame":
-    """Fetch column metadata only for the specific tables referenced by a Genie space.
+    """Fetch column metadata only for the specific tables referenced by a Genie Agent.
 
     Unlike ``get_columns`` which returns all columns in a schema, this function
     queries ``information_schema`` scoped to the exact table names.
@@ -314,7 +314,7 @@ def get_tags_for_tables(
     spark: "SparkSession",
     refs: list[tuple[str, str, str]],
 ) -> "DataFrame":
-    """Fetch tags only for the specific tables referenced by a Genie space."""
+    """Fetch tags only for the specific tables referenced by a Genie Agent."""
     schema_groups: dict[tuple[str, str], list[str]] = {}
     for cat, sch, tbl in refs:
         if cat and sch and tbl:
@@ -336,7 +336,7 @@ def get_routines_for_schemas(
     spark: "SparkSession",
     refs: list[tuple[str, str, str]],
 ) -> "DataFrame":
-    """Fetch routines for schemas that contain Genie space table references."""
+    """Fetch routines for schemas that contain Genie Agent table references."""
     schemas = get_unique_schemas(refs)
     unions: list[str] = []
     for cat, sch in schemas:
@@ -566,7 +566,7 @@ def check_tvf_schema_overlap(
     tvf_identifier: str,
     metadata_snapshot: dict,
 ) -> dict:
-    """Check schema overlap between a TVF and other assets in the Genie Space.
+    """Check schema overlap between a TVF and other assets in the Genie Agent.
 
     Returns::
 

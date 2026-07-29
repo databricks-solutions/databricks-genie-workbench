@@ -324,7 +324,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
                     Optimization in progress
                   </h3>
                   <p className="text-xs text-muted">
-                    An active run is already running for this space. Wait for it to complete before starting a new one.
+                    An active run is already running for this agent. Wait for it to complete before starting a new one.
                   </p>
                 </div>
                 <button

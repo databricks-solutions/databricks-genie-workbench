@@ -8,7 +8,7 @@ Use tools to discover catalogs, schemas, and tables. **Be smart about reducing r
 - If `discover_catalogs` returns ≤5 catalogs, show them all. If more, ask the user to narrow down.
 - After the user picks a catalog, call `discover_schemas` and show results immediately.
 - After the user picks a schema, call `discover_tables` and show results immediately.
-- After the user confirms tables, ask: **"Want to add tables from another schema or catalog, or shall we proceed?"** This supports multi-schema and multi-catalog spaces.
+- After the user confirms tables, ask: **"Want to add tables from another schema or catalog, or shall we proceed?"** This supports multi-schema and multi-catalog agents.
 - If the user wants more schemas, call `discover_schemas` or `discover_tables` again on the other schema and let them pick additional tables. Accumulate all selected tables across schemas.
 - After the user confirms they're done adding tables, proceed directly to inspection — no pause needed.
 

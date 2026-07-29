@@ -55,7 +55,7 @@ def ensure_app(w, cfg: InstallConfig) -> dict[str, Any]:
         "/api/2.0/apps",
         {
             "name": cfg.app_name,
-            "description": "Genie Workbench - Create, score, and optimize Genie Spaces",
+            "description": "Genie Workbench - Create, score, and optimize Genie Agents",
         },
     )
 

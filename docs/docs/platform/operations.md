@@ -123,11 +123,11 @@ databricks bundle deploy -t app --profile <profile>
 
 The `app` target uses `mode: development` for per-deployer Terraform state with `presets.name_prefix: ""` for clean job names.
 
-### Post-Deploy: Genie Space Access
+### Post-Deploy: Genie Agent Access
 
-After deploying, the app's SP needs access to Genie Spaces for API fallback and optimization:
+After deploying, the app's SP needs access to Genie Agents for API fallback and optimization:
 
-1. The installer grants SP access to your existing Genie Spaces
+1. The installer grants SP access to your existing Genie Agents
 2. For spaces created after install, share them with the SP (`CAN_MANAGE`)
 3. Grant SP `SELECT` on referenced schemas:
 

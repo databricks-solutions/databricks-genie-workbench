@@ -28,11 +28,11 @@ These variables are defined in `app.yaml` and injected into the app runtime. Pla
 |----------|--------|-------------|
 | `SQL_WAREHOUSE_ID` | `valueFrom: sql-warehouse` | SQL Warehouse ID, pulled from the app resource named `sql-warehouse` |
 
-### Genie Space Configuration
+### Genie Agent Configuration
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `GENIE_TARGET_DIRECTORY` | `/Shared/` | Where new Genie Spaces are created. Override to a specific folder if needed |
+| `GENIE_TARGET_DIRECTORY` | `/Shared/` | Where new Genie Agents are created. Override to a specific folder if needed |
 
 ### Local Development
 

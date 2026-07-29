@@ -426,7 +426,7 @@ shapes:
 
 Each normalized query shape contributes at most once per column. Repeated
 occurrences add a capped logarithmic frequency multiplier (maximum 3.0), and
-query shapes observed through the target Genie Space receive a 2.0 multiplier.
+query shapes observed through the target Genie Agent receive a 2.0 multiplier.
 Automated GSO traffic contributes zero.
 
 ### 8.3 Semantic score

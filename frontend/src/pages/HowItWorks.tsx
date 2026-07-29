@@ -83,7 +83,7 @@ export function HowItWorks() {
             How <span className="text-gradient">Genie Workbench</span> Works
           </h1>
           <p className="text-secondary text-base max-w-2xl mx-auto leading-relaxed">
-            Create, score, and optimize your Genie Spaces — all from one intelligent interface.
+            Create, score, and optimize your Genie Agents — all from one intelligent interface.
             Explore each capability below.
           </p>
         </div>
@@ -160,7 +160,7 @@ function OverviewContent() {
   return (
     <div className="space-y-6">
       <div className="text-center mb-2">
-        <h2 className="text-xl font-display font-bold text-primary">Everything You Need for Genie Spaces</h2>
+        <h2 className="text-xl font-display font-bold text-primary">Everything You Need for Genie Agents</h2>
         <p className="text-sm text-muted mt-1">Three core capabilities, one streamlined workflow</p>
       </div>
 
@@ -168,21 +168,21 @@ function OverviewContent() {
         <FeatureCard
           icon={<MessageSquarePlus className="h-6 w-6" />}
           title="Create"
-          description="Describe what you need in plain English. Our AI agent discovers your data, builds a plan, and creates a fully configured Genie Space."
+          description="Describe what you need in plain English. Our AI agent discovers your data, builds a plan, and creates a fully configured Genie Agent."
           accentColor={CYAN}
           glowColor={`${CYAN}15`}
         />
         <FeatureCard
           icon={<ShieldCheck className="h-6 w-6" />}
           title="Score"
-          description="Instantly scan any Genie Space against 12 quality checks. Get a maturity tier (Not Ready → Ready → Trusted) and actionable findings."
+          description="Instantly scan any Genie Agent against 12 quality checks. Get a maturity tier (Not Ready → Ready → Trusted) and actionable findings."
           accentColor={SUCCESS}
           glowColor={`${SUCCESS}15`}
         />
         <FeatureCard
           icon={<Zap className="h-6 w-6" />}
           title="Optimize"
-          description="Run a benchmark-driven pipeline for spaces that fail checks or need accuracy validation. Tests real questions and applies validated improvements."
+          description="Run a benchmark-driven pipeline for agents that fail checks or need accuracy validation. Tests real questions and applies validated improvements."
           accentColor={DANGER}
           glowColor={`${DANGER}15`}
         />
@@ -192,7 +192,7 @@ function OverviewContent() {
       <StageCard title="End-to-End Workflow" icon={<ArrowRightLeft className="h-4 w-4" />}>
         <PipelineDiagram
           steps={[
-            { icon: <MessageSquarePlus className="h-5 w-5" />, label: "Create", description: "AI builds your space", color: CYAN },
+            { icon: <MessageSquarePlus className="h-5 w-5" />, label: "Create", description: "AI builds your agent", color: CYAN },
             { icon: <ShieldCheck className="h-5 w-5" />, label: "Score", description: "12-check quality scan", color: SUCCESS },
             { icon: <Zap className="h-5 w-5" />, label: "Optimize", description: "Benchmark & refine", color: DANGER },
             { icon: <CheckCircle2 className="h-5 w-5" />, label: "Trusted", description: "Production-ready", color: SUCCESS },
@@ -212,7 +212,7 @@ function CreateAgentContent() {
     { icon: <Database className="h-5 w-5" />, label: "Data Sources", description: "Pick catalogs & tables", color: INFO },
     { icon: <Search className="h-5 w-5" />, label: "Inspection", description: "AI reads your schema", color: ACCENT },
     { icon: <GitBranch className="h-5 w-5" />, label: "Plan", description: "Parallel plan generation", color: SUCCESS },
-    { icon: <Settings className="h-5 w-5" />, label: "Configure", description: "Build the Genie Space", color: WARNING },
+    { icon: <Settings className="h-5 w-5" />, label: "Configure", description: "Build the Genie Agent", color: WARNING },
     { icon: <CheckCircle2 className="h-5 w-5" />, label: "Created", description: "Ready to score", color: SUCCESS },
   ]
 
@@ -222,14 +222,14 @@ function CreateAgentContent() {
     { name: "list_tables", desc: "Discover tables and their descriptions" },
     { name: "get_table_schema", desc: "Read column names, types, and comments" },
     { name: "run_sql", desc: "Sample data to verify table contents" },
-    { name: "create_genie_space", desc: "Build and configure the final space" },
+    { name: "create_genie_space", desc: "Build and configure the final agent" },
   ]
 
   return (
     <div className="space-y-6">
       <div className="text-center mb-2">
         <h2 className="text-xl font-display font-bold text-primary">Create Agent</h2>
-        <p className="text-sm text-muted mt-1">A multi-turn AI conversation that builds your Genie Space step by step</p>
+        <p className="text-sm text-muted mt-1">A multi-turn AI conversation that builds your Genie Agent step by step</p>
       </div>
 
       <StageCard title="6-Step Progression" subtitle="The agent walks you through each phase" icon={<MessageSquarePlus className="h-4 w-4" />}>
@@ -251,7 +251,7 @@ function CreateAgentContent() {
         <StageCard title="How It Feels" subtitle="What you experience" icon={<Sparkles className="h-4 w-4" />}>
           <div className="space-y-4">
             <div className="rounded-lg bg-elevated border border-default p-4">
-              <p className="text-sm text-secondary italic">"I need a Genie Space for our retail analytics — we have sales transactions and inventory tables in the commerce catalog."</p>
+              <p className="text-sm text-secondary italic">"I need a Genie Agent for our retail analytics — we have sales transactions and inventory tables in the commerce catalog."</p>
               <div className="mt-3 flex items-center gap-2 text-xs text-muted">
                 <div className="h-5 w-5 rounded-full bg-accent/20 flex items-center justify-center">
                   <MessageSquarePlus className="h-3 w-3 text-accent" />
@@ -285,11 +285,11 @@ function CreateAgentContent() {
    ================================================================ */
 function IQScannerContent() {
   const configChecks = [
-    { name: "Space description", desc: "Domain, audience, and scope are clearly defined" },
+    { name: "Agent description", desc: "Domain, audience, and scope are clearly defined" },
     { name: "Table descriptions (≥80%)", desc: "80%+ of tables have meaningful descriptions" },
     { name: "Column descriptions (≥50%)", desc: "50%+ of visible columns are meaningfully documented" },
     { name: "Text instructions (>50 chars)", desc: "Business context and terminology explained" },
-    { name: "Join specifications", desc: "Join paths defined for multi-table spaces" },
+    { name: "Join specifications", desc: "Join paths defined for multi-table agents" },
     { name: "Data source count 1–12", desc: "Optimal number of tables and metric views for accuracy" },
     { name: "SQL guidance artifacts", desc: "At least one snippet, SQL function, or example SQL defined" },
     { name: "Entity/format matching", desc: "Categorical and date/number columns annotated" },
@@ -298,7 +298,7 @@ function IQScannerContent() {
   ]
 
   const optimizationChecks = [
-    { name: "Optimization workflow completed", desc: "Space has been through the optimization pipeline" },
+    { name: "Optimization workflow completed", desc: "Agent has been through the optimization pipeline" },
     { name: "Optimization accuracy ≥ 85%", desc: "Benchmark accuracy meets the trusted threshold" },
   ]
 
@@ -380,7 +380,7 @@ export function AutoOptimizeContent() {
   // The 4-task linear DAG. Baseline evaluation and bounded patch attempts run
   // inside a single `02 Optimize` task.
   const pipelineSteps: PipelineStep[] = [
-    { icon: <Database className="h-5 w-5" />, label: "00 Intake & Snapshot", description: "Read config; snapshot the live space for rollback", color: INFO },
+    { icon: <Database className="h-5 w-5" />, label: "00 Intake & Snapshot", description: "Read config; snapshot the live agent for rollback", color: INFO },
     { icon: <ShieldCheck className="h-5 w-5" />, label: "01 Benchmark QC & Repair", description: "Validate, repair & prune the 30–40-question set", color: CYAN },
     { icon: <RefreshCw className="h-5 w-5" />, label: "02 Optimize", description: "Baseline eval and targeted patch attempts", color: WARNING },
     { icon: <CheckCircle2 className="h-5 w-5" />, label: "03 Publish & Audit", description: "Publish the champion; write the audit record", color: SUCCESS },
@@ -415,7 +415,7 @@ export function AutoOptimizeContent() {
                 <h4 className="text-sm font-semibold" style={{ color: WARNING }}>Iteration 0 — Baseline</h4>
               </div>
               <p className="text-xs text-muted">
-                The current live space is scored with the native Genie Benchmark API and persisted as
+                The current live agent is scored with the native Genie Benchmark API and persisted as
                 the baseline. If it already meets the target, the run stops early.
               </p>
             </div>
@@ -509,7 +509,7 @@ function ArchitectureContent() {
       desc: "Databricks platform services",
       color: WARNING,
       icon: <Network className="h-5 w-5" />,
-      items: ["Unity Catalog for data discovery", "Genie API for space management", "Lakeflow Jobs for optimization pipeline"],
+      items: ["Unity Catalog for data discovery", "Genie API for agent management", "Lakeflow Jobs for optimization pipeline"],
     },
   ]
 
@@ -557,7 +557,7 @@ function ArchitectureContent() {
           steps={[
             { icon: <Globe className="h-5 w-5" />, label: "Browser", description: "React SPA", color: CYAN },
             { icon: <Box className="h-5 w-5" />, label: "FastAPI", description: "OBO middleware", color: ACCENT },
-            { icon: <Database className="h-5 w-5" />, label: "Genie API", description: "Space CRUD", color: INFO },
+            { icon: <Database className="h-5 w-5" />, label: "Genie API", description: "Agent CRUD", color: INFO },
             { icon: <HardDrive className="h-5 w-5" />, label: "Lakebase", description: "State storage", color: SUCCESS },
             { icon: <Network className="h-5 w-5" />, label: "Unity Catalog", description: "Data governance", color: WARNING },
           ]}

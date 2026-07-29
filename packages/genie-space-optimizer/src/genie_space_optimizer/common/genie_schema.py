@@ -1,5 +1,5 @@
 """
-Pydantic v2 models for the Genie Space ``serialized_space`` structure.
+Pydantic v2 models for the Genie Agent ``serialized_space`` structure.
 
 Used to validate config payloads **before** PATCH requests so that
 malformed data never reaches the Databricks API.  All models use
@@ -44,7 +44,7 @@ MAX_SQL_SNIPPETS = 200
 def generate_genie_id() -> str:
     """Generate a valid 32-char lowercase hex ID (time-ordered UUID).
 
-    Follows the Databricks recommendation for Genie space IDs:
+    Follows the Databricks recommendation for Genie Agent IDs:
     time-ordered so that IDs generated in sequence sort alphabetically.
     """
     epoch = datetime.datetime(1582, 10, 15)
@@ -471,7 +471,7 @@ class BenchmarkAnswer(BaseModel):
 
 
 class BenchmarkQuestion(BaseModel):
-    """A single benchmark question entry in the Genie Space config."""
+    """A single benchmark question entry in the Genie Agent config."""
 
     model_config = ConfigDict(extra="allow")
 

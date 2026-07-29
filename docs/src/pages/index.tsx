@@ -8,7 +8,7 @@ import Button from '@site/src/components/Button';
 const CAPABILITIES = [
   {
     title: 'Create',
-    body: 'A multi-turn AI agent walks you from business requirements to a fully configured Genie Space.',
+    body: 'A multi-turn AI agent walks you from business requirements to a fully configured Genie Agent.',
     to: '/docs/features/create-agent',
   },
   {
@@ -37,7 +37,7 @@ const STATS = [
 
 const PERSONAS = [
   {
-    title: 'Genie Space developer',
+    title: 'Genie Agent developer',
     body: 'Build and refine spaces. Start with the Create Agent and the IQ Scanner.',
     to: '/docs/getting-started/introduction',
   },

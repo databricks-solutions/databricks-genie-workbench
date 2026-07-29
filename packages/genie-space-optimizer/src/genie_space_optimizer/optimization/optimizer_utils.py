@@ -244,7 +244,7 @@ def _log_token_usage(span: Any, response: Any) -> None:
 def _resolve_scope(lever: int, apply_mode: str = APPLY_MODE) -> str:
     """Determine where a patch is applied based on lever and apply_mode.
 
-    Levers 4-6 are always ``genie_config`` (Genie Space native structures).
+    Levers 4-6 are always ``genie_config`` (Genie Agent native structures).
     Levers 1-3 are governed by ``apply_mode``.
     """
     if lever in (4, 5, 6):
@@ -253,7 +253,7 @@ def _resolve_scope(lever: int, apply_mode: str = APPLY_MODE) -> str:
 
 
 def _extract_instruction_default_filters(metadata_snapshot: dict) -> list[dict]:
-    """Parse Genie Space instructions for default filter rules."""
+    """Parse Genie Agent instructions for default filter rules."""
     from genie_space_optimizer.optimization.applier import _get_general_instructions
 
     instructions = _get_general_instructions(metadata_snapshot)
@@ -450,7 +450,7 @@ def _generate_space_description(
     metadata_snapshot: dict,
     w: WorkspaceClient | None = None,
 ) -> str:
-    """Generate a structured description for a Genie Space from its schema.
+    """Generate a structured description for a Genie Agent from its schema.
 
     Returns the description text, or ``""`` on failure.
     """
@@ -460,7 +460,7 @@ def _generate_space_description(
         priority_keys=["tables_context"],
     )
     prompt = format_mlflow_template(SPACE_DESCRIPTION_PROMPT, **format_kwargs)
-    system_msg = "You generate structured descriptions for Databricks Genie Spaces."
+    system_msg = "You generate structured descriptions for Databricks Genie Agents."
 
     try:
         text, _response = _traced_llm_call(

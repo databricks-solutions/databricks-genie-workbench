@@ -43,7 +43,7 @@ For the Create Agent's Server-Sent Events endpoint, the `ContextVar` is **not** 
 
 Users can only interact with resources they have permission to access:
 - **Unity Catalog**: catalogs, schemas, tables visible to the user
-- **Genie Spaces**: only spaces the user can manage
+- **Genie Agents**: only spaces the user can manage
 - **SQL Warehouse**: queries execute under the user's identity
 - **Space creation/modification**: spaces are created and patched as the user
 
@@ -67,7 +67,7 @@ def _is_scope_error(e: Exception) -> bool:
     return "scope" in msg or "insufficient_scope" in msg
 ```
 
-For this fallback to work, the SP must have **CAN_MANAGE** on each Genie Space.
+For this fallback to work, the SP must have **CAN_MANAGE** on each Genie Agent.
 
 #### 2. Optimization job execution
 
@@ -113,7 +113,7 @@ The `user_api_scopes` in `app.yaml` request these scopes for the user's OBO toke
 | Scope | Purpose |
 |-------|---------|
 | `sql` | Execute SQL queries via warehouses |
-| `dashboards.genie` | Access Genie Space API |
+| `dashboards.genie` | Access Genie Agent API |
 | `serving.serving-endpoints` | Call model serving endpoints (LLM) |
 | `catalog.catalogs:read` | Browse Unity Catalog catalogs |
 | `catalog.schemas:read` | Browse Unity Catalog schemas |
@@ -125,13 +125,13 @@ If the workspace or user's OAuth consent doesn't grant all scopes, the app degra
 
 ## SP Permissions Required
 
-### Per Genie Space
+### Per Genie Agent
 
 | Permission | Purpose |
 |-----------|---------|
 | `CAN_MANAGE` | API fallback when user token lacks Genie scope; applying optimization patches during the GSO pipeline |
 
-Grant via the Genie Space sharing UI or the installer (`scripts/install.sh` automates this).
+Grant via the Genie Agent sharing UI or the installer (`scripts/install.sh` automates this).
 
 ### Per referenced data schema
 
@@ -170,7 +170,7 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 
 | Operation | Identity | Code Reference | Rationale |
 |-----------|----------|---------------|-----------|
-| Browse Genie Spaces, UC catalogs/schemas/tables | OBO (user) | `services/uc_client.py`, `routers/create.py` | User sees only what they have access to |
+| Browse Genie Agents, UC catalogs/schemas/tables | OBO (user) | `services/uc_client.py`, `routers/create.py` | User sees only what they have access to |
 | Genie API — fetch/list spaces | OBO → SP fallback | `services/genie_client.py` `_is_scope_error()` | User token may lack `dashboards.genie` scope |
 | Create Agent — tools, SQL, space creation | OBO (user) | `services/create_agent.py`, `services/create_agent_tools.py` | Space created under user identity |
 | Trigger optimization — permission check | OBO (user) | `integration/trigger.py` `user_can_edit_space()` | Verify user has CAN_EDIT/CAN_MANAGE |
@@ -184,7 +184,7 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 
 ## Security Considerations
 
-1. **Authorization before execution** — the user must have `CAN_EDIT` or `CAN_MANAGE` on the Genie Space before any optimization job is submitted. This check happens with the user's OBO token, not the SP.
+1. **Authorization before execution** — the user must have `CAN_EDIT` or `CAN_MANAGE` on the Genie Agent before any optimization job is submitted. This check happens with the user's OBO token, not the SP.
 
 2. **SP entitlement validated** — even if the user is authorized, the SP must also have `CAN_MANAGE` on the space. If the SP lacks access, the trigger is rejected with a clear error.
 

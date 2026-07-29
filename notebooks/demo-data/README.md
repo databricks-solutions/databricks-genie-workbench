@@ -42,6 +42,6 @@ The user running a notebook needs:
 3. Optionally change `SCHEMA`.
 4. Leave `OVERWRITE_EXISTING` as `False` for the first run.
 5. Run the notebook from the top.
-6. In Genie Workbench, create or optimize a Genie space that references the generated tables.
+6. In Genie Workbench, create or optimize a Genie Agent that references the generated tables.
 
 To refresh a demo dataset, rerun the notebook with `OVERWRITE_EXISTING` set to `True`.

@@ -178,13 +178,13 @@ const REVERT_LABEL: Record<RevertTarget, string> = {
 }
 
 const REVERT_HINT: Record<RevertTarget, string> = {
-  champion: "Roll the live Genie Space back to this run's champion (winning) configuration.",
-  baseline: "Roll the live Genie Space back to this run's starting (pre-optimization) configuration.",
+  champion: "Roll the live Genie Agent back to this run's champion (winning) configuration.",
+  baseline: "Roll the live Genie Agent back to this run's starting (pre-optimization) configuration.",
 }
 
 const REVERT_CONFIRM: Record<RevertTarget, string> = {
-  champion: "Roll space back to champion?",
-  baseline: "Roll space back to baseline?",
+  champion: "Roll agent back to champion?",
+  baseline: "Roll agent back to baseline?",
 }
 
 const REVERT_ICON: Record<RevertTarget, React.ReactNode> = {
@@ -200,11 +200,11 @@ interface RevertButtonProps {
 }
 
 /**
- * Per-row revert affordance. Re-PATCHes the live Genie Space with either the
+ * Per-row revert affordance. Re-PATCHes the live Genie Agent with either the
  * run's champion config (``target="champion"``) or its pre-run baseline
  * (``target="baseline"``) via ``POST /auto-optimize/runs/{id}/revert?target=``.
  * Destructive (it overwrites the live space config), so it's gated behind an
- * inline confirm and disabled whenever any run for the Space is active.
+ * inline confirm and disabled whenever any run for the agent is active.
  */
 export function RevertButton({ run, target, disabled, onReverted }: RevertButtonProps) {
   const [phase, setPhase] = useState<RevertPhase>("idle")
@@ -227,7 +227,7 @@ export function RevertButton({ run, target, disabled, onReverted }: RevertButton
           ? e.message
           : e instanceof Error
             ? e.message
-            : "Failed to revert the Genie Space."
+            : "Failed to revert the Genie Agent."
       setError(message)
       setPhase("error")
     }
@@ -305,7 +305,7 @@ export function RevertButton({ run, target, disabled, onReverted }: RevertButton
       disabled={disabled}
       title={
         disabled
-          ? `Wait for the active optimization on this Space to finish before reverting history.`
+          ? `Wait for the active optimization on this agent to finish before reverting history.`
           : REVERT_HINT[target]
       }
       className="flex items-center gap-1 text-xs text-accent hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"

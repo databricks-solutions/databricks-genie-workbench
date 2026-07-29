@@ -5,7 +5,7 @@ import pytest
 
 def _make_table(name, *, description=None, columns=None, column_configs=None,
                 entity_matching=False, format_assistance=False, row_filter=None):
-    """Helper to build a table dict matching Genie Space config format."""
+    """Helper to build a table dict matching Genie Agent config format."""
     t = {"name": name, "identifier": f"catalog.schema.{name}"}
     if description:
         t["description"] = description

@@ -5,7 +5,7 @@
 # MAGIC | Quick Reference | |
 # MAGIC |---|---|
 # MAGIC | **Task** | `optimize` |
-# MAGIC | **Reads** | benchmarks, live Genie Space config |
+# MAGIC | **Reads** | benchmarks, live Genie Agent config |
 # MAGIC | **Writes** | `genie_opt_iterations`, `genie_opt_patches`, `genie_opt_stages` |
 # MAGIC | **Log label** | `[TASK OPTIMIZE]` |
 # MAGIC

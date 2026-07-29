@@ -196,7 +196,7 @@ def _p(name: str, value: Any, value_type: str = "STRING") -> StatementParameterL
 #
 # Scoping is done with the `workspace_id` column present on every system table
 # we read (query.history, billing.usage, access.table_lineage, access.audit) —
-# a Genie space's queries always run on a warehouse in the space's own
+# a Genie Agent's queries always run on a warehouse in the agent's own
 # workspace, so `workspace_id` cleanly identifies the owning workspace and also
 # preserves history for spaces that have since been deleted. The Genie API
 # remains the source for the *set* of spaces and their metadata (titles,
@@ -523,7 +523,7 @@ def usage_summary_all_spaces(days: int = 7) -> list[dict[str, Any]]:
 
 
 # ─── Workspace overview (native cost-tab dashboard) ────────────────────────
-# Powers the app's own Genie Spaces Overview panel (KPI tiles + daily trend),
+# Powers the app's own Genie Agents Overview panel (KPI tiles + daily trend),
 # replacing the embedded AI/BI dashboard. Cost is attributed the same way as
 # top_spenders: a genie query gets a share of its warehouse-hour's USD by its
 # share of that hour's task time. Workspace-scoped + fail-closed via {ws}.

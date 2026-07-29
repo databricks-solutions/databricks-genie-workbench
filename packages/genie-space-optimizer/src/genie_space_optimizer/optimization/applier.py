@@ -2,7 +2,7 @@
 Optimization Applier — patch rendering, application, and rollback.
 
 Converts optimizer proposals into Patch DSL actions, applies them to the
-Genie Space config (and optionally UC artifacts), and supports full
+Genie Agent config (and optionally UC artifacts), and supports full
 snapshot-based rollback.
 """
 
@@ -76,11 +76,11 @@ from genie_space_optimizer.optimization.applier_audit import (
 logger = logging.getLogger(__name__)
 
 
-_MAX_INSTRUCTION_CHARS = 24_500  # Genie Space API enforces 25 000; leave margin
+_MAX_INSTRUCTION_CHARS = 24_500  # Genie Agent API enforces 25 000; leave margin
 
 
 # ── Join Spec Helpers ─────────────────────────────────────────────────
-# The Genie Space API uses nested objects for join specs:
+# The Genie Agent API uses nested objects for join specs:
 #   {"left": {"identifier": "...", "alias": "..."}, "right": {...}, "sql": [...]}
 # These helpers extract identifiers for matching across add/update/remove ops.
 
@@ -1106,7 +1106,7 @@ def rewrite_instructions_from_miner_output(
     """Span-based canonical rewrite of instruction prose.
 
     Called once per miner invocation, AFTER every target-specific applier
-    has committed its changes to the Genie Space config. Produces the new
+    has committed its changes to the Genie Agent config. Produces the new
     ``text_instructions`` content that reflects:
 
     - Removal of every promoted span (``applied_spans``).
@@ -1556,7 +1556,7 @@ def _ensure_column_configs_from_uc(
 ) -> int:
     """Populate column_configs from UC metadata for columns not yet present.
 
-    The Genie Space API only returns column_configs for explicitly configured
+    The Genie Agent API only returns column_configs for explicitly configured
     columns. For unconfigured spaces every table has column_configs: [].
     This bootstraps entries so that format assistance and entity matching
     loops have something to iterate over.
@@ -1599,7 +1599,7 @@ def auto_apply_prompt_matching(
     """Enable format assistance and entity matching as a best-practice step.
 
     Operates deterministically (no LLM calls).  Mutates ``config`` in-place
-    and PATCHes the Genie Space via the API.
+    and PATCHes the Genie Agent via the API.
 
     When ``ENABLE_SMARTER_SCORING=True`` (default) the scoring path uses
     the profile / benchmarks / RLS-audit-aware scorer and **filters**
@@ -3408,7 +3408,7 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
 
 
 def _apply_action_to_config(config: dict, action: dict) -> bool:
-    """Apply a single rendered action to a Genie Space config dict in-place.
+    """Apply a single rendered action to a Genie Agent config dict in-place.
 
     Returns True if applied, False if skipped (e.g. old_text guard failed).
     """
@@ -4034,7 +4034,7 @@ def apply_patch_set(
     force_apply: bool = False,
     benchmark_corpus: "BenchmarkCorpus | None" = None,
 ) -> dict:
-    """Apply a patch set to a Genie Space (and optionally UC artifacts).
+    """Apply a patch set to a Genie Agent (and optionally UC artifacts).
 
     Applies in risk order: LOW -> MEDIUM -> HIGH.
     High-risk patches are queued for manual review unless *force_apply*
@@ -4232,7 +4232,7 @@ def apply_patch_set(
                     )
                 ok = True
             except Exception:
-                logger.exception("Genie Space metadata action failed for %s", patch_type)
+                logger.exception("Genie Agent metadata action failed for %s", patch_type)
                 ok = False
         else:
             if scope in ("genie_config", "both"):
@@ -4439,7 +4439,7 @@ def apply_patch_set(
         except Exception as exc:
             patch_error = str(exc)
             logger.exception(
-                "Failed to PATCH Genie Space config after retries — "
+                "Failed to PATCH Genie Agent config after retries — "
                 "patches were NOT deployed remotely",
             )
 
@@ -4554,7 +4554,7 @@ def rollback(
     space_id: str,
     metadata_snapshot: dict | None = None,
 ) -> dict:
-    """Restore the Genie Space config to its pre-patch state.
+    """Restore the Genie Agent config to its pre-patch state.
 
     Primary mechanism: replace current config with ``apply_log["pre_snapshot"]``.
     Fallback: execute rollback_commands in reverse order (HIGH -> MEDIUM -> LOW).

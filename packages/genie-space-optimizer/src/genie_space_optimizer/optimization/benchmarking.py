@@ -2186,7 +2186,7 @@ def extract_genie_space_benchmarks(
     w: Any = None,
     warehouse_id: str = "",
 ) -> list[dict]:
-    """Extract benchmark questions from a Genie Space config.
+    """Extract benchmark questions from a Genie Agent config.
 
     Sources:
       1. ``benchmarks.questions`` — user-authored benchmark questions, with
@@ -2238,7 +2238,7 @@ def extract_genie_space_benchmarks(
                 validation_reason_code = "ok"
             else:
                 logger.warning(
-                    "Genie space benchmark source SQL failed validation: %s -- %s",
+                    "Genie Agent benchmark source SQL failed validation: %s -- %s",
                     normalized_question[:60],
                     err,
                 )
@@ -2294,7 +2294,7 @@ def extract_genie_space_benchmarks(
     benchmarks = _filter_example_sql_mirrored_benchmarks(benchmarks, config)
 
     logger.info(
-        "Extracted %d benchmark question(s) from Genie space config "
+        "Extracted %d benchmark question(s) from Genie Agent config "
         "(%d with SQL, %d requiring SQL generation)",
         len(benchmarks),
         sum(1 for b in benchmarks if b.get("expected_sql")),
@@ -2303,7 +2303,7 @@ def extract_genie_space_benchmarks(
     return benchmarks
 
 def _build_valid_assets_context(config: dict) -> str:
-    """Build an explicit allowlist of Genie space data assets for the LLM prompt.
+    """Build an explicit allowlist of Genie Agent data assets for the LLM prompt.
 
     Uses the *effective* MV / table classification so that any
     ``data_sources.tables`` entries Genie serialized but which carry
@@ -2983,7 +2983,7 @@ def _extract_fully_qualified_routine_calls(sql: str) -> set[str]:
     The extractor is intentionally catalog/schema-independent. Benchmark
     provenance must not depend on the optimizer's current SQL context because
     the failing 7now case used a valid physical UC routine that was not a
-    Genie Space asset.
+    Genie Agent asset.
     """
     calls: set[str] = set()
     for match in _SQL_FQ_ROUTINE_CALL_PATTERN.finditer(sql or ""):
@@ -2995,7 +2995,7 @@ def _extract_fully_qualified_routine_calls(sql: str) -> set[str]:
     return calls
 
 def _benchmark_space_routine_violations(sql: str, config: dict) -> list[str]:
-    """Return fully-qualified routine calls not registered in the Genie Space."""
+    """Return fully-qualified routine calls not registered in the Genie Agent."""
     calls = _extract_fully_qualified_routine_calls(sql)
     if not calls:
         return []
@@ -3010,7 +3010,7 @@ def _mark_function_not_in_space_if_needed(candidate: dict, config: dict) -> bool
     """Mark a benchmark candidate invalid when SQL calls unregistered routines.
 
     Returns ``True`` when the candidate was mutated (i.e. a routine the
-    Genie Space does not own was found). The candidate's
+    Genie Agent does not own was found). The candidate's
     ``validation_status``, ``validation_reason_code``, ``validation_error``,
     and ``quarantine_reason_*`` keys are stamped so downstream consumers
     treat it as a quarantined invalid benchmark rather than a Genie failure.
@@ -3024,7 +3024,7 @@ def _mark_function_not_in_space_if_needed(candidate: dict, config: dict) -> bool
 
     message = (
         "Benchmark SQL references routine(s) that exist in UC but are not "
-        f"registered in this Genie Space: {violations[:5]}"
+        f"registered in this Genie Agent: {violations[:5]}"
     )
     candidate["validation_status"] = "invalid"
     candidate["validation_reason_code"] = "function_not_in_space"
@@ -3140,11 +3140,11 @@ def _compute_asset_coverage(
     benchmarks: list[dict],
     config: dict,
 ) -> dict[str, Any]:
-    """Identify which Genie Space assets have/lack benchmark coverage.
+    """Identify which Genie Agent assets have/lack benchmark coverage.
 
     Collects covered assets from ``required_tables`` and ``expected_sql``
     SQL references across all benchmarks, then diffs against the full asset
-    list from the Genie Space config.
+    list from the Genie Agent config.
 
     Returns a dict with ``covered``, ``uncovered_tables``,
     ``uncovered_mvs``, ``uncovered_functions``, and ``uncovered_joins``
@@ -3170,7 +3170,7 @@ def _compute_asset_coverage(
 
     covered_leaves = {_leaf(c) for c in covered if c}
 
-    # Configured join pairs from Genie Space join specs
+    # Configured join pairs from Genie Agent join specs
     parsed_space = config.get("_parsed_space", {})
     if not isinstance(parsed_space, dict):
         parsed_space = {}
@@ -3219,7 +3219,7 @@ def _fill_coverage_gaps(
     target_benchmark_count: int = TARGET_BENCHMARK_COUNT,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> list[dict]:
-    """Generate targeted benchmarks for Genie Space assets with zero coverage.
+    """Generate targeted benchmarks for Genie Agent assets with zero coverage.
 
     Runs after the main generation pipeline. Identifies uncovered assets via
     ``_compute_asset_coverage``, then makes a single LLM call asking for 1-2
@@ -3250,7 +3250,7 @@ def _fill_coverage_gaps(
     uncovered_joins: set[tuple[str, str]] = coverage.get("uncovered_joins", set())
 
     if not uncovered_tables and not uncovered_mvs and not uncovered_functions and not uncovered_joins:
-        logger.info("All Genie Space assets and join paths already covered by benchmarks")
+        logger.info("All Genie Agent assets and join paths already covered by benchmarks")
         return []
 
     # Prioritise MVs and TVFs (higher routing-issue risk), then tables, then joins.
@@ -3689,7 +3689,7 @@ def _enforce_instruction_default_filters_on_benchmarks(
 ) -> int:
     """Ensure benchmarks include instruction-mandated default filters in their SQL.
 
-    Reads default filter rules from the Genie Space instructions and checks
+    Reads default filter rules from the Genie Agent instructions and checks
     each benchmark's ``expected_sql``. If a benchmark's SQL is missing a
     mandated filter, appends it to the WHERE clause.
 
@@ -3786,12 +3786,12 @@ def generate_benchmarks(
     *,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> list[dict]:
-    """Generate benchmark questions via LLM from Genie Space context.
+    """Generate benchmark questions via LLM from Genie Agent context.
 
     Pipeline:
-      1. Start with curated Genie space benchmarks (if provided)
+      1. Start with curated Genie Agent benchmarks (if provided)
       2. Calculate how many synthetic benchmarks to generate to reach target
-      3. Build schema context from actual Genie Space assets + UC metadata
+      3. Build schema context from actual Genie Agent assets + UC metadata
       4. Call LLM with BENCHMARK_GENERATION_PROMPT (includes valid asset allowlist)
       5. Enforce strict metadata constraints (assets/routines/required fields)
       6. Run deterministic metadata drift auto-correction (field suggestions)
@@ -3822,7 +3822,7 @@ def generate_benchmarks(
 
     if curated:
         logger.info(
-            "Starting with %d curated Genie space benchmarks (%d with SQL). "
+            "Starting with %d curated Genie Agent benchmarks (%d with SQL). "
             "Generating %d synthetic to reach target of %d.",
             len(curated),
             sum(1 for b in curated if b.get("expected_sql")),
@@ -4338,7 +4338,7 @@ def generate_benchmarks(
     all_benchmarks = assign_splits(all_benchmarks)
 
     logger.info(
-        "Final benchmark set: %d total (%d curated from Genie space, "
+        "Final benchmark set: %d total (%d curated from Genie Agent, "
         "%d synthetic, %d gap-fill, %d discarded out of %d raw generated)",
         len(all_benchmarks),
         len(curated),

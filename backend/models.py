@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 # ===== GenieIQ Models =====
 
 class MaturityLevel(str, Enum):
-    """Maturity level for a Genie Space (3-tier)."""
+    """Maturity level for a Genie Agent (3-tier)."""
     NOT_READY = "Not Ready"
     READY_TO_OPTIMIZE = "Ready to Optimize"
     TRUSTED = "Trusted"
@@ -22,7 +22,7 @@ class CheckDetail(BaseModel):
 
 
 class ScanResult(BaseModel):
-    """IQ scan result for a Genie Space."""
+    """IQ scan result for a Genie Agent."""
     space_id: str
     score: int = Field(..., ge=0, le=12)
     total: int = 12

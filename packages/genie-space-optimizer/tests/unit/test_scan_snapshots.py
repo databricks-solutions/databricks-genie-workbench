@@ -32,7 +32,7 @@ def _sample_scan_result() -> dict:
         "score": 7,
         "total": 12,
         "maturity": "Ready to Optimize",
-        "checks": [{"label": "Space description", "passed": True, "severity": "pass"}],
+        "checks": [{"label": "Agent description", "passed": True, "severity": "pass"}],
         "findings": ["Only 5 example SQL questions"],
         "warnings": ["Column descriptions at 60%"],
         "scanned_at": "2025-01-15T12:00:00+00:00",
@@ -110,7 +110,7 @@ class TestWriteScanSnapshot:
         # Pull out the checks_json literal from the SQL and round-trip it.
         # The string form in SQL wraps the JSON in single quotes and doubles any
         # embedded quotes; undo that to get the original JSON.
-        label = "Space description"
+        label = "Agent description"
         # Loose assertion: the checks json appears verbatim somewhere in the SQL.
         assert label in merge_sql
         # And the serialized form round-trips.

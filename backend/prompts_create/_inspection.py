@@ -22,7 +22,7 @@ Do NOT run all inspection tools in a single batch. The phased approach lets the 
 ask questions as you go.
 
 **Summarize findings conversationally.** Don't dump raw tool output. Lead with insights — what's interesting, \
-what matters for the Genie Space, what needs the user's input. Structure your summary like a conversation, \
+what matters for the Genie Agent, what needs the user's input. Structure your summary like a conversation, \
 not a report:
 
 > "Here's what I found across your 3 tables:

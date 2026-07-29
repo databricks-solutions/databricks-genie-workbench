@@ -1,11 +1,11 @@
 # Genie Workbench
 
-Genie Workbench is a Databricks App for creating, scoring, and optimizing Databricks Genie Spaces. It combines a FastAPI backend, React/Vite frontend, Databricks On-Behalf-Of auth, Lakebase persistence, and the Genie Space Optimizer (GSO) benchmark pipeline.
+Genie Workbench is a Databricks App for creating, scoring, and optimizing Databricks Genie Agents. It combines a FastAPI backend, React/Vite frontend, Databricks On-Behalf-Of auth, Lakebase persistence, and the Genie Space Optimizer (GSO) benchmark pipeline.
 
 Use it to:
 
-- Create Genie Spaces from business requirements and Unity Catalog data sources
-- Score Genie Space quality with an instant rule-based IQ scan
+- Create Genie Agents from business requirements and Unity Catalog data sources
+- Score Genie Agent quality with an instant rule-based IQ scan
 - Apply quick fixes to existing spaces
 - Run benchmark-driven optimization through the Auto-Optimize pipeline
 - Track scan history, starred spaces, sessions, and optimization state
@@ -83,7 +83,7 @@ The installer creates a Databricks App, UC schema/volume/tables, a Lakebase Auto
 - Lakebase Autoscaling project creation and ownership (to create the Postgres role and run database `GRANT`s)
 - Workspace files write for `databricks sync` and the MLflow experiment path
 - Jobs create entitlement and `CAN_MANAGE` on the GSO job
-- `CAN_MANAGE` on any Genie Spaces being granted to the app SP (optional step)
+- `CAN_MANAGE` on any Genie Agents being granted to the app SP (optional step)
 
 For the full entitlement list, see [Installer permissions](docs/docs/getting-started/deployment-guide.md#installer-permissions) and [Authentication & Permissions](docs/docs/platform/authentication.md).
 

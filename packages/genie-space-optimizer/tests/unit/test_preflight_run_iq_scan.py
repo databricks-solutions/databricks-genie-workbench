@@ -319,4 +319,4 @@ class TestStrategistSummaryShape:
             "failed_checks", "warnings", "outcome_checks",
             "recommended_levers", "guidance",
         }
-        assert any(c["label"] == "Space description" for c in quality["failed_checks"])
+        assert any(c["label"] == "Agent description" for c in quality["failed_checks"])

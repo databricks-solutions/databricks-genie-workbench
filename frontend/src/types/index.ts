@@ -160,7 +160,7 @@ export interface CurrentUser {
   auth_source: string
 }
 
-// Benchmark question from Genie Space JSON
+// Benchmark question from Genie Agent JSON
 export interface BenchmarkQuestion {
   id: string
   question: string[]
@@ -508,7 +508,7 @@ export interface GSOIterationResult {
   // fields, merged from genie_opt_iterations. The UI reads is_champion as
   // authoritative instead of re-deriving idxmax(accuracy). All optional: legacy
   // runs / pre-migration tables omit them. config_json is the FULL effective
-  // Genie Space config for this iteration (raw JSON string).
+  // Genie Agent config for this iteration (raw JSON string).
   is_champion?: boolean
   config_json?: string | null
   attempt_no?: number | null
@@ -618,7 +618,7 @@ export interface GSOQuestionDetail {
 
 // GSO v2 Phase 6 (§3.5) — benchmark provenance ledger. Each entry records a
 // benchmark question GSO added / removed / changed (or recommended for prune)
-// in the user's live Genie Space, with provenance. Backed by
+// in the user's live Genie Agent, with provenance. Backed by
 // genie_opt_benchmark_mutations via /runs/{id}/benchmark-changes.
 export type GSOBenchmarkOp = "added" | "removed" | "changed" | "prune_recommended"
 

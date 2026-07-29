@@ -1,4 +1,4 @@
-# Best Practices: Patching a Genie Space After Poor Benchmark Results
+# Best Practices: Patching a Genie Agent After Poor Benchmark Results
 
 ## Phase 1: Diagnosis — Understand What Failed and Why
 

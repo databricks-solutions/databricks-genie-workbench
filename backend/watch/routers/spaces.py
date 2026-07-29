@@ -130,7 +130,7 @@ async def get_space(space_id: str) -> dict:
     try:
         raw = genie_client.get_genie_space(sid)
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Genie space not found: {e}")
+        raise HTTPException(status_code=404, detail=f"Genie Agent not found: {e}")
 
     perms_payload = None
     try:

@@ -111,7 +111,7 @@ export default function App() {
               }`}
             >
               <LayoutGrid className="w-4 h-4" />
-              Spaces
+              Agents
             </button>
             <button
               onClick={handleNavAdmin}
@@ -171,7 +171,7 @@ export default function App() {
             and component state survive navigation to other pages. */}
         <div className={currentView === "create" ? undefined : "hidden"}>
           <div className="mb-4">
-            <h1 className="text-2xl font-bold text-primary">Create Genie Space</h1>
+            <h1 className="text-2xl font-bold text-primary">Create Genie Agent</h1>
             <p className="text-muted text-sm mt-1">
               AI-guided creation with live progress tracking — describe what you need and fill in details as you go
             </p>

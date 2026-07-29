@@ -1,4 +1,4 @@
-"""Parallel plan generation — builds a Genie Space plan via concurrent LLM calls.
+"""Parallel plan generation — builds a Genie Agent plan via concurrent LLM calls.
 
 Instead of one monolithic LLM call that generates the entire plan JSON (slow,
 truncation-prone), this module splits the plan into 5 independent sections and
@@ -53,7 +53,7 @@ def generate_plan(
     user_requirements: str,
     model: str | None = None,
 ) -> dict:
-    """Generate a complete Genie Space plan via parallel LLM calls.
+    """Generate a complete Genie Agent plan via parallel LLM calls.
 
     Args:
         tables_context: List of table dicts from describe_table results, each with
@@ -370,7 +370,7 @@ def _gen_tables(shared: str, tables_context: list[dict], model: str | None = Non
         return {"tables": [], "metric_views": metric_views}
 
     prompt = (
-        "You are enriching table and column metadata for a Databricks Genie Space.\n\n"
+        "You are enriching table and column metadata for a Databricks Genie Agent.\n\n"
         "For each table below:\n"
         "1. If the table description is empty or vague, write a clear 1-2 sentence description.\n"
         "2. Add a brief description for EVERY column that doesn't already have one.\n"
@@ -408,17 +408,17 @@ def _gen_tables(shared: str, tables_context: list[dict], model: str | None = Non
 def _gen_questions_instructions(shared: str, model: str | None = None) -> dict:
     """Generate sample_questions and text_instructions."""
     prompt = (
-        "You are creating sample questions and text instructions for a Databricks Genie Space.\n\n"
+        "You are creating sample questions and text instructions for a Databricks Genie Agent.\n\n"
         "Based on the context below, generate:\n"
-        "1. **suggested_display_name**: A concise, professional name for the Genie Space "
+        "1. **suggested_display_name**: A concise, professional name for the Genie Agent "
         "(e.g., 'NYC Taxi Revenue Performance', 'TPC-H Sales Analytics', 'Customer Support Dashboard')\n"
         "2. **sample_questions**: EXACTLY 5 natural-language questions a business user would ask\n"
-        "3. **text_instructions**: Domain knowledge for the Genie agent, organized under the "
+        "3. **text_instructions**: Domain knowledge for the Genie Agent, organized under the "
         "canonical GSL section headers (see rules below).\n\n"
         "Text instructions should contain ONLY business logic and terminology — NOT SQL formulas, "
         "filter expressions, or join definitions (those go in other sections).\n\n"
         "**Section vocabulary (use these exact headers, omit any that are empty, keep this order):**\n"
-        "- `## PURPOSE` — one or two bullets stating the space's scope and audience.\n"
+        "- `## PURPOSE` — one or two bullets stating the agent's scope and audience.\n"
         "- `## DISAMBIGUATION` — clarification-question triggers and term-resolution rules "
         "(e.g., \"When the user asks about 'customer performance' without a time range, ask them to clarify the period\"; "
         "\"'Q1' means calendar Q1 unless the user says 'fiscal Q1'\").\n"
@@ -457,7 +457,7 @@ def _gen_example_sqls(shared: str, model: str | None = None) -> dict:
     complex multi-table queries with CTEs.
     """
     prompt = (
-        "You are creating example SQL queries for a Databricks Genie Space.\n\n"
+        "You are creating example SQL queries for a Databricks Genie Agent.\n\n"
         "Generate EXACTLY 12 question+SQL pairs that teach Genie how to write correct queries.\n"
         "   - Use fully-qualified table names (catalog.schema.table)\n"
         "   - Use parameterized SQL (:param_name) when the question involves user-supplied values\n"
@@ -497,9 +497,9 @@ def _gen_benchmarks(shared: str, model: str | None = None) -> dict:
     complex multi-table queries.
     """
     prompt = (
-        "You are creating benchmark tests for a Databricks Genie Space.\n\n"
+        "You are creating benchmark tests for a Databricks Genie Agent.\n\n"
         "Generate EXACTLY 10 question + expected_sql pairs for validation.\n"
-        "These are used to score the Genie space quality — cover a representative spread.\n"
+        "These are used to score the Genie Agent quality — cover a representative spread.\n"
         "   - Use fully-qualified table names (catalog.schema.table)\n"
         "   - Benchmarks MUST use hardcoded literal values — NO :param_name placeholders\n"
         "   - Include aggregation, filtering, grouping, and join patterns\n"
@@ -540,7 +540,7 @@ def _gen_analytics(shared: str, model: str | None = None) -> dict:
     within the 5000 max_tokens budget.
     """
     prompt = (
-        "You are creating analytics scaffolding for a Databricks Genie Space.\n\n"
+        "You are creating analytics scaffolding for a Databricks Genie Agent.\n\n"
         "Based on the context below, generate ALL of the following sections:\n\n"
         "1. **join_specs**: Table relationships for multi-table queries (up to 5).\n"
         "   Each: {left_table, right_table, left_column, right_column, "
@@ -842,7 +842,7 @@ def _check_benchmark_alignment(
         return None
 
     prompt = (
-        "You are reviewing a benchmark test for a Databricks Genie Space.\n\n"
+        "You are reviewing a benchmark test for a Databricks Genie Agent.\n\n"
         f"Question: {question}\n"
         f"Expected SQL: {sql}\n\n"
         "Check if this expected SQL is the MOST DIRECT answer to the question:\n"

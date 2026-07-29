@@ -56,7 +56,7 @@ function resolvedStatusFrom409(e: ApiError, action: ResolutionAction): ResolvedS
 
 /**
  * Keep (``apply``) marks the run APPLIED; Discard (``discard``) re-PATCHes the
- * original ``space_snapshot`` to roll the live Genie Space back (the backend
+ * original ``space_snapshot`` to roll the live Genie Agent back (the backend
  * ``/discard`` endpoint). A 409 means the run was already resolved elsewhere —
  * surface that terminal state instead of a raw error.
  */

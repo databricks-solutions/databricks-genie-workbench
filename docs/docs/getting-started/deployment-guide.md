@@ -82,7 +82,7 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; defaults to `<app-name>-lakebase` for `create`. Leave blank when `lakebase_mode` is `skip` |
 
 :::note
-The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Spaces to the app service principal, so the user needs `CAN_MANAGE` on each visible space they want the app to manage.
+The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible space they want the app to manage.
 :::
 
 <!-- TODO(screenshot): the installer notebook open in the workspace with widgets visible -->
@@ -99,7 +99,7 @@ The installer uses the shared `scripts.deploy_lib` Python library and notebook-n
 5. Creates or updates the GSO optimization job (`<app-name>-gso-optimization-job`) via the SDK/Jobs API
 6. Renders a patched `app.yaml` into the generated source folder and patches app OAuth scopes and resources
 7. Deploys the app from the generated source folder
-8. Grants the app SP access to visible Genie Spaces
+8. Grants the app SP access to visible Genie Agents
 
 The Git folder is never modified — the generated workspace folder is deployment output; do not edit it by hand.
 
@@ -146,7 +146,7 @@ The installer will:
 8. Write `.env.deploy` with your configuration (including the default LLM endpoint)
 9. Run `scripts/deploy.sh` to build and deploy the app
 10. Resolve the app's service principal
-11. Optionally grant the SP access to your existing Genie Spaces
+11. Optionally grant the SP access to your existing Genie Agents
 
 ## Lakebase (automated)
 
@@ -204,7 +204,7 @@ This applies to **Method 2 (local terminal)**. The notebook installer runs the e
 It does **not** remove:
 - Lakebase data (the `genie` schema in `databricks_postgres`)
 - Unity Catalog schema/tables (`<catalog>.genie_space_optimizer` and its tables)
-- Genie Space SP permissions granted during install
+- Genie Agent SP permissions granted during install
 - MLflow experiments created during install
 - Synced tables (if manually created)
 

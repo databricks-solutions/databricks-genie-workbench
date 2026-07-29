@@ -17,7 +17,7 @@ export function ResourceRollup() {
         <div>
           <h1 className="text-2xl font-semibold">Resource Rollup</h1>
           <p className="text-sm text-muted">
-            Most-referenced tables across all Genie Spaces in the workspace.
+            Most-referenced tables across all Genie Agents in the workspace.
           </p>
         </div>
         <select
@@ -64,7 +64,7 @@ function RollupTable({ days }: { days: number }) {
           <thead className="border-b border-default bg-elevated text-left text-xs uppercase text-muted">
             <tr>
               <th className="px-4 py-2">Table</th>
-              <th className="px-4 py-2 text-right">Spaces using</th>
+              <th className="px-4 py-2 text-right">Agents using</th>
               <th className="px-4 py-2 text-right">Total queries</th>
               <th className="px-4 py-2">Last used</th>
             </tr>

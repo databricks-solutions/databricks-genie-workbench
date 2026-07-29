@@ -1,5 +1,5 @@
 """
-Delta-backed state machine for Genie Space optimization runs.
+Delta-backed state machine for Genie Agent optimization runs.
 
 Persists stage transitions, iteration scores, and patch records in the
 canonical GSO Delta tables. The optimization workflow writes them and the
@@ -1091,7 +1091,7 @@ def mark_patches_rolled_back(
         )
     except Exception:
         # Non-fatal: the patches-table stamp is still correct, so the
-        # deployed Genie Space state is accurate. Only the iteration
+        # deployed Genie Agent state is accurate. Only the iteration
         # filter downstream is affected; readers fall back to reading
         # ``rolled_back`` from patches via a join if needed.
         logger.warning(
@@ -1174,7 +1174,7 @@ def write_benchmark_mutations(
     """Append GSO benchmark-mutation provenance rows (v2 §3.5).
 
     Each ``row`` describes one mutation (or advisory) GSO recorded against
-    the user's live Genie Space benchmark set:
+    the user's live Genie Agent benchmark set:
     ``{question_id, op, before, after, reason}`` where ``op`` ∈
     {``added``, ``removed``, ``changed``, ``prune_recommended``}.
     ``prune_recommended`` is a NON-mutating advisory row: the over-window
@@ -1588,7 +1588,7 @@ def load_latest_state_iteration(
     spark: SparkSession, run_id: str, catalog: str, schema: str,
     *, include_rolled_back: bool = False,
 ) -> dict | None:
-    """Latest iteration row reflecting current Genie Space state.
+    """Latest iteration row reflecting current Genie Agent state.
 
     Includes ``eval_scope IN ('full', 'enrichment')`` so post-enrichment
     evals (which mutate the space without an intervening lever-loop
@@ -1693,7 +1693,7 @@ def load_all_scored_iterations(
 def load_runs_for_space(
     spark: SparkSession, space_id: str, catalog: str, schema: str
 ) -> pd.DataFrame:
-    """All runs for a Genie Space, ordered by ``started_at DESC``."""
+    """All runs for a Genie Agent, ordered by ``started_at DESC``."""
     fqn = _fqn(catalog, schema, TABLE_RUNS)
     return run_query(
         spark,

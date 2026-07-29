@@ -279,7 +279,7 @@ PUBLISH_BENCHMARKS_TO_SPACE: bool = (
     in {"1", "true", "yes", "on"}
 )
 """When True (default), benchmark questions used by the optimizer are
-published to the Genie Space's native ``benchmarks.questions`` at finalize
+published to the Genie Agent's native ``benchmarks.questions`` at finalize
 via ``publish_benchmarks_to_genie_space``. Writes are merged (not replacing)
 with any user-authored benchmarks and tagged with a ``[auto-optimize]``
 prefix + structured source metadata so end users can distinguish them from
@@ -355,7 +355,7 @@ distinct values collected (useful for generating realistic filter values)."""
 
 BENCHMARK_GENERATION_PROMPT = (
     '<role>\n'
-    'You are a Databricks Genie Space evaluation expert.\n'
+    'You are a Databricks Genie Agent evaluation expert.\n'
     '</role>\n'
     '\n'
     '<context>\n'
@@ -379,10 +379,10 @@ BENCHMARK_GENERATION_PROMPT = (
     '## Join Specifications (how tables relate)\n'
     '{{ join_specs_context }}\n'
     '\n'
-    '## Genie Space Instructions\n'
+    '## Genie Agent Instructions\n'
     '{{ instructions_context }}\n'
     '\n'
-    '## Sample Questions (from Genie Space config)\n'
+    '## Sample Questions (from Genie Agent config)\n'
     '{{ sample_questions_context }}\n'
     '\n'
     '## Data Profile (actual values from database)\n'
@@ -453,7 +453,7 @@ BENCHMARK_GENERATION_PROMPT = (
     'Space Instructions mandate it as a default.\n'
     '\n'
     '## CRITICAL: Instruction-Mandated Default Filters\n'
-    'The Genie Space Instructions section above may define default filters (e.g. '
+    'The Genie Agent Instructions section above may define default filters (e.g. '
     '"Default filter: <flag_column> = <value> for all <metric>-related queries", '
     'such as a default region filter, a default active-only filter, or a default '
     'time-window filter). These are MANDATORY:\n'
@@ -605,7 +605,7 @@ BENCHMARK_CORRECTION_PROMPT = (
 
 EXAMPLE_SQL_GENERATION_PROMPT = (
     '<role>\n'
-    'You are a Databricks Genie Space example-SQL author. Your output '
+    'You are a Databricks Genie Agent example-SQL author. Your output '
     'will be stored in instructions.example_question_sqls as reference '
     'material that TEACHES Genie the shape of common questions on this '
     'space — it is NOT used to evaluate Genie. Write examples a real '
@@ -640,10 +640,10 @@ EXAMPLE_SQL_GENERATION_PROMPT = (
     '## Asset Coverage Guidance\n'
     '{{ asset_coverage_guidance }}\n'
     '\n'
-    '## Genie Space Instructions\n'
+    '## Genie Agent Instructions\n'
     '{{ instructions_context }}\n'
     '\n'
-    '## Sample Questions (from Genie Space config)\n'
+    '## Sample Questions (from Genie Agent config)\n'
     '{{ sample_questions_context }}\n'
     '\n'
     '## Data Profile (actual values from database)\n'
@@ -715,7 +715,7 @@ EXAMPLE_SQL_GENERATION_PROMPT = (
     'Space Instructions mandate it as a default.\n'
     '\n'
     '## CRITICAL: Instruction-Mandated Default Filters\n'
-    'The Genie Space Instructions section above may define default filters. These are MANDATORY:\n'
+    'The Genie Agent Instructions section above may define default filters. These are MANDATORY:\n'
     '- EVERY example SQL in the scope of a default filter MUST include that filter. '
     'Omitting it teaches Genie the wrong query shape.\n'
     '- The question text MUST reflect the default filter so question and SQL stay aligned.\n'
@@ -753,7 +753,7 @@ EXAMPLE_SQL_GENERATION_PROMPT = (
 
 EXAMPLE_SQL_CORRECTION_PROMPT = (
     '<role>\n'
-    'You are a Databricks SQL expert fixing invalid Genie Space example '
+    'You are a Databricks SQL expert fixing invalid Genie Agent example '
     'SQLs. These examples TEACH Genie common query shapes, so the '
     'corrected SQL must be realistic and clear for a business user.\n'
     '</role>\n'
@@ -851,7 +851,7 @@ CURATED_SQL_GENERATION_PROMPT = (
     '## Join Specifications (how tables relate)\n'
     '{{ join_specs_context }}\n'
     '\n'
-    '## Genie Space Instructions (business rules — follow these)\n'
+    '## Genie Agent Instructions (business rules — follow these)\n'
     '{{ instructions_context }}\n'
     '\n'
     '## Data Profile (actual values from database)\n'
@@ -877,7 +877,7 @@ CURATED_SQL_GENERATION_PROMPT = (
     'to null with unfixable_reason explaining why.\n'
     '\n'
     '## CRITICAL: Instruction-Mandated Default Filters\n'
-    'The Genie Space Instructions above define the business rules for this space, including '
+    'The Genie Agent Instructions above define the business rules for this space, including '
     'default filters. These instructions are the SOURCE OF TRUTH.\n'
     '- If instructions say "Default filter: X = Y for all Z queries", EVERY SQL for Z-type '
     'questions MUST include WHERE X = Y. Omitting an instruction-mandated default filter '
@@ -999,7 +999,7 @@ BENCHMARK_QUALITY_REVIEW_PROMPT = (
 
 BENCHMARK_COVERAGE_GAP_PROMPT = (
     '<role>\n'
-    'You are a Databricks Genie Space evaluation expert.\n'
+    'You are a Databricks Genie Agent evaluation expert.\n'
     '</role>\n'
     '\n'
     '<context>\n'
@@ -1080,7 +1080,7 @@ BENCHMARK_COVERAGE_GAP_PROMPT = (
     '- Do NOT add WHERE filters the question does not mention.\n'
     '- Do NOT add extra columns beyond what the question asks for.\n'
     '- Do NOT add JOINs that only serve to add unrequested columns.\n'
-    '- If the Genie Space Instructions specify a default filter (e.g., same-store only, '
+    '- If the Genie Agent Instructions specify a default filter (e.g., same-store only, '
     'active status), and you include that filter in the SQL, you MUST mention it in the '
     'question text so the question and SQL stay aligned.\n'
     '\n'
@@ -1108,8 +1108,8 @@ BENCHMARK_COVERAGE_GAP_PROMPT = (
 
 SPACE_DESCRIPTION_PROMPT = (
     '<role>\n'
-    'You are a Databricks Genie Space metadata expert. Your job is to write '
-    'a concise, structured description for a Genie Space that has NO '
+    'You are a Databricks Genie Agent metadata expert. Your job is to write '
+    'a concise, structured description for a Genie Agent that has NO '
     'description yet. The description helps users understand what data is '
     'available and what questions they can ask.\n'
     '</role>\n'
@@ -1126,7 +1126,7 @@ SPACE_DESCRIPTION_PROMPT = (
     '</context>\n'
     '\n'
     '<instructions>\n'
-    'Write a plain-text Genie Space description (150-300 words) with these '
+    'Write a plain-text Genie Agent description (150-300 words) with these '
     'ALL-CAPS sections:\n'
     '\n'
     'DATA COVERAGE:\n'
@@ -1199,7 +1199,7 @@ LEVER_TO_SECTIONS: dict[int, list[str]] = {
 # not a verbose staircase narrative. Keep it tight.
 AUDIT_SUMMARY_PROMPT = (
     '<role>\n'
-    'You are the Audit Scribe for a Databricks Genie Space optimization run. '
+    'You are the Audit Scribe for a Databricks Genie Agent optimization run. '
     'You write the final, human-readable audit summary that goes into the run '
     'record reviewers read to understand what happened.\n'
     '</role>\n'
@@ -1372,7 +1372,7 @@ DEFAULT_LEVER_ORDER = [1, 2, 3, 4, 5, 6]
 
 
 SCAN_CHECK_TO_LEVERS: dict[int, list[int]] = {
-    # Check 1 (Space description) → lever 5 (Instructions & Examples), which
+    # Check 1 (Agent description) → lever 5 (Instructions & Examples), which
     # owns broad natural-language guidance and can update top-level scope.
     1: [5],
     # Check 2 (Table descriptions) / Check 3 (Column descriptions) → lever 1
@@ -1407,7 +1407,7 @@ Consumed by :func:`preflight_run_iq_scan` to translate failing checks into a
 
 SPACE_QUALITY_CHECK_ACTIONS: dict[int, dict[str, Any]] = {
     1: {
-        "label": "Space description",
+        "label": "Agent description",
         "opportunity": (
             "Clarify the business domain, intended audience, scope, and major "
             "guardrails so Genie starts from the right context."
@@ -1530,7 +1530,7 @@ the current route allows and validates.
 
 WELL_CURATED_SPACE_RUBRIC: dict[str, Any] = {
     "purpose": (
-        "A well-curated Genie Space is both benchmark-accurate and complete "
+        "A well-curated Genie Agent is both benchmark-accurate and complete "
         "enough that users can understand its scope, trust its metadata, and "
         "inspect reusable SQL guidance."
     ),
@@ -1563,7 +1563,7 @@ WELL_CURATED_SPACE_RUBRIC: dict[str, Any] = {
 """Compact rubric injected into optimizer LLM prompts."""
 
 MAX_VALUE_DICTIONARY_COLUMNS = 120
-"""Maximum number of string columns per Genie Space that can have
+"""Maximum number of string columns per Genie Agent that can have
 enable_entity_matching=true. Enforced by auto_apply_prompt_matching()."""
 
 
@@ -1701,7 +1701,7 @@ optimization run. One row per (run_id, phase). See
 ``genie_space_optimizer.optimization.scan_snapshots``."""
 TABLE_BENCHMARK_MUTATIONS = "genie_opt_benchmark_mutations"
 """GSO v2 (§3.5) — provenance ledger of every benchmark mutation GSO makes
-to the user's live Genie Space: questions added (preflight push), removed
+to the user's live Genie Agent: questions added (preflight push), removed
 (EXPLAIN-invalid / validation prune), or changed (auto-correction). One row
 per (run_id, question_id, op). Backed by ``ddl._GENIE_OPT_BENCHMARK_MUTATIONS_DDL``
 and written via ``state.write_benchmark_mutations``. The backend endpoint +
@@ -1740,7 +1740,7 @@ OPTIMIZER_PROMPT_MAX_CHARS = _int_env("GSO_OPTIMIZER_PROMPT_MAX_CHARS", 60_000)
 """Hard character budget for the unified optimizer patch prompt's JSON context."""
 
 UNIFIED_OPTIMIZER_PATCH_SYSTEM_PROMPT = (
-    "You are optimizing a Databricks Genie Space. Return exactly one compact JSON object. "
+    "You are optimizing a Databricks Genie Agent. Return exactly one compact JSON object. "
     "Do not include markdown fences, prose, analysis, comments, or text outside JSON. "
     "You may propose ordinary Patch DSL entries; enrichment is not a separate mode. "
     "Return at most 3 patches. Keep every text field concise; put reasoning in rationale. "

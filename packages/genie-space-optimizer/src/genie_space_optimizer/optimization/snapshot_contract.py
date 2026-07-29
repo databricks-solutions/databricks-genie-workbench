@@ -1,4 +1,4 @@
-"""Pre-action-group Genie Space snapshot contract.
+"""Pre-action-group Genie Agent snapshot contract.
 
 The live optimizer uses this module to make rollback verification depend on
 the in-process pre-AG snapshot instead of a Delta row that may be stale or
@@ -56,7 +56,7 @@ def _normalize_recursive(value: Any) -> Any:
 
 
 def canonical_snapshot(value: Any) -> Any:
-    """Return a stable compare shape for Genie Space snapshots.
+    """Return a stable compare shape for Genie Agent snapshots.
 
     The rollback contract is the parsed Genie config, not the full API response.
     Normalize through the same exportable/sorted helpers used before PATCH so

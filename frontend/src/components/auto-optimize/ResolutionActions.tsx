@@ -7,7 +7,7 @@ interface ResolutionActionsProps {
   /** Current run status string (APPLIED / DISCARDED reflect a prior resolution). */
   status: string
   /**
-   * Whether the run auto-published a champion to the live Genie Space. The
+   * Whether the run auto-published a champion to the live Genie Agent. The
    * Keep/Discard affordance only makes sense once something was published —
    * Discard rolls that back via the space_snapshot re-PATCH (arch §7.3 / D3).
    */
@@ -45,7 +45,7 @@ export function ResolutionActions({ runId, status, published, onResolved }: Reso
         tone="success"
         icon={<ShieldCheck className="h-4 w-4" />}
         title="Changes kept"
-        detail="The champion configuration is live in this Genie Space."
+        detail="The champion configuration is live in this Genie Agent."
       />
     )
   }
@@ -55,7 +55,7 @@ export function ResolutionActions({ runId, status, published, onResolved }: Reso
         tone="secondary"
         icon={<RotateCcw className="h-4 w-4" />}
         title="Changes discarded"
-        detail="The Genie Space was rolled back to its pre-optimization snapshot."
+        detail="The Genie Agent was rolled back to its pre-optimization snapshot."
       />
     )
   }
@@ -86,8 +86,8 @@ export function ResolutionActions({ runId, status, published, onResolved }: Reso
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-primary">Keep or roll back</h3>
           <p className="mt-0.5 text-xs text-muted">
-            The optimized configuration is live in this Genie Space. Keep it, or discard the run to
-            roll the space back to its pre-optimization snapshot.
+            The optimized configuration is live in this Genie Agent. Keep it, or discard the run to
+            roll the agent back to its pre-optimization snapshot.
           </p>
         </div>
         {!confirmingDiscard ? (
@@ -119,7 +119,7 @@ export function ResolutionActions({ runId, status, published, onResolved }: Reso
         ) : (
           <div className="flex shrink-0 flex-col items-end gap-1.5">
             <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
-              Roll the live space back to its pre-optimization snapshot?
+              Roll the live agent back to its pre-optimization snapshot?
             </p>
             <div className="flex items-center gap-2">
               <button

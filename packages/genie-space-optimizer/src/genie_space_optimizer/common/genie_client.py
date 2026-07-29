@@ -1,7 +1,7 @@
 """
-Genie Space API wrapper.
+Genie Agent API wrapper.
 
-All Genie Space API interactions. Every function takes ``WorkspaceClient``
+All Genie Agent API interactions. Every function takes ``WorkspaceClient``
 as its first argument (APX pattern: dependency injection, no global state).
 """
 
@@ -74,7 +74,7 @@ def _serialized_space_for_patch(config: dict) -> dict:
     """Return the parsed ``serialized_space`` object expected by PATCH.
 
     Most callers already pass the parsed config directly, but history and
-    snapshot paths can hand around the raw Genie Space API response, where the
+    snapshot paths can hand around the raw Genie Agent API response, where the
     exportable config is nested under ``serialized_space`` / ``_parsed_space``.
     The PATCH body must contain the parsed serialized-space object itself.
     """
@@ -106,7 +106,7 @@ def space_config_has_tables(config: dict | None) -> bool:
 
 
 def list_spaces(w: WorkspaceClient) -> list[dict[str, str]]:
-    """List available Genie Spaces via SDK, paginating through all pages.
+    """List available Genie Agents via SDK, paginating through all pages.
 
     Returns a list of ``{"id": ..., "title": ...}`` dicts.
     """
@@ -129,7 +129,7 @@ EDITABLE_PERMISSIONS = {"CAN_MANAGE", "CAN_EDIT"}
 
 
 def get_space_permissions_rest(w: WorkspaceClient, space_id: str) -> dict | None:
-    """Fetch Genie Space ACL via REST API.
+    """Fetch Genie Agent ACL via REST API.
 
     Returns the raw JSON response dict, or ``None`` on failure.
     Prefer this over ``permissions.get()`` SDK which requires specific
@@ -271,7 +271,7 @@ def get_user_access_level(
     user_groups: set[str] | None = None,
     acl_client: WorkspaceClient | None = None,
 ) -> str | None:
-    """Return the user's highest permission on a Genie space.
+    """Return the user's highest permission on a Genie Agent.
 
     Returns ``"CAN_MANAGE"``, ``"CAN_EDIT"``, ``"CAN_VIEW"``, or ``None``.
     """
@@ -305,7 +305,7 @@ def user_can_edit_space(
     acl_client: WorkspaceClient | None = None,
     cached_perms: dict | object | None = None,
 ) -> bool:
-    """Check whether a user has CAN_MANAGE or CAN_EDIT on a Genie space.
+    """Check whether a user has CAN_MANAGE or CAN_EDIT on a Genie Agent.
 
     Uses REST API ``GET /api/2.0/permissions/genie/{id}`` via the OBO
     client first, then falls back to the SP client.  The ``cached_perms``
@@ -343,7 +343,7 @@ def sp_can_manage_space(
     cached_perms: dict | None = None,
     sp_client: WorkspaceClient | None = None,
 ) -> bool:
-    """Check whether a service principal has CAN_MANAGE on a Genie space.
+    """Check whether a service principal has CAN_MANAGE on a Genie Agent.
 
     Uses REST API ``GET /api/2.0/permissions/genie/{id}``.
     Accepts a pre-fetched REST dict via ``cached_perms``.
@@ -365,7 +365,7 @@ def sp_can_manage_space(
 
 
 def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
-    """GET Genie Space config with full serialized_space content.
+    """GET Genie Agent config with full serialized_space content.
 
     Returns the raw API response augmented with convenience keys:
     ``_parsed_space``, ``_tables``, ``_metric_views``, ``_functions``,
@@ -382,41 +382,41 @@ def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
     )
     if not isinstance(raw_config, dict):
         raise RuntimeError(
-            f"Unexpected Genie space response type: {type(raw_config).__name__}"
+            f"Unexpected Genie Agent response type: {type(raw_config).__name__}"
         )
     config = cast(dict[str, Any], raw_config)
 
     ss = config.get("serialized_space", _MISSING)
     if ss is _MISSING or ss is None or ss == "":
         logger.error(
-            "Genie space %s response omitted serialized_space despite "
+            "Genie Agent %s response omitted serialized_space despite "
             "include_serialized_space=true; response keys=%s",
             space_id,
             sorted(config.keys()),
         )
         raise MissingSerializedSpaceError(
-            f"Genie Space {space_id} response omitted serialized_space; "
+            f"Genie Agent {space_id} response omitted serialized_space; "
             "the caller must retry with a client that can export the space config."
         )
     if isinstance(ss, str):
         if not ss.strip():
             logger.error(
-                "Genie Space %s response returned empty serialized_space string",
+                "Genie Agent %s response returned empty serialized_space string",
                 space_id,
             )
             raise MissingSerializedSpaceError(
-                f"Genie Space {space_id} response returned empty serialized_space"
+                f"Genie Agent {space_id} response returned empty serialized_space"
             )
         ss = json.loads(ss)
     if not isinstance(ss, dict) or not ss:
         logger.error(
-            "Genie space %s response had empty/invalid serialized_space "
+            "Genie Agent %s response had empty/invalid serialized_space "
             "despite include_serialized_space=true; type=%s",
             space_id,
             type(ss).__name__,
         )
         raise MissingSerializedSpaceError(
-            f"Genie Space {space_id} response had empty serialized_space; "
+            f"Genie Agent {space_id} response had empty serialized_space; "
             "the caller must reject this snapshot."
         )
     config["_parsed_space"] = ss
@@ -705,7 +705,7 @@ def sanitize_sql(sql: str) -> str:
 def _migrate_column_configs_v1_to_v2(config: dict) -> dict:
     """Migrate v1 column config fields to v2 and strip non-exportable column fields.
 
-    The Genie Space export API v2 renamed:
+    The Genie Agent export API v2 renamed:
       - ``get_example_values``    -> ``enable_format_assistance``
       - ``build_value_dictionary`` -> ``enable_entity_matching``
 
@@ -898,7 +898,7 @@ def patch_space_config(
     max_retries: int = 2,
     retry_delay: float = 5.0,
 ) -> dict:
-    """PATCH a Genie Space with updated serialized_space config.
+    """PATCH a Genie Agent with updated serialized_space config.
 
     Strips non-exportable fields, sorts arrays, and validates the payload
     structure before sending.  Retries on transient HTTP errors (429, 5xx).
@@ -929,7 +929,7 @@ def patch_space_config(
     payload = {"serialized_space": json.dumps(clean)}
     payload_size = len(payload["serialized_space"])
     logger.info(
-        "PATCHing Genie Space %s (payload: %d chars)", space_id, payload_size,
+        "PATCHing Genie Agent %s (payload: %d chars)", space_id, payload_size,
     )
 
     last_exc: Exception | None = None
@@ -971,7 +971,7 @@ def update_space_description(
     max_retries: int = 2,
     retry_delay: float = 5.0,
 ) -> dict:
-    """PATCH only the top-level ``description`` field of a Genie Space.
+    """PATCH only the top-level ``description`` field of a Genie Agent.
 
     ``description`` is a top-level metadata field on the Space object, NOT
     inside ``serialized_space``.  This sends a minimal PATCH with just
@@ -979,7 +979,7 @@ def update_space_description(
     """
     payload = {"description": description}
     logger.info(
-        "PATCHing Genie Space %s description (%d chars)", space_id, len(description),
+        "PATCHing Genie Agent %s description (%d chars)", space_id, len(description),
     )
 
     last_exc: Exception | None = None
@@ -1309,7 +1309,7 @@ def compute_benchmark_window_recommendation(
 
 @dataclass
 class BenchmarkPushReport:
-    """Structured outcome of a merge-only benchmark push to a Genie Space.
+    """Structured outcome of a merge-only benchmark push to a Genie Agent.
 
     Surfaces enough detail for the v2 provenance ledger (§3.5) to record
     the added/removed/changed diff without re-deriving it. ``added`` rows
@@ -1441,7 +1441,7 @@ def publish_benchmarks_to_genie_space_with_report(
     # (never deleted to make room).
     if len(merged_questions) > max_questions:
         logger.error(
-            "Refusing to push benchmarks to Genie space %s: merged set of %d "
+            "Refusing to push benchmarks to Genie Agent %s: merged set of %d "
             "exceeds the Genie API hard cap of %d. Publisher is merge-only and "
             "will not truncate — pruning the live set is an explicit operator "
             "decision. No mutation performed.",
@@ -1467,7 +1467,7 @@ def publish_benchmarks_to_genie_space_with_report(
     patch_space_config(w, space_id, parsed)
 
     logger.info(
-        "Published %d new benchmark question(s) to Genie space %s "
+        "Published %d new benchmark question(s) to Genie Agent %s "
         "(dedup-skipped: %d, example-sql-mirror-skipped: %d, total after merge: %d, "
         "window: %s)",
         len(added_detail), space_id, dedup_skipped, skipped_mirror,

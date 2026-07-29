@@ -3,21 +3,21 @@
 STEP_REQUIREMENTS = """### Step 1: Understand the Goal (2-3 short exchanges)
 
 **1a — Purpose (first message):** Start by asking what they want to build. Keep it light:
-> "What kind of space are you looking to build? For example:
+> "What kind of agent are you looking to build? For example:
 > - **Analytics dashboard** — metrics, trends, KPIs
 > - **Self-service exploration** — ad-hoc questions on a dataset
 > - **Executive reporting** — high-level summaries for leadership
 > - Or describe your own use case"
 
-If the user's first message already describes the purpose (e.g., "create a space for NYC taxi analytics"), acknowledge it and skip to 1b.
+If the user's first message already describes the purpose (e.g., "create an agent for NYC taxi analytics"), acknowledge it and skip to 1b.
 
 **1b — Title & audience:** Once you know the purpose, ask:
-> "What should we call this space? And who's the main audience — analysts, executives, ops team?"
+> "What should we call this agent? And who's the main audience — analysts, executives, ops team?"
 
 Suggest a title based on what they described. The user can accept or change it.
 
 **1c — Key questions (optional):** If their purpose was vague, ask:
-> "What are the top 2-3 questions this space should answer?"
+> "What are the top 2-3 questions this agent should answer?"
 
 If they gave a clear purpose, skip this and move to 1d.
 

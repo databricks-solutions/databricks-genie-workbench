@@ -1,11 +1,11 @@
 ---
 sidebar_position: 1
-description: "Multi-turn, tool-calling LLM agent that builds Genie Spaces from requirements."
+description: "Multi-turn, tool-calling LLM agent that builds Genie Agents from requirements."
 ---
 
 # Create Agent
 
-The Create Agent is a multi-turn, tool-calling LLM agent that walks users from business requirements to a fully configured and deployed Genie Space. It handles data discovery, profiling, plan generation, config assembly, validation, and space creation — all through a conversational interface.
+The Create Agent is a multi-turn, tool-calling LLM agent that walks users from business requirements to a fully configured and deployed Genie Agent. It handles data discovery, profiling, plan generation, config assembly, validation, and space creation — all through a conversational interface.
 
 ## How It Works
 
@@ -28,7 +28,7 @@ flowchart LR
 | `data_sources` | Discovering Data | Agent browses Unity Catalog (catalogs → schemas → tables) to find relevant tables |
 | `inspection` | Inspecting Tables | Agent profiles columns, assesses data quality, and checks table usage patterns |
 | `plan` | Building Plan | Agent generates a structured plan with tables, questions, example SQLs, benchmarks |
-| `config_create` | Creating Space | Agent builds the `serialized_space` config, validates it, and creates the Genie Space |
+| `config_create` | Creating Space | Agent builds the `serialized_space` config, validates it, and creates the Genie Agent |
 | `post_creation` | Done | Agent provides a summary, the space URL, and suggests next steps (e.g., run IQ Scan) |
 
 Step detection is automatic — the agent infers the current step from conversation history using `detect_step()` in `backend/prompts_create/`.
@@ -65,7 +65,7 @@ The agent has access to 17 tools organized into six categories:
 
 | Tool | Purpose |
 |------|---------|
-| `get_config_schema` | Return the Genie Space JSON schema reference |
+| `get_config_schema` | Return the Genie Agent JSON schema reference |
 | `generate_config` | Build a `serialized_space` config from the plan |
 | `validate_config` | Validate a config against the Genie API schema (errors + warnings) |
 | `update_config` | Modify an existing space's config |
@@ -81,8 +81,8 @@ The agent has access to 17 tools organized into six categories:
 
 | Tool | Purpose |
 |------|---------|
-| `create_space` | Create a new Genie Space via the Databricks API |
-| `update_space` | Update an existing Genie Space |
+| `create_space` | Create a new Genie Agent via the Databricks API |
+| `update_space` | Update an existing Genie Agent |
 
 ## Parallel Plan Generation
 
@@ -130,7 +130,7 @@ The create agent uses SSE (Server-Sent Events) to stream progress to the fronten
 | `tool_result` | Tool execution result |
 | `message_delta` | Incremental text from the LLM (streamed token-by-token) |
 | `message` | Complete message from the agent |
-| `created` | Genie Space was created (includes space ID and URL) |
+| `created` | Genie Agent was created (includes space ID and URL) |
 | `updated` | Existing space was updated |
 | `heartbeat` | Keep-alive ping (every 15s to prevent proxy timeout) |
 | `error` | Something went wrong |

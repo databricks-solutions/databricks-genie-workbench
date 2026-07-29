@@ -1,5 +1,5 @@
 /**
- * SpaceDetail - 3-tab detail view for a Genie Space.
+ * SpaceDetail - 3-tab detail view for a Genie Agent.
  * Tabs: Score (default) | Optimize | History
  */
 import { useState, useEffect, useRef } from "react"
@@ -148,7 +148,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
       actionIcon: <Rocket className="w-4 h-4" />,
       actionDescription: (
         <>
-          This space passed the configuration checks. Auto-Optimize will benchmark real
+          This agent passed the configuration checks. Auto-Optimize will benchmark real
           questions, tune the selected levers, and apply only changes that improve the
           measured result.
         </>
@@ -161,7 +161,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
       actionIcon: <Rocket className="w-4 h-4" />,
       actionDescription: (
         <>
-          Auto-Optimize is the recommended path for improving spaces that fail IQ checks.
+          Auto-Optimize is the recommended path for improving agents that fail IQ checks.
           It runs benchmarks and applies validated configuration changes. Some issues, such
           as missing data sources, permissions, or bulk Unity Catalog metadata gaps, may
           still require manual setup.
@@ -243,7 +243,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
               <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3 mb-4">
                 <div>
                   <h3 className="text-sm font-semibold text-primary">Optimization in progress</h3>
-                  <p className="text-xs text-muted mt-0.5">An optimization run is currently running for this space.</p>
+                  <p className="text-xs text-muted mt-0.5">An optimization run is currently running for this agent.</p>
                 </div>
                 <button
                   onClick={() => setActiveTab("optimize")}
@@ -277,14 +277,14 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
                   }
                   <Settings className="w-4 h-4 text-muted" />
                   <span className="text-sm font-semibold text-secondary uppercase tracking-wide">
-                    Space Configuration
+                    Agent Configuration
                   </span>
                 </button>
                 <button
                   onClick={() => actions.handleFetchSpace(spaceId)}
                   disabled={state.isLoading}
                   className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
-                  title="Reload space configuration"
+                  title="Reload agent configuration"
                 >
                   <RefreshCw className={`w-3 h-3 ${state.isLoading ? "animate-spin" : ""}`} />
                   Reload

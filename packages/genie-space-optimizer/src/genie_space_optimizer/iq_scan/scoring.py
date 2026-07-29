@@ -1,4 +1,4 @@
-"""IQ scoring engine for Genie Space configurations.
+"""IQ scoring engine for Genie Agent configurations.
 
 Pure-function scoring logic extracted from ``backend/services/scanner.py`` so
 that both the backend scanner service and the GSO optimizer preflight can
@@ -306,7 +306,7 @@ def sql_in_text_findings(text: str) -> list[str]:
 
 
 def calculate_score(space_data: dict, optimization_run: dict | None = None) -> dict:
-    """Calculate IQ score for a Genie Space configuration.
+    """Calculate IQ score for a Genie Agent configuration.
 
     Returns a dict with:
         - score: int (0-12)
@@ -330,27 +330,27 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
 
     # --- Config checks (1-10) ---
 
-    # 1. Space description
+    # 1. Agent description
     description = space_data.get("description")
     has_description = _meaningful_text(description, min_chars=30, min_words=5)
     desc_text = _join_text(description).strip()
     detail = (
         f"{len(desc_text)} chars"
         if desc_text
-        else "No space description configured"
+        else "No agent description configured"
     )
     severity = "fail"
     if has_description:
         severity = "warning" if len(desc_text) < 100 else "pass"
         if severity == "warning":
             detail += " — add domain, audience, and scope details"
-    _check(checks, "Space description", has_description, detail=detail, severity=severity)
+    _check(checks, "Agent description", has_description, detail=detail, severity=severity)
     if not has_description:
-        findings.append("Missing or placeholder space description")
-        next_steps.append("Add a space description that defines the domain, audience, and scope")
+        findings.append("Missing or placeholder agent description")
+        next_steps.append("Add an agent description that defines the domain, audience, and scope")
     elif severity == "warning":
         warnings.append(detail)
-        warning_next_steps.append("Expand the space description with domain, audience, and guardrails")
+        warning_next_steps.append("Expand the agent description with domain, audience, and guardrails")
 
     # 2. Table descriptions — require ≥80% coverage (Gap 2)
     #    Auto-pass when no tables (metric-view-only spaces manage descriptions in UC).
@@ -377,7 +377,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
             warnings.append(detail)
             warning_next_steps.append("Add descriptions to remaining tables for better Intent Agent routing")
     elif metric_views:
-        _check(checks, "Table descriptions", True, detail="Metric-view-only space — descriptions managed in Unity Catalog", severity="pass")
+        _check(checks, "Table descriptions", True, detail="Metric-view-only agent — descriptions managed in Unity Catalog", severity="pass")
     else:
         _check(checks, "Table descriptions", False, detail="No data sources configured", severity="fail")
 
@@ -415,7 +415,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
             warnings.append("No column synonyms defined")
             warning_next_steps.append("Add synonyms for columns with abbreviated or technical names")
     elif metric_views:
-        _check(checks, "Column descriptions", True, detail="Metric-view-only space — columns managed in Unity Catalog", severity="pass")
+        _check(checks, "Column descriptions", True, detail="Metric-view-only agent — columns managed in Unity Catalog", severity="pass")
     else:
         _check(checks, "Column descriptions", False, detail="No data sources configured", severity="fail")
 
@@ -476,7 +476,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         detail += " — relationship coverage may be incomplete"
     _check(checks, "Join specifications", passed, detail=detail, severity=severity)
     if not passed and table_count > 1:
-        findings.append("No join specifications for multi-table space")
+        findings.append("No join specifications for multi-table agent")
         next_steps.append("Add join specifications to help Genie correctly join your tables")
     elif severity == "warning":
         warnings.append(detail)
@@ -487,21 +487,21 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     detail = f"{total_sources} data source(s)"
     severity = "pass" if passed else "fail"
     if passed and total_sources >= 9:
-        detail += " — consider focused spaces for broad domains"
+        detail += " — consider focused agents for broad domains"
         severity = "warning"
     if not passed and total_sources > 12:
         detail += " — consider multi-room architecture"
     _check(checks, "Data source count 1-12", passed, detail=detail, severity=severity)
     if not passed and total_sources == 0:
         findings.append("No tables or metric views configured")
-        next_steps.append("Add at least one table or metric view to your Genie Space")
+        next_steps.append("Add at least one table or metric view to your Genie Agent")
     elif not passed and (tables or metric_views):
         if total_sources > 12:
             findings.append(f"{total_sources} data sources — more than 12 reduces Genie accuracy")
             next_steps.append("Consider multi-room architecture or reducing to the most relevant 5-12 data sources")
     elif severity == "warning":
         warnings.append(detail)
-        warning_next_steps.append("Consider splitting broad domains into smaller focused Genie Spaces")
+        warning_next_steps.append("Consider splitting broad domains into smaller focused Genie Agents")
 
     # 7. SQL guidance artifacts (SQL snippets/functions or example SQLs)
     example_sqls = instructions.get("example_question_sqls", [])
@@ -567,10 +567,10 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     severity = "pass" if entity_or_format else "fail"
     if entity_or_format:
         if entity_count > 120:
-            detail += f" — exceeds 120/space limit, excess will be ignored"
+            detail += f" — exceeds 120/agent limit, excess will be ignored"
             severity = "warning"
         elif entity_count > 100:
-            detail += f" — approaching 120/space limit"
+            detail += f" — approaching 120/agent limit"
             severity = "warning"
     _check(checks, "Entity/format matching", entity_or_format, detail=detail, severity=severity)
     if not entity_or_format and (tables or metric_views):
@@ -578,7 +578,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         next_steps.append("Enable entity matching on categorical columns and format assistance on date/number columns")
     elif severity == "warning":
         warnings.append(detail)
-        warning_next_steps.append("Reduce entity matching columns to stay within the 120/space limit")
+        warning_next_steps.append("Reduce entity matching columns to stay within the 120/agent limit")
     # Advisory: RLS disables entity matching silently
     if rls_tables and entity_or_format:
         rls_msg = f"Tables with row-level security ({', '.join(rls_tables[:3])}) — entity matching is silently disabled for these"
@@ -648,7 +648,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     has_run = bool(optimization_run)
     _check(checks, "Optimization workflow completed", has_run)
     if not has_run:
-        findings.append("Space has not been through the optimization workflow")
+        findings.append("Agent has not been through the optimization workflow")
         next_steps.append("Benchmark and improve Genie's accuracy with Optimization")
 
     # 12. Accuracy ≥ 85%

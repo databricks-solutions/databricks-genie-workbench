@@ -136,7 +136,7 @@ class TestSystemicCoercion:
 
 class TestNoFieldLoss:
     def test_raw_space_response_is_unwrapped_before_wire_payload(self):
-        """History/revert paths may pass a raw Genie Space response. The wire
+        """History/revert paths may pass a raw Genie Agent response. The wire
         payload must still be the parsed serialized_space object, not the
         response wrapper with a nested ``serialized_space`` key."""
         raw_response = {

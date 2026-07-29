@@ -8,7 +8,7 @@ endpoints:
 
   - ``get_serialized_space`` — like the workbench helper but tolerant of spaces
     that have no ``serialized_space`` (returns ``{}`` instead of raising).
-  - ``list_space_permissions`` — Genie Space ACLs.
+  - ``list_space_permissions`` — Genie Agent ACLs.
   - ``list_message_comments`` — free-text feedback comments on a message.
 
 Auth (OBO contextvar + SP fallback) and metric-view normalization come from the

@@ -1646,4 +1646,4 @@ print(f"  Schema  : {SCHEMA}")
 print(
     "  Tables  : products, branches, customers, accounts,transactions, service_requests"
 )
-print("  Next    : Create a Genie space from these tables, or see notebooks/demo-data/README.md")
+print("  Next    : Create a Genie Agent from these tables, or see notebooks/demo-data/README.md")

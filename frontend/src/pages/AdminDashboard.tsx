@@ -1,6 +1,6 @@
 /**
  * AdminDashboard - Org-wide statistics, leaderboard, alerts, and the
- * GenieWatch observability surface (sub-tabs: Spaces / Cost / Resources / Settings).
+ * GenieWatch observability surface (sub-tabs: Agents / Cost / Resources / Settings).
  */
 import { Suspense, lazy, useEffect, useState } from "react"
 import {
@@ -59,7 +59,7 @@ const MATURITY_STATES: { label: string; icon: React.ReactNode }[] = [
 
 const SUB_TABS: { id: AdminSubTab; label: string; icon: React.ReactNode }[] = [
   { id: "overview",  label: "Overview",  icon: <BarChart2 className="w-4 h-4" /> },
-  { id: "spaces",    label: "Spaces",    icon: <LayoutGrid className="w-4 h-4" /> },
+  { id: "spaces",    label: "Agents",    icon: <LayoutGrid className="w-4 h-4" /> },
   { id: "cost",      label: "Cost",      icon: <DollarSign className="w-4 h-4" /> },
   { id: "feedback",  label: "Feedback",  icon: <MessageSquare className="w-4 h-4" /> },
   { id: "resources", label: "Resources", icon: <Database className="w-4 h-4" /> },
@@ -125,10 +125,10 @@ function AdminOverview({ onSelectSpace }: { onSelectSpace?: (spaceId: string, di
       </div>
 
       {/* Stats — counts per maturity state tie the cards to the maturity
-          curve, Top Spaces, and Needs Attention below. */}
+          curve, Top Agents, and Needs Attention below. */}
       {stats && (
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          <StatCard label="Total Spaces" value={stats.total_spaces} icon={<BarChart2 className="w-4 h-4" />} />
+          <StatCard label="Total Agents" value={stats.total_spaces} icon={<BarChart2 className="w-4 h-4" />} />
           <StatCard label="Scanned" value={stats.scanned_spaces} sub={`${stats.total_spaces > 0 ? Math.round(stats.scanned_spaces / stats.total_spaces * 100) : 0}% coverage`} icon={<BarChart2 className="w-4 h-4" />} />
           {MATURITY_STATES.map(({ label, icon }) => (
             <StatCard
@@ -171,7 +171,7 @@ function AdminOverview({ onSelectSpace }: { onSelectSpace?: (spaceId: string, di
           <div className="bg-surface border border-default rounded-xl p-5">
             <h3 className="text-sm font-semibold text-secondary uppercase tracking-wide mb-4 flex items-center gap-2">
               <Award className="w-4 h-4 text-amber-400" />
-              Top Spaces
+              Top Agents
             </h3>
             <div className="space-y-2">
               {leaderboard.top.map((entry, i) => (
@@ -274,7 +274,7 @@ export function AdminDashboard({ onSelectSpace, initialSubTab }: AdminDashboardP
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-display font-bold text-primary">Admin Dashboard</h2>
-          <p className="text-muted mt-1">Org-wide Genie Space health &amp; observability</p>
+          <p className="text-muted mt-1">Org-wide Genie Agent health &amp; observability</p>
         </div>
       </div>
 

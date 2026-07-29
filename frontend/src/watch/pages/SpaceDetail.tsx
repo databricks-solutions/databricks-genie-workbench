@@ -47,7 +47,7 @@ export function SpaceDetail({ spaceId, onBack }: Props) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <Button variant="ghost" onClick={onBack} className="gap-1">
-          <ArrowLeft size={16} /> Back to spaces
+          <ArrowLeft size={16} /> Back to agents
         </Button>
         <Button variant="outline" onClick={refreshAll} disabled={refreshing} className="gap-1">
           <RefreshCw className={refreshing ? 'animate-spin' : ''} size={14} /> Refresh
@@ -68,7 +68,7 @@ export function SpaceDetail({ spaceId, onBack }: Props) {
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg"
-                title="Open Genie Space in Databricks"
+                title="Open Genie Agent in Databricks"
               >
                 <ExternalLink size={14} /> open in Databricks
               </a>
@@ -245,7 +245,7 @@ function CostTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: number 
       <Card className="border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-400">
         <AlertCircle className="mr-1 inline" size={14} />
         Cost is approximate. Databricks bills warehouses, not queries — we apportion warehouse-day cost
-        by this space's share of warehouse query duration. See <code>docs/apportionment-caveat.md</code>.
+        by this agent's share of warehouse query duration. See <code>docs/apportionment-caveat.md</code>.
       </Card>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -383,7 +383,6 @@ function ResourcesTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: nu
     </Card>
   )
 }
-
 
 
 

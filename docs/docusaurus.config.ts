@@ -47,7 +47,7 @@ const DOC_NAV = [
 
 const config: Config = {
   title: 'Genie Workbench',
-  tagline: 'Create, score, and optimize Databricks Genie Spaces',
+  tagline: 'Create, score, and optimize Databricks Genie Agents',
   favicon: 'img/favicon.svg',
 
   // Production URL for GitHub Pages: https://databricks-solutions.github.io/databricks-genie-workbench/
@@ -125,7 +125,7 @@ const config: Config = {
       {
         siteTitle: 'Genie Workbench',
         siteDescription:
-          'Developer tool for creating, scoring, and optimizing Databricks Genie Spaces.',
+          'Developer tool for creating, scoring, and optimizing Databricks Genie Agents.',
       },
     ],
   ],

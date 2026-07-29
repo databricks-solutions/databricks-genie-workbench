@@ -117,7 +117,7 @@ shared Python module) is tracked in epic #173.
 ## References
 
 - Databricks best practices: https://docs.databricks.com/aws/en/genie/best-practices
-- Genie Space serialized schema: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field
+- Genie Agent serialized schema: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field
 - Near-term epic: #87 (this doc + #89 Create Agent)
 - Full unification epic: #173 (Workbench 0.1)
 - IQ Scanner check this schema supports: `backend/services/scanner.py` check #4 (text-instructions length + SQL-in-text)

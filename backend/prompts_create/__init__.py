@@ -1,4 +1,4 @@
-"""Dynamic prompt assembly for the Create Genie agent.
+"""Dynamic prompt assembly for the Create Genie Agent.
 
 Instead of a single monolithic system prompt (~500 lines), this package
 assembles a scoped prompt per turn based on the agent's current workflow step.
@@ -389,8 +389,8 @@ def assemble_system_prompt(session: AgentSession, schema_reference: str) -> str:
         summary = _summarize_space_config(session.space_config)
         if summary:
             sections.append(
-                "## Current Space Config\n\n"
-                "The space config is already loaded in your session. "
+                "## Current Agent Config\n\n"
+                "The agent config is already loaded in your session. "
                 "You do NOT need to call discover_tables, describe_table, or other "
                 "inspection tools — use the summary below and jump straight to fixes.\n\n"
                 f"{summary}"

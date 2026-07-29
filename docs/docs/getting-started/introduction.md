@@ -7,11 +7,11 @@ description: "What Genie Workbench is, who it's for, key concepts, and the five-
 
 ## What is Genie Workbench?
 
-Genie Workbench is a developer tool for Databricks Genie Spaces — the natural-language-to-SQL interface for business users. It addresses the gap between creating a Genie Space and having one that reliably produces correct SQL: most spaces start with incomplete metadata, missing instructions, and no benchmarks, leading to poor user experiences.
+Genie Workbench is a developer tool for Databricks Genie Agents — the natural-language-to-SQL interface for business users. It addresses the gap between creating a Genie Agent and having one that reliably produces correct SQL: most spaces start with incomplete metadata, missing instructions, and no benchmarks, leading to poor user experiences.
 
 Genie Workbench provides five capabilities that form a continuous improvement loop:
 
-1. **Create** — An AI agent that walks you from business requirements through data discovery, inspection, and plan generation to a fully configured Genie Space.
+1. **Create** — An AI agent that walks you from business requirements through data discovery, inspection, and plan generation to a fully configured Genie Agent.
 2. **Score** — A rule-based IQ Scanner that evaluates space quality across 12 checks and assigns a maturity tier.
 3. **Fix** — An AI agent that reads scan findings and generates targeted JSON patches to fix configuration gaps.
 4. **Optimize** — A benchmark-driven pipeline (Auto-Optimize / GSO) that measures real accuracy, diagnoses failures, and iteratively improves the space configuration.
@@ -19,19 +19,19 @@ Genie Workbench provides five capabilities that form a continuous improvement lo
 
 ## Target Audience
 
-- **Genie Space developers** building and maintaining spaces for their organizations
-- **Data platform teams** managing quality across multiple Genie Spaces
+- **Genie Agent developers** building and maintaining spaces for their organizations
+- **Data platform teams** managing quality across multiple Genie Agents
 - **Workspace administrators** deploying and operating the Workbench app
 
 ## Key Concepts
 
 | Term | Definition |
 |------|-----------|
-| **Genie Space** | A Databricks resource that lets business users ask data questions in natural language. Configured with tables, instructions, example SQL, and benchmarks. |
-| **`serialized_space`** | The JSON configuration of a Genie Space, accessed via the Genie Conversation API. Contains `data_sources`, `instructions`, `config`, and `benchmarks` sections. |
+| **Genie Agent** | A Databricks resource that lets business users ask data questions in natural language. Configured with tables, instructions, example SQL, and benchmarks. |
+| **`serialized_space`** | The JSON configuration of a Genie Agent, accessed via the Genie Conversation API. Contains `data_sources`, `instructions`, `config`, and `benchmarks` sections. |
 | **IQ Score** | A 0–12 score based on 12 binary checks. Each check evaluates one aspect of space configuration quality. |
 | **Maturity Tier** | One of three labels derived from the IQ Score: **Not Ready**, **Ready to Optimize**, or **Trusted**. |
-| **Finding** | A specific configuration gap identified by the IQ Scanner (e.g., "No join specifications for multi-table space"), paired with a recommended next step. |
+| **Finding** | A specific configuration gap identified by the IQ Scanner (e.g., "No join specifications for multi-table agent"), paired with a recommended next step. |
 | **Benchmark** | A question-answer pair used to measure Genie accuracy. The expected SQL is compared against Genie's generated SQL by specialized judges. |
 | **Lever** | An optimization strategy category in Auto-Optimize. Five lever types: tables/columns, metric views, TVFs, join specs, and instructions/example SQL. |
 | **Patch** | A targeted change to the `serialized_space` configuration, represented as a `field_path` + `new_value` pair. |

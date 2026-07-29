@@ -109,7 +109,7 @@ def test_happy_path():
 
     print("\n--- Turn 1: Initial request with table selections ---")
     sid, ev1 = chat(sid, (
-        "Create a Genie space called 'E2E Deployed - TPCH Analytics'. "
+        "Create a Genie Agent called 'E2E Deployed - TPCH Analytics'. "
         "Use samples.tpch with tables: orders, lineitem, customer, nation, supplier. "
         "Purpose: supply chain analytics. Key metrics: revenue, order count, avg delivery days. "
         "Go autonomous — inspect, plan, create."
@@ -196,7 +196,7 @@ def test_single_table():
 
     print("\n--- Turn 1: Single table request ---")
     sid, ev1 = chat(sid, (
-        "Create a Genie space called 'E2E Deployed - Nations Only'. "
+        "Create a Genie Agent called 'E2E Deployed - Nations Only'. "
         "Just use samples.tpch.nation. Keep it simple."
     ), selections={
         "catalog_selection": "samples",

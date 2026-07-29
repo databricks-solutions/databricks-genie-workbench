@@ -59,12 +59,12 @@ def discard_optimization(
 
     space_id = run_data.get("space_id", "")
     if not space_id:
-        raise ValueError("Run has no space_id; cannot roll back the Genie Space.")
+        raise ValueError("Run has no space_id; cannot roll back the Genie Agent.")
     from genie_space_optimizer.common.genie_client import user_can_edit_space
 
     if not user_can_edit_space(ws, str(space_id), acl_client=sp_ws):
         raise PermissionError(
-            "You need CAN_EDIT or CAN_MANAGE permission on this Genie Space "
+            "You need CAN_EDIT or CAN_MANAGE permission on this Genie Agent "
             "to discard optimization changes."
         )
 

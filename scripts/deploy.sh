@@ -238,7 +238,7 @@ else
         echo "  ✓ App '$APP_NAME' already exists"
     else
         echo "  Creating app '$APP_NAME'..."
-        APP_CREATE_JSON=$(python3 -c "import json; print(json.dumps({'name': '$APP_NAME', 'description': 'Genie Workbench - Create, score, and optimize Genie Spaces'}))")
+        APP_CREATE_JSON=$(python3 -c "import json; print(json.dumps({'name': '$APP_NAME', 'description': 'Genie Workbench - Create, score, and optimize Genie Agents'}))")
         if databricks apps create --json "$APP_CREATE_JSON" --profile "$PROFILE" --no-wait 2>/dev/null; then
             echo "  ✓ App created (compute starting in background)"
         else

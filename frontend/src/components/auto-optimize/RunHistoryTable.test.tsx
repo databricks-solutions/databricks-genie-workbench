@@ -27,7 +27,7 @@ function run(overrides: Partial<GSORunSummary>): GSORunSummary {
 }
 
 describe("RunHistoryTable revert safety", () => {
-  it("treats any active run for the Space as a global history lock", () => {
+  it("treats any active run for the agent as a global history lock", () => {
     expect(hasActiveOptimizationRun([
       run({ run_id: "old", status: "CONVERGED" }),
       run({ run_id: "current", status: "IN_PROGRESS" }),
@@ -46,7 +46,7 @@ describe("RunHistoryTable revert safety", () => {
     )
 
     expect(markup).toContain("disabled")
-    expect(markup).toContain("active optimization on this Space")
+    expect(markup).toContain("active optimization on this agent")
     expect(markup).toContain("Revert to Baseline")
   })
 

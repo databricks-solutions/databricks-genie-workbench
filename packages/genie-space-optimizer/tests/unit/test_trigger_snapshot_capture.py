@@ -147,7 +147,7 @@ def test_trigger_capture_rejects_empty_snapshots_and_never_persists_them(
 
     assert calls == ["sp", "obo"]
     create_run.assert_not_called()
-    assert "Rejecting empty Genie space snapshot" in caplog.text
+    assert "Rejecting empty Genie Agent snapshot" in caplog.text
 
 
 def test_warehouse_run_insert_preserves_nested_serialized_space_escapes(

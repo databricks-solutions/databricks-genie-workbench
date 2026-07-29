@@ -423,7 +423,7 @@ def collect_inventory(
         if tuple(normalize_component(value) for value in ref) in eligible_asset_keys
     ]
     if not refs:
-        raise RuntimeError("Cannot collect wide-schema inventory: Genie space has no eligible assets")
+        raise RuntimeError("Cannot collect wide-schema inventory: Genie Agent has no eligible assets")
     # The OBO prefetch uses an inline Statement Execution result and therefore
     # cannot prove completeness for very large schemas. Always recollect the
     # durable inventory through per-table UC REST calls (or information_schema)

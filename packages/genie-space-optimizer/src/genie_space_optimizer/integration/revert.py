@@ -1,6 +1,6 @@
 """Warehouse-backed revert operation for integration callers.
 
-Reverts the **live Genie Space** to a chosen configuration captured during a
+Reverts the **live Genie Agent** to a chosen configuration captured during a
 past optimization run:
 
 * ``target="champion"`` — the run's champion iteration config
@@ -56,7 +56,7 @@ def revert_optimization(
     *,
     target: RevertTarget = "champion",
 ) -> ActionResult:
-    """Revert the live Genie Space to a past run's captured configuration.
+    """Revert the live Genie Agent to a past run's captured configuration.
 
     Args:
         run_id: The optimization run whose configuration to revert to.
@@ -94,13 +94,13 @@ def revert_optimization(
 
     space_id = str(run_data.get("space_id") or "")
     if not space_id:
-        raise ValueError("Run has no space_id; cannot target a Genie Space to revert.")
+        raise ValueError("Run has no space_id; cannot target a Genie Agent to revert.")
 
     from genie_space_optimizer.common.genie_client import user_can_edit_space
 
     if not user_can_edit_space(ws, space_id, acl_client=sp_ws):
         raise PermissionError(
-            "You need CAN_EDIT or CAN_MANAGE permission on this Genie Space "
+            "You need CAN_EDIT or CAN_MANAGE permission on this Genie Agent "
             "to revert its configuration."
         )
 
@@ -144,7 +144,7 @@ def revert_optimization(
     live_config = _as_serialized_space_config(live_snapshot)
     if not live_config:
         raise RuntimeError(
-            "Cannot safely revert without capturing the live Genie Space state."
+            "Cannot safely revert without capturing the live Genie Agent state."
         )
     live_description = _description_from_snapshot(live_snapshot)
     target_config = _preserve_live_benchmarks(
@@ -164,13 +164,13 @@ def revert_optimization(
     )
 
     logger.info(
-        "Reverted live Genie Space %s to run %s's %s config (source=%s).",
+        "Reverted live Genie Agent %s to run %s's %s config (source=%s).",
         space_id, run_id, target, source,
     )
     return ActionResult(
         status="reverted",
         run_id=run_id,
-        message=f"Genie Space reverted to this run's {target} configuration.",
+        message=f"Genie Agent reverted to this run's {target} configuration.",
     )
 
 
@@ -237,7 +237,7 @@ def _as_serialized_space_config(config: dict | None) -> dict | None:
 
     * the correct parsed ``serialized_space`` object with top-level
       ``version`` / ``data_sources`` / ``config`` / ``instructions``;
-    * a raw Genie Space API response where that object is nested under
+    * a raw Genie Agent API response where that object is nested under
       ``_parsed_space`` or ``serialized_space``.
 
     The PATCH client must receive the first shape.
@@ -333,7 +333,7 @@ def _fetch_live_space_snapshot(
         except Exception as exc:
             errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
     raise RuntimeError(
-        "Cannot safely revert without reading the live Genie Space state. "
+        "Cannot safely revert without reading the live Genie Agent state. "
         f"Fetch errors: {'; '.join(errors) or 'none'}"
     )
 

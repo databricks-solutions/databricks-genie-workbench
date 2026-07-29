@@ -104,7 +104,7 @@ See [Appendix A: API Reference](/docs/reference/api) for the complete endpoint l
 
 - `backend/prompts/` — templates for analysis
 - `backend/prompts_create/` — modular templates for the create agent (step detection, system prompts, tool instructions)
-- `backend/references/schema.md` — Genie Space JSON schema reference (needed at runtime)
+- `backend/references/schema.md` — Genie Agent JSON schema reference (needed at runtime)
 
 ## Frontend Structure
 
@@ -116,7 +116,7 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 
 | View | Component | Description |
 |------|-----------|-------------|
-| `list` | `SpaceList` | Browse and search Genie Spaces with IQ scores |
+| `list` | `SpaceList` | Browse and search Genie Agents with IQ scores |
 | `detail` | `SpaceDetail` | Space detail with tabs: Score, Optimize, History |
 | `admin` | `AdminDashboard` | Org-wide stats, leaderboard, alerts |
 | `create` | `CreateAgentChat` | Conversational agent for building new spaces |

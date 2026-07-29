@@ -26,7 +26,7 @@
 # MAGIC | `succession_plans` | variable | Critical role successor coverage |
 # MAGIC
 # MAGIC The notebook also creates six curated mart tables for
-# MAGIC focused Genie spaces.
+# MAGIC focused Genie Agents.
 # MAGIC
 # MAGIC **Setup:** Edit the configuration variables below, then **Run All**.
 # MAGIC
@@ -2023,4 +2023,4 @@ print("                 compensation_snapshots, engagement_pulses, retention_ris
 print("                 requisitions, applications, succession_plans")
 print("  Topic Marts : mart_workforce_planning, mart_hiring_funnel, mart_retention_engagement,")
 print("                 mart_internal_mobility, mart_comp_performance, mart_succession_planning")
-print("  Next    : Create a Genie space from these tables, or see notebooks/demo-data/README.md")
+print("  Next    : Create a Genie Agent from these tables, or see notebooks/demo-data/README.md")

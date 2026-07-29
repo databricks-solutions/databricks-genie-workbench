@@ -1,7 +1,7 @@
 """GSO Optimizer v2 — Phase 2 example-SQL leakage guard (§3.6 / D8).
 
 Hard eval-validity invariant: NO scored benchmark question/answer may be
-seeded into the Genie Space's *Example SQL Queries* section — including
+seeded into the Genie Agent's *Example SQL Queries* section — including
 examples derived from *passing* benchmark rows. The exclusion is keyed on
 THREE deterministic, always-on keys (question-id, normalized-SQL hash,
 canonical question text) and is INDEPENDENT of the tunable fuzzy

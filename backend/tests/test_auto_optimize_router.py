@@ -1,7 +1,7 @@
 """Integration tests for the Auto-Optimize router.
 
 These tests lock in the app-layer permission/start contract for GSO v2:
-the Workbench backend pre-checks Genie Space CAN_MANAGE and UC read access,
+the Workbench backend pre-checks Genie Agent CAN_MANAGE and UC read access,
 but it does not probe or gate on MLflow Prompt Registry availability.
 
 Style mirrors backend/tests/test_llm_utils.py: pure FastAPI TestClient + light
@@ -1033,6 +1033,24 @@ def test_step_definitions_are_the_four_task_dag() -> None:
     assert "Deploy" not in names
 
 
+def test_genie_benchmark_url_deep_links_to_benchmarks_tab() -> None:
+    assert auto_optimize._genie_benchmark_url(
+        "https://example.cloud.databricks.com/",
+        "01f181445759140988c176c27534ab52",
+        7474650956504148,
+    ) == (
+        "https://example.cloud.databricks.com/genie/rooms/"
+        "01f181445759140988c176c27534ab52/benchmarks?o=7474650956504148"
+    )
+
+
+def test_genie_benchmark_url_allows_missing_workspace_id() -> None:
+    assert auto_optimize._genie_benchmark_url(
+        "https://example.cloud.databricks.com",
+        "agent-id",
+    ) == "https://example.cloud.databricks.com/genie/rooms/agent-id/benchmarks"
+
+
 def test_map_stages_to_steps_new_dag_stage_names() -> None:
     """The new orchestration stage names roll up into the 4 logical steps."""
     stages = [
@@ -1900,7 +1918,7 @@ def test_revert_run_happy_path(client, monkeypatch, mock_sp_ws, mock_user_ws) ->
     monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
     monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
     fake = MagicMock(status="reverted", run_id=run_id,
-                      message="Genie Space reverted to this run's champion configuration.")
+                      message="Genie Agent reverted to this run's champion configuration.")
     captured = {}
     def _stub(*a, **k):
         captured.update(k)
@@ -1998,4 +2016,4 @@ def test_revert_run_returns_500_for_unexpected_exception(client, monkeypatch, mo
     monkeypatch.setattr(auto_optimize, "revert_optimization", _raise)
     resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert")
     assert resp.status_code == 500
-    assert resp.json()["detail"] == "Failed to revert the Genie Space."
+    assert resp.json()["detail"] == "Failed to revert the Genie Agent."

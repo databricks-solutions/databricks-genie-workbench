@@ -1,4 +1,4 @@
-"""Row-level security / column-mask audit for Genie Space tables.
+"""Row-level security / column-mask audit for Genie Agent tables.
 
 Lives in ``iq_scan/`` to colocate with Check 9 (the IQ score's RLS
 advisory) but kept in a separate module from ``scoring.py`` so the

@@ -28,7 +28,7 @@ def _sample_scan_result() -> dict:
         "score": 9,
         "total": 12,
         "maturity": "Ready to Optimize",
-        "checks": [{"label": "Space description", "passed": True, "severity": "pass"}],
+        "checks": [{"label": "Agent description", "passed": True, "severity": "pass"}],
         "findings": [],
         "warnings": [],
         "scanned_at": "2026-04-22T12:00:00+00:00",

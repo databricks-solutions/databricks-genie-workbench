@@ -1,4 +1,4 @@
-"""Unified asset-semantics contract for Genie space assets (PR 27).
+"""Unified asset-semantics contract for Genie Agent assets (PR 27).
 
 A single source of truth for *what kind of asset* every Genie ref is —
 ordinary table, plain view, metric view, or unknown — plus the measure /

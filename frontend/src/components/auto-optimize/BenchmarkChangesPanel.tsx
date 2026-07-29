@@ -76,7 +76,7 @@ export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkCha
     return (
       <PanelShell>
         <p className="text-sm text-muted text-center py-6">
-          GSO made no changes to this space's benchmark set.
+          GSO made no changes to this agent's benchmark set.
         </p>
       </PanelShell>
     )
@@ -90,7 +90,7 @@ export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkCha
       {total > 0 ? (
         <>
           <p className="text-xs text-muted">
-            GSO pushes its quality-reviewed, SQL-valid benchmark questions into your live Genie Space
+            GSO pushes its quality-reviewed, SQL-valid benchmark questions into your live Genie Agent
             (additive, merge-only) and excludes hard failures from evaluation. Discarding the run reverts
             additions and changes from the intake snapshot.
           </p>
@@ -122,7 +122,7 @@ export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkCha
         </>
       ) : (
         <p className="text-xs text-muted">
-          GSO made no additive changes to this space's benchmark set.
+          GSO made no additive changes to this agent's benchmark set.
         </p>
       )}
     </PanelShell>

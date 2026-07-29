@@ -20,7 +20,7 @@ export function Settings() {
     setRefreshing(true); setSavedMessage(null); setError(null)
     try {
       const r = await api.refreshConversationCache()
-      setSavedMessage(`Queued ${r.queued} space sync(s) in the background.`)
+      setSavedMessage(`Queued ${r.queued} agent sync(s) in the background.`)
     } catch (e) {
       setError(String(e))
     } finally {
@@ -56,9 +56,9 @@ export function Settings() {
       <Card className="p-4">
         <h2 className="mb-3 text-sm font-medium uppercase text-muted">Genie conversation history</h2>
         <p className="mb-3 text-sm text-muted">
-          Re-pulls each space's conversations from the Genie API into the cache that powers the
-          “Recent conversations” list on a space's detail page. Runs in the background across every
-          visible space. Does not affect cost, usage, or feedback metrics — those are read live from
+          Re-pulls each agent's conversations from the Genie API into the cache that powers the
+          “Recent conversations” list on an agent's detail page. Runs in the background across every
+          visible agent. Does not affect cost, usage, or feedback metrics — those are read live from
           Databricks system tables.
         </p>
         <Button onClick={refreshCache} disabled={refreshing}>

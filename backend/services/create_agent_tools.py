@@ -1,4 +1,4 @@
-"""Tool implementations for the Create Genie agent.
+"""Tool implementations for the Create Genie Agent.
 
 Each tool returns a dict that gets serialized as the tool result for the LLM.
 Tools handle all mechanical formatting — the LLM provides content, tools handle structure.
@@ -292,7 +292,7 @@ TOOL_DEFINITIONS = [
                     "table_identifiers": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Fully qualified table names (catalog.schema.table) — the tables selected for the Genie Space.",
+                        "description": "Fully qualified table names (catalog.schema.table) — the tables selected for the Genie Agent.",
                     },
                     "business_questions": {
                         "type": "array",
@@ -334,7 +334,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "discover_warehouses",
-            "description": "List eligible SQL warehouses (pro or serverless) for the Genie space.",
+            "description": "List eligible SQL warehouses (pro or serverless) for the Genie Agent.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -356,7 +356,7 @@ TOOL_DEFINITIONS = [
             "name": "generate_config",
             "description": (
                 "Build the complete serialized_space JSON from structured inputs. "
-                "Use this for INITIAL space creation only. For post-creation changes, use update_config instead. "
+                "Use this for INITIAL agent creation only. For post-creation changes, use update_config instead. "
                 "Handles all mechanical formatting: generates IDs, sorts arrays, splits SQL into "
                 "line-by-line arrays, formats join specs with backtick-quoting and --rt= annotations, "
                 "wraps strings in arrays. The LLM provides the CONTENT; this tool handles the FORMAT. "
@@ -367,12 +367,12 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "tables": {
                         "type": "array",
-                        "description": "Tables to include in the space",
+                        "description": "Tables to include in the agent",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "identifier": {"type": "string", "description": "catalog.schema.table"},
-                                "description": {"type": "string", "description": "Space-scoped table description"},
+                                "description": {"type": "string", "description": "Agent-scoped table description"},
                                 "column_configs": {
                                     "type": "array",
                                     "items": {
@@ -394,7 +394,7 @@ TOOL_DEFINITIONS = [
                     "sample_questions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "5 sample questions shown to users in the Genie Space UI as click-to-ask suggestions",
+                        "description": "5 sample questions shown to users in the Genie Agent UI as click-to-ask suggestions",
                     },
                     "text_instructions": {
                         "type": "array",
@@ -559,7 +559,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "generate_plan",
             "description": (
-                "Generate the complete Genie Space plan using PARALLEL LLM calls (4x faster than "
+                "Generate the complete Genie Agent plan using PARALLEL LLM calls (4x faster than "
                 "building it manually). Extracts table context and inspection findings from session "
                 "history automatically — you only need to pass user_requirements summarizing the "
                 "user's goals and business context. Returns the plan as a present_plan result for "
@@ -587,7 +587,7 @@ TOOL_DEFINITIONS = [
             "name": "present_plan",
             "description": (
                 "Present a structured plan for the user to review BEFORE generating the config. "
-                "The frontend renders this as collapsible sections mirroring the Genie Space UI tabs. "
+                "The frontend renders this as collapsible sections mirroring the Genie Agent UI tabs. "
                 "Prefer generate_plan (parallel, faster) unless you need to manually construct "
                 "or revise specific plan sections. The user must approve the plan before "
                 "you call generate_config. Parameters are IDENTICAL to generate_config so the plan "
@@ -598,12 +598,12 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "tables": {
                         "type": "array",
-                        "description": "Tables to include in the space",
+                        "description": "Tables to include in the agent",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "identifier": {"type": "string", "description": "catalog.schema.table"},
-                                "description": {"type": "string", "description": "Space-scoped table description"},
+                                "description": {"type": "string", "description": "Agent-scoped table description"},
                                 "column_configs": {
                                     "type": "array",
                                     "items": {
@@ -625,7 +625,7 @@ TOOL_DEFINITIONS = [
                     "sample_questions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "5 sample questions shown to users in the Genie Space UI as click-to-ask suggestions",
+                        "description": "5 sample questions shown to users in the Genie Agent UI as click-to-ask suggestions",
                     },
                     "text_instructions": {
                         "type": "array",
@@ -800,14 +800,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "create_space",
-            "description": "Create the Genie space via the Databricks API. Call this only after the user has approved the config.",
+            "description": "Create the Genie Agent via the Databricks API. Call this only after the user has approved the config.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "display_name": {"type": "string", "description": "Display name for the space"},
-                    "description": {"type": "string", "description": "1-2 sentence description of what this Genie Space enables users to explore"},
+                    "display_name": {"type": "string", "description": "Display name for the agent"},
+                    "description": {"type": "string", "description": "1-2 sentence description of what this Genie Agent enables users to explore"},
                     "config": {"type": "object", "description": "The validated serialized_space dict (optional — defaults to last generated config)"},
-                    "parent_path": {"type": "string", "description": "Workspace folder path for the space (optional)"},
+                    "parent_path": {"type": "string", "description": "Workspace folder path for the agent (optional)"},
                 },
                 "required": ["display_name", "description"],
             },
@@ -817,13 +817,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "update_space",
-            "description": "Update an existing Genie space — config, display name, or both. Use this instead of create_space when the space has already been created. Supports renaming.",
+            "description": "Update an existing Genie Agent — config, display name, or both. Use this instead of create_space when the agent has already been created. Supports renaming.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "space_id": {"type": "string", "description": "The ID of the existing Genie space to update"},
+                    "space_id": {"type": "string", "description": "The ID of the existing Genie Agent to update"},
                     "config": {"type": "object", "description": "The validated serialized_space dict (optional — defaults to last generated config)"},
-                    "display_name": {"type": "string", "description": "New display name for the space (optional — only if renaming)"},
+                    "display_name": {"type": "string", "description": "New display name for the agent (optional — only if renaming)"},
                 },
                 "required": ["space_id"],
             },
@@ -2104,7 +2104,7 @@ def _assess_readiness(table_identifiers: list[str], business_questions: list[str
         if cols_without > 0:
             recommendations.append(
                 f"{cols_without} column(s) ({100 - col_doc_pct:.0f}%) have no descriptions — "
-                "these will be generated in the Genie Space configuration."
+                "these will be generated in the Genie Agent configuration."
             )
     if semantic_band == "Low" and extracted.get("entities"):
         missing_dims = sorted(extracted["entities"] - set(corpus.split()))
@@ -3166,7 +3166,7 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
     if len(description_text.strip()) < 30 or len(description_words) < 5 or description_text.strip().lower() in {"n/a", "na", "none", "todo", "tbd"}:
         warning(
             "description",
-            "Missing or short space description — define the domain, audience, and scope"
+            "Missing or short agent description — define the domain, audience, and scope"
         )
 
     # 2. Table descriptions: warn if <80% have descriptions; warn at 80-99%
@@ -3310,7 +3310,7 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
     if entity_count > 100:
         warning(
             "data_sources.tables.column_configs",
-            f"{entity_count} columns with entity matching — approaching 120/space limit"
+            f"{entity_count} columns with entity matching — approaching 120/agent limit"
         )
 
     # 9. Benchmarks: warn if <10
@@ -3375,7 +3375,7 @@ def _check_sorted(items: list, key_fn, key_name: str, path: str, error_fn) -> No
 
 @mlflow.trace(name="create_space", span_type=SpanType.TOOL)
 def _create_space(display_name: str, description: str = "", config: dict | None = None, parent_path: str | None = None) -> dict:
-    """Create the Genie space via the API.
+    """Create the Genie Agent via the API.
 
     Path resolution is automatic: configured directory -> /Shared/.
     On permission errors the next candidate is tried transparently.
@@ -3406,7 +3406,7 @@ def _create_space(display_name: str, description: str = "", config: dict | None 
 
 @mlflow.trace(name="update_space", span_type=SpanType.TOOL)
 def _update_space(space_id: str, config: dict | None = None, display_name: str | None = None) -> dict:
-    """Update an existing Genie space with a new configuration and/or name."""
+    """Update an existing Genie Agent with a new configuration and/or name."""
     if not config and not display_name:
         return {"success": False, "error": "No config or display_name provided"}
     try:
@@ -3439,7 +3439,7 @@ def _update_space(space_id: str, config: dict | None = None, display_name: str |
             "success": True,
             "space_id": space_id,
             "url": f"{host}/genie/rooms/{space_id}",
-            "message": "Space updated successfully.",
+            "message": "Agent updated successfully.",
         }
     except Exception as e:
         logger.exception("update_space failed")

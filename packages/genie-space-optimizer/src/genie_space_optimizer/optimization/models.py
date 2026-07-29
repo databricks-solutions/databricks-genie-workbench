@@ -1,4 +1,4 @@
-"""Champion selection for Genie Space optimization runs (Delta-only).
+"""Champion selection for Genie Agent optimization runs (Delta-only).
 
 GSO v2 (Phase 5, D3/D7): tracking and versioning are Delta-only. There is no
 MLflow LoggedModel snapshot, no UC Model Registry version, and no per-mutation

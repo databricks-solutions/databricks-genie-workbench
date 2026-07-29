@@ -109,7 +109,7 @@ export function SpacesList({ onOpenSpace }: Props) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `geniewatch-spaces-${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = `geniewatch-agents-${new Date().toISOString().slice(0, 10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -118,9 +118,9 @@ export function SpacesList({ onOpenSpace }: Props) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Genie Spaces</h1>
+          <h1 className="text-2xl font-semibold">Genie Agents</h1>
           <p className="text-sm text-muted">
-            {filtered.length} space{filtered.length === 1 ? '' : 's'} visible to you · last {days}-day cost & usage
+            {filtered.length} agent{filtered.length === 1 ? '' : 's'} visible to you · last {days}-day cost & usage
           </p>
         </div>
         <div className="flex gap-2">
@@ -149,7 +149,7 @@ export function SpacesList({ onOpenSpace }: Props) {
         <Input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name, owner, or space ID"
+          placeholder="Search by name, owner, or agent ID"
           className="pl-9"
         />
       </div>
@@ -162,7 +162,7 @@ export function SpacesList({ onOpenSpace }: Props) {
             which the app service principal can't currently read — so those panels will be empty
             (not necessarily "no activity"). A workspace admin must grant the required
             {' '}<code className="font-mono">SELECT</code>s (see <code className="font-mono">scripts/grant_permissions.py</code>).
-            Space and permission data still load.
+            Agent and permission data still load.
           </span>
         </Card>
       )}
@@ -177,7 +177,7 @@ export function SpacesList({ onOpenSpace }: Props) {
         <table className="w-full text-sm">
           <thead className="border-b border-default bg-elevated text-left text-xs uppercase text-muted">
             <tr>
-              <Th onClick={() => toggleSort('title')} active={sortKey === 'title'} dir={sortDir}>Space</Th>
+              <Th onClick={() => toggleSort('title')} active={sortKey === 'title'} dir={sortDir}>Agent</Th>
               <Th>Owner</Th>
               <Th onClick={() => toggleSort('queries_7d')} active={sortKey === 'queries_7d'} dir={sortDir} align="right">Queries ({days}d)</Th>
               <Th onClick={() => toggleSort('cost_7d_usd')} active={sortKey === 'cost_7d_usd'} dir={sortDir} align="right">Cost ({days}d)</Th>
@@ -223,7 +223,7 @@ export function SpacesList({ onOpenSpace }: Props) {
                     target="_blank"
                     rel="noreferrer"
                     onClick={e => e.stopPropagation()}
-                    title="Open Genie Space in Databricks"
+                    title="Open Genie Agent in Databricks"
                     className="inline-flex items-center text-muted hover:text-fg"
                   >
                     <ExternalLink size={14} />
@@ -234,7 +234,7 @@ export function SpacesList({ onOpenSpace }: Props) {
             {data && !filtered.length && (
               <tr>
                 <td colSpan={7} className="p-8 text-center text-muted">
-                  No spaces match this filter.
+                  No agents match this filter.
                 </td>
               </tr>
             )}

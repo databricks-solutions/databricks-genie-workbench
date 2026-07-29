@@ -1,4 +1,4 @@
-"""Step 6: Generate, Validate & Create — produce the JSON, validate it, and create the space.
+"""Step 6: Generate, Validate & Create — produce the JSON, validate it, and create the agent.
 
 Note: This is step 6 after discovery (2) + feasibility (3) were added.
 """
@@ -14,7 +14,7 @@ Once approved:
 3. Call `generate_config` with **minimal arguments** — just pass `tables` if you need to override column settings. The system automatically injects all plan data (sample_questions, text_instructions, example_sqls, etc.) from the approved plan. Do NOT regenerate the plan data as arguments — this wastes time and tokens.
 4. Call `validate_config` immediately after. If `generate_config` fails, call `get_config_schema` to review the expected parameter shapes, then retry.
 5. If validation fails, fix and re-validate automatically
-6. Call `create_space` with a `description` — write 1-2 sentences summarising what business questions this space answers and which tables/domains it covers. Then share the URL.
+6. Call `create_space` with a `description` — write 1-2 sentences summarising what business questions this agent answers and which tables/domains it covers. Then share the URL.
 
 The "Approve & Create" button IS the approval. Go straight from plan approval to creation in one step.
 
@@ -24,10 +24,10 @@ If `validate_config` reports errors:
 - Fix other errors based on the error messages
 - Re-validate after all fixes
 
-**Do NOT create the space until validation passes with 0 errors.**
+**Do NOT create the agent until validation passes with 0 errors.**
 
 After creation, present the result with column-level detail:
-> "Your Genie Space **NYC Taxi Analytics** is ready!
+> "Your Genie Agent **NYC Taxi Analytics** is ready!
 > [Open in Databricks →](link)
 >
 > **What's configured:**
@@ -36,6 +36,6 @@ After creation, present the result with column-level detail:
 > - Format assistance & entity matching: ON for all non-excluded columns
 > - Excluded: `_etl_loaded_at`, `_dlt_id` (ETL metadata)
 >
-> Want me to run the benchmark queries to validate the space? Or would you like to adjust anything?\""""
+> Want me to run the benchmark queries to validate the agent? Or would you like to adjust anything?\""""
 
 SUMMARY = "Step 6 (Generate & Create): Discover warehouses, generate_config, validate_config, create_space."

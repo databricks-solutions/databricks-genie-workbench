@@ -125,10 +125,10 @@ export function PermissionAlert({ permissions, loading, onRefresh }: PermissionA
       <div className="space-y-2">
         <PermissionStep
           step={1}
-          title="Grant Genie Space access"
+          title="Grant Genie Agent access"
           description={
             <>
-              Open the Genie Space sharing dialog and add{" "}
+              Open the Genie Agent sharing dialog and add{" "}
               <CopyableText text={permissions.sp_display_name || "<service-principal>"} />{" "}
               with <strong>CAN_MANAGE</strong> permission.
             </>

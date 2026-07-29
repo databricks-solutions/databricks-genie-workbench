@@ -334,7 +334,7 @@ describe("ResolutionActions — rendered states", () => {
     )
     expect(markup).toContain("Keep changes")
     expect(markup).toContain("Discard")
-    expect(markup).toContain("roll the space back")
+    expect(markup).toContain("roll the agent back")
   })
 
   it("renders the kept banner when already APPLIED", () => {
@@ -492,7 +492,7 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
     // No mutation groups, but the window meter is still present (not the empty
     // "no changes" placeholder).
     expect(markup).toContain("Working-set window")
-    expect(markup).not.toContain("GSO made no changes to this space's benchmark set.")
+    expect(markup).not.toContain("GSO made no changes to this agent's benchmark set.")
   })
 
   it("flags a below-window count as top-up recommended", () => {
@@ -518,7 +518,7 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
       <BenchmarkChangesPanel runId="r" changes={changes({})} />,
     )
     // renderToStaticMarkup HTML-escapes the apostrophe (' → &#x27;).
-    expect(markup).toContain("GSO made no changes to this space")
+    expect(markup).toContain("GSO made no changes to this agent")
     expect(markup).not.toContain("Working-set window")
   })
 

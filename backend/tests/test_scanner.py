@@ -82,30 +82,30 @@ class TestScoreEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# Check 1: Space description
+# Check 1: Agent description
 # ---------------------------------------------------------------------------
 
 class TestSpaceDescription:
     def test_missing_description_fails(self, empty_space_data):
         result = calculate_score(empty_space_data)
-        check = _check_by_label(result, "Space description")
+        check = _check_by_label(result, "Agent description")
         assert check["passed"] is False
 
     def test_meaningful_description_passes(self, full_space_data):
-        check = _check_by_label(calculate_score(full_space_data), "Space description")
+        check = _check_by_label(calculate_score(full_space_data), "Agent description")
         assert check["passed"] is True
 
     def test_short_but_meaningful_description_warns(self, full_space_data):
         data = copy.deepcopy(full_space_data)
         data["description"] = "Sales analytics space for finance teams."
-        check = _check_by_label(calculate_score(data), "Space description")
+        check = _check_by_label(calculate_score(data), "Agent description")
         assert check["passed"] is True
         assert check["severity"] == "warning"
 
     def test_placeholder_description_fails(self, full_space_data):
         data = copy.deepcopy(full_space_data)
         data["description"] = "TBD"
-        check = _check_by_label(calculate_score(data), "Space description")
+        check = _check_by_label(calculate_score(data), "Agent description")
         assert check["passed"] is False
 
 
@@ -287,7 +287,7 @@ class TestJoinSpecs:
         tables = [{"name": "t1", "columns": []}, {"name": "t2", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
-        assert "No join specifications for multi-table space" in result["findings"]
+        assert "No join specifications for multi-table agent" in result["findings"]
 
     def test_absent_single_table_no_finding(self):
         tables = [{"name": "t1", "columns": []}]
@@ -295,7 +295,7 @@ class TestJoinSpecs:
         result = calculate_score(data)
         check = _check_by_label(result, "Join specifications")
         assert check["passed"] is True
-        assert "No join specifications for multi-table space" not in result["findings"]
+        assert "No join specifications for multi-table agent" not in result["findings"]
 
     def test_partial_multi_table_join_coverage_warns(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(3)]
@@ -323,7 +323,7 @@ class TestJoinSpecs:
         result = calculate_score(data)
         check = _check_by_label(result, "Join specifications")
         assert check["passed"] is True
-        assert "No join specifications for multi-table space" not in result["findings"]
+        assert "No join specifications for multi-table agent" not in result["findings"]
 
     def test_absent_with_multiple_metric_views_passes(self):
         data = {
@@ -358,7 +358,7 @@ class TestJoinSpecs:
         result = calculate_score(data)
         check = _check_by_label(result, "Join specifications")
         assert check["passed"] is False
-        assert "No join specifications for multi-table space" in result["findings"]
+        assert "No join specifications for multi-table agent" in result["findings"]
 
     def test_metric_views_do_not_inflate_join_coverage_requirement(self):
         data = {
@@ -971,7 +971,7 @@ class TestScanSpaceGsoSelection:
 
     @pytest.mark.asyncio
     async def test_scan_requests_top_level_space_description(self, monkeypatch):
-        """scan_space must score the API-level Space description, not only the
+        """scan_space must score the API-level agent description, not only the
         parsed serialized_space payload."""
         import backend.services.scanner as scanner
         import backend.services.gso_lakebase as gso_lakebase
@@ -1002,7 +1002,7 @@ class TestScanSpaceGsoSelection:
         monkeypatch.setattr(scanner, "save_scan_result", _save)
 
         result = await scanner.scan_space("space-1")
-        check = _check_by_label(result, "Space description")
+        check = _check_by_label(result, "Agent description")
         assert check["passed"] is True
 
     @pytest.mark.asyncio

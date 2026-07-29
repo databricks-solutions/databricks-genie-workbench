@@ -1,4 +1,4 @@
-"""Optional Genie Space permission grants for the app service principal."""
+"""Optional Genie Agent permission grants for the app service principal."""
 
 from __future__ import annotations
 

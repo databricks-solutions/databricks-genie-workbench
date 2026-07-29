@@ -64,7 +64,7 @@ def _capture_config_snapshot(
                 f"functions={counts['functions']})"
             )
             snap_errors.append(msg)
-            logger.error("Rejecting empty Genie space snapshot for %s: %s", space_id, msg)
+            logger.error("Rejecting empty Genie Agent snapshot for %s: %s", space_id, msg)
             continue
 
         space_snapshot = candidate
@@ -82,7 +82,7 @@ def _capture_config_snapshot(
     if not space_snapshot:
         combined = "; ".join(snap_errors)
         raise RuntimeError(
-            f"Cannot export non-empty Genie Space config for {space_id}. "
+            f"Cannot export non-empty Genie Agent config for {space_id}. "
             f"Errors: {combined}"
         )
     return space_snapshot
@@ -108,7 +108,7 @@ def trigger_optimization(
     use the Statement Execution API via ``config.warehouse_id``.
 
     Args:
-        space_id: The Genie Space ID to optimize.
+        space_id: The Genie Agent ID to optimize.
         ws: OBO-authenticated ``WorkspaceClient`` for the requesting user.
         sp_ws: Service-principal ``WorkspaceClient`` for job submission.
         config: Integration configuration (catalog, schema, warehouse, etc.).
@@ -149,7 +149,7 @@ def trigger_optimization(
     if not user_can_edit_space(ws, space_id, user_email=caller_email, acl_client=sp_ws):
         raise PermissionError(
             "You need CAN_EDIT or CAN_MANAGE permission on this "
-            "Genie Space to start optimization."
+            "Genie Agent to start optimization."
         )
 
     wh_ensure_optimization_tables(
@@ -225,7 +225,7 @@ def trigger_optimization(
     sp_aliases = get_sp_principal_aliases(sp_ws)
     if not sp_can_manage_space(sp_ws, space_id, sp_aliases):
         raise PermissionError(
-            f"The service principal does not have CAN_MANAGE on Genie Space {space_id}."
+            f"The service principal does not have CAN_MANAGE on Genie Agent {space_id}."
         )
 
     levers_resolved = levers if levers else list(DEFAULT_LEVER_ORDER)

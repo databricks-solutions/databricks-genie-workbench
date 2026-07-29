@@ -5,13 +5,13 @@ description: "Deterministic 12-check quality scoring with three maturity tiers."
 
 # IQ Scanner
 
-The IQ Scanner is a **deterministic, rule-based** quality assessment engine for Genie Space configurations. It evaluates 12 binary checks, assigns a maturity tier, and produces actionable findings with recommended next steps.
+The IQ Scanner is a **deterministic, rule-based** quality assessment engine for Genie Agent configurations. It evaluates 12 binary checks, assigns a maturity tier, and produces actionable findings with recommended next steps.
 
 Unlike the LLM-based analysis tools, the scanner runs instantly with no LLM calls — it inspects the `serialized_space` JSON directly.
 
 ### Unity Catalog Enrichment
 
-Before scoring, `scan_space()` fetches table and column descriptions from Unity Catalog via `WorkspaceClient.tables.get()` and merges them into the space config. This means checks 2 (table descriptions) and 3 (column descriptions) reflect metadata that exists in UC even if not inlined in the Genie Space config. Existing inline descriptions are never overwritten. If UC metadata is unavailable (permissions, network), the scan continues with config-only data.
+Before scoring, `scan_space()` fetches table and column descriptions from Unity Catalog via `WorkspaceClient.tables.get()` and merges them into the space config. This means checks 2 (table descriptions) and 3 (column descriptions) reflect metadata that exists in UC even if not inlined in the Genie Agent config. Existing inline descriptions are never overwritten. If UC metadata is unavailable (permissions, network), the scan continues with config-only data.
 
 ## Scoring Model
 
@@ -50,7 +50,7 @@ The first 10 checks evaluate configuration quality. The last 2 checks evaluate o
 
 | # | Check | Pass Criteria | On Failure |
 |---|-------|--------------|------------|
-| 11 | **Optimization workflow completed** | A terminal optimization run exists (`CONVERGED`, `STALLED`, or `MAX_ITERATIONS`) | "Space has not been through the optimization workflow" |
+| 11 | **Optimization workflow completed** | A terminal optimization run exists (`CONVERGED`, `STALLED`, or `MAX_ITERATIONS`) | "Agent has not been through the optimization workflow" |
 | 12 | **Optimization accuracy ≥ 85%** | Best accuracy from optimization is ≥ 0.85 | "Optimization accuracy is X% — target ≥ 85%" |
 
 ## Severity Levels
@@ -78,7 +78,7 @@ The scanner returns:
     {"label": "Data sources exist", "passed": true, "detail": "5 table(s) configured", "severity": "pass"},
     ...
   ],
-  "findings": ["No join specifications for multi-table space", ...],
+  "findings": ["No join specifications for multi-table agent", ...],
   "next_steps": ["Add join specifications to help Genie correctly join your tables", ...],
   "warnings": ["Instructions total 2,500 chars — keep under 2,000", ...],
   "warning_next_steps": ["Restructure text instructions for optimal LLM context usage", ...],
@@ -104,7 +104,7 @@ Beyond the 12 scored checks, the scanner emits additional warnings for edge case
 | Example SQLs 8–14 | "10-15 is the sweet spot for largest accuracy jump" |
 | Missing `usage_guidance` on >50% of example SQLs | "Add descriptions of when each example should be applied" |
 | Missing measures or filters in SQL snippets | "Add missing SQL snippet types for better coverage" |
-| Entity matching columns > 100 | "Approaching 120/space limit" |
+| Entity matching columns > 100 | "Approaching 120/agent limit" |
 | Row-level security on tables with entity matching | "Entity matching is silently disabled for these" |
 
 ## Integration with Auto-Optimize

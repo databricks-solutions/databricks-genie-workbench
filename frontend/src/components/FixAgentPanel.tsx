@@ -1,5 +1,5 @@
 /**
- * FixAgentPanel — Task-list UI for fixing a Genie Space.
+ * FixAgentPanel — Task-list UI for fixing a Genie Agent.
  * Uses the dedicated fix agent endpoint (POST /api/spaces/{id}/fix) which
  * generates JSON patches and applies them directly — no conversational chat.
  */

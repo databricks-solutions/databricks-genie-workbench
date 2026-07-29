@@ -1,4 +1,4 @@
-"""Narrow pre-baseline Genie Space quality enrichment.
+"""Narrow pre-baseline Genie Agent quality enrichment.
 
 This phase runs inside the Optimize task before iteration-0 benchmark
 evaluation.  It is intentionally small and auditable: fix only basic,
@@ -244,7 +244,7 @@ def parsed_space_from_config(config: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def top_level_space_description(config: dict[str, Any] | None) -> str:
-    """Return the real top-level Genie Space description, if present."""
+    """Return the real top-level Genie Agent description, if present."""
     if not isinstance(config, dict):
         return ""
     for key in ("description", "_gso_top_level_description"):
@@ -762,7 +762,7 @@ def _maybe_seed_instructions(
 
 def _minimal_instruction_seed(parsed: dict[str, Any], existing_text: str = "") -> str:
     source_phrase = _source_phrase(parsed)
-    purpose = f"Answer questions using the configured Genie Space data sources: {source_phrase}."
+    purpose = f"Answer questions using the configured Genie Agent data sources: {source_phrase}."
     if existing_text.strip():
         existing = existing_text.strip().replace("\n", " ")
         if len(existing) > 140:
@@ -776,7 +776,7 @@ def _minimal_instruction_seed(parsed: dict[str, Any], existing_text: str = "") -
             "## DISAMBIGUATION\n"
             "- When a request is missing a time range, metric, entity, or grouping, ask one concise clarification question before querying.",
             "## CONSTRAINTS\n"
-            "- Use only configured data sources and documented relationships in this Genie Space.\n"
+            "- Use only configured data sources and documented relationships in this Genie Agent.\n"
             "- Do not expose columns that are hidden or excluded from the space.",
             "## Instructions you must follow when providing summaries\n"
             "- State relevant filters, grouping, and date range when they affect the answer.",
