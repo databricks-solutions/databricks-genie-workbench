@@ -11,6 +11,7 @@ const item: SpaceListItem = {
   permissions: [
     { principal: 'alice@example.com', permission_level: 'CAN_MANAGE', principal_type: 'user', inherited: false },
     { principal: 'data-admins', permission_level: 'CAN_MANAGE', principal_type: 'group', inherited: true },
+    { principal: '0013c5df-38cd-4316-bebe-e733247677a2', permission_level: 'CAN_MANAGE', principal_type: 'service_principal', inherited: false },
   ],
   last_seen_at: null, queries_7d: 2, cost_7d_usd: 1.5,
   feedback_pos_7d: 1, feedback_neg_7d: 0, last_query_at: null,
@@ -21,24 +22,30 @@ describe('manager presentation', () => {
     expect(renderToStaticMarkup(<ManagerSummary permissions={[]} />)).toContain('—')
   })
 
-  it('renders one manager compactly', () => {
+  it('renders one manager inline', () => {
     const html = renderToStaticMarkup(<ManagerSummary permissions={[item.permissions[0]]} />)
     expect(html).toContain('alice@example.com')
-    expect(html).not.toContain('+1')
+    expect(html).toContain('user')
   })
 
-  it('renders the first manager and count for multiple managers', () => {
+  it('renders every manager inline without hover-only content', () => {
     const html = renderToStaticMarkup(<ManagerSummary permissions={item.permissions} />)
     expect(html).toContain('alice@example.com')
-    expect(html).toContain('+1')
-    expect(html).toContain('data-admins (group, inherited)')
+    expect(html).toContain('data-admins')
+    expect(html).toContain('group · inherited')
+    expect(html).toContain('0013c5df-38cd-4316-bebe-e733247677a2')
+    expect(html).toContain('service principal')
+    expect(html).toContain('aria-label="3 managers"')
+    expect(html).not.toContain('+1')
+    expect(html).not.toContain('title=')
+    expect(html).not.toContain('role="tooltip"')
   })
 
   it('searches every manager and exports them in the managers column', () => {
     expect(filterSpaces([item], 'DATA-ADMINS')).toEqual([item])
     const csv = buildSpacesCsv([item])
     expect(csv).toContain('"managers"')
-    expect(csv).toContain('"alice@example.com; data-admins"')
+    expect(csv).toContain('"alice@example.com; data-admins; 0013c5df-38cd-4316-bebe-e733247677a2"')
     expect(csv).not.toContain('owner_email')
   })
 

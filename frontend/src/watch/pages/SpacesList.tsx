@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Tooltip } from '@/components/ui/tooltip'
 import * as api from '@/watch/lib/api'
 import type { HealthStatus, SpaceListItem, SpacePermission } from '@/watch/types/api'
 import { formatInt, formatUsd, relativeTime } from '@/watch/lib/format'
@@ -181,7 +180,7 @@ export function SpacesList({ onOpenSpace }: Props) {
                   <div className="font-medium">{s.title || '(untitled)'}</div>
                   <div className="font-mono text-xs text-muted">{s.space_id.slice(0, 12)}…</div>
                 </td>
-                <td className="px-4 py-3 text-muted"><ManagerSummary permissions={s.permissions} /></td>
+                <td className="min-w-64 px-4 py-3"><ManagerSummary permissions={s.permissions} /></td>
                 <td className="px-4 py-3 text-right tabular-nums">{formatInt(s.queries_7d)}</td>
                 <td className="px-4 py-3 text-right tabular-nums">
                   {s.cost_7d_usd > 0 ? formatUsd(s.cost_7d_usd) : '—'}
@@ -237,28 +236,28 @@ export function SpacesList({ onOpenSpace }: Props) {
 }
 
 export function ManagerSummary({ permissions }: { permissions: SpacePermission[] }) {
-  if (!permissions.length) return <>—</>
-  const first = permissions[0].principal || '—'
-  const managerTitle = permissions.map(permission => {
-    const type = (permission.principal_type || 'principal').replaceAll('_', ' ')
-    return `${permission.principal || '?'} (${type}${permission.inherited ? ', inherited' : ''})`
-  }).join('\n')
-  const content = (
-    <div className="space-y-1 text-left">
-      {permissions.map((permission, index) => (
-        <div key={`${permission.principal}-${index}`}>
-          {permission.principal || '?'} <span className="opacity-70">({(permission.principal_type || 'principal').replaceAll('_', ' ')}{permission.inherited ? ', inherited' : ''})</span>
-        </div>
-      ))}
-    </div>
-  )
+  if (!permissions.length) return <span className="text-muted">—</span>
+
   return (
-    <Tooltip content={content} side="bottom">
-      <span className="inline-flex max-w-56 cursor-help items-center gap-1" title={managerTitle}>
-        <span className="truncate">{first}</span>
-        {permissions.length > 1 && <Badge>+{permissions.length - 1}</Badge>}
-      </span>
-    </Tooltip>
+    <ul
+      className="space-y-1"
+      aria-label={`${permissions.length} manager${permissions.length === 1 ? '' : 's'}`}
+    >
+      {permissions.map((permission, index) => (
+        <li
+          key={`${permission.principal}-${index}`}
+          className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 leading-tight"
+        >
+          <span className="min-w-0 break-words font-medium text-fg">
+            {permission.principal || 'Unknown principal'}
+          </span>
+          <span className="whitespace-nowrap text-xs text-muted">
+            {(permission.principal_type || 'principal').replaceAll('_', ' ')}
+            {permission.inherited ? ' · inherited' : ''}
+          </span>
+        </li>
+      ))}
+    </ul>
   )
 }
 
