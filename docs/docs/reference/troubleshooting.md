@@ -25,11 +25,11 @@ description: "Common issues, causes, and fixes."
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "You need CAN_EDIT or CAN_MANAGE permission" on optimize trigger | User lacks permission on the Genie Space | Share the space with the user (CAN_EDIT or CAN_MANAGE) |
-| "The service principal does not have CAN_MANAGE" | SP not shared on the Genie Space | Share the space with the app's SP (CAN_MANAGE) |
+| "You need CAN_EDIT or CAN_MANAGE permission" on optimize trigger | User lacks permission on the Genie Agent | Share the agent with the user (CAN_EDIT or CAN_MANAGE) |
+| "The service principal does not have CAN_MANAGE" | SP not shared on the Genie Agent | Share the agent with the app's SP (CAN_MANAGE) |
 | "OBO token lacks genie scope, retrying with service principal" (in logs) | User token missing `dashboards.genie` scope | This is handled automatically via SP fallback — no action needed unless SP also fails |
 | Optimization job fails with catalog/schema access errors | SP lacks UC permissions on referenced data | Grant `SELECT` on referenced schemas to the SP |
-| "Permission denied" on scan | User lacks access to the Genie Space | Share the space with the user |
+| "Permission denied" on scan | User lacks access to the Genie Agent | Share the agent with the user |
 
 ## Lakebase Issues
 

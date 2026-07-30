@@ -5,7 +5,7 @@ description: "Benchmark-driven optimization: a 6-task pipeline, 5 levers, 3 gate
 
 # Auto-Optimize (GSO)
 
-Auto-Optimize is a benchmark-driven optimization pipeline that measures Genie Space accuracy, diagnoses failures, and iteratively applies metadata patches until quality thresholds are met. It is powered by the Genie Space Optimizer (GSO) engine — a separate Python package at `packages/genie-space-optimizer/`.
+Auto-Optimize is a benchmark-driven optimization pipeline that measures Genie Agent accuracy, diagnoses failures, and iteratively applies metadata patches until quality thresholds are met. It is powered by the Genie Space Optimizer (GSO) engine — a separate Python package at `packages/genie-space-optimizer/`.
 
 ## Overview
 
@@ -33,7 +33,7 @@ flowchart LR
 | 3 | **Enrichment** | Gather optimization context | Proactive metadata enrichment — profile tables, analyze query patterns, identify improvement opportunities |
 | 4 | **Lever Loop** | Iterative optimization | The core loop: RCA-ground failures → cluster → pick one action group (cluster + lever) → generate patches → safety gates → apply → re-evaluate → accept or roll back |
 | 5 | **Finalize** | Consolidate results | Merge accepted patches, validate final configuration, compute final accuracy |
-| 6 | **Deploy** | Apply to space | Optionally apply the optimized configuration to the live Genie Space |
+| 6 | **Deploy** | Apply to agent | Optionally apply the optimized configuration to the live Genie Agent |
 
 ## The Levers
 
@@ -41,19 +41,19 @@ Levers are the categories of metadata change the optimizer can apply. **Lever 0 
 
 | Lever | Name | Target | Examples |
 |-------|------|--------|----------|
-| **0** | Proactive Enrichment *(always-on)* | UC metadata the space doesn't yet inline | Table/column descriptions, glossary terms, UC tags — non-behavioral context only |
+| **0** | Proactive Enrichment *(always-on)* | UC metadata the agent doesn't yet inline | Table/column descriptions, glossary terms, UC tags — non-behavioral context only |
 | **1** | Tables & Columns | Table allowlist + per-column metadata | Add a table, add column synonyms/aliases, mark deprecated columns |
 | **2** | Metric Views | Governed metric definitions | Add or refine a metric view for a common aggregation |
 | **3** | Table-Valued Functions | Parameterized SQL patterns | Register a TVF for a recurring query shape |
 | **4** | Join Specifications | Table relationships | Add or correct a join spec / preferred join key |
-| **5** | Genie Space Instructions | Natural-language guidance | Add a domain term, routing rule, or guardrail to the instructions block |
+| **5** | Genie Agent Instructions | Natural-language guidance | Add a domain term, routing rule, or guardrail to the instructions block |
 | **6** | SQL Expressions | Example SQL library | Add a worked example, replace a stale one |
 
 The lever loop's **strategist** analyzes current failure patterns and selects the lever most likely to address them.
 
 ## The Lever Loop
 
-The heart of Auto-Optimize is an evidence-grounded iteration — **measure, diagnose, intervene, prove, learn** — that never changes the space on a hunch:
+The heart of Auto-Optimize is an evidence-grounded iteration — **measure, diagnose, intervene, prove, learn** — that never changes the Genie Agent on a hunch:
 
 ```mermaid
 flowchart LR
@@ -68,12 +68,12 @@ flowchart LR
 2. **Cluster** — failures sharing a root cause are grouped so one patch can fix a whole theme.
 3. **Intervene** — the strategist commits to exactly **one** action group per iteration (a cluster paired with a lever). One change at a time keeps cause and effect attributable.
 4. **Gate + apply** — proposed patches run the safety gates (below); survivors are applied to a candidate config, with a pre-iteration snapshot kept for rollback.
-5. **Prove** — the train benchmark is re-evaluated through the patched space with the same judge panel.
+5. **Prove** — the train benchmark is re-evaluated through the patched agent with the same judge panel.
 6. **Accept / learn** — the acceptance rule (below) keeps or rolls back the change, and a reflection entry records what worked so the strategist won't repeat a dead end.
 
 ## Acceptance: did the score actually improve?
 
-Each iteration is kept or discarded by a single explicit rule (`decide_acceptance`): the **post-arbiter accuracy** of the patched space must beat the carried baseline by at least a gain floor.
+Each iteration is kept or discarded by a single explicit rule (`decide_acceptance`): the **post-arbiter accuracy** of the patched agent must beat the carried baseline by at least a gain floor.
 
 ```
 accept if  candidate_accuracy ≥ baseline_accuracy + min_gain_pp
@@ -130,7 +130,7 @@ A candidate that scores well on the questions it was tuned against might simply 
 
 - **Held-out generalization** — at preflight the benchmark is split, reserving ~15% (`HELD_OUT_RATIO = 0.15`) of questions that the lever loop **never sees**. Finalize evaluates the candidate against this held-out set; a large train-vs-held-out gap flags overfitting.
 - **Repeatability** — the candidate is re-run to confirm the score is stable rather than a lucky draw from LLM-graded variance.
-- **Champion promotion** — each accepted iteration is snapshotted as an MLflow **LoggedModel**; the best is promoted to the **`champion`** alias (`promote_best_model`). The Deploy task applies that champion config to the live space.
+- **Champion promotion** — each accepted iteration is snapshotted as an MLflow **LoggedModel**; the best is promoted to the **`champion`** alias (`promote_best_model`). The Deploy task applies that champion config to the live agent.
 
 ## Convergence
 
