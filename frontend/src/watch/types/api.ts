@@ -3,6 +3,8 @@
 export interface SpacePermission {
   principal: string | null
   permission_level: string | null
+  principal_type?: string | null
+  inherited?: boolean | null
 }
 
 export interface SpaceSummary {

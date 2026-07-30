@@ -11,8 +11,7 @@ endpoints:
   - ``list_space_permissions`` — Genie Agent ACLs.
   - ``list_message_comments`` — free-text feedback comments on a message.
 
-Auth (OBO contextvar + SP fallback) and metric-view normalization come from the
-canonical module via ``call_with_sp_fallback``.
+Shared auth and metric-view normalization come from the canonical modules.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 
-from backend.services.auth import get_workspace_client
+from backend.services.auth import get_service_principal_client, get_workspace_client
 from backend.services.genie_client import (
     call_with_sp_fallback,
     get_genie_space,
@@ -62,11 +61,9 @@ def get_serialized_space(genie_space_id: str) -> dict:
 def list_space_permissions(genie_space_id: str) -> dict:
     if not genie_space_id:
         raise ValueError("genie_space_id is required")
-    path = f"/api/2.0/permissions/genie/{genie_space_id}"
-    return call_with_sp_fallback(
-        lambda client: client.api_client.do(method="GET", path=path),
-        what="list_space_permissions",
-    )
+    path = f"/api/2.0/permissions/dashboards.genie/{genie_space_id}"
+    client = get_service_principal_client()
+    return client.api_client.do(method="GET", path=path)
 
 
 def list_message_comments(

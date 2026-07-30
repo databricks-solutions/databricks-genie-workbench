@@ -99,21 +99,17 @@ export function SpaceDetail({ spaceId, onBack }: Props) {
   )
 }
 
-function Overview({ space }: { space: SpaceSummary }) {
+export function Overview({ space }: { space: SpaceSummary }) {
   return (
-    <div className="grid gap-4 md:grid-cols-2">
+    <div className="grid gap-4">
       <Card className="p-4">
-        <h2 className="mb-2 text-sm font-medium uppercase text-muted">Owner</h2>
-        <p className="font-medium">{space.owner_email || '—'}</p>
-      </Card>
-      <Card className="p-4">
-        <h2 className="mb-2 text-sm font-medium uppercase text-muted">Permissions</h2>
+        <h2 className="mb-2 text-sm font-medium uppercase text-muted">Managers</h2>
         <div className="space-y-1">
-          {space.permissions.length === 0 && <p className="text-sm text-muted">No ACL data.</p>}
+          {space.permissions.length === 0 && <p className="text-sm text-muted">—</p>}
           {space.permissions.map((p, i) => (
             <div key={i} className="flex items-center justify-between text-sm">
               <span className="truncate">{p.principal || '?'}</span>
-              <Badge>{p.permission_level || '—'}</Badge>
+              <Badge>{(p.principal_type || 'principal').replaceAll('_', ' ')}{p.inherited ? ' · inherited' : ''}</Badge>
             </div>
           ))}
         </div>
@@ -386,6 +382,3 @@ function ResourcesTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: nu
     </Card>
   )
 }
-
-
-

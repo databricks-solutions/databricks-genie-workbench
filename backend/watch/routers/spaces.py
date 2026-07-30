@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from backend.services import lakebase
 from backend.watch._validators import validate_days, validate_space_id
@@ -22,37 +22,83 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/watch/spaces")
 
 
-def _to_summary(raw: dict, perms: Optional[list[dict]] = None) -> dict:
+def _manager_permissions(payload: Optional[dict]) -> list[WatchSpacePermission]:
+    managers: list[WatchSpacePermission] = []
+    if not payload:
+        return managers
+    for acl in payload.get("access_control_list", []) or []:
+        principal = None
+        principal_type = None
+        for field, kind in (
+            ("user_name", "user"),
+            ("group_name", "group"),
+            ("service_principal_name", "service_principal"),
+        ):
+            if acl.get(field):
+                principal = acl[field]
+                principal_type = kind
+                break
+        if not principal:
+            continue
+        manage_permissions = [
+            p for p in (acl.get("all_permissions", []) or [])
+            if p.get("permission_level") == "CAN_MANAGE"
+        ]
+        if not manage_permissions:
+            continue
+        managers.append(WatchSpacePermission(
+            principal=principal,
+            principal_type=principal_type,
+            permission_level="CAN_MANAGE",
+            inherited=any(
+                bool(p.get("inherited") or p.get("inherited_from_object"))
+                for p in manage_permissions
+            ),
+        ))
+    return managers
+
+
+def _to_summary(raw: dict, permissions: Optional[list[dict]] = None) -> dict:
     space_id = raw.get("id") or raw.get("space_id") or ""
     title = raw.get("display_name") or raw.get("title")
     description = raw.get("description")
-    owner = (raw.get("creator") or {}).get("user_name") or raw.get("owner_email")
-    perm_list: list[WatchSpacePermission] = []
-    if perms:
-        for p in perms:
-            for acl in p.get("access_control_list", []) or []:
-                principal = (
-                    acl.get("user_name")
-                    or acl.get("group_name")
-                    or acl.get("service_principal_name")
-                )
-                level = None
-                for pl in acl.get("all_permissions", []) or []:
-                    level = pl.get("permission_level")
-                    if level:
-                        break
-                perm_list.append(WatchSpacePermission(principal=principal, permission_level=level))
     return {
         "space_id": space_id,
         "title": title,
-        "owner_email": owner,
+        # Retained in the wire/database shape for compatibility. Genie Agents
+        # can have multiple managers, so a synthesized single owner is omitted.
+        "owner_email": None,
         "description": description,
-        "permissions": [p.model_dump() for p in perm_list],
+        "permissions": permissions or [],
         "last_seen_at": datetime.now(timezone.utc),
     }
 
 
-async def _refresh_cache_with_live_listing() -> list[dict]:
+async def _populate_permissions(summaries: list[dict], *, force: bool = False) -> None:
+    cached = {
+        s["space_id"]: s.get("permissions") or []
+        for s in await lakebase.watch_list_cached_spaces()
+    }
+    semaphore = asyncio.Semaphore(8)
+
+    async def populate(summary: dict) -> None:
+        sid = summary["space_id"]
+        old_permissions = cached.get(sid, [])
+        if old_permissions and not force:
+            summary["permissions"] = old_permissions
+            return
+        try:
+            async with semaphore:
+                payload = await asyncio.to_thread(genie_client.list_space_permissions, sid)
+            summary["permissions"] = [p.model_dump() for p in _manager_permissions(payload)]
+        except Exception as e:
+            logger.info("list_space_permissions(%s) failed: %s", sid, e)
+            summary["permissions"] = old_permissions
+
+    await asyncio.gather(*(populate(summary) for summary in summaries))
+
+
+async def _refresh_cache_with_live_listing(*, force_permissions: bool = False) -> list[dict]:
     try:
         spaces = genie_client.list_genie_spaces()
     except Exception as e:
@@ -63,8 +109,10 @@ async def _refresh_cache_with_live_listing() -> list[dict]:
         summary = _to_summary(s)
         if not summary["space_id"]:
             continue
-        await lakebase.watch_upsert_space(summary)
         summaries.append(summary)
+    await _populate_permissions(summaries, force=force_permissions)
+    for summary in summaries:
+        await lakebase.watch_upsert_space(summary)
     return summaries
 
 
@@ -83,8 +131,10 @@ async def list_spaces(days: int = Query(7, ge=1, le=365)) -> list[dict]:
             summary = _to_summary(s)
             if not summary["space_id"]:
                 continue
-            await lakebase.watch_upsert_space(summary)
             summaries.append(summary)
+        await _populate_permissions(summaries)
+        for summary in summaries:
+            await lakebase.watch_upsert_space(summary)
     else:
         summaries = await lakebase.watch_list_cached_spaces()
 
@@ -132,18 +182,23 @@ async def get_space(space_id: str) -> dict:
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Genie Agent not found: {e}")
 
-    perms_payload = None
+    cached = {
+        s["space_id"]: s.get("permissions") or []
+        for s in await lakebase.watch_list_cached_spaces()
+    }
+    permissions = cached.get(sid, [])
     try:
-        perms_payload = genie_client.list_space_permissions(sid)
+        payload = await asyncio.to_thread(genie_client.list_space_permissions, sid)
+        permissions = [p.model_dump() for p in _manager_permissions(payload)]
     except Exception as e:
         logger.info("list_space_permissions(%s) failed: %s", sid, e)
 
-    summary = _to_summary(raw, perms=[perms_payload] if perms_payload else None)
+    summary = _to_summary(raw, permissions=permissions)
     await lakebase.watch_upsert_space(summary)
     return WatchSpaceSummary(**summary).model_dump(mode="json")
 
 
 @router.post("/refresh")
-async def refresh_spaces(background_tasks: BackgroundTasks) -> dict:
-    summaries = await _refresh_cache_with_live_listing()
+async def refresh_spaces() -> dict:
+    summaries = await _refresh_cache_with_live_listing(force_permissions=True)
     return {"refreshed": len(summaries)}

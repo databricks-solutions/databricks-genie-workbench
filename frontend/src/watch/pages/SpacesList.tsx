@@ -5,11 +5,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip } from '@/components/ui/tooltip'
 import * as api from '@/watch/lib/api'
-import type { HealthStatus, SpaceListItem } from '@/watch/types/api'
+import type { HealthStatus, SpaceListItem, SpacePermission } from '@/watch/types/api'
 import { formatInt, formatUsd, relativeTime } from '@/watch/lib/format'
 import { invalidate, useCachedFetch } from '@/watch/lib/cache'
 import { genieSpaceUrl } from '@/watch/lib/genie'
+import { buildSpacesCsv, filterSpaces } from '@/watch/lib/spaces'
 
 interface Props {
   onOpenSpace: (spaceId: string) => void
@@ -49,14 +51,7 @@ export function SpacesList({ onOpenSpace }: Props) {
   const filtered = useMemo(() => {
     if (!data) return []
     const q = search.trim().toLowerCase()
-    const list = q
-      ? data.filter(
-          s =>
-            (s.title || '').toLowerCase().includes(q) ||
-            (s.owner_email || '').toLowerCase().includes(q) ||
-            s.space_id.includes(q),
-        )
-      : data
+    const list = filterSpaces(data, q)
     const sorted = [...list].sort((a, b) => {
       const dir = sortDir === 'asc' ? 1 : -1
       switch (sortKey) {
@@ -93,18 +88,7 @@ export function SpacesList({ onOpenSpace }: Props) {
 
   function exportCsv() {
     if (!data) return
-    const header = [
-      'space_id', 'title', 'owner_email', 'queries_7d', 'cost_sql_wh_7d_usd',
-      'feedback_pos_7d', 'feedback_neg_7d', 'last_query_at',
-    ]
-    const rows = filtered.map(s => [
-      s.space_id, s.title || '', s.owner_email || '',
-      s.queries_7d, s.cost_7d_usd,
-      s.feedback_pos_7d, s.feedback_neg_7d, s.last_query_at || '',
-    ])
-    const csv = [header, ...rows]
-      .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
-      .join('\n')
+    const csv = buildSpacesCsv(filtered)
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -149,7 +133,7 @@ export function SpacesList({ onOpenSpace }: Props) {
         <Input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name, owner, or agent ID"
+          placeholder="Search by name, manager, or agent ID"
           className="pl-9"
         />
       </div>
@@ -178,7 +162,7 @@ export function SpacesList({ onOpenSpace }: Props) {
           <thead className="border-b border-default bg-elevated text-left text-xs uppercase text-muted">
             <tr>
               <Th onClick={() => toggleSort('title')} active={sortKey === 'title'} dir={sortDir}>Agent</Th>
-              <Th>Owner</Th>
+              <Th>Managers</Th>
               <Th onClick={() => toggleSort('queries_7d')} active={sortKey === 'queries_7d'} dir={sortDir} align="right">Queries ({days}d)</Th>
               <Th onClick={() => toggleSort('cost_7d_usd')} active={sortKey === 'cost_7d_usd'} dir={sortDir} align="right">Cost (SQL WH, {days}d)</Th>
               <Th onClick={() => toggleSort('feedback')} active={sortKey === 'feedback'} dir={sortDir} align="right">Feedback ({days}d)</Th>
@@ -197,7 +181,7 @@ export function SpacesList({ onOpenSpace }: Props) {
                   <div className="font-medium">{s.title || '(untitled)'}</div>
                   <div className="font-mono text-xs text-muted">{s.space_id.slice(0, 12)}…</div>
                 </td>
-                <td className="px-4 py-3 text-muted">{s.owner_email || '—'}</td>
+                <td className="px-4 py-3 text-muted"><ManagerSummary permissions={s.permissions} /></td>
                 <td className="px-4 py-3 text-right tabular-nums">{formatInt(s.queries_7d)}</td>
                 <td className="px-4 py-3 text-right tabular-nums">
                   {s.cost_7d_usd > 0 ? formatUsd(s.cost_7d_usd) : '—'}
@@ -249,6 +233,32 @@ export function SpacesList({ onOpenSpace }: Props) {
         </table>
       </Card>
     </div>
+  )
+}
+
+export function ManagerSummary({ permissions }: { permissions: SpacePermission[] }) {
+  if (!permissions.length) return <>—</>
+  const first = permissions[0].principal || '—'
+  const managerTitle = permissions.map(permission => {
+    const type = (permission.principal_type || 'principal').replaceAll('_', ' ')
+    return `${permission.principal || '?'} (${type}${permission.inherited ? ', inherited' : ''})`
+  }).join('\n')
+  const content = (
+    <div className="space-y-1 text-left">
+      {permissions.map((permission, index) => (
+        <div key={`${permission.principal}-${index}`}>
+          {permission.principal || '?'} <span className="opacity-70">({(permission.principal_type || 'principal').replaceAll('_', ' ')}{permission.inherited ? ', inherited' : ''})</span>
+        </div>
+      ))}
+    </div>
+  )
+  return (
+    <Tooltip content={content} side="bottom">
+      <span className="inline-flex max-w-56 cursor-help items-center gap-1" title={managerTitle}>
+        <span className="truncate">{first}</span>
+        {permissions.length > 1 && <Badge>+{permissions.length - 1}</Badge>}
+      </span>
+    </Tooltip>
   )
 }
 

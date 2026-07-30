@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 class WatchSpacePermission(BaseModel):
     principal: Optional[str] = None
     permission_level: Optional[str] = None
+    principal_type: Optional[str] = None
+    inherited: Optional[bool] = None
 
 
 class WatchSpaceSummary(BaseModel):
