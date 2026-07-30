@@ -28,7 +28,7 @@ def test_permissions_endpoint_uses_service_principal(monkeypatch):
     assert genie_client.list_space_permissions("abc") == {"access_control_list": []}
     assert calls == [{
         "method": "GET",
-        "path": "/api/2.0/permissions/dashboards.genie/abc",
+        "path": "/api/2.0/permissions/genie/abc",
     }]
 
 

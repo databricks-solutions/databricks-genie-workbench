@@ -61,7 +61,7 @@ def get_serialized_space(genie_space_id: str) -> dict:
 def list_space_permissions(genie_space_id: str) -> dict:
     if not genie_space_id:
         raise ValueError("genie_space_id is required")
-    path = f"/api/2.0/permissions/dashboards.genie/{genie_space_id}"
+    path = f"/api/2.0/permissions/genie/{genie_space_id}"
     client = get_service_principal_client()
     return client.api_client.do(method="GET", path=path)
 

@@ -855,7 +855,7 @@ for space in spaces:
             ]
         })
         subprocess.run(
-            ['databricks', 'api', 'put', f'/api/2.0/permissions/dashboards.genie/{space_id}',
+            ['databricks', 'api', 'put', f'/api/2.0/permissions/genie/{space_id}',
              '--profile', profile, '--json', perm_payload],
             capture_output=True, text=True, check=True,
         )

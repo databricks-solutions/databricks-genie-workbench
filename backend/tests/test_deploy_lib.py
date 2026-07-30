@@ -598,7 +598,7 @@ def test_genie_space_grant_patches_can_manage_without_replacing_acl():
     grant_call = w.api_client.calls[1]
     assert grant_call == (
         "PATCH",
-        "/api/2.0/permissions/dashboards.genie/space-1",
+        "/api/2.0/permissions/genie/space-1",
         {
             "access_control_list": [
                 {
@@ -624,7 +624,7 @@ def test_genie_space_grants_count_successes_and_skip_failures():
             ("GET", "/api/2.0/genie/spaces"): {
                 "spaces": [{"space_id": "space-ok"}, {"space_id": "space-fail"}]
             },
-            ("PATCH", "/api/2.0/permissions/dashboards.genie/space-fail"): RuntimeError("denied"),
+            ("PATCH", "/api/2.0/permissions/genie/space-fail"): RuntimeError("denied"),
         }
     )
 

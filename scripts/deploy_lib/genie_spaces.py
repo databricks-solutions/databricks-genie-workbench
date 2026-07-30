@@ -22,7 +22,7 @@ def grant_can_manage_on_space(w, space_id: str, app_sp_client_id: str) -> None:
     _api_do(
         w,
         "PATCH",
-        f"/api/2.0/permissions/dashboards.genie/{space_id}",
+        f"/api/2.0/permissions/genie/{space_id}",
         {
             "access_control_list": [
                 {
