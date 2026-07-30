@@ -1,0 +1,28 @@
+# Dependabot version updates.
+#
+# Python (pip/uv) version updates are intentionally NOT configured here: the
+# project's dependency policy (AGENTS.md "Dependency Security Policy") requires
+# regenerating requirements.txt via `uv export` alongside any Python bump,
+# which Dependabot cannot do. Python vulnerability coverage comes from
+# Dependabot security alerts, with bumps applied manually per that policy.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /packages/genie-space-optimizer
+    schedule:
+      interval: weekly
