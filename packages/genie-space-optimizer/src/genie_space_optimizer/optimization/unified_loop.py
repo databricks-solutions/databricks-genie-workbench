@@ -14,7 +14,7 @@ import logging
 import os
 import re
 from contextlib import nullcontext
-from typing import Any
+from typing import Any, Callable
 
 from genie_space_optimizer.common.config import (
     OPTIMIZER_PROMPT_MAX_CHARS,
@@ -1995,6 +1995,7 @@ def run_unified_optimization_loop(
     wide_schema_plan: dict[str, Any] | None = None,
     wide_schema_parent_artifact_id: str | None = None,
     wide_schema_profile_budget: dict[str, Any] | None = None,
+    diagnostic_callback: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
     """Run baseline eval plus bounded LLM patch attempts."""
     target_accuracy = target_accuracy_percent(float(target_accuracy))
@@ -2002,6 +2003,36 @@ def run_unified_optimization_loop(
     if not allowed_levers:
         allowed_levers = [1, 2, 3, 4, 5, 6]
     max_attempts = max(0, int(max_attempts))
+
+    def _emit_diagnostic(event: str, **payload: object) -> None:
+        """Best-effort notebook signal; diagnostics must never break a run."""
+        if diagnostic_callback is None:
+            return
+        try:
+            diagnostic_callback(event, **payload)
+        except Exception:
+            logger.warning(
+                "GSO operator diagnostic callback failed for event %s",
+                event,
+                exc_info=True,
+            )
+
+    def _emit_terminal(
+        reason: str,
+        *,
+        champion_iteration: int,
+        champion_accuracy: float,
+        attempts: int,
+    ) -> None:
+        _emit_diagnostic(
+            "Optimization stopped",
+            terminal_reason=reason,
+            champion_iteration=champion_iteration,
+            champion_accuracy=round(champion_accuracy, 2),
+            target_accuracy=round(target_accuracy, 2),
+            attempts_used=attempts,
+            max_attempts=max_attempts,
+        )
 
     if wide_schema_inventory is not None:
         validate_inventory(wide_schema_inventory)
@@ -2294,6 +2325,18 @@ def run_unified_optimization_loop(
         best_iteration=0,
         best_accuracy=best_accuracy,
     )
+    _emit_diagnostic(
+        "Baseline evaluated",
+        attempt=0,
+        accuracy=round(best_accuracy, 2),
+        target_accuracy=round(target_accuracy, 2),
+        total_questions=baseline_eval.get("total_questions"),
+        correct_count=baseline_eval.get("correct_count"),
+        needs_review=baseline_eval.get("num_needs_review", 0),
+        remaining_failures=len(baseline_eval.get("remaining_failures") or []),
+        eval_run_id=baseline_eval.get("eval_run_id"),
+        eval_run_status=baseline_eval.get("eval_run_status"),
+    )
 
     if baseline_eval.get("eval_run_failed"):
         terminal_reason = "EVAL_INVALID"
@@ -2325,6 +2368,12 @@ def run_unified_optimization_loop(
             catalog=catalog,
             schema=schema,
         )
+        _emit_terminal(
+            terminal_reason,
+            champion_iteration=stamp_iteration,
+            champion_accuracy=stamp_accuracy,
+            attempts=attempts_used,
+        )
         return {
             "run_id": run_id,
             "accuracy": stamp_accuracy,
@@ -2350,6 +2399,12 @@ def run_unified_optimization_loop(
             config=current_config,
             catalog=catalog,
             schema=schema,
+        )
+        _emit_terminal(
+            terminal_reason,
+            champion_iteration=best_iteration,
+            champion_accuracy=best_accuracy,
+            attempts=attempts_used,
         )
         return {
             "run_id": run_id,
@@ -2419,6 +2474,14 @@ def run_unified_optimization_loop(
                 last_failed_hypothesis = hypothesis
                 retry_budget = _proposal_retry_budget(
                     leak_pivot_available=leak_pivot_available
+                )
+                _emit_diagnostic(
+                    "Proposal rejected",
+                    attempt=iteration,
+                    failure_stage="llm_no_supported_patches",
+                    proposal_retry=proposal_retries,
+                    will_retry=proposal_retries < retry_budget,
+                    banned_patch_types=sorted(banned_patch_types),
                 )
                 if proposal_retries < retry_budget:
                     proposal_retries += 1
@@ -2519,6 +2582,15 @@ def run_unified_optimization_loop(
                 retry_budget = _proposal_retry_budget(
                     leak_pivot_available=leak_pivot_available
                 )
+                _emit_diagnostic(
+                    "Proposal rejected",
+                    attempt=iteration,
+                    failure_stage="preapply_rejected_all_patches",
+                    proposal_retry=proposal_retries,
+                    will_retry=proposal_retries < retry_budget,
+                    dropped_reasons=hypothesis.get("preapply_dropped_reasons", []),
+                    banned_patch_types=sorted(banned_patch_types),
+                )
                 if proposal_retries < retry_budget:
                     proposal_retries += 1
                     continue
@@ -2562,8 +2634,24 @@ def run_unified_optimization_loop(
                 reflections.append(reflection)
                 last_failed_hypothesis = hypothesis
                 if validation_errors:
+                    _emit_diagnostic(
+                        "Proposal rejected",
+                        attempt=iteration,
+                        failure_stage="config_validation_failed",
+                        proposal_retry=proposal_retries,
+                        will_retry=False,
+                        validation_errors=validation_errors[:5],
+                    )
                     terminal_reason = "CONFIG_VALIDATION_FAILED"
                     break
+                _emit_diagnostic(
+                    "Proposal rejected",
+                    attempt=iteration,
+                    failure_stage="apply_deployed_no_patches",
+                    proposal_retry=proposal_retries,
+                    will_retry=proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES,
+                    dropped_reasons=hypothesis.get("apply_dropped_patch_summary", {}),
+                )
                 if proposal_retries < _MAX_PROPOSAL_RECOVERY_RETRIES:
                     proposal_retries += 1
                     continue
@@ -2589,6 +2677,18 @@ def run_unified_optimization_loop(
                 catalog,
                 schema,
             )
+
+        _emit_diagnostic(
+            "Attempt prepared",
+            attempt=iteration,
+            lever=lever,
+            patch_family=hypothesis.get("patch_family"),
+            patch_types=hypothesis.get("patch_types", []),
+            proposed_patches=hypothesis.get("proposed_patch_count", 0),
+            applied_patches=len(applied_entries),
+            dropped_patches=len(apply_log.get("dropped_patches") or []),
+            proposal_retries=proposal_retries,
+        )
 
         submitted_candidate_config = copy.deepcopy(
             apply_log.get("post_snapshot") or current_config
@@ -2679,9 +2779,21 @@ def run_unified_optimization_loop(
                     "accuracy": candidate_accuracy,
                 }
             )
+            _emit_diagnostic(
+                "Attempt rolled back",
+                attempt=iteration,
+                lever=lever,
+                decision="reject",
+                reason=terminal_reason,
+                candidate_accuracy=round(candidate_accuracy, 2),
+                champion_accuracy=round(best_accuracy, 2),
+                eval_run_id=candidate_eval.get("eval_run_id"),
+                eval_run_status=candidate_eval.get("eval_run_status"),
+            )
             break
 
         if candidate_accuracy > best_accuracy:
+            previous_best_accuracy = best_accuracy
             best_accuracy = candidate_accuracy
             best_iteration = iteration
             best_eval = candidate_eval
@@ -2746,6 +2858,18 @@ def run_unified_optimization_loop(
                     "issues, use structured behavioral patches next."
                 )
             reflections.append(accepted_reflection)
+            _emit_diagnostic(
+                "Attempt accepted",
+                attempt=iteration,
+                lever=lever,
+                decision="accept",
+                candidate_accuracy=round(candidate_accuracy, 2),
+                improvement=round(candidate_accuracy - previous_best_accuracy, 2),
+                champion_accuracy=round(best_accuracy, 2),
+                remaining_failures=len(candidate_eval.get("remaining_failures") or []),
+                eval_run_id=candidate_eval.get("eval_run_id"),
+                eval_run_status=candidate_eval.get("eval_run_status"),
+            )
             if best_accuracy >= target_accuracy:
                 terminal_reason = "TARGET_REACHED"
                 break
@@ -2801,6 +2925,18 @@ def run_unified_optimization_loop(
                 "patch_family": hypothesis.get("patch_family"),
             }
         )
+        _emit_diagnostic(
+            "Attempt rolled back",
+            attempt=iteration,
+            lever=lever,
+            decision="reject",
+            reason=reason,
+            candidate_accuracy=round(candidate_accuracy, 2),
+            champion_accuracy=round(best_accuracy, 2),
+            remaining_failures=len(candidate_eval.get("remaining_failures") or []),
+            eval_run_id=candidate_eval.get("eval_run_id"),
+            eval_run_status=candidate_eval.get("eval_run_status"),
+        )
 
     if terminal_reason is None:
         terminal_reason = "MAX_ATTEMPTS"
@@ -2849,6 +2985,12 @@ def run_unified_optimization_loop(
             if terminal_reason in {"NO_NEW_HYPOTHESIS", "CONFIG_VALIDATION_FAILED"}
             else None
         ),
+    )
+    _emit_terminal(
+        terminal_reason,
+        champion_iteration=stamp_iteration,
+        champion_accuracy=stamp_accuracy,
+        attempts=attempts_used,
     )
 
     return {

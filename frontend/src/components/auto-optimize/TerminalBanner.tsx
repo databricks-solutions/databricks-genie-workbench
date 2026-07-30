@@ -38,9 +38,9 @@ const TONE_STYLES: Record<TerminalTone, { wrap: string; icon: string }> = {
 }
 
 // Terminal banner (Phase 12) — keyed on the typed terminal reason, clearly
-// distinguishing "stopped — nothing published" (EVAL_INVALID / LOOP_STATE_INVALID
-// / benchmark-unrepairable / budget) from "champion published" (TARGET_REACHED /
-// MAX_ATTEMPTS).
+// distinguishing "stopped — nothing published" (evaluation/config/loop
+// failures, benchmark-unrepairable, or budget) from "champion published"
+// (TARGET_REACHED / MAX_ATTEMPTS).
 export function TerminalBanner({
   status,
   terminalReason,

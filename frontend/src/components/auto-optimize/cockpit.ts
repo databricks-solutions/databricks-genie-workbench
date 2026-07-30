@@ -370,6 +370,7 @@ const PUBLISHED_REASONS: ReadonlySet<GSOTerminalReason> = new Set([
 ])
 const HARD_FAIL_REASONS: ReadonlySet<GSOTerminalReason> = new Set([
   "EVAL_INVALID",
+  "CONFIG_VALIDATION_FAILED",
   "LOOP_STATE_INVALID",
 ])
 
@@ -437,6 +438,14 @@ export function classifyTerminal(args: {
         title: "Stopped — evaluation invalid",
         detail:
           "An eval run produced no scorable rows, so the loop stopped fail-closed. Nothing was published.",
+      }
+    case "CONFIG_VALIDATION_FAILED":
+      return {
+        published: false,
+        tone: "danger",
+        title: "Stopped — configuration validation failed",
+        detail:
+          "A proposed Genie configuration failed structural validation, so the loop stopped without publishing it.",
       }
     case "LOOP_STATE_INVALID":
       return {

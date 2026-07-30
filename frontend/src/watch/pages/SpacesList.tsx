@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Search, RefreshCw, ExternalLink, AlertTriangle } from 'lucide-react'
+import { Search, RefreshCw, AlertTriangle } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -166,7 +166,6 @@ export function SpacesList({ onOpenSpace }: Props) {
               <Th onClick={() => toggleSort('cost_7d_usd')} active={sortKey === 'cost_7d_usd'} dir={sortDir} align="right">Cost (SQL WH, {days}d)</Th>
               <Th onClick={() => toggleSort('feedback')} active={sortKey === 'feedback'} dir={sortDir} align="right">Feedback ({days}d)</Th>
               <Th onClick={() => toggleSort('last_query_at')} active={sortKey === 'last_query_at'} dir={sortDir}>Last query</Th>
-              <th className="w-8" />
             </tr>
           </thead>
           <tbody>
@@ -178,7 +177,10 @@ export function SpacesList({ onOpenSpace }: Props) {
               >
                 <td className="px-4 py-3">
                   <div className="font-medium">{s.title || '(untitled)'}</div>
-                  <div className="font-mono text-xs text-muted">{s.space_id.slice(0, 12)}…</div>
+                  <SpaceIdLink
+                    spaceId={s.space_id}
+                    workspaceHost={health.data?.workspace_host || null}
+                  />
                 </td>
                 <td className="min-w-64 px-4 py-3"><ManagerSummary permissions={s.permissions} /></td>
                 <td className="px-4 py-3 text-right tabular-nums">{formatInt(s.queries_7d)}</td>
@@ -200,30 +202,18 @@ export function SpacesList({ onOpenSpace }: Props) {
                   )}
                 </td>
                 <td className="px-4 py-3 text-muted">{relativeTime(s.last_query_at)}</td>
-                <td className="px-2 py-3 text-right">
-                  <a
-                    href={genieSpaceUrl(s.space_id, health.data?.workspace_host || null)}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={e => e.stopPropagation()}
-                    title="Open Genie Agent in Databricks"
-                    className="inline-flex items-center text-muted hover:text-fg"
-                  >
-                    <ExternalLink size={14} />
-                  </a>
-                </td>
               </tr>
             ))}
             {data && !filtered.length && (
               <tr>
-                <td colSpan={7} className="p-8 text-center text-muted">
+                <td colSpan={6} className="p-8 text-center text-muted">
                   No agents match this filter.
                 </td>
               </tr>
             )}
             {!data && (
               <tr>
-                <td colSpan={7} className="p-8 text-center text-muted">
+                <td colSpan={6} className="p-8 text-center text-muted">
                   Loading…
                 </td>
               </tr>
@@ -232,6 +222,27 @@ export function SpacesList({ onOpenSpace }: Props) {
         </table>
       </Card>
     </div>
+  )
+}
+
+export function SpaceIdLink({
+  spaceId,
+  workspaceHost,
+}: {
+  spaceId: string
+  workspaceHost: string | null
+}) {
+  return (
+    <a
+      href={genieSpaceUrl(spaceId, workspaceHost)}
+      target="_blank"
+      rel="noreferrer"
+      onClick={event => event.stopPropagation()}
+      aria-label={`Open Genie Agent ${spaceId} in Databricks`}
+      className="inline-block break-all rounded-sm font-mono text-xs text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    >
+      {spaceId}
+    </a>
   )
 }
 

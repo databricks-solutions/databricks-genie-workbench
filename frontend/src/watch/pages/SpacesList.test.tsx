@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SpaceListItem } from '@/watch/types/api'
 import { buildSpacesCsv, filterSpaces } from '@/watch/lib/spaces'
-import { ManagerSummary } from './SpacesList'
+import { ManagerSummary, SpaceIdLink } from './SpacesList'
 import { Overview } from './SpaceDetail'
 
 const item: SpaceListItem = {
@@ -16,6 +16,20 @@ const item: SpaceListItem = {
   last_seen_at: null, queries_7d: 2, cost_7d_usd: 1.5,
   feedback_pos_7d: 1, feedback_neg_7d: 0, last_query_at: null,
 }
+
+describe('space id navigation', () => {
+  it('renders the complete space id as a link that opens Genie in a new tab', () => {
+    const spaceId = '01f186aef02e1001a23456789abcdef0'
+    const html = renderToStaticMarkup(
+      <SpaceIdLink spaceId={spaceId} workspaceHost="https://example.cloud.databricks.com" />,
+    )
+
+    expect(html).toContain(`>${spaceId}</a>`)
+    expect(html).toContain(`href="https://example.cloud.databricks.com/genie/rooms/${spaceId}"`)
+    expect(html).toContain('target="_blank"')
+    expect(html).not.toContain('…')
+  })
+})
 
 describe('manager presentation', () => {
   it('renders an em dash for no managers', () => {

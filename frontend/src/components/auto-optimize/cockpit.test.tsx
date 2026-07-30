@@ -277,10 +277,14 @@ describe("Terminal Banner — published vs nothing-published", () => {
     expect(classifyTerminal({ terminalReason: "MAX_ATTEMPTS", published: true })!.published).toBe(true)
   })
 
-  it("classifies EVAL_INVALID / LOOP_STATE_INVALID as stopped — nothing published", () => {
+  it("classifies hard failures as stopped — nothing published", () => {
     const ev = classifyTerminal({ terminalReason: "EVAL_INVALID" })!
     expect(ev.published).toBe(false)
     expect(ev.tone).toBe("danger")
+    const cv = classifyTerminal({ terminalReason: "CONFIG_VALIDATION_FAILED" })!
+    expect(cv.published).toBe(false)
+    expect(cv.tone).toBe("danger")
+    expect(cv.title).toMatch(/configuration validation failed/i)
     const ls = classifyTerminal({ terminalReason: "LOOP_STATE_INVALID" })!
     expect(ls.published).toBe(false)
   })

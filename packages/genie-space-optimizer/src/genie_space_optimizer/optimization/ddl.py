@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     best_config_version_id STRING              COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): serialized config snapshot reference for the current champion.',
     current_hypothesis  STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): JSON of the active patch hypothesis tested in this attempt.',
     do_not_repeat       STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): JSON ARRAY of rejected lever families / strategies the controller will not retry.',
-    terminal_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | EVAL_BUDGET_EXHAUSTED. Set on the champion row only.',
+    terminal_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | CONFIG_VALIDATION_FAILED | LOOP_STATE_INVALID | EVAL_BUDGET_EXHAUSTED. Set on the champion row only.',
     decision            STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): per-attempt aggregate decision — accept | reject | continue.',
     decision_reason     STRING                 COMMENT 'GSO v2 Phase 7 (loop-state, arch §7.4): human-readable reason for the decision (e.g. rolled_back (Δacc<0), no_enrichment_candidates).',
     surgical_attempts_used INT                 COMMENT 'GSO v2 Phase 8 (loop-state, arch §7.4): patch/eval attempt budget consumed so far.',
@@ -229,7 +229,7 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_ITERATIONS, "best_config_version_id", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): serialized config snapshot reference for the current champion.'"),
     (TABLE_ITERATIONS, "current_hypothesis", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): JSON of the active patch hypothesis tested in this attempt.'"),
     (TABLE_ITERATIONS, "do_not_repeat", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): JSON ARRAY of rejected lever families / strategies.'"),
-    (TABLE_ITERATIONS, "terminal_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | EVAL_BUDGET_EXHAUSTED.'"),
+    (TABLE_ITERATIONS, "terminal_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): TARGET_REACHED | MAX_ATTEMPTS | NO_NEW_HYPOTHESIS | EVAL_INVALID | CONFIG_VALIDATION_FAILED | LOOP_STATE_INVALID | EVAL_BUDGET_EXHAUSTED.'"),
     (TABLE_ITERATIONS, "decision", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): per-attempt aggregate decision — accept | reject | continue.'"),
     (TABLE_ITERATIONS, "decision_reason", "STRING COMMENT 'GSO v2 Phase 7 (loop-state): human-readable reason for the decision.'"),
     # GSO v2 Phase 8 (loop-state, arch §7.4): the unified optimize loop adds

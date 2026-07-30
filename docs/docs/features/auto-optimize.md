@@ -125,6 +125,8 @@ The loop stamps one of the typed reasons below. Publish & Audit uses that stampe
 | `MAX_ATTEMPTS` | `MAX_ITERATIONS` | Yes |
 | `NO_NEW_HYPOTHESIS` | `STALLED` | No |
 | `EVAL_INVALID` | `FAILED` | No |
+| `CONFIG_VALIDATION_FAILED` | `FAILED` | No |
+| `LOOP_STATE_INVALID` | `FAILED` | No |
 | `EVAL_BUDGET_EXHAUSTED` | `STALLED` | No |
 | Missing or unknown | `STALLED` | No, fail closed |
 
@@ -183,6 +185,7 @@ The Workbench prefers Lakebase synced reads for UI views and falls back to direc
 
 ## Related documentation
 
+- [Debug GSO runs with Genie Code](/docs/reference/gso-run-debugger)
 - [Authentication & Permissions](/docs/platform/authentication)
 - [IQ Scanner](/docs/features/iq-scanner)
 - [Operations Guide](/docs/platform/operations)

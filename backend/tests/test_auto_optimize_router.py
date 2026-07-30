@@ -1109,6 +1109,11 @@ def test_typed_terminal_reason_validates_closed_set() -> None:
     ttr = auto_optimize._typed_terminal_reason
     assert ttr({"convergence_reason": "TARGET_REACHED"}) == "TARGET_REACHED"
     assert ttr({"convergence_reason": "MAX_ATTEMPTS"}) == "MAX_ATTEMPTS"
+    assert (
+        ttr({"convergence_reason": "CONFIG_VALIDATION_FAILED"})
+        == "CONFIG_VALIDATION_FAILED"
+    )
+    assert ttr({"convergence_reason": "LOOP_STATE_INVALID"}) == "LOOP_STATE_INVALID"
     assert ttr({"convergence_reason": "EVAL_BUDGET_EXHAUSTED"}) == "EVAL_BUDGET_EXHAUSTED"
     # Legacy free-text / job-error reasons are NOT typed.
     assert ttr({"convergence_reason": "threshold_met"}) is None

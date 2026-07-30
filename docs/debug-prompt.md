@@ -1,40 +1,94 @@
-# Genie Space Optimizer Run Debugger
+# GSO Run Debugger Prompt for Genie Code
 
-## Purpose
+Copy the prompt below into Genie Code in the Databricks workspace that ran GSO.
+Replace the angle-bracket placeholders first.
 
-Use this prompt to reconstruct a Genie Space Optimizer run from the live Delta logs. The current job is a 4-task DAG:
-`intake_and_snapshot`, `benchmark_qc_and_repair`, `optimize`, and `publish_and_audit`.
-The main sources of truth live under `<LOG_CATALOG>.<LOG_SCHEMA>`.
+---
 
-| Task | Primary tables | What to look for |
-|---|---|---|
-| `INTAKE_AND_SNAPSHOT` | `genie_opt_runs`, `genie_opt_artifacts` (`run_manifest`), `genie_opt_stages` | original snapshot, job/run metadata, warehouse id, config contract |
-| `BENCHMARK_QC_AND_REPAIR` | `genie_opt_artifacts` (`benchmark_qc`), `genie_opt_benchmark_mutations`, `genie_opt_stages` | benchmark validation, repair/prune attempts, live benchmark push |
-| `OPTIMIZE` | `genie_opt_iterations`, `genie_opt_patches`, `genie_eval_lever_loop_decisions`, `genie_opt_provenance`, `genie_opt_artifacts` (`space_quality_enrichment`), `genie_opt_stages` | baseline / enrichment evals, lever-loop decisions, root cause, description metadata, terminal reason |
-| `PUBLISH_AND_AUDIT` | `genie_opt_artifacts` (`publish_record`), `genie_opt_runs`, `genie_opt_stages` | publish decision, audit summary, final status, concerns |
+You are debugging one Genie Space Optimizer (GSO) run from its Unity Catalog
+Delta logs. Reconstruct what happened, why it happened, and the safest next
+action. Do not modify the Space, the benchmarks, or any table.
 
-Older 6-notebook tables are retired. Only consult them for legacy installs.
+## Inputs
 
-## Inputs Required
+- Log catalog: `<LOG_CATALOG>`
+- Log schema: `<LOG_SCHEMA>`
+- Run ID: `<RUN_ID>`
+- Space ID, if known: `<SPACE_ID>`
+- Optional Databricks Job run URL: `<JOB_RUN_URL>`
 
-This prompt ships with no workspace, space, or run baked in. Supply your own values for the placeholders below and substitute every occurrence into the SQL queries that follow.
+Ask me for any missing required value before querying. The run ID, log catalog,
+and log schema are required. The schema is not necessarily named
+`genie_space_optimizer`.
 
-- **`<WORKSPACE_ID>`**: Databricks workspace id. Use this when opening workspace links (`?o=<WORKSPACE_ID>`).
-- **`<WORKSPACE_HOST>`**: optional Databricks workspace host, e.g. `https://your-workspace.cloud.databricks.com`, if you want API/UI links.
-- **`<SPACE_ID>`**: the Genie Agent that was optimized.
-- **`<RUN_ID>`**: the optimizer run to investigate.
-- **`<LOG_CATALOG>`**: Unity Catalog catalog that holds the GSO log schema.
-- **`<LOG_SCHEMA>`**: schema that holds the GSO log tables. Do not assume it is named `genie_space_optimizer`.
+## Non-negotiable rules
 
-All SQL below should be fully qualified as `<LOG_CATALOG>.<LOG_SCHEMA>.<table>`.
+1. Be read-only. Execute only `SHOW`, `DESCRIBE`, `SELECT`, and read-only CTEs.
+   Never run `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `ALTER`, `CREATE`, `DROP`,
+   `OPTIMIZE`, `VACUUM`, grants, or Genie configuration APIs.
+2. Discover the installed schema before forming conclusions. Columns are added
+   over time, so use only columns confirmed by `DESCRIBE TABLE`. If a documented
+   column is missing, say `not available in this install`; do not invent a value
+   or silently substitute an unrelated field.
+3. Treat these six tables as the current debugging surface:
+   `genie_opt_runs`, `genie_opt_stages`, `genie_opt_artifacts`,
+   `genie_opt_iterations`, `genie_opt_patches`, and
+   `genie_opt_benchmark_mutations`.
+4. The current job has four tasks, in order: `intake_and_snapshot`,
+   `benchmark_qc_and_repair`, `optimize`, and `publish_and_audit`. Delta rows,
+   not notebook-local state, are the durable source of truth.
+5. Cite evidence for every conclusion using the table plus its identifying row,
+   for example `[genie_opt_iterations: iteration=2, eval_scope=full]` or
+   `[genie_opt_artifacts: artifact_kind=publish_record, created_at=...]`.
+6. Do not print benchmark expected SQL or full configuration JSON by default.
+   Expected SQL is evaluation truth and must not be copied into instructions,
+   examples, descriptions, or proposed patches. Inspect the minimum fragment
+   only when it is essential to explain a specific question-level mismatch.
+7. Separate facts from hypotheses. Label an inference as `Hypothesis` and state
+   what evidence would confirm it.
 
-## Step 0: Optional Consolidated View
+## 1. Discover tables and columns
 
-If the Workbench API is available, fetch `GET /api/auto-optimize/runs/{run_id}` first. It already stitches together the current four-step view, scores, levers, and workspace links. If you only have SQL access, start with the queries below.
+Run this first and report which of the six current tables exist:
 
-## Step 1: Get Run Metadata
+```sql
+SHOW TABLES IN <LOG_CATALOG>.<LOG_SCHEMA>
+```
 
-Query the runs table to understand the run's overall configuration and outcome.
+Then run all six descriptions. A missing table is evidence about the install;
+it is not permission to query a similarly named retired table.
+
+```sql
+DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_runs
+```
+
+```sql
+DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_stages
+```
+
+```sql
+DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_artifacts
+```
+
+```sql
+DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_iterations
+```
+
+```sql
+DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_patches
+```
+
+```sql
+DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_benchmark_mutations
+```
+
+Build a small availability map before continuing: table, present/missing, and
+important missing columns. Adapt the projections below to the described schema.
+
+## 2. Establish the run envelope
+
+Read the exact run row. If no row exists, stop and verify the catalog, schema,
+and run ID. If `<SPACE_ID>` was supplied, flag a mismatch.
 
 ```sql
 SELECT
@@ -56,37 +110,23 @@ SELECT
   benchmarks_generated,
   best_iteration,
   best_accuracy,
-  best_repeatability,
   convergence_reason,
-  config_snapshot,
   triggered_by,
   warehouse_id,
-  human_corrections_json,
   max_benchmark_count,
-  updated_at
+  updated_at,
+  config_snapshot IS NOT NULL AS has_config_snapshot,
+  LENGTH(config_snapshot) AS config_snapshot_chars
 FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_runs
-WHERE space_id = '<SPACE_ID>'
-  AND run_id = '<RUN_ID>'
+WHERE run_id = '<RUN_ID>'
 ```
 
-**What to extract:**
-- `status` - terminal status.
-- `started_at` / `completed_at` - total wall-clock duration.
-- `catalog` / `uc_schema` - the actual log location for this run.
-- `job_run_id` / `job_id` - Databricks job identifiers.
-- `warehouse_id` - the warehouse resolved at preflight.
-- `levers`, `apply_mode`, `llm_model`, `deploy_target` - run configuration.
-- `benchmarks_generated`, `max_iterations`, `max_benchmark_count` - capacity and benchmark behavior.
-- `best_iteration`, `best_accuracy`, `best_repeatability` - the final champion state.
-- `convergence_reason` - the final stop reason recorded on the run row.
-- `config_snapshot` - the rollback anchor captured at trigger time.
-- `human_corrections_json` - carry-forward human feedback, if any.
+Extract the status, timestamps, Space and Job identifiers, run settings,
+trigger-time `config_snapshot` presence, benchmark settings, best iteration and
+accuracy, and `convergence_reason`. Do not display the full `config_snapshot`;
+report whether it is present and, if useful, its size.
 
-If `config_snapshot` is missing, the run violated the trigger-time snapshot contract. Baseline revert and discard fail closed because there is no trustworthy rollback anchor.
-
-## Step 2: Get The Current Task Timeline
-
-Query the stage timeline and the task-level artifact blobs.
+## 3. Reconstruct the four-task timeline
 
 ```sql
 SELECT
@@ -102,56 +142,68 @@ SELECT
   error_message
 FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_stages
 WHERE run_id = '<RUN_ID>'
-ORDER BY started_at
+ORDER BY started_at, completed_at, stage
 ```
+
+Identify:
+
+- the last completed task or nested stage;
+- the first failed stage and its exact error;
+- a `STARTED` row with no completion;
+- skipped or rolled-back work;
+- gaps between stages that dominate wall-clock time.
+
+Parse `detail_json` as JSON. Describe only keys actually present. Do not rely on
+a fixed catalog of legacy stage names.
+
+## 4. Load the latest artifact of each kind
+
+Artifacts are append-only and a retry may write the same kind more than once.
+Use the latest row per `artifact_kind`, while retaining older revisions when
+they explain a retry or changed outcome.
 
 ```sql
-SELECT
-  artifact_kind,
-  stage_name,
-  iteration,
-  artifact_json,
-  content_hash,
-  source_notebook,
-  created_at
-FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_artifacts
-WHERE run_id = '<RUN_ID>'
-ORDER BY created_at
+WITH ranked AS (
+  SELECT
+    artifact_id,
+    run_id,
+    stage_name,
+    iteration,
+    artifact_kind,
+    artifact_json,
+    content_hash,
+    parent_artifact_id,
+    source_notebook,
+    created_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY artifact_kind
+      ORDER BY created_at DESC, artifact_id DESC
+    ) AS recency
+  FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_artifacts
+  WHERE run_id = '<RUN_ID>'
+)
+SELECT *
+FROM ranked
+ORDER BY artifact_kind, recency
 ```
 
-**Reasoning:** `genie_opt_stages` is the chronological timeline, while `genie_opt_artifacts` stores the run manifest, benchmark QC payload, post-enrichment Space description metadata, and publish record.
+Prioritize these artifact kinds when present:
 
-**Current labels to expect:**
-- Top-level task labels: `INTAKE_AND_SNAPSHOT`, `BENCHMARK_QC_AND_REPAIR`, `OPTIMIZE`, `PUBLISH_AND_AUDIT`.
-- Common nested stage labels: `PREFLIGHT_STARTED`, `PREFLIGHT_METADATA_COLLECTION`, `DATA_PROFILING`, `GENIE_BENCHMARK_EXTRACTION`, `BENCHMARK_GENERATION`, `PREFLIGHT_SEMANTIC_ALIGNMENT`, `PREFLIGHT_PREDICATE_VALIDATION`, `PREFLIGHT_GT_EXECUTION_CHECK`, `PREFLIGHT_BENCHMARK_PUSH`, `PREFLIGHT_BENCHMARK_WINDOW`, `BASELINE_EVAL_STARTED`, `DESCRIPTION_ENRICHMENT`, `JOIN_DISCOVERY`, `SPACE_METADATA_ENRICHMENT`, `SQL_EXPRESSION_SEEDING`, `LEVER_LOOP_STARTED`, `PUBLISH_AND_AUDIT`.
-- The post-enrichment evaluation is usually represented by `genie_opt_iterations` with `eval_scope = 'enrichment'`, not by a separate wrapper stage.
+- `run_manifest`: intake parameters, snapshot/hash, and handoff identifiers;
+- `benchmark_qc`: validity counts, finding codes, repair use, semantic-review
+  coverage, and the final benchmark window;
+- `space_quality_enrichment` and `space_metadata`: pre-loop metadata changes;
+- `publish_record`: authoritative publish outcome, champion, final status,
+  concerns, audit summary, and improvement trajectory.
 
-Do not rely on older wrapper labels such as `ENRICHMENT_STARTED`, `PROMPT_MATCHING_SETUP`, `FINALIZE_STARTED`, `FINALIZE_TERMINAL`, or `AG_AG1_*`. They are legacy noise, not the primary debugging surface for current runs.
+Also use wide-schema artifacts when the failure concerns asset discovery,
+profiling, or selection. Do not assume an artifact kind exists.
 
-### Key Fields in `detail_json` to Parse
+## 5. Build the evaluation and decision ladder
 
-| Stage | Key Fields |
-|-------|-----------|
-| `INTAKE_AND_SNAPSHOT` | `run_id`, `space_id`, `catalog`, `schema`, `baseline_config_hash`, `warehouse_id` |
-| `BENCHMARK_QC_AND_REPAIR` | `valid_count`, `repair_tries_used`, `repair_max_tries`, `window_status`, `final_validity`, `terminal_reason` |
-| `PREFLIGHT_METADATA_COLLECTION` | `columns_collected`, `tags_collected`, `routines_collected` |
-| `DATA_PROFILING` | `tables_profiled`, `columns_profiled`, `low_cardinality_columns`, `metric_view_profile_outcomes` |
-| `GENIE_BENCHMARK_EXTRACTION` | `genie_space_benchmarks`, `with_sql`, `question_only` |
-| `BENCHMARK_GENERATION` | `total_count`, `curated_count`, `synthetic_count`, `auto_corrected_count`, `valid_count` |
-| `PREFLIGHT_SEMANTIC_ALIGNMENT` | `checked`, `misaligned`, `remaining` |
-| `PREFLIGHT_PREDICATE_VALIDATION` | `checked`, `mismatched`, `auto_corrected`, `remaining` |
-| `PREFLIGHT_GT_EXECUTION_CHECK` | `checked`, `empty_results`, `remaining` |
-| `PREFLIGHT_BENCHMARK_PUSH` | `added`, `dedup_skipped`, `merged_total`, `existing_count`, `window_status` |
-| `PREFLIGHT_BENCHMARK_WINDOW` | `count`, `window`, `status` |
-| `BASELINE_EVAL_STARTED` | `overall_accuracy`, `both_correct_rate`, `thresholds_met` |
-| `DESCRIPTION_ENRICHMENT` | `total_eligible`, `total_patches_generated`, `total_enriched`, `total_skipped`, `total_failed_llm` |
-| `JOIN_DISCOVERY` | `existing_specs`, `candidates_found`, `total_applied` |
-| `SPACE_METADATA_ENRICHMENT` | `description_generated`, `questions_count` |
-| `SQL_EXPRESSION_SEEDING` | `total_candidates`, `total_seeded`, `total_rejected` |
-| `LEVER_LOOP_STARTED` | `levers_attempted`, `levers_accepted`, `reflection_buffer`, `terminal_reason` |
-| `PUBLISH_AND_AUDIT` | `terminal_reason`, `final_status`, `published`, `publish_outcome`, `champion_iteration`, `champion_accuracy`, `audit_summary_generated`, `concerns` |
-
-## Step 3: Get Iterations (Eval Results)
+Select only described columns. The following projection is valid for the
+current schema; remove a field rather than guessing if an older install lacks
+it.
 
 ```sql
 SELECT
@@ -159,96 +211,59 @@ SELECT
   attempt_no,
   attempt_mode,
   eval_scope,
+  timestamp,
   overall_accuracy,
-  both_correct_rate,
   total_questions,
   correct_count,
   evaluated_count,
   excluded_count,
   thresholds_met,
-  is_champion,
-  terminal_reason,
-  decision,
-  decision_reason,
-  repeatability_pct,
-  best_accuracy,
-  best_config_version_id,
-  current_hypothesis,
-  do_not_repeat,
-  next_hypothesis,
-  surgical_attempts_used,
-  target_accuracy,
-  max_attempts,
-  failures_json,
-  remaining_failures,
   num_needs_review,
   eval_run_id,
   eval_run_status,
-  config_json
+  is_champion,
+  rolled_back,
+  rollback_reason,
+  current_hypothesis,
+  reflection_json,
+  decision,
+  decision_reason,
+  best_accuracy,
+  do_not_repeat,
+  next_hypothesis,
+  remaining_failures,
+  rows_json,
+  terminal_reason,
+  surgical_attempts_used,
+  target_accuracy,
+  max_attempts
 FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_iterations
 WHERE run_id = '<RUN_ID>'
-ORDER BY iteration, eval_scope
+ORDER BY iteration, eval_scope, timestamp
 ```
 
-**Reasoning:**
-- `iteration = 0` and `eval_scope = 'full'` is the baseline eval.
-- `iteration = 0` and `eval_scope = 'enrichment'` is the post-enrichment eval when it exists.
-- Higher iterations are lever-loop eval results.
-- `is_champion = true` marks the promoted row.
-- `terminal_reason` on the champion row is authoritative and is copied to `genie_opt_runs.convergence_reason` by publish.
-- `config_json` is the full effective Genie Agent config for that attempt.
-- `best_config_version_id`, `current_hypothesis`, `do_not_repeat`, and `next_hypothesis` are the loop-state breadcrumbs that explain why the run kept going or stopped.
-- `eval_run_id` / `eval_run_status` appear when the native eval runner was used.
+Interpret the rows as follows:
 
-## Step 4: Trace Decisions and Provenance
+- `iteration=0, eval_scope=full` is the baseline.
+- Later full rows are patch attempts. An enrichment row, when present, is
+  supporting evidence and not a replacement for the full-evaluation ladder.
+- `decision`, `decision_reason`, `current_hypothesis`, `reflection_json`,
+  `do_not_repeat`, and `next_hypothesis` explain the controller's choices.
+- `rolled_back=true` and `rollback_reason` show rejected candidates.
+- `is_champion=true` identifies the champion. Its `terminal_reason` is the
+  authoritative loop stop reason. Compare it with the run row and
+  `publish_record`; report disagreement as a state-consistency defect.
+- Accuracy uses the persisted denominator. Do not recalculate it from
+  `total_questions` when `evaluated_count` or exclusions indicate otherwise.
 
-```sql
-SELECT
-  iteration,
-  decision_order,
-  stage_letter,
-  gate_name,
-  decision,
-  reason_code,
-  reason_detail,
-  affected_qids_json,
-  source_cluster_ids_json,
-  proposal_ids_json,
-  proposal_to_patch_map_json,
-  metrics_json,
-  created_at
-FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_eval_lever_loop_decisions
-WHERE run_id = '<RUN_ID>'
-ORDER BY iteration, decision_order
-```
+Parse every non-null `rows_json` value as a JSON array. Inspect the keys before
+aggregating because native-evaluation payloads can evolve. At minimum, build a
+per-iteration count of `assessment` values (`GOOD`, `BAD`, `NEEDS_REVIEW`, plus
+unknown/null) and summarize recurring `assessment_reasons`. Tie each claimed
+failure cluster to question identifiers and iteration evidence. Do not display
+the question text or expected SQL unless needed for the specific root cause.
 
-```sql
-SELECT
-  iteration,
-  lever,
-  question_id,
-  cluster_id,
-  proposal_id,
-  patch_type,
-  gate_type,
-  gate_result,
-  resolved_root_cause,
-  resolution_method,
-  judge,
-  judge_verdict,
-  arbiter_verdict,
-  wrong_clause,
-  counterfactual_fix,
-  rationale_snippet,
-  logged_at
-FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_provenance
-WHERE run_id = '<RUN_ID>'
-ORDER BY iteration, lever, question_id
-```
-
-**Reasoning:** `genie_eval_lever_loop_decisions` is the gate audit trail. `genie_opt_provenance` is the end-to-end trace from judge verdicts to patches and gate outcomes. If you need the exact patch linkage, join through `proposal_ids_json` or `proposal_to_patch_map_json`.
-
-## Step 5: Inspect Patches and Benchmark Changes
+## 6. Connect hypotheses to patches and rollbacks
 
 ```sql
 SELECT
@@ -256,89 +271,113 @@ SELECT
   lever,
   patch_index,
   patch_type,
-  applied_patch_type,
   scope,
   risk_level,
   target_object,
-  applied,
   rolled_back,
   rollback_reason,
   proposal_id,
   cluster_id,
   provenance_json,
-  applied_at
+  applied_at,
+  rolled_back_at
 FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_patches
 WHERE run_id = '<RUN_ID>'
 ORDER BY iteration, lever, patch_index
 ```
+
+Parse `provenance_json` and connect each patch to the relevant hypothesis,
+failure cluster, and question-level assessment evidence. Use the iteration
+row's `decision` and `decision_reason` for the aggregate accept/reject decision.
+Do not infer that a proposal improved the Space merely because a patch row
+exists; confirm acceptance and accuracy movement in `genie_opt_iterations`.
+
+For each attempt, report: hypothesis, patch types and targets, evaluation
+change from the previous champion, decision, rollback status, and the evidence
+that caused the decision.
+
+## 7. Explain benchmark QC and mutations
 
 ```sql
 SELECT
   question_id,
   op,
   reason,
-  before,
-  after,
+  before IS NOT NULL AS has_before,
+  after IS NOT NULL AS has_after,
+  SHA2(COALESCE(before, ''), 256) AS before_hash,
+  SHA2(COALESCE(after, ''), 256) AS after_hash,
   logged_at
 FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_benchmark_mutations
 WHERE run_id = '<RUN_ID>'
-ORDER BY logged_at
+ORDER BY logged_at, question_id
 ```
 
-**Reasoning:** `genie_opt_patches` shows the patch lifecycle, including applied vs. rolled back patches. `genie_opt_benchmark_mutations` shows the live-space benchmark changes from benchmark QC and repair.
+Use the latest `benchmark_qc` artifact together with this ledger. Summarize
+counts and reason codes for added, removed, changed, and advisory mutations.
+Distinguish these cases:
 
-## Step 6: Legacy Tables Only If Needed
+- question-quality or question-to-SQL semantic finding;
+- SQL validation or execution failure;
+- semantic review was not run or was degraded;
+- duplicate removal;
+- repair/regeneration exhausted;
+- corpus below the minimum or outside the target window.
 
-If you are debugging an older install, you may still see retired tables such as:
-- `genie_eval_asi_results`
-- `genie_eval_human_required`
-- `genie_eval_proactive_corpus_profile`
-- `genie_eval_proactive_patches`
-- `genie_eval_gt_correction_candidates`
-- `genie_eval_question_regressions`
-- `genie_opt_finalize_attestation_matrix`
-- `genie_opt_suggestions`
-- `genie_opt_data_access_grants`
+The `before` and `after` fields can contain question and SQL text. Report hashes,
+IDs, operation, and reason by default; expose content only when it is necessary
+for a specific RCA.
 
-Fresh installs do not create these tables. Do not treat them as the primary source of truth for current runs.
+## 8. Reconcile the terminal and publish outcome
 
-## Step 7: Interpret the Failure Pattern
+Use three sources together:
 
-When the run stalls or no patch is applied, inspect:
+1. champion `genie_opt_iterations.terminal_reason`;
+2. latest `publish_record` artifact;
+3. `genie_opt_runs.status` and `convergence_reason`.
 
-1. `terminal_reason` on the champion `genie_opt_iterations` row.
-2. `reason_code` and `decision` in `genie_eval_lever_loop_decisions`.
-3. `resolved_root_cause`, `resolution_method`, `counterfactual_fix`, `wrong_clause`, and `rationale_snippet` in `genie_opt_provenance`.
-4. `rollback_reason` and `applied` / `rolled_back` in `genie_opt_patches`.
+Current expected mappings are:
 
-Common root causes and their meaning:
-- `unverifiable_no_expected_sql` - the benchmarks do not have a gold SQL answer, so the optimizer cannot prove that a candidate fix is correct.
-- `measure_swap` - Genie is using the wrong measure columns.
-- `missing_groupby_col` - the GROUP BY does not match the question's requested dimensions.
+| Terminal reason | Run status | Published |
+|---|---|---|
+| `TARGET_REACHED` | `CONVERGED` | yes |
+| `MAX_ATTEMPTS` | `MAX_ITERATIONS` | yes |
+| `NO_NEW_HYPOTHESIS` | `STALLED` | no |
+| `EVAL_INVALID` | `FAILED` | no |
+| `CONFIG_VALIDATION_FAILED` | `FAILED` | no |
+| `LOOP_STATE_INVALID` | `FAILED` | no |
+| `EVAL_BUDGET_EXHAUSTED` | `STALLED` | no |
+| missing or unknown | `STALLED` | no, fail closed |
 
-When `resolved_root_cause = unverifiable_no_expected_sql`:
-- The system can identify the problem pattern.
-- The system can generate proposal instructions.
-- It cannot validate that applying those instructions actually fixes the issue because there is no expected SQL to compare against.
-- That can leave the run with grounded proposals that still fail to apply or get rolled back.
+If the run stopped during Benchmark QC, there may be no iteration or publish
+record. Use the failed stage, `benchmark_qc`, mutation ledger, and run row; do
+not manufacture an Optimize outcome.
 
-If you need the published summary, inspect the `publish_record` artifact in `genie_opt_artifacts` rather than looking for a `FINALIZE_TERMINAL` stage. The current publish task is `PUBLISH_AND_AUDIT`.
+## 9. Produce the debugging report
 
-## Step 8: Cross-Run Comparison (Optional)
+Return this structure:
 
-If comparing two runs on the same space, note:
-- Whether the second run reused the same `config_snapshot` and benchmark mutation history.
-- Benchmark count differences and the `genie_opt_benchmark_mutations` deltas.
-- Whether baseline accuracy improved, using the `iteration = 0`, `eval_scope = 'full'` row in `genie_opt_iterations`.
-- Whether the failing cluster or provenance set shrank, using `genie_opt_provenance` and `genie_eval_lever_loop_decisions`.
-- Different `llm_model` values and their impact on baseline and optimized scores.
+1. **Executive diagnosis** — one paragraph: final outcome, failing task or
+   limiting factor, champion/publish state, and confidence.
+2. **Four-task story** — one concise subsection per task. Say `not reached` or
+   `no durable evidence` when appropriate.
+3. **Attempt ladder** — a table with iteration/scope, accuracy, assessment
+   counts, hypothesis, patch summary, decision, rollback, and champion marker.
+4. **Primary root cause** — facts first, then explicitly labeled hypotheses.
+   Explain why the controller accepted, rejected, retried, or stopped.
+5. **State consistency checks** — terminal mapping, champion pointer, artifact
+   recency, missing schema fields, and contradictions.
+6. **Recommended next actions** — ordered, specific, and non-destructive.
+   Distinguish benchmark fixes, Space metadata/instruction fixes, permissions or
+   evaluation infrastructure fixes, and code defects.
+7. **Evidence appendix** — every cited table row and identifier. Include query
+   limitations and missing data.
 
-## Output Format
+Do not merely dump rows. Stitch them into a chronological causal story. Never
+claim a root cause from a status string alone when iteration, artifact, patch,
+or question-level evidence can confirm or refute it.
 
-Produce a narrative covering:
-1. **Intake and Snapshot**: What was captured at trigger time, plus the run manifest and rollback anchor.
-2. **Benchmark QC and Repair**: Benchmark validity, repair attempts, and what changed in the live space.
-3. **Optimize**: Baseline accuracy, enrichment, lever-loop decisions, provenance, and terminal reason.
-4. **Publish and Audit**: Publish outcome, audit summary, final status, and concerns.
-5. **Legacy Tables**: Only if the run predates the current 4-task DAG.
-6. **Notable Observations**: Model used, duration, workspace context, and comparison with prior runs if applicable.
+---
+
+For recurring investigations, save the completed report in the workspace next
+to the Job run link, but do not persist raw expected SQL or full Space snapshots.

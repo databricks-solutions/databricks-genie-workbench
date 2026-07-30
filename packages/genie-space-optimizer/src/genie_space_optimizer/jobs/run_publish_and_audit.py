@@ -17,8 +17,9 @@
 # MAGIC
 # MAGIC - `TARGET_REACHED` / `MAX_ATTEMPTS` ⇒ publish (idempotent Delta-only
 # MAGIC   `promote_best_model`; NO live-space mutation) + write the full `publish_record`.
-# MAGIC - anything else (`EVAL_INVALID`, `NO_NEW_HYPOTHESIS`,
-# MAGIC   `EVAL_BUDGET_EXHAUSTED`) ⇒ do NOT publish, but still write a `publish_record`
+# MAGIC - anything else (`EVAL_INVALID`, `CONFIG_VALIDATION_FAILED`,
+# MAGIC   `LOOP_STATE_INVALID`, `NO_NEW_HYPOTHESIS`, `EVAL_BUDGET_EXHAUSTED`) ⇒
+# MAGIC   do NOT publish, but still write a `publish_record`
 # MAGIC   carrying the stop reason + residual failures as concerns (arch §7.3).
 # MAGIC
 # MAGIC The `publish_record` includes an **LLM-generated 1–2 paragraph audit summary**
@@ -41,6 +42,7 @@ from typing import Any, cast
 from genie_space_optimizer._workspace_client import make_workspace_client
 from genie_space_optimizer.common.warehouse import export_warehouse_id, resolve_warehouse_id
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
+from genie_space_optimizer.jobs._helpers import _diagnostic as _diagnostic_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.publish import publish_and_audit
 from genie_space_optimizer.optimization.state import (
@@ -57,6 +59,7 @@ dbutils = cast(Any, globals().get("dbutils"))
 _TASK_LABEL = "TASK-PUBLISH"
 _TASK_KEY = "publish_and_audit"
 _banner = partial(_banner_base, _TASK_LABEL)
+_diagnostic = partial(_diagnostic_base, _TASK_LABEL)
 _log = partial(_log_base, _TASK_LABEL)
 
 # COMMAND ----------
@@ -309,6 +312,14 @@ except Exception as exc:
         spark, run_id, "PUBLISH_AND_AUDIT",
         task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
     )
+    _diagnostic(
+        "Task failed",
+        run_id=run_id,
+        log_schema=f"{catalog}.{schema}",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        next_sources=["genie_opt_stages", "genie_opt_artifacts"],
+    )
     raise
 
 write_stage(
@@ -322,6 +333,19 @@ write_stage(
     },
 )
 
+_diagnostic(
+    "Run outcome",
+    run_id=run_id,
+    log_schema=f"{catalog}.{schema}",
+    business_status=result.get("final_status"),
+    terminal_reason=result.get("terminal_reason"),
+    published=result.get("published"),
+    publish_outcome=result.get("publish_outcome"),
+    champion_iteration=result.get("champion_iteration"),
+    champion_accuracy=result.get("champion_accuracy"),
+    concerns=result.get("concerns"),
+    primary_sources=["genie_opt_runs", "genie_opt_artifacts"],
+)
 _banner("Task publish_and_audit Completed")
 dbutils.notebook.exit(json.dumps({
     "run_id": run_id,

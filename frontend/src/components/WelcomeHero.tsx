@@ -63,7 +63,7 @@ export function WelcomeHero({ spaces, loading, onCreateSpace }: WelcomeHeroProps
 
         {/* Description */}
         <p
-          className="text-secondary text-lg max-w-lg mb-8 leading-relaxed"
+          className="text-secondary text-lg mb-8 leading-relaxed"
           style={{ animation: "fadeSlideUp 0.5s ease-out 120ms both" }}
         >
           Score, optimize, and govern your Databricks Genie Agents — all in one place.

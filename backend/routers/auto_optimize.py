@@ -109,14 +109,15 @@ _TERMINAL_RUN_STATUSES = {
 # convergence_reason (never collapsed). This supersedes the free-text
 # convergence_reason for the UI; the typed `terminalReason` field is derived by
 # validating convergence_reason against this set (legacy free-text reasons and
-# in-progress runs ⇒ None). EVAL_BUDGET_EXHAUSTED is included because Phase 8
-# emits it as a primary stop (the eval-budget cap), alongside the 5 named in the
-# Phase-10 contract. Mirrored on the frontend as the `GSOTerminalReason` union.
+# in-progress runs ⇒ None). This includes evaluation-budget, configuration,
+# and controller-state hard stops. Mirrored on the frontend as the
+# `GSOTerminalReason` union.
 _TYPED_TERMINAL_REASONS = (
     "TARGET_REACHED",
     "MAX_ATTEMPTS",
     "NO_NEW_HYPOTHESIS",
     "EVAL_INVALID",
+    "CONFIG_VALIDATION_FAILED",
     "LOOP_STATE_INVALID",
     "EVAL_BUDGET_EXHAUSTED",
 )

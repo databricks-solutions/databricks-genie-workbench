@@ -42,6 +42,11 @@ description: "Common issues, causes, and fixes."
 
 ## GSO / Auto-Optimize Issues
 
+For a table-backed root-cause analysis, use the
+[GSO Run Debugger for Genie Code](/docs/reference/gso-run-debugger). It starts
+from the notebook diagnostics and reconstructs the run from current Delta
+tables without changing workspace state.
+
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "GSO not configured" in health check | `GSO_JOB_ID` or `GSO_CATALOG` not set | Re-run `./scripts/deploy.sh` (patches `app.yaml` with values from bundle state) |
@@ -85,3 +90,4 @@ databricks apps get <app-name> --profile <profile> | grep service_principal
 - [Operations Guide](/docs/platform/operations) — monitoring and management
 - [Authentication & Permissions](/docs/platform/authentication) — permission model
 - [Environment Variables](/docs/reference/environment-variables) — full variable reference
+- [GSO Run Debugger](/docs/reference/gso-run-debugger) — read-only, cross-table Auto-Optimize diagnosis

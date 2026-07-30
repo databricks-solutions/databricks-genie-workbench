@@ -51,6 +51,7 @@ from genie_space_optimizer.common.warehouse import (
     resolve_warehouse_id,
 )
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
+from genie_space_optimizer.jobs._helpers import _diagnostic as _diagnostic_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.iq_scan import collect_rls_audit
 from genie_space_optimizer.optimization.benchmark_repair import (
@@ -112,6 +113,7 @@ dbutils = cast(Any, globals().get("dbutils"))
 _TASK_LABEL = "TASK BENCH_QC"
 _TASK_KEY = "benchmark_qc_and_repair"
 _banner = partial(_banner_base, _TASK_LABEL)
+_diagnostic = partial(_diagnostic_base, _TASK_LABEL)
 _log = partial(_log_base, _TASK_LABEL)
 
 # COMMAND ----------
@@ -700,6 +702,32 @@ except BenchmarkCorpusTooSmallError as exc:
         minimum_count=exc.minimum_count,
         target_count=exc.target_count,
     )
+except Exception as exc:
+    _banner("Benchmark Repair FAILED")
+    _log(
+        "Failure details",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        traceback=traceback.format_exc(),
+    )
+    write_failure_stage_safely(
+        spark,
+        run_id,
+        "BENCHMARK_QC_AND_REPAIR",
+        task_key=_TASK_KEY,
+        catalog=catalog,
+        schema=schema,
+        error_message=str(exc),
+    )
+    _diagnostic(
+        "Repair failed",
+        run_id=run_id,
+        log_schema=f"{catalog}.{schema}",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        next_sources=["genie_opt_stages", "genie_opt_artifacts"],
+    )
+    raise
 
 if _repair_failed:
     _benchmarks, _failed_repair_duplicates = deduplicate_benchmark_corpus(
@@ -872,6 +900,25 @@ if _repair_failed and _repair_error is not None:
             default_id_of(b) for b in _repair_error.still_invalid
         ]
 
+_finding_code_counts: dict[str, int] = {}
+for _finding in _qc_payload["quality_findings"]:
+    _finding_code = str(_finding.get("code") or "UNKNOWN")
+    _finding_code_counts[_finding_code] = _finding_code_counts.get(_finding_code, 0) + 1
+
+_diagnostic(
+    "Benchmark quality review",
+    run_id=run_id,
+    valid_count=_qc_payload["valid_count"],
+    minimum_valid_count=_qc_payload["minimum_valid_count"],
+    target_count=_qc_payload["target_count"],
+    repair_tries_used=_qc_payload["repair_tries_used"],
+    final_validity=_qc_payload["final_validity"],
+    semantic_review_coverage=_qc_payload["semantic_review_coverage"],
+    quality_counts=_qc_payload["quality_counts"],
+    finding_codes=dict(sorted(_finding_code_counts.items())),
+    window_status=(_qc_payload.get("window") or {}).get("status"),
+)
+
 write_artifact(
     spark, run_id, "benchmark_qc", _qc_payload,
     catalog=catalog, schema=schema,
@@ -907,6 +954,15 @@ if _repair_failed and _repair_error is not None:
         },
         error_message=str(_repair_error),
     )
+    _diagnostic(
+        "Task failed",
+        run_id=run_id,
+        log_schema=f"{catalog}.{schema}",
+        terminal_reason=_repair_error.terminal_reason,
+        valid_count=len(_benchmarks),
+        minimum_valid_count=MIN_VALID_BENCHMARK_COUNT,
+        next_sources=["genie_opt_artifacts", "genie_opt_benchmark_mutations"],
+    )
     # Hard stop — invalid questions or an undersized final corpus.
     raise _repair_error
 
@@ -920,6 +976,16 @@ write_stage(
     },
 )
 
+_diagnostic(
+    "Task outcome",
+    run_id=run_id,
+    log_schema=f"{catalog}.{schema}",
+    valid_count=len(_benchmarks),
+    repair_tries_used=_repair_tries_used,
+    published_count=_push.get("published_count"),
+    window_status=_window.get("status"),
+    primary_sources=["genie_opt_artifacts", "genie_opt_benchmark_mutations"],
+)
 _banner("Benchmark QC and repair completed")
 dbutils.notebook.exit(json.dumps({
     "run_id": run_id,

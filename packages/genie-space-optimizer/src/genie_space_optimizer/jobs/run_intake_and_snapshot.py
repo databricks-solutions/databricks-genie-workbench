@@ -40,6 +40,7 @@ from genie_space_optimizer.common.warehouse import (
     resolve_warehouse_id,
 )
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
+from genie_space_optimizer.jobs._helpers import _diagnostic as _diagnostic_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.preflight import (
     compute_asset_fingerprint,
@@ -70,6 +71,7 @@ dbutils = cast(Any, globals().get("dbutils"))
 _TASK_LABEL = "TASK INTAKE"
 _TASK_KEY = "intake_and_snapshot"
 _banner = partial(_banner_base, _TASK_LABEL)
+_diagnostic = partial(_diagnostic_base, _TASK_LABEL)
 _log = partial(_log_base, _TASK_LABEL)
 
 # COMMAND ----------
@@ -284,6 +286,12 @@ try:
     )
 except Exception as exc:
     _banner("Wide-Schema Inventory FAILED")
+    _log(
+        "Failure details",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        traceback=traceback.format_exc(),
+    )
     write_failure_stage_safely(
         spark,
         run_id,
@@ -292,6 +300,14 @@ except Exception as exc:
         catalog=catalog,
         schema=schema,
         error_message=str(exc),
+    )
+    _diagnostic(
+        "Task failed",
+        run_id=run_id,
+        log_schema=f"{catalog}.{schema}",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        next_source="genie_opt_stages",
     )
     raise
 
@@ -343,5 +359,18 @@ write_stage(
     detail={"config_hash": _config_hash, "table_refs": len(_genie_table_refs)},
 )
 
+_diagnostic(
+    "Task outcome",
+    run_id=run_id,
+    log_schema=f"{catalog}.{schema}",
+    config_hash=_config_hash,
+    data_assets=len(_genie_table_refs),
+    inventory_columns=sum(
+        len(asset.get("columns") or [])
+        for asset in _inventory.get("assets") or []
+    ),
+    query_history_source=_wide_schema_evidence.get("source_mode"),
+    primary_sources=["genie_opt_runs", "genie_opt_artifacts", "genie_opt_stages"],
+)
 _banner("Intake and snapshot completed")
 dbutils.notebook.exit(json.dumps({"run_id": run_id, "config_hash": _config_hash}, default=str))

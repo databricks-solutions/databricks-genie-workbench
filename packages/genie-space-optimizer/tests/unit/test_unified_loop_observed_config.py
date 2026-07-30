@@ -36,6 +36,7 @@ def test_baseline_observation_is_captured_after_native_evaluation(monkeypatch) -
     submitted = _config(["PURPOSE:\n- Help users"])
     normalized = _config(["PURPOSE:\n", "- Help users"])
     events: list[str] = []
+    diagnostics: list[tuple[str, dict[str, object]]] = []
     writes: list[dict] = []
     fetch_count = 0
 
@@ -95,6 +96,9 @@ def test_baseline_observation_is_captured_after_native_evaluation(monkeypatch) -
         levers=[1],
         max_attempts=1,
         target_accuracy=0.9,
+        diagnostic_callback=lambda event, **payload: diagnostics.append(
+            (event, payload)
+        ),
     )
 
     assert result["terminal_reason"] == "TARGET_REACHED"
@@ -109,3 +113,126 @@ def test_baseline_observation_is_captured_after_native_evaluation(monkeypatch) -
     ]
     assert writes[0]["config_snapshot"] == submitted
     assert writes[0]["observed_config_snapshot"] == normalized
+    assert [event for event, _payload in diagnostics] == [
+        "Baseline evaluated",
+        "Optimization stopped",
+    ]
+    assert diagnostics[0][1]["accuracy"] == 95.0
+    assert diagnostics[1][1] == {
+        "terminal_reason": "TARGET_REACHED",
+        "champion_iteration": 0,
+        "champion_accuracy": 95.0,
+        "target_accuracy": 90.0,
+        "attempts_used": 0,
+        "max_attempts": 1,
+    }
+
+
+def test_accepted_attempt_emits_bounded_decision_diagnostics(monkeypatch) -> None:
+    baseline_config = _config(["PURPOSE:\n- Help users"])
+    candidate_config = _config(["PURPOSE:\n- Help users", "TERMS:\n- Revenue"])
+    patch = {
+        "type": "update_column",
+        "lever": 1,
+        "target": "main.sales.orders.revenue",
+    }
+    diagnostics: list[tuple[str, dict[str, object]]] = []
+    evaluations = iter(
+        [
+            {
+                "overall_accuracy": 70.0,
+                "total_questions": 10,
+                "correct_count": 7,
+                "scores": {},
+                "failures": ["q8", "q9", "q10"],
+                "remaining_failures": ["q8", "q9", "q10"],
+                "thresholds_met": False,
+                "rows": [],
+            },
+            {
+                "overall_accuracy": 80.0,
+                "total_questions": 10,
+                "correct_count": 8,
+                "scores": {},
+                "failures": ["q9", "q10"],
+                "remaining_failures": ["q9", "q10"],
+                "thresholds_met": False,
+                "rows": [],
+            },
+        ]
+    )
+
+    monkeypatch.setattr(
+        unified_loop,
+        "fetch_space_config",
+        lambda *_args, **_kwargs: {"_parsed_space": copy.deepcopy(baseline_config)},
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "run_space_quality_enrichment",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            current_config=copy.deepcopy(baseline_config)
+        ),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "_native_eval",
+        lambda *_args, **_kwargs: next(evaluations),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "propose_patches",
+        lambda *_args, **_kwargs: (1, "Improve revenue metadata", [patch], "{}"),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "_preapply_safety_screen",
+        lambda patches, **_kwargs: (patches, []),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "apply_patch_set",
+        lambda *_args, **_kwargs: {
+            "patch_deployed": True,
+            "applied": [{"patch": patch, "action": {}}],
+            "post_snapshot": copy.deepcopy(candidate_config),
+            "dropped_patches": [],
+        },
+    )
+    for name in (
+        "write_iteration",
+        "write_patch",
+        "update_iteration_loop_state",
+        "update_run_status",
+        "_stamp_terminal",
+    ):
+        monkeypatch.setattr(unified_loop, name, lambda *_args, **_kwargs: None)
+
+    result = unified_loop.run_unified_optimization_loop(
+        MagicMock(),
+        MagicMock(),
+        run_id="run-1",
+        space_id="space-1",
+        benchmarks=[],
+        catalog="catalog",
+        schema="schema",
+        levers=[1],
+        max_attempts=1,
+        target_accuracy=90.0,
+        diagnostic_callback=lambda event, **payload: diagnostics.append(
+            (event, payload)
+        ),
+    )
+
+    assert result["terminal_reason"] == "MAX_ATTEMPTS"
+    assert [event for event, _payload in diagnostics] == [
+        "Baseline evaluated",
+        "Attempt prepared",
+        "Attempt accepted",
+        "Optimization stopped",
+    ]
+    accepted = diagnostics[2][1]
+    assert accepted["candidate_accuracy"] == 80.0
+    assert accepted["improvement"] == 10.0
+    assert accepted["champion_accuracy"] == 80.0
+    assert "Improve revenue metadata" not in str(diagnostics)

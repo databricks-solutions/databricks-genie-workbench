@@ -8,8 +8,9 @@ champion, this module:
    via ``state.update_iteration_loop_state``). It does **NOT** re-derive the
    reason from accuracy vs. target — that re-derivation silently collapses
    ``NO_NEW_HYPOTHESIS`` / ``EVAL_INVALID`` /
-   ``EVAL_BUDGET_EXHAUSTED`` into ``TARGET_REACHED`` / ``MAX_ATTEMPTS`` and is the
-   correctness bug Phase 9 fixes.
+   ``CONFIG_VALIDATION_FAILED`` / ``LOOP_STATE_INVALID`` /
+   ``EVAL_BUDGET_EXHAUSTED`` into ``TARGET_REACHED`` / ``MAX_ATTEMPTS`` and is
+   the correctness bug Phase 9 fixes.
 2. **Gates on the terminal reason** (arch §5.1 vocabulary):
    * ``{TARGET_REACHED, MAX_ATTEMPTS}`` -> publish the champion (idempotent
      Delta-only ``models.promote_best_model`` - re-stamps ``is_champion`` + the
@@ -85,6 +86,8 @@ _TERMINAL_REASON_TO_RUN_STATUS: dict[str, str] = {
     "TARGET_REACHED": "CONVERGED",
     "MAX_ATTEMPTS": "MAX_ITERATIONS",
     "EVAL_INVALID": "FAILED",
+    "CONFIG_VALIDATION_FAILED": "FAILED",
+    "LOOP_STATE_INVALID": "FAILED",
     "NO_NEW_HYPOTHESIS": "STALLED",
     "EVAL_BUDGET_EXHAUSTED": "STALLED",
 }
@@ -94,6 +97,14 @@ _TERMINAL_REASON_CONCERN: dict[str, str] = {
     "EVAL_INVALID": (
         "Run stopped because evaluation became invalid (EVAL_INVALID); the "
         "champion was NOT published."
+    ),
+    "CONFIG_VALIDATION_FAILED": (
+        "Run stopped because a proposed Genie configuration failed structural "
+        "validation (CONFIG_VALIDATION_FAILED); the champion was NOT published."
+    ),
+    "LOOP_STATE_INVALID": (
+        "Run stopped because the optimizer controller state became invalid "
+        "(LOOP_STATE_INVALID); the champion was NOT published."
     ),
     "NO_NEW_HYPOTHESIS": (
         "Run stalled: the strategist produced no new hypothesis to try "

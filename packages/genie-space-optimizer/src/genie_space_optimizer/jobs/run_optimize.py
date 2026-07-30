@@ -40,6 +40,7 @@ from genie_space_optimizer.common.genie_client import (
 )
 from genie_space_optimizer.common.warehouse import export_warehouse_id, resolve_warehouse_id
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
+from genie_space_optimizer.jobs._helpers import _diagnostic as _diagnostic_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.benchmarks import (
     benchmark_corpus_for_optimization,
@@ -73,6 +74,7 @@ dbutils = cast(Any, globals().get("dbutils"))
 _TASK_LABEL = "TASK OPTIMIZE"
 _TASK_KEY = "optimize"
 _banner = partial(_banner_base, _TASK_LABEL)
+_diagnostic = partial(_diagnostic_base, _TASK_LABEL)
 _log = partial(_log_base, _TASK_LABEL)
 
 # COMMAND ----------
@@ -151,82 +153,139 @@ write_stage(
 
 # COMMAND ----------
 
-uc_schema = f"{catalog}.{schema}"
-_all_benchmarks = load_benchmark_corpus(spark, uc_schema, domain)
-benchmarks = benchmark_corpus_for_optimization(_all_benchmarks)
-if not benchmarks:
-    raise RuntimeError(f"No benchmarks found in {uc_schema}.genie_benchmarks_{domain}")
-
-_log(
-    "Optimize inputs",
-    run_id=run_id,
-    benchmarks=len(benchmarks),
-    levers=levers,
-    max_attempts=max_attempts,
-    target_accuracy=target_accuracy,
-)
-
-prompt_matching_context = load_latest_artifact_payload(
-    spark,
-    run_id,
-    catalog,
-    schema,
-    "space_metadata",
-) or {}
-
-inventory_record = load_latest_artifact_record(
-    spark, run_id, catalog, schema, "wide_schema_inventory",
-)
-if inventory_record is None:
-    raise RuntimeError("Required wide_schema_inventory artifact is missing")
-wide_schema_inventory = inventory_record["payload"]
-validate_inventory(wide_schema_inventory)
-
-plan_record = load_latest_artifact_record(
-    spark, run_id, catalog, schema, "wide_schema_selection_plan",
-)
-if plan_record is None:
-    raise RuntimeError("Required wide_schema_selection_plan artifact is missing")
-wide_schema_plan = plan_record["payload"]
-validate_selection_plan(
-    wide_schema_plan,
-    inventory_hash=wide_schema_inventory["inventory_hash"],
-)
-os.environ["GSO_WIDE_SCHEMA_INVENTORY_HASH"] = wide_schema_inventory[
-    "inventory_hash"
-]
-os.environ["GSO_WIDE_SCHEMA_PLAN_HASH"] = wide_schema_plan["plan_hash"]
-if prompt_matching_context.get("inventory_hash") not in {
-    None,
-    wide_schema_inventory["inventory_hash"],
-}:
-    raise RuntimeError("space_metadata inventory hash does not match required inventory")
-if prompt_matching_context.get("plan_hash") not in {None, wide_schema_plan["plan_hash"]}:
-    raise RuntimeError("space_metadata plan hash does not match latest selection plan")
-
-profile_artifact_rows = load_artifacts(
-    spark,
-    run_id,
-    catalog,
-    schema,
-    artifact_kind="wide_schema_profile_telemetry",
-)
-persisted_profile_telemetry: list[dict[str, Any]] = []
-for raw_profile_telemetry in profile_artifact_rows.get("artifact_json", []):
-    try:
-        profile_payload = (
-            json.loads(raw_profile_telemetry)
-            if isinstance(raw_profile_telemetry, str)
-            else raw_profile_telemetry
+def _load_optimize_inputs() -> tuple[
+    list[dict[str, Any]],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    """Load and validate the durable Delta handoff for the Optimize task."""
+    uc_schema = f"{catalog}.{schema}"
+    all_benchmarks = load_benchmark_corpus(spark, uc_schema, domain)
+    loaded_benchmarks = benchmark_corpus_for_optimization(all_benchmarks)
+    if not loaded_benchmarks:
+        raise RuntimeError(
+            f"No benchmarks found in {uc_schema}.genie_benchmarks_{domain}"
         )
-    except (TypeError, ValueError):
-        continue
-    if isinstance(profile_payload, dict):
-        persisted_profile_telemetry.append(profile_payload)
-wide_schema_profile_budget = merge_profiling_budgets(
-    wide_schema_plan.get("profiling_budget") or {},
-    build_profiling_budget(persisted_profile_telemetry),
-)
+
+    loaded_prompt_context = load_latest_artifact_payload(
+        spark, run_id, catalog, schema, "space_metadata",
+    ) or {}
+
+    loaded_inventory_record = load_latest_artifact_record(
+        spark, run_id, catalog, schema, "wide_schema_inventory",
+    )
+    if loaded_inventory_record is None:
+        raise RuntimeError("Required wide_schema_inventory artifact is missing")
+    loaded_inventory = loaded_inventory_record["payload"]
+    validate_inventory(loaded_inventory)
+
+    loaded_plan_record = load_latest_artifact_record(
+        spark, run_id, catalog, schema, "wide_schema_selection_plan",
+    )
+    if loaded_plan_record is None:
+        raise RuntimeError("Required wide_schema_selection_plan artifact is missing")
+    loaded_plan = loaded_plan_record["payload"]
+    validate_selection_plan(
+        loaded_plan,
+        inventory_hash=loaded_inventory["inventory_hash"],
+    )
+    os.environ["GSO_WIDE_SCHEMA_INVENTORY_HASH"] = loaded_inventory[
+        "inventory_hash"
+    ]
+    os.environ["GSO_WIDE_SCHEMA_PLAN_HASH"] = loaded_plan["plan_hash"]
+    if loaded_prompt_context.get("inventory_hash") not in {
+        None,
+        loaded_inventory["inventory_hash"],
+    }:
+        raise RuntimeError(
+            "space_metadata inventory hash does not match required inventory"
+        )
+    if loaded_prompt_context.get("plan_hash") not in {
+        None,
+        loaded_plan["plan_hash"],
+    }:
+        raise RuntimeError(
+            "space_metadata plan hash does not match latest selection plan"
+        )
+
+    profile_artifact_rows = load_artifacts(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        artifact_kind="wide_schema_profile_telemetry",
+    )
+    persisted_profile_telemetry: list[dict[str, Any]] = []
+    for raw_profile_telemetry in profile_artifact_rows.get("artifact_json", []):
+        try:
+            profile_payload = (
+                json.loads(raw_profile_telemetry)
+                if isinstance(raw_profile_telemetry, str)
+                else raw_profile_telemetry
+            )
+        except (TypeError, ValueError):
+            continue
+        if isinstance(profile_payload, dict):
+            persisted_profile_telemetry.append(profile_payload)
+    profile_budget = merge_profiling_budgets(
+        loaded_plan.get("profiling_budget") or {},
+        build_profiling_budget(persisted_profile_telemetry),
+    )
+    return (
+        loaded_benchmarks,
+        loaded_prompt_context,
+        loaded_inventory_record,
+        loaded_plan_record,
+        profile_budget,
+    )
+
+
+try:
+    (
+        benchmarks,
+        prompt_matching_context,
+        inventory_record,
+        plan_record,
+        wide_schema_profile_budget,
+    ) = _load_optimize_inputs()
+    wide_schema_inventory = inventory_record["payload"]
+    wide_schema_plan = plan_record["payload"]
+    _log(
+        "Optimize inputs",
+        run_id=run_id,
+        benchmarks=len(benchmarks),
+        levers=levers,
+        max_attempts=max_attempts,
+        target_accuracy=target_accuracy,
+    )
+except Exception as exc:
+    _banner("Optimize Input Loading FAILED")
+    _log(
+        "Failure details",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        traceback=traceback.format_exc(),
+    )
+    write_failure_stage_safely(
+        spark,
+        run_id,
+        "OPTIMIZE",
+        task_key=_TASK_KEY,
+        catalog=catalog,
+        schema=schema,
+        error_message=str(exc),
+    )
+    _diagnostic(
+        "Input loading failed",
+        run_id=run_id,
+        log_schema=f"{catalog}.{schema}",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        next_sources=["genie_opt_artifacts", f"genie_benchmarks_{domain}"],
+    )
+    raise
 
 # COMMAND ----------
 
@@ -254,6 +313,7 @@ try:
         wide_schema_plan=wide_schema_plan,
         wide_schema_parent_artifact_id=plan_record.get("artifact_id"),
         wide_schema_profile_budget=wide_schema_profile_budget,
+        diagnostic_callback=_diagnostic,
     )
     _log(
         "Optimize loop finished",
@@ -281,6 +341,14 @@ except Exception as exc:
         catalog=catalog,
         schema=schema,
         error_message=str(exc),
+    )
+    _diagnostic(
+        "Task failed",
+        run_id=run_id,
+        log_schema=f"{catalog}.{schema}",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        next_source="genie_opt_stages",
     )
     raise
 
@@ -318,6 +386,16 @@ write_stage(
     },
 )
 
+_diagnostic(
+    "Task outcome",
+    run_id=run_id,
+    log_schema=f"{catalog}.{schema}",
+    terminal_reason=loop_out.get("terminal_reason"),
+    champion_iteration=loop_out.get("best_iteration"),
+    champion_accuracy=loop_out.get("accuracy"),
+    attempts_used=loop_out.get("surgical_attempts_used"),
+    primary_sources=["genie_opt_iterations", "genie_opt_patches"],
+)
 _banner("Optimize completed")
 dbutils.notebook.exit(
     json.dumps(

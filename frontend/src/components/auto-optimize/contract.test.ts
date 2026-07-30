@@ -43,6 +43,7 @@ describe("GSO v2 frontend contract", () => {
       llm_model: "model-a",
       target_accuracy: 0.9,
       max_attempts: 3,
+      workload_warehouse_ids: [],
     })
     expect("deploy_target" in req).toBe(false)
   })

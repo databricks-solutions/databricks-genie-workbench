@@ -232,6 +232,38 @@ def test_eval_invalid_does_not_publish_status_failed():
     assert updates[0]["convergence_reason"] == "EVAL_INVALID"
 
 
+def test_config_validation_failed_does_not_publish_status_failed():
+    result, artifacts, updates, promote, _llm = _run_publish_and_audit(
+        scored_iters=_full_iters(champion_reason="CONFIG_VALIDATION_FAILED"),
+    )
+    promote.assert_not_called()
+    assert result["published"] is False
+    assert result["publish_outcome"] == "not_published:CONFIG_VALIDATION_FAILED"
+    assert result["final_status"] == "FAILED"
+    assert any(
+        "CONFIG_VALIDATION_FAILED" in concern
+        for concern in artifacts[0]["payload"]["concerns"]
+    )
+    assert updates[0]["status"] == "FAILED"
+    assert updates[0]["convergence_reason"] == "CONFIG_VALIDATION_FAILED"
+
+
+def test_loop_state_invalid_does_not_publish_status_failed():
+    result, artifacts, updates, promote, _llm = _run_publish_and_audit(
+        scored_iters=_full_iters(champion_reason="LOOP_STATE_INVALID"),
+    )
+    promote.assert_not_called()
+    assert result["published"] is False
+    assert result["publish_outcome"] == "not_published:LOOP_STATE_INVALID"
+    assert result["final_status"] == "FAILED"
+    assert any(
+        "LOOP_STATE_INVALID" in concern
+        for concern in artifacts[0]["payload"]["concerns"]
+    )
+    assert updates[0]["status"] == "FAILED"
+    assert updates[0]["convergence_reason"] == "LOOP_STATE_INVALID"
+
+
 def test_unknown_terminal_reason_does_not_publish_status_stalled():
     result, artifacts, updates, promote, _llm = _run_publish_and_audit(
         scored_iters=_full_iters(champion_reason="UNKNOWN_STOP"),

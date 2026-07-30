@@ -40,6 +40,7 @@ const TERMINAL_REASON_LABELS: Record<GSOTerminalReason, string> = {
   MAX_ATTEMPTS: "Max attempts",
   NO_NEW_HYPOTHESIS: "No new hypothesis",
   EVAL_INVALID: "Eval invalid",
+  CONFIG_VALIDATION_FAILED: "Config validation failed",
   LOOP_STATE_INVALID: "Loop state invalid",
   EVAL_BUDGET_EXHAUSTED: "Budget exhausted",
 }
