@@ -5,13 +5,13 @@ description: "Deterministic 12-check quality scoring with three maturity tiers."
 
 # IQ Scanner
 
-The IQ Scanner is a **deterministic, rule-based** quality assessment engine for Genie Space configurations. It evaluates 12 binary checks, assigns a maturity tier, and produces actionable findings with recommended next steps.
+The IQ Scanner is a **deterministic, rule-based** quality assessment engine for Genie Agent configurations. It evaluates 12 binary checks, assigns a maturity tier, and produces actionable findings with recommended next steps.
 
 Unlike the LLM-based analysis tools, the scanner runs instantly with no LLM calls — it inspects the `serialized_space` JSON directly.
 
 ### Unity Catalog Enrichment
 
-Before scoring, `scan_space()` fetches table and column descriptions from Unity Catalog via `WorkspaceClient.tables.get()` and merges them into the space config. This means checks 2 (table descriptions) and 3 (column descriptions) reflect metadata that exists in UC even if not inlined in the Genie Space config. Existing inline descriptions are never overwritten. If UC metadata is unavailable (permissions, network), the scan continues with config-only data.
+Before scoring, `scan_space()` fetches table and column descriptions from Unity Catalog via `WorkspaceClient.tables.get()` and merges them into the agent config. This means checks 2 (table descriptions) and 3 (column descriptions) reflect metadata that exists in UC even if not inlined in the Genie Agent config. Existing inline descriptions are never overwritten. If UC metadata is unavailable (permissions, network), the scan continues with config-only data.
 
 ## Scoring Model
 
@@ -39,7 +39,7 @@ The first 10 checks evaluate configuration quality. The last 2 checks evaluate o
 | 2 | **Table descriptions** | ≥80% of tables have descriptions | Finding + next step to add descriptions |
 | 3 | **Column descriptions** | ≥50% of columns have descriptions | Finding + next step to add descriptions |
 | 4 | **Text instructions** | Present and >50 characters total | Finding to add business context instructions |
-| 5 | **Join specifications** | At least 1 join spec (for multi-source spaces) | Finding to add join specs |
+| 5 | **Join specifications** | At least 1 join spec (for multi-source agents) | Finding to add join specs |
 | 6 | **Data source count 1–12** | Between 1 and 12 tables + metric views | Finding to reduce data sources or use multi-room architecture |
 | 7 | **8+ example SQLs** | At least 8 example question-SQL pairs | Finding to add more examples |
 | 8 | **SQL snippets** | At least 1 function, expression, measure, or filter | Finding to add SQL snippets |
@@ -104,7 +104,7 @@ Beyond the 12 scored checks, the scanner emits additional warnings for edge case
 | Example SQLs 8–14 | "10-15 is the sweet spot for largest accuracy jump" |
 | Missing `usage_guidance` on >50% of example SQLs | "Add descriptions of when each example should be applied" |
 | Missing measures or filters in SQL snippets | "Add missing SQL snippet types for better coverage" |
-| Entity matching columns > 100 | "Approaching 120/space limit" |
+| Entity matching columns > 100 | "Approaching 120/agent limit" |
 | Row-level security on tables with entity matching | "Entity matching is silently disabled for these" |
 
 ## Integration with Auto-Optimize

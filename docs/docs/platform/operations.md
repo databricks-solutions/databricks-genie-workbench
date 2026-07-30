@@ -16,8 +16,8 @@ The app creates the `genie` schema and all tables on first startup (the SP owns 
 | Table | Purpose |
 |-------|---------|
 | `scan_results` | IQ scan history: score, maturity, checks, findings, timestamps |
-| `starred_spaces` | User-starred spaces for quick access |
-| `seen_spaces` | Tracks which spaces the user has visited |
+| `starred_spaces` | User-starred agents for quick access |
+| `seen_spaces` | Tracks which agents the user has visited |
 | `optimization_runs` | Legacy optimization accuracy records (used by scanner checks 11–12) |
 | `agent_sessions` | Create agent session persistence (message history, step state) |
 
@@ -30,7 +30,7 @@ Lakebase credentials are auto-generated via the Databricks SDK (`postgres.genera
 If `LAKEBASE_HOST` is not configured (no Lakebase attached), the app falls back to **in-memory dictionaries**. The app remains fully functional but:
 
 - Scan results are lost on restart
-- Starred spaces are lost on restart
+- Starred Genie Agents are lost on restart
 - Agent sessions are lost on restart
 - The Admin Dashboard shows no historical data
 
@@ -129,12 +129,12 @@ databricks bundle deploy -t app --profile <profile>
 
 The `app` target uses `mode: development` for per-deployer Terraform state with `presets.name_prefix: ""` for clean job names.
 
-### Post-Deploy: Genie Space Access
+### Post-Deploy: Genie Agent Access
 
-After deploying, the app's SP needs access to Genie Spaces for API fallback and optimization:
+After deploying, the app's SP needs access to Genie Agents for API fallback and optimization:
 
-1. The installer grants SP access to your existing Genie Spaces
-2. For spaces created after install, share them with the SP (`CAN_MANAGE`)
+1. The installer grants SP access to your existing Genie Agents
+2. For agents created after install, share them with the SP (`CAN_MANAGE`)
 3. Grant SP `SELECT` on referenced schemas:
 
 ```sql
