@@ -479,6 +479,10 @@ def _native_benchmark_id(benchmark: dict) -> str:
     ).strip()
 
 
+def _warning_repair_identity(benchmark: dict) -> str:
+    return default_id_of(benchmark) or str(benchmark.get("question") or "").strip()
+
+
 def _activate_benchmark_columns(benchmarks: list[dict[str, Any]]) -> None:
     """Persist adaptive revisions for omitted columns used by this operation."""
     global _wide_schema_plan, _plan_record, _uc_columns
@@ -693,7 +697,12 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
                 benchmark,
                 result,
             )
-            if benchmark_policy == "repair_allowed" and repair_candidate is not None:
+            if (
+                benchmark_policy == "repair_allowed"
+                and repair_candidate is not None
+                and _warning_repair_identity(benchmark)
+                not in _warning_repair_attempted_ids
+            ):
                 invalid.append(benchmark)
             else:
                 valid.append(benchmark)
@@ -716,8 +725,8 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
 def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
     """One repair sweep: apply warning proposals, then replace hard failures.
 
-    Returns ONLY the newly synthesized candidates (not the already-valid set),
-    so the bounded loop accumulates valid rows correctly.
+    Returns only changed warning candidates plus newly synthesized replacements
+    (not the already-valid set), so the bounded loop accumulates rows correctly.
     """
     _activate_benchmark_columns(invalid)
     warning_candidates: list[dict] = []
@@ -729,7 +738,7 @@ def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
             hard_invalid.append(benchmark)
             continue
         warning_candidates.append(candidate)
-        benchmark_id = default_id_of(benchmark)
+        benchmark_id = _warning_repair_identity(benchmark)
         if benchmark_id:
             _warning_repair_attempted_ids.add(benchmark_id)
 

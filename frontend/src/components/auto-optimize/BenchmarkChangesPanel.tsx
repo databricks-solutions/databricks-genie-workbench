@@ -73,7 +73,9 @@ export function BenchmarkChangesPanel({
   if (loading) {
     return (
       <PanelShell showTitle={showTitle}>
-        <p className="text-sm text-muted animate-pulse text-center py-6">Loading benchmark changes…</p>
+        <p className="rounded-xl border border-default py-6 text-center text-sm text-muted animate-pulse">
+          Loading benchmark changes…
+        </p>
       </PanelShell>
     )
   }
@@ -81,7 +83,7 @@ export function BenchmarkChangesPanel({
   if (!qc && total === 0) {
     return (
       <PanelShell showTitle={showTitle}>
-        <p className="text-sm text-muted text-center py-6">
+        <p className="rounded-xl border border-default py-6 text-center text-sm text-muted">
           GSO made no changes to this agent's benchmark set.
         </p>
       </PanelShell>
@@ -114,7 +116,7 @@ function PanelShell({
   showTitle?: boolean
 }) {
   return (
-    <div className="rounded-xl border border-default p-6 space-y-5">
+    <div className="space-y-4">
       {showTitle && (
         <h3 className="text-sm font-semibold text-primary">Benchmark QC &amp; Repairs</h3>
       )}
@@ -163,7 +165,7 @@ function QcMeter({
   const minimum = qc.minimumValidCount
 
   return (
-    <div className="space-y-4 rounded-lg border border-default bg-elevated/30 p-4">
+    <div className="space-y-4 rounded-xl border border-default bg-elevated/30 p-4">
       {/* Window meter */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -277,7 +279,7 @@ function QcMeter({
 
 function BenchmarkRepairs({ changes }: { changes: GSOBenchmarkChanges }) {
   return (
-    <div className="space-y-3 rounded-lg border border-default bg-elevated/20 p-4">
+    <div className="space-y-3 rounded-xl border border-default bg-elevated/20 p-4">
       <div>
         <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
           <Wrench className="h-3.5 w-3.5 text-blue-400" />
@@ -330,7 +332,7 @@ function BenchmarkQuality({ qc }: { qc: GSOBenchmarkQC }) {
     : Math.round(qc.semanticReviewCoverage * 100)
 
   return (
-    <div className="space-y-3 rounded-lg border border-default bg-elevated/20 p-4">
+    <div className="space-y-3 rounded-xl border border-default bg-elevated/20 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">

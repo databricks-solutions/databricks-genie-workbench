@@ -401,6 +401,104 @@ def test_user_authored_implementation_hint_is_advisory_and_not_rewritten(
     assert result["findings"][0]["proposed_question"] != original
 
 
+def test_actionable_warning_proposal_builds_repair_without_mutating_input() -> None:
+    benchmark = {
+        "id": "q1",
+        "space_question_id": "native-q1",
+        "question": "Show revenue",
+        "expected_sql": "SELECT old_metric FROM revenue",
+        "source": "genie_benchmark",
+    }
+    result = {
+        "question_id": "q1",
+        "disposition": "warning",
+        "findings": [
+            quality._finding(
+                question_id="q1",
+                question="Show revenue",
+                source="genie_benchmark",
+                category=quality.QUESTION_SQL_ALIGNMENT,
+                code="WRONG_METRIC",
+                severity="warning",
+                confidence=0.65,
+                explanation="Use recognized revenue and make the wording precise.",
+                expected_sql="SELECT old_metric FROM revenue",
+                proposed_question="Show recognized revenue",
+                proposed_sql="SELECT recognized_revenue FROM revenue",
+            ),
+        ],
+    }
+
+    candidate, change = quality.build_actionable_warning_repair(benchmark, result)
+
+    assert candidate is not None
+    assert candidate["question"] == "Show recognized revenue"
+    assert candidate["expected_sql"] == "SELECT recognized_revenue FROM revenue"
+    assert benchmark["question"] == "Show revenue"
+    assert change is not None
+    assert change["question_id"] == "native-q1"
+    assert change["reason"] == "benchmark_quality_warning_repair"
+
+
+def test_actionable_warning_repair_ignores_system_and_conflicting_proposals() -> None:
+    benchmark = {
+        "id": "q1",
+        "question": "Show revenue",
+        "expected_sql": "SELECT 1",
+    }
+    system_result = {
+        "question_id": "q1",
+        "disposition": "warning",
+        "findings": [
+            quality._finding(
+                question_id="q1",
+                question="Show revenue",
+                source="genie_benchmark",
+                category=quality.REVIEW_SYSTEM,
+                code="REVIEW_NOT_RUN",
+                severity="warning",
+                explanation="Review unavailable.",
+                proposed_question="Unsafe suggestion",
+            ),
+        ],
+    }
+    assert quality.build_actionable_warning_repair(benchmark, system_result) == (
+        None,
+        None,
+    )
+
+    conflicting_result = {
+        "question_id": "q1",
+        "disposition": "warning",
+        "findings": [
+            quality._finding(
+                question_id="q1",
+                question="Show revenue",
+                source="genie_benchmark",
+                category=quality.QUESTION_QUALITY,
+                code="AMBIGUOUS_METRIC",
+                severity="warning",
+                explanation="Ambiguous.",
+                proposed_question="Show gross revenue",
+            ),
+            quality._finding(
+                question_id="q1",
+                question="Show revenue",
+                source="genie_benchmark",
+                category=quality.QUESTION_SQL_ALIGNMENT,
+                code="WRONG_METRIC",
+                severity="warning",
+                explanation="Wrong metric.",
+                proposed_question="Show net revenue",
+            ),
+        ],
+    }
+    assert quality.build_actionable_warning_repair(benchmark, conflicting_result) == (
+        None,
+        None,
+    )
+
+
 def test_legitimate_where_and_from_are_not_deterministically_rejected(monkeypatch) -> None:
     _patch_deterministic_checks(monkeypatch)
     _patch_quality_context(monkeypatch)

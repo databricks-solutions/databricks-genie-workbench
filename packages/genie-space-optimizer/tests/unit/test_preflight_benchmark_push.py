@@ -293,6 +293,88 @@ def test_real_publisher_refuses_stable_id_update_when_question_text_changed():
     assert report.dedup_skipped == 1
 
 
+def test_real_publisher_applies_explicitly_authorized_warning_repair():
+    existing_question = "Show revenue"
+    repaired_question = "Show recognized revenue"
+    existing = [_live_question("native-q1", existing_question, "SELECT old_metric")]
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    repaired = _bench(
+        "native-q1",
+        repaired_question,
+        "SELECT recognized_revenue",
+        source="genie_benchmark",
+        space_question_id="native-q1",
+    )
+    with patch(
+        _FETCH_PATH,
+        return_value={"_parsed_space": _parsed_space(existing=existing)},
+    ), patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(),
+            "space-1",
+            [repaired],
+            question_update_ids={"native-q1"},
+        )
+
+    patched_question = patched_holder["cfg"]["benchmarks"]["questions"][0]
+    assert patched_question["id"] == "native-q1"
+    assert patched_question["question"] == [repaired_question]
+    assert patched_question["answer"][0]["content"] == [
+        "SELECT recognized_revenue",
+    ]
+    assert report.added_count == 0
+    assert report.updated_count == 1
+    assert report.updated[0]["before_question"] == existing_question
+    assert report.updated[0]["after_question"] == repaired_question
+
+
+def test_authorized_rewording_releases_old_wording_for_a_new_benchmark():
+    old_question = "Show revenue"
+    repaired_question = "Show recognized revenue"
+    existing = [_live_question("native-q1", old_question, "SELECT old_metric")]
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    repaired = _bench(
+        "native-q1",
+        repaired_question,
+        "SELECT recognized_revenue",
+        source="genie_benchmark",
+        space_question_id="native-q1",
+    )
+    replacement_for_old_wording = _bench(
+        "new-q2",
+        old_question,
+        "SELECT total_revenue",
+    )
+    with patch(
+        _FETCH_PATH,
+        return_value={"_parsed_space": _parsed_space(existing=existing)},
+    ), patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(),
+            "space-1",
+            [repaired, replacement_for_old_wording],
+            question_update_ids={"native-q1"},
+        )
+
+    questions = {
+        question["question"][0]
+        for question in patched_holder["cfg"]["benchmarks"]["questions"]
+    }
+    assert questions == {repaired_question, old_question}
+    assert report.updated_count == 1
+    assert report.added_count == 1
+
+
 def test_real_publisher_adds_near_duplicate_when_text_is_not_exact():
     """Similarity is advisory only; it must not erase a distinct eval row."""
     existing_question = "How many support tickets were created per account segment?"
@@ -468,9 +550,18 @@ def captured_publish():
     set, so the preflight's post-merge window path is exercised)."""
     captured: dict = {}
 
-    def _fake(w, space_id, benchmarks, max_questions=None, *, run_id=None):
+    def _fake(
+        w,
+        space_id,
+        benchmarks,
+        max_questions=None,
+        *,
+        run_id=None,
+        question_update_ids=None,
+    ):
         captured["benchmarks"] = list(benchmarks)
         captured["space_id"] = space_id
+        captured["question_update_ids"] = set(question_update_ids or set())
         added = [
             {
                 "id": b.get("id", ""),
@@ -519,6 +610,42 @@ def test_push_excludes_invalid_and_sqlless_rows_before_publish(captured_publish)
     assert out["resolved_question_ids"] == 2
     assert out["pruned_at_push"] == 2
     assert out["push_ok"] is True
+
+
+def test_push_authorizes_only_recorded_question_warning_repairs(captured_publish):
+    benchmark = _bench(
+        "native-q1",
+        "Show recognized revenue",
+        "SELECT recognized_revenue",
+        source="genie_benchmark",
+        space_question_id="native-q1",
+    )
+    changed = [{
+        "question_id": "native-q1",
+        "before_question": "Show revenue",
+        "after_question": "Show recognized revenue",
+        "before_sql": "SELECT old_metric",
+        "after_sql": "SELECT recognized_revenue",
+        "reason": "benchmark_quality_warning_repair",
+    }]
+    with patch(
+        "genie_space_optimizer.optimization.preflight.write_stage",
+    ), patch(
+        "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
+        return_value=0,
+    ):
+        preflight_push_benchmarks_to_space(
+            MagicMock(),
+            MagicMock(),
+            "run-1",
+            "space-1",
+            "cat",
+            "sch",
+            [benchmark],
+            changed_benchmarks=changed,
+        )
+
+    assert captured_publish["question_update_ids"] == {"native-q1"}
 
 
 def test_push_attaches_exact_live_question_id_for_delta_handoff():
@@ -740,6 +867,65 @@ def test_push_ledgers_native_sql_repair_as_changed() -> None:
     assert changed[0]["after"]["sql"] == "SELECT 1"
     assert changed[0]["reason"] == "curated_sql_repair"
     assert out["benchmark_mutation_count"] == 1
+
+
+def test_push_preserves_warning_repair_reason_for_sql_only_update() -> None:
+    question = "Show recognized revenue"
+    updated = [{
+        "id": "native-q1",
+        "question": question,
+        "before_question": question,
+        "after_question": question,
+        "before_sql": "SELECT old_metric",
+        "after_sql": "SELECT recognized_revenue",
+    }]
+    report = BenchmarkPushReport(
+        updated_count=1,
+        merged_total=1,
+        existing_count=1,
+        updated=updated,
+        merged=[{
+            "id": "native-q1",
+            "question": question,
+            "sql": "SELECT recognized_revenue",
+        }],
+        window=compute_benchmark_window_recommendation(updated),
+        patched=True,
+    )
+    recorded: dict = {}
+
+    def _capture(spark, run_id, rows, *, catalog, schema):
+        recorded["rows"] = rows
+        return len(rows)
+
+    warning_change = [{
+        "question_id": "native-q1",
+        "before_question": question,
+        "after_question": question,
+        "before_sql": "SELECT old_metric",
+        "after_sql": "SELECT recognized_revenue",
+        "reason": "benchmark_quality_warning_repair",
+    }]
+    with patch(_PUBLISH_PATH, return_value=report), patch(
+        "genie_space_optimizer.optimization.preflight.write_stage",
+    ), patch(
+        "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
+        side_effect=_capture,
+    ):
+        preflight_push_benchmarks_to_space(
+            MagicMock(),
+            MagicMock(),
+            "run-1",
+            "space-1",
+            "cat",
+            "sch",
+            [_bench("native-q1", question, "SELECT recognized_revenue")],
+            changed_benchmarks=warning_change,
+        )
+
+    changed = [row for row in recorded["rows"] if row["op"] == "changed"]
+    assert len(changed) == 1
+    assert changed[0]["reason"] == "benchmark_quality_warning_repair"
 
 
 def test_push_records_over_window_prune_recommendations_in_ledger():

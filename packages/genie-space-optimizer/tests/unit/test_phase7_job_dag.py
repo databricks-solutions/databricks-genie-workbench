@@ -160,6 +160,8 @@ def test_repair_task_uses_canonical_quality_review_and_persists_findings():
         / "run_benchmark_qc_and_repair.py"
     ).read_text()
     assert "review_benchmark_quality(" in src
+    assert "build_actionable_warning_repair(" in src
+    assert "changed_benchmarks=_warning_repairs_applied" in src
     assert '"quality_findings"' in src
     assert '"semantic_review_coverage"' in src
 

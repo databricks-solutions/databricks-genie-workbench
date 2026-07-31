@@ -1136,6 +1136,7 @@ def _benchmarks_to_genie_format(
     seen: set[str] = set()
     skipped_no_answer = 0
     for b in ordered:
+        source = b.get("source", "")
         question = str(b.get("question", "")).strip()
         if not question:
             continue
@@ -1308,6 +1309,16 @@ def _dedupe_and_merge_benchmarks(
                 repaired["question"] = add.get("question")
             repaired["answer"] = after_answer
             merged[existing_index] = repaired
+            if question_changed:
+                existing_norms = [
+                    normalized
+                    for entry in merged
+                    if (
+                        normalized := _normalize_question_text(
+                            _extract_existing_question_text(entry)
+                        )
+                    )
+                ]
 
             updated.append({
                 "id": add_id,

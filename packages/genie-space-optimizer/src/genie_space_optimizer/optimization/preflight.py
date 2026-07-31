@@ -2653,9 +2653,10 @@ def preflight_push_benchmarks_to_space(
       into ``serialized_space.benchmarks.questions`` so the official
       Benchmark API scores against it from baseline onward. There is NO
       train/held-out split — the benchmark is held out by nature. User-
-      authored question text is never changed, rows are never deleted, and
-      the merged set is never sliced or truncated (the publisher fails closed
-      on the Genie API hard cap rather than dropping rows).
+      authored question text changes require an explicit, revalidated warning
+      repair record in ``changed_benchmarks``; rows are never deleted, and the
+      merged set is never sliced or truncated (the publisher fails closed on
+      the Genie API hard cap rather than dropping rows).
     * **Prune-invalid before publish:** a final defensive guard drops any
       row that is not EXPLAIN-valid or lacks ground-truth SQL, so a
       SQL-erroring question can never be published.
@@ -2678,6 +2679,19 @@ def preflight_push_benchmarks_to_space(
     """
     rejected_benchmarks = rejected_benchmarks or []
     changed_benchmarks = changed_benchmarks or []
+    changed_benchmarks_by_id = {
+        str(change.get("question_id") or change.get("id") or "").strip(): change
+        for change in changed_benchmarks
+        if str(change.get("question_id") or change.get("id") or "").strip()
+    }
+    question_update_ids = {
+        str(change.get("question_id") or change.get("id") or "").strip()
+        for change in changed_benchmarks
+        if change.get("reason") == "benchmark_quality_warning_repair"
+        and str(change.get("before_question") or "").strip()
+        != str(change.get("after_question") or "").strip()
+        and str(change.get("question_id") or change.get("id") or "").strip()
+    }
 
     # ── Prune-invalid backstop before publish (eval-validity) ────────
     pushable: list[dict] = []
@@ -2722,7 +2736,11 @@ def preflight_push_benchmarks_to_space(
             # publisher caps only on the genuine Genie API hard limit
             # (its default) and never truncates the merged set.
             push_report = publish_benchmarks_to_genie_space_with_report(
-                w, space_id, pushable, run_id=run_id,
+                w,
+                space_id,
+                pushable,
+                run_id=run_id,
+                question_update_ids=question_update_ids,
             )
         except Exception as exc:
             push_exc = exc
@@ -2900,18 +2918,37 @@ def preflight_push_benchmarks_to_space(
                 "reason": "preflight_push",
             })
         for updated in push_report.updated:
+            before_question = updated.get(
+                "before_question",
+                updated.get("question", ""),
+            )
+            after_question = updated.get(
+                "after_question",
+                updated.get("question", ""),
+            )
+            requested_change = changed_benchmarks_by_id.get(
+                str(updated.get("id") or ""),
+                {},
+            )
             ledger_rows.append({
                 "question_id": updated.get("id", ""),
                 "op": "changed",
                 "before": {
-                    "question": updated.get("question", ""),
+                    "question": before_question,
                     "sql": updated.get("before_sql", ""),
                 },
                 "after": {
-                    "question": updated.get("question", ""),
+                    "question": after_question,
                     "sql": updated.get("after_sql", ""),
                 },
-                "reason": "curated_sql_repair",
+                "reason": (
+                    requested_change.get("reason")
+                    or (
+                        "benchmark_quality_warning_repair"
+                        if before_question != after_question
+                        else "curated_sql_repair"
+                    )
+                ),
             })
     for r in rejected_benchmarks:
         ledger_rows.append({
@@ -2943,12 +2980,25 @@ def preflight_push_benchmarks_to_space(
             "after": None,
             "reason": "prune_invalid_before_publish",
         })
+    publisher_updated_ids = {
+        str(updated.get("id") or "")
+        for updated in (push_report.updated if push_report is not None else [])
+    }
     for c in changed_benchmarks:
+        change_id = str(c.get("question_id") or c.get("id") or "")
+        if change_id in publisher_updated_ids:
+            continue
         ledger_rows.append({
-            "question_id": c.get("id", c.get("question_id", "")),
+            "question_id": change_id,
             "op": "changed",
-            "before": {"question": c.get("question", ""), "sql": c.get("before_sql", "")},
-            "after": {"question": c.get("question", ""), "sql": c.get("after_sql", "")},
+            "before": {
+                "question": c.get("before_question", c.get("question", "")),
+                "sql": c.get("before_sql", ""),
+            },
+            "after": {
+                "question": c.get("after_question", c.get("question", "")),
+                "sql": c.get("after_sql", ""),
+            },
             "reason": c.get("reason") or "auto_corrected",
         })
     # Over-window prune RECOMMENDATIONS — recorded as non-mutating advisory
