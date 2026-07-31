@@ -7,6 +7,7 @@ integration module (``integration/``).
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -281,11 +282,11 @@ def wh_create_run(
     """Insert a QUEUED run row via SQL warehouse."""
     from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER, MAX_ITERATIONS
 
-    snap_json = (
-        json.dumps(config_snapshot).replace("\\", "\\\\").replace("'", "''")
-        if config_snapshot
-        else ""
-    )
+    snap_json = json.dumps(config_snapshot) if config_snapshot else ""
+    snap_sql = "''"
+    if snap_json:
+        snap_b64 = base64.b64encode(snap_json.encode("utf-8")).decode("ascii")
+        snap_sql = f"CAST(unbase64('{snap_b64}') AS STRING)"
     levers_json = json.dumps(levers if levers is not None else DEFAULT_LEVER_ORDER)
     user = (triggered_by or "").replace("'", "''")
     model_escaped = llm_model.replace("'", "''") if llm_model else ""
@@ -304,7 +305,7 @@ def wh_create_run(
         f"'{run_id}', '{space_id}', '{domain}', '{catalog}', "
         f"'{catalog}.{schema}', 'QUEUED', current_timestamp(), "
         f"{MAX_ITERATIONS}, '{levers_json}', '{apply_mode}', current_timestamp(), "
-        f"'{user}', '{snap_json}', {model_sql}, '{policy_escaped}', 0)"
+        f"'{user}', {snap_sql}, {model_sql}, '{policy_escaped}', 0)"
     )
     sql_warehouse_execute(ws, warehouse_id, sql)
     logger.info("Created run %s via SQL warehouse", run_id)

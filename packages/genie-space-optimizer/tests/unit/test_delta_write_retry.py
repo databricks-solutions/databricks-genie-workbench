@@ -137,7 +137,7 @@ def test_insert_and_update_row_use_retry_helper(monkeypatch: pytest.MonkeyPatch)
     assert captured[1]["kwargs"]["table_name"] == "cat.sch.tbl"
 
 
-def test_insert_and_update_row_preserve_nested_json_escapes(
+def test_insert_and_update_row_preserve_nested_json_bytes_with_base64_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     statements: list[str] = []
@@ -149,18 +149,23 @@ def test_insert_and_update_row_preserve_nested_json_escapes(
     payload = json.dumps({
         "serialized_space": json.dumps({"version": 2, "description": "O'Brien"}),
     })
-    expected = payload.replace("\\", "\\\\").replace("'", "''")
+    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
     delta_helpers.insert_row(
         object(), "cat", "sch", "tbl", {"config_snapshot": payload},
+        base64_string_columns={"config_snapshot"},
     )
     delta_helpers.update_row(
         object(), "cat", "sch", "tbl", {"run_id": "r1"},
         {"config_snapshot": payload},
+        base64_string_columns={"config_snapshot"},
     )
 
-    assert f"'{expected}'" in statements[0]
-    assert f"config_snapshot = '{expected}'" in statements[1]
+    expression = f"CAST(unbase64('{encoded}') AS STRING)"
+    assert expression in statements[0]
+    assert f"config_snapshot = {expression}" in statements[1]
+    assert payload not in statements[0]
+    assert payload not in statements[1]
 
 
 def test_insert_row_can_transport_string_bytes_without_sql_literal_escaping(

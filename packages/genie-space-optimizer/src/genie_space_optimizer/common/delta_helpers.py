@@ -274,23 +274,34 @@ def update_row(
     table: str,
     key_cols: dict[str, Any],
     update_cols: dict[str, Any],
+    *,
+    base64_string_columns: set[str] | None = None,
 ) -> None:
     """Update a row in a Delta table matching ``key_cols`` with ``update_cols``.
 
     Both arguments are ``{column: value}`` dicts. Key columns form the
-    ``WHERE`` clause; update columns form the ``SET`` clause.
+    ``WHERE`` clause; update columns form the ``SET`` clause. Columns named in
+    ``base64_string_columns`` use byte-preserving transport instead of a SQL
+    string literal.
     """
     fqn = _fqn(catalog, schema, table)
+    encoded_columns = base64_string_columns or set()
 
-    def _fmt(val: Any) -> str:
+    def _fmt(val: Any, *, encode: bool = False) -> str:
         if isinstance(val, str):
+            if encode:
+                encoded = base64.b64encode(val.encode("utf-8")).decode("ascii")
+                return f"CAST(unbase64('{encoded}') AS STRING)"
             escaped = val.replace("\\", "\\\\").replace("'", "''")
             return f"'{escaped}'"
         if val is None:
             return "NULL"
         return str(val)
 
-    set_clause = ", ".join(f"{col} = {_fmt(val)}" for col, val in update_cols.items())
+    set_clause = ", ".join(
+        f"{col} = {_fmt(val, encode=col in encoded_columns)}"
+        for col, val in update_cols.items()
+    )
     where_clause = " AND ".join(f"{col} = {_fmt(val)}" for col, val in key_cols.items())
 
     stmt = f"UPDATE {fqn} SET {set_clause} WHERE {where_clause}"

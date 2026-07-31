@@ -679,7 +679,7 @@ def test_update_run_status_retries_delta_concurrent_append(monkeypatch) -> None:
     class ConcurrentAppendLike(Exception):
         pass
 
-    def fake_update_row(_spark, _catalog, _schema, _table, _keys, updates):
+    def fake_update_row(_spark, _catalog, _schema, _table, _keys, updates, **_kwargs):
         calls.append(updates)
         if len(calls) == 1:
             raise ConcurrentAppendLike(

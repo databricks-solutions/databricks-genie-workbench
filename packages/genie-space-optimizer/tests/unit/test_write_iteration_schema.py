@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -123,9 +125,51 @@ def test_write_iteration_persists_submitted_and_observed_configs(mock_spark_iter
     )
 
     sql = _insert_sql(mock_spark_iter)
+    submitted_encoded = base64.b64encode(
+        json.dumps(submitted).encode("utf-8")
+    ).decode("ascii")
+    observed_encoded = base64.b64encode(
+        json.dumps(observed).encode("utf-8")
+    ).decode("ascii")
     assert "config_json, observed_config_json, is_champion" in sql
-    assert "one block" in sql
-    assert '"content": ["one ", "block"]' in sql
+    assert f"CAST(unbase64('{submitted_encoded}') AS STRING)" in sql
+    assert f"CAST(unbase64('{observed_encoded}') AS STRING)" in sql
+
+
+def test_write_iteration_preserves_sql_string_literal_quotes(mock_spark_iter) -> None:
+    config = {
+        "version": 2,
+        "benchmarks": {
+            "questions": [{
+                "question": ["Which invoices are late?"],
+                "answer": [{
+                    "format": "SQL",
+                    "content": ["SELECT * FROM invoices WHERE status = 'Late'"],
+                }],
+            }],
+        },
+    }
+    write_iteration(
+        mock_spark_iter,
+        run_id="run-quotes",
+        iteration=1,
+        eval_result={
+            "overall_accuracy": 90.0,
+            "total_questions": 10,
+            "correct_count": 9,
+            "scores": {},
+            "thresholds_met": True,
+        },
+        config_snapshot=config,
+        observed_config_snapshot=config,
+        catalog="cat",
+        schema="sch",
+    )
+
+    encoded = base64.b64encode(json.dumps(config).encode("utf-8")).decode("ascii")
+    sql = _insert_sql(mock_spark_iter)
+    assert sql.count(f"CAST(unbase64('{encoded}') AS STRING)") == 2
+    assert "status = ''Late''" not in sql
 
 
 def test_write_iteration_accepts_enrichment_scope(mock_spark_iter) -> None:

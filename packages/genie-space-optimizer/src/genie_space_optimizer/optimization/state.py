@@ -11,6 +11,7 @@ arguments — no globals.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -310,7 +311,12 @@ def create_run(
     if llm_model is not None:
         row["llm_model"] = llm_model
 
-    insert_row(spark, catalog, schema, TABLE_RUNS, row)
+    insert_kwargs = (
+        {"base64_string_columns": {"config_snapshot"}}
+        if config_snapshot is not None
+        else {}
+    )
+    insert_row(spark, catalog, schema, TABLE_RUNS, row, **insert_kwargs)
     logger.info("Created run %s for space %s", run_id, space_id)
 
 
@@ -323,11 +329,25 @@ def _update_row_with_delta_retry(
     updates: dict[str, Any],
     *,
     attempts: int = 3,
+    base64_string_columns: set[str] | None = None,
 ) -> None:
     last_exc: BaseException | None = None
     for attempt in range(attempts):
         try:
-            update_row(spark, catalog, schema, table, keys, updates)
+            update_kwargs = (
+                {"base64_string_columns": base64_string_columns}
+                if base64_string_columns
+                else {}
+            )
+            update_row(
+                spark,
+                catalog,
+                schema,
+                table,
+                keys,
+                updates,
+                **update_kwargs,
+            )
             return
         except Exception as exc:
             if not is_retryable_delta_write_conflict(exc) or attempt == attempts - 1:
@@ -427,6 +447,11 @@ def update_run_status(
     if resolved_space_id:
         keys["space_id"] = resolved_space_id
 
+    update_kwargs = (
+        {"base64_string_columns": {"config_snapshot"}}
+        if config_snapshot is not None
+        else {}
+    )
     _update_row_with_delta_retry(
         spark,
         catalog,
@@ -434,6 +459,7 @@ def update_run_status(
         TABLE_RUNS,
         keys,
         updates,
+        **update_kwargs,
     )
 
 
@@ -848,6 +874,13 @@ def write_iteration(
             return "NULL"
         return f"'{_esc(json.dumps(val))}'"
 
+    def _opt_byte_preserving_json(val: Any) -> str:
+        if val is None:
+            return "NULL"
+        raw = json.dumps(val)
+        encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+        return f"CAST(unbase64('{encoded}') AS STRING)"
+
     # Bug #2 denominator contract fields.
     # Read from eval_result but fall back sensibly:
     #   evaluated_count defaults to total_questions (matches pre-Bug#2 behavior
@@ -923,8 +956,10 @@ def write_iteration(
             str(int(_evaluated_count)),
             str(_excluded_count),
             "true" if rolled_back else "false",
-            _opt_json(_config_payload) if _config_payload else "NULL",
-            _opt_json(_observed_config_payload) if _observed_config_payload else "NULL",
+            _opt_byte_preserving_json(_config_payload) if _config_payload else "NULL",
+            _opt_byte_preserving_json(_observed_config_payload)
+            if _observed_config_payload
+            else "NULL",
             "false",
             str(_num_needs_review) if _num_needs_review is not None else "NULL",
             f"'{_esc(str(_eval_run_id))}'" if _eval_run_id is not None else "NULL",

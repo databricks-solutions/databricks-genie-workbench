@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from unittest.mock import MagicMock
@@ -164,10 +165,19 @@ def test_warehouse_run_insert_preserves_nested_serialized_space_escapes(
         "serialized_space": json.dumps({
             "version": 2,
             "data_sources": {"tables": [{"identifier": "cat.sch.table_1"}]},
+            "benchmarks": {
+                "questions": [{
+                    "question": ["Which invoices are late?"],
+                    "answer": [{
+                        "format": "SQL",
+                        "content": ["SELECT * FROM invoices WHERE status = 'Late'"],
+                    }],
+                }],
+            },
         }),
     }
     encoded = json.dumps(snapshot)
-    expected = encoded.replace("\\", "\\\\").replace("'", "''")
+    encoded_b64 = base64.b64encode(encoded.encode("utf-8")).decode("ascii")
 
     warehouse.wh_create_run(
         MagicMock(),
@@ -181,4 +191,5 @@ def test_warehouse_run_insert_preserves_nested_serialized_space_escapes(
     )
 
     assert len(statements) == 1
-    assert f"'{expected}'" in statements[0]
+    assert f"CAST(unbase64('{encoded_b64}') AS STRING)" in statements[0]
+    assert "status = ''Late''" not in statements[0]

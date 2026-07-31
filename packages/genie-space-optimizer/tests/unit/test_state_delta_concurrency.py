@@ -1,11 +1,45 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pandas as pd
 import pytest
 
 from genie_space_optimizer.optimization import state
+
+
+def test_create_run_uses_byte_preserving_snapshot_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+
+    def fake_insert_row(spark, catalog, schema, table, row, **kwargs):
+        captured.append({"row": row, "kwargs": kwargs})
+
+    monkeypatch.setattr(state, "insert_row", fake_insert_row)
+    snapshot = {
+        "benchmarks": {
+            "questions": [{
+                "answer": [{"format": "SQL", "content": ["WHERE status = 'Late'"]}],
+            }],
+        },
+    }
+
+    state.create_run(
+        object(),
+        "run-1",
+        "space-1",
+        "domain",
+        "cat",
+        "sch",
+        config_snapshot=snapshot,
+    )
+
+    assert json.loads(captured[0]["row"]["config_snapshot"]) == snapshot
+    assert captured[0]["kwargs"] == {
+        "base64_string_columns": {"config_snapshot"},
+    }
 
 
 def test_update_run_status_includes_space_id_when_passed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,6 +119,46 @@ def test_update_run_status_falls_back_to_run_id_when_lookup_empty(monkeypatch: p
 
     assert captured[0]["keys"] == {"run_id": "run-1"}
     assert captured[0]["updates"]["status"] == "IN_PROGRESS"
+
+
+def test_update_run_status_uses_byte_preserving_snapshot_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+
+    def fake_update_row_with_delta_retry(
+        spark,
+        catalog,
+        schema,
+        table,
+        keys,
+        updates,
+        **kwargs,
+    ):
+        captured.append({"updates": updates, "kwargs": kwargs})
+
+    monkeypatch.setattr(state, "_update_row_with_delta_retry", fake_update_row_with_delta_retry)
+
+    snapshot = {
+        "benchmarks": {
+            "questions": [{
+                "answer": [{"format": "SQL", "content": ["WHERE status = 'Late'"]}],
+            }],
+        },
+    }
+    state.update_run_status(
+        object(),
+        "run-1",
+        "cat",
+        "sch",
+        space_id="space-1",
+        config_snapshot=snapshot,
+    )
+
+    assert json.loads(captured[0]["updates"]["config_snapshot"]) == snapshot
+    assert captured[0]["kwargs"] == {
+        "base64_string_columns": {"config_snapshot"},
+    }
 
 
 def test_write_stage_uses_delta_write_retry(monkeypatch: pytest.MonkeyPatch) -> None:
