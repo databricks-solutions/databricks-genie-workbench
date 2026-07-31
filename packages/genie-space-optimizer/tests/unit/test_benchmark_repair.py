@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from genie_space_optimizer.common.config import (
+    MAX_BENCHMARK_COUNT,
     MIN_VALID_BENCHMARK_COUNT,
     TARGET_BENCHMARK_COUNT,
 )
@@ -47,9 +48,10 @@ def test_default_max_tries_is_three():
     assert DEFAULT_BENCHMARK_REPAIR_MAX_TRIES == 3
 
 
-def test_default_corpus_floor_is_15_and_generation_target_remains_30():
+def test_default_corpus_uses_15_floor_30_target_and_40_ceiling():
     assert MIN_VALID_BENCHMARK_COUNT == 15
     assert TARGET_BENCHMARK_COUNT == 30
+    assert MAX_BENCHMARK_COUNT == 40
 
 
 def test_fourteen_valid_benchmarks_fail_the_corpus_floor():

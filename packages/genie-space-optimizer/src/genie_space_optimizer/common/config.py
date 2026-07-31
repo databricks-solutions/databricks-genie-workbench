@@ -290,21 +290,23 @@ out and keep the space's benchmark section untouched."""
 # All Bug-#4-era changes to these values are hidden behind GSO_NEW_SIZING so
 # rollback to previous behaviour is a one-env-var flip. The legacy values
 # were TARGET=24, MAX=29, HELD_OUT=0.15 (~20 train + ~4 held-out); the Phase
-# 4 plan later collapsed to the V2 30-question full-corpus contract.
+# 4 plan later evolved into the V2 30–40 full-corpus working window: generate
+# toward 30, but retain and evaluate an already-valid corpus of up to 40.
 _GSO_NEW_SIZING = os.environ.get("GSO_NEW_SIZING", "true").lower() in {
     "1", "true", "yes", "on",
 }
 
 if _GSO_NEW_SIZING:
     TARGET_BENCHMARK_COUNT = 30
-    MAX_BENCHMARK_COUNT = 30
+    MAX_BENCHMARK_COUNT = 40
 else:
     TARGET_BENCHMARK_COUNT = 24
     MAX_BENCHMARK_COUNT = 29
 """Hard ceiling on benchmark count. No evaluation should ever run on more
 than this many questions, regardless of how many are generated or loaded.
-With the V2 default the assessed corpus is exactly 30 questions. Flip
-GSO_NEW_SIZING=0 to restore the legacy 24/29 values."""
+With the V2 default, generation targets 30 while valid 30–40 question working
+sets are assessed in full. Flip GSO_NEW_SIZING=0 to restore the legacy 24/29
+values."""
 
 MIN_VALID_BENCHMARK_COUNT = 15
 """Hard floor for the quality-reviewed benchmark corpus. Generation still
