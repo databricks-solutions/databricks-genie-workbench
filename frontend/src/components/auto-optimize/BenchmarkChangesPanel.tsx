@@ -89,43 +89,12 @@ export function BenchmarkChangesPanel({
   }
 
   return (
-    <PanelShell counts={changes?.counts} showTitle={showTitle}>
-      {qc && <QcMeter qc={qc} />}
+    <PanelShell showTitle={showTitle}>
+      {qc && <QcMeter qc={qc} counts={changes?.counts} />}
       {qc && <BenchmarkQuality qc={qc} />}
 
-      {total > 0 ? (
-        <>
-          <p className="text-xs text-muted">
-            GSO pushes its quality-reviewed, SQL-valid benchmark questions into your live Genie Agent
-            (additive, merge-only) and excludes hard failures from evaluation. Discarding the run reverts
-            additions and changes from the intake snapshot.
-          </p>
-
-          <ChangeGroup
-            title="Added"
-            icon={<PlusCircle className="h-4 w-4 text-emerald-500" />}
-            mutations={changes?.added ?? []}
-            defaultExpanded={false}
-          />
-          <ChangeGroup
-            title="Changed"
-            icon={<RefreshCw className="h-4 w-4 text-blue-400" />}
-            mutations={changes?.changed ?? []}
-            defaultExpanded
-          />
-          <ChangeGroup
-            title="Removed"
-            icon={<MinusCircle className="h-4 w-4 text-red-400" />}
-            mutations={changes?.removed ?? []}
-            defaultExpanded
-          />
-          <ChangeGroup
-            title="Prune recommended"
-            icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
-            mutations={changes?.pruneRecommended ?? []}
-            defaultExpanded
-          />
-        </>
+      {changes && total > 0 ? (
+        <BenchmarkRepairs changes={changes} />
       ) : (
         <p className="text-xs text-muted">
           {qc?.benchmarkPolicy === "review_only"
@@ -139,38 +108,15 @@ export function BenchmarkChangesPanel({
 
 function PanelShell({
   children,
-  counts,
   showTitle = true,
 }: {
   children: React.ReactNode
-  counts?: GSOBenchmarkChanges["counts"]
   showTitle?: boolean
 }) {
-  const showHeader = showTitle || Boolean(counts && counts.total > 0)
-
   return (
     <div className="rounded-xl border border-default p-6 space-y-5">
-      {showHeader && (
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {showTitle && (
-            <h3 className="text-sm font-semibold text-primary">Benchmark QC &amp; Repairs</h3>
-          )}
-          {counts && counts.total > 0 && (
-            <div className={`flex items-center gap-1.5 text-xs text-muted ${showTitle ? "" : "ml-auto"}`}>
-              <span className="text-emerald-500">+{counts.added} added</span>
-              <span>·</span>
-              <span className="text-red-400">−{counts.removed} removed</span>
-              <span>·</span>
-              <span className="text-blue-400">{counts.changed} changed</span>
-              {counts.pruneRecommended > 0 && (
-                <>
-                  <span>·</span>
-                  <span className="text-amber-500">{counts.pruneRecommended} prune-recommended</span>
-                </>
-              )}
-            </div>
-          )}
-        </div>
+      {showTitle && (
+        <h3 className="text-sm font-semibold text-primary">Benchmark QC &amp; Repairs</h3>
       )}
       {children}
     </div>
@@ -183,7 +129,13 @@ function PanelShell({
  * optimization handoff) is the headline; the shaded band marks the target
  * window.
  */
-function QcMeter({ qc }: { qc: GSOBenchmarkQC }) {
+function QcMeter({
+  qc,
+  counts,
+}: {
+  qc: GSOBenchmarkQC
+  counts?: GSOBenchmarkChanges["counts"]
+}) {
   const min = qc.windowTargetMin ?? DEFAULT_WINDOW_MIN
   const max = qc.windowTargetMax ?? DEFAULT_WINDOW_MAX
   const count = qc.persistedCount ?? qc.validCount ?? null
@@ -289,6 +241,21 @@ function QcMeter({ qc }: { qc: GSOBenchmarkQC }) {
             {stillInvalid} still invalid
           </span>
         )}
+        {counts && counts.total > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted sm:ml-auto">
+            <span className="text-emerald-500">+{counts.added} added</span>
+            <span>·</span>
+            <span className="text-red-400">−{counts.removed} removed</span>
+            <span>·</span>
+            <span className="text-blue-400">{counts.changed} changed</span>
+            {counts.pruneRecommended > 0 && (
+              <>
+                <span>·</span>
+                <span className="text-amber-500">{counts.pruneRecommended} prune-recommended</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {qc.terminalReason === "BENCHMARK_UNREPAIRABLE" && (
@@ -304,6 +271,49 @@ function QcMeter({ qc }: { qc: GSOBenchmarkQC }) {
           {minimum != null ? `; at least ${minimum} are required` : ""}. No evaluation or configuration patch ran.
         </p>
       )}
+    </div>
+  )
+}
+
+function BenchmarkRepairs({ changes }: { changes: GSOBenchmarkChanges }) {
+  return (
+    <div className="space-y-3 rounded-lg border border-default bg-elevated/20 p-4">
+      <div>
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+          <Wrench className="h-3.5 w-3.5 text-blue-400" />
+          Benchmark repairs
+        </div>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted">
+          GSO pushes its quality-reviewed, SQL-valid benchmark questions into your live Genie Agent
+          (additive, merge-only) and excludes hard failures from evaluation. Discarding the run reverts
+          additions and changes from the intake snapshot.
+        </p>
+      </div>
+
+      <ChangeGroup
+        title="Added"
+        icon={<PlusCircle className="h-4 w-4 text-emerald-500" />}
+        mutations={changes.added}
+        defaultExpanded={false}
+      />
+      <ChangeGroup
+        title="Changed"
+        icon={<RefreshCw className="h-4 w-4 text-blue-400" />}
+        mutations={changes.changed}
+        defaultExpanded
+      />
+      <ChangeGroup
+        title="Removed"
+        icon={<MinusCircle className="h-4 w-4 text-red-400" />}
+        mutations={changes.removed}
+        defaultExpanded
+      />
+      <ChangeGroup
+        title="Prune recommended"
+        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+        mutations={changes.pruneRecommended}
+        defaultExpanded
+      />
     </div>
   )
 }

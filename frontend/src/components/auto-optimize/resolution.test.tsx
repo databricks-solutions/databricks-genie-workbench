@@ -581,6 +581,48 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
     expect(markup).not.toContain("New benchmark question")
   })
 
+  it("groups mutation totals with the window meter and mutation details in Benchmark repairs", () => {
+    const added = {
+      questionId: "q-new",
+      op: "added",
+      before: null,
+      after: { question: "New benchmark question", sql: "SELECT 1" },
+      reason: "preflight_push",
+      loggedAt: null,
+    }
+    const removed = {
+      questionId: "q-old",
+      op: "removed",
+      before: { question: "Old benchmark question", sql: "SELECT 0" },
+      after: null,
+      reason: "hard_failure",
+      loggedAt: null,
+    }
+    const markup = renderToStaticMarkup(
+      <BenchmarkChangesPanel
+        runId="r"
+        changes={changes({
+          qc: qc({
+            qualityReviewStatus: "complete",
+            qualityCounts: { total: 30, trusted: 30, warnings: 0, excluded: 0, review_not_run: 0 },
+          }),
+          added: [added],
+          removed: [removed],
+          items: [added, removed],
+          counts: { added: 1, removed: 1, changed: 0, pruneRecommended: 0, total: 2 },
+        })}
+        showTitle={false}
+      />,
+    )
+
+    expect(markup).toContain("+1 added")
+    expect(markup).toContain("−1 removed")
+    expect(markup).toContain("Benchmark repairs")
+    expect(markup.indexOf("Working-set window")).toBeLessThan(markup.indexOf("+1 added"))
+    expect(markup.indexOf("+1 added")).toBeLessThan(markup.indexOf("Benchmark quality"))
+    expect(markup.indexOf("Benchmark quality")).toBeLessThan(markup.indexOf("Benchmark repairs"))
+  })
+
   it("labels complete before and after SQL for changed benchmarks", () => {
     const changed = {
       questionId: "q-existing",
