@@ -13,6 +13,8 @@ from backend.services.llm_utils import get_llm_model
 logger = logging.getLogger(__name__)
 
 _CURATED_COMPATIBLE_CHAT_MODELS: tuple[tuple[str, str], ...] = (
+    ("databricks-claude-opus-5", "Claude Opus 5"),
+    ("databricks-claude-sonnet-5", "Claude Sonnet 5"),
     ("databricks-claude-opus-4-8", "Claude Opus 4.8"),
     ("databricks-claude-opus-4-7", "Claude Opus 4.7"),
     ("databricks-claude-sonnet-4-6", "Claude Sonnet 4.6"),

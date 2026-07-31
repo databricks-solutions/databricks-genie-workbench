@@ -64,6 +64,8 @@ def test_list_chat_models_returns_curated_compatible_models(monkeypatch):
     assert "databricks-gpt-5-4-mini" not in names
     assert "databricks-gpt-5-5" not in names
     assert "databricks-gpt-5-5-pro" not in names
+    assert "databricks-claude-opus-5" in names
+    assert "databricks-claude-sonnet-5" in names
     assert "databricks-claude-opus-4-8" in names
     assert "databricks-claude-opus-4-7" in names
     assert "databricks-claude-sonnet-4-5" not in names
@@ -102,14 +104,16 @@ def test_list_chat_models_uses_default_when_curated(monkeypatch):
     assert any(m.name == "databricks-gpt-5-4" for m in models)
 
 
-def test_validate_chat_model_accepts_curated_model_without_listing():
+def test_validate_chat_model_accepts_curated_models_without_listing():
     ws = MagicMock()
     ws.serving_endpoints.list.side_effect = AssertionError("should not list")
 
-    assert (
-        model_catalog.validate_chat_model("databricks-claude-opus-4-8", client=ws)
-        == "databricks-claude-opus-4-8"
-    )
+    for model_name in (
+        "databricks-claude-opus-5",
+        "databricks-claude-sonnet-5",
+        "databricks-claude-opus-4-8",
+    ):
+        assert model_catalog.validate_chat_model(model_name, client=ws) == model_name
 
 
 def test_validate_chat_model_rejects_non_curated_model():
