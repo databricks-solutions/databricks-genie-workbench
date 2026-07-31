@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Info, Play, BarChart2 } from "lucide-react"
+import { Info, Play, BarChart2, ExternalLink, ShieldCheck, Sparkles } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { OptimizationConfig } from "@/components/auto-optimize/OptimizationConfig"
@@ -16,6 +16,7 @@ import { ResolutionActions } from "@/components/auto-optimize/ResolutionActions"
 import { BenchmarkChangesPanel } from "@/components/auto-optimize/BenchmarkChangesPanel"
 import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
 import { ResourceLinks } from "@/components/auto-optimize/ResourceLinks"
+import { RunActivitySection } from "@/components/auto-optimize/RunActivitySection"
 import {
   getAutoOptimizeHealth,
   getAutoOptimizeStatus,
@@ -429,6 +430,23 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         resolutionPublished === true ||
         (resolutionPublished == null &&
           (statusForRun?.status === "CONVERGED" || statusForRun?.status === "MAX_ITERATIONS")))
+    const legacyReason = !showTypedBanner && statusForRun
+      ? convergenceReasonText({
+          baselineScore: statusForRun.baselineScore,
+          optimizedScore: statusForRun.optimizedScore,
+          bestIteration: statusForRun.bestIteration,
+          status: statusForRun.status,
+          convergenceReason: statusForRun.convergenceReason,
+        })
+      : null
+    const hasOptimizationSurface =
+      isTerminal ||
+      benchmarkUnrepairable ||
+      showResolution ||
+      baselineAccuracy != null ||
+      bestAccuracy != null ||
+      hasAttempts ||
+      Boolean(legacyReason)
 
     return (
       <div className="space-y-4">
@@ -461,94 +479,126 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
           benchmarkUnrepairable={benchmarkUnrepairable}
         />
 
-        {/* Benchmark QC & changes — first-class surface under task 01. */}
+        {/* Task 01: benchmark QC, repair, and evaluation-set handoff. */}
         {hasBenchmarkSurface && (
-          <BenchmarkChangesPanel runId={activeRunId} changes={benchmarkChangesForRun} />
+          <RunActivitySection
+            title="Benchmark QC & Repairs"
+            description="Reviews benchmark quality, repairs eligible items, and establishes the evaluation set."
+            icon={ShieldCheck}
+          >
+            <BenchmarkChangesPanel
+              runId={activeRunId}
+              changes={benchmarkChangesForRun}
+              showTitle={false}
+            />
+          </RunActivitySection>
         )}
 
-        {/* Terminal banner — published vs nothing-published, keyed on reason.
-            Concerns are owned by the publish/audit summary below. */}
-        {(isTerminal || benchmarkUnrepairable) && (
-          <TerminalBanner
-            status={statusForRun?.status ?? null}
-            terminalReason={terminalReason}
-            published={publishRecordForRun ? publishRecordForRun.published : null}
-            publishOutcome={publishRecordForRun?.publishOutcome ?? null}
-            benchmarkUnrepairable={benchmarkUnrepairable}
-            championAccuracy={publishRecordForRun?.championAccuracy ?? bestAccuracy}
-          />
-        )}
-
-        {/* Publish/audit summary headline — LLM paragraph + concerns callout. */}
-        {isTerminal && <PublishAuditSummary publishRecord={publishRecordForRun} />}
-
-        {/* Keep / Discard-rollback affordance (auto-publish model). */}
-        {showResolution && (
-          <ResolutionActions
-            key={activeRunId}
-            runId={activeRunId}
-            status={statusForRun?.status ?? ""}
-            published={resolutionPublished}
-            onResolved={(s) =>
-              setRunStatus((prev) => (prev ? { ...prev, status: s } : prev))
-            }
-          />
-        )}
-
-        {(baselineAccuracy != null || bestAccuracy != null) && (
-          <ScoreComparisonCards
-            baselineAccuracy={baselineAccuracy}
-            optimizedAccuracy={bestAccuracy}
-          />
-        )}
-
-        {hasAttempts ? (
-          <>
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              <AttemptLadder
-                baselineAccuracy={baselineAccuracy}
-                attempts={attempts}
-                targetUnit={targetUnit}
-              />
-              <AttemptLedger
-                baselineAccuracy={baselineAccuracy}
-                attempts={attempts}
-                baselineIsChampion={baselineIsChampion}
-              />
-            </div>
-            {!isTerminal && (
-              <CurrentAttemptStrip
-                attempt={latestAttempt}
-                residualFailureCount={null}
-                lastCommitAt={lastCommitAt}
-                isLive={!isTerminal}
+        {/* Tasks 02–04: evaluation, optimization attempts, and publish outcome. */}
+        {hasOptimizationSurface && (
+          <RunActivitySection
+            title="Optimization"
+            description="Compares attempts, selects the champion, and records the configuration patches."
+            icon={Sparkles}
+          >
+            {/* Terminal banner — published vs nothing-published, keyed on reason.
+                Concerns are owned by the publish/audit summary below. */}
+            {(isTerminal || benchmarkUnrepairable) && (
+              <TerminalBanner
+                status={statusForRun?.status ?? null}
+                terminalReason={terminalReason}
+                published={publishRecordForRun ? publishRecordForRun.published : null}
+                publishOutcome={publishRecordForRun?.publishOutcome ?? null}
+                benchmarkUnrepairable={benchmarkUnrepairable}
+                championAccuracy={publishRecordForRun?.championAccuracy ?? bestAccuracy}
               />
             )}
-            <PatchesTable
-              key={`${activeRunId}:${attempts.length}`}
-              runId={activeRunId}
-              iterations={iterations}
-            />
-          </>
-        ) : null}
 
-        {runDetailForRun?.links && runDetailForRun.links.length > 0 && (
-          <ResourceLinks links={runDetailForRun.links} />
+            {/* Publish/audit summary headline — LLM paragraph + concerns callout. */}
+            {isTerminal && <PublishAuditSummary publishRecord={publishRecordForRun} />}
+
+            {/* Keep / Discard-rollback affordance (auto-publish model). */}
+            {showResolution && (
+              <ResolutionActions
+                key={activeRunId}
+                runId={activeRunId}
+                status={statusForRun?.status ?? ""}
+                published={resolutionPublished}
+                onResolved={(s) =>
+                  setRunStatus((prev) => (prev ? { ...prev, status: s } : prev))
+                }
+              />
+            )}
+
+            {(baselineAccuracy != null || bestAccuracy != null) && (
+              <ScoreComparisonCards
+                baselineAccuracy={baselineAccuracy}
+                optimizedAccuracy={bestAccuracy}
+              />
+            )}
+
+            {hasAttempts ? (
+              <>
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <AttemptLadder
+                    baselineAccuracy={baselineAccuracy}
+                    attempts={attempts}
+                    targetUnit={targetUnit}
+                  />
+                  <AttemptLedger
+                    baselineAccuracy={baselineAccuracy}
+                    attempts={attempts}
+                    baselineIsChampion={baselineIsChampion}
+                  />
+                </div>
+                {!isTerminal && (
+                  <CurrentAttemptStrip
+                    attempt={latestAttempt}
+                    residualFailureCount={null}
+                    lastCommitAt={lastCommitAt}
+                    isLive={!isTerminal}
+                  />
+                )}
+                <PatchesTable
+                  key={`${activeRunId}:${attempts.length}`}
+                  runId={activeRunId}
+                  iterations={iterations}
+                />
+              </>
+            ) : null}
+
+            {legacyReason && <p className="text-sm text-muted">Reason: {legacyReason}</p>}
+
+            {/* Re-scan prompt when run reaches terminal state */}
+            {isTerminal && onRescan && (
+              <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-primary">Optimization complete</h3>
+                  <p className="text-xs text-muted mt-0.5">
+                    Re-scan to see how your IQ score has changed.
+                  </p>
+                </div>
+                <button
+                  onClick={onRescan}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
+                >
+                  <BarChart2 className="w-3.5 h-3.5" />
+                  Re-scan IQ Score
+                </button>
+              </div>
+            )}
+          </RunActivitySection>
         )}
 
-        {/* Legacy / free-text convergence reason — only when no typed banner */}
-        {!showTypedBanner && statusForRun && (() => {
-          const reason = convergenceReasonText({
-            baselineScore: statusForRun.baselineScore,
-            optimizedScore: statusForRun.optimizedScore,
-            bestIteration: statusForRun.bestIteration,
-            status: statusForRun.status,
-            convergenceReason: statusForRun.convergenceReason,
-          })
-          return reason ? (
-            <p className="text-sm text-muted">Reason: {reason}</p>
-          ) : null
-        })()}
+        {runDetailForRun?.links && runDetailForRun.links.length > 0 && (
+          <RunActivitySection
+            title="Databricks Resources"
+            description="Open the Genie Agent and workflow artifacts associated with this run."
+            icon={ExternalLink}
+          >
+            <ResourceLinks links={runDetailForRun.links} showHeading={false} />
+          </RunActivitySection>
+        )}
 
         {/* Footer */}
         {!isTerminal && (
@@ -557,24 +607,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
           </div>
         )}
 
-        {/* Re-scan prompt when run reaches terminal state */}
-        {isTerminal && onRescan && (
-          <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3">
-            <div>
-              <h3 className="text-sm font-semibold text-primary">Optimization complete</h3>
-              <p className="text-xs text-muted mt-0.5">
-                Re-scan to see how your IQ score has changed.
-              </p>
-            </div>
-            <button
-              onClick={onRescan}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
-            >
-              <BarChart2 className="w-3.5 h-3.5" />
-              Re-scan IQ Score
-            </button>
-          </div>
-        )}
       </div>
     )
   }

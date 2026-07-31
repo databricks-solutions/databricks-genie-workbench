@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, ExternalLink, ShieldCheck, Sparkles } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { ScoreSummary } from "@/components/auto-optimize/ScoreSummary"
 import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
@@ -9,6 +9,7 @@ import { PatchesTable } from "@/components/auto-optimize/PatchesTable"
 import { ResourceLinks } from "@/components/auto-optimize/ResourceLinks"
 import { AttemptLadder } from "@/components/auto-optimize/AttemptLadder"
 import { AttemptLedger } from "@/components/auto-optimize/AttemptLedger"
+import { RunActivitySection } from "@/components/auto-optimize/RunActivitySection"
 import {
   getAutoOptimizeRun,
   getAutoOptimizeIterations,
@@ -113,52 +114,71 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         </div>
       </div>
 
-      {/* Publish/audit summary headline (LLM paragraph + concerns). */}
-      <PublishAuditSummary publishRecord={publishRecord} />
+      <RunActivitySection
+        title="Benchmark QC & Repairs"
+        description="Reviews benchmark quality, repairs eligible items, and establishes the evaluation set."
+        icon={ShieldCheck}
+      >
+        <BenchmarkChangesPanel runId={runId} showTitle={false} />
+      </RunActivitySection>
 
-      {/* Keep / Discard-rollback affordance (auto-publish model). */}
-      {showResolution && (
-        <ResolutionActions
-          key={runId}
-          runId={runId}
+      <RunActivitySection
+        title="Optimization"
+        description="Compares attempts, selects the champion, and records the configuration patches."
+        icon={Sparkles}
+      >
+        {/* Publish/audit summary headline (LLM paragraph + concerns). */}
+        <PublishAuditSummary publishRecord={publishRecord} />
+
+        {/* Keep / Discard-rollback affordance (auto-publish model). */}
+        {showResolution && (
+          <ResolutionActions
+            key={runId}
+            runId={runId}
+            status={run.status}
+            published={resolutionPublished}
+            onResolved={(s) => setRun((prev) => (prev ? { ...prev, status: s } : prev))}
+          />
+        )}
+
+        <ScoreSummary
+          baselineScore={run.baselineScore}
+          optimizedScore={run.optimizedScore}
+          bestIteration={run.bestIteration}
           status={run.status}
-          published={resolutionPublished}
-          onResolved={(s) => setRun((prev) => (prev ? { ...prev, status: s } : prev))}
+          needsReviewCount={needsReviewCount}
         />
+
+        {/* Attempt Ladder + Ledger — the per-attempt staircase and decision ledger
+            from the 03_optimize controller loop-state. Guarded by hasAttempts so
+            legacy 6-step runs (no loop-state) render nothing. */}
+        {hasAttempts && (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <AttemptLadder
+              baselineAccuracy={run.baselineScore}
+              attempts={attempts}
+              targetUnit={targetUnit}
+            />
+            <AttemptLedger
+              baselineAccuracy={run.baselineScore}
+              attempts={attempts}
+              baselineIsChampion={baselineIsChampion}
+            />
+          </div>
+        )}
+
+        <PatchesTable runId={runId} iterations={iterations} />
+      </RunActivitySection>
+
+      {run.links.length > 0 && (
+        <RunActivitySection
+          title="Databricks Resources"
+          description="Open the Genie Agent and workflow artifacts associated with this run."
+          icon={ExternalLink}
+        >
+          <ResourceLinks links={run.links} showHeading={false} />
+        </RunActivitySection>
       )}
-
-      <ScoreSummary
-        baselineScore={run.baselineScore}
-        optimizedScore={run.optimizedScore}
-        bestIteration={run.bestIteration}
-        status={run.status}
-        needsReviewCount={needsReviewCount}
-      />
-
-      {/* Attempt Ladder + Ledger — the per-attempt staircase and decision ledger
-          from the 03_optimize controller loop-state. Guarded by hasAttempts so
-          legacy 6-step runs (no loop-state) render nothing. */}
-      {hasAttempts && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <AttemptLadder
-            baselineAccuracy={run.baselineScore}
-            attempts={attempts}
-            targetUnit={targetUnit}
-          />
-          <AttemptLedger
-            baselineAccuracy={run.baselineScore}
-            attempts={attempts}
-            baselineIsChampion={baselineIsChampion}
-          />
-        </div>
-      )}
-
-      {/* Benchmark QC & changes — first-class surface under task 01. */}
-      <BenchmarkChangesPanel runId={runId} />
-
-      <PatchesTable runId={runId} iterations={iterations} />
-
-      {run.links.length > 0 && <ResourceLinks links={run.links} />}
     </div>
   )
 }

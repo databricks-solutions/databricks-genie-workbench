@@ -8,6 +8,7 @@ import type { GSOResourceLink } from "@/types"
 
 interface ResourceLinksProps {
   links: GSOResourceLink[]
+  showHeading?: boolean
 }
 
 const categoryConfig: Record<string, {
@@ -40,7 +41,7 @@ const categoryConfig: Record<string, {
   },
 }
 
-export function ResourceLinks({ links }: ResourceLinksProps) {
+export function ResourceLinks({ links, showHeading = true }: ResourceLinksProps) {
   if (!links.length) return null
 
   const grouped = links.reduce<Record<string, GSOResourceLink[]>>((acc, link) => {
@@ -59,10 +60,12 @@ export function ResourceLinks({ links }: ResourceLinksProps) {
 
   return (
     <div className="space-y-3">
-      <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
-        <ExternalLink className="h-3.5 w-3.5" />
-        Databricks Resources
-      </h3>
+      {showHeading && (
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+          <ExternalLink className="h-3.5 w-3.5" />
+          Databricks Resources
+        </h3>
+      )}
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {sortedCategories.map((cat) => {

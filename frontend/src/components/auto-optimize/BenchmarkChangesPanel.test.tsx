@@ -52,6 +52,7 @@ describe("BenchmarkChangesPanel policy and gate summary", () => {
       />,
     )
 
+    expect(markup).toContain("Benchmark QC &amp; Repairs")
     expect(markup).toContain("Review only · live benchmarks preserved")
     expect(markup).toContain("Optimization was skipped")
     expect(markup).toContain("at least 15 are required")

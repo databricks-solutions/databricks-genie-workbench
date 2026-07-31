@@ -25,6 +25,8 @@ interface BenchmarkChangesPanelProps {
    * (the live cockpit already polls ``/benchmark-changes`` for the rail chip).
    */
   changes?: GSOBenchmarkChanges | null
+  /** Hide the card title when a run-level activity divider labels the panel. */
+  showTitle?: boolean
 }
 
 // The documented working-set window (D8 / §3.5): 30–40 questions.
@@ -38,7 +40,11 @@ const DEFAULT_WINDOW_MAX = 40
  * window meter + the bounded repair-tries indicator. Promoted out of the buried
  * PipelineDetailsModal tab to a first-class surface under task 01.
  */
-export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkChangesPanelProps) {
+export function BenchmarkChangesPanel({
+  runId,
+  changes: provided,
+  showTitle = true,
+}: BenchmarkChangesPanelProps) {
   const [fetched, setFetched] = useState<GSOBenchmarkChanges | null>(null)
   const [loading, setLoading] = useState(provided === undefined)
 
@@ -66,7 +72,7 @@ export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkCha
 
   if (loading) {
     return (
-      <PanelShell>
+      <PanelShell showTitle={showTitle}>
         <p className="text-sm text-muted animate-pulse text-center py-6">Loading benchmark changes…</p>
       </PanelShell>
     )
@@ -74,7 +80,7 @@ export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkCha
 
   if (!qc && total === 0) {
     return (
-      <PanelShell>
+      <PanelShell showTitle={showTitle}>
         <p className="text-sm text-muted text-center py-6">
           GSO made no changes to this agent's benchmark set.
         </p>
@@ -83,7 +89,7 @@ export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkCha
   }
 
   return (
-    <PanelShell counts={changes?.counts}>
+    <PanelShell counts={changes?.counts} showTitle={showTitle}>
       {qc && <QcMeter qc={qc} />}
       {qc && <BenchmarkQuality qc={qc} />}
 
@@ -134,30 +140,38 @@ export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkCha
 function PanelShell({
   children,
   counts,
+  showTitle = true,
 }: {
   children: React.ReactNode
   counts?: GSOBenchmarkChanges["counts"]
+  showTitle?: boolean
 }) {
+  const showHeader = showTitle || Boolean(counts && counts.total > 0)
+
   return (
     <div className="rounded-xl border border-default p-6 space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-primary">Benchmark Changes</h3>
-        {counts && counts.total > 0 && (
-          <div className="flex items-center gap-1.5 text-xs text-muted">
-            <span className="text-emerald-500">+{counts.added} added</span>
-            <span>·</span>
-            <span className="text-red-400">−{counts.removed} removed</span>
-            <span>·</span>
-            <span className="text-blue-400">{counts.changed} changed</span>
-            {counts.pruneRecommended > 0 && (
-              <>
-                <span>·</span>
-                <span className="text-amber-500">{counts.pruneRecommended} prune-recommended</span>
-              </>
-            )}
-          </div>
-        )}
-      </div>
+      {showHeader && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {showTitle && (
+            <h3 className="text-sm font-semibold text-primary">Benchmark QC &amp; Repairs</h3>
+          )}
+          {counts && counts.total > 0 && (
+            <div className={`flex items-center gap-1.5 text-xs text-muted ${showTitle ? "" : "ml-auto"}`}>
+              <span className="text-emerald-500">+{counts.added} added</span>
+              <span>·</span>
+              <span className="text-red-400">−{counts.removed} removed</span>
+              <span>·</span>
+              <span className="text-blue-400">{counts.changed} changed</span>
+              {counts.pruneRecommended > 0 && (
+                <>
+                  <span>·</span>
+                  <span className="text-amber-500">{counts.pruneRecommended} prune-recommended</span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {children}
     </div>
   )
