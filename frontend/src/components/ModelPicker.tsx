@@ -73,7 +73,7 @@ export function ModelPicker({
         {loading ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
         ) : error ? (
-          <AlertTriangle className="h-3.5 w-3.5 text-warning" />
+          <AlertTriangle className="h-3.5 w-3.5 text-warning-foreground" />
         ) : (
           <Bot className="h-3.5 w-3.5 text-accent" />
         )}
@@ -105,7 +105,7 @@ export function ModelPicker({
         <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
       </div>
       {helper && <div className="text-xs text-muted leading-relaxed">{helper}</div>}
-      {error && <div className="text-xs text-warning">{error}</div>}
+      {error && <div className="text-xs text-warning-foreground">{error}</div>}
     </div>
   )
 }
@@ -162,7 +162,7 @@ export function ChatModelMenu({
         {loading ? (
           <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-accent" />
         ) : error ? (
-          <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 text-warning" />
+          <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 text-warning-foreground" />
         ) : (
           <Bot className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
         )}
@@ -177,7 +177,7 @@ export function ChatModelMenu({
         >
           <div className="px-2.5 py-2 text-xs font-medium text-muted">Model</div>
           {error ? (
-            <div className="px-2.5 pb-2 text-xs text-warning">{error}</div>
+            <div className="px-2.5 pb-2 text-xs text-warning-foreground">{error}</div>
           ) : models.length === 0 ? (
             <div className="px-2.5 pb-2 text-xs text-muted">No chat models found</div>
           ) : (

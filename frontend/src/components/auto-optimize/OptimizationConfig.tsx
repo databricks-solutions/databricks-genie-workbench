@@ -1,6 +1,6 @@
 import { useState } from "react"
 import type { LucideIcon } from "lucide-react"
-import { AlertTriangle, Database, ListChecks, Rocket, Target } from "lucide-react"
+import { AlertTriangle, Database, ListChecks, Rocket, Settings2, Target } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { triggerAutoOptimize } from "@/lib/api"
@@ -41,8 +41,7 @@ const DEFAULT_TARGET_PERCENT = "90"
 const DEFAULT_MAX_ATTEMPTS = "3"
 const MAX_WORKLOAD_WAREHOUSES = 20
 
-// Shared pillar header — icon + label, matching ModelPicker's own label row so
-// all three columns read as equal choices (previously only Model had an icon).
+// Shared section header for the two configuration columns and their subsections.
 function PillarHeader({ icon: Icon, children }: { icon: LucideIcon; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-1.5 text-xs font-medium text-muted">
@@ -115,21 +114,17 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
         <CardTitle>Optimization Configuration</CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* Three equal pillars — scope · model · stopping criteria — separated
-            by hairline dividers. Column gap comes from symmetric per-column
-            padding (not grid `gap`) so content always clears the divider on
-            both sides; the first column only needs right-inset since its left
-            edge aligns with the card padding. */}
-        <div className="grid grid-cols-1 gap-y-8 lg:grid-cols-3 lg:divide-x lg:divide-default">
-          {/* Pillar 1 — Optimization scope (lever checkboxes) */}
-          <div className="space-y-2 lg:pr-8">
-            <PillarHeader icon={ListChecks}>Optimization scope</PillarHeader>
-            <p className="text-xs text-muted">
-              Select which levers the optimizer may use when proposing targeted patch sets.
-            </p>
-            <div className="space-y-1.5 pt-1">
+        <div className="grid grid-cols-1 gap-y-8 lg:grid-cols-2 lg:divide-x lg:divide-default">
+          <div className="space-y-4 lg:pr-8">
+            <div className="space-y-2">
+              <PillarHeader icon={ListChecks}>Optimization Scope</PillarHeader>
+              <p className="text-xs text-muted">
+                Select which changes the optimizer may make during this run.
+              </p>
+            </div>
+            <div className="space-y-1.5">
               {LEVERS.map((lever) => (
-                <label key={lever.id} className="flex items-start gap-2 cursor-pointer">
+                <label key={lever.id} className="flex cursor-pointer items-start gap-2">
                   <Checkbox
                     checked={selectedLevers.has(lever.id)}
                     onCheckedChange={() => toggleLever(lever.id)}
@@ -142,175 +137,183 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
                 </label>
               ))}
             </div>
+
+            <div className="border-t border-default pt-4">
+              <label className="flex cursor-pointer items-start gap-2">
+                <Checkbox
+                  checked={allowBenchmarkRepair}
+                  onCheckedChange={(checked) => setAllowBenchmarkRepair(checked === true)}
+                  disabled={loading || hasActiveRun}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-primary">
+                    Allow GSO to repair and add benchmarks
+                  </span>
+                  <span className="mt-0.5 block text-xs text-muted">
+                    Off by default. GSO reviews existing benchmarks without changing them and optimizes only against the valid subset. If fewer than the required minimum remain, optimization is skipped.
+                  </span>
+                  {allowBenchmarkRepair && (
+                    <span className="mt-2 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      This run may add benchmarks or update benchmark SQL in the live Genie Agent.
+                    </span>
+                  )}
+                </span>
+              </label>
+            </div>
           </div>
 
-          {/* Pillar 2 — Model (ModelPicker renders its own matching Bot + label) */}
-          <div className="lg:px-8">
+          <div className="space-y-6 lg:pl-8">
+            <div className="space-y-2">
+              <PillarHeader icon={Settings2}>Optimization Config</PillarHeader>
+              <p className="text-xs text-muted">
+                Choose the model and the limits that determine when optimization stops.
+              </p>
+            </div>
+
             <ModelPicker
               value={selectedModel}
               onChange={setSelectedModel}
               disabled={loading || hasActiveRun}
+              label="Model selection"
               className="w-full"
               helper="We recommend Claude Opus, Claude Sonnet, or compatible GPT models for the most reliable optimization results."
             />
-          </div>
 
-          {/* Pillar 3 — Stopping criteria. pl only: last column's right edge
-              aligns with the card padding, so no right-inset needed. */}
-          <div className="space-y-3 lg:pl-8">
-            <div className="space-y-2">
-              <PillarHeader icon={Target}>Stopping criteria</PillarHeader>
-              <p className="text-xs text-muted">
-                The run stops at whichever comes first: reaching the target accuracy, exhausting the patch attempts, or finding no safe new hypothesis.
-              </p>
-            </div>
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                <label htmlFor="gso-target-accuracy" className="block text-xs font-medium text-muted">
-                  Target accuracy
-                </label>
-                <div className="relative w-28">
-                  <input
-                    id="gso-target-accuracy"
-                    type="number"
-                    min={80}
-                    max={100}
-                    step={1}
-                    value={targetPercent}
-                    onChange={(e) => setTargetPercent(e.target.value)}
-                    disabled={loading || hasActiveRun}
-                    className="h-9 w-full rounded-lg border border-default bg-surface px-3 pr-7 text-sm text-primary shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
-                  />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted">%</span>
-                </div>
-                <p className="text-xs text-muted">Stop early once a candidate reaches this accuracy.</p>
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="gso-max-attempts" className="block text-xs font-medium text-muted">
-                  Max patch attempts
-                </label>
-                <input
-                  id="gso-max-attempts"
-                  type="number"
-                  min={1}
-                  max={10}
-                  step={1}
-                  value={maxAttemptsInput}
-                  onChange={(e) => setMaxAttemptsInput(e.target.value)}
-                  disabled={loading || hasActiveRun}
-                  className="h-9 w-20 rounded-lg border border-default bg-surface px-3 text-sm text-primary shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
-                />
+            <div className="space-y-3 border-t border-default pt-5">
+              <div className="space-y-2">
+                <PillarHeader icon={Target}>Stopping criteria</PillarHeader>
                 <p className="text-xs text-muted">
-                  Caps the bounded patch/eval loop inside the Optimize task.
+                  The run stops at whichever comes first: reaching the target accuracy, exhausting the patch attempts, or finding no safe new hypothesis.
                 </p>
               </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label htmlFor="gso-target-accuracy" className="block text-xs font-medium text-muted">
+                    Target accuracy
+                  </label>
+                  <div className="relative w-28">
+                    <input
+                      id="gso-target-accuracy"
+                      type="number"
+                      min={80}
+                      max={100}
+                      step={1}
+                      value={targetPercent}
+                      onChange={(e) => setTargetPercent(e.target.value)}
+                      disabled={loading || hasActiveRun}
+                      className="h-9 w-full rounded-lg border border-default bg-surface px-3 pr-7 text-sm text-primary shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+                    />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted">%</span>
+                  </div>
+                  <p className="text-xs text-muted">Stop early once a candidate reaches this accuracy.</p>
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="gso-max-attempts" className="block text-xs font-medium text-muted">
+                    Max patch attempts
+                  </label>
+                  <input
+                    id="gso-max-attempts"
+                    type="number"
+                    min={1}
+                    max={10}
+                    step={1}
+                    value={maxAttemptsInput}
+                    onChange={(e) => setMaxAttemptsInput(e.target.value)}
+                    disabled={loading || hasActiveRun}
+                    className="h-9 w-20 rounded-lg border border-default bg-surface px-3 text-sm text-primary shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                  <p className="text-xs text-muted">
+                    Caps the bounded patch/eval loop inside the Optimize task.
+                  </p>
+                </div>
+              </div>
+              {!knobsValid && (
+                <p className="text-xs text-danger">
+                  Enter a target accuracy between 80–100% and a max attempts of 1 or more.
+                </p>
+              )}
             </div>
-            {!knobsValid && (
-              <p className="text-xs text-danger">
-                Enter a target accuracy between 80–100% and a max attempts of 1 or more.
-              </p>
-            )}
           </div>
         </div>
 
-        <div className="rounded-lg border border-default bg-surface-subtle px-4 py-3">
-          <label className="flex cursor-pointer items-start gap-3">
-            <Checkbox
-              checked={allowBenchmarkRepair}
-              onCheckedChange={(checked) => setAllowBenchmarkRepair(checked === true)}
-              disabled={loading || hasActiveRun}
-              className="mt-0.5"
-            />
-            <span>
-              <span className="block text-sm font-medium text-primary">
-                Allow GSO to repair and add benchmarks
-              </span>
-              <span className="mt-0.5 block text-xs text-muted">
-                Off by default. GSO will review existing benchmarks without changing them and optimize only against the valid subset. If fewer than the required minimum remain, optimization is skipped.
-              </span>
-              {allowBenchmarkRepair && (
-                <span className="mt-2 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  This run may add benchmarks or update benchmark SQL in the live Genie Agent.
-                </span>
-              )}
-            </span>
-          </label>
-        </div>
-
-        {/* Alerts + launch — a full-width footer separated by a hairline so the
-            CTA reads as the form's conclusion, not an orphan under one column. */}
-        <div className="space-y-4 border-t border-default pt-4">
-          {permissions?.query_usage_signal && (
-            <div className="rounded-lg border border-default bg-surface-subtle px-4 py-3 space-y-3">
-              <div className="flex items-center gap-2 text-sm font-medium text-primary">
-                <Database className="h-4 w-4 text-accent" />
-                Query usage signal
-              </div>
-              {permissions.query_usage_signal.system_table_available ? (
-                <p className="text-xs text-muted">System query history available. GSO will use aggregated human-query behavior for column ranking.</p>
-              ) : permissions.query_usage_signal.warehouses.length > 0 ? (
-                <>
-                  <p className="text-xs text-muted">
-                    {permissions.query_usage_signal.status === "partially_available"
-                      ? `Partially available. CAN VIEW is still needed for: ${permissions.query_usage_signal.inaccessible_warehouses.join(", ")}.`
-                      : permissions.query_usage_signal.warehouse_api_available
-                        ? "Warehouse query history available."
-                        : "Warehouse query history unavailable until CAN VIEW is granted."}
-                    {" "}Optionally select representative workload warehouses; missing access never blocks optimization.
-                  </p>
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {permissions.query_usage_signal.warehouses.map((warehouse) => (
-                      <label key={warehouse.warehouse_id} className="flex items-center gap-2 text-xs text-primary">
-                        <Checkbox
-                          checked={workloadWarehouseIds.has(warehouse.warehouse_id)}
-                          onCheckedChange={() => setWorkloadWarehouseIds((previous) => {
-                            const next = new Set(previous)
-                            if (next.has(warehouse.warehouse_id)) next.delete(warehouse.warehouse_id)
-                            else if (next.size < MAX_WORKLOAD_WAREHOUSES) next.add(warehouse.warehouse_id)
-                            return next
-                          })}
-                          disabled={loading || hasActiveRun}
-                        />
-                        <span className="truncate" title={warehouse.name}>
-                          {warehouse.name}{warehouse.accessible ? "" : " (CAN VIEW needed)"}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                  <p className="text-xs text-muted">
-                    The GSO service principal needs CAN VIEW on each selected warehouse: <span className="font-mono">{permissions.sp_application_id || permissions.sp_display_name}</span>.
-                  </p>
-                  {permissions.query_usage_signal.warehouses.some(
-                    (warehouse) => workloadWarehouseIds.has(warehouse.warehouse_id) && !warehouse.accessible,
-                  ) && (
-                    <textarea
-                      readOnly
-                      aria-label="Warehouse query history permission instructions"
-                      value={permissions.query_usage_signal.warehouses
-                        .filter((warehouse) => workloadWarehouseIds.has(warehouse.warehouse_id) && !warehouse.accessible)
-                        .map((warehouse) => `Grant CAN VIEW on SQL warehouse "${warehouse.name}" to service principal "${permissions.sp_application_id || permissions.sp_display_name}".`)
-                        .join("\n")}
-                      className="min-h-20 w-full resize-y rounded-md border border-default bg-surface p-2 font-mono text-xs text-primary"
-                    />
-                  )}
-                </>
-              ) : (
-                <p className="text-xs text-muted">Query history unavailable. GSO will continue with configuration, benchmark, and metadata evidence.</p>
-              )}
-              {!permissions.query_usage_signal.system_table_available && permissions.query_usage_signal.system_grant_sql && (
-                <details className="text-xs text-muted">
-                  <summary className="cursor-pointer font-medium text-primary">System query history grants</summary>
+        {permissions && (
+          <div className="space-y-3 rounded-lg border border-default bg-surface-subtle px-4 py-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-primary">
+              <Database className="h-4 w-4 text-accent" />
+              Query usage signal
+            </div>
+            {permissions.query_usage_signal?.system_table_available ? (
+              <p className="text-xs text-muted">System query history available. GSO will use aggregated human-query behavior for column ranking.</p>
+            ) : permissions.query_usage_signal && permissions.query_usage_signal.warehouses.length > 0 ? (
+              <>
+                <p className="text-xs text-muted">
+                  {permissions.query_usage_signal.status === "partially_available"
+                    ? `Partially available. CAN VIEW is still needed for: ${permissions.query_usage_signal.inaccessible_warehouses.join(", ")}.`
+                    : permissions.query_usage_signal.warehouse_api_available
+                      ? "Warehouse query history available."
+                      : "Warehouse query history unavailable until CAN VIEW is granted."}
+                  {" "}Optionally select representative workload warehouses; missing access never blocks optimization.
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {permissions.query_usage_signal.warehouses.map((warehouse) => (
+                    <label key={warehouse.warehouse_id} className="flex items-center gap-2 text-xs text-primary">
+                      <Checkbox
+                        checked={workloadWarehouseIds.has(warehouse.warehouse_id)}
+                        onCheckedChange={() => setWorkloadWarehouseIds((previous) => {
+                          const next = new Set(previous)
+                          if (next.has(warehouse.warehouse_id)) next.delete(warehouse.warehouse_id)
+                          else if (next.size < MAX_WORKLOAD_WAREHOUSES) next.add(warehouse.warehouse_id)
+                          return next
+                        })}
+                        disabled={loading || hasActiveRun}
+                      />
+                      <span className="truncate" title={warehouse.name}>
+                        {warehouse.name}{warehouse.accessible ? "" : " (CAN VIEW needed)"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-muted">
+                  The GSO service principal needs CAN VIEW on each selected warehouse: <span className="font-mono">{permissions.sp_application_id || permissions.sp_display_name}</span>.
+                </p>
+                {permissions.query_usage_signal.warehouses.some(
+                  (warehouse) => workloadWarehouseIds.has(warehouse.warehouse_id) && !warehouse.accessible,
+                ) && (
                   <textarea
                     readOnly
-                    value={permissions.query_usage_signal.system_grant_sql}
-                    aria-label="System query history grants"
-                    className="mt-2 min-h-24 w-full resize-y rounded-md border border-default bg-surface p-2 font-mono text-xs text-primary"
+                    aria-label="Warehouse query history permission instructions"
+                    value={permissions.query_usage_signal.warehouses
+                      .filter((warehouse) => workloadWarehouseIds.has(warehouse.warehouse_id) && !warehouse.accessible)
+                      .map((warehouse) => `Grant CAN VIEW on SQL warehouse "${warehouse.name}" to service principal "${permissions.sp_application_id || permissions.sp_display_name}".`)
+                      .join("\n")}
+                    className="min-h-20 w-full resize-y rounded-md border border-default bg-surface p-2 font-mono text-xs text-primary"
                   />
-                </details>
-              )}
-            </div>
-          )}
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-muted">
+                Query usage is unavailable. Optimization will still run; GSO skips query-history-based ranking and relies on configuration, benchmark, metadata, and local profiling evidence.
+              </p>
+            )}
+            {!permissions.query_usage_signal?.system_table_available && permissions.query_usage_signal?.system_grant_sql && (
+              <details className="text-xs text-muted">
+                <summary className="cursor-pointer font-medium text-primary">System query history grants</summary>
+                <textarea
+                  readOnly
+                  value={permissions.query_usage_signal.system_grant_sql}
+                  aria-label="System query history grants"
+                  className="mt-2 min-h-24 w-full resize-y rounded-md border border-default bg-surface p-2 font-mono text-xs text-primary"
+                />
+              </details>
+            )}
+          </div>
+        )}
+
+        {/* Alerts + launch — a full-width footer separated by a hairline so the
+            CTA reads as the form's conclusion. */}
+        <div className="space-y-4 border-t border-default pt-4">
           {/* Health Issues */}
           {hasHealthIssues && (
             <div className="rounded-lg bg-danger/10 border border-danger/20 px-4 py-3 space-y-1">

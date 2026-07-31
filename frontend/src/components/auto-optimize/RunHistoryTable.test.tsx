@@ -16,6 +16,7 @@ import {
   HistoryIncompleteBanner,
   LiveVersionBadge,
   RevertOptionsButton,
+  RunMetadataCell,
 } from "./RunHistoryTable"
 import { hasActiveOptimizationRun, hasRevertibleChampion } from "./runHistory"
 
@@ -94,6 +95,23 @@ describe("BenchmarkPolicyCell", () => {
     )
     expect(repair).toContain("Repair allowed")
     expect(repair).toContain("2 live changes")
+  })
+})
+
+describe("RunMetadataCell", () => {
+  it("groups the run date, model, and triggering user", () => {
+    const markup = renderToStaticMarkup(
+      <RunMetadataCell run={run({
+        llm_model: "databricks-claude-sonnet-4-6",
+        triggered_by: "optimizer@example.com",
+      })} />,
+    )
+
+    expect(markup).toContain("Jul")
+    expect(markup).toContain("Model:")
+    expect(markup).toContain("databricks-claude-sonnet-4-6")
+    expect(markup).toContain("Triggered by:")
+    expect(markup).toContain("optimizer@example.com")
   })
 })
 

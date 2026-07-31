@@ -108,7 +108,7 @@ export function PermissionDiagram({ className }: { className?: string }) {
                     </span>
                   )}
                   {row.identity === "both" && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2.5 py-0.5 text-xs font-medium text-warning">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2.5 py-0.5 text-xs font-medium text-warning-foreground">
                       OBO → SP
                     </span>
                   )}

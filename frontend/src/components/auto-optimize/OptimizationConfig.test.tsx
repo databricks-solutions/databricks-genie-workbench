@@ -21,8 +21,12 @@ describe("OptimizationConfig lever scope", () => {
       />,
     )
 
-    expect(markup).toContain("Optimization scope")
-    expect(markup).toContain("targeted patch sets")
+    expect(markup).toContain("Optimization Scope")
+    expect(markup).toContain("Select which changes the optimizer may make")
+    expect(markup).toContain("Optimization Config")
+    expect(markup).toContain("Model selection")
+    expect(markup).toContain("lg:grid-cols-2")
+    expect(markup).not.toContain("lg:grid-cols-3")
     expect(markup).not.toContain("Coverage pass")
     expect(markup).not.toContain("Surgical optimization scope")
 
@@ -49,6 +53,37 @@ describe("OptimizationConfig lever scope", () => {
     // Defaults reflect the job defaults (0.90 -> 90%, 3 attempts).
     expect(markup).toContain('value="90"')
     expect(markup).toContain('value="3"')
+  })
+
+  it("explains the non-blocking fallback when query usage is unavailable", () => {
+    const markup = renderToStaticMarkup(
+      <OptimizationConfig
+        spaceId="space-1"
+        onStarted={() => {}}
+        hasActiveRun={false}
+        permissions={{
+          sp_display_name: "gso-service-principal",
+          sp_application_id: "application-id",
+          sp_has_manage: true,
+          schemas: [],
+          can_start: true,
+          errors: [],
+          query_usage_signal: {
+            status: "unavailable",
+            system_table_available: false,
+            warehouse_api_available: false,
+            warehouses: [],
+            inaccessible_warehouses: [],
+            system_grant_sql: null,
+          },
+        }}
+        permsLoading={false}
+      />,
+    )
+
+    expect(markup).toContain("Query usage signal")
+    expect(markup).toContain("Optimization will still run")
+    expect(markup).toContain("local profiling evidence")
   })
 })
 

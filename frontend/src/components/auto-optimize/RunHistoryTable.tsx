@@ -131,13 +131,11 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Date</TableHead>
+                <TableHead>Run</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Outcome</TableHead>
                 <TableHead>Champion accuracy</TableHead>
                 <TableHead>Benchmark handling</TableHead>
-                <TableHead>Model</TableHead>
-                <TableHead>Triggered By</TableHead>
                 <TableHead>Details</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
@@ -145,18 +143,10 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
             <TableBody>
               {runs.map((run) => (
                 <TableRow key={run.run_id}>
-                  <TableCell className="text-sm">
-                    {run.started_at
-                      ? new Date(run.started_at).toLocaleDateString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })
-                      : "—"}
+                  <TableCell className="align-top">
+                    <RunMetadataCell run={run} />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="align-top">
                     <div className="flex flex-col items-start gap-1">
                       <Badge variant={STATUS_VARIANT[run.status] ?? "secondary"}>
                         {run.status}
@@ -170,24 +160,18 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                     </div>
                   </TableCell>
                   <TableCell
-                    className="text-sm text-muted max-w-[14rem] truncate"
+                    className="max-w-[14rem] truncate align-top text-sm text-muted"
                     title={humanizeTerminalReason(run.terminal_reason, run.convergence_reason)}
                   >
                     {humanizeTerminalReason(run.terminal_reason, run.convergence_reason)}
                   </TableCell>
-                  <TableCell className="text-sm">
+                  <TableCell className="align-top text-sm">
                     {championAccuracyText(run.best_accuracy)}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="align-top">
                     <BenchmarkPolicyCell run={run} />
                   </TableCell>
-                  <TableCell className="text-sm text-muted max-w-[12rem] truncate" title={run.llm_model ?? undefined}>
-                    {run.llm_model ?? "—"}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted">
-                    {run.triggered_by ?? "—"}
-                  </TableCell>
-                  <TableCell>
+                  <TableCell className="align-top">
                     <button
                       onClick={() => onSelectRun(run.run_id)}
                       className="rounded-md border border-default px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-elevated"
@@ -195,7 +179,7 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                       View Details
                     </button>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="align-top">
                     {(hasRevertibleChampion(run) || run.has_config_snapshot !== false) && (
                       <RevertOptionsButton
                         run={run}
@@ -212,6 +196,34 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
         )}
       </CardContent>
     </Card>
+  )
+}
+
+function formatRunDate(iso?: string | null): string {
+  if (!iso) return "—"
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return "—"
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
+
+/** Compact run provenance so the table can reserve width for outcome/actions. */
+export function RunMetadataCell({ run }: { run: GSORunSummary }) {
+  return (
+    <div className="min-w-[11rem] max-w-[15rem] space-y-0.5">
+      <p className="text-sm font-medium text-primary">{formatRunDate(run.started_at)}</p>
+      <p className="truncate text-xs text-muted" title={run.llm_model ?? undefined}>
+        <span className="font-medium text-secondary">Model:</span> {run.llm_model ?? "—"}
+      </p>
+      <p className="truncate text-xs text-muted" title={run.triggered_by ?? undefined}>
+        <span className="font-medium text-secondary">Triggered by:</span> {run.triggered_by ?? "—"}
+      </p>
+    </div>
   )
 }
 
@@ -374,7 +386,7 @@ export function RevertOptionsButton({ run, disabled, onReverted }: RevertOptions
                 />
               </fieldset>
 
-              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
+              <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-primary">
                 The live agent config will be replaced with the selected {configTarget} state
                 {benchmarkTarget === "current" ? ", while current benchmarks are preserved." : ", including pre-run baseline benchmarks."}
               </div>
@@ -382,7 +394,7 @@ export function RevertOptionsButton({ run, disabled, onReverted }: RevertOptions
           ) : null}
 
           {error && (
-            <p className="mt-4 flex items-start gap-1.5 text-xs text-red-500">
+            <p className="mt-4 flex items-start gap-1.5 text-xs text-danger-foreground">
               <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {error}
             </p>
@@ -495,8 +507,8 @@ export function LiveVersionBadge({
 export function DriftBanner({ liveUpdateTime }: { liveUpdateTime?: string | null }) {
   const when = formatMatchDate(liveUpdateTime)
   return (
-    <div className="mb-3 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+    <div className="mb-3 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-primary">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
       <p>
         The live agent configuration doesn&rsquo;t match any known optimization version
         &mdash; it was changed outside Auto-Optimize{when ? ` (last modified ${when})` : ""}.
