@@ -23,7 +23,7 @@ flowchart LR
 | # | Task | Responsibility |
 |---|------|----------------|
 | 1 | **Intake & Snapshot** | Validate the run envelope, retain the trigger-time rollback snapshot, and write the `run_manifest` artifact. |
-| 2 | **Benchmark QC & Repair** | Review question clarity and question-to-SQL alignment, validate SQL and ground-truth data, repair or replace hard failures within a bounded retry budget, then persist `benchmark_qc`. |
+| 2 | **Benchmark QC & Repair** | Review question clarity and question-to-SQL alignment, validate SQL and ground-truth data, and—only when allowed for the run—repair or replace hard failures before persisting `benchmark_qc`. |
 | 3 | **Optimize** | Apply low-risk Space quality enrichment, run the baseline evaluation, and execute the bounded patch/evaluation loop. |
 | 4 | **Publish & Audit** | Resolve the stamped terminal reason, mark the champion when eligible, generate a best-effort audit summary, capture postflight IQ, and write terminal run state. |
 
@@ -31,18 +31,28 @@ Each task receives the complete job parameter set and exchanges durable state th
 
 ### Benchmark quality review
 
+Each run has an explicit benchmark policy. The Workbench defaults to **review
+only**: GSO reviews the native benchmark questions captured in the pre-run
+snapshot, excludes invalid questions from that run's evaluation corpus, and
+does not generate, repair, push, or ledger any live benchmark mutation. Turning
+on **Allow GSO to repair and add benchmarks** enables the bounded repair,
+replacement, and live merge behavior used by earlier runs.
+
 Benchmark QC separates five kinds of evidence: question quality,
 question-to-SQL alignment, SQL validity, data validity, and review-system
 health. A benchmark with a hard semantic or validation error is excluded from
-the evaluation working set and replaced toward the configured target. Wording
-that is weak but still has one defensible answer remains eligible with a
-warning. A semantic-review outage is recorded as `review_not_run`; it is never
-silently reported as a successful review.
+the evaluation working set. Repair-enabled runs replace excluded questions
+toward the configured target; review-only runs retain only the accepted native
+subset. Wording that is weak but still has one defensible answer remains
+eligible with a warning. A semantic-review outage is recorded as
+`review_not_run`; it is never silently reported as a successful review.
 
 Generation targets 30 valid questions. A run may proceed with fewer when
-generation or bounded repair cannot reach that ideal, but Benchmark QC fails
-closed if fewer than 15 valid questions remain; 15–29 is accepted with 30 still
-treated as the target.
+generation or bounded repair cannot reach that ideal. At least 15 valid
+questions are required to optimize; 15–29 is accepted with 30 still treated as
+the target. If fewer than 15 remain, Optimize performs no evaluation or
+configuration mutation and Publish & Audit records a terminal `SKIPPED` summary
+with reason `INSUFFICIENT_VALID_BENCHMARKS`.
 
 The `benchmark_qc` artifact records structured findings, review coverage,
 quality counts, and proposed repairs. The **Benchmark Changes** panel surfaces
@@ -128,16 +138,33 @@ The loop stamps one of the typed reasons below. Publish & Audit uses that stampe
 | `CONFIG_VALIDATION_FAILED` | `FAILED` | No |
 | `LOOP_STATE_INVALID` | `FAILED` | No |
 | `EVAL_BUDGET_EXHAUSTED` | `STALLED` | No |
+| `INSUFFICIENT_VALID_BENCHMARKS` | `SKIPPED` | No; Optimize does not run |
 | Missing or unknown | `STALLED` | No, fail closed |
 
 Publishing is an idempotent Delta champion mark. Accepted patches are already applied to the live Space by the loop; Publish & Audit does not replay them. Audit-summary generation and postflight IQ capture are soft-failing and cannot prevent the final status write.
 
 ## History, revert, and discard
 
-Optimization History exposes two different rollback contracts:
+Optimization History separates **View Details** and **Revert Options** into
+different columns. The benchmark-handling column records whether the run was
+review-only or repair-enabled and, for repair-enabled runs, how many live
+benchmark additions or SQL updates it made.
 
-- **Revert to champion/baseline** changes live Space configuration without changing the historical run status. It preserves the Space's current benchmark block so reverting history cannot roll benchmark ground truth backward. Champion reverts restore the captured post-enrichment description when available; legacy runs preserve the current description.
-- **Discard** restores the complete trigger-time snapshot, including the original benchmark block and top-level description, then marks the run `DISCARDED` only after rollback succeeds.
+One **Revert Options** action opens a dialog with two independent choices:
+
+- **Agent config:** restore the run's champion or its pre-run baseline.
+- **Benchmarks:** preserve the current live benchmark block or restore the
+  run's pre-run baseline benchmark block.
+
+The dialog previews how many benchmarks a baseline restore will add, remove,
+or update and requires confirmation before replacing the live Agent. A history
+revert does not change the historical run status. Champion config restores the
+captured post-enrichment description when available; legacy runs preserve the
+current description.
+
+**Discard** remains the pre-Apply resolution action. It restores the complete
+trigger-time snapshot, including the original benchmark block and top-level
+description, then marks the run `DISCARDED` only after rollback succeeds.
 
 Both paths snapshot live state before a two-part serialized-config/description mutation. If the description update fails after the serialized config succeeds, the optimizer attempts compensation and never reports success for the partial operation.
 
@@ -169,10 +196,10 @@ The Workbench prefers Lakebase synced reads for UI views and falls back to direc
 ## Triggering from the UI
 
 1. Open a Space and select **Optimize**.
-2. Configure levers, target accuracy, attempt budget, and model.
+2. Configure levers, target accuracy, attempt budget, model, and whether GSO may repair or add live benchmarks. Repair is off by default.
 3. Start the run. The UI submits `POST /api/auto-optimize/trigger` and polls the run status.
 4. Review the attempt ladder, question results, patches, benchmark QC, audit summary, and terminal outcome.
-5. Keep the accepted state, discard it to the trigger snapshot, or later use Optimization History to revert to a past champion or baseline.
+5. Keep the accepted state, discard it to the trigger snapshot, or later use **Revert Options** to choose a past config and benchmark scope independently.
 
 ## Source files
 

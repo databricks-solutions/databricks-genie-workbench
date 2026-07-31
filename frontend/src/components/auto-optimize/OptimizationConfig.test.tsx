@@ -27,7 +27,9 @@ describe("OptimizationConfig lever scope", () => {
     expect(markup).not.toContain("Surgical optimization scope")
 
     const checkboxCount = (markup.match(/type="checkbox"/g) ?? []).length
-    expect(checkboxCount).toBe(6)
+    expect(checkboxCount).toBe(7)
+    expect(markup).toContain("Allow GSO to repair and add benchmarks")
+    expect(markup).toContain("Off by default")
   })
 
   it("surfaces the two stopping-criteria knobs with their default values", () => {
@@ -90,6 +92,7 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
       selectedModel: "claude-opus",
       targetAccuracy: parseTargetAccuracy("90")!,
       maxAttempts: parseMaxAttempts("3")!,
+      benchmarkPolicy: "review_only",
     })
 
     expect(req).toEqual({
@@ -100,6 +103,7 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
       target_accuracy: 0.9,
       max_attempts: 3,
       workload_warehouse_ids: [],
+      benchmark_policy: "review_only",
     })
     expect(req.target_accuracy).toBeLessThanOrEqual(1)
   })
@@ -112,6 +116,7 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
       selectedModel: null,
       targetAccuracy: 0.9,
       maxAttempts: 3,
+      benchmarkPolicy: "review_only",
       workloadWarehouseIds: ["warehouse-b", "warehouse-a"],
     })
 
@@ -126,6 +131,7 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
       selectedModel: null,
       targetAccuracy: 0.9,
       maxAttempts: 3,
+      benchmarkPolicy: "review_only",
     })
 
     expect(req.levers).toEqual([1, 3]) // sorted subset of {1..6}
@@ -140,6 +146,7 @@ describe("buildOptimizationTriggerRequest (trigger payload)", () => {
       selectedModel: null,
       targetAccuracy: 0.9,
       maxAttempts: 3,
+      benchmarkPolicy: "review_only",
     })
 
     expect(req.levers).toEqual([1]) // 0 (retired) and 7 (out of range) dropped

@@ -29,6 +29,7 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   "MAX_ITERATIONS",
   "FAILED",
   "CANCELLED",
+  "SKIPPED",
   "APPLIED",
   "DISCARDED",
 ])

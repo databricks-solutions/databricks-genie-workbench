@@ -67,12 +67,14 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 |--------|------|------|---------|
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/health` | <span className="badge badge--secondary">SP</span> | GSO health check: job/warehouse configuration status |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/permissions/{space_id}` | <span className="badge badge--warning">Mixed</span> | Pre-check SP manage + UC read |
-| <span className="badge badge--info">POST</span> | `/api/auto-optimize/trigger` | <span className="badge badge--warning">Mixed</span> | Start GSO optimization job (OBO for auth, SP for job submission) |
+| <span className="badge badge--info">POST</span> | `/api/auto-optimize/trigger` | <span className="badge badge--warning">Mixed</span> | Start GSO optimization job; `benchmark_policy` is `review_only` or `repair_allowed` (OBO for auth, SP for job submission) |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}` | <span className="badge badge--secondary">SP</span> | Full run detail: stages, steps, levers, links |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/status` | <span className="badge badge--secondary">SP</span> | Lightweight status poll: steps, scores |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/levers` | <span className="badge badge--secondary">None</span> | List optimization lever definitions |
 | <span className="badge badge--info">POST</span> | `/api/auto-optimize/runs/{run_id}/apply` | <span className="badge badge--primary">OBO</span> | Apply optimization results to the Genie Agent |
 | <span className="badge badge--info">POST</span> | `/api/auto-optimize/runs/{run_id}/discard` | <span className="badge badge--warning">Mixed</span> | Discard run / rollback changes |
+| <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/revert-options` | <span className="badge badge--warning">Mixed</span> | Preview champion/baseline availability and the live-to-baseline benchmark diff |
+| <span className="badge badge--info">POST</span> | `/api/auto-optimize/runs/{run_id}/revert` | <span className="badge badge--warning">Mixed</span> | Revert with independent `config_target=champion\|baseline` and `benchmark_target=current\|baseline` query parameters |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/spaces/{space_id}/active-run` | <span className="badge badge--secondary">SP</span> | Check for QUEUED/IN_PROGRESS run |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/spaces/{space_id}/runs` | <span className="badge badge--secondary">SP</span> | List optimization runs for a space |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/iterations` | <span className="badge badge--secondary">SP</span> | Per-iteration evaluation rows |

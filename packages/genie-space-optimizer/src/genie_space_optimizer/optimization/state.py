@@ -280,6 +280,7 @@ def create_run(
     config_snapshot: dict | None = None,
     triggered_by: str | None = None,
     llm_model: str | None = None,
+    benchmark_policy: str = "repair_allowed",
 ) -> None:
     """Insert a new row into ``genie_opt_runs`` with status QUEUED."""
     from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER, MAX_ITERATIONS
@@ -296,6 +297,8 @@ def create_run(
         "max_iterations": max_iterations or MAX_ITERATIONS,
         "levers": json.dumps(levers or DEFAULT_LEVER_ORDER),
         "apply_mode": apply_mode,
+        "benchmark_policy": benchmark_policy,
+        "benchmark_mutation_count": 0,
         "updated_at": now,
     }
     if deploy_target is not None:
@@ -379,13 +382,18 @@ def update_run_status(
     warehouse_id: str | None = None,
     max_benchmark_count: int | None = None,
     llm_model: str | None = None,
+    benchmark_policy: str | None = None,
+    benchmark_mutation_count: int | None = None,
     space_id: str | None = None,
 ) -> None:
     """Update ``genie_opt_runs`` — only sets non-None fields."""
     now = datetime.now(timezone.utc).isoformat()
 
     updates: dict[str, Any] = {"updated_at": now}
-    terminal_statuses = {"CONVERGED", "STALLED", "MAX_ITERATIONS", "FAILED", "CANCELLED"}
+    terminal_statuses = {
+        "CONVERGED", "STALLED", "MAX_ITERATIONS", "FAILED", "CANCELLED",
+        "SKIPPED",
+    }
 
     if status is not None:
         updates["status"] = status
@@ -409,6 +417,10 @@ def update_run_status(
         updates["max_benchmark_count"] = int(max_benchmark_count)
     if llm_model is not None:
         updates["llm_model"] = llm_model
+    if benchmark_policy is not None:
+        updates["benchmark_policy"] = benchmark_policy
+    if benchmark_mutation_count is not None:
+        updates["benchmark_mutation_count"] = int(benchmark_mutation_count)
 
     resolved_space_id = space_id or _lookup_run_space_id(spark, run_id, catalog, schema)
     keys: dict[str, Any] = {"run_id": run_id}

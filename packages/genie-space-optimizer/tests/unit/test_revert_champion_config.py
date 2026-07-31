@@ -322,6 +322,161 @@ def test_revert_preserves_live_benchmarks_byte_for_byte(monkeypatch) -> None:
     assert patched_questions == live["_parsed_space"]["benchmarks"]["questions"]
 
 
+@pytest.mark.parametrize(
+    ("config_target", "benchmark_target", "expected_instruction", "expected_qid"),
+    [
+        ("champion", "current", "champion config", "cccccccccccccccccccccccccccccccc"),
+        ("champion", "baseline", "champion config", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ("baseline", "current", "baseline config", "cccccccccccccccccccccccccccccccc"),
+        ("baseline", "baseline", "baseline config", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+    ],
+)
+def test_revert_composes_config_and_benchmark_targets_independently(
+    monkeypatch,
+    config_target: str,
+    benchmark_target: str,
+    expected_instruction: str,
+    expected_qid: str,
+) -> None:
+    """The modal's two selectors form four deterministic revert operations."""
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    baseline = {
+        "version": 2,
+        "data_sources": {"tables": []},
+        "instructions": {"text_instructions": [{"content": "baseline config"}]},
+        "benchmarks": {"questions": [
+            _live_benchmark(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "baseline benchmark",
+                "SELECT 'baseline'",
+            ),
+        ]},
+    }
+    champion = {
+        "version": 2,
+        "data_sources": {"tables": []},
+        "instructions": {"text_instructions": [{"content": "champion config"}]},
+        # This historical champion block must never leak through either scope.
+        "benchmarks": {"questions": [
+            _live_benchmark(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "champion-time benchmark",
+                "SELECT 'champion-time'",
+            ),
+        ]},
+    }
+    live = {
+        "_parsed_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+            "benchmarks": {"questions": [
+                _live_benchmark(
+                    "cccccccccccccccccccccccccccccccc",
+                    "current benchmark",
+                    "SELECT 'current'",
+                ),
+            ]},
+        },
+    }
+    run = {
+        "run_id": "r-options",
+        "space_id": "space-options",
+        "status": "CONVERGED",
+        "config_snapshot": json.dumps({"serialized_space": baseline}),
+    }
+
+    monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+
+    def _query(_ws, _warehouse_id, sql):
+        if "genie_opt_iterations" in sql:
+            return pd.DataFrame([{"config_json": json.dumps(champion)}])
+        if "genie_opt_artifacts" in sql:
+            return pd.DataFrame()
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(revert, "sql_warehouse_query", _query)
+    patch_mock = _patch_patch_space_config(monkeypatch, live_config=live)
+
+    result = revert.revert_optimization(
+        "r-options",
+        ws,
+        sp_ws,
+        cfg,
+        target=config_target,
+        benchmark_target=benchmark_target,
+    )
+
+    patched = patch_mock.call_args.args[2]
+    assert patched["instructions"]["text_instructions"][0]["content"] == expected_instruction
+    assert patched["benchmarks"]["questions"][0]["id"] == expected_qid
+    assert benchmark_target in result.message or (
+        benchmark_target == "current" and "preserved" in result.message
+    )
+
+
+def test_preview_revert_options_reports_availability_and_benchmark_diff(
+    monkeypatch,
+) -> None:
+    cfg = _config()
+    ws, sp_ws = _ws(), MagicMock(name="sp_ws")
+    shared_id = "22222222222222222222222222222222"
+    baseline = {
+        "version": 2,
+        "data_sources": {"tables": []},
+        "benchmarks": {"questions": [
+            _live_benchmark(
+                "11111111111111111111111111111111",
+                "baseline only",
+                "SELECT 1",
+            ),
+            _live_benchmark(shared_id, "shared", "SELECT 'baseline'"),
+        ]},
+    }
+    live = {
+        "_parsed_space": {
+            "version": 2,
+            "data_sources": {"tables": []},
+            "benchmarks": {"questions": [
+                _live_benchmark(shared_id, "shared", "SELECT 'current'"),
+                _live_benchmark(
+                    "33333333333333333333333333333333",
+                    "current only",
+                    "SELECT 3",
+                ),
+            ]},
+        },
+    }
+    run = {
+        "run_id": "r-preview",
+        "space_id": "space-preview",
+        "status": "CONVERGED",
+        "config_snapshot": json.dumps({"serialized_space": baseline}),
+    }
+    monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+    monkeypatch.setattr(
+        revert,
+        "sql_warehouse_query",
+        lambda *a, **k: pd.DataFrame([{
+            "config_json": json.dumps(_champion_config()),
+        }]),
+    )
+    _patch_patch_space_config(monkeypatch, live_config=live)
+
+    preview = revert.preview_revert_options("r-preview", ws, sp_ws, cfg)
+
+    assert preview["championAvailable"] is True
+    assert preview["baselineAvailable"] is True
+    assert preview["benchmarkBaselineAvailable"] is True
+    assert preview["benchmarkDiff"] == {
+        "currentCount": 2,
+        "baselineCount": 2,
+        "willAdd": 1,
+        "willRemove": 1,
+        "willChange": 1,
+    }
+
+
 def test_revert_champion_errors_when_no_champion_row(monkeypatch) -> None:
     """No is_champion row → ValueError (NOT a silent baseline fallback).
 

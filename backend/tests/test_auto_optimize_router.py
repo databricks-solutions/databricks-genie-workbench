@@ -10,6 +10,7 @@ monkeypatching, no real Databricks connectivity required.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -224,6 +225,9 @@ def test_trigger_proceeds_without_prompt_registry_gate(
         # them, and are echoed back so the UI can confirm what the run uses.
         "targetAccuracy": 0.90,
         "maxAttempts": 3,
+        # Legacy API callers retain the historical repair behavior; the
+        # Workbench sends review_only explicitly for its safer UI default.
+        "benchmarkPolicy": "repair_allowed",
     }
     trigger_mock.assert_called_once()
     config = trigger_mock.call_args.kwargs["config"]
@@ -231,6 +235,7 @@ def test_trigger_proceeds_without_prompt_registry_gate(
     # Omitted knobs flow to trigger_optimization as None (it resolves defaults).
     assert trigger_mock.call_args.kwargs["target_accuracy"] is None
     assert trigger_mock.call_args.kwargs["max_attempts"] is None
+    assert trigger_mock.call_args.kwargs["benchmark_policy"] == "repair_allowed"
     assert "deploy_target" not in trigger_mock.call_args.kwargs
 
 
@@ -751,6 +756,7 @@ def test_iterations_endpoint_emits_phase6_counts_and_gate(monkeypatch) -> None:
 
     monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", fake_lakebase)
     monkeypatch.setattr(auto_optimize, "_select_iterations_delta", lambda _rid: [dict(r) for r in delta_rows])
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [])
 
     app = FastAPI()
     app.include_router(auto_optimize.router)
@@ -813,6 +819,99 @@ def test_benchmark_changes_endpoint_groups_by_op(monkeypatch) -> None:
     # before/after JSON strings are parsed into objects.
     assert body["added"][0]["after"] == {"question": "new q", "sql": "SELECT 1"}
     assert body["changed"][0]["before"] == {"sql": "a"}
+
+
+def test_benchmark_changes_recovers_snapshot_sql_and_hides_fragment_only_changes(
+    monkeypatch,
+) -> None:
+    """Legacy content[0] ledger rows are repaired from the intake snapshot."""
+    monkeypatch.setenv("GSO_CATALOG", "main")
+    monkeypatch.setenv("GSO_JOB_ID", "12345")
+    monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+
+    from backend.routers import auto_optimize
+
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    unchanged_sql = "SELECT COUNT(*) FROM tickets"
+    changed_before_sql = "SELECT status, COUNT(*) FROM tickets GROUP BY status"
+    snapshot = {
+        "benchmarks": {
+            "questions": [
+                {
+                    "id": "q-shape-only",
+                    "question": ["How many tickets are there?"],
+                    "answer": [{
+                        "format": "SQL",
+                        "content": ["SELECT ", "COUNT(*) ", "FROM tickets"],
+                    }],
+                },
+                {
+                    "id": "q-real-repair",
+                    "question": ["How many tickets are in each status?"],
+                    "answer": [{
+                        "format": "SQL",
+                        "content": [
+                            "SELECT status, ",
+                            "COUNT(*) FROM tickets GROUP BY status",
+                        ],
+                    }],
+                },
+            ],
+        },
+    }
+    ledger = [
+        {
+            "run_id": run_id,
+            "question_id": "q-shape-only",
+            "op": "changed",
+            "before": '{"question":"How many tickets are there?","sql":"SELECT "}',
+            "after": json.dumps({
+                "question": "How many tickets are there?",
+                "sql": unchanged_sql,
+            }),
+            "reason": "curated_sql_repair",
+            "logged_at": "2026-06-25T00:00:00Z",
+        },
+        {
+            "run_id": run_id,
+            "question_id": "q-real-repair",
+            "op": "changed",
+            "before": '{"question":"How many tickets are in each status?","sql":"SELECT status, "}',
+            "after": json.dumps({
+                "question": "How many tickets are in each status?",
+                "sql": "SELECT status, COUNT(DISTINCT ticket_id) FROM tickets GROUP BY status",
+            }),
+            "reason": "curated_sql_repair",
+            "logged_at": "2026-06-25T00:01:00Z",
+        },
+    ]
+
+    async def fake_mutations(_run_id):
+        return ledger
+
+    async def fake_run(_run_id):
+        return {"run_id": run_id, "config_snapshot": json.dumps(snapshot)}
+
+    monkeypatch.setattr(
+        auto_optimize.gso_lakebase,
+        "load_gso_benchmark_mutations",
+        fake_mutations,
+    )
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", fake_run)
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda *_a: None)
+
+    app = FastAPI()
+    app.include_router(auto_optimize.router)
+    response = TestClient(app).get(
+        f"/api/auto-optimize/runs/{run_id}/benchmark-changes",
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["counts"]["changed"] == 1
+    assert body["counts"]["total"] == 1
+    assert body["changed"][0]["questionId"] == "q-real-repair"
+    assert body["changed"][0]["before"]["sql"] == changed_before_sql
 
 
 def test_optimize_step_summary_is_attempt_centric_no_judges() -> None:
@@ -943,6 +1042,7 @@ def test_iterations_official_accuracy_uses_num_questions_not_evaluated_count(mon
 
     monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", fake_lakebase)
     monkeypatch.setattr(auto_optimize, "_select_iterations_delta", lambda _rid: [dict(r) for r in delta_rows])
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [])
 
     app = FastAPI()
     app.include_router(auto_optimize.router)
@@ -986,6 +1086,7 @@ def test_iterations_official_v2_reports_full_30_question_corpus(monkeypatch) -> 
 
     monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", fake_lakebase)
     monkeypatch.setattr(auto_optimize, "_select_iterations_delta", lambda _rid: [dict(r) for r in delta_rows])
+    monkeypatch.setattr(auto_optimize, "_select_loop_state_delta", lambda _rid: [])
 
     app = FastAPI()
     app.include_router(auto_optimize.router)
@@ -1427,7 +1528,12 @@ def test_trigger_round_trips_loop_knobs(client, mock_sp_ws, mock_user_ws, monkey
     with patch.object(auto_optimize, "trigger_optimization", return_value=fake_result) as tmock:
         resp = client.post(
             "/api/auto-optimize/trigger",
-            json={"space_id": "space-abc", "target_accuracy": 0.85, "max_attempts": 5},
+            json={
+                "space_id": "space-abc",
+                "target_accuracy": 0.85,
+                "max_attempts": 5,
+                "benchmark_policy": "review_only",
+            },
         )
 
     assert resp.status_code == 200, resp.text
@@ -1435,9 +1541,11 @@ def test_trigger_round_trips_loop_knobs(client, mock_sp_ws, mock_user_ws, monkey
     # Echoed back exactly as requested.
     assert body["targetAccuracy"] == 0.85
     assert body["maxAttempts"] == 5
+    assert body["benchmarkPolicy"] == "review_only"
     # Threaded into trigger_optimization.
     assert tmock.call_args.kwargs["target_accuracy"] == 0.85
     assert tmock.call_args.kwargs["max_attempts"] == 5
+    assert tmock.call_args.kwargs["benchmark_policy"] == "review_only"
 
 
 def test_trigger_rejects_out_of_range_target_accuracy(client) -> None:
@@ -1709,6 +1817,9 @@ def test_benchmark_changes_includes_qc(monkeypatch) -> None:
         "run_id": _RUN, "valid_count": 32, "persisted_count": 32,
         "repair_tries_used": 1, "benchmark_repair_max_tries": 3,
         "repaired_ids": ["q5"], "repair_sweeps": 1, "final_validity": True,
+        "benchmark_policy": "review_only", "benchmark_mutation_count": 0,
+        "optimization_eligible": False, "minimum_valid_count": 15,
+        "terminal_reason": "INSUFFICIENT_VALID_BENCHMARKS",
         "window": {"status": "in_window", "count": 32},
         "window_target_min": 30, "window_target_max": 40,
         "gt_correction_candidates": [],
@@ -1745,6 +1856,11 @@ def test_benchmark_changes_includes_qc(monkeypatch) -> None:
     assert qc["repairTriesUsed"] == 1
     assert qc["repairMaxTries"] == 3
     assert qc["finalValidity"] is True
+    assert qc["benchmarkPolicy"] == "review_only"
+    assert qc["benchmarkMutationCount"] == 0
+    assert qc["optimizationEligible"] is False
+    assert qc["minimumValidCount"] == 15
+    assert qc["terminalReason"] == "INSUFFICIENT_VALID_BENCHMARKS"
     assert qc["window"] == {"status": "in_window", "count": 32}
     assert qc["windowTargetMin"] == 30
     assert qc["qualityReviewVersion"] == "benchmark_quality_v1"
@@ -1859,6 +1975,7 @@ def test_status_echoes_knobs_from_run_manifest_pre_loop(monkeypatch) -> None:
     monkeypatch.setattr(auto_optimize, "_load_latest_artifact",
                         lambda _rid, kind: manifest if kind == "run_manifest" else None)
     monkeypatch.setattr(auto_optimize, "_loop_state_knobs", lambda _rid: (None, None))
+    monkeypatch.setattr(auto_optimize, "_job_task_progress", lambda _run: None)
 
     client = _gso_client(monkeypatch)
     resp = client.get(f"/api/auto-optimize/runs/{_RUN}/status")
@@ -1937,6 +2054,7 @@ def test_revert_run_happy_path(client, monkeypatch, mock_sp_ws, mock_user_ws) ->
     assert "reverted" in body["message"].lower()
     # The target query param is forwarded to the integration function.
     assert captured.get("target") == "champion"
+    assert captured.get("benchmark_target") == "current"
 
 
 def test_revert_run_defaults_target_to_champion(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
@@ -1952,6 +2070,30 @@ def test_revert_run_defaults_target_to_champion(client, monkeypatch, mock_sp_ws,
     resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert")
     assert resp.status_code == 200
     assert captured.get("target") == "champion"
+    assert captured.get("benchmark_target") == "current"
+
+
+def test_revert_run_forwards_both_selected_scopes(
+    client, monkeypatch, mock_sp_ws, mock_user_ws,
+) -> None:
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    captured = {}
+
+    def _stub(*args, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(status="reverted", run_id=run_id, message="ok")
+
+    monkeypatch.setattr(auto_optimize, "revert_optimization", _stub)
+    resp = client.post(
+        f"/api/auto-optimize/runs/{run_id}/revert"
+        "?config_target=baseline&benchmark_target=baseline"
+    )
+
+    assert resp.status_code == 200
+    assert captured["target"] == "baseline"
+    assert captured["benchmark_target"] == "baseline"
 
 
 def test_revert_run_rejects_invalid_target(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
@@ -1964,6 +2106,24 @@ def test_revert_run_rejects_invalid_target(client, monkeypatch, mock_sp_ws, mock
     resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert?target=garbage")
     assert resp.status_code == 422
     assert "target" in resp.json()["detail"].lower()
+    stub.assert_not_called()
+
+
+def test_revert_run_rejects_invalid_benchmark_target(
+    client, monkeypatch, mock_sp_ws, mock_user_ws,
+) -> None:
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    stub = MagicMock(side_effect=AssertionError("must not be called"))
+    monkeypatch.setattr(auto_optimize, "revert_optimization", stub)
+
+    resp = client.post(
+        f"/api/auto-optimize/runs/{run_id}/revert?benchmark_target=garbage"
+    )
+
+    assert resp.status_code == 422
+    assert "benchmark_target" in resp.json()["detail"]
     stub.assert_not_called()
 
 
@@ -2022,3 +2182,36 @@ def test_revert_run_returns_500_for_unexpected_exception(client, monkeypatch, mo
     resp = client.post(f"/api/auto-optimize/runs/{run_id}/revert")
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Failed to revert the Genie Agent."
+
+
+def test_revert_options_returns_preview(
+    client, monkeypatch, mock_sp_ws, mock_user_ws,
+) -> None:
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    preview = {
+        "runId": run_id,
+        "spaceId": "space-1",
+        "championAvailable": True,
+        "baselineAvailable": True,
+        "benchmarkBaselineAvailable": True,
+        "benchmarkDiff": {
+            "currentCount": 12,
+            "baselineCount": 10,
+            "willAdd": 1,
+            "willRemove": 3,
+            "willChange": 2,
+        },
+    }
+    stub = MagicMock(return_value=preview)
+    monkeypatch.setattr(auto_optimize, "preview_revert_options", stub)
+
+    resp = client.get(f"/api/auto-optimize/runs/{run_id}/revert-options")
+
+    assert resp.status_code == 200
+    assert resp.json() == preview
+    stub.assert_called_once()
+    assert stub.call_args.args[0] == run_id
+    assert stub.call_args.args[1] is mock_user_ws
+    assert stub.call_args.args[2] is mock_sp_ws

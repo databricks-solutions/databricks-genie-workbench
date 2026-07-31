@@ -67,7 +67,7 @@ async def load_gso_runs_for_space(space_id: str) -> list[dict]:
             rows = await conn.fetch(
                 f"""SELECT run_id, space_id, status, started_at, completed_at,
                           best_accuracy, best_iteration, convergence_reason, triggered_by,
-                          llm_model,
+                          llm_model, benchmark_policy, benchmark_mutation_count,
                           (config_snapshot IS NOT NULL AND length(config_snapshot) > 2) AS has_config_snapshot
                    FROM {_tbl('genie_opt_runs')}
                    WHERE space_id = $1

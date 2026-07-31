@@ -88,6 +88,7 @@ dbutils.widgets.text("levers", "[1,2,3,4,5,6]")
 dbutils.widgets.text("max_attempts", "3")
 dbutils.widgets.text("target_accuracy", "0.90")
 dbutils.widgets.text("benchmark_repair_max_tries", "3")
+dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("triggered_by", "")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
@@ -103,6 +104,9 @@ levers = json.loads(dbutils.widgets.get("levers") or "[1,2,3,4,5,6]")
 max_attempts = int(dbutils.widgets.get("max_attempts") or "3")
 target_accuracy = float(dbutils.widgets.get("target_accuracy") or "0.90")
 benchmark_repair_max_tries = int(dbutils.widgets.get("benchmark_repair_max_tries") or "3")
+benchmark_policy = dbutils.widgets.get("benchmark_policy").strip() or "repair_allowed"
+if benchmark_policy not in {"review_only", "repair_allowed"}:
+    raise RuntimeError(f"Unsupported benchmark_policy: {benchmark_policy}")
 triggered_by = dbutils.widgets.get("triggered_by").strip()
 llm_model = dbutils.widgets.get("llm_model").strip()
 try:
@@ -133,6 +137,7 @@ _log(
     max_attempts=max_attempts,
     target_accuracy=target_accuracy,
     benchmark_repair_max_tries=benchmark_repair_max_tries,
+    benchmark_policy=benchmark_policy,
 )
 
 # COMMAND ----------
@@ -332,6 +337,7 @@ write_artifact(
         "target_accuracy": target_accuracy,
         "max_attempts": max_attempts,
         "benchmark_repair_max_tries": benchmark_repair_max_tries,
+        "benchmark_policy": benchmark_policy,
         "benchmark_min_valid": MIN_VALID_BENCHMARK_COUNT,
         "benchmark_target": TARGET_BENCHMARK_COUNT,
         "benchmark_max": MAX_BENCHMARK_COUNT,
@@ -351,6 +357,7 @@ update_run_status(
     status="IN_PROGRESS",
     warehouse_id=warehouse_id,
     llm_model=llm_model or None,
+    benchmark_policy=benchmark_policy,
 )
 
 write_stage(

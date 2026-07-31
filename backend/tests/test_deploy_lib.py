@@ -469,6 +469,7 @@ def test_gso_job_settings_match_4task_dag_shape():
     assert params["max_attempts"] == "3"
     assert params["target_accuracy"] == "0.90"
     assert params["benchmark_repair_max_tries"] == "3"
+    assert params["benchmark_policy"] == "repair_allowed"
     assert "experiment_name" not in params
     assert "deploy_target" not in params
     # llm_model stays a Workbench-specific param defaulted to cfg.llm_model.
@@ -479,6 +480,7 @@ def test_gso_job_settings_match_4task_dag_shape():
     for t in tasks:
         bp = t["notebook_task"]["base_parameters"]
         assert bp["llm_model"] == "{{job.parameters.llm_model}}"
+        assert bp["benchmark_policy"] == "{{job.parameters.benchmark_policy}}"
         for required in ("run_id", "catalog", "schema"):
             assert bp[required] == f"{{{{job.parameters.{required}}}}}"
 

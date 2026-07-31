@@ -34,6 +34,7 @@ import type {
   GSOLoopStateResponse,
   GSOPublishRecordResponse,
   CurrentVersionResponse,
+  GSORevertOptions,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -470,12 +471,27 @@ export async function discardAutoOptimize(runId: string): Promise<{ status: stri
 
 export async function revertAutoOptimizeRun(
   runId: string,
-  target: "champion" | "baseline" = "champion",
+  options: {
+    configTarget: "champion" | "baseline"
+    benchmarkTarget: "current" | "baseline"
+  } = { configTarget: "champion", benchmarkTarget: "current" },
 ): Promise<{ status: string; runId: string; message: string }> {
+  const query = new URLSearchParams({
+    config_target: options.configTarget,
+    benchmark_target: options.benchmarkTarget,
+  })
   return fetchWithTimeout<{ status: string; runId: string; message: string }>(
-    `${API_BASE}/auto-optimize/runs/${runId}/revert?target=${target}`,
+    `${API_BASE}/auto-optimize/runs/${runId}/revert?${query.toString()}`,
     { method: "POST", headers: { "Content-Type": "application/json" } },
     DEFAULT_TIMEOUT
+  )
+}
+
+export async function getAutoOptimizeRevertOptions(
+  runId: string,
+): Promise<GSORevertOptions> {
+  return fetchWithTimeout<GSORevertOptions>(
+    `${API_BASE}/auto-optimize/runs/${runId}/revert-options`,
   )
 }
 

@@ -43,7 +43,7 @@ TASKS = [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "levers", "max_attempts", "target_accuracy",
             "benchmark_repair_max_tries", "triggered_by",
-            "warehouse_id", "workload_warehouse_ids", "llm_model",
+            "benchmark_policy", "warehouse_id", "workload_warehouse_ids", "llm_model",
         ],
     ),
     (
@@ -53,6 +53,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "benchmark_repair_max_tries", "warehouse_id", "llm_model",
+            "benchmark_policy",
         ],
     ),
     (
@@ -62,7 +63,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "levers", "max_attempts", "target_accuracy",
-            "warehouse_id", "llm_model",
+            "benchmark_policy", "warehouse_id", "llm_model",
         ],
     ),
     (
@@ -72,6 +73,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "target_accuracy", "max_attempts", "warehouse_id", "llm_model",
+            "benchmark_policy",
         ],
     ),
 ]
@@ -93,6 +95,7 @@ JOB_PARAMETERS = {
     "max_attempts": "3",
     "target_accuracy": "0.90",
     "benchmark_repair_max_tries": "3",
+    "benchmark_policy": "repair_allowed",
     "triggered_by": "",
     "warehouse_id": "",
     "workload_warehouse_ids": "[]",

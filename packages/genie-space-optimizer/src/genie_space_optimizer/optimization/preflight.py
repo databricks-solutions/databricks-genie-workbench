@@ -2686,6 +2686,7 @@ def preflight_push_benchmarks_to_space(
     push_report = None
     published_count = 0
     resolved_question_ids = 0
+    benchmark_mutation_count = 0
     push_required = bool(PUBLISH_BENCHMARKS_TO_SPACE and pushable)
     push_failure_reason: str | None = None
     push_exc: Exception | None = None
@@ -2751,6 +2752,42 @@ def preflight_push_benchmarks_to_space(
                     },
                 )
             else:
+                # The live PATCH has already succeeded. Persist its mutation
+                # count before identity reconciliation, which can still fail
+                # and abort the task. Preserve a larger value from an earlier
+                # task attempt so repair/retry cannot reset the audit field.
+                current_mutation_count = max(
+                    int(push_report.added_count), 0,
+                ) + max(int(push_report.updated_count), 0)
+                try:
+                    existing_run = load_run(spark, run_id, catalog, schema) or {}
+                except Exception:
+                    logger.warning(
+                        "Could not read the existing benchmark mutation count "
+                        "for run %s; persisting the current PATCH count",
+                        run_id,
+                        exc_info=True,
+                    )
+                    existing_run = {}
+                try:
+                    existing_mutation_count = max(
+                        int(existing_run.get("benchmark_mutation_count") or 0),
+                        0,
+                    )
+                except (TypeError, ValueError):
+                    existing_mutation_count = 0
+                benchmark_mutation_count = max(
+                    current_mutation_count,
+                    existing_mutation_count,
+                )
+                _update_run_status(
+                    spark,
+                    run_id,
+                    catalog,
+                    schema,
+                    benchmark_mutation_count=benchmark_mutation_count,
+                )
+
                 resolved_question_ids, unresolved = _attach_live_benchmark_question_ids(
                     pushable,
                     push_report.merged,
@@ -2949,6 +2986,7 @@ def preflight_push_benchmarks_to_space(
         "push_ok": push_failure_reason is None,
         "ledger_rows": len(ledger_rows),
         "ledger_written": ledger_written,
+        "benchmark_mutation_count": benchmark_mutation_count,
         "push_report": push_report,
     }
 

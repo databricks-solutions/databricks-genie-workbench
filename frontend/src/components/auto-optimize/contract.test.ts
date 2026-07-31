@@ -34,6 +34,7 @@ describe("GSO v2 frontend contract", () => {
       selectedModel: "model-a",
       targetAccuracy: 0.9,
       maxAttempts: 3,
+      benchmarkPolicy: "review_only",
     })
 
     expect(req).toEqual({
@@ -44,6 +45,7 @@ describe("GSO v2 frontend contract", () => {
       target_accuracy: 0.9,
       max_attempts: 3,
       workload_warehouse_ids: [],
+      benchmark_policy: "review_only",
     })
     expect("deploy_target" in req).toBe(false)
   })

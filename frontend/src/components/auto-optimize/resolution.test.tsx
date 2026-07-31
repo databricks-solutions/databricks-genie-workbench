@@ -580,4 +580,36 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
     expect(markup).toContain('aria-expanded="false"')
     expect(markup).not.toContain("New benchmark question")
   })
+
+  it("labels complete before and after SQL for changed benchmarks", () => {
+    const changed = {
+      questionId: "q-existing",
+      op: "changed",
+      before: {
+        question: "Existing benchmark question",
+        sql: "WITH original AS (\n  SELECT 1\n)\nSELECT * FROM original",
+      },
+      after: {
+        question: "Existing benchmark question",
+        sql: "SELECT 1",
+      },
+      reason: "curated_sql_repair",
+      loggedAt: null,
+    }
+    const markup = renderToStaticMarkup(
+      <BenchmarkChangesPanel
+        runId="r"
+        changes={changes({
+          changed: [changed],
+          items: [changed],
+          counts: { added: 0, removed: 0, changed: 1, pruneRecommended: 0, total: 1 },
+        })}
+      />,
+    )
+
+    expect(markup).toContain("Before")
+    expect(markup).toContain("After")
+    expect(markup).toContain("WITH original AS")
+    expect(markup).toContain("SELECT * FROM original")
+  })
 })

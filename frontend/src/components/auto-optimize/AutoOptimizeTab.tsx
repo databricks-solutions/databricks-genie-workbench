@@ -53,6 +53,7 @@ const TERMINAL_STATUSES = new Set([
   "CANCELLED",
   "APPLIED",
   "DISCARDED",
+  "SKIPPED",
 ])
 
 const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger" | "info" | "secondary"> = {
@@ -63,6 +64,7 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   FAILED: "danger",
   CANCELLED: "secondary",
   DISCARDED: "secondary",
+  SKIPPED: "warning",
   IN_PROGRESS: "info",
   RUNNING: "info",
   QUEUED: "secondary",

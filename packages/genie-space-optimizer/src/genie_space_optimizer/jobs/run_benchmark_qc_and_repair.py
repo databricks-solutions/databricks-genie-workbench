@@ -7,17 +7,20 @@
 # MAGIC | **Task** | `benchmark_qc_and_repair` |
 # MAGIC | **Reads** | space metadata, run-row snapshot, benchmark set |
 # MAGIC | **Writes** | `genie_opt_artifacts` (`space_metadata`, `benchmark_qc`), `genie_opt_benchmark_mutations`, `genie_opt_stages` |
-# MAGIC | **Hard stop** | Invalid after repair budget, or fewer than 15 valid questions after QC |
+# MAGIC | **Hard stop** | Invalid after the repair budget; fewer than 15 valid questions becomes a business skip |
 # MAGIC | **Log label** | `[TASK BENCH_QC]` |
 # MAGIC
 # MAGIC ## 🎯 Purpose (arch §5 / §6 / progress §5 K=3)
 # MAGIC
-# MAGIC Validate the benchmark set → **bounded inline repair/prune** (≤
-# MAGIC `benchmark_repair_max_tries`, default 3) → re-validate → push the
-# MAGIC quality-reviewed, SQL-valid set into the LIVE space (additive/merge-only) → flow
-# MAGIC into `optimize` when at least 15 valid questions remain. A benchmark
-# MAGIC still invalid after K tries hard-fails with `BENCHMARK_UNREPAIRABLE`;
-# MAGIC a smaller final corpus hard-fails with `INSUFFICIENT_VALID_BENCHMARKS`.
+# MAGIC Review the benchmark set, then follow the run's policy. `review_only`
+# MAGIC excludes invalid native questions without generating, repairing, or
+# MAGIC changing the live benchmark block. `repair_allowed` runs bounded inline
+# MAGIC repair/prune (≤ `benchmark_repair_max_tries`, default 3), re-validates,
+# MAGIC and pushes the SQL-valid set into the live Agent (additive/merge-only).
+# MAGIC Both policies flow into `optimize` when at least 15 valid questions
+# MAGIC remain. A benchmark still invalid after K repair tries hard-fails with
+# MAGIC `BENCHMARK_UNREPAIRABLE`; a smaller final corpus records
+# MAGIC `INSUFFICIENT_VALID_BENCHMARKS` and skips optimization.
 # MAGIC
 # MAGIC The bounded try-counting control loop lives in
 # MAGIC `optimization.benchmark_repair.run_bounded_benchmark_repair`; this task
@@ -70,6 +73,9 @@ from genie_space_optimizer.optimization.benchmark_quality import (
     review_benchmark_quality,
 )
 from genie_space_optimizer.optimization.benchmarking import generate_benchmarks
+from genie_space_optimizer.optimization.benchmarking import (
+    extract_review_only_benchmarks,
+)
 from genie_space_optimizer.optimization.preflight import (
     preflight_collect_uc_metadata,
     preflight_fetch_config,
@@ -85,6 +91,7 @@ from genie_space_optimizer.optimization.state import (
     load_artifacts,
     load_latest_artifact_payload,
     load_latest_artifact_record,
+    update_run_status,
     write_artifact,
     write_benchmark_mutations,
     write_failure_stage_safely,
@@ -125,6 +132,7 @@ dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("schema", "")
 dbutils.widgets.text("apply_mode", "genie_config")
 dbutils.widgets.text("benchmark_repair_max_tries", "3")
+dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
 
@@ -135,6 +143,9 @@ catalog = dbutils.widgets.get("catalog").strip()
 schema = dbutils.widgets.get("schema").strip()
 apply_mode = dbutils.widgets.get("apply_mode").strip() or "genie_config"
 benchmark_repair_max_tries = int(dbutils.widgets.get("benchmark_repair_max_tries") or "3")
+benchmark_policy = dbutils.widgets.get("benchmark_policy").strip() or "repair_allowed"
+if benchmark_policy not in {"review_only", "repair_allowed"}:
+    raise RuntimeError(f"Unsupported benchmark_policy: {benchmark_policy}")
 llm_model = dbutils.widgets.get("llm_model").strip()
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
@@ -379,23 +390,48 @@ try:
         source_notebook="run_benchmark_qc_and_repair.py",
     )
 
-    ctx_bench = preflight_generate_benchmarks(
-        w, spark, run_id, catalog, schema, _config,
-        _uc_columns, _uc_tags, _uc_routines, _domain,
-        space_id=space_id, experiment_name=None, warehouse_id=warehouse_id,
-        target_benchmark_count=effective_target, max_benchmark_count=effective_max,
-    )
-    _benchmarks = ctx_bench["benchmarks"]
-    _duplicate_rejections = list(ctx_bench.get("duplicate_rejections") or [])
-    if _duplicate_rejections:
-        write_benchmark_mutations(
+    if benchmark_policy == "review_only":
+        # The policy boundary is intentionally above every synthesis primitive:
+        # only native live benchmark questions from the immutable intake
+        # snapshot are eligible. Sample questions, prior UC handoff rows, and
+        # generated replacements are never imported into this working set.
+        _benchmarks = extract_review_only_benchmarks(
+            _config,
             spark,
-            run_id,
-            duplicate_rejection_mutations(_duplicate_rejections),
             catalog=catalog,
             schema=schema,
+            w=w,
+            warehouse_id=warehouse_id,
         )
-    _log("Initial benchmarks", count=len(_benchmarks), regenerated=ctx_bench["regenerated"])
+        _benchmarks, _duplicate_rejections = deduplicate_benchmark_corpus(
+            _benchmarks,
+        )
+        _benchmarks_regenerated = False
+    else:
+        ctx_bench = preflight_generate_benchmarks(
+            w, spark, run_id, catalog, schema, _config,
+            _uc_columns, _uc_tags, _uc_routines, _domain,
+            space_id=space_id, experiment_name=None, warehouse_id=warehouse_id,
+            target_benchmark_count=effective_target, max_benchmark_count=effective_max,
+        )
+        _benchmarks = ctx_bench["benchmarks"]
+        _duplicate_rejections = list(ctx_bench.get("duplicate_rejections") or [])
+        _benchmarks_regenerated = bool(ctx_bench["regenerated"])
+        if _duplicate_rejections:
+            write_benchmark_mutations(
+                spark,
+                run_id,
+                duplicate_rejection_mutations(_duplicate_rejections),
+                catalog=catalog,
+                schema=schema,
+            )
+    _initial_benchmark_count = len(_benchmarks) + len(_duplicate_rejections)
+    _log(
+        "Initial benchmarks",
+        count=len(_benchmarks),
+        regenerated=_benchmarks_regenerated,
+        benchmark_policy=benchmark_policy,
+    )
 except Exception as exc:
     _banner("Benchmark Generation FAILED")
     _log("Failure details", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
@@ -644,90 +680,118 @@ def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
 
 _repair_failed = False
 _repair_error: BenchmarkUnrepairableError | BenchmarkCorpusTooSmallError | None = None
-try:
-    _banner("Step 01b — Bounded Benchmark Repair")
-    outcome = run_bounded_benchmark_repair(
-        _benchmarks,
-        validate_fn=_validate_fn,
-        repair_fn=_repair_fn,
-        max_tries=benchmark_repair_max_tries,
+_optimization_eligible = True
+_skip_reason: str | None = None
+if benchmark_policy == "review_only":
+    _banner("Step 01b — Benchmark Review (no live repair)")
+    _benchmarks, _excluded_benchmarks = _validate_fn(list(_benchmarks))
+    _benchmarks, _review_duplicates = deduplicate_benchmark_corpus(_benchmarks)
+    _duplicate_rejections.extend(_review_duplicates)
+    _repair_tries_used = 0
+    _repaired_ids: list[str] = []
+    _repair_sweeps: list[dict] = []
+    # Every row left in the accepted subset is valid. Corpus size is a
+    # separate optimization-eligibility gate and must not be reported as a SQL
+    # validity failure in the UI.
+    _final_validity = True
+    if len(_benchmarks) < MIN_VALID_BENCHMARK_COUNT:
+        _optimization_eligible = False
+        _skip_reason = "INSUFFICIENT_VALID_BENCHMARKS"
+    _log(
+        "Benchmark review complete",
+        valid_count=len(_benchmarks),
+        excluded_count=len(_excluded_benchmarks) + len(_duplicate_rejections),
+        optimization_eligible=_optimization_eligible,
     )
-    _benchmarks = outcome.benchmarks
-    _benchmarks, _post_repair_duplicates = deduplicate_benchmark_corpus(_benchmarks)
-    _duplicate_rejections.extend(_post_repair_duplicates)
-    if _post_repair_duplicates:
-        write_benchmark_mutations(
+else:
+    try:
+        _banner("Step 01b — Bounded Benchmark Repair")
+        outcome = run_bounded_benchmark_repair(
+            _benchmarks,
+            validate_fn=_validate_fn,
+            repair_fn=_repair_fn,
+            max_tries=benchmark_repair_max_tries,
+        )
+        _benchmarks = outcome.benchmarks
+        _benchmarks, _post_repair_duplicates = deduplicate_benchmark_corpus(
+            _benchmarks,
+        )
+        _duplicate_rejections.extend(_post_repair_duplicates)
+        if _post_repair_duplicates:
+            write_benchmark_mutations(
+                spark,
+                run_id,
+                duplicate_rejection_mutations(_post_repair_duplicates),
+                catalog=catalog,
+                schema=schema,
+            )
+        _repair_tries_used = outcome.tries_used
+        _repaired_ids = outcome.repaired_ids
+        _repair_sweeps = outcome.sweeps
+        _final_validity = True
+        require_minimum_valid_benchmarks(
+            _benchmarks,
+            minimum_count=MIN_VALID_BENCHMARK_COUNT,
+            target_count=effective_target,
+            context="bounded benchmark quality review and repair",
+        )
+        _log(
+            "Benchmark repair complete",
+            valid_count=len(_benchmarks),
+            tries_used=_repair_tries_used,
+            repaired=len(_repaired_ids),
+        )
+    except BenchmarkUnrepairableError as exc:
+        _repair_failed = True
+        _repair_error = exc
+        _benchmarks = exc.valid
+        _repair_tries_used = exc.tries_used
+        _repaired_ids = []
+        _repair_sweeps = []
+        _final_validity = False
+        _log(
+            "Benchmark UNREPAIRABLE",
+            tries_used=exc.tries_used,
+            still_invalid=[default_id_of(b) for b in exc.still_invalid],
+        )
+    except BenchmarkCorpusTooSmallError as exc:
+        # An undersized but otherwise valid corpus is a business skip, not a job
+        # failure. Downstream tasks read optimization_eligible from benchmark_qc.
+        _optimization_eligible = False
+        _skip_reason = exc.terminal_reason
+        _final_validity = True
+        _log(
+            "Benchmark corpus below minimum",
+            valid_count=exc.valid_count,
+            minimum_count=exc.minimum_count,
+            target_count=exc.target_count,
+        )
+    except Exception as exc:
+        _banner("Benchmark Repair FAILED")
+        _log(
+            "Failure details",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            traceback=traceback.format_exc(),
+        )
+        write_failure_stage_safely(
             spark,
             run_id,
-            duplicate_rejection_mutations(_post_repair_duplicates),
+            "BENCHMARK_QC_AND_REPAIR",
+            task_key=_TASK_KEY,
             catalog=catalog,
             schema=schema,
+            error_message=str(exc),
         )
-    _repair_tries_used = outcome.tries_used
-    _repaired_ids = outcome.repaired_ids
-    _repair_sweeps = outcome.sweeps
-    _final_validity = True
-    require_minimum_valid_benchmarks(
-        _benchmarks,
-        minimum_count=MIN_VALID_BENCHMARK_COUNT,
-        target_count=effective_target,
-        context="bounded benchmark quality review and repair",
-    )
-    _log(
-        "Benchmark repair complete",
-        valid_count=len(_benchmarks),
-        tries_used=_repair_tries_used,
-        repaired=len(_repaired_ids),
-    )
-except BenchmarkUnrepairableError as exc:
-    _repair_failed = True
-    _repair_error = exc
-    _benchmarks = exc.valid
-    _repair_tries_used = exc.tries_used
-    _repaired_ids = []
-    _repair_sweeps = []
-    _final_validity = False
-    _log(
-        "Benchmark UNREPAIRABLE",
-        tries_used=exc.tries_used,
-        still_invalid=[default_id_of(b) for b in exc.still_invalid],
-    )
-except BenchmarkCorpusTooSmallError as exc:
-    _repair_failed = True
-    _repair_error = exc
-    _final_validity = False
-    _log(
-        "Benchmark corpus below minimum",
-        valid_count=exc.valid_count,
-        minimum_count=exc.minimum_count,
-        target_count=exc.target_count,
-    )
-except Exception as exc:
-    _banner("Benchmark Repair FAILED")
-    _log(
-        "Failure details",
-        error_type=type(exc).__name__,
-        error_message=str(exc),
-        traceback=traceback.format_exc(),
-    )
-    write_failure_stage_safely(
-        spark,
-        run_id,
-        "BENCHMARK_QC_AND_REPAIR",
-        task_key=_TASK_KEY,
-        catalog=catalog,
-        schema=schema,
-        error_message=str(exc),
-    )
-    _diagnostic(
-        "Repair failed",
-        run_id=run_id,
-        log_schema=f"{catalog}.{schema}",
-        error_type=type(exc).__name__,
-        error_message=str(exc),
-        next_sources=["genie_opt_stages", "genie_opt_artifacts"],
-    )
-    raise
+        _diagnostic(
+            "Repair failed",
+            run_id=run_id,
+            log_schema=f"{catalog}.{schema}",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            next_sources=["genie_opt_stages", "genie_opt_artifacts"],
+        )
+        raise
 
 if _repair_failed:
     _benchmarks, _failed_repair_duplicates = deduplicate_benchmark_corpus(
@@ -757,7 +821,8 @@ if _repair_failed:
 
 _push = {}
 _window: dict[str, Any] = {}
-if not _repair_failed and _benchmarks:
+_benchmark_mutation_count = 0
+if benchmark_policy == "repair_allowed" and not _repair_failed and _benchmarks:
     try:
         _banner("Step 01c — Push Benchmarks to Live Space")
         _push = preflight_push_benchmarks_to_space(
@@ -765,6 +830,9 @@ if not _repair_failed and _benchmarks:
             rejected_benchmarks=list(_rejected_benchmarks_by_id.values()),
         )
         _window = _push.get("window", {})
+        _benchmark_mutation_count = int(
+            _push.get("benchmark_mutation_count") or 0
+        )
         _log(
             "Push complete",
             published=_push.get("published_count"),
@@ -779,6 +847,18 @@ if not _repair_failed and _benchmarks:
             task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
         )
         raise
+elif benchmark_policy == "review_only":
+    _count = len(_benchmarks)
+    _window = {
+        "count": _count,
+        "status": (
+            "under_window" if _count < 30
+            else "over_window" if _count > 40
+            else "in_window"
+        ),
+        "recommended_topup": max(30 - _count, 0),
+        "recommended_prune": [],
+    }
 
 # COMMAND ----------
 
@@ -832,6 +912,9 @@ _final_quality_results = [_final_quality_result(b) for b in _benchmarks]
 
 _qc_payload: dict[str, Any] = {
     "run_id": run_id,
+    "benchmark_policy": benchmark_policy,
+    "benchmark_mutation_count": _benchmark_mutation_count,
+    "initial_count": _initial_benchmark_count,
     "valid_count": len(_benchmarks),
     "minimum_valid_count": MIN_VALID_BENCHMARK_COUNT,
     "target_count": effective_target,
@@ -841,6 +924,7 @@ _qc_payload: dict[str, Any] = {
     "repair_sweeps": _repair_sweeps,
     "benchmark_repair_max_tries": benchmark_repair_max_tries,
     "final_validity": _final_validity,
+    "optimization_eligible": _optimization_eligible,
     "window": _window,
     "window_target_min": 30,
     "window_target_max": 40,
@@ -893,6 +977,8 @@ _qc_payload: dict[str, Any] = {
     # genie_eval_gt_correction_candidates table — §7 reconciliation).
     "gt_correction_candidates": [],
 }
+if _skip_reason:
+    _qc_payload["terminal_reason"] = _skip_reason
 if _repair_failed and _repair_error is not None:
     _qc_payload["terminal_reason"] = _repair_error.terminal_reason
     if isinstance(_repair_error, BenchmarkUnrepairableError):
@@ -919,10 +1005,19 @@ _diagnostic(
     window_status=(_qc_payload.get("window") or {}).get("status"),
 )
 
-write_artifact(
+write_required_artifact(
     spark, run_id, "benchmark_qc", _qc_payload,
     catalog=catalog, schema=schema,
     stage_name=_TASK_KEY, source_notebook="run_benchmark_qc_and_repair.py",
+)
+
+update_run_status(
+    spark,
+    run_id,
+    catalog,
+    schema,
+    benchmark_policy=benchmark_policy,
+    benchmark_mutation_count=_benchmark_mutation_count,
 )
 
 from genie_space_optimizer.optimization.wide_schema_prompt import (
@@ -963,7 +1058,7 @@ if _repair_failed and _repair_error is not None:
         minimum_valid_count=MIN_VALID_BENCHMARK_COUNT,
         next_sources=["genie_opt_artifacts", "genie_opt_benchmark_mutations"],
     )
-    # Hard stop — invalid questions or an undersized final corpus.
+    # Hard stop only for questions that remain invalid after the repair budget.
     raise _repair_error
 
 write_stage(
@@ -973,6 +1068,10 @@ write_stage(
         "valid_count": len(_benchmarks),
         "repair_tries_used": _repair_tries_used,
         "window_status": _window.get("status"),
+        "benchmark_policy": benchmark_policy,
+        "benchmark_mutation_count": _benchmark_mutation_count,
+        "optimization_eligible": _optimization_eligible,
+        "terminal_reason": _skip_reason,
     },
 )
 
@@ -984,6 +1083,9 @@ _diagnostic(
     repair_tries_used=_repair_tries_used,
     published_count=_push.get("published_count"),
     window_status=_window.get("status"),
+    benchmark_policy=benchmark_policy,
+    benchmark_mutation_count=_benchmark_mutation_count,
+    optimization_eligible=_optimization_eligible,
     primary_sources=["genie_opt_artifacts", "genie_opt_benchmark_mutations"],
 )
 _banner("Benchmark QC and repair completed")
@@ -991,4 +1093,6 @@ dbutils.notebook.exit(json.dumps({
     "run_id": run_id,
     "valid_count": len(_benchmarks),
     "repair_tries_used": _repair_tries_used,
+    "optimization_eligible": _optimization_eligible,
+    "terminal_reason": _skip_reason,
 }, default=str))

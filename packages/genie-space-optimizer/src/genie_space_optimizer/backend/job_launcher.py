@@ -78,6 +78,7 @@ def submit_optimization(
     target_accuracy: str = "0.90",
     max_attempts: str = "3",
     workload_warehouse_ids: str = "[]",
+    benchmark_policy: str = "repair_allowed",
 ) -> tuple[str, int]:
     """Trigger a run on the bundle-managed optimization job.
 
@@ -120,6 +121,7 @@ def submit_optimization(
                 "warehouse_id": warehouse_id,
                 "llm_model": llm_model or os.getenv("LLM_MODEL", ""),
                 "workload_warehouse_ids": workload_warehouse_ids,
+                "benchmark_policy": benchmark_policy,
             },
         )
 

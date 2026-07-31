@@ -401,21 +401,25 @@ class TestPreflightValidateBenchmarks:
         ]
         mock_generate.return_value = topped_up
 
-        result = preflight_validate_benchmarks(
-            MagicMock(),
-            MagicMock(),
-            "run-1",
-            "cat",
-            "gold",
-            {"_parsed_space": {}},
-            initial,
-            [],
-            [],
-            [],
-            "sales",
-            target_benchmark_count=30,
-            max_benchmark_count=30,
-        )
+        with patch(
+            "genie_space_optimizer.optimization.benchmarks.validate_question_sql_alignment",
+            side_effect=lambda rows: [{"aligned": True} for _ in rows],
+        ):
+            result = preflight_validate_benchmarks(
+                MagicMock(),
+                MagicMock(),
+                "run-1",
+                "cat",
+                "gold",
+                {"_parsed_space": {}},
+                initial,
+                [],
+                [],
+                [],
+                "sales",
+                target_benchmark_count=30,
+                max_benchmark_count=30,
+            )
 
         assert len(result["benchmarks"]) == 30
         assert result["benchmarks"] == topped_up

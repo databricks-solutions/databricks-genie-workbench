@@ -5,11 +5,18 @@ import type { GSORunSummary, VersionMatch } from "@/types"
 vi.mock("@/lib/api", () => ({
   getAutoOptimizeRunsForSpace: vi.fn(() => Promise.resolve([])),
   getCurrentVersion: vi.fn(() => Promise.resolve({ status: "no_known_versions" })),
+  getAutoOptimizeRevertOptions: vi.fn(),
   revertAutoOptimizeRun: vi.fn(),
   ApiError: class ApiError extends Error {},
 }))
 
-import { DriftBanner, HistoryIncompleteBanner, LiveVersionBadge, RevertButton } from "./RunHistoryTable"
+import {
+  BenchmarkPolicyCell,
+  DriftBanner,
+  HistoryIncompleteBanner,
+  LiveVersionBadge,
+  RevertOptionsButton,
+} from "./RunHistoryTable"
 import { hasActiveOptimizationRun, hasRevertibleChampion } from "./runHistory"
 
 function run(overrides: Partial<GSORunSummary>): GSORunSummary {
@@ -38,9 +45,8 @@ describe("RunHistoryTable revert safety", () => {
 
   it("disables a terminal row's revert control while another run is active", () => {
     const markup = renderToStaticMarkup(
-      <RevertButton
+      <RevertOptionsButton
         run={run({ run_id: "old", status: "CONVERGED" })}
-        target="baseline"
         disabled={true}
         onReverted={() => undefined}
       />,
@@ -48,7 +54,7 @@ describe("RunHistoryTable revert safety", () => {
 
     expect(markup).toContain("disabled")
     expect(markup).toContain("active optimization on this agent")
-    expect(markup).toContain("Revert to Baseline")
+    expect(markup).toContain("Revert Options")
   })
 
   it("offers an iteration-0 champion when enrichment or recovery won", () => {
@@ -72,6 +78,22 @@ describe("RunHistoryTable revert safety", () => {
       best_iteration: 2,
       best_accuracy: 96,
     }))).toBe(true)
+  })
+})
+
+describe("BenchmarkPolicyCell", () => {
+  it("distinguishes review-only from repair-enabled runs", () => {
+    const review = renderToStaticMarkup(
+      <BenchmarkPolicyCell run={run({ benchmark_policy: "review_only", benchmark_mutation_count: 0 })} />,
+    )
+    expect(review).toContain("Review only")
+    expect(review).toContain("No live benchmark changes")
+
+    const repair = renderToStaticMarkup(
+      <BenchmarkPolicyCell run={run({ benchmark_policy: "repair_allowed", benchmark_mutation_count: 2 })} />,
+    )
+    expect(repair).toContain("Repair allowed")
+    expect(repair).toContain("2 live changes")
   })
 })
 

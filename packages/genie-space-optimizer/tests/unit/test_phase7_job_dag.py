@@ -104,6 +104,7 @@ def test_new_job_parameters_present_with_defaults():
     assert params.get("max_attempts") == "3"
     assert params.get("target_accuracy") == "0.90"
     assert params.get("benchmark_repair_max_tries") == "3"
+    assert params.get("benchmark_policy") == "repair_allowed"
     assert params.get("workload_warehouse_ids") == "[]"
 
 
@@ -136,6 +137,13 @@ def test_repair_task_receives_benchmark_repair_max_tries():
     assert "benchmark_repair_max_tries" in bp
 
 
+def test_every_task_receives_benchmark_policy():
+    job = _load_job()
+    for task in job["tasks"]:
+        bp = task["notebook_task"]["base_parameters"]
+        assert bp["benchmark_policy"] == "{{job.parameters.benchmark_policy}}"
+
+
 def test_intake_receives_optional_workload_warehouses():
     job = _load_job()
     by_key = {t["task_key"]: t for t in job["tasks"]}
@@ -156,6 +164,82 @@ def test_repair_task_uses_canonical_quality_review_and_persists_findings():
     assert '"semantic_review_coverage"' in src
 
 
+def test_benchmark_qc_is_a_required_verified_handoff():
+    jobs_dir = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+    )
+    repair_src = (jobs_dir / "run_benchmark_qc_and_repair.py").read_text()
+    assert (
+        'write_required_artifact(\n'
+        '    spark, run_id, "benchmark_qc", _qc_payload,'
+    ) in repair_src
+
+    for notebook_name in ("run_optimize.py", "run_publish_and_audit.py"):
+        src = (jobs_dir / notebook_name).read_text()
+        load = src.index("_benchmark_qc_record = load_latest_artifact_record(")
+        missing_gate = src.index("if _benchmark_qc_record is None:", load)
+        verified_payload = src.index(
+            '_benchmark_qc = _benchmark_qc_record["payload"]',
+            missing_gate,
+        )
+        eligibility_gate = src.index(
+            'if _benchmark_qc.get("optimization_eligible") is False:',
+            verified_payload,
+        )
+        assert load < missing_gate < verified_payload < eligibility_gate
+
+
+def test_repair_task_uses_persisted_push_mutation_count():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_benchmark_qc_and_repair.py"
+    ).read_text()
+    assert '_push.get("benchmark_mutation_count")' in src
+    assert 'getattr(_push_report, "added_count"' not in src
+
+
+def test_review_only_policy_never_enters_generation_or_live_push():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_benchmark_qc_and_repair.py"
+    ).read_text()
+
+    assert "extract_review_only_benchmarks(" in src
+    assert 'if benchmark_policy == "review_only":' in src
+    assert (
+        'if benchmark_policy == "repair_allowed" and not _repair_failed'
+        in src
+    )
+    review_start = src.index('if benchmark_policy == "review_only":')
+    repair_start = src.index("    else:\n        ctx_bench = preflight_generate_benchmarks(")
+    assert review_start < repair_start
+
+
+def test_insufficient_qc_short_circuits_optimize_before_input_load_or_loop():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_optimize.py"
+    ).read_text()
+
+    skip_gate = src.index('if _benchmark_qc.get("optimization_eligible") is False:')
+    input_load = src.index("def _load_optimize_inputs(")
+    loop_call = src.index("run_unified_optimization_loop(", input_load)
+    assert skip_gate < input_load < loop_call
+    assert '"status": "SKIPPED"' in src[skip_gate:input_load]
+
+
 def test_repair_task_enforces_corpus_floor_before_publish_and_optimize():
     src = (
         _PKG_ROOT
@@ -164,7 +248,7 @@ def test_repair_task_enforces_corpus_floor_before_publish_and_optimize():
         / "jobs"
         / "run_benchmark_qc_and_repair.py"
     ).read_text()
-    floor_call = "    require_minimum_valid_benchmarks(\n        _benchmarks,"
+    floor_call = "        require_minimum_valid_benchmarks(\n            _benchmarks,"
     push_call = "        _push = preflight_push_benchmarks_to_space("
     assert floor_call in src
     assert push_call in src
@@ -201,12 +285,14 @@ def test_submit_optimization_threads_loop_knobs_into_job_parameters():
         schema="sch",
         target_accuracy="0.85",
         max_attempts="5",
+        benchmark_policy="review_only",
         workload_warehouse_ids='["wh-a","wh-b"]',
     )
     assert resolved_job_id == 99
     params = ws.jobs.run_now.call_args.kwargs["job_parameters"]
     assert params["target_accuracy"] == "0.85"
     assert params["max_attempts"] == "5"
+    assert params["benchmark_policy"] == "review_only"
     assert params["workload_warehouse_ids"] == '["wh-a","wh-b"]'
 
 
@@ -225,6 +311,7 @@ def test_submit_optimization_loop_knobs_default_to_job_defaults():
     params = ws.jobs.run_now.call_args.kwargs["job_parameters"]
     assert params["target_accuracy"] == "0.90"
     assert params["max_attempts"] == "3"
+    assert params["benchmark_policy"] == "repair_allowed"
 
 
 def test_no_dbutils_notebook_run_or_task_values_in_new_notebooks():

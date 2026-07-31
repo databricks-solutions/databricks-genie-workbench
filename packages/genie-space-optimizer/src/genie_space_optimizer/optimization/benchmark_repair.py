@@ -7,8 +7,8 @@ task validates → **repairs/prunes inline** → re-validates, bounded by
 ``benchmark_repair_max_tries`` (default 3), and flows into ``02`` when the
 valid corpus still meets the configured floor. A benchmark that is still
 invalid after K tries hard-fails with terminal reason
-``BENCHMARK_UNREPAIRABLE``; a corpus below the floor fails with
-``INSUFFICIENT_VALID_BENCHMARKS``.
+``BENCHMARK_UNREPAIRABLE``; callers treat a corpus below the floor as the
+business-skip reason ``INSUFFICIENT_VALID_BENCHMARKS``.
 
 This module owns the bounded try-counting control loop and the final corpus
 floor guard. It reuses the existing Phase-2 validation/repair primitives

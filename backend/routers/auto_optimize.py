@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import time
-from typing import Annotated, Any, Callable, TypeVar
+from typing import Annotated, Any, Callable, Literal, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -38,6 +38,7 @@ from genie_space_optimizer.integration import (
     trigger_optimization,
     apply_optimization,
     discard_optimization,
+    preview_revert_options,
     revert_optimization,
     get_lever_info,
     IntegrationConfig,
@@ -101,7 +102,7 @@ LEVER_NAMES: dict[int, str] = {
 
 _TERMINAL_RUN_STATUSES = {
     "CONVERGED", "STALLED", "MAX_ITERATIONS", "FAILED", "CANCELLED",
-    "APPLIED", "DISCARDED",
+    "APPLIED", "DISCARDED", "SKIPPED",
 }
 
 # GSO v2 (arch §5.1 / §7.4) — the closed set of typed loop terminal reasons the
@@ -120,6 +121,7 @@ _TYPED_TERMINAL_REASONS = (
     "CONFIG_VALIDATION_FAILED",
     "LOOP_STATE_INVALID",
     "EVAL_BUDGET_EXHAUSTED",
+    "INSUFFICIENT_VALID_BENCHMARKS",
 )
 
 # Defaults for the round-tripped loop knobs (arch §13 / D9). target_accuracy is
@@ -175,6 +177,9 @@ class TriggerRequest(BaseModel):
     # native patch/eval loop. The loop stops at whichever comes first.
     target_accuracy: float | None = Field(None, ge=0.0, le=1.0)
     max_attempts: int | None = Field(None, ge=1, le=20)
+    # Backward-compatible API default: callers predating the gate retain the
+    # former repair behavior. The Workbench UI sends review_only explicitly.
+    benchmark_policy: Literal["review_only", "repair_allowed"] = "repair_allowed"
     workload_warehouse_ids: list[
         Annotated[str, Field(pattern=r"^[0-9a-zA-Z_-]{1,128}$")]
     ] = Field(default_factory=list, max_length=20)
@@ -1421,6 +1426,7 @@ async def trigger(body: TriggerRequest, request: Request):
             target_accuracy=body.target_accuracy,
             max_attempts=body.max_attempts,
             workload_warehouse_ids=body.workload_warehouse_ids,
+            benchmark_policy=body.benchmark_policy,
         )
         # Echo the resolved knobs (request value or the job default) so the UI
         # can confirm what the run will use without re-reading the job config.
@@ -1433,6 +1439,7 @@ async def trigger(body: TriggerRequest, request: Request):
             "status": result.status,
             "targetAccuracy": resolved_target,
             "maxAttempts": resolved_max_attempts,
+            "benchmarkPolicy": body.benchmark_policy,
         }
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -2054,36 +2061,54 @@ async def discard_run(run_id: RunId):
 @router.post("/runs/{run_id}/revert")
 async def revert_run(
     run_id: RunId,
-    target: str = Query(
+    config_target: str = Query(
         "champion",
         description="Which configuration to revert to: "
         "'champion' (the run's winning iteration config) or 'baseline' "
         "(the run's pre-run config snapshot).",
     ),
+    benchmark_target: str = Query(
+        "current",
+        description="Whether to preserve 'current' live benchmarks or restore "
+        "the run's pre-run 'baseline' benchmarks.",
+    ),
+    # Deprecated alias retained for existing callers and bookmarked URLs.
+    target: str | None = Query(None, include_in_schema=False),
 ):
-    """Revert the live Genie Agent to a past run's captured configuration.
+    """Revert a past run with independently selected config/benchmark scopes.
 
-    Re-PATCHes the live space with the run's captured config. ``target=champion``
-    uses the champion iteration's authoritative observed config (with legacy
-    ``config_json`` fallback); ``target=baseline`` uses the run's
-    ``config_snapshot`` (the
-    pre-run serialized space, i.e. what the space looked like before this
-    optimization ran). Unlike ``/discard``, this is a pure config rollback —
-    the run's own status is left untouched, so any past history entry can be
-    reverted to regardless of its terminal resolution. Refuses runs that are
-    still in progress.
+    ``config_target=champion`` uses the champion iteration's authoritative
+    observed config (with legacy ``config_json`` fallback), while
+    ``config_target=baseline`` uses the run's pre-run ``config_snapshot``.
+    ``benchmark_target=current`` composes the live benchmark block into that
+    config; ``benchmark_target=baseline`` restores the benchmark block from the
+    same pre-run snapshot. Unlike ``/discard``, this leaves the historical run
+    status untouched. Active same-Space runs are refused.
     """
-    if target not in ("champion", "baseline"):
+    resolved_config_target = target or config_target
+    if resolved_config_target not in ("champion", "baseline"):
         raise HTTPException(
             status_code=422,
-            detail="target must be 'champion' or 'baseline'.",
+            detail="config_target must be 'champion' or 'baseline'.",
+        )
+    if benchmark_target not in ("current", "baseline"):
+        raise HTTPException(
+            status_code=422,
+            detail="benchmark_target must be 'current' or 'baseline'.",
         )
     ws = get_workspace_client()
     sp_ws = get_service_principal_client()
     config = _build_gso_config()
 
     try:
-        result = revert_optimization(run_id, ws, sp_ws, config, target=target)
+        result = revert_optimization(
+            run_id,
+            ws,
+            sp_ws,
+            config,
+            target=resolved_config_target,
+            benchmark_target=benchmark_target,
+        )
         _invalidate_live_fingerprint_for_run(run_id)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
     except PermissionError as e:
@@ -2095,6 +2120,31 @@ async def revert_run(
     except Exception as e:
         logger.exception("Failed to revert to run %s: %s", run_id, e)
         raise HTTPException(status_code=500, detail="Failed to revert the Genie Agent.")
+
+
+@router.get("/runs/{run_id}/revert-options")
+async def get_revert_options(run_id: RunId):
+    """Preview available revert targets and the baseline benchmark diff."""
+    ws = get_workspace_client()
+    sp_ws = get_service_principal_client()
+    config = _build_gso_config()
+    try:
+        return await _offload(
+            preview_revert_options,
+            run_id,
+            ws,
+            sp_ws,
+            config,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to preview revert options for %s: %s", run_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to preview revert options.")
 
 
 # ---------------------------------------------------------------------------
@@ -2493,6 +2543,9 @@ def _enrich_run_summaries(runs: list[dict]) -> list[dict]:
         r["best_accuracy"] = _safe_float(r.get("best_accuracy"))
         r["best_iteration"] = _safe_int(r.get("best_iteration"))
         r["has_config_snapshot"] = _safe_bool(r.get("has_config_snapshot"))
+        r["benchmark_mutation_count"] = _safe_int(
+            r.get("benchmark_mutation_count")
+        ) or 0
     return runs
 
 
@@ -2508,13 +2561,30 @@ async def load_runs_with_fallback(space_id: str) -> list[dict]:
     if not _is_configured():
         return []
 
-    return _enrich_run_summaries(_delta_query(
-        f"SELECT run_id, space_id, status, started_at, completed_at, "
-        f"best_accuracy, best_iteration, convergence_reason, triggered_by, llm_model, "
-        f"(config_snapshot IS NOT NULL AND length(config_snapshot) > 2) AS has_config_snapshot "
-        f"FROM {_delta_table('genie_opt_runs')} "
-        f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
-    ))
+    base_cols = (
+        "run_id, space_id, status, started_at, completed_at, best_accuracy, "
+        "best_iteration, convergence_reason, triggered_by, llm_model"
+    )
+    suffix = (
+        "(config_snapshot IS NOT NULL AND length(config_snapshot) > 2) "
+        "AS has_config_snapshot"
+    )
+    table = _delta_table("genie_opt_runs")
+    try:
+        rows = _delta_query(
+            f"SELECT {base_cols}, benchmark_policy, benchmark_mutation_count, "
+            f"{suffix} FROM {table} WHERE space_id = '{space_id}' "
+            "ORDER BY started_at DESC",
+            strict=True,
+        )
+    except Exception:
+        # History remains readable before the next run executes the additive
+        # migration. Legacy rows surface their benchmark handling as unknown.
+        rows = _delta_query(
+            f"SELECT {base_cols}, {suffix} FROM {table} "
+            f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
+        )
+    return _enrich_run_summaries(rows)
 
 
 @router.get("/spaces/{space_id}/runs")
@@ -2917,6 +2987,14 @@ def _build_benchmark_qc(payload: dict) -> dict:
         "windowTargetMax": _safe_int(payload.get("window_target_max")),
         "gtCorrectionCandidates": gt_candidates if isinstance(gt_candidates, list) else [],
         "terminalReason": payload.get("terminal_reason") or None,
+        "benchmarkPolicy": payload.get("benchmark_policy") or None,
+        "benchmarkMutationCount": _safe_int(payload.get("benchmark_mutation_count")),
+        "optimizationEligible": (
+            _safe_bool(payload.get("optimization_eligible"))
+            if payload.get("optimization_eligible") is not None
+            else None
+        ),
+        "minimumValidCount": _safe_int(payload.get("minimum_valid_count")),
         "stillInvalidIds": still_invalid if isinstance(still_invalid, list) else None,
         "qualityReviewVersion": payload.get("quality_review_version") or None,
         "qualityReviewStatus": payload.get("quality_review_status") or None,
@@ -3112,17 +3190,56 @@ async def list_benchmark_changes(run_id: RunId):
 
     qc_payload = await _offload(_load_latest_artifact, run_id, "benchmark_qc") if _is_configured() else None
 
+    # Older publishers stored only answer.content[0] in the mutation ledger.
+    # Recover the authoritative full "before" state from the immutable intake
+    # snapshot so historical runs render correctly too. This also lets us hide
+    # old false-positive changes caused solely by Genie serializing one SQL
+    # statement as many content fragments while GSO serialized it as one.
+    snapshot_states: dict[str, dict[str, str]] = {}
+    if any(str(m.get("op") or "").strip().lower() == "changed" for m in mutations):
+        run_row = await gso_lakebase.load_gso_run(run_id)
+        if run_row is None and _is_configured():
+            try:
+                rows = await _delta_query_async(
+                    f"SELECT config_snapshot FROM {_delta_table('genie_opt_runs')} "
+                    f"WHERE run_id = '{run_id}' LIMIT 1"
+                )
+                run_row = rows[0] if rows else None
+            except Exception:
+                logger.warning(
+                    "Could not load intake snapshot for benchmark changes run %s",
+                    run_id,
+                    exc_info=True,
+                )
+        if isinstance(run_row, dict):
+            snapshot_states = _benchmark_states_from_snapshot(
+                run_row.get("config_snapshot"),
+            )
+
     buckets: dict[str, list[dict]] = {
         "added": [], "removed": [], "changed": [], "prune_recommended": [],
     }
     items: list[dict] = []
     for m in mutations:
         op = str(m.get("op") or "").strip().lower()
+        before = _safe_json_parse(m.get("before"))
+        after = _safe_json_parse(m.get("after"))
+        question_id = str(m.get("question_id") or "")
+        if op == "changed" and question_id in snapshot_states:
+            # Snapshot state is the actual pre-run benchmark, whereas legacy
+            # ledger state may contain only the first SQL fragment.
+            before = snapshot_states[question_id]
+            if (
+                isinstance(after, dict)
+                and str(before.get("sql") or "").strip()
+                == str(after.get("sql") or "").strip()
+            ):
+                continue
         item = {
             "questionId": m.get("question_id"),
             "op": op,
-            "before": _safe_json_parse(m.get("before")),
-            "after": _safe_json_parse(m.get("after")),
+            "before": before,
+            "after": after,
             "reason": m.get("reason"),
             "loggedAt": _isoformat(m.get("logged_at")),
         }
@@ -3146,6 +3263,58 @@ async def list_benchmark_changes(run_id: RunId):
         },
         "qc": _build_benchmark_qc(qc_payload) if qc_payload else None,
     }
+
+
+def _benchmark_states_from_snapshot(raw_snapshot: Any) -> dict[str, dict[str, str]]:
+    """Map native benchmark IDs to complete question/SQL intake state."""
+    snapshot = _safe_json_parse(raw_snapshot)
+    if not isinstance(snapshot, dict):
+        return {}
+    parsed = _resolve_parsed_space(snapshot)
+    if not parsed and isinstance(snapshot.get("benchmarks"), dict):
+        parsed = snapshot
+    benchmark_node = parsed.get("benchmarks") if isinstance(parsed, dict) else None
+    questions = (
+        benchmark_node.get("questions")
+        if isinstance(benchmark_node, dict)
+        else None
+    )
+    if not isinstance(questions, list):
+        return {}
+
+    states: dict[str, dict[str, str]] = {}
+    for row in questions:
+        if not isinstance(row, dict):
+            continue
+        question_id = str(row.get("id") or "").strip()
+        if not question_id:
+            continue
+        raw_question = row.get("question")
+        question = (
+            " ".join(str(part) for part in raw_question).strip()
+            if isinstance(raw_question, list)
+            else str(raw_question or "").strip()
+        )
+        sql = ""
+        answers = row.get("answer")
+        if isinstance(answers, list):
+            for answer in answers:
+                if not isinstance(answer, dict):
+                    continue
+                if str(answer.get("format") or "").upper() != "SQL":
+                    continue
+                content = answer.get("content")
+                if isinstance(content, list):
+                    sql = "".join(
+                        str(fragment)
+                        for fragment in content
+                        if fragment is not None
+                    ).strip()
+                else:
+                    sql = str(content or "").strip()
+                break
+        states[question_id] = {"question": question, "sql": sql}
+    return states
 
 
 def _parse_official_eval_results(rows_json_str: str | None) -> list[dict]:

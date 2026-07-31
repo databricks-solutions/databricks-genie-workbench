@@ -15,6 +15,7 @@ import {
   getAutoOptimizePublishRecord,
   getAutoOptimizeLoopState,
 } from "@/lib/api"
+import { isTerminalStatus } from "@/lib/score-display"
 import type { GSOPipelineRun, GSOIterationResult, GSOPublishRecord, GSOAttempt } from "@/types"
 
 interface RunDetailViewProps {
@@ -29,21 +30,12 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   MAX_ITERATIONS: "warning",
   FAILED: "danger",
   CANCELLED: "secondary",
+  SKIPPED: "warning",
   DISCARDED: "secondary",
   IN_PROGRESS: "info",
   RUNNING: "info",
   QUEUED: "secondary",
 }
-
-const TERMINAL_STATUSES = new Set([
-  "CONVERGED",
-  "STALLED",
-  "MAX_ITERATIONS",
-  "FAILED",
-  "CANCELLED",
-  "APPLIED",
-  "DISCARDED",
-])
 
 export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
@@ -79,7 +71,7 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
     return <div className="py-8 text-center text-muted text-sm">Loading run details...</div>
   }
 
-  const isTerminal = TERMINAL_STATUSES.has(run.status)
+  const isTerminal = isTerminalStatus(run.status)
   // Attempt Ladder + Ledger inputs (mirror PipelineDetailsModal / AutoOptimizeTab).
   const hasAttempts = attempts.length > 0
   const targetUnit = run.targetAccuracy ?? null

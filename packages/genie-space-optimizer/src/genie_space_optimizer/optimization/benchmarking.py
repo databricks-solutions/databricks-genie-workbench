@@ -43,6 +43,7 @@ from genie_space_optimizer.common.config import (
 )
 
 from genie_space_optimizer.common.genie_client import (
+    _extract_benchmark_sql_answer,
     detect_asset_type,
     resolve_sql,
     sanitize_sql,
@@ -2118,19 +2119,7 @@ def _strip_legacy_auto_optimize_prefix(question: str) -> str:
     return text
 
 def _extract_sql_answer(answers: Any) -> str:
-    if not isinstance(answers, list):
-        return ""
-    for ans in answers:
-        if not isinstance(ans, dict):
-            continue
-        if str(ans.get("format", "")).upper() != "SQL":
-            continue
-        content = ans.get("content", [])
-        if isinstance(content, list):
-            return "".join(str(part) for part in content).strip()
-        if isinstance(content, str):
-            return content.strip()
-    return ""
+    return _extract_benchmark_sql_answer(answers)
 
 def _normalized_question_key(question: str) -> str:
     text = _strip_legacy_auto_optimize_prefix(str(question or ""))
@@ -2306,6 +2295,35 @@ def extract_genie_space_benchmarks(
         sum(1 for b in benchmarks if not b.get("expected_sql")),
     )
     return benchmarks
+
+
+def extract_review_only_benchmarks(
+    config: dict,
+    spark: SparkSession,
+    catalog: str = "",
+    schema: str = "",
+    *,
+    w: Any = None,
+    warehouse_id: str = "",
+) -> list[dict]:
+    """Return only native pre-run benchmark questions for review-only runs.
+
+    Sample questions intentionally remain outside the optimization corpus: they
+    do not have user-approved ground-truth SQL and admitting them would turn a
+    review-only run into implicit benchmark generation.
+    """
+    return [
+        benchmark
+        for benchmark in extract_genie_space_benchmarks(
+            config,
+            spark,
+            catalog=catalog,
+            schema=schema,
+            w=w,
+            warehouse_id=warehouse_id,
+        )
+        if benchmark.get("source") == "genie_benchmark"
+    ]
 
 def _build_valid_assets_context(config: dict) -> str:
     """Build an explicit allowlist of Genie Agent data assets for the LLM prompt.

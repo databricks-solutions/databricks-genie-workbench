@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from genie_space_optimizer.optimization.benchmarking import extract_genie_space_benchmarks
+from genie_space_optimizer.optimization.benchmarking import (
+    extract_genie_space_benchmarks,
+    extract_review_only_benchmarks,
+)
 
 
 def _hex(seed: str) -> str:
@@ -80,6 +83,49 @@ def test_extracts_user_benchmarks_and_sample_questions_but_not_example_sqls() ->
     assert by_question["What were total sales yesterday?"]["source"] == "sample_question"
     assert by_question["What were total sales yesterday?"]["expected_sql"] == ""
     assert all("example function" not in row["question"].lower() for row in rows)
+
+
+def test_extracts_complete_sql_from_multiple_content_fragments() -> None:
+    config = _space_config()
+    config["_parsed_space"]["benchmarks"]["questions"][0]["answer"][0]["content"] = [
+        "SELECT market, ",
+        "SUM(sales) FROM cat.sch.fact_sales ",
+        "GROUP BY market",
+    ]
+
+    with patch(
+        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
+        return_value=(True, ""),
+    ):
+        rows = extract_genie_space_benchmarks(
+            config,
+            spark=MagicMock(),
+            catalog="cat",
+            schema="sch",
+        )
+
+    benchmark = next(row for row in rows if row["source"] == "genie_benchmark")
+    assert benchmark["expected_sql"] == (
+        "SELECT market, SUM(sales) FROM cat.sch.fact_sales GROUP BY market"
+    )
+
+
+def test_review_only_extracts_native_benchmarks_without_sample_questions() -> None:
+    with patch(
+        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
+        return_value=(True, ""),
+    ):
+        rows = extract_review_only_benchmarks(
+            _space_config(),
+            spark=MagicMock(),
+            catalog="cat",
+            schema="sch",
+        )
+
+    assert rows
+    assert all(row["source"] == "genie_benchmark" for row in rows)
+    assert all(row.get("space_question_id") for row in rows)
+    assert all(row["category"] == "user_benchmark" for row in rows)
 
 
 def test_invalid_user_benchmark_sql_is_kept_question_only_for_sql_regeneration() -> None:

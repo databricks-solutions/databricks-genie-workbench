@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { RotateCcw, Loader2, AlertCircle, AlertTriangle, CheckCircle2, Trophy, History, Info } from "lucide-react"
+import { RotateCcw, Loader2, AlertCircle, AlertTriangle, CheckCircle2, Info } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -10,14 +10,37 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table"
-import { getAutoOptimizeRunsForSpace, getCurrentVersion, revertAutoOptimizeRun, ApiError } from "@/lib/api"
+import {
+  ApiError,
+  getAutoOptimizeRevertOptions,
+  getAutoOptimizeRunsForSpace,
+  getCurrentVersion,
+  revertAutoOptimizeRun,
+} from "@/lib/api"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import {
   championAccuracyText,
   hasActiveOptimizationRun,
   hasRevertibleChampion,
   humanizeTerminalReason,
 } from "@/components/auto-optimize/runHistory"
-import type { CurrentVersionResponse, GSORunSummary, VersionMatch } from "@/types"
+import type {
+  CurrentVersionResponse,
+  GSORevertBenchmarkTarget,
+  GSORevertConfigTarget,
+  GSORevertOptions,
+  GSORunSummary,
+  VersionMatch,
+} from "@/types"
 
 interface RunHistoryTableProps {
   spaceId: string
@@ -32,6 +55,7 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   FAILED: "danger",
   CANCELLED: "secondary",
   DISCARDED: "secondary",
+  SKIPPED: "warning",
   IN_PROGRESS: "info",
   RUNNING: "info",
   QUEUED: "secondary",
@@ -111,9 +135,11 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                 <TableHead>Status</TableHead>
                 <TableHead>Outcome</TableHead>
                 <TableHead>Champion accuracy</TableHead>
+                <TableHead>Benchmark handling</TableHead>
                 <TableHead>Model</TableHead>
                 <TableHead>Triggered By</TableHead>
-                <TableHead></TableHead>
+                <TableHead>Details</TableHead>
+                <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -152,6 +178,9 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                   <TableCell className="text-sm">
                     {championAccuracyText(run.best_accuracy)}
                   </TableCell>
+                  <TableCell>
+                    <BenchmarkPolicyCell run={run} />
+                  </TableCell>
                   <TableCell className="text-sm text-muted max-w-[12rem] truncate" title={run.llm_model ?? undefined}>
                     {run.llm_model ?? "—"}
                   </TableCell>
@@ -159,37 +188,21 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                     {run.triggered_by ?? "—"}
                   </TableCell>
                   <TableCell>
-                    <div className="flex flex-col gap-1.5">
-                      <button
-                        onClick={() => onSelectRun(run.run_id)}
-                        className="text-sm text-accent hover:underline text-left"
-                      >
-                        View Details
-                      </button>
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                        {/* Iteration 0 can be a real post-enrichment/recovery
-                            champion distinct from the pre-run baseline. */}
-                        {hasRevertibleChampion(run) && (
-                          <RevertButton
-                            run={run}
-                            target="champion"
-                            disabled={hasActiveRun}
-                            onReverted={refreshRuns}
-                          />
-                        )}
-                        {/* Revert to baseline — shown whenever a config snapshot
-                            exists. ``has_config_snapshot`` is undefined on older
-                            backends; treat that as "unknown" and still render. */}
-                        {run.has_config_snapshot !== false && (
-                          <RevertButton
-                            run={run}
-                            target="baseline"
-                            disabled={hasActiveRun}
-                            onReverted={refreshRuns}
-                          />
-                        )}
-                      </div>
-                    </div>
+                    <button
+                      onClick={() => onSelectRun(run.run_id)}
+                      className="rounded-md border border-default px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-elevated"
+                    >
+                      View Details
+                    </button>
+                  </TableCell>
+                  <TableCell>
+                    {(hasRevertibleChampion(run) || run.has_config_snapshot !== false) && (
+                      <RevertOptionsButton
+                        run={run}
+                        disabled={hasActiveRun}
+                        onReverted={refreshRuns}
+                      />
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -202,59 +215,74 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
   )
 }
 
-type RevertTarget = "champion" | "baseline"
-
-type RevertPhase = "idle" | "confirming" | "pending" | "success" | "error"
-
-const REVERT_LABEL: Record<RevertTarget, string> = {
-  champion: "Revert to Champion",
-  baseline: "Revert to Baseline",
-}
-
-const REVERT_HINT: Record<RevertTarget, string> = {
-  champion: "Roll the live Genie Agent back to this run's champion (winning) configuration.",
-  baseline: "Roll the live Genie Agent back to this run's starting (pre-optimization) configuration.",
-}
-
-const REVERT_CONFIRM: Record<RevertTarget, string> = {
-  champion: "Roll agent back to champion?",
-  baseline: "Roll agent back to baseline?",
-}
-
-const REVERT_ICON: Record<RevertTarget, React.ReactNode> = {
-  champion: <Trophy className="h-3.5 w-3.5" />,
-  baseline: <History className="h-3.5 w-3.5" />,
-}
-
-interface RevertButtonProps {
+interface RevertOptionsButtonProps {
   run: GSORunSummary
-  target: RevertTarget
   disabled: boolean
   onReverted: () => void
 }
 
-/**
- * Per-row revert affordance. Re-PATCHes the live Genie Agent with either the
- * run's champion config (``target="champion"``) or its pre-run baseline
- * (``target="baseline"``) via ``POST /auto-optimize/runs/{id}/revert?target=``.
- * Destructive (it overwrites the live space config), so it's gated behind an
- * inline confirm and disabled whenever any run for the agent is active.
- */
-export function RevertButton({ run, target, disabled, onReverted }: RevertButtonProps) {
-  const [phase, setPhase] = useState<RevertPhase>("idle")
+export function BenchmarkPolicyCell({ run }: { run: GSORunSummary }) {
+  const count = run.benchmark_mutation_count ?? 0
+  if (run.benchmark_policy === "review_only") {
+    return (
+      <div className="text-xs">
+        <span className="font-medium text-primary">Review only</span>
+        <p className="text-muted">No live benchmark changes</p>
+      </div>
+    )
+  }
+  if (run.benchmark_policy === "repair_allowed") {
+    return (
+      <div className="text-xs">
+        <span className="font-medium text-amber-600 dark:text-amber-400">Repair allowed</span>
+        <p className="text-muted">{count === 0 ? "No changes" : `${count} live change${count === 1 ? "" : "s"}`}</p>
+      </div>
+    )
+  }
+  return <span className="text-xs text-muted">Legacy / unknown</span>
+}
+
+/** One history action opens both independent revert dimensions. */
+export function RevertOptionsButton({ run, disabled, onReverted }: RevertOptionsButtonProps) {
+  const [open, setOpen] = useState(false)
+  const [options, setOptions] = useState<GSORevertOptions | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [success, setSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [configTarget, setConfigTarget] = useState<GSORevertConfigTarget>(
+    hasRevertibleChampion(run) ? "champion" : "baseline",
+  )
+  const [benchmarkTarget, setBenchmarkTarget] = useState<GSORevertBenchmarkTarget>("current")
+
+  function showOptions() {
+    if (disabled) return
+    setOpen(true)
+    setLoading(true)
+    setError(null)
+    setOptions(null)
+    setBenchmarkTarget("current")
+    getAutoOptimizeRevertOptions(run.run_id)
+      .then((preview) => {
+        setOptions(preview)
+        setConfigTarget(preview.championAvailable ? "champion" : "baseline")
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : "Failed to load revert options.")
+      })
+      .finally(() => setLoading(false))
+  }
 
   async function doRevert() {
-    if (disabled) return
-    setPhase("pending")
+    if (disabled || !options) return
+    setPending(true)
     setError(null)
     try {
-      await revertAutoOptimizeRun(run.run_id, target)
-      setPhase("success")
+      await revertAutoOptimizeRun(run.run_id, { configTarget, benchmarkTarget })
+      setOpen(false)
+      setSuccess(true)
       onReverted()
-      // Drop the success banner back to idle after a few seconds so the row
-      // returns to its resting affordance.
-      setTimeout(() => setPhase("idle"), 4000)
+      setTimeout(() => setSuccess(false), 4000)
     } catch (e) {
       const message =
         e instanceof ApiError
@@ -263,11 +291,16 @@ export function RevertButton({ run, target, disabled, onReverted }: RevertButton
             ? e.message
             : "Failed to revert the Genie Agent."
       setError(message)
-      setPhase("error")
+    } finally {
+      setPending(false)
     }
   }
 
-  if (phase === "success") {
+  const selectionAvailable = options != null
+    && (configTarget === "champion" ? options.championAvailable : options.baselineAvailable)
+    && (benchmarkTarget === "current" || options.benchmarkBaselineAvailable)
+
+  if (success) {
     return (
       <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
         <CheckCircle2 className="h-3.5 w-3.5" />
@@ -276,78 +309,139 @@ export function RevertButton({ run, target, disabled, onReverted }: RevertButton
     )
   }
 
-  if (phase === "error") {
-    return (
-      <span className="flex flex-col items-start gap-0.5">
-        <button
-          onClick={() => setPhase("confirming")}
-          disabled={disabled}
-          className="flex items-center gap-1 text-xs text-accent hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
-        >
-          {REVERT_ICON[target]}
-          {REVERT_LABEL[target]}
-        </button>
-        <span
-          className="flex items-center gap-1 text-xs text-red-500 max-w-[18rem] truncate"
-          title={error ?? undefined}
-        >
-          <AlertCircle className="h-3 w-3 shrink-0" />
-          {error ?? "Failed"}
-        </span>
-      </span>
-    )
-  }
-
-  if (phase === "pending") {
-    return (
-      <span className="flex items-center gap-1.5 text-xs text-muted">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        Reverting…
-      </span>
-    )
-  }
-
-  if (phase === "confirming") {
-    return (
-      <span className="flex items-center gap-1.5">
-        <span className="text-xs text-muted">{REVERT_CONFIRM[target]}</span>
-        <button
-          onClick={doRevert}
-          disabled={disabled}
-          className="flex items-center gap-1 rounded-md bg-red-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <RotateCcw className="h-3 w-3" />
-          Yes
-        </button>
-        <button
-          onClick={() => {
-            setPhase("idle")
-            setError(null)
-          }}
-          className="rounded-md border border-default px-2 py-0.5 text-xs font-medium text-muted transition-colors hover:text-primary"
-        >
-          Cancel
-        </button>
-      </span>
-    )
-  }
-
-  // idle
   return (
-    <button
-      onClick={() => setPhase("confirming")}
-      disabled={disabled}
-      title={
-        disabled
-          ? `Wait for the active optimization on this agent to finish before reverting history.`
-          : REVERT_HINT[target]
-      }
-      className="flex items-center gap-1 text-xs text-accent hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
-    >
-      {REVERT_ICON[target]}
-      {REVERT_LABEL[target]}
-    </button>
+    <>
+      <button
+        onClick={showOptions}
+        disabled={disabled}
+        title={disabled ? "Wait for the active optimization on this agent to finish before reverting history." : undefined}
+        className="flex items-center gap-1.5 rounded-md border border-default px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-elevated disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <RotateCcw className="h-3.5 w-3.5" />
+        Revert Options
+      </button>
+      <AlertDialog open={open} onOpenChange={(next) => !pending && setOpen(next)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Revert Options</AlertDialogTitle>
+            <AlertDialogDescription>
+              Choose the agent configuration and benchmark state independently. This overwrites the live Genie Agent.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {loading ? (
+            <p className="mt-5 flex items-center gap-2 text-sm text-muted">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading available states…
+            </p>
+          ) : options ? (
+            <div className="mt-5 space-y-5">
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-semibold text-primary">Agent config</legend>
+                <RadioOption
+                  name={`config-target-${run.run_id}`}
+                  checked={configTarget === "champion"}
+                  disabled={!options.championAvailable}
+                  onChange={() => setConfigTarget("champion")}
+                  label="Champion"
+                  detail="Restore this run's winning optimized configuration."
+                />
+                <RadioOption
+                  name={`config-target-${run.run_id}`}
+                  checked={configTarget === "baseline"}
+                  disabled={!options.baselineAvailable}
+                  onChange={() => setConfigTarget("baseline")}
+                  label="Pre-run baseline"
+                  detail="Restore the configuration captured before this run started."
+                />
+              </fieldset>
+
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-semibold text-primary">Benchmarks</legend>
+                <RadioOption
+                  name={`benchmark-target-${run.run_id}`}
+                  checked={benchmarkTarget === "current"}
+                  onChange={() => setBenchmarkTarget("current")}
+                  label="Preserve current benchmarks"
+                  detail="Keep the live benchmark set exactly as it is now."
+                />
+                <RadioOption
+                  name={`benchmark-target-${run.run_id}`}
+                  checked={benchmarkTarget === "baseline"}
+                  disabled={!options.benchmarkBaselineAvailable}
+                  onChange={() => setBenchmarkTarget("baseline")}
+                  label="Restore pre-run baseline"
+                  detail={benchmarkDiffText(options)}
+                />
+              </fieldset>
+
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
+                The live agent config will be replaced with the selected {configTarget} state
+                {benchmarkTarget === "current" ? ", while current benchmarks are preserved." : ", including pre-run baseline benchmarks."}
+              </div>
+            </div>
+          ) : null}
+
+          {error && (
+            <p className="mt-4 flex items-start gap-1.5 text-xs text-red-500">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {error}
+            </p>
+          )}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending} onClick={() => setOpen(false)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={loading || pending || !selectionAvailable}
+              onClick={(event) => {
+                // Radix closes AlertDialogAction synchronously by default.
+                // Keep the dialog mounted so API errors remain visible.
+                event.preventDefault()
+                void doRevert()
+              }}
+              className="bg-red-600 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCcw className="mr-2 h-4 w-4" />}
+              Revert agent
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
+}
+
+function RadioOption({
+  name,
+  checked,
+  disabled = false,
+  onChange,
+  label,
+  detail,
+}: {
+  name: string
+  checked: boolean
+  disabled?: boolean
+  onChange: () => void
+  label: string
+  detail: string
+}) {
+  return (
+    <label className={`flex items-start gap-2 rounded-md border p-3 ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}>
+      <input name={name} type="radio" checked={checked} disabled={disabled} onChange={onChange} className="mt-0.5" />
+      <span>
+        <span className="block text-sm font-medium text-primary">{label}</span>
+        <span className="block text-xs text-muted">{detail}</span>
+      </span>
+    </label>
+  )
+}
+
+function benchmarkDiffText(options: GSORevertOptions): string {
+  const diff = options.benchmarkDiff
+  if (diff.willAdd === 0 && diff.willRemove === 0 && diff.willChange === 0) {
+    return `Baseline matches the current ${diff.currentCount} benchmarks.`
+  }
+  return `Restore ${diff.baselineCount} baseline benchmarks: add ${diff.willAdd}, remove ${diff.willRemove}, and update ${diff.willChange}.`
 }
 
 // ---------------------------------------------------------------------------

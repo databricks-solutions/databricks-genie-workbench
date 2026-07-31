@@ -88,6 +88,7 @@ dbutils.widgets.text("apply_mode", "genie_config")
 dbutils.widgets.text("levers", "[1,2,3,4,5,6]")
 dbutils.widgets.text("max_attempts", "3")
 dbutils.widgets.text("target_accuracy", "0.90")
+dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
 
@@ -103,6 +104,7 @@ target_accuracy = target_accuracy_percent(
     float(dbutils.widgets.get("target_accuracy") or "0.90")
 )
 llm_model = dbutils.widgets.get("llm_model").strip()
+benchmark_policy = dbutils.widgets.get("benchmark_policy").strip() or "repair_allowed"
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
 
@@ -145,6 +147,42 @@ write_stage(
     catalog=catalog,
     schema=schema,
 )
+
+# QC business skips keep the four-task job green while guaranteeing that no
+# evaluation or live configuration mutation occurs in Optimize.
+_benchmark_qc_record = load_latest_artifact_record(
+    spark, run_id, catalog, schema, "benchmark_qc",
+)
+if _benchmark_qc_record is None:
+    raise RuntimeError(
+        f"Required benchmark_qc artifact is missing for run {run_id}"
+    )
+_benchmark_qc = _benchmark_qc_record["payload"]
+if _benchmark_qc.get("optimization_eligible") is False:
+    _skip_reason = str(
+        _benchmark_qc.get("terminal_reason")
+        or "INSUFFICIENT_VALID_BENCHMARKS"
+    )
+    write_stage(
+        spark,
+        run_id,
+        "OPTIMIZE",
+        "SKIPPED",
+        task_key=_TASK_KEY,
+        catalog=catalog,
+        schema=schema,
+        detail={
+            "terminal_reason": _skip_reason,
+            "valid_count": _benchmark_qc.get("valid_count"),
+            "minimum_valid_count": _benchmark_qc.get("minimum_valid_count"),
+            "benchmark_policy": benchmark_policy,
+        },
+    )
+    dbutils.notebook.exit(json.dumps({
+        "run_id": run_id,
+        "status": "SKIPPED",
+        "terminal_reason": _skip_reason,
+    }))
 
 # COMMAND ----------
 

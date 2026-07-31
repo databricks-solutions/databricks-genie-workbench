@@ -157,6 +157,55 @@ def test_postflight_scan_runs_immediately_before_terminal_status_update():
     assert events[-2:] == ["postflight", "terminal_update"]
 
 
+def test_publish_skipped_run_writes_actionable_terminal_summary():
+    artifacts: list[dict] = []
+    updates: list[dict] = []
+
+    with (
+        patch.object(
+            P,
+            "write_artifact",
+            side_effect=lambda _spark, _run_id, kind, payload, **_kwargs: (
+                artifacts.append({"kind": kind, "payload": payload}) or "artifact-1"
+            ),
+        ),
+        patch.object(
+            P,
+            "update_run_status",
+            side_effect=lambda _spark, _run_id, _catalog, _schema, **kwargs: (
+                updates.append(kwargs)
+            ),
+        ),
+    ):
+        result = P.publish_skipped_run(
+            MagicMock(),
+            "run-skipped",
+            space_id="space-abc",
+            catalog="c",
+            schema="s",
+            terminal_reason="INSUFFICIENT_VALID_BENCHMARKS",
+            valid_count=9,
+            minimum_valid_count=15,
+            target_accuracy=90.0,
+            max_attempts=3,
+        )
+
+    assert result["final_status"] == "SKIPPED"
+    assert result["published"] is False
+    assert artifacts[0]["kind"] == "publish_record"
+    record = artifacts[0]["payload"]
+    assert "9 valid benchmark" in record["audit_summary"]
+    assert "required minimum of 15" in record["audit_summary"]
+    assert "No optimization evaluation or configuration patch" in record["audit_summary"]
+    assert record["improvement_trajectory"] == []
+    assert any("6 more valid" in concern for concern in record["concerns"])
+    assert updates == [{
+        "status": "SKIPPED",
+        "convergence_reason": "INSUFFICIENT_VALID_BENCHMARKS",
+        "space_id": "space-abc",
+    }]
+
+
 # ── (i) gating-reason publish path ──────────────────────────────────────────
 
 

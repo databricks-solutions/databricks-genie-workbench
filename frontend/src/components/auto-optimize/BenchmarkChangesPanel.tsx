@@ -122,7 +122,9 @@ export function BenchmarkChangesPanel({ runId, changes: provided }: BenchmarkCha
         </>
       ) : (
         <p className="text-xs text-muted">
-          GSO made no additive changes to this agent's benchmark set.
+          {qc?.benchmarkPolicy === "review_only"
+            ? "GSO reviewed the existing benchmarks without changing the live benchmark set."
+            : "GSO made no additive changes to this agent's benchmark set."}
         </p>
       )}
     </PanelShell>
@@ -163,8 +165,9 @@ function PanelShell({
 
 /**
  * The 30–40 working-set window meter + the bounded repair-tries indicator
- * (Phase 13, item 3). ``persistedCount`` (questions persisted into the live
- * space) is the headline; the shaded band marks the target window.
+ * (Phase 13, item 3). ``persistedCount`` (questions persisted into the
+ * optimization handoff) is the headline; the shaded band marks the target
+ * window.
  */
 function QcMeter({ qc }: { qc: GSOBenchmarkQC }) {
   const min = qc.windowTargetMin ?? DEFAULT_WINDOW_MIN
@@ -190,6 +193,8 @@ function QcMeter({ qc }: { qc: GSOBenchmarkQC }) {
   const triesMax = qc.repairMaxTries ?? 0
   const repairedCount = qc.repairedIds?.length ?? 0
   const stillInvalid = qc.stillInvalidIds?.length ?? 0
+  const reviewOnly = qc.benchmarkPolicy === "review_only"
+  const minimum = qc.minimumValidCount
 
   return (
     <div className="space-y-4 rounded-lg border border-default bg-elevated/30 p-4">
@@ -223,24 +228,31 @@ function QcMeter({ qc }: { qc: GSOBenchmarkQC }) {
 
       {/* Repair-tries indicator + validity */}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-default pt-3 text-xs">
-        <span className="flex items-center gap-1.5 text-muted">
-          <Wrench className="h-3.5 w-3.5 text-blue-400" />
-          Repair sweeps:
-          <span className="font-semibold text-primary">
-            {triesUsed}
-            {triesMax > 0 ? ` / ${triesMax}` : ""}
+        {reviewOnly ? (
+          <span className="flex items-center gap-1.5 font-medium text-cyan-600 dark:text-cyan-400">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Review only · live benchmarks preserved
           </span>
-          {triesMax > 0 && (
-            <span className="ml-1 flex items-center gap-0.5">
-              {Array.from({ length: triesMax }, (_, i) => (
-                <span
-                  key={i}
-                  className={`h-1.5 w-1.5 rounded-full ${i < triesUsed ? "bg-blue-400" : "bg-elevated border border-default"}`}
-                />
-              ))}
+        ) : (
+          <span className="flex items-center gap-1.5 text-muted">
+            <Wrench className="h-3.5 w-3.5 text-blue-400" />
+            Repair sweeps:
+            <span className="font-semibold text-primary">
+              {triesUsed}
+              {triesMax > 0 ? ` / ${triesMax}` : ""}
             </span>
-          )}
-        </span>
+            {triesMax > 0 && (
+              <span className="ml-1 flex items-center gap-0.5">
+                {Array.from({ length: triesMax }, (_, i) => (
+                  <span
+                    key={i}
+                    className={`h-1.5 w-1.5 rounded-full ${i < triesUsed ? "bg-blue-400" : "bg-elevated border border-default"}`}
+                  />
+                ))}
+              </span>
+            )}
+          </span>
+        )}
         {repairedCount > 0 && (
           <span className="text-muted">
             <span className="font-semibold text-primary">{repairedCount}</span> repaired
@@ -269,6 +281,13 @@ function QcMeter({ qc }: { qc: GSOBenchmarkQC }) {
         <p className="flex items-center gap-1.5 rounded-md border border-red-300 bg-red-50 px-2.5 py-1.5 text-[11px] font-medium text-red-600 dark:border-red-800 dark:bg-red-950/20 dark:text-red-400">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
           Benchmark could not be repaired into a valid evaluation set — the run stopped here.
+        </p>
+      )}
+      {qc.optimizationEligible === false && qc.terminalReason === "INSUFFICIENT_VALID_BENCHMARKS" && (
+        <p className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          Optimization was skipped: {qc.validCount ?? 0} valid benchmarks remained
+          {minimum != null ? `; at least ${minimum} are required` : ""}. No evaluation or configuration patch ran.
         </p>
       )}
     </div>
@@ -483,12 +502,18 @@ function MutationRow({ mutation }: { mutation: GSOBenchmarkMutation }) {
       </div>
       {mutation.op === "changed" && (beforeSql || afterSql) && (
         <div className="grid grid-cols-2 gap-2">
-          <pre className="rounded border border-default bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap overflow-x-auto">
-            {beforeSql ?? "—"}
-          </pre>
-          <pre className="rounded border border-default bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap overflow-x-auto">
-            {afterSql ?? "—"}
-          </pre>
+          <div className="min-w-0">
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted">Before</p>
+            <pre className="rounded border border-default bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap overflow-x-auto">
+              {beforeSql ?? "—"}
+            </pre>
+          </div>
+          <div className="min-w-0">
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-blue-500">After</p>
+            <pre className="rounded border border-default bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap overflow-x-auto">
+              {afterSql ?? "—"}
+            </pre>
+          </div>
         </div>
       )}
       {mutation.op !== "changed" && (afterSql || beforeSql) && (

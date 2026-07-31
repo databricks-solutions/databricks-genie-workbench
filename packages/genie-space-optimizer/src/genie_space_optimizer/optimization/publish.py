@@ -775,6 +775,79 @@ def build_publish_record(
     }
 
 
+def publish_skipped_run(
+    spark: Any,
+    run_id: str,
+    *,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    terminal_reason: str,
+    valid_count: int,
+    minimum_valid_count: int,
+    target_accuracy: float | None = None,
+    max_attempts: int | None = None,
+    source_notebook: str = "run_publish_and_audit.py",
+) -> dict:
+    """Write the terminal audit record for a pre-optimization business skip."""
+    audit_summary = (
+        "Optimization was skipped because benchmark review left "
+        f"{valid_count} valid benchmark question(s), below the required minimum "
+        f"of {minimum_valid_count}. No optimization evaluation or configuration "
+        "patch was run."
+    )
+    concerns = [
+        f"Add or repair at least {minimum_valid_count - valid_count} more valid "
+        "benchmark question(s), then start a new optimization run."
+    ]
+    publish_record = build_publish_record(
+        run_id=run_id,
+        space_id=space_id,
+        run_status="SKIPPED",
+        terminal_reason=terminal_reason,
+        published=False,
+        publish_outcome=f"not_published:{terminal_reason}",
+        champion_iteration=None,
+        champion_accuracy=None,
+        champion_config_version_id=None,
+        target_accuracy=target_accuracy,
+        max_attempts=max_attempts,
+        audit_summary=audit_summary,
+        improvement_trajectory=[],
+        concerns=concerns,
+    )
+    write_artifact(
+        spark,
+        run_id,
+        "publish_record",
+        publish_record,
+        catalog=catalog,
+        schema=schema,
+        stage_name="PUBLISH_AND_AUDIT",
+        source_notebook=source_notebook,
+    )
+    update_run_status(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        status="SKIPPED",
+        convergence_reason=terminal_reason,
+        space_id=space_id or None,
+    )
+    return {
+        "run_id": run_id,
+        "terminal_reason": terminal_reason,
+        "final_status": "SKIPPED",
+        "published": False,
+        "publish_outcome": f"not_published:{terminal_reason}",
+        "champion_iteration": None,
+        "champion_accuracy": None,
+        "concerns": concerns,
+        "audit_summary_generated": True,
+    }
+
+
 def publish_and_audit(
     spark: Any,
     w: "WorkspaceClient | None",

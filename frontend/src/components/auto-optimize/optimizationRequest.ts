@@ -33,6 +33,7 @@ export function buildOptimizationTriggerRequest(args: {
   targetAccuracy: number
   maxAttempts: number
   workloadWarehouseIds?: string[]
+  benchmarkPolicy: "review_only" | "repair_allowed"
 }): GSOTriggerRequest {
   return {
     space_id: args.spaceId,
@@ -44,5 +45,6 @@ export function buildOptimizationTriggerRequest(args: {
     target_accuracy: args.targetAccuracy,
     max_attempts: args.maxAttempts,
     workload_warehouse_ids: args.workloadWarehouseIds ?? [],
+    benchmark_policy: args.benchmarkPolicy,
   }
 }

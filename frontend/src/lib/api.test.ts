@@ -4,7 +4,9 @@ import {
   extractDetailMessage,
   getAutoOptimizeLoopState,
   getAutoOptimizePublishRecord,
+  getAutoOptimizeRevertOptions,
   getModels,
+  revertAutoOptimizeRun,
   streamAgentChat,
   triggerAutoOptimize,
 } from "./api"
@@ -122,6 +124,7 @@ describe("model selection API payloads", () => {
       apply_mode: "genie_config",
       levers: [1, 2],
       llm_model: "selected-chat",
+      benchmark_policy: "review_only",
     })
 
     const [, options] = fetchMock.mock.calls[0]
@@ -130,6 +133,7 @@ describe("model selection API payloads", () => {
       apply_mode: "genie_config",
       levers: [1, 2],
       llm_model: "selected-chat",
+      benchmark_policy: "review_only",
     })
   })
 
@@ -151,6 +155,7 @@ describe("model selection API payloads", () => {
       space_id: "space",
       target_accuracy: 0.85,
       max_attempts: 5,
+      benchmark_policy: "repair_allowed",
     })
 
     const [, options] = fetchMock.mock.calls[0]
@@ -158,6 +163,7 @@ describe("model selection API payloads", () => {
       space_id: "space",
       target_accuracy: 0.85,
       max_attempts: 5,
+      benchmark_policy: "repair_allowed",
     })
     expect(resp.targetAccuracy).toBe(0.85)
     expect(resp.maxAttempts).toBe(5)
@@ -187,6 +193,52 @@ describe("model selection API payloads", () => {
 
     expect(out).toEqual({ runId: "run", publishRecord: null })
     expect(fetchMock.mock.calls[0][0]).toBe("/api/auto-optimize/runs/run/publish")
+  })
+
+  it("fetches the combined revert-options preview", async () => {
+    const preview = {
+      runId: "run",
+      spaceId: "space",
+      championAvailable: true,
+      baselineAvailable: true,
+      benchmarkBaselineAvailable: true,
+      benchmarkDiff: {
+        currentCount: 12,
+        baselineCount: 10,
+        willAdd: 1,
+        willRemove: 3,
+        willChange: 2,
+      },
+    }
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => preview,
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(getAutoOptimizeRevertOptions("run")).resolves.toEqual(preview)
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/auto-optimize/runs/run/revert-options",
+    )
+  })
+
+  it("sends both independent revert scopes through one action", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ status: "reverted", runId: "run", message: "ok" }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await revertAutoOptimizeRun("run", {
+      configTarget: "baseline",
+      benchmarkTarget: "baseline",
+    })
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toBe(
+      "/api/auto-optimize/runs/run/revert?config_target=baseline&benchmark_target=baseline",
+    )
+    expect(options).toEqual(expect.objectContaining({ method: "POST" }))
   })
 
   it("sends model in Create Agent chat request", async () => {

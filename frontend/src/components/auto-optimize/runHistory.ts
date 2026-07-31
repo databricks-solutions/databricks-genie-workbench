@@ -43,6 +43,7 @@ const TERMINAL_REASON_LABELS: Record<GSOTerminalReason, string> = {
   CONFIG_VALIDATION_FAILED: "Config validation failed",
   LOOP_STATE_INVALID: "Loop state invalid",
   EVAL_BUDGET_EXHAUSTED: "Budget exhausted",
+  INSUFFICIENT_VALID_BENCHMARKS: "Not enough valid benchmarks",
 }
 
 /**

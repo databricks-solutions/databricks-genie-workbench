@@ -265,6 +265,7 @@ export type GSOTerminalReason =
   | "CONFIG_VALIDATION_FAILED"
   | "LOOP_STATE_INVALID"
   | "EVAL_BUDGET_EXHAUSTED"
+  | "INSUFFICIENT_VALID_BENCHMARKS"
 
 // GSO v2 — per-attempt mode. Current optimize attempts use "llm_patch";
 // legacy runs may still send "coverage" / "surgical", so wire fields accept
@@ -287,6 +288,7 @@ export interface GSOTriggerRequest {
   target_accuracy?: number | null
   max_attempts?: number | null
   workload_warehouse_ids?: string[]
+  benchmark_policy: "review_only" | "repair_allowed"
 }
 
 export interface GSOTriggerResponse {
@@ -297,6 +299,7 @@ export interface GSOTriggerResponse {
   // Resolved loop knobs the run will use (request value or job default).
   targetAccuracy?: number | null
   maxAttempts?: number | null
+  benchmarkPolicy?: "review_only" | "repair_allowed"
 }
 
 export interface GSOLeverInfo {
@@ -348,6 +351,8 @@ export interface GSORunSummary {
   terminal_reason?: GSOTerminalReason | null
   triggered_by: string | null
   llm_model?: string | null
+  benchmark_policy?: "review_only" | "repair_allowed" | string | null
+  benchmark_mutation_count?: number | null
   /** True when the run has a captured config snapshot (baseline) to revert to.
    * Absent on older backends — treat undefined as "unknown / optimistic" so
    * the Revert button still renders (the backend will 409 if truly missing). */
@@ -380,6 +385,24 @@ export interface CurrentVersionResponse {
   also_matches?: VersionMatch[]
   /** Live space update_time when known — used by the drift banner. */
   live_update_time?: string | null
+}
+
+export type GSORevertConfigTarget = "champion" | "baseline"
+export type GSORevertBenchmarkTarget = "current" | "baseline"
+
+export interface GSORevertOptions {
+  runId: string
+  spaceId: string
+  championAvailable: boolean
+  baselineAvailable: boolean
+  benchmarkBaselineAvailable: boolean
+  benchmarkDiff: {
+    currentCount: number
+    baselineCount: number
+    willAdd: number
+    willRemove: number
+    willChange: number
+  }
 }
 
 export interface GSOPipelineStep {
@@ -684,8 +707,9 @@ export interface GSOBenchmarkProposedChange {
 // GSO v2 (item 7) — benchmark QC metadata from 01_benchmark_qc_and_repair
 // (benchmark_qc artifact): the 30–40 window recommendation, repair-try usage,
 // and validity findings. `window` is the raw recommendation payload (status +
-// counts). terminalReason is BENCHMARK_UNREPAIRABLE only when the bounded
-// repair loop gave up. Null on legacy runs.
+// counts). terminalReason is BENCHMARK_UNREPAIRABLE when bounded repair gives
+// up, or INSUFFICIENT_VALID_BENCHMARKS when the valid subset is too small to
+// optimize. Null on legacy runs.
 export interface GSOBenchmarkQC {
   validCount: number | null
   persistedCount: number | null
@@ -700,6 +724,10 @@ export interface GSOBenchmarkQC {
   gtCorrectionCandidates: unknown[]
   terminalReason: string | null
   stillInvalidIds: string[] | null
+  benchmarkPolicy?: "review_only" | "repair_allowed" | string | null
+  benchmarkMutationCount?: number | null
+  optimizationEligible?: boolean | null
+  minimumValidCount?: number | null
   qualityReviewVersion?: string | null
   qualityReviewStatus?: "complete" | "degraded" | string | null
   semanticReviewCoverage?: number | null

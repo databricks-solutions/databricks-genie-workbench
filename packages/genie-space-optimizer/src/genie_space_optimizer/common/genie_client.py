@@ -1150,6 +1150,31 @@ def _benchmarks_to_genie_format(
     return genie_questions
 
 
+def _extract_benchmark_sql_answer(answer: Any) -> str:
+    """Reconstruct the complete SQL answer from Genie content fragments.
+
+    Genie serializes answer ``content`` as an array. Existing spaces can carry
+    one SQL statement split across multiple array elements, while GSO writes a
+    newly repaired statement as one element. The elements are ordered content
+    fragments, so concatenate all of them exactly as the benchmark extractor
+    does instead of treating ``content[0]`` as the whole statement.
+    """
+    if not isinstance(answer, list):
+        return ""
+    for item in answer:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("format") or "").upper() != "SQL":
+            continue
+        content = item.get("content")
+        if isinstance(content, list):
+            return "".join(
+                str(fragment) for fragment in content if fragment is not None
+            ).strip()
+        return str(content or "").strip()
+    return ""
+
+
 def _dedupe_and_merge_benchmarks(
     existing: list[dict], additions: list[dict],
 ) -> tuple[list[dict], int, int, list[dict]]:
@@ -1209,29 +1234,24 @@ def _dedupe_and_merge_benchmarks(
                 continue
             before_answer = current.get("answer") if isinstance(current, dict) else None
             after_answer = add.get("answer") if isinstance(add, dict) else None
-            if before_answer == after_answer:
+            before_sql = _extract_benchmark_sql_answer(before_answer)
+            after_sql = _extract_benchmark_sql_answer(after_answer)
+            # Do not report or apply a repair when the only difference is the
+            # serialized content shape (many fragments versus one fragment).
+            # This preserves the user's original row byte-for-byte and keeps
+            # the benchmark-change count semantic rather than representational.
+            if before_sql == after_sql:
                 skipped += 1
                 continue
             repaired = dict(current)
             repaired["answer"] = after_answer
             merged[existing_index] = repaired
 
-            def _first_sql(answer: Any) -> str:
-                if not isinstance(answer, list) or not answer:
-                    return ""
-                first = answer[0]
-                if not isinstance(first, dict):
-                    return ""
-                content = first.get("content")
-                if isinstance(content, list) and content:
-                    return str(content[0])
-                return str(content or "")
-
             updated.append({
                 "id": add_id,
                 "question": current_text,
-                "before_sql": _first_sql(before_answer),
-                "after_sql": _first_sql(after_answer),
+                "before_sql": before_sql,
+                "after_sql": after_sql,
             })
             continue
 
@@ -1491,7 +1511,7 @@ def publish_benchmarks_to_genie_space_with_report(
         return {
             "id": str(r.get("id", "")),
             "question": _first(r.get("question")),
-            "sql": _first((r.get("answer") or [{}])[0].get("content")),
+            "sql": _extract_benchmark_sql_answer(r.get("answer")),
         }
 
     merged_detail = [_to_record(r) for r in merged_questions if isinstance(r, dict)]

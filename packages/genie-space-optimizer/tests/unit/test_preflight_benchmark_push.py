@@ -196,6 +196,72 @@ def test_real_publisher_repairs_sql_in_place_by_stable_id_without_rewording():
     assert report.updated[0]["after_sql"] == "SELECT 1"
 
 
+def test_real_publisher_preserves_multifragment_sql_when_logically_unchanged():
+    """Content-array shape alone is not a benchmark SQL repair."""
+    question = "How many support tickets were created?"
+    existing = [_live_question("native-q1", question, "unused")]
+    existing[0]["answer"][0]["content"] = ["SELECT ", "COUNT(*) ", "FROM tickets"]
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    unchanged = _bench(
+        "native-q1",
+        question,
+        "SELECT COUNT(*) FROM tickets",
+        source="genie_benchmark",
+        space_question_id="native-q1",
+    )
+    with patch(
+        _FETCH_PATH,
+        return_value={"_parsed_space": _parsed_space(existing=existing)},
+    ), patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1", [unchanged],
+        )
+
+    assert patched_holder["cfg"]["benchmarks"]["questions"] == existing
+    assert report.updated_count == 0
+    assert report.updated == []
+    assert report.dedup_skipped == 1
+    assert report.merged[0]["sql"] == "SELECT COUNT(*) FROM tickets"
+
+
+def test_real_publisher_ledgers_complete_multifragment_sql_before_repair():
+    question = "How many support tickets were created?"
+    existing = [_live_question("native-q1", question, "unused")]
+    existing[0]["answer"][0]["content"] = [
+        "WITH ticket_counts AS (\n",
+        "  SELECT COUNT(*) AS total FROM tickets\n",
+        ")\nSELECT total FROM ticket_counts",
+    ]
+
+    repaired = _bench(
+        "native-q1",
+        question,
+        "SELECT COUNT(*) FROM tickets",
+        source="genie_benchmark",
+        space_question_id="native-q1",
+    )
+    with patch(
+        _FETCH_PATH,
+        return_value={"_parsed_space": _parsed_space(existing=existing)},
+    ), patch(_PATCH_PATH, return_value={}):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1", [repaired],
+        )
+
+    assert report.updated_count == 1
+    assert report.updated[0]["before_sql"] == (
+        "WITH ticket_counts AS (\n"
+        "  SELECT COUNT(*) AS total FROM tickets\n"
+        ")\nSELECT total FROM ticket_counts"
+    )
+    assert report.updated[0]["after_sql"] == "SELECT COUNT(*) FROM tickets"
+
+
 def test_real_publisher_refuses_stable_id_update_when_question_text_changed():
     existing_question = "How many tickets were created?"
     existing = [_live_question("native-q1", existing_question, "SELECT old")]
@@ -502,19 +568,32 @@ def test_push_fails_when_publisher_does_not_return_exact_question_mapping():
         patched=True,
     )
 
+    spark = MagicMock()
     with patch(_PUBLISH_PATH, return_value=report), patch(
         "genie_space_optimizer.optimization.preflight.write_stage",
     ), patch(
         "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
         return_value=0,
-    ):
+    ), patch(
+        "genie_space_optimizer.optimization.preflight.load_run",
+        return_value={"benchmark_mutation_count": 4},
+    ), patch(
+        "genie_space_optimizer.optimization.preflight._update_run_status",
+    ) as update_run_status:
         with pytest.raises(BenchmarkPushError, match="unresolved_after_publish"):
             preflight_push_benchmarks_to_space(
-                MagicMock(), MagicMock(), "run-1", "space-1", "cat", "sch",
+                MagicMock(), spark, "run-1", "space-1", "cat", "sch",
                 [benchmark],
             )
 
     assert "space_question_id" not in benchmark
+    update_run_status.assert_called_once_with(
+        spark,
+        "run-1",
+        "cat",
+        "sch",
+        benchmark_mutation_count=4,
+    )
 
 
 def test_push_fails_when_exact_question_mapping_is_ambiguous():
@@ -644,7 +723,7 @@ def test_push_ledgers_native_sql_repair_as_changed() -> None:
         "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
         side_effect=_capture,
     ):
-        preflight_push_benchmarks_to_space(
+        out = preflight_push_benchmarks_to_space(
             MagicMock(),
             MagicMock(),
             "run-1",
@@ -660,6 +739,7 @@ def test_push_ledgers_native_sql_repair_as_changed() -> None:
     assert changed[0]["before"]["sql"] == "SELECT broken"
     assert changed[0]["after"]["sql"] == "SELECT 1"
     assert changed[0]["reason"] == "curated_sql_repair"
+    assert out["benchmark_mutation_count"] == 1
 
 
 def test_push_records_over_window_prune_recommendations_in_ledger():

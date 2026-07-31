@@ -25,6 +25,8 @@ _DEFAULT_RE = re.compile(
 _REQUIRED_RUN_COLUMNS = (
     "job_id",
     "llm_model",
+    "benchmark_policy",
+    "benchmark_mutation_count",
 )
 
 
@@ -274,6 +276,7 @@ def wh_create_run(
     triggered_by: str | None = None,
     config_snapshot: dict | None = None,
     llm_model: str | None = None,
+    benchmark_policy: str = "repair_allowed",
 ) -> None:
     """Insert a QUEUED run row via SQL warehouse."""
     from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER, MAX_ITERATIONS
@@ -287,6 +290,7 @@ def wh_create_run(
     user = (triggered_by or "").replace("'", "''")
     model_escaped = llm_model.replace("'", "''") if llm_model else ""
     model_sql = f"'{model_escaped}'" if model_escaped else "NULL"
+    policy_escaped = benchmark_policy.replace("'", "''")
 
     # GSO v2 Phase 5 (D3): the ``experiment_name`` column was scrubbed; the
     # surviving MLflow tracing self-resolves a deterministic experiment path in
@@ -295,11 +299,12 @@ def wh_create_run(
         f"INSERT INTO {catalog}.{schema}.genie_opt_runs "
         f"(run_id, space_id, domain, catalog, uc_schema, status, started_at, "
         f"max_iterations, levers, apply_mode, updated_at, "
-        f"triggered_by, config_snapshot, llm_model) VALUES ("
+        f"triggered_by, config_snapshot, llm_model, benchmark_policy, "
+        f"benchmark_mutation_count) VALUES ("
         f"'{run_id}', '{space_id}', '{domain}', '{catalog}', "
         f"'{catalog}.{schema}', 'QUEUED', current_timestamp(), "
         f"{MAX_ITERATIONS}, '{levers_json}', '{apply_mode}', current_timestamp(), "
-        f"'{user}', '{snap_json}', {model_sql})"
+        f"'{user}', '{snap_json}', {model_sql}, '{policy_escaped}', 0)"
     )
     sql_warehouse_execute(ws, warehouse_id, sql)
     logger.info("Created run %s via SQL warehouse", run_id)

@@ -44,7 +44,10 @@ from genie_space_optimizer.common.warehouse import export_warehouse_id, resolve_
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _diagnostic as _diagnostic_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
-from genie_space_optimizer.optimization.publish import publish_and_audit
+from genie_space_optimizer.optimization.publish import (
+    publish_and_audit,
+    publish_skipped_run,
+)
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
     load_artifacts,
@@ -72,6 +75,7 @@ dbutils.widgets.text("schema", "")
 dbutils.widgets.text("apply_mode", "genie_config")
 dbutils.widgets.text("target_accuracy", "0.90")
 dbutils.widgets.text("max_attempts", "3")
+dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("warehouse_id", "")
 
 run_id = dbutils.widgets.get("run_id").strip()
@@ -110,6 +114,47 @@ write_stage(
     spark, run_id, "PUBLISH_AND_AUDIT", "STARTED",
     task_key=_TASK_KEY, catalog=catalog, schema=schema,
 )
+
+_benchmark_qc_record = load_latest_artifact_record(
+    spark, run_id, catalog, schema, "benchmark_qc",
+)
+if _benchmark_qc_record is None:
+    raise RuntimeError(
+        f"Required benchmark_qc artifact is missing for run {run_id}"
+    )
+_benchmark_qc = _benchmark_qc_record["payload"]
+if _benchmark_qc.get("optimization_eligible") is False:
+    _skip_reason = str(
+        _benchmark_qc.get("terminal_reason")
+        or "INSUFFICIENT_VALID_BENCHMARKS"
+    )
+    result = publish_skipped_run(
+        spark,
+        run_id,
+        space_id=space_id,
+        catalog=catalog,
+        schema=schema,
+        terminal_reason=_skip_reason,
+        valid_count=int(_benchmark_qc.get("valid_count") or 0),
+        minimum_valid_count=int(_benchmark_qc.get("minimum_valid_count") or 0),
+        target_accuracy=target_accuracy,
+        max_attempts=max_attempts,
+    )
+    write_stage(
+        spark,
+        run_id,
+        "PUBLISH_AND_AUDIT",
+        "COMPLETE",
+        task_key=_TASK_KEY,
+        catalog=catalog,
+        schema=schema,
+        detail={
+            "terminal_reason": _skip_reason,
+            "final_status": "SKIPPED",
+            "published": False,
+        },
+    )
+    dbutils.notebook.exit(json.dumps(result, default=str))
 
 # COMMAND ----------
 

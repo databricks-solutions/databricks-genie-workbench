@@ -56,6 +56,10 @@ def discard_optimization(
     status = str(run_data.get("status") or "")
     if status in ("DISCARDED", "APPLIED"):
         raise ValueError(f"Run already {status.lower()}.")
+    if status == "SKIPPED":
+        raise ValueError(
+            "Cannot discard a skipped run because optimization did not run."
+        )
 
     space_id = run_data.get("space_id", "")
     if not space_id:

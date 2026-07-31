@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _ACTIVE_RUN_STATUSES = frozenset({"QUEUED", "IN_PROGRESS"})
 
 _SUPPORTED_APPLY_MODES = {"genie_config", "uc_artifact", "both"}
+_SUPPORTED_BENCHMARK_POLICIES = {"review_only", "repair_allowed"}
 
 
 def _capture_config_snapshot(
@@ -101,6 +102,7 @@ def trigger_optimization(
     target_accuracy: float | None = None,
     max_attempts: int | None = None,
     workload_warehouse_ids: list[str] | None = None,
+    benchmark_policy: str = "repair_allowed",
 ) -> TriggerResult:
     """Trigger a GSO optimization run using SQL Warehouse for state management.
 
@@ -122,6 +124,9 @@ def trigger_optimization(
             attempt-1 coverage pass is a free probe that never consumes a slot.
         workload_warehouse_ids: Representative workload warehouses whose query
             history may be used as optional ranking evidence.
+        benchmark_policy: ``review_only`` reviews and filters the existing live
+            benchmark set without mutation; ``repair_allowed`` permits bounded
+            generation, repair, and live benchmark updates.
 
     Returns:
         :class:`TriggerResult` with run_id, job_run_id, job_url, and status.
@@ -137,6 +142,13 @@ def trigger_optimization(
         raise ValueError(
             f"Unsupported apply_mode '{apply_mode}'. "
             f"Use one of: {sorted(_SUPPORTED_APPLY_MODES)}"
+        )
+
+    requested_benchmark_policy = (benchmark_policy or "repair_allowed").strip().lower()
+    if requested_benchmark_policy not in _SUPPORTED_BENCHMARK_POLICIES:
+        raise ValueError(
+            f"Unsupported benchmark_policy '{benchmark_policy}'. "
+            f"Use one of: {sorted(_SUPPORTED_BENCHMARK_POLICIES)}"
         )
 
     caller_email = (user_email or user_name or "").lower()
@@ -260,6 +272,7 @@ def trigger_optimization(
         triggered_by=caller_email,
         config_snapshot=space_snapshot if space_snapshot else None,
         llm_model=config.llm_model or None,
+        benchmark_policy=requested_benchmark_policy,
     )
 
     from genie_space_optimizer.backend.job_launcher import submit_optimization
@@ -281,6 +294,7 @@ def trigger_optimization(
             target_accuracy=target_accuracy_str,
             max_attempts=max_attempts_str,
             workload_warehouse_ids=workload_warehouse_ids_str,
+            benchmark_policy=requested_benchmark_policy,
         )
 
         sql_warehouse_execute(

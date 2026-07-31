@@ -23,6 +23,7 @@ import {
 import {
   convergenceReasonText,
   formatScorePct,
+  isTerminalStatus,
   presentBaselineScore,
   presentOptimizedScore,
 } from "@/lib/score-display"
@@ -45,6 +46,7 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   MAX_ITERATIONS: "warning",
   FAILED: "danger",
   CANCELLED: "secondary",
+  SKIPPED: "warning",
   DISCARDED: "secondary",
   IN_PROGRESS: "info",
   RUNNING: "info",
@@ -110,8 +112,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
   }, [runId, isOpen])
 
   // Poll for live updates when run is not terminal
-  const TERMINAL = new Set(["CONVERGED", "STALLED", "MAX_ITERATIONS", "FAILED", "CANCELLED", "APPLIED", "DISCARDED"])
-  const runIsTerminal = run ? TERMINAL.has(run.status) : false
+  const runIsTerminal = run ? isTerminalStatus(run.status) : false
 
   useEffect(() => {
     if (!isOpen || runIsTerminal) {

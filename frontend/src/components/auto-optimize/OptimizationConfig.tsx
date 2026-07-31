@@ -59,6 +59,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [targetPercent, setTargetPercent] = useState(DEFAULT_TARGET_PERCENT)
   const [maxAttemptsInput, setMaxAttemptsInput] = useState(DEFAULT_MAX_ATTEMPTS)
   const [workloadWarehouseIds, setWorkloadWarehouseIds] = useState<Set<string>>(new Set())
+  const [allowBenchmarkRepair, setAllowBenchmarkRepair] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -95,6 +96,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           targetAccuracy,
           maxAttempts,
           workloadWarehouseIds: Array.from(workloadWarehouseIds).sort(),
+          benchmarkPolicy: allowBenchmarkRepair ? "repair_allowed" : "review_only",
         }),
       )
       onStarted(result.runId)
@@ -209,6 +211,31 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
               </p>
             )}
           </div>
+        </div>
+
+        <div className="rounded-lg border border-default bg-surface-subtle px-4 py-3">
+          <label className="flex cursor-pointer items-start gap-3">
+            <Checkbox
+              checked={allowBenchmarkRepair}
+              onCheckedChange={(checked) => setAllowBenchmarkRepair(checked === true)}
+              disabled={loading || hasActiveRun}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block text-sm font-medium text-primary">
+                Allow GSO to repair and add benchmarks
+              </span>
+              <span className="mt-0.5 block text-xs text-muted">
+                Off by default. GSO will review existing benchmarks without changing them and optimize only against the valid subset. If fewer than the required minimum remain, optimization is skipped.
+              </span>
+              {allowBenchmarkRepair && (
+                <span className="mt-2 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  This run may add benchmarks or update benchmark SQL in the live Genie Agent.
+                </span>
+              )}
+            </span>
+          </label>
         </div>
 
         {/* Alerts + launch — a full-width footer separated by a hairline so the

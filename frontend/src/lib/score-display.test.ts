@@ -13,6 +13,7 @@ describe("isTerminalStatus", () => {
     expect(isTerminalStatus("CONVERGED")).toBe(true)
     expect(isTerminalStatus("STALLED")).toBe(true)
     expect(isTerminalStatus("FAILED")).toBe(true)
+    expect(isTerminalStatus("SKIPPED")).toBe(true)
     expect(isTerminalStatus("APPLIED")).toBe(true)
     expect(isTerminalStatus("DISCARDED")).toBe(true)
   })

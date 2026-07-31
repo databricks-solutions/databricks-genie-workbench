@@ -95,6 +95,10 @@ resources:
         # Bound on benchmark_qc_and_repair's inline repair/prune loop.
         - name: benchmark_repair_max_tries
           default: "3"
+        # Backward-compatible job default. The Workbench UI explicitly sends
+        # review_only unless the operator opts into live benchmark repair.
+        - name: benchmark_policy
+          default: "repair_allowed"
         - name: triggered_by
           default: ""
         - name: warehouse_id
@@ -123,6 +127,7 @@ resources:
               max_attempts: "{{job.parameters.max_attempts}}"
               target_accuracy: "{{job.parameters.target_accuracy}}"
               benchmark_repair_max_tries: "{{job.parameters.benchmark_repair_max_tries}}"
+              benchmark_policy: "{{job.parameters.benchmark_policy}}"
               triggered_by: "{{job.parameters.triggered_by}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               workload_warehouse_ids: "{{job.parameters.workload_warehouse_ids}}"
@@ -143,6 +148,7 @@ resources:
               schema: "{{job.parameters.schema}}"
               apply_mode: "{{job.parameters.apply_mode}}"
               benchmark_repair_max_tries: "{{job.parameters.benchmark_repair_max_tries}}"
+              benchmark_policy: "{{job.parameters.benchmark_policy}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
           environment_key: default
@@ -163,6 +169,7 @@ resources:
               levers: "{{job.parameters.levers}}"
               max_attempts: "{{job.parameters.max_attempts}}"
               target_accuracy: "{{job.parameters.target_accuracy}}"
+              benchmark_policy: "{{job.parameters.benchmark_policy}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
           environment_key: default
@@ -182,6 +189,7 @@ resources:
               apply_mode: "{{job.parameters.apply_mode}}"
               target_accuracy: "{{job.parameters.target_accuracy}}"
               max_attempts: "{{job.parameters.max_attempts}}"
+              benchmark_policy: "{{job.parameters.benchmark_policy}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
           environment_key: default

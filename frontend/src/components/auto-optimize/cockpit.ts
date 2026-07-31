@@ -471,6 +471,14 @@ export function classifyTerminal(args: {
         detail:
           "The 2-hour eval-wall budget was reached before another attempt could be funded. Nothing was published.",
       }
+    case "INSUFFICIENT_VALID_BENCHMARKS":
+      return {
+        published: false,
+        tone: "warning",
+        title: "Optimization skipped — not enough valid benchmarks",
+        detail:
+          "Benchmark review left fewer valid questions than the required minimum. No evaluation or configuration patch ran.",
+      }
     default:
       return {
         published,

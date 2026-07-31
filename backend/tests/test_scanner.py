@@ -903,6 +903,7 @@ class TestScanSpaceGsoSelection:
         legacy optimization_runs, GSO runs, and persistence."""
         import backend.services.scanner as scanner
         import backend.services.gso_lakebase as gso_lakebase
+        import backend.services.auth as auth
 
         # Minimal scorable config (1 table, no benchmarks needed for accuracy).
         space_data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
@@ -914,7 +915,7 @@ class TestScanSpaceGsoSelection:
         )
         # Skip UC enrichment (it's already wrapped in try/except, but make it a
         # clean no-op so the test doesn't depend on a WorkspaceClient).
-        monkeypatch.setattr(scanner, "get_workspace_client", lambda: MagicMock(), raising=False)
+        monkeypatch.setattr(auth, "get_workspace_client", lambda: MagicMock())
         monkeypatch.setattr(scanner, "_enrich_with_uc_descriptions", lambda *a, **k: 0)
 
         async def _legacy(_sid):
@@ -975,6 +976,7 @@ class TestScanSpaceGsoSelection:
         parsed serialized_space payload."""
         import backend.services.scanner as scanner
         import backend.services.gso_lakebase as gso_lakebase
+        import backend.services.auth as auth
 
         def _get_serialized_space(_sid, *, include_top_level_description=False):
             assert include_top_level_description is True
@@ -986,7 +988,7 @@ class TestScanSpaceGsoSelection:
             }
 
         monkeypatch.setattr(scanner, "get_serialized_space", _get_serialized_space)
-        monkeypatch.setattr(scanner, "get_workspace_client", lambda: MagicMock(), raising=False)
+        monkeypatch.setattr(auth, "get_workspace_client", lambda: MagicMock())
         monkeypatch.setattr(scanner, "_enrich_with_uc_descriptions", lambda *a, **k: 0)
 
         async def _legacy(_sid):
