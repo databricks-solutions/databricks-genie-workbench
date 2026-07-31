@@ -147,6 +147,26 @@ def test_invalid_user_benchmark_sql_is_kept_question_only_for_sql_regeneration()
     assert user_row["validation_reason_code"] == "invalid_source_sql"
 
 
+def test_review_only_preserves_invalid_source_sql_for_accurate_qc() -> None:
+    with patch(
+        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
+        return_value=(False, "TABLE_OR_VIEW_NOT_FOUND"),
+    ):
+        rows = extract_review_only_benchmarks(
+            _space_config(),
+            spark=MagicMock(),
+            catalog="cat",
+            schema="sch",
+        )
+
+    assert len(rows) == 1
+    user_row = rows[0]
+    assert user_row["expected_sql"].startswith("SELECT market")
+    assert user_row["validation_status"] == "invalid"
+    assert user_row["validation_reason_code"] == "invalid_source_sql"
+    assert user_row["validation_error"] == "TABLE_OR_VIEW_NOT_FOUND"
+
+
 def test_legacy_auto_optimize_prefix_is_normalized_when_reading_native_benchmarks() -> None:
     config = _space_config()
     config["_parsed_space"]["benchmarks"]["questions"] = [

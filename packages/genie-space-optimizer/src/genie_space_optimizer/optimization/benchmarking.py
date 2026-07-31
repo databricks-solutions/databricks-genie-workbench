@@ -2174,6 +2174,7 @@ def extract_genie_space_benchmarks(
     *,
     w: Any = None,
     warehouse_id: str = "",
+    preserve_invalid_sql: bool = False,
 ) -> list[dict]:
     """Extract benchmark questions from a Genie Agent config.
 
@@ -2185,6 +2186,11 @@ def extract_genie_space_benchmarks(
 
     ``instructions.example_question_sqls`` are training examples and are
     intentionally excluded from the benchmark corpus.
+
+    When ``preserve_invalid_sql`` is true, source SQL that fails the initial
+    validation pass remains attached to the benchmark so a later quality
+    review can report the actual validation error.  Repair-enabled callers
+    retain the historical question-only fallback by using the default.
     """
     from genie_space_optimizer.optimization.benchmarks import validate_ground_truth_sql
 
@@ -2211,6 +2217,7 @@ def extract_genie_space_benchmarks(
 
         validation_status = "question_only"
         validation_reason_code = "missing_expected_sql"
+        validation_error: str | None = "No valid expected SQL in Genie benchmark source"
         sql = expected_sql.strip()
         if sql:
             from genie_space_optimizer.optimization.benchmarks import fix_mv_alias_sort_collision
@@ -2226,14 +2233,19 @@ def extract_genie_space_benchmarks(
             if is_valid:
                 validation_status = "valid"
                 validation_reason_code = "ok"
+                validation_error = None
             else:
                 logger.warning(
                     "Genie Agent benchmark source SQL failed validation: %s -- %s",
                     normalized_question[:60],
                     err,
                 )
-                sql = ""
-                validation_status = "question_only"
+                if preserve_invalid_sql:
+                    validation_status = "invalid"
+                    validation_error = str(err or "SQL validation failed")
+                else:
+                    sql = ""
+                    validation_status = "question_only"
                 validation_reason_code = "invalid_source_sql"
 
         benchmark = {
@@ -2248,7 +2260,7 @@ def extract_genie_space_benchmarks(
             "provenance": "curated",
             "validation_status": validation_status,
             "validation_reason_code": validation_reason_code,
-            "validation_error": None if sql else "No valid expected SQL in Genie benchmark source",
+            "validation_error": validation_error,
         }
         if space_question_id:
             benchmark["space_question_id"] = space_question_id
@@ -2321,6 +2333,7 @@ def extract_review_only_benchmarks(
             schema=schema,
             w=w,
             warehouse_id=warehouse_id,
+            preserve_invalid_sql=True,
         )
         if benchmark.get("source") == "genie_benchmark"
     ]

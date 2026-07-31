@@ -54,6 +54,32 @@ def eval_llm_timeout_seconds() -> int:
 _openai_client_cache: dict[str, Any] = {}
 
 
+def _message_content_text(content: Any) -> str:
+    """Normalize OpenAI-compatible message content into plain text.
+
+    Databricks serving endpoints may return either the traditional string or
+    structured content blocks.  Joining block text without a separator keeps
+    JSON responses valid when an endpoint splits one document across blocks.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        return "".join(_message_content_text(part) for part in content)
+    if isinstance(content, dict):
+        for key in ("text", "content", "value"):
+            if key in content:
+                return _message_content_text(content[key])
+        return ""
+
+    for attribute in ("text", "content", "value"):
+        value = getattr(content, attribute, None)
+        if value is not None and value is not content:
+            return _message_content_text(value)
+    return str(content)
+
+
 def _resolve_bearer_token(wc: "WorkspaceClient") -> str:
     """Extract a bearer token from the workspace client's auth chain.
 
@@ -162,14 +188,14 @@ def call_llm(
             response = client.chat.completions.create(**call_kwargs)
             if not response.choices:
                 raise ValueError("LLM response had no choices")
-            content = response.choices[0].message.content
-            if not content or not content.strip():
+            content = _message_content_text(response.choices[0].message.content).strip()
+            if not content:
                 raise ValueError("LLM response content is empty")
             try:
                 response._gso_prompt_pack_stats = pack_stats
             except Exception:
                 pass
-            return str(content).strip(), response
+            return content, response
         except Exception as exc:
             if response_format is not None and not retried_without_response_format:
                 message = str(exc).lower()
