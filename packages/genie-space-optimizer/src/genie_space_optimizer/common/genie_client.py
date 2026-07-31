@@ -70,6 +70,37 @@ def _space_from_config(config: dict | None) -> dict:
     return {}
 
 
+def drop_empty_text_instruction_placeholders(config: dict | None) -> int:
+    """Remove exported text-instruction rows that contain no content.
+
+    Genie can export an empty UI placeholder as an ID-only row even though
+    ``content`` is required when ``serialized_space`` is validated or patched.
+    The row carries no instruction semantics, so normalize it to the canonical
+    representation for "no text instructions": an empty list. Non-empty rows
+    are left untouched and remain subject to normal schema validation.
+
+    Returns the number of placeholders removed.
+    """
+    parsed = _space_from_config(config)
+    instructions = parsed.get("instructions") if isinstance(parsed, dict) else None
+    if not isinstance(instructions, dict):
+        return 0
+    text_instructions = instructions.get("text_instructions")
+    if not isinstance(text_instructions, list):
+        return 0
+
+    kept: list[Any] = []
+    removed = 0
+    for instruction in text_instructions:
+        if isinstance(instruction, dict) and not instruction.get("content"):
+            removed += 1
+        else:
+            kept.append(instruction)
+    if removed:
+        instructions["text_instructions"] = kept
+    return removed
+
+
 def _serialized_space_for_patch(config: dict) -> dict:
     """Return the parsed ``serialized_space`` object expected by PATCH.
 
@@ -420,6 +451,15 @@ def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
             "the caller must reject this snapshot."
         )
     config["_parsed_space"] = ss
+
+    removed_placeholders = drop_empty_text_instruction_placeholders(config)
+    if removed_placeholders:
+        logger.warning(
+            "Normalized %d empty text-instruction placeholder(s) exported by "
+            "Genie Agent %s",
+            removed_placeholders,
+            space_id,
+        )
 
     ds = ss.get("data_sources", {})
     if isinstance(ds, dict):

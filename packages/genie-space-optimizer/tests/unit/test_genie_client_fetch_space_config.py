@@ -59,3 +59,30 @@ def test_fetch_space_config_allows_genuine_empty_space_with_export() -> None:
     assert config["_tables"] == []
     assert config["_metric_views"] == []
     assert config["_functions"] == []
+
+
+def test_fetch_space_config_drops_id_only_text_instruction_placeholder(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _client_with_response(
+        {
+            "title": "Agent with empty instruction placeholder",
+            "serialized_space": {
+                "version": 2,
+                "data_sources": {
+                    "tables": [{"identifier": "cat.sch.orders"}],
+                    "metric_views": [],
+                },
+                "instructions": {
+                    "text_instructions": [{"id": "a" * 32}],
+                },
+            },
+        }
+    )
+
+    with caplog.at_level(logging.WARNING):
+        config = fetch_space_config(client, "space-1")
+
+    assert config["_parsed_space"]["instructions"]["text_instructions"] == []
+    assert config["_instructions"] == []
+    assert "empty text-instruction placeholder" in caplog.text

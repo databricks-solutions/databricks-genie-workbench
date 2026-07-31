@@ -28,6 +28,7 @@ from genie_space_optimizer.common.config import (
 )
 from genie_space_optimizer.common.genie_client import (
     compute_benchmark_window_recommendation,
+    drop_empty_text_instruction_placeholders,
     fetch_space_config,
 )
 from genie_space_optimizer.common.genie_schema import (
@@ -1018,6 +1019,15 @@ def preflight_fetch_config(
             logger.warning(
                 "Could not back-fill config_snapshot for %s", run_id, exc_info=True,
             )
+
+    removed_instruction_placeholders = drop_empty_text_instruction_placeholders(config)
+    if removed_instruction_placeholders:
+        logger.warning(
+            "Normalized %d empty text-instruction placeholder(s) from the "
+            "stored snapshot for run %s",
+            removed_instruction_placeholders,
+            run_id,
+        )
 
     _parsed = config.get("_parsed_space", config)
     _schema_ok, _schema_errors = validate_serialized_space(

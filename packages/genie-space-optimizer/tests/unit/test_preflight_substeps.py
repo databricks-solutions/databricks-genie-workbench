@@ -96,6 +96,50 @@ class TestPreflightFetchConfig:
         result = preflight_fetch_config(mock_ws, mock_spark, "run-1", "space-1", "cat", "gold", "My Domain!!")
         assert result["domain"] == "my_domain"
 
+    @patch("genie_space_optimizer.optimization.preflight.extract_genie_space_table_refs", return_value=[])
+    @patch("genie_space_optimizer.optimization.preflight.load_run")
+    @patch("genie_space_optimizer.optimization.preflight.write_stage")
+    def test_normalizes_id_only_instruction_in_stored_snapshot(
+        self,
+        mock_write_stage,
+        mock_load,
+        mock_refs,
+        mock_spark,
+        mock_ws,
+        caplog,
+    ):
+        from genie_space_optimizer.optimization.preflight import preflight_fetch_config
+
+        snapshot = {
+            "_parsed_space": {
+                "version": 2,
+                "data_sources": {
+                    "tables": [{"identifier": "cat.gold.orders"}],
+                    "metric_views": [],
+                },
+                "instructions": {
+                    "text_instructions": [{"id": "a" * 32}],
+                },
+            }
+        }
+        mock_load.return_value = {"config_snapshot": snapshot}
+
+        with caplog.at_level("WARNING"):
+            result = preflight_fetch_config(
+                mock_ws,
+                mock_spark,
+                "run-1",
+                "space-1",
+                "cat",
+                "gold",
+                "revenue",
+            )
+
+        assert result["config"]["_parsed_space"]["instructions"][
+            "text_instructions"
+        ] == []
+        assert "empty text-instruction placeholder" in caplog.text
+
     @patch("genie_space_optimizer.optimization.preflight.validate_serialized_space")
     @patch("genie_space_optimizer.optimization.preflight.load_run")
     @patch("genie_space_optimizer.optimization.preflight.write_failure_stage_safely")
