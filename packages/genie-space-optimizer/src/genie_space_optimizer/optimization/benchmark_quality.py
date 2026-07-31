@@ -28,7 +28,7 @@ from genie_space_optimizer.optimization.benchmarks import (
 
 logger = logging.getLogger(__name__)
 
-QUALITY_REVIEW_VERSION = "benchmark_quality_v1"
+QUALITY_REVIEW_VERSION = "benchmark_quality_v2"
 QUALITY_ERROR_CONFIDENCE = 0.75
 
 QUESTION_QUALITY = "question_quality"
@@ -43,6 +43,7 @@ _QUESTION_QUALITY_CODES = frozenset(
         "AMBIGUOUS_TIME_SCOPE",
         "AMBIGUOUS_GRAIN",
         "UNANSWERABLE_FROM_SPACE",
+        "IMPLEMENTATION_HINT",
         "WEAK_BUT_ANSWERABLE",
     }
 )
@@ -122,6 +123,16 @@ def _source(benchmark: dict) -> str:
     return str(benchmark.get("source") or benchmark.get("provenance") or "unknown")
 
 
+def _is_generated_benchmark(benchmark: dict) -> bool:
+    """Return whether GSO, rather than a user, authored the question text."""
+    source = str(benchmark.get("source") or "").strip().lower()
+    provenance = str(benchmark.get("provenance") or "").strip().lower()
+    return source == "llm_generated" or provenance in {
+        "synthetic",
+        "coverage_gap_fill",
+    }
+
+
 def _strip_json_fence(raw: str) -> str:
     text = str(raw or "").strip()
     if text.startswith("```"):
@@ -163,6 +174,7 @@ def _llm_review(
                 "question_id": qid,
                 "question": str(b.get("question") or ""),
                 "expected_sql": str(b.get("expected_sql") or ""),
+                "source": _source(b),
             }
             for qid, b in batch
         ]
@@ -221,6 +233,18 @@ def _llm_review(
                     severity = str(issue.get("severity") or "warning").lower()
                     if code == "WEAK_BUT_ANSWERABLE":
                         severity = "warning"
+                    elif code == "IMPLEMENTATION_HINT":
+                        # Generated questions with confident implementation leakage
+                        # are unsafe evaluation rows and can be replaced with a new
+                        # benchmark. User-authored wording is immutable: retain it as
+                        # an advisory warning for the owner instead of auto-pruning or
+                        # rewriting it. Low-confidence findings are warnings for both.
+                        severity = (
+                            "error"
+                            if confidence >= QUALITY_ERROR_CONFIDENCE
+                            and _is_generated_benchmark(benchmark)
+                            else "warning"
+                        )
                     elif severity == "error" and confidence < QUALITY_ERROR_CONFIDENCE:
                         severity = "warning"
                     findings.append(

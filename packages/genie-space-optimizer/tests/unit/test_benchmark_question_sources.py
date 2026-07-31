@@ -75,6 +75,7 @@ def test_extracts_user_benchmarks_and_sample_questions_but_not_example_sqls() ->
 
     by_question = {row["question"]: row for row in rows}
     assert by_question["What is sales by market?"]["source"] == "genie_benchmark"
+    assert by_question["What is sales by market?"]["space_question_id"] == _hex("c")
     assert by_question["What is sales by market?"]["expected_sql"].startswith("SELECT market")
     assert by_question["What were total sales yesterday?"]["source"] == "sample_question"
     assert by_question["What were total sales yesterday?"]["expected_sql"] == ""

@@ -2571,13 +2571,14 @@ def preflight_push_benchmarks_to_space(
     This is the runner-independent Phase-2 wiring point (it does not depend
     on the Phase-1 EvalRunner seam):
 
-    * **Push (D8):** the WHOLE validated set is merged (additive/merge-only)
+    * **Push (D8):** the WHOLE validated set is merged (additive plus
+      SQL-only updates by stable native benchmark ID)
       into ``serialized_space.benchmarks.questions`` so the official
       Benchmark API scores against it from baseline onward. There is NO
       train/held-out split — the benchmark is held out by nature. User-
-      authored rows are never deleted, and the merged set is never sliced
-      or truncated (the publisher fails closed on the Genie API hard cap
-      rather than dropping rows).
+      authored question text is never changed, rows are never deleted, and
+      the merged set is never sliced or truncated (the publisher fails closed
+      on the Genie API hard cap rather than dropping rows).
     * **Prune-invalid before publish:** a final defensive guard drops any
       row that is not EXPLAIN-valid or lacks ground-truth SQL, so a
       SQL-erroring question can never be published.
@@ -2687,6 +2688,7 @@ def preflight_push_benchmarks_to_space(
                     task_key="preflight", catalog=catalog, schema=schema,
                     detail={
                         "added": push_report.added_count,
+                        "updated": push_report.updated_count,
                         "dedup_skipped": push_report.dedup_skipped,
                         "mirror_skipped": push_report.mirror_skipped,
                         "merged_total": push_report.merged_total,
@@ -2748,6 +2750,20 @@ def preflight_push_benchmarks_to_space(
                 "before": None,
                 "after": {"question": a.get("question", ""), "sql": a.get("sql", "")},
                 "reason": "preflight_push",
+            })
+        for updated in push_report.updated:
+            ledger_rows.append({
+                "question_id": updated.get("id", ""),
+                "op": "changed",
+                "before": {
+                    "question": updated.get("question", ""),
+                    "sql": updated.get("before_sql", ""),
+                },
+                "after": {
+                    "question": updated.get("question", ""),
+                    "sql": updated.get("after_sql", ""),
+                },
+                "reason": "curated_sql_repair",
             })
     for r in rejected_benchmarks:
         ledger_rows.append({

@@ -270,3 +270,163 @@ def test_compile_failure_is_classified_without_semantic_review(monkeypatch) -> N
     assert semantic_called is False
     assert result["findings"][0]["category"] == quality.SQL_VALIDITY
     assert result["findings"][0]["code"] == "SYNTAX_ERROR"
+
+
+def _patch_quality_context(monkeypatch) -> None:
+    from genie_space_optimizer.optimization import benchmarking
+
+    monkeypatch.setattr(
+        benchmarking,
+        "_build_schema_contexts",
+        lambda *_args, **_kwargs: {
+            "valid_assets_context": "assets",
+            "tables_context": "tables",
+            "metric_views_context": "metric views",
+            "tvfs_context": "functions",
+            "join_specs_context": "joins",
+            "instructions_context": "instructions",
+        },
+    )
+
+
+def test_high_confidence_generated_implementation_hint_is_excluded(monkeypatch) -> None:
+    _patch_deterministic_checks(monkeypatch)
+    _patch_quality_context(monkeypatch)
+    monkeypatch.setattr(
+        quality,
+        "_call_quality_llm",
+        lambda _prompt: json.dumps([{
+            "question_id": "q1",
+            "confidence": 0.96,
+            "issues": [{
+                "category": "question_quality",
+                "code": "IMPLEMENTATION_HINT",
+                "severity": "warning",
+                "explanation": "The question tells the evaluator which join to use.",
+            }],
+            "proposed_question": "How many tickets were created per account segment?",
+        }]),
+    )
+
+    result = quality.review_benchmark_quality(
+        [{
+            "id": "q1",
+            "question": "Count tickets per segment. Join tickets to accounts.",
+            "expected_sql": "SELECT 1",
+            "source": "llm_generated",
+            "provenance": "synthetic",
+        }],
+        object(),
+        config={},
+    )
+
+    assert result["accepted"] == []
+    assert len(result["excluded"]) == 1
+    assert result["findings"][0]["code"] == "IMPLEMENTATION_HINT"
+    assert result["findings"][0]["severity"] == "error"
+
+
+def test_low_confidence_implementation_hint_is_warning(monkeypatch) -> None:
+    _patch_deterministic_checks(monkeypatch)
+    _patch_quality_context(monkeypatch)
+    monkeypatch.setattr(
+        quality,
+        "_call_quality_llm",
+        lambda _prompt: json.dumps([{
+            "question_id": "q1",
+            "confidence": 0.45,
+            "issues": [{
+                "category": "question_quality",
+                "code": "IMPLEMENTATION_HINT",
+                "severity": "error",
+                "explanation": "This might be an implementation hint.",
+            }],
+        }]),
+    )
+
+    result = quality.review_benchmark_quality(
+        [{
+            "id": "q1",
+            "question": "Show renewal revenue from accounts",
+            "expected_sql": "SELECT 1",
+            "source": "llm_generated",
+            "provenance": "synthetic",
+        }],
+        object(),
+        config={},
+    )
+
+    assert len(result["accepted"]) == 1
+    assert result["counts"]["warnings"] == 1
+    assert result["findings"][0]["severity"] == "warning"
+
+
+def test_user_authored_implementation_hint_is_advisory_and_not_rewritten(
+    monkeypatch,
+) -> None:
+    _patch_deterministic_checks(monkeypatch)
+    _patch_quality_context(monkeypatch)
+    original = "Count tickets per segment. Join tickets to accounts."
+    monkeypatch.setattr(
+        quality,
+        "_call_quality_llm",
+        lambda _prompt: json.dumps([{
+            "question_id": "q1",
+            "confidence": 0.99,
+            "issues": [{
+                "category": "question_quality",
+                "code": "IMPLEMENTATION_HINT",
+                "severity": "error",
+                "explanation": "The question includes a join instruction.",
+            }],
+            "proposed_question": "How many tickets were created per account segment?",
+        }]),
+    )
+
+    result = quality.review_benchmark_quality(
+        [{
+            "id": "q1",
+            "question": original,
+            "expected_sql": "SELECT 1",
+            "source": "genie_benchmark",
+            "provenance": "curated",
+        }],
+        object(),
+        config={},
+    )
+
+    assert result["excluded"] == []
+    assert result["accepted"][0]["question"] == original
+    assert result["findings"][0]["severity"] == "warning"
+    assert result["findings"][0]["proposed_question"] != original
+
+
+def test_legitimate_where_and_from_are_not_deterministically_rejected(monkeypatch) -> None:
+    _patch_deterministic_checks(monkeypatch)
+    _patch_quality_context(monkeypatch)
+    monkeypatch.setattr(
+        quality,
+        "_call_quality_llm",
+        lambda _prompt: json.dumps([{
+            "question_id": "q1",
+            "confidence": 0.95,
+            "issues": [],
+        }]),
+    )
+
+    question = "Where did revenue from renewals increase last quarter?"
+    result = quality.review_benchmark_quality(
+        [{
+            "id": "q1",
+            "question": question,
+            "expected_sql": "SELECT 1",
+            "source": "llm_generated",
+            "provenance": "synthetic",
+        }],
+        object(),
+        config={},
+    )
+
+    assert result["excluded"] == []
+    assert result["accepted"][0]["question"] == question
+    assert result["counts"]["trusted"] == 1

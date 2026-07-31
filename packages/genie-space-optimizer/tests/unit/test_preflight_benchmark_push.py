@@ -163,6 +163,72 @@ def test_real_publisher_preserves_existing_live_rows_and_adds_net_new():
     assert len(patched_qs) == 4
 
 
+def test_real_publisher_repairs_sql_in_place_by_stable_id_without_rewording():
+    existing_question = "How many support tickets were created per account segment?"
+    existing = [_live_question("native-q1", existing_question, "SELECT broken")]
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    repaired = _bench(
+        "native-q1",
+        existing_question,
+        "SELECT 1",
+        source="genie_benchmark",
+        space_question_id="native-q1",
+    )
+    with patch(
+        _FETCH_PATH,
+        return_value={"_parsed_space": _parsed_space(existing=existing)},
+    ), patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1", [repaired],
+        )
+
+    patched_questions = patched_holder["cfg"]["benchmarks"]["questions"]
+    assert len(patched_questions) == 1
+    assert patched_questions[0]["id"] == "native-q1"
+    assert patched_questions[0]["question"] == [existing_question]
+    assert patched_questions[0]["answer"][0]["content"] == ["SELECT 1"]
+    assert report.added_count == 0
+    assert report.updated_count == 1
+    assert report.updated[0]["before_sql"] == "SELECT broken"
+    assert report.updated[0]["after_sql"] == "SELECT 1"
+
+
+def test_real_publisher_refuses_stable_id_update_when_question_text_changed():
+    existing_question = "How many tickets were created?"
+    existing = [_live_question("native-q1", existing_question, "SELECT old")]
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    rewritten = _bench(
+        "native-q1",
+        "How many tickets were created? Join tickets to accounts.",
+        "SELECT new",
+        source="genie_benchmark",
+        space_question_id="native-q1",
+    )
+    with patch(
+        _FETCH_PATH,
+        return_value={"_parsed_space": _parsed_space(existing=existing)},
+    ), patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(), "space-1", [rewritten],
+        )
+
+    patched_questions = patched_holder["cfg"]["benchmarks"]["questions"]
+    assert patched_questions == existing
+    assert report.added_count == 0
+    assert report.updated_count == 0
+    assert report.dedup_skipped == 1
+
+
 def test_real_publisher_pushes_valid_31_to_40_set_without_truncation():
     """(b) a valid 31–40 set is pushed whole — never truncated to 30."""
     patched_holder: dict = {}
@@ -425,6 +491,56 @@ def test_push_writes_added_removed_changed_ledger_rows(captured_publish):
     assert by_op["changed"][0]["after"]["sql"] == "WHERE region = 'Europe'"
 
     assert out["ledger_rows"] == len(rows)
+
+
+def test_push_ledgers_native_sql_repair_as_changed() -> None:
+    updated = [{
+        "id": "native-q1",
+        "question": "How many tickets were created?",
+        "before_sql": "SELECT broken",
+        "after_sql": "SELECT 1",
+    }]
+    report = BenchmarkPushReport(
+        updated_count=1,
+        merged_total=1,
+        existing_count=1,
+        updated=updated,
+        merged=[{
+            "id": "native-q1",
+            "question": "How many tickets were created?",
+            "sql": "SELECT 1",
+        }],
+        window=compute_benchmark_window_recommendation(updated),
+        patched=True,
+    )
+    recorded: dict = {}
+
+    def _capture(spark, run_id, rows, *, catalog, schema):
+        recorded["rows"] = rows
+        return len(rows)
+
+    with patch(_PUBLISH_PATH, return_value=report), patch(
+        "genie_space_optimizer.optimization.preflight.write_stage",
+    ), patch(
+        "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
+        side_effect=_capture,
+    ):
+        preflight_push_benchmarks_to_space(
+            MagicMock(),
+            MagicMock(),
+            "run-1",
+            "space-1",
+            "cat",
+            "sch",
+            [_bench("native-q1", "How many tickets were created?", "SELECT 1")],
+        )
+
+    changed = [row for row in recorded["rows"] if row["op"] == "changed"]
+    assert len(changed) == 1
+    assert changed[0]["question_id"] == "native-q1"
+    assert changed[0]["before"]["sql"] == "SELECT broken"
+    assert changed[0]["after"]["sql"] == "SELECT 1"
+    assert changed[0]["reason"] == "curated_sql_repair"
 
 
 def test_push_records_over_window_prune_recommendations_in_ledger():

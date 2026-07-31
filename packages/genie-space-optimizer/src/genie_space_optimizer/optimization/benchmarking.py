@@ -2212,6 +2212,7 @@ def extract_genie_space_benchmarks(
         expected_sql: str,
         source: str,
         category: str,
+        space_question_id: str = "",
     ) -> None:
         normalized_question = _strip_legacy_auto_optimize_prefix(question)
         q_lower = normalized_question.lower().strip()
@@ -2246,7 +2247,7 @@ def extract_genie_space_benchmarks(
                 validation_status = "question_only"
                 validation_reason_code = "invalid_source_sql"
 
-        benchmarks.append({
+        benchmark = {
             "question": normalized_question,
             "expected_sql": sql,
             "expected_asset": detect_asset_type(sql) if sql else "TABLE",
@@ -2259,7 +2260,10 @@ def extract_genie_space_benchmarks(
             "validation_status": validation_status,
             "validation_reason_code": validation_reason_code,
             "validation_error": None if sql else "No valid expected SQL in Genie benchmark source",
-        })
+        }
+        if space_question_id:
+            benchmark["space_question_id"] = space_question_id
+        benchmarks.append(benchmark)
 
     bench_section = parsed_space.get("benchmarks", {})
     if not isinstance(bench_section, dict):
@@ -2275,6 +2279,7 @@ def extract_genie_space_benchmarks(
             expected_sql=expected_sql,
             source="genie_benchmark",
             category="user_benchmark",
+            space_question_id=str(bq.get("id") or "").strip(),
         )
 
     cfg_block = parsed_space.get("config", {})
@@ -2598,6 +2603,38 @@ def _validate_benchmark_sql(
         w=w, warehouse_id=warehouse_id,
     )
 
+
+def _index_question_candidates(
+    candidates: list[dict],
+    *,
+    fallback_prefix: str,
+) -> list[tuple[str, dict]]:
+    """Assign an unambiguous request-local identity to each candidate.
+
+    Existing benchmark IDs are preserved when available. The request-local
+    fallback is positional, so SQL-only LLM responses can be merged back onto
+    the exact input row without matching on mutable question text.
+    """
+    indexed: list[tuple[str, dict]] = []
+    used: set[str] = set()
+    for index, candidate in enumerate(candidates):
+        base = str(
+            candidate.get("question_id")
+            or candidate.get("id")
+            or candidate.get("space_question_id")
+            or f"{fallback_prefix}_{index + 1:03d}"
+        ).strip()
+        if not base:
+            base = f"{fallback_prefix}_{index + 1:03d}"
+        question_id = base
+        suffix = 2
+        while question_id in used:
+            question_id = f"{base}__{suffix}"
+            suffix += 1
+        used.add(question_id)
+        indexed.append((question_id, candidate))
+    return indexed
+
 def _attempt_sql_correction(
     w: WorkspaceClient,
     config: dict,
@@ -2642,7 +2679,13 @@ def _attempt_sql_correction(
 
     ctx = _build_schema_contexts(config, uc_columns, uc_routines)
 
-    def _benchmark_payload(b: dict) -> dict:
+    indexed_candidates = _index_question_candidates(
+        invalid_candidates,
+        fallback_prefix="repair",
+    )
+    candidates_by_id = {question_id: b for question_id, b in indexed_candidates}
+
+    def _benchmark_payload(question_id: str, b: dict) -> dict:
         err_str = str(b.get("validation_error", "") or "")
         # PR 16: emit class-specific repair hints so the LLM gets a
         # deterministic nudge toward the correct fix instead of
@@ -2661,6 +2704,7 @@ def _attempt_sql_correction(
             else ""
         )
         return {
+            "question_id": question_id,
             "question": b["question"],
             "original_expected_sql": b["expected_sql"],
             "error": err_str or "unknown",
@@ -2670,7 +2714,7 @@ def _attempt_sql_correction(
         }
 
     benchmarks_to_fix = json.dumps(
-        [_benchmark_payload(b) for b in invalid_candidates],
+        [_benchmark_payload(question_id, b) for question_id, b in indexed_candidates],
         indent=2,
     )
 
@@ -2759,10 +2803,34 @@ def _attempt_sql_correction(
     )
 
     corrected: list[dict] = []
-    for c in corrections:
+    returned_ids: set[str] = set()
+    for response_item in corrections:
+        if not isinstance(response_item, dict):
+            continue
+        question_id = str(response_item.get("question_id") or "").strip()
+        original = candidates_by_id.get(question_id)
+        if original is None or question_id in returned_ids:
+            logger.warning(
+                "Ignoring SQL correction with unknown or duplicate question_id: %s",
+                question_id or "(missing)",
+            )
+            continue
+        returned_ids.add(question_id)
+        # The model is only authoritative for SQL repair. In particular, do
+        # not accept model-returned question text or metadata: reconstruct the
+        # candidate from the exact input row selected by stable identity.
+        c = {
+            **original,
+            "expected_sql": response_item.get("expected_sql"),
+            "unfixable_reason": response_item.get("unfixable_reason"),
+        }
         sql = c.get("expected_sql")
         if not sql or c.get("unfixable_reason"):
-            logger.info("Candidate unfixable: %s — %s", c.get("question", "")[:60], c.get("unfixable_reason", ""))
+            logger.info(
+                "Candidate unfixable: %s — %s",
+                str(c.get("question", ""))[:60],
+                c.get("unfixable_reason", ""),
+            )
             continue
 
         # F8 — apply the same deterministic repairs the preflight
@@ -2897,6 +2965,15 @@ def _attempt_sql_correction(
                 )
                 continue
         sql = sql_str
+
+        # The repair response is intentionally SQL-only. Refresh auxiliary
+        # table metadata from that SQL and discard stale model-authored column
+        # annotations from the invalid input; otherwise a corrected query can
+        # still be rejected solely because its old ``required_*`` hints refer
+        # to the pre-repair SQL. SQL metadata enforcement below remains the
+        # authoritative safety check.
+        c["required_tables"] = sorted(_extract_sql_asset_references(sql_str))
+        c["required_columns"] = []
 
         metadata_ok, _reason_code, reason_message = _enforce_metadata_constraints(
             benchmark=c,
@@ -3559,8 +3636,18 @@ def _generate_sql_for_curated_questions(
     from genie_space_optimizer.optimization.benchmarks import validate_ground_truth_sql
 
     ctx = _build_schema_contexts(config, uc_columns, uc_routines)
+    indexed_questions = _index_question_candidates(
+        question_only_benchmarks,
+        fallback_prefix="curated",
+    )
+    questions_by_id = {
+        question_id: benchmark for question_id, benchmark in indexed_questions
+    }
     questions_json = json.dumps(
-        [{"question": b["question"]} for b in question_only_benchmarks],
+        [
+            {"question_id": question_id, "question": b["question"]}
+            for question_id, b in indexed_questions
+        ],
         indent=2,
     )
 
@@ -3586,14 +3673,23 @@ def _generate_sql_for_curated_questions(
         logger.warning("Curated SQL generation LLM call failed", exc_info=True)
         return []
 
-    question_map = {b["question"].strip().lower(): b for b in question_only_benchmarks}
     enriched: list[dict] = []
+    returned_ids: set[str] = set()
 
     for g in generated:
         if not isinstance(g, dict):
             continue
+        question_id = str(g.get("question_id") or "").strip()
+        original = questions_by_id.get(question_id)
+        if original is None or question_id in returned_ids:
+            logger.warning(
+                "Ignoring curated SQL result with unknown or duplicate question_id: %s",
+                question_id or "(missing)",
+            )
+            continue
+        returned_ids.add(question_id)
         sql = g.get("expected_sql")
-        question = str(g.get("question", "")).strip()
+        question = str(original.get("question") or "").strip()
         if not sql or g.get("unfixable_reason"):
             logger.info(
                 "Curated SQL generation: unfixable '%s' — %s",
@@ -3610,7 +3706,13 @@ def _generate_sql_for_curated_questions(
             for _retry in range(CURATED_SQL_GENERATION_MAX_RETRIES):
                 corrections = _attempt_benchmark_correction(
                     w, config, uc_columns, uc_routines,
-                    [{"question": question, "expected_sql": sql, "validation_error": err}],
+                    [{
+                        **original,
+                        "question_id": question_id,
+                        "question": question,
+                        "expected_sql": sql,
+                        "validation_error": err,
+                    }],
                     catalog, schema, spark,
                     _build_metadata_allowlist(config=config, uc_columns=uc_columns, uc_routines=uc_routines),
                     warehouse_id=warehouse_id,
@@ -3626,17 +3728,16 @@ def _generate_sql_for_curated_questions(
                 )
 
         if is_valid and sql:
-            original = question_map.get(question.lower(), {})
             enriched.append({
                 **original,
                 "question": question,
                 "expected_sql": sql,
-                "expected_asset": g.get("expected_asset", detect_asset_type(sql)),
-                "category": g.get("category", original.get("category", "curated")),
-                "required_tables": g.get("required_tables", []),
-                "required_columns": g.get("required_columns", []),
-                "expected_facts": g.get("expected_facts", []),
-                "source": "genie_space",
+                "expected_asset": detect_asset_type(sql),
+                "category": original.get("category", "curated"),
+                "required_tables": original.get("required_tables", []),
+                "required_columns": original.get("required_columns", []),
+                "expected_facts": original.get("expected_facts", []),
+                "source": original.get("source") or "genie_space",
                 "provenance": "curated_sql_generated",
                 "validation_status": "valid",
                 "validation_reason_code": "ok",
@@ -4160,7 +4261,19 @@ def generate_benchmarks(
         logger.warning("Alignment validation skipped: %s", _align_err)
 
     all_benchmarks: list[dict] = list(_existing)
-    allocate_benchmark_id = _make_benchmark_id_allocator(all_benchmarks)
+    # Reserve native benchmark IDs up front so generated rows cannot collide
+    # with a curated row that must be updated in place when its SQL is repaired.
+    reserved_curated_ids = [
+        {
+            "id": str(b.get("space_question_id") or "").strip(),
+        }
+        for b in curated
+        if b.get("source") == "genie_benchmark"
+        and str(b.get("space_question_id") or "").strip()
+    ]
+    allocate_benchmark_id = _make_benchmark_id_allocator(
+        all_benchmarks + reserved_curated_ids,
+    )
 
     from genie_space_optimizer.common.config import REQUIRE_GROUND_TRUTH_SQL
 
@@ -4202,37 +4315,50 @@ def generate_benchmarks(
     effective_curated = curated_with_sql
 
     for idx, b in enumerate(effective_curated):
-        question_id = allocate_benchmark_id(f"{domain}_gs", idx + 1)
+        native_question_id = (
+            str(b.get("space_question_id") or "").strip()
+            if b.get("source") == "genie_benchmark"
+            else ""
+        )
+        question_id = native_question_id or allocate_benchmark_id(
+            f"{domain}_gs", idx + 1,
+        )
         priority = "P0"
         expected_sql = str(b.get("expected_sql", "") or "")
         curated_status = "question_only" if not expected_sql else str(
             b.get("validation_status", "valid"),
         )
-        all_benchmarks.append(
-            {
-                "id": question_id,
-                "question": b.get("question", ""),
-                "expected_sql": expected_sql,
-                "expected_asset": _normalize_expected_asset(
-                    b.get("expected_asset", "TABLE"),
-                    expected_sql,
-                    hint=b.get("expected_asset_hint"),
-                ),
-                "expected_asset_hint": b.get("expected_asset_hint", ""),
-                "category": b.get("category", "curated"),
-                "required_tables": b.get("required_tables", []),
-                "required_columns": b.get("required_columns", []),
-                "expected_facts": b.get("expected_facts", []),
-                "priority": priority,
-                "split": "",
-                "source": b.get("source") or "genie_space",
-                "provenance": b.get("provenance") or "curated",
-                "validation_status": curated_status,
-                "validation_reason_code": "ok" if expected_sql else "missing_expected_sql",
-                "validation_error": None if expected_sql else "No expected SQL in curated sample question",
-                "correction_source": b.get("correction_source", ""),
-            }
-        )
+        curated_row = {
+            "id": question_id,
+            "question": b.get("question", ""),
+            "expected_sql": expected_sql,
+            "expected_asset": _normalize_expected_asset(
+                b.get("expected_asset", "TABLE"),
+                expected_sql,
+                hint=b.get("expected_asset_hint"),
+            ),
+            "expected_asset_hint": b.get("expected_asset_hint", ""),
+            "category": b.get("category", "curated"),
+            "required_tables": b.get("required_tables", []),
+            "required_columns": b.get("required_columns", []),
+            "expected_facts": b.get("expected_facts", []),
+            "priority": priority,
+            "split": "",
+            "source": b.get("source") or "genie_space",
+            "provenance": b.get("provenance") or "curated",
+            "validation_status": curated_status,
+            "validation_reason_code": (
+                "ok" if expected_sql else "missing_expected_sql"
+            ),
+            "validation_error": (
+                None if expected_sql
+                else "No expected SQL in curated sample question"
+            ),
+            "correction_source": b.get("correction_source", ""),
+        }
+        if native_question_id:
+            curated_row["space_question_id"] = native_question_id
+        all_benchmarks.append(curated_row)
 
     offset = len(effective_curated)
     for idx, b in enumerate(valid_benchmarks):

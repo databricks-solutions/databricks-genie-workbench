@@ -1116,8 +1116,17 @@ def _benchmarks_to_genie_format(
             else question
         )
 
+        # A curated native benchmark keeps its Genie question ID so a SQL
+        # repair can update that exact row. Other rows receive fresh IDs;
+        # notably, sample-question IDs cannot be reused because Genie requires
+        # uniqueness across sample questions and benchmark questions.
+        native_question_id = (
+            str(b.get("space_question_id") or "").strip()
+            if source == "genie_benchmark"
+            else ""
+        )
         entry: dict[str, Any] = {
-            "id": uuid.uuid4().hex,
+            "id": native_question_id or uuid.uuid4().hex,
             "question": [display_question],
             "answer": [{"format": "SQL", "content": [expected_sql]}],
         }
@@ -1143,15 +1152,28 @@ def _benchmarks_to_genie_format(
 
 def _dedupe_and_merge_benchmarks(
     existing: list[dict], additions: list[dict],
-) -> tuple[list[dict], int, int]:
+) -> tuple[list[dict], int, int, list[dict]]:
     """Merge ``additions`` into ``existing`` preserving user-authored rows.
 
-    Returns ``(merged, added_count, skipped_count)``. A new row is skipped if
-    its normalized question text has n-gram Jaccard >= 0.90 against any
-    existing row (covers "Top 10 products" vs "top 10 products" vs "Top
-    ten  products").
+    An addition whose stable ID matches an existing row may update only that
+    row's SQL answer, and only when the normalized question text is identical.
+    This lets GSO repair a question-only/invalid-SQL curated benchmark without
+    accepting replacement wording from an LLM. All other existing rows remain
+    byte-for-byte intact.
+
+    Returns ``(merged, added_count, skipped_count, updated)``. A new row is
+    skipped if its normalized question text has n-gram Jaccard >= 0.90 against
+    any existing row (covers "Top 10 products" vs "top 10 products" vs "Top
+    ten products"). ``updated`` contains before/after SQL records for the
+    provenance ledger.
     """
     merged: list[dict] = list(existing) if isinstance(existing, list) else []
+
+    existing_index_by_id = {
+        str(entry.get("id") or "").strip(): index
+        for index, entry in enumerate(merged)
+        if isinstance(entry, dict) and str(entry.get("id") or "").strip()
+    }
 
     existing_norms: list[str] = [
         _normalize_question_text(_extract_existing_question_text(e))
@@ -1161,11 +1183,53 @@ def _dedupe_and_merge_benchmarks(
 
     added = 0
     skipped = 0
+    updated: list[dict] = []
     for add in additions:
         add_text = _extract_existing_question_text(add)
         add_norm = _normalize_question_text(add_text)
         if not add_norm:
             skipped += 1
+            continue
+
+        add_id = str(add.get("id") or "").strip() if isinstance(add, dict) else ""
+        existing_index = existing_index_by_id.get(add_id) if add_id else None
+        if existing_index is not None:
+            current = merged[existing_index]
+            current_text = _extract_existing_question_text(current)
+            current_norm = _normalize_question_text(current_text)
+            if current_norm != add_norm:
+                logger.warning(
+                    "Skipped benchmark update for stable id %s because question text changed",
+                    add_id,
+                )
+                skipped += 1
+                continue
+            before_answer = current.get("answer") if isinstance(current, dict) else None
+            after_answer = add.get("answer") if isinstance(add, dict) else None
+            if before_answer == after_answer:
+                skipped += 1
+                continue
+            repaired = dict(current)
+            repaired["answer"] = after_answer
+            merged[existing_index] = repaired
+
+            def _first_sql(answer: Any) -> str:
+                if not isinstance(answer, list) or not answer:
+                    return ""
+                first = answer[0]
+                if not isinstance(first, dict):
+                    return ""
+                content = first.get("content")
+                if isinstance(content, list) and content:
+                    return str(content[0])
+                return str(content or "")
+
+            updated.append({
+                "id": add_id,
+                "question": current_text,
+                "before_sql": _first_sql(before_answer),
+                "after_sql": _first_sql(after_answer),
+            })
             continue
 
         is_dup = False
@@ -1181,10 +1245,12 @@ def _dedupe_and_merge_benchmarks(
             continue
 
         merged.append(add)
+        if add_id:
+            existing_index_by_id[add_id] = len(merged) - 1
         existing_norms.append(add_norm)
         added += 1
 
-    return merged, added, skipped
+    return merged, added, skipped, updated
 
 
 def _extract_example_sql_questions(parsed: dict) -> set[str]:
@@ -1317,8 +1383,9 @@ class BenchmarkPushReport:
     ``{id, question, sql}``); ``merged`` is the WHOLE post-merge set
     (existing live + net-new) so callers can compute the 30–40 window
     recommendation over the real resulting set; ``merged_total`` is its
-    length. The push is strictly additive/merge-only — user-authored rows
-    are NEVER removed or truncated here.
+    length. The push is additive except for SQL-only repair of an identical
+    question selected by stable native ID. User-authored rows are NEVER
+    removed, truncated, or reworded here.
 
     ``window`` is the post-merge 30–40 window recommendation (recommendation
     only — never auto-applied). ``over_cap`` is set when the merged set would
@@ -1328,11 +1395,13 @@ class BenchmarkPushReport:
     """
 
     added_count: int = 0
+    updated_count: int = 0
     dedup_skipped: int = 0
     mirror_skipped: int = 0
     merged_total: int = 0
     existing_count: int = 0
     added: list[dict] = field(default_factory=list)
+    updated: list[dict] = field(default_factory=list)
     merged: list[dict] = field(default_factory=list)
     window: dict | None = None
     over_cap: bool = False
@@ -1361,16 +1430,17 @@ def publish_benchmarks_to_genie_space_with_report(
     are excluded — keeping the same question in both slots would restore the
     exact leak Bug #4 guards against.
 
-    The push is **strictly additive/merge-only**: the merged set is NEVER
-    sliced or truncated, so pushed rows can't be silently dropped and
-    pre-existing user-authored rows can't be deleted. ``max_questions`` is
-    the genuine Genie API hard cap (``GENIE_MAX_BENCHMARK_QUESTIONS``), NOT
-    a train/held-out target. If the post-merge set would exceed that hard
-    cap, the publisher FAILS CLOSED — it does not patch and returns a
-    non-mutating report with ``over_cap=True`` (the caller turns that into a
-    hard failure). The 30–40 *working window* is surfaced as a
-    RECOMMENDATION only (``window``) computed over the post-merge set; it is
-    never auto-applied here.
+    The push is additive except for one bounded update: when a curated native
+    benchmark retains its stable ID and identical question text, GSO may
+    replace only its SQL answer. The merged set is NEVER sliced or truncated,
+    so pushed rows can't be silently dropped and pre-existing user-authored
+    rows can't be deleted or reworded. ``max_questions`` is the genuine Genie
+    API hard cap (``GENIE_MAX_BENCHMARK_QUESTIONS``), NOT a train/held-out
+    target. If the post-merge set would exceed that hard cap, the publisher
+    FAILS CLOSED — it does not patch and returns a non-mutating report with
+    ``over_cap=True`` (the caller turns that into a hard failure). The 30–40
+    *working window* is surfaced as a RECOMMENDATION only (``window``)
+    computed over the post-merge set; it is never auto-applied here.
 
     Returns a :class:`BenchmarkPushReport` describing the merge.
     ``publish_benchmarks_to_genie_space`` is the thin int-returning wrapper
@@ -1407,9 +1477,12 @@ def publish_benchmarks_to_genie_space_with_report(
     )
 
     existing_count = len(existing_questions)
-    merged_questions, _added_count, dedup_skipped = _dedupe_and_merge_benchmarks(
-        existing_questions, new_genie_questions,
-    )
+    (
+        merged_questions,
+        _added_count,
+        dedup_skipped,
+        updated_detail,
+    ) = _dedupe_and_merge_benchmarks(existing_questions, new_genie_questions)
     # The merge appends net-new rows after the existing ones, so the
     # tail [existing_count:] is exactly what GSO added this push.
     added_rows = merged_questions[existing_count:]
@@ -1449,11 +1522,13 @@ def publish_benchmarks_to_genie_space_with_report(
         )
         return BenchmarkPushReport(
             added_count=0,
+            updated_count=0,
             dedup_skipped=dedup_skipped,
             mirror_skipped=skipped_mirror,
             merged_total=len(merged_questions),
             existing_count=existing_count,
             added=[],
+            updated=[],
             merged=merged_detail,
             window=window,
             over_cap=True,
@@ -1467,20 +1542,22 @@ def publish_benchmarks_to_genie_space_with_report(
     patch_space_config(w, space_id, parsed)
 
     logger.info(
-        "Published %d new benchmark question(s) to Genie Agent %s "
+        "Published %d new and updated %d existing benchmark question(s) to Genie Agent %s "
         "(dedup-skipped: %d, example-sql-mirror-skipped: %d, total after merge: %d, "
         "window: %s)",
-        len(added_detail), space_id, dedup_skipped, skipped_mirror,
+        len(added_detail), len(updated_detail), space_id, dedup_skipped, skipped_mirror,
         len(merged_questions), window.get("status"),
     )
 
     return BenchmarkPushReport(
         added_count=len(added_detail),
+        updated_count=len(updated_detail),
         dedup_skipped=dedup_skipped,
         mirror_skipped=skipped_mirror,
         merged_total=len(merged_questions),
         existing_count=existing_count,
         added=added_detail,
+        updated=updated_detail,
         merged=merged_detail,
         window=window,
         over_cap=False,
