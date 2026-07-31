@@ -9,7 +9,6 @@ import { RunDetailView } from "@/components/auto-optimize/RunDetailView"
 import { TaskRail } from "@/components/auto-optimize/TaskRail"
 import { AttemptLadder } from "@/components/auto-optimize/AttemptLadder"
 import { AttemptLedger } from "@/components/auto-optimize/AttemptLedger"
-import { CurrentAttemptStrip } from "@/components/auto-optimize/CurrentAttemptStrip"
 import { TerminalBanner } from "@/components/auto-optimize/TerminalBanner"
 import { PublishAuditSummary } from "@/components/auto-optimize/PublishAuditSummary"
 import { ResolutionActions } from "@/components/auto-optimize/ResolutionActions"
@@ -137,13 +136,11 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   const [permissions, setPermissions] = useState<GSOPermissionCheck | null>(null)
   const [permsLoading, setPermsLoading] = useState(true)
   // GSO v2 Phase 12 — live cockpit state (loop-state attempts + publish record
-  // + benchmark QC for the 01 hard-fail chip + a client-side loop-state
-  // heartbeat). All optional/nullable — legacy 6-step runs degrade gracefully.
+  // + benchmark QC for the 01 hard-fail chip). All optional/nullable — legacy
+  // 6-step runs degrade gracefully.
   const [loopState, setLoopState] = useState<GSOLoopStateResponse | null>(null)
   const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
   const [benchmarkChanges, setBenchmarkChanges] = useState<GSOBenchmarkChanges | null>(null)
-  const [lastCommitAt, setLastCommitAt] = useState<number | null>(null)
-  const attemptSigRef = useRef<string>("")
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Health check on mount
@@ -183,9 +180,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   useEffect(() => {
     if (view !== "monitoring" || !activeRunId) return
 
-    // Reset the heartbeat signature so a switched/new run stamps the first
-    // non-empty attempt commit it sees.
-    attemptSigRef.current = ""
     const runId = activeRunId
     let cancelled = false
 
@@ -224,8 +218,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         .catch(() => {})
 
       // GSO v2 Phase 12 — controller loop-state (per-attempt rows + run-level
-      // aggregate) drives the Attempt Ladder/Ledger + Champion hero. The
-      // attempt-signature diff feeds the client-side loop-state heartbeat.
+      // aggregate) drives the Attempt Ladder/Ledger + Champion hero.
       getAutoOptimizeLoopState(runId)
         .then((ls) => {
           if (cancelled) return
@@ -238,20 +231,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
             }
             return ls
           })
-          const attempts = ls?.attempts ?? []
-          if (attempts.length === 0) {
-            return
-          }
-          const sig = attempts
-            .map(
-              (a) =>
-                `${a.attemptNo}:${a.accuracy}:${a.bestAccuracy}:${a.decision}:${a.rolledBack}:${a.isChampion}`,
-            )
-            .join("|")
-          if (sig !== attemptSigRef.current) {
-            attemptSigRef.current = sig
-            setLastCommitAt(Date.now())
-          }
         })
         .catch(() => {})
 
@@ -416,8 +395,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
     // Baseline is champion only when terminal AND no attempt was flagged
     // champion (nothing beat it) — derived from explicit flags, never idxmax.
     const baselineIsChampion = isTerminal && hasAttempts && !attempts.some((a) => a.isChampion)
-    const latestAttempt = hasAttempts ? attempts[attempts.length - 1] : null
-
     // Keep / Discard-rollback is available once a champion was published to the
     // live space (or the run is already resolved). Published comes from the
     // publish record; fall back to the published-terminal statuses for runs
@@ -551,14 +528,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
                     baselineIsChampion={baselineIsChampion}
                   />
                 </div>
-                {!isTerminal && (
-                  <CurrentAttemptStrip
-                    attempt={latestAttempt}
-                    residualFailureCount={null}
-                    lastCommitAt={lastCommitAt}
-                    isLive={!isTerminal}
-                  />
-                )}
                 <PatchesTable
                   key={`${activeRunId}:${attempts.length}`}
                   runId={activeRunId}

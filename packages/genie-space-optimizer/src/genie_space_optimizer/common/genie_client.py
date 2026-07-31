@@ -1216,14 +1216,17 @@ def _extract_benchmark_sql_answer(answer: Any) -> str:
 
 
 def _dedupe_and_merge_benchmarks(
-    existing: list[dict], additions: list[dict],
+    existing: list[dict],
+    additions: list[dict],
+    *,
+    question_update_ids: set[str] | None = None,
 ) -> tuple[list[dict], int, int, list[dict]]:
     """Merge ``additions`` into ``existing`` preserving user-authored rows.
 
     An addition whose stable ID matches an existing row may update only that
-    row's SQL answer, and only when the normalized question text is identical.
-    This lets GSO repair a question-only/invalid-SQL curated benchmark without
-    accepting replacement wording from an LLM. All other existing rows remain
+    row's SQL answer by default. Question text may change only when the caller
+    explicitly includes the stable native ID in ``question_update_ids`` after
+    a bounded quality-warning repair. All other existing rows remain
     byte-for-byte intact.
 
     Returns ``(merged, added_count, skipped_count, updated)``. A new row is
@@ -1236,6 +1239,7 @@ def _dedupe_and_merge_benchmarks(
     provenance ledger.
     """
     merged: list[dict] = list(existing) if isinstance(existing, list) else []
+    question_update_ids = question_update_ids or set()
 
     existing_index_by_id = {
         str(entry.get("id") or "").strip(): index
@@ -1265,13 +1269,29 @@ def _dedupe_and_merge_benchmarks(
             current = merged[existing_index]
             current_text = _extract_existing_question_text(current)
             current_norm = _normalize_question_text(current_text)
-            if current_norm != add_norm:
+            question_changed = current_norm != add_norm
+            if question_changed and add_id not in question_update_ids:
                 logger.warning(
                     "Skipped benchmark update for stable id %s because question text changed",
                     add_id,
                 )
                 skipped += 1
                 continue
+            if question_changed:
+                collides_with_other = any(
+                    index != existing_index
+                    and _normalize_question_text(_extract_existing_question_text(entry))
+                    == add_norm
+                    for index, entry in enumerate(merged)
+                )
+                if collides_with_other:
+                    logger.warning(
+                        "Skipped authorized benchmark question update for stable id %s "
+                        "because the proposed wording duplicates another live row",
+                        add_id,
+                    )
+                    skipped += 1
+                    continue
             before_answer = current.get("answer") if isinstance(current, dict) else None
             after_answer = add.get("answer") if isinstance(add, dict) else None
             before_sql = _extract_benchmark_sql_answer(before_answer)
@@ -1280,16 +1300,20 @@ def _dedupe_and_merge_benchmarks(
             # serialized content shape (many fragments versus one fragment).
             # This preserves the user's original row byte-for-byte and keeps
             # the benchmark-change count semantic rather than representational.
-            if before_sql == after_sql:
+            if not question_changed and before_sql == after_sql:
                 skipped += 1
                 continue
             repaired = dict(current)
+            if question_changed:
+                repaired["question"] = add.get("question")
             repaired["answer"] = after_answer
             merged[existing_index] = repaired
 
             updated.append({
                 "id": add_id,
-                "question": current_text,
+                "question": add_text,
+                "before_question": current_text,
+                "after_question": add_text,
                 "before_sql": before_sql,
                 "after_sql": after_sql,
             })
@@ -1438,9 +1462,11 @@ class BenchmarkPushReport:
     ``{id, question, sql}``); ``merged`` is the WHOLE post-merge set
     (existing live + net-new) so callers can compute the 30–40 window
     recommendation over the real resulting set; ``merged_total`` is its
-    length. The push is additive except for SQL-only repair of an identical
-    question selected by stable native ID. User-authored rows are NEVER
-    removed, truncated, or reworded here.
+    length. The push is additive except for SQL repair of an identical
+    question selected by stable native ID, plus explicitly authorized wording
+    repairs produced by the bounded benchmark-quality loop. User-authored rows
+    are NEVER removed or truncated here, and cannot be reworded without that
+    per-ID authorization.
 
     ``window`` is the post-merge 30–40 window recommendation (recommendation
     only — never auto-applied). ``over_cap`` is set when the merged set would
@@ -1471,6 +1497,7 @@ def publish_benchmarks_to_genie_space_with_report(
     max_questions: int = GENIE_MAX_BENCHMARK_QUESTIONS,
     *,
     run_id: str | None = None,
+    question_update_ids: set[str] | None = None,
 ) -> BenchmarkPushReport:
     """Merge optimizer benchmarks into the space's native benchmarks section.
 
@@ -1485,9 +1512,11 @@ def publish_benchmarks_to_genie_space_with_report(
     are excluded — keeping the same question in both slots would restore the
     exact leak Bug #4 guards against.
 
-    The push is additive except for one bounded update: when a curated native
-    benchmark retains its stable ID and identical question text, GSO may
-    replace only its SQL answer. The merged set is NEVER sliced or truncated,
+    The push is additive except for bounded stable-ID updates. SQL-only repair
+    is allowed when question text is identical. A wording repair additionally
+    requires the native ID in ``question_update_ids``; the QC task supplies
+    that authorization only for revalidated warning proposals. The merged set
+    is NEVER sliced or truncated,
     so pushed rows can't be silently dropped and pre-existing user-authored
     rows can't be deleted or reworded. ``max_questions`` is the genuine Genie
     API hard cap (``GENIE_MAX_BENCHMARK_QUESTIONS``), NOT a train/held-out
@@ -1537,7 +1566,11 @@ def publish_benchmarks_to_genie_space_with_report(
         _added_count,
         dedup_skipped,
         updated_detail,
-    ) = _dedupe_and_merge_benchmarks(existing_questions, new_genie_questions)
+    ) = _dedupe_and_merge_benchmarks(
+        existing_questions,
+        new_genie_questions,
+        question_update_ids=question_update_ids,
+    )
     # The merge appends net-new rows after the existing ones, so the
     # tail [existing_count:] is exactly what GSO added this push.
     added_rows = merged_questions[existing_count:]

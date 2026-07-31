@@ -70,6 +70,7 @@ from genie_space_optimizer.optimization.benchmarks import (
 )
 from genie_space_optimizer.optimization.benchmark_quality import (
     QUALITY_REVIEW_VERSION,
+    build_actionable_warning_repair,
     review_benchmark_quality,
 )
 from genie_space_optimizer.optimization.benchmarking import generate_benchmarks
@@ -444,6 +445,40 @@ except Exception as exc:
 # COMMAND ----------
 
 
+_initial_benchmarks_by_id = {
+    default_id_of(benchmark): dict(benchmark)
+    for benchmark in _benchmarks
+    if default_id_of(benchmark)
+}
+_warning_repair_attempted_ids: set[str] = set()
+
+
+def _quality_result_for_benchmark(benchmark: dict) -> dict:
+    qid = default_id_of(benchmark)
+    if qid and qid in _quality_results_by_id:
+        return _quality_results_by_id[qid]
+    question = str(benchmark.get("question") or "").strip().lower()
+    return next(
+        (
+            result
+            for result in _quality_results_by_id.values()
+            if str(result.get("question") or "").strip().lower() == question
+        ),
+        {},
+    )
+
+
+def _native_benchmark_id(benchmark: dict) -> str:
+    if str(benchmark.get("source") or "").strip().lower() != "genie_benchmark":
+        return ""
+    return str(
+        benchmark.get("space_question_id")
+        or benchmark.get("id")
+        or benchmark.get("question_id")
+        or ""
+    ).strip()
+
+
 def _activate_benchmark_columns(benchmarks: list[dict[str, Any]]) -> None:
     """Persist adaptive revisions for omitted columns used by this operation."""
     global _wide_schema_plan, _plan_record, _uc_columns
@@ -629,10 +664,18 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
         float(review.get("semantic_review_coverage", 0.0) or 0.0),
     )
 
+    reviewed_question_ids: set[str] = set()
     for result in review.get("benchmark_results", []):
         qid = str(result.get("question_id") or result.get("question") or "")
         if qid:
+            reviewed_question_ids.add(qid)
             _quality_results_by_id[qid] = result
+    # Re-reviewing a repaired stable ID replaces its prior findings. Without
+    # this reset the final artifact keeps warnings that the repair already
+    # resolved, making the UI report stale proposed changes.
+    for key in list(_quality_findings_by_key):
+        if key.split("|", 1)[0] in reviewed_question_ids:
+            del _quality_findings_by_key[key]
     for finding in review.get("findings", []):
         key = "|".join(
             [
@@ -642,9 +685,21 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
             ]
         )
         _quality_findings_by_key[key] = finding
+    valid: list[dict] = []
+    invalid: list[dict] = []
     for benchmark, result in zip(bms, review.get("benchmark_results", [])):
         if result.get("disposition") != "excluded":
+            repair_candidate, _change = build_actionable_warning_repair(
+                benchmark,
+                result,
+            )
+            if benchmark_policy == "repair_allowed" and repair_candidate is not None:
+                invalid.append(benchmark)
+            else:
+                valid.append(benchmark)
             continue
+
+        invalid.append(benchmark)
         qid = str(result.get("question_id") or default_id_of(benchmark) or result.get("question") or "")
         rejected = dict(benchmark)
         errors = [
@@ -655,27 +710,44 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
             rejected["validation_error"] = str(errors[0].get("explanation") or "")[:200]
         _rejected_benchmarks_by_id[qid] = rejected
 
-    return list(review.get("accepted", [])), list(review.get("excluded", []))
+    return valid, invalid
 
 
 def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
-    """One repair sweep: prune the invalid rows and synthesize replacements
-    toward the 30–40 target, keeping the already-valid set as context.
+    """One repair sweep: apply warning proposals, then replace hard failures.
 
     Returns ONLY the newly synthesized candidates (not the already-valid set),
     so the bounded loop accumulates valid rows correctly.
     """
     _activate_benchmark_columns(invalid)
+    warning_candidates: list[dict] = []
+    hard_invalid: list[dict] = []
+    for benchmark in invalid:
+        result = _quality_result_for_benchmark(benchmark)
+        candidate, _change = build_actionable_warning_repair(benchmark, result)
+        if candidate is None:
+            hard_invalid.append(benchmark)
+            continue
+        warning_candidates.append(candidate)
+        benchmark_id = default_id_of(benchmark)
+        if benchmark_id:
+            _warning_repair_attempted_ids.add(benchmark_id)
+
+    if not hard_invalid:
+        return warning_candidates
+
+    existing_context = list(valid) + warning_candidates
     refilled = generate_benchmarks(
         w, _config, _uc_columns, _uc_tags, _uc_routines, _domain,
         catalog, schema, spark,
         target_count=effective_target,
-        existing_benchmarks=valid,
+        existing_benchmarks=existing_context,
         warehouse_id=warehouse_id,
         max_benchmark_count=effective_max,
     )
-    valid_ids = {default_id_of(b) for b in valid}
-    return [b for b in refilled if default_id_of(b) not in valid_ids]
+    existing_ids = {default_id_of(b) for b in existing_context}
+    generated = [b for b in refilled if default_id_of(b) not in existing_ids]
+    return warning_candidates + generated
 
 
 _repair_failed = False
@@ -809,6 +881,36 @@ if _repair_failed:
 
 # COMMAND ----------
 
+
+_warning_repairs_applied: list[dict] = []
+for _benchmark in _benchmarks:
+    _benchmark_id = default_id_of(_benchmark)
+    if not _benchmark_id or _benchmark_id not in _warning_repair_attempted_ids:
+        continue
+    _before = _initial_benchmarks_by_id.get(_benchmark_id)
+    if not _before:
+        continue
+    _before_question = str(_before.get("question") or "").strip()
+    _after_question = str(_benchmark.get("question") or "").strip()
+    _before_sql = str(_before.get("expected_sql") or "").strip()
+    _after_sql = str(_benchmark.get("expected_sql") or "").strip()
+    if _before_question == _after_question and _before_sql == _after_sql:
+        continue
+    _warning_repairs_applied.append(
+        {
+            "id": _native_benchmark_id(_benchmark) or _benchmark_id,
+            "question_id": _native_benchmark_id(_benchmark) or _benchmark_id,
+            "question": _after_question,
+            "before_question": _before_question,
+            "after_question": _after_question,
+            "before_sql": _before_sql,
+            "after_sql": _after_sql,
+            "reason": "benchmark_quality_warning_repair",
+        }
+    )
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Push validated set to the LIVE space (additive/merge-only)
 # MAGIC
@@ -828,6 +930,7 @@ if benchmark_policy == "repair_allowed" and not _repair_failed and _benchmarks:
         _push = preflight_push_benchmarks_to_space(
             w, spark, run_id, space_id, catalog, schema, _benchmarks,
             rejected_benchmarks=list(_rejected_benchmarks_by_id.values()),
+            changed_benchmarks=_warning_repairs_applied,
         )
         _window = _push.get("window", {})
         _benchmark_mutation_count = int(
@@ -894,18 +997,7 @@ if not _repair_failed and _benchmarks:
 
 
 def _final_quality_result(benchmark: dict) -> dict:
-    qid = default_id_of(benchmark)
-    if qid and qid in _quality_results_by_id:
-        return _quality_results_by_id[qid]
-    question = str(benchmark.get("question") or "").strip().lower()
-    return next(
-        (
-            result
-            for result in _quality_results_by_id.values()
-            if str(result.get("question") or "").strip().lower() == question
-        ),
-        {},
-    )
+    return _quality_result_for_benchmark(benchmark)
 
 
 _final_quality_results = [_final_quality_result(b) for b in _benchmarks]
@@ -922,6 +1014,8 @@ _qc_payload: dict[str, Any] = {
     "repair_tries_used": _repair_tries_used,
     "repaired_ids": _repaired_ids,
     "repair_sweeps": _repair_sweeps,
+    "warning_repair_count": len(_warning_repairs_applied),
+    "warning_repairs_applied": _warning_repairs_applied,
     "benchmark_repair_max_tries": benchmark_repair_max_tries,
     "final_validity": _final_validity,
     "optimization_eligible": _optimization_eligible,

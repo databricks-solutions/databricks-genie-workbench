@@ -37,6 +37,13 @@ SQL_VALIDITY = "sql_validity"
 DATA_VALIDITY = "data_validity"
 REVIEW_SYSTEM = "review_system"
 
+_NON_ACTIONABLE_WARNING_CODES = frozenset(
+    {
+        "GT_EXECUTION_NOT_RUN",
+        "REVIEW_NOT_RUN",
+    }
+)
+
 _QUESTION_QUALITY_CODES = frozenset(
     {
         "AMBIGUOUS_METRIC",
@@ -131,6 +138,85 @@ def _is_generated_benchmark(benchmark: dict) -> bool:
         "synthetic",
         "coverage_gap_fill",
     }
+
+
+def build_actionable_warning_repair(
+    benchmark: dict,
+    benchmark_result: dict,
+) -> tuple[dict | None, dict | None]:
+    """Build one coherent repair candidate for a warning disposition.
+
+    The quality model emits the same top-level proposal on each issue for a
+    question.  A proposal becomes actionable only when repair policy is
+    enabled by the caller, every non-empty proposed value agrees, and the
+    proposal changes the current benchmark.  Review-system warnings remain
+    advisory because they describe missing evidence rather than benchmark
+    content.
+
+    The returned change record is audit metadata; this helper does not mutate
+    the input benchmark or authorize a live Genie Agent update by itself.
+    """
+    if benchmark_result.get("disposition") != "warning":
+        return None, None
+
+    findings = [
+        finding
+        for finding in benchmark_result.get("findings", [])
+        if isinstance(finding, dict)
+        and finding.get("severity") == "warning"
+        and finding.get("category") != REVIEW_SYSTEM
+        and str(finding.get("code") or "").upper()
+        not in _NON_ACTIONABLE_WARNING_CODES
+    ]
+    proposed_questions = {
+        str(finding.get("proposed_question") or "").strip()
+        for finding in findings
+        if str(finding.get("proposed_question") or "").strip()
+    }
+    proposed_sqls = {
+        str(finding.get("proposed_sql") or "").strip()
+        for finding in findings
+        if str(finding.get("proposed_sql") or "").strip()
+    }
+    if len(proposed_questions) > 1 or len(proposed_sqls) > 1:
+        logger.warning(
+            "Ignoring conflicting benchmark warning proposals for question_id=%s",
+            benchmark_result.get("question_id") or _question_id(benchmark, 0),
+        )
+        return None, None
+
+    before_question = str(benchmark.get("question") or "").strip()
+    before_sql = str(benchmark.get("expected_sql") or "").strip()
+    after_question = next(iter(proposed_questions), before_question)
+    after_sql = next(iter(proposed_sqls), before_sql)
+    if after_question == before_question and after_sql == before_sql:
+        return None, None
+
+    candidate = dict(benchmark)
+    candidate["question"] = after_question
+    candidate["expected_sql"] = after_sql
+    change = {
+        "question_id": str(
+            benchmark.get("space_question_id")
+            or benchmark.get("id")
+            or benchmark.get("question_id")
+            or benchmark_result.get("question_id")
+            or ""
+        ),
+        "before_question": before_question,
+        "after_question": after_question,
+        "before_sql": before_sql,
+        "after_sql": after_sql,
+        "reason": "benchmark_quality_warning_repair",
+        "codes": sorted(
+            {
+                str(finding.get("code") or "UNKNOWN")
+                for finding in findings
+                if finding.get("proposed_question") or finding.get("proposed_sql")
+            }
+        ),
+    }
+    return candidate, change
 
 
 def _strip_json_fence(raw: str) -> str:
