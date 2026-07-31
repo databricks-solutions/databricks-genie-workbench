@@ -5,10 +5,40 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from genie_space_optimizer.optimization.benchmarks import (
+    _normalize_benchmark_row,
+    build_benchmark_handoff_records,
     deduplicate_benchmark_corpus,
     duplicate_rejection_mutations,
     persist_benchmark_corpus,
 )
+
+
+def test_handoff_prefers_reconciled_live_question_id() -> None:
+    live_id = "a" * 32
+    records = build_benchmark_handoff_records([{
+        "id": "internal-q1",
+        "space_question_id": live_id,
+        "question": "What is revenue?",
+        "expected_sql": "SELECT 1",
+        "validation_status": "valid",
+    }])
+
+    assert records[0]["inputs"]["question_id"] == live_id
+
+
+def test_nested_handoff_promotes_only_native_shaped_question_id() -> None:
+    live_id = "b" * 32
+    live = _normalize_benchmark_row({
+        "inputs": {"question_id": live_id, "question": "Live question"},
+        "expectations": {"expected_response": "SELECT 1"},
+    })
+    internal = _normalize_benchmark_row({
+        "inputs": {"question_id": "internal-q1", "question": "Internal question"},
+        "expectations": {"expected_response": "SELECT 2"},
+    })
+
+    assert live["space_question_id"] == live_id
+    assert "space_question_id" not in internal
 
 
 def test_deduplication_uses_deterministic_retention_priority() -> None:

@@ -50,10 +50,8 @@ def _bench(qid: str, question: str, sql: str, **kw) -> dict:
 def _distinct_benchmarks(n: int, *, prefix: str) -> list[dict]:
     """N mutually-distinct benchmark rows.
 
-    The publisher's merge dedup drops near-duplicates (n-gram Jaccard >=
-    0.90), so templated "question {i}" strings would collapse. Each row here
-    is built from index-carrying tokens so questions share almost no
-    character trigrams and survive the merge as distinct rows.
+    Each row is built from index-carrying tokens so window-pruning tests do not
+    accidentally classify the generated rows as near-duplicates.
     """
     rows: list[dict] = []
     for i in range(n):
@@ -227,6 +225,36 @@ def test_real_publisher_refuses_stable_id_update_when_question_text_changed():
     assert report.added_count == 0
     assert report.updated_count == 0
     assert report.dedup_skipped == 1
+
+
+def test_real_publisher_adds_near_duplicate_when_text_is_not_exact():
+    """Similarity is advisory only; it must not erase a distinct eval row."""
+    existing_question = "How many support tickets were created per account segment?"
+    distinct_question = "How many support tickets were created per account segments?"
+    existing = [_live_question("native-q1", existing_question, "SELECT 1")]
+    patched_holder: dict = {}
+
+    def _capture_patch(w, space_id, cfg, **kw):
+        patched_holder["cfg"] = cfg
+        return {}
+
+    with patch(
+        _FETCH_PATH,
+        return_value={"_parsed_space": _parsed_space(existing=existing)},
+    ), patch(_PATCH_PATH, side_effect=_capture_patch):
+        report = publish_benchmarks_to_genie_space_with_report(
+            MagicMock(),
+            "space-1",
+            [_bench("internal-q2", distinct_question, "SELECT 2")],
+        )
+
+    questions = patched_holder["cfg"]["benchmarks"]["questions"]
+    assert [q["question"][0] for q in questions] == [
+        existing_question,
+        distinct_question,
+    ]
+    assert report.added_count == 1
+    assert report.dedup_skipped == 0
 
 
 def test_real_publisher_pushes_valid_31_to_40_set_without_truncation():
@@ -422,8 +450,99 @@ def test_push_excludes_invalid_and_sqlless_rows_before_publish(captured_publish)
     pushed_ids = {b["id"] for b in captured_publish["benchmarks"]}
     assert pushed_ids == {"v1", "v2"}, "only EXPLAIN-valid rows with SQL may publish"
     assert out["published_count"] == 2
+    assert out["resolved_question_ids"] == 2
     assert out["pruned_at_push"] == 2
     assert out["push_ok"] is True
+
+
+def test_push_attaches_exact_live_question_id_for_delta_handoff():
+    native_id = "a" * 32
+    benchmark = _bench("internal-q1", "How many tickets were created?", "SELECT 1")
+    report = BenchmarkPushReport(
+        added_count=1,
+        merged_total=1,
+        added=[{
+            "id": native_id,
+            "question": benchmark["question"],
+            "sql": benchmark["expected_sql"],
+        }],
+        merged=[{
+            "id": native_id,
+            "question": benchmark["question"],
+            "sql": benchmark["expected_sql"],
+        }],
+        window=compute_benchmark_window_recommendation([benchmark]),
+        patched=True,
+    )
+
+    with patch(_PUBLISH_PATH, return_value=report), patch(
+        "genie_space_optimizer.optimization.preflight.write_stage",
+    ), patch(
+        "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
+        return_value=0,
+    ):
+        out = preflight_push_benchmarks_to_space(
+            MagicMock(), MagicMock(), "run-1", "space-1", "cat", "sch",
+            [benchmark],
+        )
+
+    assert benchmark["space_question_id"] == native_id
+    assert out["resolved_question_ids"] == 1
+    assert out["push_ok"] is True
+
+
+def test_push_fails_when_publisher_does_not_return_exact_question_mapping():
+    benchmark = _bench("internal-q1", "How many tickets were created?", "SELECT 1")
+    report = BenchmarkPushReport(
+        added_count=1,
+        merged_total=1,
+        added=[{"id": "a" * 32, "question": "Different wording", "sql": "SELECT 1"}],
+        merged=[{"id": "a" * 32, "question": "Different wording", "sql": "SELECT 1"}],
+        window=compute_benchmark_window_recommendation([benchmark]),
+        patched=True,
+    )
+
+    with patch(_PUBLISH_PATH, return_value=report), patch(
+        "genie_space_optimizer.optimization.preflight.write_stage",
+    ), patch(
+        "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
+        return_value=0,
+    ):
+        with pytest.raises(BenchmarkPushError, match="unresolved_after_publish"):
+            preflight_push_benchmarks_to_space(
+                MagicMock(), MagicMock(), "run-1", "space-1", "cat", "sch",
+                [benchmark],
+            )
+
+    assert "space_question_id" not in benchmark
+
+
+def test_push_fails_when_exact_question_mapping_is_ambiguous():
+    benchmark = _bench("internal-q1", "How many tickets were created?", "SELECT 1")
+    merged = [
+        {"id": "a" * 32, "question": benchmark["question"], "sql": "SELECT 1"},
+        {"id": "b" * 32, "question": benchmark["question"], "sql": "SELECT 1"},
+    ]
+    report = BenchmarkPushReport(
+        merged_total=2,
+        merged=merged,
+        window=compute_benchmark_window_recommendation(merged),
+        patched=True,
+    )
+
+    with patch(_PUBLISH_PATH, return_value=report), patch(
+        "genie_space_optimizer.optimization.preflight.write_stage",
+    ), patch(
+        "genie_space_optimizer.optimization.preflight.write_benchmark_mutations",
+        return_value=0,
+    ):
+        with pytest.raises(BenchmarkPushError, match="unresolved_after_publish"):
+            preflight_push_benchmarks_to_space(
+                MagicMock(), MagicMock(), "run-1", "space-1", "cat", "sch",
+                [benchmark],
+            )
+
+    assert "space_question_id" not in benchmark
 
 
 def test_push_writes_added_removed_changed_ledger_rows(captured_publish):

@@ -168,6 +168,13 @@ def _normalize_benchmark_row(row: dict) -> dict:
 
     if flat.get("question_id") and not flat.get("id"):
         flat["id"] = flat["question_id"]
+    # The QC publisher reconciles persisted handoff question IDs to native
+    # Genie benchmark IDs. Native IDs are 32 lowercase hex characters; only
+    # promote IDs with that shape so legacy/internal corpus IDs do not get
+    # misrepresented as live IDs.
+    question_id = str(flat.get("question_id") or "")
+    if _re.fullmatch(r"[0-9a-f]{32}", question_id):
+        flat["space_question_id"] = question_id
 
     for k, v in row.items():
         if k not in ("inputs", "expectations") and k not in flat:
@@ -1181,9 +1188,12 @@ def build_benchmark_handoff_records(
     records: list[dict] = []
     for b in benchmark_corpus_for_optimization(benchmarks):
         question = b.get("question", "")
-        qid = b.get("id") or b.get("question_id") or hashlib.md5(
-            question.encode()
-        ).hexdigest()[:8]
+        qid = (
+            b.get("space_question_id")
+            or b.get("id")
+            or b.get("question_id")
+            or hashlib.md5(question.encode()).hexdigest()[:8]
+        )
 
         _raw_asset = b.get("expected_asset", "TABLE")
         _esql = b.get("expected_sql", "")

@@ -2546,11 +2546,78 @@ def preflight_validate_benchmarks(
 class BenchmarkPushError(RuntimeError):
     """Raised when a REQUIRED preflight benchmark push fails.
 
-    A failed required push means the live space still holds the stale
-    benchmark set, so baseline eval would score against the wrong corpus
-    (contract 1: benchmarks are pushed BEFORE eval). Raising here aborts
-    preflight so eval never runs on stale benchmarks.
+    A failed required push means the live space still holds a stale or
+    incomplete benchmark set, or a handoff row could not be reconciled to an
+    exact live question ID. Raising here aborts preflight so native evaluation
+    never scores the wrong corpus (contract 1: benchmarks are pushed and
+    identity-reconciled BEFORE eval).
     """
+
+
+def _attach_live_benchmark_question_ids(
+    benchmarks: list[dict],
+    merged_live_rows: list[dict],
+) -> tuple[int, list[dict[str, str]]]:
+    """Attach exact live benchmark IDs to the rows persisted for Optimize.
+
+    Matching is intentionally exact after the publisher's shared question
+    normalization. Fuzzy matching is unsafe because the native evaluator uses
+    the live row's wording and SQL, not the handoff row's expected SQL.
+    """
+    from genie_space_optimizer.common.genie_client import _normalize_question_text
+
+    live_by_id: dict[str, dict] = {}
+    live_ids_by_question: dict[str, list[str]] = {}
+    for row in merged_live_rows:
+        if not isinstance(row, dict):
+            continue
+        live_id = str(row.get("id") or "").strip()
+        normalized = _normalize_question_text(str(row.get("question") or ""))
+        if not live_id or not normalized:
+            continue
+        live_by_id[live_id] = row
+        live_ids_by_question.setdefault(normalized, []).append(live_id)
+
+    resolved = 0
+    unresolved: list[dict[str, str]] = []
+    for benchmark in benchmarks:
+        normalized = _normalize_question_text(str(benchmark.get("question") or ""))
+        requested_id = str(benchmark.get("space_question_id") or "").strip()
+
+        live_id = ""
+        if requested_id and requested_id in live_by_id:
+            live_question = _normalize_question_text(
+                str(live_by_id[requested_id].get("question") or ""),
+            )
+            if live_question == normalized:
+                live_id = requested_id
+
+        if not live_id:
+            candidates = live_ids_by_question.get(normalized, [])
+            if len(candidates) == 1:
+                live_id = candidates[0]
+            elif len(candidates) > 1:
+                unresolved.append({
+                    "benchmark_id": str(
+                        benchmark.get("id") or benchmark.get("question_id") or "",
+                    ),
+                    "reason": "ambiguous_exact_question",
+                })
+                continue
+
+        if not live_id:
+            unresolved.append({
+                "benchmark_id": str(
+                    benchmark.get("id") or benchmark.get("question_id") or "",
+                ),
+                "reason": "question_not_present_after_publish",
+            })
+            continue
+
+        benchmark["space_question_id"] = live_id
+        resolved += 1
+
+    return resolved, unresolved
 
 
 def preflight_push_benchmarks_to_space(
@@ -2588,9 +2655,10 @@ def preflight_push_benchmarks_to_space(
       (``> max`` ⇒ recommended prune set; ``< min`` ⇒ top-up count).
       Recommendation only — never a silent auto-delete.
     * **Fail closed (contract 1):** when publishing is enabled and there is
-      a non-empty validated set, a push failure (publisher raised, or the
-      merged set exceeds the Genie API hard cap) raises
-      :class:`BenchmarkPushError` so eval never runs against the stale set.
+      a non-empty validated set, a push failure (publisher raised, the merged
+      set exceeds the Genie API hard cap, or any handoff row cannot be mapped
+      to one exact live question ID) raises :class:`BenchmarkPushError` so eval
+      never runs against a stale, incomplete, or identity-mismatched set.
     * **Provenance ledger (§3.5):** every added / removed / changed row —
       plus any over-window prune RECOMMENDATION — is written to
       ``genie_opt_benchmark_mutations``. The preflight ``config_snapshot``
@@ -2617,6 +2685,7 @@ def preflight_push_benchmarks_to_space(
     # computed over the real POST-MERGE live set returned by the publisher.
     push_report = None
     published_count = 0
+    resolved_question_ids = 0
     push_required = bool(PUBLISH_BENCHMARKS_TO_SPACE and pushable)
     push_failure_reason: str | None = None
     push_exc: Exception | None = None
@@ -2682,21 +2751,53 @@ def preflight_push_benchmarks_to_space(
                     },
                 )
             else:
-                published_count = push_report.added_count
-                write_stage(
-                    spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "COMPLETE",
-                    task_key="preflight", catalog=catalog, schema=schema,
-                    detail={
-                        "added": push_report.added_count,
-                        "updated": push_report.updated_count,
-                        "dedup_skipped": push_report.dedup_skipped,
-                        "mirror_skipped": push_report.mirror_skipped,
-                        "merged_total": push_report.merged_total,
-                        "existing_count": push_report.existing_count,
-                        "pushable": len(pushable),
-                        "window_status": (push_report.window or {}).get("status"),
-                    },
+                resolved_question_ids, unresolved = _attach_live_benchmark_question_ids(
+                    pushable,
+                    push_report.merged,
                 )
+                if unresolved:
+                    push_failure_reason = (
+                        "unresolved_after_publish:"
+                        f"{len(unresolved)}/{len(pushable)} benchmark ids"
+                    )
+                    logger.error(
+                        "Preflight benchmark push left %d/%d row(s) without an "
+                        "exact live question ID; refusing to start native eval",
+                        len(unresolved),
+                        len(pushable),
+                    )
+                    write_stage(
+                        spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "FAILED",
+                        task_key="preflight", catalog=catalog, schema=schema,
+                        error_message=push_failure_reason[:500],
+                        detail={
+                            "added": push_report.added_count,
+                            "updated": push_report.updated_count,
+                            "dedup_skipped": push_report.dedup_skipped,
+                            "mirror_skipped": push_report.mirror_skipped,
+                            "merged_total": push_report.merged_total,
+                            "pushable": len(pushable),
+                            "resolved_question_ids": resolved_question_ids,
+                            "unresolved": unresolved[:20],
+                        },
+                    )
+                else:
+                    published_count = push_report.added_count
+                    write_stage(
+                        spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "COMPLETE",
+                        task_key="preflight", catalog=catalog, schema=schema,
+                        detail={
+                            "added": push_report.added_count,
+                            "updated": push_report.updated_count,
+                            "dedup_skipped": push_report.dedup_skipped,
+                            "mirror_skipped": push_report.mirror_skipped,
+                            "merged_total": push_report.merged_total,
+                            "existing_count": push_report.existing_count,
+                            "pushable": len(pushable),
+                            "resolved_question_ids": resolved_question_ids,
+                            "window_status": (push_report.window or {}).get("status"),
+                        },
+                    )
 
     # ── 30–40 window recommendation over the POST-MERGE set (D8) ─────
     # Authoritative source is the publisher's post-merge recommendation
@@ -2834,14 +2935,15 @@ def preflight_push_benchmarks_to_space(
         raise BenchmarkPushError(
             f"Preflight benchmark push to space {space_id} failed "
             f"({push_failure_reason}). Refusing to continue: baseline eval "
-            f"must not run against the stale live benchmark set "
-            f"(contract 1 — pushed BEFORE eval)."
+            f"must not run against a stale, incomplete, or identity-mismatched "
+            f"live benchmark set (contract 1 — pushed and reconciled BEFORE eval)."
         ) from push_exc
 
     return {
         "pushable_count": len(pushable),
         "pruned_at_push": len(pruned_at_push),
         "published_count": published_count,
+        "resolved_question_ids": resolved_question_ids,
         "window": window,
         "window_basis": window_basis,
         "push_ok": push_failure_reason is None,

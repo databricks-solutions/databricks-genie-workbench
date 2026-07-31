@@ -1162,9 +1162,12 @@ def _dedupe_and_merge_benchmarks(
     byte-for-byte intact.
 
     Returns ``(merged, added_count, skipped_count, updated)``. A new row is
-    skipped if its normalized question text has n-gram Jaccard >= 0.90 against
-    any existing row (covers "Top 10 products" vs "top 10 products" vs "Top
-    ten products"). ``updated`` contains before/after SQL records for the
+    skipped only when its normalized question text exactly matches an existing
+    row. Similar-but-distinct phrasings must remain separate live benchmarks:
+    the native evaluator identifies rows by live question ID, and mapping a
+    fuzzy match to an existing row could silently evaluate different wording
+    or ground-truth SQL. Near-duplicate pruning remains an advisory window
+    recommendation. ``updated`` contains before/after SQL records for the
     provenance ledger.
     """
     merged: list[dict] = list(existing) if isinstance(existing, list) else []
@@ -1232,15 +1235,7 @@ def _dedupe_and_merge_benchmarks(
             })
             continue
 
-        is_dup = False
-        for ex_norm in existing_norms:
-            if ex_norm == add_norm:
-                is_dup = True
-                break
-            if _ngram_similarity_for_dedup(ex_norm, add_norm) >= _DEDUP_SIMILARITY_THRESHOLD:
-                is_dup = True
-                break
-        if is_dup:
+        if add_norm in existing_norms:
             skipped += 1
             continue
 
