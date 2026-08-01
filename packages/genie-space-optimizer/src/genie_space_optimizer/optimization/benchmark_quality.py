@@ -683,9 +683,10 @@ def _llm_review(
                     elif code == "IMPLEMENTATION_HINT":
                         # Generated questions with confident implementation leakage
                         # are unsafe evaluation rows and can be replaced with a new
-                        # benchmark. User-authored wording is immutable: retain it as
-                        # an advisory warning for the owner instead of auto-pruning or
-                        # rewriting it. Low-confidence findings are warnings for both.
+                        # benchmark. Keep user-authored findings as warnings so
+                        # review-only runs preserve them; repair-enabled callers may
+                        # apply a safe proposed question/SQL under benchmark_policy.
+                        # Low-confidence findings are warnings for both.
                         severity = (
                             "error"
                             if confidence >= QUALITY_ERROR_CONFIDENCE

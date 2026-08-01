@@ -3205,6 +3205,7 @@ def _build_benchmark_qc(payload: dict) -> dict:
     repaired = payload.get("repaired_ids")
     gt_candidates = payload.get("gt_correction_candidates")
     still_invalid = payload.get("still_invalid_ids")
+    repair_exhausted = payload.get("repair_exhausted_ids")
     quality_counts = payload.get("quality_counts")
     quality_findings = payload.get("quality_findings")
     proposed_changes = payload.get("proposed_changes")
@@ -3231,6 +3232,10 @@ def _build_benchmark_qc(payload: dict) -> dict:
         ),
         "minimumValidCount": _safe_int(payload.get("minimum_valid_count")),
         "stillInvalidIds": still_invalid if isinstance(still_invalid, list) else None,
+        "repairExhaustedIds": (
+            repair_exhausted if isinstance(repair_exhausted, list) else []
+        ),
+        "repairExhaustedCount": _safe_int(payload.get("repair_exhausted_count")),
         "qualityReviewVersion": payload.get("quality_review_version") or None,
         "qualityReviewStatus": payload.get("quality_review_status") or None,
         "semanticReviewCoverage": _safe_float(payload.get("semantic_review_coverage")),
@@ -3404,8 +3409,8 @@ async def list_benchmark_changes(run_id: RunId):
     """Benchmark provenance ledger for a run (GSO v2 Phase 6, §3.5).
 
     Serves ``genie_opt_benchmark_mutations`` — every benchmark question GSO
-    added / removed / changed (and prune recommendations) in the live Genie
-    Space — grouped so the Workbench can render the added/removed/changed diff
+    added / changed in the live Genie Space, excluded from this run, or marked
+    for pruning (advisory) — grouped so the Workbench can render the audit trail
     with provenance. The diff is also reconstructable as
     (current space benchmarks) − (preflight snapshot); this ledger is the
     direct, attributable source.
@@ -3452,7 +3457,8 @@ async def list_benchmark_changes(run_id: RunId):
             )
 
     buckets: dict[str, list[dict]] = {
-        "added": [], "removed": [], "changed": [], "prune_recommended": [],
+        "added": [], "excluded": [], "removed": [], "changed": [],
+        "prune_recommended": [],
     }
     items: list[dict] = []
     for m in mutations:
@@ -3485,12 +3491,14 @@ async def list_benchmark_changes(run_id: RunId):
     return {
         "runId": run_id,
         "added": buckets["added"],
+        "excluded": buckets["excluded"],
         "removed": buckets["removed"],
         "changed": buckets["changed"],
         "pruneRecommended": buckets["prune_recommended"],
         "items": items,
         "counts": {
             "added": len(buckets["added"]),
+            "excluded": len(buckets["excluded"]),
             "removed": len(buckets["removed"]),
             "changed": len(buckets["changed"]),
             "pruneRecommended": len(buckets["prune_recommended"]),

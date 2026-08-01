@@ -454,6 +454,8 @@ function qc(overrides: Partial<GSOBenchmarkQC>): GSOBenchmarkQC {
     gtCorrectionCandidates: [],
     terminalReason: null,
     stillInvalidIds: [],
+    repairExhaustedIds: [],
+    repairExhaustedCount: 0,
     ...overrides,
   }
 }
@@ -462,11 +464,12 @@ function changes(overrides: Partial<GSOBenchmarkChanges>): GSOBenchmarkChanges {
   return {
     runId: "r",
     added: [],
+    excluded: [],
     removed: [],
     changed: [],
     pruneRecommended: [],
     items: [],
-    counts: { added: 0, removed: 0, changed: 0, pruneRecommended: 0, total: 0 },
+    counts: { added: 0, excluded: 0, removed: 0, changed: 0, pruneRecommended: 0, total: 0 },
     qc: null,
     ...overrides,
   }
@@ -572,7 +575,7 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
         changes={changes({
           added: [added],
           items: [added],
-          counts: { added: 1, removed: 0, changed: 0, pruneRecommended: 0, total: 1 },
+          counts: { added: 1, excluded: 0, removed: 0, changed: 0, pruneRecommended: 0, total: 1 },
         })}
       />,
     )
@@ -590,12 +593,12 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
       reason: "preflight_push",
       loggedAt: null,
     }
-    const removed = {
+    const excluded = {
       questionId: "q-old",
-      op: "removed",
+      op: "excluded",
       before: { question: "Old benchmark question", sql: "SELECT 0" },
-      after: null,
-      reason: "hard_failure",
+      after: { question: "Old benchmark question", sql: "SELECT 0" },
+      reason: "repair_exhausted",
       loggedAt: null,
     }
     const markup = renderToStaticMarkup(
@@ -607,16 +610,17 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
             qualityCounts: { total: 30, trusted: 30, warnings: 0, excluded: 0, review_not_run: 0 },
           }),
           added: [added],
-          removed: [removed],
-          items: [added, removed],
-          counts: { added: 1, removed: 1, changed: 0, pruneRecommended: 0, total: 2 },
+          excluded: [excluded],
+          items: [added, excluded],
+          counts: { added: 1, excluded: 1, removed: 0, changed: 0, pruneRecommended: 0, total: 2 },
         })}
         showTitle={false}
       />,
     )
 
     expect(markup).toContain("+1 added")
-    expect(markup).toContain("−1 removed")
+    expect(markup).toContain("1 excluded from this run")
+    expect(markup).toContain("Excluded from this run (1)")
     expect(markup).toContain("Benchmark repairs")
     expect(markup.indexOf("Working-set window")).toBeLessThan(markup.indexOf("+1 added"))
     expect(markup.indexOf("+1 added")).toBeLessThan(markup.indexOf("Benchmark quality"))
@@ -644,7 +648,7 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
         changes={changes({
           changed: [changed],
           items: [changed],
-          counts: { added: 0, removed: 0, changed: 1, pruneRecommended: 0, total: 1 },
+          counts: { added: 0, excluded: 0, removed: 0, changed: 1, pruneRecommended: 0, total: 1 },
         })}
       />,
     )

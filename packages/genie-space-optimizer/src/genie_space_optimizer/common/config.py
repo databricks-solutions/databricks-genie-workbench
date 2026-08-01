@@ -1089,8 +1089,8 @@ BENCHMARK_QUALITY_REVIEW_PROMPT = (
     'replace its own generated row; use "warning" for user-authored sources.\n'
     'Provide a concise proposed '
     'question and/or proposed SQL when a safe correction is apparent. Preserve the '
-    'question_id exactly. A proposed_question is advisory review metadata only; never treat '
-    'it as authorization to rewrite the input benchmark.\n'
+    'question_id exactly. A proposed_question is a concrete repair proposal; the caller\'s '
+    'benchmark_policy determines whether it may be applied and published.\n'
     '</instructions>\n'
     '\n'
     '<output_schema>\n'
@@ -1836,12 +1836,12 @@ TABLE_SCAN_SNAPSHOTS = "genie_opt_scan_snapshots"
 optimization run. One row per (run_id, phase). See
 ``genie_space_optimizer.optimization.scan_snapshots``."""
 TABLE_BENCHMARK_MUTATIONS = "genie_opt_benchmark_mutations"
-"""GSO v2 (§3.5) — provenance ledger of every benchmark mutation GSO makes
-to the user's live Genie Agent: questions added (preflight push), removed
-(EXPLAIN-invalid / validation prune), or changed (auto-correction). One row
-per (run_id, question_id, op). Backed by ``ddl._GENIE_OPT_BENCHMARK_MUTATIONS_DDL``
-and written via ``state.write_benchmark_mutations``. The backend endpoint +
-UI 'Benchmark changes' view that consume it are Phase 6."""
+"""GSO v2 (§3.5) benchmark provenance ledger. Records live additions and
+changes, run-local non-mutating exclusions, legacy removed rows, and advisory
+prune recommendations. One row per (run_id, question_id, op). Backed by
+``ddl._GENIE_OPT_BENCHMARK_MUTATIONS_DDL`` and written via
+``state.write_benchmark_mutations``. The backend endpoint + UI 'Benchmark
+changes' view that consume it are Phase 6."""
 TABLE_ARTIFACTS = "genie_opt_artifacts"
 """GSO v2 orchestration (Phase 7, arch §7.1) — generic Delta handoff table
 for the fat JSON stage-level blobs that don't fit a per-attempt scored row:

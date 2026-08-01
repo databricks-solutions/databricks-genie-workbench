@@ -9,6 +9,7 @@ from genie_space_optimizer.optimization.benchmarks import (
     build_benchmark_handoff_records,
     deduplicate_benchmark_corpus,
     duplicate_rejection_mutations,
+    live_benchmark_question_id,
     load_benchmark_corpus,
     persist_benchmark_corpus,
 )
@@ -97,6 +98,15 @@ def test_deduplication_uses_deterministic_retention_priority() -> None:
             "priority": "P0",
         },
         {
+            "id": "genie-user-duplicate",
+            "question": "Revenue by month?",
+            "expected_sql": "",
+            "validation_status": "question_only",
+            "source": "genie_benchmark",
+            "provenance": "curated",
+            "priority": "P0",
+        },
+        {
             "id": "valid-sql",
             "question": "Margin by region?",
             "expected_sql": "SELECT 2",
@@ -143,6 +153,7 @@ def test_deduplication_uses_deterministic_retention_priority() -> None:
     ]
     by_id = {row["id"]: row for row in rejected}
     assert by_id["synthetic-valid"]["duplicate_retained_question_id"] == "genie-user"
+    assert by_id["genie-user-duplicate"]["duplicate_retained_question_id"] == "genie-user"
     assert by_id["curated-no-sql"]["duplicate_retained_question_id"] == "valid-sql"
     assert by_id["stable-second"]["duplicate_retained_question_id"] == "stable-first"
     assert all(
@@ -150,9 +161,28 @@ def test_deduplication_uses_deterministic_retention_priority() -> None:
         for row in rejected
     )
     mutations = duplicate_rejection_mutations(rejected)
-    assert all(row["op"] == "removed" for row in mutations)
+    assert len(mutations) == 1
+    assert all(row["op"] == "excluded" for row in mutations)
+    assert all(row["before"] == row["after"] for row in mutations)
+    assert mutations[0]["question_id"] == "genie-user-duplicate"
     assert mutations[0]["reason"] == "duplicate_normalized_question"
     assert mutations[0]["before"]["retained_question_id"]
+
+
+def test_live_benchmark_question_id_rejects_synthetic_candidate_ids() -> None:
+    assert live_benchmark_question_id({
+        "id": "genie_gs_003",
+        "source": "llm_generated",
+    }) == ""
+    assert live_benchmark_question_id({
+        "id": "native-id",
+        "source": "genie_benchmark",
+    }) == "native-id"
+    assert live_benchmark_question_id({
+        "id": "internal-id",
+        "space_question_id": "native-space-id",
+        "source": "llm_generated",
+    }) == "native-space-id"
 
 
 def test_direct_delta_persistence_preserves_full_working_window_and_nested_schema() -> None:

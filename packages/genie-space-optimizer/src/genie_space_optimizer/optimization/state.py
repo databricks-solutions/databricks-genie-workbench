@@ -1232,7 +1232,9 @@ def write_benchmark_mutations(
     Each ``row`` describes one mutation (or advisory) GSO recorded against
     the user's live Genie Agent benchmark set:
     ``{question_id, op, before, after, reason}`` where ``op`` ∈
-    {``added``, ``removed``, ``changed``, ``prune_recommended``}.
+    {``added``, ``excluded``, ``removed``, ``changed``,
+    ``prune_recommended``}. ``excluded`` is a non-mutating run-local decision;
+    ``removed`` remains accepted for historical ledger rows. Likewise,
     ``prune_recommended`` is a NON-mutating advisory row: the over-window
     (30–40) prune recommendation, recorded for transparency because the
     publisher never auto-prunes. ``before`` / ``after`` are
@@ -1257,7 +1259,9 @@ def write_benchmark_mutations(
 
     for r in rows:
         op = str(r.get("op", "")).strip()
-        if op not in ("added", "removed", "changed", "prune_recommended"):
+        if op not in (
+            "added", "excluded", "removed", "changed", "prune_recommended",
+        ):
             logger.debug("Skipping benchmark mutation with bad op=%r", op)
             continue
         payload: dict[str, Any] = {

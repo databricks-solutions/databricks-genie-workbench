@@ -23,6 +23,7 @@ def test_ledger_table_registered_in_all_ddl():
     # Versioned history for the diff (CDF), consistent with sibling tables.
     assert "delta.enableChangeDataFeed" in ddl
     assert "PARTITIONED BY (run_id)" in ddl
+    assert "excluded (run-local, non-mutating)" in ddl
 
 
 def test_write_benchmark_mutations_serializes_and_filters():
@@ -36,9 +37,9 @@ def test_write_benchmark_mutations_serializes_and_filters():
         },
         {
             "question_id": "q2",
-            "op": "removed",
+            "op": "excluded",
             "before": {"question": "bad q", "sql": "SELECT broken"},
-            "after": None,
+            "after": {"question": "bad q", "sql": "SELECT broken"},
             "reason": "sql_compile_error",
         },
         # Bad op must be skipped, not written.
@@ -57,7 +58,7 @@ def test_write_benchmark_mutations_serializes_and_filters():
 
     assert written == 2
     ops = {p["op"] for p in captured}
-    assert ops == {"added", "removed"}
+    assert ops == {"added", "excluded"}
 
     added = next(p for p in captured if p["op"] == "added")
     assert added["run_id"] == "run-xyz"
@@ -65,9 +66,25 @@ def test_write_benchmark_mutations_serializes_and_filters():
     assert json.loads(added["after"]) == {"question": "new q", "sql": "SELECT 1"}
     assert added["reason"] == "preflight_push"
 
-    removed = next(p for p in captured if p["op"] == "removed")
-    assert json.loads(removed["before"]) == {"question": "bad q", "sql": "SELECT broken"}
-    assert removed["after"] is None
+    excluded = next(p for p in captured if p["op"] == "excluded")
+    expected = {"question": "bad q", "sql": "SELECT broken"}
+    assert json.loads(excluded["before"]) == expected
+    assert json.loads(excluded["after"]) == expected
+
+
+def test_write_benchmark_mutations_keeps_legacy_removed_rows_compatible():
+    rows = [{
+        "question_id": "legacy-q",
+        "op": "removed",
+        "before": {"question": "legacy", "sql": "SELECT 1"},
+        "after": None,
+    }]
+    with patch.object(state_mod, "insert_row") as insert:
+        written = state_mod.write_benchmark_mutations(
+            MagicMock(), "run-xyz", rows, catalog="cat", schema="sch",
+        )
+    assert written == 1
+    assert insert.call_args.args[-1]["op"] == "removed"
 
 
 def test_write_benchmark_mutations_empty_is_noop():

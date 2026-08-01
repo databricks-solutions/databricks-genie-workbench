@@ -19,6 +19,8 @@ function qc(overrides: Partial<GSOBenchmarkQC> = {}): GSOBenchmarkQC {
     gtCorrectionCandidates: [],
     terminalReason: "INSUFFICIENT_VALID_BENCHMARKS",
     stillInvalidIds: null,
+    repairExhaustedIds: [],
+    repairExhaustedCount: 0,
     qualityCounts: null,
     qualityFindings: [],
     proposedChanges: [],
@@ -30,11 +32,12 @@ function changes(qcPayload: GSOBenchmarkQC): GSOBenchmarkChanges {
   return {
     runId: "run-1",
     added: [],
+    excluded: [],
     removed: [],
     changed: [],
     pruneRecommended: [],
     items: [],
-    counts: { added: 0, removed: 0, changed: 0, pruneRecommended: 0, total: 0 },
+    counts: { added: 0, excluded: 0, removed: 0, changed: 0, pruneRecommended: 0, total: 0 },
     qc: qcPayload,
   }
 }
@@ -80,5 +83,28 @@ describe("BenchmarkChangesPanel policy and gate summary", () => {
     expect(markup).toContain("Repair sweeps:")
     expect(markup).toContain(">1</span> repaired")
     expect(markup).not.toContain("Optimization was skipped")
+  })
+
+  it("reports exhausted repairs as run-local exclusions", () => {
+    const markup = renderToStaticMarkup(
+      <BenchmarkChangesPanel
+        runId="run-3"
+        changes={changes(qc({
+          validCount: 36,
+          persistedCount: 36,
+          repairTriesUsed: 3,
+          repairExhaustedIds: ["q1", "q2"],
+          repairExhaustedCount: 2,
+          stillInvalidIds: ["q1", "q2"],
+          terminalReason: null,
+          benchmarkPolicy: "repair_allowed",
+          optimizationEligible: true,
+        }))}
+      />,
+    )
+
+    expect(markup).toContain("2 excluded after repair limit")
+    expect(markup).toContain("SQL valid")
+    expect(markup).not.toContain("run stopped here")
   })
 })

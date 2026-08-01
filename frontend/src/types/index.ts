@@ -658,10 +658,11 @@ export interface GSOQuestionDetail {
 }
 
 // GSO v2 Phase 6 (§3.5) — benchmark provenance ledger. Each entry records a
-// benchmark question GSO added / removed / changed (or recommended for prune)
+// benchmark question GSO added / changed, excluded from one run, or recommended
+// for prune. `removed` remains for historical ledger rows only.
 // in the user's live Genie Agent, with provenance. Backed by
 // genie_opt_benchmark_mutations via /runs/{id}/benchmark-changes.
-export type GSOBenchmarkOp = "added" | "removed" | "changed" | "prune_recommended"
+export type GSOBenchmarkOp = "added" | "excluded" | "removed" | "changed" | "prune_recommended"
 
 export interface GSOBenchmarkQuestionState {
   question?: string | null
@@ -719,9 +720,9 @@ export interface GSOBenchmarkProposedChange {
 // GSO v2 (item 7) — benchmark QC metadata from 01_benchmark_qc_and_repair
 // (benchmark_qc artifact): the 30–40 window recommendation, repair-try usage,
 // and validity findings. `window` is the raw recommendation payload (status +
-// counts). terminalReason is BENCHMARK_UNREPAIRABLE when bounded repair gives
-// up, or INSUFFICIENT_VALID_BENCHMARKS when the valid subset is too small to
-// optimize. Null on legacy runs.
+// counts). New runs exclude repair-exhausted rows and use
+// INSUFFICIENT_VALID_BENCHMARKS only when the remaining valid subset is too
+// small. BENCHMARK_UNREPAIRABLE is retained for historical runs.
 export interface GSOBenchmarkQC {
   validCount: number | null
   persistedCount: number | null
@@ -736,6 +737,8 @@ export interface GSOBenchmarkQC {
   gtCorrectionCandidates: unknown[]
   terminalReason: string | null
   stillInvalidIds: string[] | null
+  repairExhaustedIds?: string[]
+  repairExhaustedCount?: number | null
   benchmarkPolicy?: "review_only" | "repair_allowed" | string | null
   benchmarkMutationCount?: number | null
   optimizationEligible?: boolean | null
@@ -751,12 +754,14 @@ export interface GSOBenchmarkQC {
 export interface GSOBenchmarkChanges {
   runId: string
   added: GSOBenchmarkMutation[]
+  excluded: GSOBenchmarkMutation[]
   removed: GSOBenchmarkMutation[]
   changed: GSOBenchmarkMutation[]
   pruneRecommended: GSOBenchmarkMutation[]
   items: GSOBenchmarkMutation[]
   counts: {
     added: number
+    excluded: number
     removed: number
     changed: number
     pruneRecommended: number

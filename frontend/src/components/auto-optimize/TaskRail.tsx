@@ -13,7 +13,7 @@ interface TaskRailProps {
 
 // The 4-task rail.
 // 00 intake · 01 QC+repair · 02 optimize · 03 publish_and_audit.
-// The 01 node branches to a BENCHMARK_UNREPAIRABLE hard-fail chip.
+// Historical runs may branch the 01 node to BENCHMARK_UNREPAIRABLE.
 export function TaskRail({
   stepsCompleted,
   currentStepName,

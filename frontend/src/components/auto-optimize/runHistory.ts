@@ -75,10 +75,8 @@ const TERMINAL_REASON_LABELS: Record<GSOTerminalReason, string> = {
  * (legacy runs / in-progress rows with no typed reason) it degrades to the
  * free-text ``convergence_reason`` (trimmed) or an em dash.
  *
- * ``BENCHMARK_UNREPAIRABLE`` is a QC-side (task 01) hard-stop, NOT a loop
- * ``GSOTerminalReason`` member (it lives on the benchmark-QC artifact), so it
- * arrives here as raw text on either field — handle it defensively rather than
- * letting the raw token leak into the column.
+ * Historical ``BENCHMARK_UNREPAIRABLE`` is not a ``GSOTerminalReason`` member;
+ * it can arrive as raw QC text on either field, so handle it defensively.
  */
 export function humanizeTerminalReason(
   reason: GSOTerminalReason | null | undefined,

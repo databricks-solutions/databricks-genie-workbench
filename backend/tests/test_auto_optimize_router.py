@@ -784,8 +784,7 @@ def test_iterations_endpoint_emits_phase6_counts_and_gate(monkeypatch) -> None:
 
 
 def test_benchmark_changes_endpoint_groups_by_op(monkeypatch) -> None:
-    """/benchmark-changes groups the mutations ledger into added/removed/
-    changed/prune_recommended with provenance + counts."""
+    """/benchmark-changes groups current and legacy ledger operations."""
     monkeypatch.setenv("GSO_CATALOG", "main")
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
@@ -797,6 +796,8 @@ def test_benchmark_changes_endpoint_groups_by_op(monkeypatch) -> None:
          "after": '{"question": "new q", "sql": "SELECT 1"}', "reason": "preflight_push", "logged_at": "2026-06-25T00:00:00Z"},
         {"run_id": "12345678-1234-1234-1234-1234567890ab", "question_id": "q2", "op": "removed", "before": '{"question": "old"}',
          "after": None, "reason": "explain_invalid", "logged_at": "2026-06-25T00:01:00Z"},
+        {"run_id": "12345678-1234-1234-1234-1234567890ab", "question_id": "q4", "op": "excluded", "before": '{"question": "kept live"}',
+         "after": '{"question": "kept live"}', "reason": "repair_exhausted", "logged_at": "2026-06-25T00:01:30Z"},
         {"run_id": "12345678-1234-1234-1234-1234567890ab", "question_id": "q3", "op": "changed", "before": '{"sql": "a"}',
          "after": '{"sql": "b"}', "reason": "normalized", "logged_at": "2026-06-25T00:02:00Z"},
     ]
@@ -814,8 +815,10 @@ def test_benchmark_changes_endpoint_groups_by_op(monkeypatch) -> None:
     resp = client.get("/api/auto-optimize/runs/12345678-1234-1234-1234-1234567890ab/benchmark-changes")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["counts"] == {"added": 1, "removed": 1, "changed": 1, "pruneRecommended": 0, "total": 3}
+    assert body["counts"] == {"added": 1, "excluded": 1, "removed": 1, "changed": 1, "pruneRecommended": 0, "total": 4}
     assert body["added"][0]["questionId"] == "q1"
+    assert body["excluded"][0]["questionId"] == "q4"
+    assert body["excluded"][0]["before"] == body["excluded"][0]["after"]
     # before/after JSON strings are parsed into objects.
     assert body["added"][0]["after"] == {"question": "new q", "sql": "SELECT 1"}
     assert body["changed"][0]["before"] == {"sql": "a"}
@@ -1987,6 +1990,7 @@ def test_benchmark_changes_includes_qc(monkeypatch) -> None:
     qc_payload = {
         "run_id": _RUN, "valid_count": 32, "persisted_count": 32,
         "repair_tries_used": 1, "benchmark_repair_max_tries": 3,
+        "repair_exhausted_ids": [], "repair_exhausted_count": 0,
         "repaired_ids": ["q5"], "repair_sweeps": 1, "final_validity": True,
         "benchmark_policy": "review_only", "benchmark_mutation_count": 0,
         "optimization_eligible": False, "minimum_valid_count": 15,
@@ -2026,6 +2030,9 @@ def test_benchmark_changes_includes_qc(monkeypatch) -> None:
     assert qc["validCount"] == 32
     assert qc["repairTriesUsed"] == 1
     assert qc["repairMaxTries"] == 3
+    assert qc["repairExhaustedIds"] == []
+    assert qc["repairExhaustedCount"] == 0
+    assert qc["stillInvalidIds"] is None
     assert qc["finalValidity"] is True
     assert qc["benchmarkPolicy"] == "review_only"
     assert qc["benchmarkMutationCount"] == 0
@@ -2039,6 +2046,27 @@ def test_benchmark_changes_includes_qc(monkeypatch) -> None:
     assert qc["semanticReviewCoverage"] == 1.0
     assert qc["qualityCounts"]["trusted"] == 30
     assert qc["qualityFindings"][0]["code"] == "WEAK_BUT_ANSWERABLE"
+
+
+def test_build_benchmark_qc_maps_new_exhaustion_without_legacy_alias() -> None:
+    qc = auto_optimize._build_benchmark_qc({
+        "benchmark_policy": "repair_allowed",
+        "repair_exhausted_ids": ["q7", "q8"],
+        "repair_exhausted_count": 2,
+        "final_validity": True,
+        "optimization_eligible": True,
+    })
+
+    assert qc["repairExhaustedIds"] == ["q7", "q8"]
+    assert qc["repairExhaustedCount"] == 2
+    assert qc["stillInvalidIds"] is None
+
+    legacy = auto_optimize._build_benchmark_qc({
+        "terminal_reason": "BENCHMARK_UNREPAIRABLE",
+        "still_invalid_ids": ["legacy-q"],
+        "final_validity": False,
+    })
+    assert legacy["stillInvalidIds"] == ["legacy-q"]
 
 
 def test_benchmark_changes_qc_null_for_legacy_run(monkeypatch) -> None:

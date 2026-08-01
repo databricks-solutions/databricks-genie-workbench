@@ -234,13 +234,25 @@ def test_review_only_policy_never_enters_generation_or_live_push():
 
     assert "extract_review_only_benchmarks(" in src
     assert 'if benchmark_policy == "review_only":' in src
-    assert (
-        'if benchmark_policy == "repair_allowed" and not _repair_failed'
-        in src
-    )
+    assert 'if benchmark_policy == "repair_allowed" and _benchmarks:' in src
+    assert "_repair_failed" not in src
     review_start = src.index('if benchmark_policy == "review_only":')
     repair_start = src.index("    else:\n        ctx_bench = preflight_generate_benchmarks(")
     assert review_start < repair_start
+
+
+def test_qc_keeps_candidate_churn_out_of_exclusion_ledger_and_legacy_alias():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_benchmark_qc_and_repair.py"
+    ).read_text()
+
+    assert "if benchmark_id in _initial_benchmarks_by_id:" in src
+    assert "or _excluded_id not in _initial_benchmarks_by_id" in src
+    assert '"still_invalid_ids":' not in src
 
 
 def test_insufficient_qc_short_circuits_optimize_before_input_load_or_loop():

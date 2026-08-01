@@ -156,7 +156,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
                   {allowBenchmarkRepair && (
                     <span className="mt-2 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      This run may add benchmarks or update benchmark SQL in the live Genie Agent.
+                      This run may add benchmarks or update benchmark questions and SQL in the live Genie Agent. Existing benchmarks are never deleted.
                     </span>
                   )}
                 </span>

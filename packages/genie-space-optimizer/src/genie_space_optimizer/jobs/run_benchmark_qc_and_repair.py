@@ -7,7 +7,7 @@
 # MAGIC | **Task** | `benchmark_qc_and_repair` |
 # MAGIC | **Reads** | space metadata, run-row snapshot, benchmark set |
 # MAGIC | **Writes** | `genie_opt_artifacts` (`space_metadata`, `benchmark_qc`), `genie_opt_benchmark_mutations`, `genie_opt_stages` |
-# MAGIC | **Hard stop** | Invalid after the repair budget; fewer than 15 valid questions becomes a business skip |
+# MAGIC | **Stop condition** | Fewer than 15 valid questions after review, repair, and run-local exclusions |
 # MAGIC | **Log label** | `[TASK BENCH_QC]` |
 # MAGIC
 # MAGIC ## 🎯 Purpose (arch §5 / §6 / progress §5 K=3)
@@ -15,11 +15,11 @@
 # MAGIC Review the benchmark set, then follow the run's policy. `review_only`
 # MAGIC excludes invalid native questions without generating, repairing, or
 # MAGIC changing the live benchmark block. `repair_allowed` runs bounded inline
-# MAGIC repair/prune (≤ `benchmark_repair_max_tries`, default 3), re-validates,
+# MAGIC repair/exclusion (≤ `benchmark_repair_max_tries`, default 3), re-validates,
 # MAGIC and pushes the SQL-valid set into the live Agent (additive/merge-only).
 # MAGIC Both policies flow into `optimize` when at least 15 valid questions
-# MAGIC remain. A benchmark still invalid after K repair tries hard-fails with
-# MAGIC `BENCHMARK_UNREPAIRABLE`; a smaller final corpus records
+# MAGIC remain. A benchmark still invalid after K repair tries is preserved in
+# MAGIC the live Agent but excluded from this run. A smaller final corpus records
 # MAGIC `INSUFFICIENT_VALID_BENCHMARKS` and skips optimization.
 # MAGIC
 # MAGIC The bounded try-counting control loop lives in
@@ -59,7 +59,6 @@ from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.iq_scan import collect_rls_audit
 from genie_space_optimizer.optimization.benchmark_repair import (
     BenchmarkCorpusTooSmallError,
-    BenchmarkUnrepairableError,
     default_id_of,
     require_minimum_valid_benchmarks,
     run_bounded_benchmark_repair,
@@ -632,13 +631,14 @@ _activate_benchmark_columns(_benchmarks)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Bounded inline repair/prune (≤ benchmark_repair_max_tries)
+# MAGIC ## Bounded inline repair/exclusion (≤ benchmark_repair_max_tries)
 # MAGIC
-# MAGIC Quality-review the set, regenerate/prune the invalid subset, and
+# MAGIC Quality-review the set, regenerate or repair the invalid subset, and
 # MAGIC re-review — bounded by `benchmark_repair_max_tries`. The quality review
 # MAGIC includes SQL/data validity, question clarity, and question↔SQL alignment.
 # MAGIC A try is consumed only when ≥1 question is still invalid after
-# MAGIC re-validation (progress §5).
+# MAGIC re-validation (progress §5). Rows that exhaust the budget are excluded
+# MAGIC from this run without being deleted from the live Agent.
 
 # COMMAND ----------
 
@@ -698,6 +698,13 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
     valid: list[dict] = []
     invalid: list[dict] = []
     for benchmark, result in zip(bms, review.get("benchmark_results", [])):
+        benchmark_id = default_id_of(benchmark)
+        qid = str(
+            result.get("question_id")
+            or benchmark_id
+            or result.get("question")
+            or ""
+        )
         if result.get("disposition") != "excluded":
             repair_candidate, _change = build_actionable_warning_repair(
                 benchmark,
@@ -710,10 +717,13 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
                 invalid.append(benchmark)
             else:
                 valid.append(benchmark)
+                if benchmark_id:
+                    _rejected_benchmarks_by_id.pop(benchmark_id, None)
+                if qid and qid != benchmark_id:
+                    _rejected_benchmarks_by_id.pop(qid, None)
             continue
 
         invalid.append(benchmark)
-        qid = str(result.get("question_id") or default_id_of(benchmark) or result.get("question") or "")
         rejected = dict(benchmark)
         errors = [
             f for f in result.get("findings", []) if f.get("severity") == "error"
@@ -721,7 +731,11 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
         if errors:
             rejected["validation_reason_code"] = str(errors[0].get("code") or "quality_rejected").lower()
             rejected["validation_error"] = str(errors[0].get("explanation") or "")[:200]
-        _rejected_benchmarks_by_id[qid] = rejected
+        # Generated candidates are repair-loop telemetry, not live or initial
+        # corpus exclusions. Keep only rows that entered QC in the original
+        # working set; candidate churn remains visible in repair_sweeps.
+        if benchmark_id in _initial_benchmarks_by_id:
+            _rejected_benchmarks_by_id[benchmark_id] = rejected
 
     return valid, invalid
 
@@ -765,10 +779,9 @@ def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
     return warning_candidates + generated
 
 
-_repair_failed = False
-_repair_error: BenchmarkUnrepairableError | BenchmarkCorpusTooSmallError | None = None
 _optimization_eligible = True
 _skip_reason: str | None = None
+_repair_exhausted_ids: list[str] = []
 if benchmark_policy == "review_only":
     _banner("Step 01b — Benchmark Review (no live repair)")
     _benchmarks, _excluded_benchmarks = _validate_fn(list(_benchmarks))
@@ -813,6 +826,30 @@ else:
                 schema=schema,
             )
         _repair_tries_used = outcome.tries_used
+        _repair_exhausted_ids = list(outcome.still_invalid_ids)
+        _repair_exhausted_id_set = set(_repair_exhausted_ids)
+        for _excluded in outcome.excluded_benchmarks:
+            _excluded_id = default_id_of(_excluded)
+            if (
+                not _excluded_id
+                or _excluded_id not in _repair_exhausted_id_set
+                or _excluded_id not in _initial_benchmarks_by_id
+            ):
+                continue
+            # The exhausted candidate may contain several unpublished repair
+            # proposals. Ledger the intake state when available so the
+            # identical before/after exclusion record reflects what remains
+            # live, not the last failed proposal.
+            _rejected = dict(
+                _initial_benchmarks_by_id.get(_excluded_id) or _excluded
+            )
+            _rejected["validation_status"] = "excluded"
+            _rejected["validation_reason_code"] = "repair_exhausted"
+            _rejected["validation_error"] = (
+                "Benchmark remained invalid after "
+                f"{outcome.tries_used} repair tries and was excluded from this run"
+            )
+            _rejected_benchmarks_by_id[_excluded_id] = _rejected
         # ``BenchmarkRepairOutcome`` defines repaired as invalid -> eligible.
         # The QC artifact's public ``repaired_ids`` is stricter: only report
         # repaired benchmarks whose final semantic disposition is trusted.
@@ -839,19 +876,7 @@ else:
             valid_count=len(_benchmarks),
             tries_used=_repair_tries_used,
             repaired=len(_repaired_ids),
-        )
-    except BenchmarkUnrepairableError as exc:
-        _repair_failed = True
-        _repair_error = exc
-        _benchmarks = exc.valid
-        _repair_tries_used = exc.tries_used
-        _repaired_ids = []
-        _repair_sweeps = []
-        _final_validity = False
-        _log(
-            "Benchmark UNREPAIRABLE",
-            tries_used=exc.tries_used,
-            still_invalid=[default_id_of(b) for b in exc.still_invalid],
+            repair_exhausted=len(_repair_exhausted_ids),
         )
     except BenchmarkCorpusTooSmallError as exc:
         # An undersized but otherwise valid corpus is a business skip, not a job
@@ -892,20 +917,6 @@ else:
         )
         raise
 
-if _repair_failed:
-    _benchmarks, _failed_repair_duplicates = deduplicate_benchmark_corpus(
-        _benchmarks,
-    )
-    _duplicate_rejections.extend(_failed_repair_duplicates)
-    if _failed_repair_duplicates:
-        write_benchmark_mutations(
-            spark,
-            run_id,
-            duplicate_rejection_mutations(_failed_repair_duplicates),
-            catalog=catalog,
-            schema=schema,
-        )
-
 # COMMAND ----------
 
 
@@ -943,15 +954,15 @@ for _benchmark in _benchmarks:
 # MAGIC
 # MAGIC Reuses the Phase-2 publisher: additive push of the quality-reviewed set,
 # MAGIC 30–40 window recommendation, the §3.6 leakage firewall (in the applier),
-# MAGIC and the §3.5 `genie_opt_benchmark_mutations` ledger. Skipped on the
-# MAGIC unrepairable path (we hard-fail below instead of mutating the live space).
+# MAGIC and the §3.5 `genie_opt_benchmark_mutations` ledger. Invalid rows are
+# MAGIC preserved in the live space and recorded as run-local exclusions.
 
 # COMMAND ----------
 
 _push = {}
 _window: dict[str, Any] = {}
 _benchmark_mutation_count = 0
-if benchmark_policy == "repair_allowed" and not _repair_failed and _benchmarks:
+if benchmark_policy == "repair_allowed" and _benchmarks:
     try:
         _banner("Step 01c — Push Benchmarks to Live Space")
         _push = preflight_push_benchmarks_to_space(
@@ -998,7 +1009,7 @@ elif benchmark_policy == "review_only":
 # COMMAND ----------
 
 _persisted_count = len(_benchmarks)
-if not _repair_failed and _benchmarks:
+if _benchmarks:
     try:
         ctx_handoff = preflight_persist_benchmark_corpus(
             w, spark, run_id, space_id, catalog, schema, _domain,
@@ -1018,7 +1029,7 @@ if not _repair_failed and _benchmarks:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Write the benchmark_qc artifact + flow into optimize (or hard-fail)
+# MAGIC ## Write the benchmark_qc artifact + flow into optimize (or corpus skip)
 
 # COMMAND ----------
 
@@ -1051,6 +1062,8 @@ _qc_payload: dict[str, Any] = {
     "repair_tries_used": _repair_tries_used,
     "repaired_ids": _repaired_ids,
     "repair_sweeps": _repair_sweeps,
+    "repair_exhausted_ids": _repair_exhausted_ids,
+    "repair_exhausted_count": len(_repair_exhausted_ids),
     "warning_repair_rounds": dict(_warning_repair_rounds_by_id),
     "warning_repair_count": len(_warning_repairs_applied),
     "warning_repairs_applied": _warning_repairs_applied,
@@ -1116,12 +1129,6 @@ _qc_payload: dict[str, Any] = {
 }
 if _skip_reason:
     _qc_payload["terminal_reason"] = _skip_reason
-if _repair_failed and _repair_error is not None:
-    _qc_payload["terminal_reason"] = _repair_error.terminal_reason
-    if isinstance(_repair_error, BenchmarkUnrepairableError):
-        _qc_payload["still_invalid_ids"] = [
-            default_id_of(b) for b in _repair_error.still_invalid
-        ]
 
 _finding_code_counts: dict[str, int] = {}
 for _finding in _qc_payload["quality_findings"]:
@@ -1175,35 +1182,13 @@ if _prompt_telemetry:
         parent_artifact_id=_plan_record.get("artifact_id"),
     )
 
-if _repair_failed and _repair_error is not None:
-    write_failure_stage_safely(
-        spark, run_id, "BENCHMARK_QC_AND_REPAIR",
-        task_key=_TASK_KEY, catalog=catalog, schema=schema,
-        detail={
-            "terminal_reason": _repair_error.terminal_reason,
-            "valid_count": len(_benchmarks),
-            "minimum_valid_count": MIN_VALID_BENCHMARK_COUNT,
-        },
-        error_message=str(_repair_error),
-    )
-    _diagnostic(
-        "Task failed",
-        run_id=run_id,
-        log_schema=f"{catalog}.{schema}",
-        terminal_reason=_repair_error.terminal_reason,
-        valid_count=len(_benchmarks),
-        minimum_valid_count=MIN_VALID_BENCHMARK_COUNT,
-        next_sources=["genie_opt_artifacts", "genie_opt_benchmark_mutations"],
-    )
-    # Hard stop only for questions that remain invalid after the repair budget.
-    raise _repair_error
-
 write_stage(
     spark, run_id, "BENCHMARK_QC_AND_REPAIR", "COMPLETE",
     task_key=_TASK_KEY, catalog=catalog, schema=schema,
     detail={
         "valid_count": len(_benchmarks),
         "repair_tries_used": _repair_tries_used,
+        "repair_exhausted_count": len(_repair_exhausted_ids),
         "window_status": _window.get("status"),
         "benchmark_policy": benchmark_policy,
         "benchmark_mutation_count": _benchmark_mutation_count,
@@ -1230,6 +1215,7 @@ dbutils.notebook.exit(json.dumps({
     "run_id": run_id,
     "valid_count": len(_benchmarks),
     "repair_tries_used": _repair_tries_used,
+    "repair_exhausted_count": len(_repair_exhausted_ids),
     "optimization_eligible": _optimization_eligible,
     "terminal_reason": _skip_reason,
 }, default=str))

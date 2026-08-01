@@ -4,8 +4,8 @@ Covers the progress §5 RESOLVED try-counting semantics (K=3):
   * discovery validation is triage, not a try;
   * a try is consumed only when ≥1 question is still invalid after EXPLAIN
     re-validation (a sweep that clears everything is free);
-  * hard-fail ``BENCHMARK_UNREPAIRABLE`` only after ``max_tries`` consumed
-    tries still leave ≥1 invalid question.
+  * after ``max_tries`` consumed tries, still-invalid rows are excluded from
+    this run while the valid subset is returned to the caller.
 
 The control loop is exercised with stub ``validate_fn`` / ``repair_fn``
 callables so no live workspace / Spark / LLM is needed.
@@ -21,12 +21,10 @@ from genie_space_optimizer.common.config import (
     TARGET_BENCHMARK_COUNT,
 )
 from genie_space_optimizer.optimization.benchmark_repair import (
-    BENCHMARK_UNREPAIRABLE,
     INSUFFICIENT_VALID_BENCHMARKS,
     DEFAULT_BENCHMARK_REPAIR_MAX_TRIES,
     BenchmarkCorpusTooSmallError,
     BenchmarkRepairOutcome,
-    BenchmarkUnrepairableError,
     require_minimum_valid_benchmarks,
     run_bounded_benchmark_repair,
 )
@@ -261,17 +259,20 @@ def test_repeated_actionable_warning_repairs_stop_at_retry_limit():
             repaired.append(repair)
         return repaired
 
-    with pytest.raises(BenchmarkUnrepairableError) as exc_info:
-        run_bounded_benchmark_repair(
-            [{"id": "q1", "question": "Show metric", "expected_sql": "SELECT 0"}],
-            validate_fn=validate_fn,
-            repair_fn=repair_fn,
-            max_tries=3,
-        )
+    out = run_bounded_benchmark_repair(
+        [{"id": "q1", "question": "Show metric", "expected_sql": "SELECT 0"}],
+        validate_fn=validate_fn,
+        repair_fn=repair_fn,
+        max_tries=3,
+    )
 
     assert repair_calls == 3
-    assert exc_info.value.tries_used == 3
-    assert exc_info.value.still_invalid[0]["expected_sql"] == "SELECT 3"
+    assert out.tries_used == 3
+    assert out.repair_exhausted is True
+    assert out.still_invalid_ids == ["q1"]
+    assert out.excluded_benchmarks[0]["expected_sql"] == "SELECT 3"
+    assert out.benchmarks == []
+    assert len(out.sweeps) == 3
 
 
 def test_prune_as_repair_drops_unfixable_and_succeeds():
@@ -288,12 +289,11 @@ def test_prune_as_repair_drops_unfixable_and_succeeds():
     assert out.tries_used == 0
     assert out.terminal_reason is None
     assert {b["id"] for b in out.benchmarks} == {"keep"}
+    assert [b["id"] for b in out.excluded_benchmarks] == ["drop"]
 
 
-def test_unrepairable_raises_after_exactly_max_tries():
-    """When repair never fixes the failure, the loop hard-fails with
-    BENCHMARK_UNREPAIRABLE after exactly ``max_tries`` consumed tries, and
-    repair_fn is invoked exactly ``max_tries`` times (the K+1-th is gated)."""
+def test_repair_exhaustion_excludes_after_exactly_max_tries():
+    """A persistent failure is excluded after exactly ``max_tries`` sweeps."""
     bms = [_q("ok", True), _q("never", False)]
     repair_calls = {"n": 0}
 
@@ -301,23 +301,51 @@ def test_unrepairable_raises_after_exactly_max_tries():
         repair_calls["n"] += 1
         return [_q(b["id"], False) for b in invalid]  # still broken
 
-    with pytest.raises(BenchmarkUnrepairableError) as exc_info:
-        run_bounded_benchmark_repair(
-            bms, validate_fn=_validate_by_flag, repair_fn=repair_fn, max_tries=3,
-        )
+    out = run_bounded_benchmark_repair(
+        bms, validate_fn=_validate_by_flag, repair_fn=repair_fn, max_tries=3,
+    )
 
-    err = exc_info.value
-    assert err.terminal_reason == BENCHMARK_UNREPAIRABLE
-    assert err.tries_used == 3
-    assert [b["id"] for b in err.still_invalid] == ["never"]
+    assert out.terminal_reason is None
+    assert out.tries_used == 3
+    assert out.repair_exhausted is True
+    assert out.still_invalid_ids == ["never"]
+    assert [b["id"] for b in out.excluded_benchmarks] == ["never"]
+    assert len(out.sweeps) == 3
     # K=3 sweeps attempted; the 4th is gated by the budget check.
     assert repair_calls["n"] == 3
     # The non-failing question survives in the preserved valid set.
-    assert {b["id"] for b in err.valid} == {"ok"}
+    assert {b["id"] for b in out.benchmarks} == {"ok"}
+
+
+def test_two_exhausted_rows_leave_36_valid_and_pass_corpus_floor():
+    """Regression for run 0e2a7962: exhausted rows must not stop QC."""
+    bms = [
+        *[_q(f"valid-{index}", True) for index in range(36)],
+        _q("exhausted-1", False),
+        _q("exhausted-2", False),
+    ]
+
+    out = run_bounded_benchmark_repair(
+        bms,
+        validate_fn=_validate_by_flag,
+        repair_fn=lambda invalid, _valid: [
+            _q(benchmark["id"], False) for benchmark in invalid
+        ],
+        max_tries=3,
+    )
+
+    assert len(out.benchmarks) == 36
+    assert out.tries_used == 3
+    assert out.still_invalid_ids == ["exhausted-1", "exhausted-2"]
+    assert [row["id"] for row in out.excluded_benchmarks] == [
+        "exhausted-1",
+        "exhausted-2",
+    ]
+    require_minimum_valid_benchmarks(out.benchmarks)
 
 
 def test_custom_max_tries_one():
-    """max_tries=1 hard-fails after a single unproductive sweep."""
+    """max_tries=1 excludes after a single unproductive sweep."""
     bms = [_q("bad", False)]
     calls = {"n": 0}
 
@@ -325,11 +353,12 @@ def test_custom_max_tries_one():
         calls["n"] += 1
         return [_q("bad", False)]
 
-    with pytest.raises(BenchmarkUnrepairableError) as exc_info:
-        run_bounded_benchmark_repair(
-            bms, validate_fn=_validate_by_flag, repair_fn=repair_fn, max_tries=1,
-        )
-    assert exc_info.value.tries_used == 1
+    out = run_bounded_benchmark_repair(
+        bms, validate_fn=_validate_by_flag, repair_fn=repair_fn, max_tries=1,
+    )
+    assert out.tries_used == 1
+    assert out.still_invalid_ids == ["bad"]
+    assert out.repair_exhausted is True
     assert calls["n"] == 1
 
 

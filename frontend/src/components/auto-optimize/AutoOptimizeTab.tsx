@@ -243,8 +243,8 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         })
         .catch(() => {})
 
-      // Benchmark changes + QC — drives the 01 BENCHMARK_UNREPAIRABLE rail
-      // hard-fail chip and the first-class benchmark QC surface.
+      // Benchmark changes + QC — drives the first-class QC surface and the
+      // compatibility rail chip for historical BENCHMARK_UNREPAIRABLE runs.
       getAutoOptimizeBenchmarkChanges(runId)
         .then((res) => {
           if (cancelled) return

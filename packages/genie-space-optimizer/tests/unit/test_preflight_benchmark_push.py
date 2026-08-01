@@ -751,10 +751,14 @@ def test_push_fails_when_exact_question_mapping_is_ambiguous():
     assert "space_question_id" not in benchmark
 
 
-def test_push_writes_added_removed_changed_ledger_rows(captured_publish):
+def test_push_writes_added_excluded_changed_ledger_rows(captured_publish):
     benchmarks = [
         _bench("v1", "valid question one", "SELECT 1"),
-        _bench("nosql", "no sql question", ""),  # pruned at push → removed
+        _bench(
+            "nosql", "no sql question", "",
+            source="genie_benchmark",
+        ),  # live row excluded at push
+        _bench("candidate-nosql", "candidate no sql", ""),
     ]
     rejected = [
         {
@@ -762,6 +766,14 @@ def test_push_writes_added_removed_changed_ledger_rows(captured_publish):
             "question": "rejected question",
             "expected_sql": "SELECT broken",
             "validation_reason_code": "sql_compile_error",
+            "source": "genie_benchmark",
+        },
+        {
+            "id": "genie_gs_003",
+            "question": "failed generated replacement",
+            "expected_sql": "SELECT broken too",
+            "validation_reason_code": "repair_exhausted",
+            "source": "llm_generated",
         },
     ]
     changed = [
@@ -803,12 +815,16 @@ def test_push_writes_added_removed_changed_ledger_rows(captured_publish):
     assert by_op["added"][0]["reason"] == "preflight_push"
     assert by_op["added"][0]["before"] is None
 
-    # removed: validation-rejected + pruned-at-push (no-sql)
-    removed_ids = {r["question_id"] for r in by_op["removed"]}
-    assert removed_ids == {"rej1", "nosql"}
-    reasons = {r["question_id"]: r["reason"] for r in by_op["removed"]}
+    # Only live exclusions are ledgered. Candidate-only generated IDs remain
+    # in repair telemetry and never masquerade as unchanged live benchmarks.
+    excluded_ids = {r["question_id"] for r in by_op["excluded"]}
+    assert excluded_ids == {"rej1", "nosql"}
+    assert "genie_gs_003" not in excluded_ids
+    assert "candidate-nosql" not in excluded_ids
+    reasons = {r["question_id"]: r["reason"] for r in by_op["excluded"]}
     assert reasons["rej1"] == "sql_compile_error"
     assert reasons["nosql"] == "prune_invalid_before_publish"
+    assert all(r["before"] == r["after"] for r in by_op["excluded"])
 
     # changed: predicate auto-correction with before/after SQL
     assert by_op["changed"][0]["question_id"] == "chg1"
@@ -816,6 +832,7 @@ def test_push_writes_added_removed_changed_ledger_rows(captured_publish):
     assert by_op["changed"][0]["after"]["sql"] == "WHERE region = 'Europe'"
 
     assert out["ledger_rows"] == len(rows)
+    assert out["pruned_at_push"] == 2
 
 
 def test_push_ledgers_native_sql_repair_as_changed() -> None:

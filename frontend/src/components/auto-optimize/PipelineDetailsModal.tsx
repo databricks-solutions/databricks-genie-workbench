@@ -68,9 +68,8 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
   // Ladder/Ledger. Empty for legacy 6-step runs / before the first attempt; the
   // Attempt Explorer then degrades to the re-keyed iteration table.
   const [attempts, setAttempts] = useState<GSOAttempt[]>([])
-  // GSO v2 (Phase 14) — benchmark-QC terminal reason drives the 01 rail chip.
-  // A BENCHMARK_UNREPAIRABLE hard-stop lives on the QC artifact (not the loop
-  // GSOTerminalReason union), mirroring the Phase-12 cockpit derivation.
+  // Historical benchmark-QC artifacts may carry BENCHMARK_UNREPAIRABLE. Keep
+  // that compatibility chip even though current runs exclude exhausted rows.
   const [benchmarkUnrepairable, setBenchmarkUnrepairable] = useState(false)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)

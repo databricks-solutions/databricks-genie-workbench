@@ -35,8 +35,9 @@ const DEFAULT_WINDOW_MAX = 40
 
 /**
  * GSO v2 Phase 6 (§3.5) + Phase 13 (item 3) — surfaces the benchmark provenance
- * ledger (questions GSO added / removed / changed in the user's live Genie
- * Space) AND the 01_benchmark_qc_and_repair QC meta: the 30–40 working-set
+ * ledger (questions GSO added / changed in the user's live Genie Agent or
+ * excluded from this run without deleting them) AND the
+ * 01_benchmark_qc_and_repair QC meta: the 30–40 working-set
  * window meter + the bounded repair-tries indicator. Promoted out of the buried
  * PipelineDetailsModal tab to a first-class surface under task 01.
  */
@@ -161,6 +162,9 @@ function QcMeter({
   const triesMax = qc.repairMaxTries ?? 0
   const repairedCount = qc.repairedIds?.length ?? 0
   const stillInvalid = qc.stillInvalidIds?.length ?? 0
+  const repairExhausted = qc.repairExhaustedCount
+    ?? qc.repairExhaustedIds?.length
+    ?? 0
   const reviewOnly = qc.benchmarkPolicy === "review_only"
   const minimum = qc.minimumValidCount
 
@@ -238,7 +242,12 @@ function QcMeter({
             {qc.finalValidity ? "SQL valid" : "SQL invalid"}
           </span>
         )}
-        {stillInvalid > 0 && (
+        {repairExhausted > 0 && (
+          <span className="text-amber-600 dark:text-amber-400">
+            {repairExhausted} excluded after repair limit
+          </span>
+        )}
+        {repairExhausted === 0 && stillInvalid > 0 && qc.terminalReason === "BENCHMARK_UNREPAIRABLE" && (
           <span className="text-amber-600 dark:text-amber-400">
             {stillInvalid} still invalid
           </span>
@@ -247,7 +256,9 @@ function QcMeter({
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted sm:ml-auto">
             <span className="text-emerald-500">+{counts.added} added</span>
             <span>·</span>
-            <span className="text-red-400">−{counts.removed} removed</span>
+            <span className="text-amber-500">
+              {(counts.excluded ?? 0) + counts.removed} excluded from this run
+            </span>
             <span>·</span>
             <span className="text-blue-400">{counts.changed} changed</span>
             {counts.pruneRecommended > 0 && (
@@ -305,9 +316,9 @@ function BenchmarkRepairs({ changes }: { changes: GSOBenchmarkChanges }) {
         defaultExpanded
       />
       <ChangeGroup
-        title="Removed"
-        icon={<MinusCircle className="h-4 w-4 text-red-400" />}
-        mutations={changes.removed}
+        title="Excluded from this run"
+        icon={<MinusCircle className="h-4 w-4 text-amber-500" />}
+        mutations={[...(changes.excluded ?? []), ...changes.removed]}
         defaultExpanded
       />
       <ChangeGroup

@@ -39,7 +39,8 @@ def test_sql_generation_and_repair_prompts_make_questions_immutable() -> None:
 def test_semantic_review_owns_implementation_hint_detection() -> None:
     assert "IMPLEMENTATION_HINT" in BENCHMARK_QUALITY_REVIEW_PROMPT
     assert 'single word such as "where" or "from"' in BENCHMARK_QUALITY_REVIEW_PROMPT
-    assert "advisory review metadata only" in BENCHMARK_QUALITY_REVIEW_PROMPT
+    assert "concrete repair proposal" in BENCHMARK_QUALITY_REVIEW_PROMPT
+    assert "benchmark_policy determines whether it may be applied" in BENCHMARK_QUALITY_REVIEW_PROMPT
 
 
 def test_semantic_review_covers_real_user_and_stability_failures() -> None:

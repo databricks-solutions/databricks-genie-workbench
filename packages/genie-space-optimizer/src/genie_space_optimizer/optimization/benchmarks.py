@@ -1056,6 +1056,26 @@ def _benchmark_id(benchmark: dict) -> str:
     return str(benchmark.get("id") or benchmark.get("question_id") or "")
 
 
+def live_benchmark_question_id(benchmark: dict) -> str:
+    """Return the native live question ID, or empty for candidate-only rows.
+
+    Synthetic repair/generation candidates also have stable internal IDs, but
+    those IDs never existed in ``serialized_space.benchmarks.questions`` and
+    must not be represented as live benchmark mutations or exclusions.
+    """
+    explicit_id = str(
+        benchmark.get("space_question_id")
+        or benchmark.get("genie_question_id")
+        or benchmark.get("benchmark_question_id")
+        or ""
+    ).strip()
+    if explicit_id:
+        return explicit_id
+    if str(benchmark.get("source") or "").strip().casefold() == "genie_benchmark":
+        return _benchmark_id(benchmark).strip()
+    return ""
+
+
 def _duplicate_retention_priority(benchmark: dict, index: int) -> tuple[int, int, int, int]:
     """Rank duplicate candidates without changing stable input ordering."""
     source = str(benchmark.get("source") or "").strip().casefold()
@@ -1127,11 +1147,11 @@ def deduplicate_benchmark_corpus(
 
 
 def duplicate_rejection_mutations(rejected: list[dict]) -> list[dict]:
-    """Build mutation-ledger rows for normalized-question duplicates."""
+    """Build exclusion ledger rows only for duplicates that existed live."""
     return [
         {
-            "question_id": duplicate.get("id", duplicate.get("question_id", "")),
-            "op": "removed",
+            "question_id": live_benchmark_question_id(duplicate),
+            "op": "excluded",
             "before": {
                 "question": duplicate.get("question", ""),
                 "sql": duplicate.get("expected_sql", ""),
@@ -1142,10 +1162,21 @@ def duplicate_rejection_mutations(rejected: list[dict]) -> list[dict]:
                     "duplicate_normalized_question", "",
                 ),
             },
-            "after": None,
+            # Exclusion is non-mutating: the live state is unchanged.
+            "after": {
+                "question": duplicate.get("question", ""),
+                "sql": duplicate.get("expected_sql", ""),
+                "retained_question_id": duplicate.get(
+                    "duplicate_retained_question_id", "",
+                ),
+                "normalized_question": duplicate.get(
+                    "duplicate_normalized_question", "",
+                ),
+            },
             "reason": "duplicate_normalized_question",
         }
         for duplicate in rejected
+        if live_benchmark_question_id(duplicate)
     ]
 
 

@@ -52,6 +52,7 @@ from genie_space_optimizer.common.uc_metadata import (
 from genie_space_optimizer.optimization.benchmarks import (
     deduplicate_benchmark_corpus,
     duplicate_rejection_mutations,
+    live_benchmark_question_id,
     load_benchmark_corpus,
     persist_benchmark_corpus,
     validate_benchmarks,
@@ -2161,8 +2162,8 @@ def preflight_validate_benchmarks(
     filtered_benchmarks: list[dict] = []
     invalid_errors: list[str] = []
     rejected_details: list[str] = []
-    # GSO v2 (§3.5) provenance ledger inputs — questions GSO prunes from
-    # the working set (op="removed") and rows it auto-corrects in place
+    # GSO v2 (§3.5) provenance ledger inputs — questions GSO excludes from
+    # the working set (op="excluded") and rows it auto-corrects in place
     # (op="changed"). Surfaced via the return dict; the push step writes
     # them to genie_opt_benchmark_mutations.
     rejected_benchmarks: list[dict] = []
@@ -2670,7 +2671,7 @@ def preflight_push_benchmarks_to_space(
       set exceeds the Genie API hard cap, or any handoff row cannot be mapped
       to one exact live question ID) raises :class:`BenchmarkPushError` so eval
       never runs against a stale, incomplete, or identity-mismatched set.
-    * **Provenance ledger (§3.5):** every added / removed / changed row —
+    * **Provenance ledger (§3.5):** every added / excluded / changed row —
       plus any over-window prune RECOMMENDATION — is written to
       ``genie_opt_benchmark_mutations``. The preflight ``config_snapshot``
       remains the discard revert anchor (unchanged).
@@ -2951,33 +2952,41 @@ def preflight_push_benchmarks_to_space(
                 ),
             })
     for r in rejected_benchmarks:
+        live_question_id = live_benchmark_question_id(r)
+        if not live_question_id:
+            continue
+        excluded_state = {
+            "question": r.get("question", ""),
+            "sql": r.get("expected_sql", ""),
+            **(
+                {
+                    "retained_question_id": r.get("duplicate_retained_question_id", ""),
+                    "normalized_question": r.get("duplicate_normalized_question", ""),
+                }
+                if r.get("validation_reason_code") == "duplicate_normalized_question"
+                else {}
+            ),
+        }
         ledger_rows.append({
-            "question_id": r.get("id", r.get("question_id", "")),
-            "op": "removed",
-            "before": {
-                "question": r.get("question", ""),
-                "sql": r.get("expected_sql", ""),
-                **(
-                    {
-                        "retained_question_id": r.get("duplicate_retained_question_id", ""),
-                        "normalized_question": r.get("duplicate_normalized_question", ""),
-                    }
-                    if r.get("validation_reason_code") == "duplicate_normalized_question"
-                    else {}
-                ),
-            },
-            "after": None,
+            "question_id": live_question_id,
+            "op": "excluded",
+            "before": excluded_state,
+            "after": dict(excluded_state),
             "reason": r.get("validation_reason_code") or "validation_pruned",
         })
     for b in pruned_at_push:
+        live_question_id = live_benchmark_question_id(b)
+        if not live_question_id:
+            continue
+        excluded_state = {
+            "question": b.get("question", ""),
+            "sql": b.get("expected_sql", ""),
+        }
         ledger_rows.append({
-            "question_id": b.get("id", b.get("question_id", "")),
-            "op": "removed",
-            "before": {
-                "question": b.get("question", ""),
-                "sql": b.get("expected_sql", ""),
-            },
-            "after": None,
+            "question_id": live_question_id,
+            "op": "excluded",
+            "before": excluded_state,
+            "after": dict(excluded_state),
             "reason": "prune_invalid_before_publish",
         })
     publisher_updated_ids = {

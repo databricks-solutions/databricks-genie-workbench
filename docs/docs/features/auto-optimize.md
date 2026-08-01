@@ -36,7 +36,9 @@ only**: GSO reviews the native benchmark questions captured in the pre-run
 snapshot, excludes invalid questions from that run's evaluation corpus, and
 does not generate, repair, push, or ledger any live benchmark mutation. Turning
 on **Allow GSO to repair and add benchmarks** enables the bounded repair,
-replacement, and live merge behavior used by earlier runs.
+replacement, and live merge behavior used by earlier runs. That permission
+allows GSO to update both question wording and expected SQL after re-validation;
+it never allows GSO to delete an existing live benchmark.
 
 Benchmark QC separates five kinds of evidence: question quality,
 question-to-SQL alignment, SQL validity, data validity, and review-system
@@ -53,7 +55,10 @@ later bounded repair round and reviews the result again. A benchmark leaves the
 repair loop only when it passes, has no coherent actionable proposal, or
 exhausts the configured repair limit. The reported repaired count includes only
 benchmarks that finish trusted; the mutation ledger separately records every
-question or SQL change that was actually published.
+question or SQL change that was actually published. Rows that exhaust the
+repair limit are preserved in the live Agent and excluded only from the current
+run's evaluation corpus. Failed generated replacement candidates remain in the
+repair-sweep telemetry; they are never presented as live benchmark exclusions.
 
 Generation targets 30 valid questions. A run may proceed with fewer when
 generation or bounded repair cannot reach that ideal. At least 15 valid
@@ -71,9 +76,9 @@ benchmark SQL does not dominate the run page.
 Before review, and again after any repair or regeneration sweep, GSO
 deduplicates normalized question text. The deterministic winner order is:
 user/Genie-authored, SQL-valid, curated/P0, then stable input order. Every
-rejected duplicate is recorded as a `removed` mutation with reason
-`duplicate_normalized_question`; `benchmark_qc` also records the retained
-question id.
+rejected duplicate is recorded as a non-mutating `excluded` ledger row with
+reason `duplicate_normalized_question`; `benchmark_qc` also records the
+retained question id.
 
 The final corpus is written directly to
 `genie_benchmarks_<domain>` as a Delta table with nested `inputs` and

@@ -3,12 +3,13 @@
 GSO v2 orchestration (Phase 7, arch §5 / progress §5 RESOLVED K=3). The old
 6-notebook shape dead-ended a failed benchmark QC into a separate
 ``benchmark_repair_prune`` job that forced a manual re-trigger. The new ``01``
-task validates → **repairs/prunes inline** → re-validates, bounded by
+task validates → **repairs/excludes inline** → re-validates, bounded by
 ``benchmark_repair_max_tries`` (default 3), and flows into ``02`` when the
 valid corpus still meets the configured floor. A benchmark that is still
-invalid after K tries hard-fails with terminal reason
-``BENCHMARK_UNREPAIRABLE``; callers treat a corpus below the floor as the
-business-skip reason ``INSUFFICIENT_VALID_BENCHMARKS``.
+invalid after K tries is excluded from the current evaluation corpus without
+being deleted from the live Genie Agent. Callers treat a resulting corpus
+below the floor as the business-skip reason
+``INSUFFICIENT_VALID_BENCHMARKS``.
 
 This module owns the bounded try-counting control loop and the final corpus
 floor guard. It reuses the existing Phase-2 validation/repair primitives
@@ -19,14 +20,14 @@ Try-counting semantics (progress §5 RESOLVED, arch §13.1):
 
 * One **try** = one complete repair sweep: review every still-invalid question,
   produce a repaired candidate (fixed SQL / corrected expected answer / dedup /
-  replacement / prune), then EXPLAIN-re-validate.
+  replacement / run-local exclusion), then EXPLAIN-re-validate.
 * The **initial discovery validation** that *finds* the failures is triage, NOT
   a repair try.
 * A try is **consumed only when ≥1 question is still invalid after the EXPLAIN
   re-validation**. A sweep that clears every failure is "free" (productive) and
   does not consume a slot.
-* Hard-fail ``BENCHMARK_UNREPAIRABLE`` only after ``max_tries`` consumed tries
-  still leave ≥1 invalid question.
+* After ``max_tries`` consumed tries, return the remaining invalid questions
+  as run-local exclusions. The caller owns the final corpus-floor decision.
 """
 
 from __future__ import annotations
@@ -42,8 +43,8 @@ from genie_space_optimizer.common.config import (
 
 logger = logging.getLogger(__name__)
 
-# Terminal reason raised when the benchmark set cannot be repaired within the
-# try budget. Mirrors the arch-doc hard stop (§5.1 / §6 notebook contract).
+# Legacy terminal reason retained for compatibility with historical artifacts
+# and callers. New repair runs return exhausted questions as exclusions.
 BENCHMARK_UNREPAIRABLE = "BENCHMARK_UNREPAIRABLE"
 
 # Terminal reason used when QC succeeds for each remaining row but too few
@@ -66,16 +67,16 @@ def default_id_of(benchmark: dict) -> str:
 # ``validate_fn(benchmarks) -> (valid, invalid)`` — EXPLAIN-style validation.
 ValidateFn = Callable[[list[dict]], "tuple[list[dict], list[dict]]"]
 # ``repair_fn(invalid, valid) -> repaired_candidates`` — one repair sweep over
-# the still-invalid set. May fix in place, replace, or prune (return fewer).
+# the still-invalid set. May fix in place, replace, or exclude (return fewer).
 RepairFn = Callable[[list[dict], list[dict]], list[dict]]
 
 
 class BenchmarkUnrepairableError(RuntimeError):
-    """Raised when the benchmark set is still invalid after ``max_tries``.
+    """Legacy error for historical callers that hard-failed exhausted repair.
 
-    Carries the terminal reason (``BENCHMARK_UNREPAIRABLE``) and the still-
-    invalid questions so ``01`` can surface them in the ``benchmark_qc``
-    artifact and hard-fail the job with an actionable message.
+    ``run_bounded_benchmark_repair`` no longer raises this error. Keep the
+    type importable while older artifacts and integrations still recognize
+    the ``BENCHMARK_UNREPAIRABLE`` terminal reason.
     """
 
     terminal_reason = BENCHMARK_UNREPAIRABLE
@@ -149,11 +150,16 @@ class BenchmarkRepairOutcome:
             ≥1 question still invalid after re-validation). The discovery
             validation and any sweep that fully cleared the failures are NOT
             counted.
-        terminal_reason: ``None`` on success; never ``BENCHMARK_UNREPAIRABLE``
-            (that is raised, not returned).
+        terminal_reason: ``None``. Exhausted rows are exclusions, not a run
+            terminal condition.
         repaired_ids: ids of questions that moved invalid → valid.
-        still_invalid_ids: ids still invalid on a successful exit (always
-            empty on success; populated only inside the raised error).
+        still_invalid_ids: ids that remained invalid after the repair budget
+            and were excluded from this run's evaluation corpus.
+        excluded_benchmarks: invalid input rows omitted by a replacement sweep
+            plus rows corresponding to ``still_invalid_ids``. These are not
+            deleted from the live Agent.
+        repair_exhausted: whether the loop reached ``max_tries`` with at least
+            one invalid row remaining.
         sweeps: per-sweep telemetry for the ``benchmark_qc`` artifact.
     """
 
@@ -162,6 +168,8 @@ class BenchmarkRepairOutcome:
     terminal_reason: str | None = None
     repaired_ids: list[str] = field(default_factory=list)
     still_invalid_ids: list[str] = field(default_factory=list)
+    excluded_benchmarks: list[dict] = field(default_factory=list)
+    repair_exhausted: bool = False
     sweeps: list[dict] = field(default_factory=list)
 
 
@@ -173,7 +181,7 @@ def run_bounded_benchmark_repair(
     max_tries: int = DEFAULT_BENCHMARK_REPAIR_MAX_TRIES,
     id_of: Callable[[dict], str] = default_id_of,
 ) -> BenchmarkRepairOutcome:
-    """Validate → bounded inline repair/prune → re-validate (progress §5 K=3).
+    """Validate → bounded inline repair/exclusion → re-validate (progress §5 K=3).
 
     Args:
         benchmarks: the benchmark working set to validate and repair.
@@ -182,22 +190,23 @@ def run_bounded_benchmark_repair(
             sweep to re-validate the repaired candidates.
         repair_fn: one repair sweep — given the still-invalid questions (and
             the current valid set for context) returns repaired candidates to
-            re-validate. May fix in place, replace, or **prune** (return
-            fewer). Pruning is a legitimate repair (D8: never silent-delete
-            user rows at scale, but EXPLAIN-invalid rows may be dropped).
+            re-validate. May fix in place, replace, or return fewer candidates.
+            Returning fewer candidates excludes omitted rows from the working
+            corpus; it never authorizes deleting live Genie Agent benchmarks.
         max_tries: bound on consumed repair tries (``benchmark_repair_max_tries``).
         id_of: benchmark identity function for bookkeeping.
 
     Returns:
         ``BenchmarkRepairOutcome`` with the accumulated valid set on success.
 
-    Raises:
-        BenchmarkUnrepairableError: if ≥1 question is still invalid after
-            ``max_tries`` consumed tries.
+    Questions still invalid after ``max_tries`` are returned in
+    ``excluded_benchmarks``. The caller must enforce the minimum valid-corpus
+    size before optimization proceeds.
     """
     valid, invalid = validate_fn(list(benchmarks))
     sweeps: list[dict] = []
     repaired_ids: list[str] = []
+    excluded_benchmarks: list[dict] = []
     tries = 0
 
     logger.info(
@@ -207,13 +216,27 @@ def run_bounded_benchmark_repair(
 
     while invalid:
         if tries >= max_tries:
-            # K consumed tries already and still ≥1 invalid — unrepairable.
-            raise BenchmarkUnrepairableError(
-                still_invalid=invalid, tries_used=tries, valid=valid,
+            # K consumed tries already and still ≥1 invalid. Exclude those
+            # rows from this evaluation run without deleting them from the
+            # live Genie Agent; the caller applies the corpus-floor gate.
+            return BenchmarkRepairOutcome(
+                benchmarks=valid,
+                tries_used=tries,
+                repaired_ids=repaired_ids,
+                still_invalid_ids=[id_of(b) for b in invalid],
+                excluded_benchmarks=excluded_benchmarks + list(invalid),
+                repair_exhausted=True,
+                sweeps=sweeps,
             )
 
         before_invalid_ids = [id_of(b) for b in invalid]
         candidates = repair_fn(list(invalid), list(valid))
+        candidate_ids = {id_of(candidate) for candidate in candidates}
+        excluded_benchmarks.extend(
+            benchmark
+            for benchmark in invalid
+            if id_of(benchmark) not in candidate_ids
+        )
         rv_valid, rv_invalid = validate_fn(list(candidates))
 
         # Accumulate questions that moved invalid -> valid this sweep.
@@ -252,5 +275,6 @@ def run_bounded_benchmark_repair(
         terminal_reason=None,
         repaired_ids=repaired_ids,
         still_invalid_ids=[],
+        excluded_benchmarks=excluded_benchmarks,
         sweeps=sweeps,
     )

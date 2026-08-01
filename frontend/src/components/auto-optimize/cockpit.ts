@@ -492,7 +492,7 @@ export function classifyTerminal(args: {
 // ---------------------------------------------------------------------------
 // 4-task rail model. State per node is
 // driven off run-status stepsCompleted / currentStepName + the typed terminal
-// reason; the 01 node can branch to a BENCHMARK_UNREPAIRABLE hard-fail chip.
+// reason; historical runs can branch 01 to a BENCHMARK_UNREPAIRABLE chip.
 // ---------------------------------------------------------------------------
 
 export type RailNodeState = "completed" | "current" | "failed" | "upcoming"
