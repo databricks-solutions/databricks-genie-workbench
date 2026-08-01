@@ -64,6 +64,9 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   QUEUED: "secondary",
 }
 
+const HISTORY_ACTION_BUTTON_CLASS =
+  "inline-flex w-[10.75rem] items-center justify-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors"
+
 // Revert is a live-space mutation — only offer it on runs that are no longer
 // mutating the space. Reverting to a still-running run's snapshot would race
 // the active pipeline (and the backend refuses it with a 409 anyway).
@@ -181,8 +184,7 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                 <TableHead>Outcome</TableHead>
                 <TableHead>Champion accuracy</TableHead>
                 <TableHead>Benchmark handling</TableHead>
-                <TableHead>Details</TableHead>
-                <TableHead>Actions</TableHead>
+                <TableHead className="w-[11.5rem] whitespace-nowrap">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -222,16 +224,14 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                   <TableCell className="align-top">
                     <BenchmarkPolicyCell run={run} />
                   </TableCell>
-                  <TableCell className="align-top">
-                    <button
-                      onClick={() => onSelectRun(run.run_id)}
-                      className="rounded-md border border-default px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-elevated"
-                    >
-                      View Details
-                    </button>
-                  </TableCell>
-                  <TableCell className="align-top">
-                    <div className="flex flex-col items-start gap-2">
+                  <TableCell className="w-[11.5rem] align-top">
+                    <div className="flex w-[10.75rem] flex-col gap-2">
+                      <button
+                        onClick={() => onSelectRun(run.run_id)}
+                        className={`${HISTORY_ACTION_BUTTON_CLASS} border-default text-primary hover:bg-elevated`}
+                      >
+                        View Details
+                      </button>
                       {(hasRevertibleChampion(run) || run.has_config_snapshot !== false) && (
                         <RevertOptionsButton
                           run={run}
@@ -354,10 +354,10 @@ export function RemoveHistoryButton({ run, disabled, onRemoved }: RemoveHistoryB
         }}
         disabled={disabled}
         title={disabled ? "Wait for this optimization run to finish before removing it from history." : undefined}
-        className="flex items-center gap-1.5 rounded-md border border-danger/40 px-2.5 py-1.5 text-xs font-medium text-danger-foreground transition-colors hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-50"
+        className={`${HISTORY_ACTION_BUTTON_CLASS} border-danger/40 text-danger-foreground hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-50`}
       >
         <Trash2 className="h-3.5 w-3.5" />
-        Remove from history
+        Remove From History
       </button>
 
       <AlertDialog open={open} onOpenChange={(next) => !pending && setOpen(next)}>
@@ -476,7 +476,7 @@ export function RevertOptionsButton({ run, disabled, onReverted }: RevertOptions
         onClick={showOptions}
         disabled={disabled}
         title={disabled ? "Wait for the active optimization on this agent to finish before reverting history." : undefined}
-        className="flex items-center gap-1.5 rounded-md border border-default px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-elevated disabled:cursor-not-allowed disabled:opacity-50"
+        className={`${HISTORY_ACTION_BUTTON_CLASS} border-default text-primary hover:bg-elevated disabled:cursor-not-allowed disabled:opacity-50`}
       >
         <RotateCcw className="h-3.5 w-3.5" />
         Revert Options

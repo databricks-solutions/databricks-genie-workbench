@@ -79,6 +79,8 @@ describe("RunHistoryTable revert safety", () => {
     expect(markup).toContain("disabled")
     expect(markup).toContain("active optimization on this agent")
     expect(markup).toContain("Revert Options")
+    expect(markup).toContain("w-[10.75rem]")
+    expect(markup).toContain("whitespace-nowrap")
   })
 
   it("offers an iteration-0 champion when enrichment or recovery won", () => {
@@ -115,7 +117,9 @@ describe("RemoveHistoryButton", () => {
       />,
     )
 
-    expect(markup).toContain("Remove from history")
+    expect(markup).toContain("Remove From History")
+    expect(markup).toContain("w-[10.75rem]")
+    expect(markup).toContain("whitespace-nowrap")
     expect(markup).not.toContain(' disabled=""')
   })
 
