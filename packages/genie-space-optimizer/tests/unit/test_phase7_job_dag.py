@@ -164,6 +164,8 @@ def test_repair_task_uses_canonical_quality_review_and_persists_findings():
     assert "changed_benchmarks=_warning_repairs_applied" in src
     assert '"quality_findings"' in src
     assert '"semantic_review_coverage"' in src
+    assert "review_benchmark_format_coverage(" in src
+    assert '"format_coverage"' in src
 
 
 def test_repair_task_allows_cascading_warning_repairs():

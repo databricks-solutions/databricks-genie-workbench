@@ -507,14 +507,28 @@ export async function getAutoOptimizeRunsForSpace(spaceId: string): Promise<GSOR
   return fetchWithTimeout<GSORunSummary[]>(`${API_BASE}/auto-optimize/spaces/${spaceId}/runs`)
 }
 
+export async function removeAutoOptimizeRunFromHistory(
+  runId: string,
+): Promise<{ status: string; runId: string; spaceId: string; message: string }> {
+  return fetchWithTimeout<{ status: string; runId: string; spaceId: string; message: string }>(
+    `${API_BASE}/auto-optimize/runs/${runId}/history-entry`,
+    { method: "DELETE" },
+    DEFAULT_TIMEOUT,
+  )
+}
+
 /**
- * Which known optimization version the live agent currently matches
- * (fingerprint of live config vs run baselines/champions). Fail-open on the
- * backend: "unavailable" / "no_known_versions" mean "show nothing".
+ * Which known optimization versions the live agent's config and benchmarks
+ * currently match. Fail-open on the backend: "unavailable" /
+ * "no_known_versions" mean "show nothing".
  */
-export async function getCurrentVersion(spaceId: string): Promise<CurrentVersionResponse> {
+export async function getCurrentVersion(
+  spaceId: string,
+  refresh = false,
+): Promise<CurrentVersionResponse> {
+  const query = refresh ? "?refresh=true" : ""
   return fetchWithTimeout<CurrentVersionResponse>(
-    `${API_BASE}/auto-optimize/spaces/${spaceId}/current-version`,
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/current-version${query}`,
     {},
     CURRENT_VERSION_TIMEOUT
   )

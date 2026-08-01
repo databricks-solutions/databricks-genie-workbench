@@ -6,6 +6,7 @@ vi.mock("@/lib/api", () => ({
   getAutoOptimizeRunsForSpace: vi.fn(() => Promise.resolve([])),
   getCurrentVersion: vi.fn(() => Promise.resolve({ status: "no_known_versions" })),
   getAutoOptimizeRevertOptions: vi.fn(),
+  removeAutoOptimizeRunFromHistory: vi.fn(),
   revertAutoOptimizeRun: vi.fn(),
   ApiError: class ApiError extends Error {},
 }))
@@ -14,7 +15,10 @@ import {
   BenchmarkPolicyCell,
   DriftBanner,
   HistoryIncompleteBanner,
+  LiveDimensionBadge,
   LiveVersionBadge,
+  MixedStateBanner,
+  RemoveHistoryButton,
   RevertOptionsButton,
   RunMetadataCell,
 } from "./RunHistoryTable"
@@ -101,6 +105,34 @@ describe("RunHistoryTable revert safety", () => {
   })
 })
 
+describe("RemoveHistoryButton", () => {
+  it("offers Workbench-only removal for a terminal run", () => {
+    const markup = renderToStaticMarkup(
+      <RemoveHistoryButton
+        run={run({ status: "CONVERGED" })}
+        disabled={false}
+        onRemoved={() => undefined}
+      />,
+    )
+
+    expect(markup).toContain("Remove from history")
+    expect(markup).not.toContain(' disabled=""')
+  })
+
+  it("is disabled while its run is active", () => {
+    const markup = renderToStaticMarkup(
+      <RemoveHistoryButton
+        run={run({ status: "IN_PROGRESS" })}
+        disabled={true}
+        onRemoved={() => undefined}
+      />,
+    )
+
+    expect(markup).toContain("disabled")
+    expect(markup).toContain("Wait for this optimization run to finish")
+  })
+})
+
 describe("BenchmarkPolicyCell", () => {
   it("distinguishes review-only from repair-enabled runs", () => {
     const review = renderToStaticMarkup(
@@ -163,7 +195,7 @@ describe("LiveVersionBadge", () => {
     const markup = renderToStaticMarkup(
       <LiveVersionBadge current={match({ target: "baseline" })} equivalents={[]} />,
     )
-    expect(markup).toContain("currently matches this run&#x27;s baseline config")
+    expect(markup).toContain("configuration and benchmarks currently match")
   })
 
   it("lists byte-identical equivalents in the tooltip", () => {
@@ -186,13 +218,30 @@ describe("LiveVersionBadge", () => {
 
 describe("DriftBanner", () => {
   it("warns that the config changed outside Auto-Optimize", () => {
-    const markup = renderToStaticMarkup(<DriftBanner liveUpdateTime={null} />)
+    const markup = renderToStaticMarkup(
+      <DriftBanner dimensions={["config"]} liveUpdateTime={null} />,
+    )
+    expect(markup).toContain("live agent configuration")
     expect(markup).toContain("changed outside Auto-Optimize")
     expect(markup).not.toContain("last modified")
   })
 
+  it("identifies benchmark-only drift", () => {
+    const markup = renderToStaticMarkup(
+      <DriftBanner dimensions={["benchmarks"]} liveUpdateTime={null} />,
+    )
+    expect(markup).toContain("live agent benchmarks")
+    expect(markup).toContain("don’t match any known optimization version")
+    expect(markup).toContain("they were changed outside Auto-Optimize")
+  })
+
   it("includes the last-modified date when known", () => {
-    const markup = renderToStaticMarkup(<DriftBanner liveUpdateTime="2026-07-28T16:00:00Z" />)
+    const markup = renderToStaticMarkup(
+      <DriftBanner
+        dimensions={["config", "benchmarks"]}
+        liveUpdateTime="2026-07-28T16:00:00Z"
+      />,
+    )
     const expectedDate = new Date("2026-07-28T16:00:00Z").toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
@@ -200,6 +249,40 @@ describe("DriftBanner", () => {
     })
     expect(markup).toContain("last modified")
     expect(markup).toContain(expectedDate)
+  })
+})
+
+describe("MixedStateBanner", () => {
+  it("explains that config and benchmarks come from different known versions", () => {
+    const markup = renderToStaticMarkup(
+      <MixedStateBanner
+        configMatch={match({ target: "champion" })}
+        benchmarkMatch={match({ target: "baseline" })}
+      />,
+    )
+    expect(markup).toContain("champion config")
+    expect(markup).toContain("baseline benchmarks")
+    expect(markup).toContain("different optimization versions")
+    expect(markup).not.toContain("changed outside Auto-Optimize")
+  })
+})
+
+describe("LiveDimensionBadge", () => {
+  it("labels independently matched config and benchmark states", () => {
+    const config = renderToStaticMarkup(
+      <LiveDimensionBadge
+        dimension="config"
+        current={match({ target: "champion" })}
+      />,
+    )
+    const benchmarks = renderToStaticMarkup(
+      <LiveDimensionBadge
+        dimension="benchmarks"
+        current={match({ target: "baseline" })}
+      />,
+    )
+    expect(config).toContain("Live config — champion")
+    expect(benchmarks).toContain("Live benchmarks — baseline")
   })
 })
 

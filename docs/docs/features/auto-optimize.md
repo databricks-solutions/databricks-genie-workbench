@@ -172,6 +172,18 @@ revert does not change the historical run status. Champion config restores the
 captured post-enrichment description when available; legacy runs preserve the
 current description.
 
+Optimization History compares the live Agent configuration and benchmark block
+independently with every visible captured baseline and champion. Runs removed
+from Workbench history are excluded from this comparison. A green **Live** badge
+means both components match the same version. If they match different known
+versions—for example, champion config with baseline benchmarks—the history
+shows the state as mixed without treating it as external drift. If either
+component matches no visible captured version, a warning names the changed
+component, including benchmark-only edits made directly in the Genie UI or API.
+For older runs that predate authoritative captures, the UI reports that history
+is incomplete instead of claiming an external change. Returning to the
+Workbench tab after a direct Genie UI edit forces a fresh live-state check.
+
 **Discard** remains the pre-Apply resolution action. It restores the complete
 trigger-time snapshot, including the original benchmark block and top-level
 description, then marks the run `DISCARDED` only after rollback succeeds.
@@ -179,6 +191,14 @@ description, then marks the run `DISCARDED` only after rollback succeeds.
 Both paths snapshot live state before a two-part serialized-config/description mutation. If the description update fails after the serialized config succeeds, the optimizer attempts compensation and never reports success for the partial operation.
 
 History revert is disabled while any run for the same Space is active. The backend also reconciles all same-Space runs and returns a conflict if one remains `QUEUED`, `IN_PROGRESS`, or `RUNNING`.
+
+Terminal runs also have **Remove from history**. After confirmation, the run
+disappears for everyone from Optimization History and the unified History
+chart. This is a Workbench display tombstone: it does not change the live Genie
+Agent, delete the Databricks workflow run, or purge GSO Delta audit records.
+The action requires `CAN_EDIT` or `CAN_MANAGE` on the Agent and is unavailable
+while the selected run is active. Lakebase must be available so the removal is
+durable across app restarts.
 
 ## Permission model
 
@@ -200,6 +220,9 @@ The main current-run sources of truth are:
 | `genie_benchmarks_<domain>` | Direct Delta handoff of the deduplicated benchmark corpus to Optimize |
 | `genie_opt_artifacts` | `run_manifest`, `benchmark_qc`, `space_quality_enrichment`, and `publish_record` payloads |
 | `genie_opt_scan_snapshots` | Optional paired preflight/postflight IQ snapshots |
+
+Workbench stores removed-history tombstones separately in Lakebase table
+`genie.hidden_optimization_runs`; GSO audit tables remain immutable.
 
 The Workbench prefers Lakebase synced reads for UI views and falls back to direct Delta reads where needed. Mutating integration paths use the configured SQL Warehouse and SP-owned state.
 

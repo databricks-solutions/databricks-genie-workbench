@@ -364,6 +364,7 @@ export interface GSORunSummary {
 
 export type CurrentVersionStatus =
   | "matched"
+  | "mixed"
   | "drifted"
   | "history_incomplete"
   | "no_known_versions"
@@ -379,10 +380,15 @@ export interface VersionMatch {
 
 export interface CurrentVersionResponse {
   status: CurrentVersionStatus
-  /** Most recent matching version when status === "matched". */
+  /** Most recent version matching both config and benchmarks. */
   current?: VersionMatch | null
-  /** Byte-identical equivalent versions (e.g. run 2's baseline = run 1's champion). */
+  /** Equivalent versions matching both config and benchmarks. */
   also_matches?: VersionMatch[]
+  config_match?: VersionMatch | null
+  config_also_matches?: VersionMatch[]
+  benchmark_match?: VersionMatch | null
+  benchmark_also_matches?: VersionMatch[]
+  drifted_dimensions?: Array<"config" | "benchmarks">
   /** Live space update_time when known — used by the drift banner. */
   live_update_time?: string | null
 }

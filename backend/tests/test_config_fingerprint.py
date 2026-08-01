@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from backend.services.config_fingerprint import (
+    benchmark_fingerprint,
     canonicalize,
     config_fingerprint,
     unwrap_serialized_space,
@@ -279,3 +280,143 @@ def test_fingerprint_returns_none_for_unusable_input() -> None:
     assert config_fingerprint(None) is None
     assert config_fingerprint("{not json") is None
     assert config_fingerprint({"unrelated": True}) is None
+
+
+# ── benchmark_fingerprint ────────────────────────────────────────────────
+
+
+def _benchmark_question(
+    question_id: str,
+    *,
+    question: str = "What is revenue?",
+    sql: str = "SELECT SUM(revenue) FROM cat.sch.t1",
+) -> dict:
+    return {
+        "id": question_id,
+        "question": [question],
+        "answer": [{"format": "SQL", "content": [sql]}],
+    }
+
+
+def test_benchmark_fingerprint_changes_when_questions_change() -> None:
+    original = {
+        **_space(),
+        "benchmarks": {
+            "questions": [
+                _benchmark_question("b1"),
+                _benchmark_question("b2", question="What is margin?"),
+            ]
+        },
+    }
+    removed = {
+        **_space(),
+        "benchmarks": {"questions": [_benchmark_question("b1")]},
+    }
+    added = {
+        **original,
+        "benchmarks": {
+            "questions": [
+                *original["benchmarks"]["questions"],
+                _benchmark_question("b3", question="What is profit?"),
+            ]
+        },
+    }
+    updated = {
+        **original,
+        "benchmarks": {
+            "questions": [
+                _benchmark_question("b1", sql="SELECT SUM(net_revenue) FROM cat.sch.t1"),
+                _benchmark_question("b2", question="What is margin?"),
+            ]
+        },
+    }
+
+    original_fp = benchmark_fingerprint(original)
+    assert original_fp is not None
+    assert benchmark_fingerprint(removed) != original_fp
+    assert benchmark_fingerprint(added) != original_fp
+    assert benchmark_fingerprint(updated) != original_fp
+
+
+def test_benchmark_fingerprint_normalizes_order_and_fragments() -> None:
+    submitted = {
+        **_space(),
+        "benchmarks": {
+            "questions": [
+                _benchmark_question("b2", question="What is margin?"),
+                _benchmark_question("b1"),
+            ]
+        },
+    }
+    observed = {
+        **_space(instruction="A config edit must not affect benchmark identity"),
+        "benchmarks": {
+            "questions": [
+                {
+                    "id": "b1",
+                    "question": ["What is revenue?"],
+                    "answer": [
+                        {
+                            "format": "SQL",
+                            "content": ["SELECT SUM(revenue) ", "FROM cat.sch.t1"],
+                        }
+                    ],
+                },
+                _benchmark_question("b2", question="What is margin?"),
+            ]
+        },
+    }
+
+    assert benchmark_fingerprint(submitted) == benchmark_fingerprint(observed)
+
+
+def test_benchmark_fingerprint_preserves_sql_quote_semantics() -> None:
+    quoted_literal = {
+        **_space(),
+        "benchmarks": {
+            "questions": [
+                _benchmark_question(
+                    "b1",
+                    sql="SELECT * FROM cat.sch.t1 WHERE status = 'active'",
+                )
+            ]
+        },
+    }
+    unquoted_identifier = {
+        **_space(),
+        "benchmarks": {
+            "questions": [
+                _benchmark_question(
+                    "b1",
+                    sql="SELECT * FROM cat.sch.t1 WHERE status = active",
+                )
+            ]
+        },
+    }
+
+    assert benchmark_fingerprint(quoted_literal) != benchmark_fingerprint(
+        unquoted_identifier
+    )
+
+
+def test_benchmark_fingerprint_treats_empty_shapes_equivalently() -> None:
+    absent = _space()
+    empty_block = {**_space(), "benchmarks": {}}
+    empty_questions = {**_space(), "benchmarks": {"questions": []}}
+
+    fingerprints = {
+        benchmark_fingerprint(absent),
+        benchmark_fingerprint(empty_block),
+        benchmark_fingerprint(empty_questions),
+    }
+    assert len(fingerprints) == 1
+    assert fingerprints.pop() is not None
+
+
+def test_benchmark_fingerprint_returns_none_for_malformed_benchmarks() -> None:
+    assert benchmark_fingerprint(None) is None
+    assert benchmark_fingerprint({"unrelated": True}) is None
+    assert benchmark_fingerprint({**_space(), "benchmarks": []}) is None
+    assert benchmark_fingerprint(
+        {**_space(), "benchmarks": {"questions": "not-a-list"}}
+    ) is None

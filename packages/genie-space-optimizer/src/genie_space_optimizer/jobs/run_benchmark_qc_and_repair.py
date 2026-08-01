@@ -71,6 +71,7 @@ from genie_space_optimizer.optimization.benchmarks import (
 from genie_space_optimizer.optimization.benchmark_quality import (
     QUALITY_REVIEW_VERSION,
     build_actionable_warning_repair,
+    review_benchmark_format_coverage,
     review_benchmark_quality,
 )
 from genie_space_optimizer.optimization.benchmarking import generate_benchmarks
@@ -1027,6 +1028,16 @@ def _final_quality_result(benchmark: dict) -> dict:
 
 
 _final_quality_results = [_final_quality_result(b) for b in _benchmarks]
+_format_coverage = review_benchmark_format_coverage(_benchmarks)
+for _finding_row in _format_coverage.get("findings", []):
+    _finding_key = "|".join(
+        [
+            str(_finding_row.get("question_id") or "__corpus__"),
+            str(_finding_row.get("category") or ""),
+            str(_finding_row.get("code") or ""),
+        ]
+    )
+    _quality_findings_by_key[_finding_key] = _finding_row
 
 _qc_payload: dict[str, Any] = {
     "run_id": run_id,
@@ -1052,6 +1063,11 @@ _qc_payload: dict[str, Any] = {
     "quality_review_version": QUALITY_REVIEW_VERSION,
     "quality_review_status": _quality_review_status,
     "semantic_review_coverage": _semantic_review_coverage,
+    "format_coverage": {
+        key: value
+        for key, value in _format_coverage.items()
+        if key != "findings"
+    },
     "quality_findings": list(_quality_findings_by_key.values()),
     "quality_counts": {
         "total": len(_benchmarks),

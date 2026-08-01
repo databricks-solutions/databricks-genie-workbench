@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from typing import Any
 
 from genie_space_optimizer.common.config import (
@@ -28,7 +29,7 @@ from genie_space_optimizer.optimization.benchmarks import (
 
 logger = logging.getLogger(__name__)
 
-QUALITY_REVIEW_VERSION = "benchmark_quality_v2"
+QUALITY_REVIEW_VERSION = "benchmark_quality_v3"
 QUALITY_ERROR_CONFIDENCE = 0.75
 
 QUESTION_QUALITY = "question_quality"
@@ -36,11 +37,22 @@ QUESTION_SQL_ALIGNMENT = "question_sql_alignment"
 SQL_VALIDITY = "sql_validity"
 DATA_VALIDITY = "data_validity"
 REVIEW_SYSTEM = "review_system"
+CORPUS_COVERAGE = "corpus_coverage"
+
+REQUIRED_QUESTION_FORMATS = (
+    "aggregation",
+    "lookup",
+    "comparison",
+    "time_filter",
+    "top_n",
+)
 
 _NON_ACTIONABLE_WARNING_CODES = frozenset(
     {
         "GT_EXECUTION_NOT_RUN",
         "REVIEW_NOT_RUN",
+        "VALUE_ACCESS_GAP",
+        "VOLATILE_TIME_REFERENCE",
     }
 )
 
@@ -51,6 +63,9 @@ _QUESTION_QUALITY_CODES = frozenset(
         "AMBIGUOUS_GRAIN",
         "UNANSWERABLE_FROM_SPACE",
         "IMPLEMENTATION_HINT",
+        "UNNATURAL_PHRASING",
+        "CONTEXT_DEPENDENT_QUESTION",
+        "FLAKY_BENCHMARK",
         "WEAK_BUT_ANSWERABLE",
     }
 )
@@ -65,7 +80,28 @@ _ALIGNMENT_CODES = frozenset(
         "WRONG_GRAIN",
         "WRONG_JOIN",
         "WRONG_INTERPRETATION",
+        "RESULT_SHAPE_MISMATCH",
+        "UNORDERED_LIMIT",
+        "NONDETERMINISTIC_SQL",
+        "VOLATILE_TIME_REFERENCE",
     }
+)
+
+_SQL_NON_CODE_RE = re.compile(
+    r"/\*.*?\*/|--[^\n]*|'(?:''|[^'])*'|`(?:``|[^`])*`|\"(?:\"\"|[^\"])*\"",
+    re.DOTALL,
+)
+_NONDETERMINISTIC_SQL_RE = re.compile(
+    r"\b(?:rand|random|randn|uuid|monotonically_increasing_id)\s*\(",
+    re.IGNORECASE,
+)
+_NONDETERMINISTIC_SAMPLE_RE = re.compile(
+    r"\btablesample\s*\(|\bsample\s+(?:bernoulli|system)\b",
+    re.IGNORECASE,
+)
+_VOLATILE_TIME_RE = re.compile(
+    r"\b(?:current_date|current_timestamp|localtimestamp|now|curdate)\b",
+    re.IGNORECASE,
 )
 
 
@@ -93,6 +129,7 @@ def _finding(
     evidence: Any = None,
     proposed_question: str | None = None,
     proposed_sql: str | None = None,
+    recommended_action: str | None = None,
 ) -> dict[str, Any]:
     try:
         bounded_confidence = float(confidence)
@@ -123,6 +160,329 @@ def _finding(
         "before": {"question": question, "sql": expected_sql} if question or expected_sql else None,
         "proposed_question": proposed_question_value,
         "proposed_sql": proposed_sql_value,
+        "recommended_action": recommended_action,
+    }
+
+
+def _sql_tokens_with_depth(sql: str) -> list[tuple[str, int]]:
+    """Return SQL syntax tokens without literals, comments, or quoted identifiers."""
+    cleaned = _sql_code_only(sql)
+    depth = 0
+    tokens: list[tuple[str, int]] = []
+    for match in re.finditer(r"[A-Za-z_]+|[()]", cleaned):
+        token = match.group(0)
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth = max(0, depth - 1)
+        else:
+            tokens.append((token.upper(), depth))
+    return tokens
+
+
+def _sql_code_only(sql: str) -> str:
+    """Mask SQL regions whose words cannot be clauses or function calls."""
+    return _SQL_NON_CODE_RE.sub(" ", str(sql or ""))
+
+
+def _has_unordered_limit(sql: str) -> bool:
+    tokens = _sql_tokens_with_depth(sql)
+    for limit_index, (token, depth) in enumerate(tokens):
+        if token != "LIMIT":
+            continue
+        select_index = -1
+        for index in range(limit_index - 1, -1, -1):
+            prior, prior_depth = tokens[index]
+            if prior_depth == depth and prior == "SELECT":
+                select_index = index
+                break
+        same_scope = [
+            word
+            for word, word_depth in tokens[select_index + 1 : limit_index]
+            if word_depth == depth
+        ]
+        if not any(
+            same_scope[index : index + 2] == ["ORDER", "BY"]
+            for index in range(max(0, len(same_scope) - 1))
+        ):
+            return True
+    return False
+
+
+def _deterministic_sql_findings(
+    benchmark: dict,
+    *,
+    question_id: str,
+) -> list[dict[str, Any]]:
+    """Detect ground-truth SQL shapes that are unstable across executions."""
+    sql = str(benchmark.get("expected_sql") or "")
+    if not sql.strip():
+        return []
+    question = str(benchmark.get("question") or "")
+    source = _source(benchmark)
+    findings: list[dict[str, Any]] = []
+
+    if _has_unordered_limit(sql):
+        findings.append(
+            _finding(
+                question_id=question_id,
+                question=question,
+                source=source,
+                category=SQL_VALIDITY,
+                code="UNORDERED_LIMIT",
+                severity="error",
+                explanation=(
+                    "Ground-truth SQL uses LIMIT without ORDER BY in the same "
+                    "query scope, so the selected rows are unstable."
+                ),
+                expected_sql=sql,
+                evidence={"expected_sql": sql},
+                recommended_action="repair_benchmark_sql",
+            )
+        )
+
+    cleaned = _sql_code_only(sql)
+    if _NONDETERMINISTIC_SQL_RE.search(cleaned) or _NONDETERMINISTIC_SAMPLE_RE.search(cleaned):
+        findings.append(
+            _finding(
+                question_id=question_id,
+                question=question,
+                source=source,
+                category=SQL_VALIDITY,
+                code="NONDETERMINISTIC_SQL",
+                severity="error",
+                explanation=(
+                    "Ground-truth SQL uses randomization or sampling and cannot "
+                    "produce a stable benchmark result."
+                ),
+                expected_sql=sql,
+                evidence={"expected_sql": sql},
+                recommended_action="repair_benchmark_sql",
+            )
+        )
+    if _VOLATILE_TIME_RE.search(cleaned):
+        findings.append(
+            _finding(
+                question_id=question_id,
+                question=question,
+                source=source,
+                category=SQL_VALIDITY,
+                code="VOLATILE_TIME_REFERENCE",
+                severity="warning",
+                explanation=(
+                    "Ground-truth SQL depends on the execution clock. Prefer "
+                    "explicit date boundaries unless a moving window is intentional."
+                ),
+                expected_sql=sql,
+                evidence={"expected_sql": sql},
+                recommended_action="review_temporal_ground_truth",
+            )
+        )
+    return findings
+
+
+def _parsed_space(config: dict) -> dict:
+    parsed = config.get("_parsed_space")
+    if isinstance(parsed, dict):
+        return parsed
+    serialized = config.get("serialized_space")
+    if isinstance(serialized, dict):
+        return serialized
+    return config
+
+
+def _value_matching_columns(config: dict) -> dict[tuple[str, str], bool]:
+    """Index whether a Genie column exposes example/value matching support."""
+    parsed = _parsed_space(config)
+    data_sources = parsed.get("data_sources")
+    if not isinstance(data_sources, dict):
+        return {}
+    indexed: dict[tuple[str, str], bool] = {}
+    for source_key in ("tables", "metric_views"):
+        for asset in data_sources.get(source_key) or []:
+            if not isinstance(asset, dict):
+                continue
+            identifier = str(asset.get("identifier") or asset.get("name") or "")
+            normalized = identifier.replace("`", "").lower()
+            leaf = normalized.rsplit(".", 1)[-1]
+            for column in asset.get("column_configs") or []:
+                if not isinstance(column, dict):
+                    continue
+                name = str(column.get("column_name") or column.get("name") or "").lower()
+                if not name:
+                    continue
+                enabled = bool(
+                    column.get("enable_entity_matching")
+                    or column.get("build_value_dictionary")
+                    or column.get("enable_format_assistance")
+                    or column.get("get_example_values")
+                )
+                indexed[(normalized, name)] = enabled
+                indexed[(leaf, name)] = enabled
+    return indexed
+
+
+def _literal_is_explicit_in_question(literal: str, question: str) -> bool:
+    literal_tokens = re.findall(r"[a-z0-9]+", str(literal).lower())
+    question_tokens = re.findall(r"[a-z0-9]+", str(question).lower())
+    if not literal_tokens:
+        return True
+    width = len(literal_tokens)
+    return any(
+        question_tokens[index : index + width] == literal_tokens
+        for index in range(len(question_tokens) - width + 1)
+    )
+
+
+def _value_access_findings(
+    benchmark: dict,
+    *,
+    question_id: str,
+    config: dict,
+) -> list[dict[str, Any]]:
+    """Flag business-value translations Genie is not configured to recognize."""
+    from genie_space_optimizer.optimization.benchmarks import (
+        _extract_predicates,
+        _extract_table_aliases,
+    )
+
+    parsed = _parsed_space(config)
+    data_sources = parsed.get("data_sources")
+    if not isinstance(data_sources, dict):
+        return []
+    configured_assets: set[str] = set()
+    for source_key in ("tables", "metric_views"):
+        for asset in data_sources.get(source_key) or []:
+            if not isinstance(asset, dict):
+                continue
+            identifier = str(asset.get("identifier") or asset.get("name") or "")
+            normalized = identifier.replace("`", "").lower()
+            if normalized:
+                configured_assets.add(normalized)
+                configured_assets.add(normalized.rsplit(".", 1)[-1])
+    if not configured_assets:
+        return []
+    matching = _value_matching_columns(config)
+    sql = str(benchmark.get("expected_sql") or "")
+    question = str(benchmark.get("question") or "")
+    aliases = _extract_table_aliases(sql)
+    unique_tables = list(dict.fromkeys(aliases.values()))
+    findings: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for predicate in _extract_predicates(sql):
+        alias = str(predicate.get("table_alias") or "").lower()
+        table = aliases.get(alias, "") if alias else ""
+        if not table and len(unique_tables) == 1:
+            table = unique_tables[0]
+        normalized_table = str(table).replace("`", "").lower()
+        leaf = normalized_table.rsplit(".", 1)[-1]
+        column = str(predicate.get("column") or "").lower()
+        if not normalized_table or not column:
+            continue
+        if normalized_table not in configured_assets and leaf not in configured_assets:
+            continue
+        enabled = matching.get(
+            (normalized_table, column),
+            matching.get((leaf, column), False),
+        )
+        if enabled:
+            continue
+        implicit_values = [
+            str(value)
+            for value in predicate.get("values") or []
+            if not _literal_is_explicit_in_question(str(value), question)
+        ]
+        key = (normalized_table, column)
+        if not implicit_values or key in seen:
+            continue
+        seen.add(key)
+        findings.append(
+            _finding(
+                question_id=question_id,
+                question=question,
+                source=_source(benchmark),
+                category=DATA_VALIDITY,
+                code="VALUE_ACCESS_GAP",
+                severity="warning",
+                explanation=(
+                    "The ground truth translates the user's wording to stored "
+                    f"values on {leaf}.{column}, but that column has neither "
+                    "example-value nor entity-matching support enabled."
+                ),
+                expected_sql=sql,
+                evidence={
+                    "table": normalized_table,
+                    "column": column,
+                    "implicit_sql_values": implicit_values,
+                },
+                recommended_action="enable_value_matching",
+            )
+        )
+    return findings
+
+
+def review_benchmark_format_coverage(benchmarks: list[dict]) -> dict[str, Any]:
+    """Summarize required user-question formats in the final corpus."""
+    counts = {question_format: 0 for question_format in REQUIRED_QUESTION_FORMATS}
+    category_map = {
+        "aggregation": "aggregation",
+        "detail": "lookup",
+        "list": "lookup",
+        "comparison": "comparison",
+        "time-series": "time_filter",
+        "ranking": "top_n",
+    }
+    for benchmark in benchmarks:
+        detected: set[str] = set()
+        category = str(benchmark.get("category") or "").strip().lower()
+        if category in category_map:
+            detected.add(category_map[category])
+        question = str(benchmark.get("question") or "").lower()
+        sql = str(benchmark.get("expected_sql") or "").lower()
+        if re.search(r"\b(total|sum|average|avg|count|how many|by each|per)\b", question) or re.search(
+            r"\b(sum|avg|count|min|max)\s*\(", sql,
+        ):
+            detected.add("aggregation")
+        if re.search(r"\b(what is|which|show me|find|status of|details? for)\b", question):
+            detected.add("lookup")
+        if re.search(r"\b(compare|versus|vs\.?|difference|higher than|lower than)\b", question):
+            detected.add("comparison")
+        if re.search(
+            r"\b(ytd|year.to.date|last|this (?:week|month|quarter|year)|between|since|before|after)\b",
+            question,
+        ) or re.search(r"\b(date|timestamp|interval|year|month|quarter)\b", sql):
+            detected.add("time_filter")
+        if re.search(r"\b(top|bottom|highest|lowest|rank(?:ed|ing)?)\b", question) or (
+            "limit" in sql and "order by" in sql
+        ):
+            detected.add("top_n")
+        for question_format in detected:
+            counts[question_format] += 1
+
+    missing = [name for name, count in counts.items() if count == 0]
+    findings = []
+    if missing:
+        findings.append(
+            _finding(
+                question_id="__corpus__",
+                question="",
+                source="benchmark_corpus",
+                category=CORPUS_COVERAGE,
+                code="MISSING_QUESTION_FORMAT",
+                severity="warning",
+                explanation=(
+                    "The final benchmark corpus does not cover all required user "
+                    f"question formats: {', '.join(missing)}."
+                ),
+                evidence={"missing_formats": missing, "format_counts": counts},
+                recommended_action="add_benchmark_coverage",
+            )
+        )
+    return {
+        "required_formats": list(REQUIRED_QUESTION_FORMATS),
+        "counts": counts,
+        "missing": missing,
+        "findings": findings,
     }
 
 
@@ -249,6 +609,7 @@ def _llm_review(
     from genie_space_optimizer.optimization.benchmarking import _build_schema_contexts
 
     contexts = _build_schema_contexts(config, uc_columns, uc_routines)
+    contexts.setdefault("example_sql_questions_context", "(none)")
     findings: list[dict[str, Any]] = []
     incomplete: set[str] = set()
 
@@ -430,7 +791,16 @@ def review_benchmark_quality(
                 )
             )
         elif result.get("valid"):
-            sql_valid_ids.add(qid)
+            stability_findings = _deterministic_sql_findings(
+                benchmark,
+                question_id=qid,
+            )
+            findings.extend(stability_findings)
+            if not any(
+                finding.get("severity") == "error"
+                for finding in stability_findings
+            ):
+                sql_valid_ids.add(qid)
         else:
             from genie_space_optimizer.optimization.benchmarking import (
                 _classify_sql_validation_error,
@@ -526,6 +896,7 @@ def review_benchmark_quality(
                 literal = mismatch.get("literal")
                 if suggestion and literal:
                     proposed_sql = proposed_sql.replace(f"'{literal}'", f"'{suggestion}'")
+            safe_proposal = proposed_sql != str(benchmark.get("expected_sql") or "")
             findings.append(
                 _finding(
                     question_id=qid,
@@ -533,13 +904,23 @@ def review_benchmark_quality(
                     source=_source(benchmark),
                     category=DATA_VALIDITY,
                     code="DATA_VALUE_MISMATCH",
-                    severity="error",
+                    severity="warning" if safe_proposal else "error",
                     explanation="Ground-truth SQL uses filter values not found in the data profile.",
                     expected_sql=str(benchmark.get("expected_sql") or ""),
                     evidence=result.get("mismatches"),
-                    proposed_sql=proposed_sql,
+                    proposed_sql=proposed_sql if safe_proposal else None,
+                    recommended_action="repair_benchmark_sql",
                 )
             )
+
+    for qid, benchmark in reviewable_pairs:
+        findings.extend(
+            _value_access_findings(
+                benchmark,
+                question_id=qid,
+                config=config,
+            )
+        )
 
     if reviewable:
         execution_results = validate_gt_returns_results(

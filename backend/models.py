@@ -170,7 +170,7 @@ class PermissionCheckResponse(BaseModel):
 
 
 class VersionMatch(BaseModel):
-    """One known optimization version whose fingerprint matches the live config."""
+    """One known optimization version matching a live-state component."""
 
     run_id: str
     target: Literal["baseline", "champion"]
@@ -182,13 +182,12 @@ class CurrentVersionResponse(BaseModel):
     """Payload for ``GET /auto-optimize/spaces/{space_id}/current-version``.
 
     Answers "which known optimization version is the live agent on?" by
-    fingerprint-matching the live ``serialized_space`` against every captured
-    run baseline / champion config:
+    fingerprint-matching config and benchmarks independently against every
+    history-visible captured run baseline / champion:
 
-    * ``matched`` — live config equals ≥1 known version (``current`` is the
-      most recent; ``also_matches`` lists semantically equivalent versions);
-    * ``drifted`` — known versions exist but none match → the config was
-      changed outside Auto-Optimize;
+    * ``matched`` — config and benchmarks equal the same known version;
+    * ``mixed`` — both components are known, but come from different versions;
+    * ``drifted`` — one or both components match no known version;
     * ``history_incomplete`` — at least one expected baseline/champion lacks
       an authoritative API-observed capture, so a non-match is inconclusive;
     * ``no_known_versions`` — no runs with captured configs (nothing to
@@ -199,6 +198,7 @@ class CurrentVersionResponse(BaseModel):
 
     status: Literal[
         "matched",
+        "mixed",
         "drifted",
         "history_incomplete",
         "no_known_versions",
@@ -206,5 +206,12 @@ class CurrentVersionResponse(BaseModel):
         "optimization_in_progress",
     ]
     current: VersionMatch | None = None
-    also_matches: list[VersionMatch] = []
+    also_matches: list[VersionMatch] = Field(default_factory=list)
+    config_match: VersionMatch | None = None
+    config_also_matches: list[VersionMatch] = Field(default_factory=list)
+    benchmark_match: VersionMatch | None = None
+    benchmark_also_matches: list[VersionMatch] = Field(default_factory=list)
+    drifted_dimensions: list[Literal["config", "benchmarks"]] = Field(
+        default_factory=list
+    )
     live_update_time: str | None = None

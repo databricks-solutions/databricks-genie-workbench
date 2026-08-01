@@ -31,6 +31,35 @@ def _space(*, instruction: str = "Be helpful") -> dict:
     }
 
 
+def _benchmark_question(
+    question_id: str,
+    *,
+    question: str,
+    sql: str,
+) -> dict:
+    return {
+        "id": question_id,
+        "question": [question],
+        "answer": [{"format": "SQL", "content": [sql]}],
+    }
+
+
+def _with_benchmarks(space: dict, *question_ids: str) -> dict:
+    return {
+        **space,
+        "benchmarks": {
+            "questions": [
+                _benchmark_question(
+                    question_id,
+                    question=f"Question {question_id}?",
+                    sql=f"SELECT '{question_id}'",
+                )
+                for question_id in question_ids
+            ]
+        },
+    }
+
+
 def _snapshot_wrapper(space: dict) -> str:
     """config_snapshot as stored in Delta: full GET response, serialized_space
     embedded as a JSON string."""
@@ -65,6 +94,15 @@ def client(monkeypatch) -> TestClient:
     auto_optimize._live_fp_cache.clear()
     # Deterministic principal for the cache key; no real WorkspaceClient.
     _set_principal(monkeypatch, "test-token")
+
+    async def no_hidden_runs(_space_id: str) -> set[str]:
+        return set()
+
+    monkeypatch.setattr(
+        auto_optimize.workbench_lakebase,
+        "get_hidden_optimization_run_ids",
+        no_hidden_runs,
+    )
 
     app = FastAPI()
     app.include_router(auto_optimize.router)
@@ -256,7 +294,68 @@ def test_drifted_when_live_matches_nothing(client, monkeypatch) -> None:
     data = resp.json()
     assert data["status"] == "drifted"
     assert data["current"] is None
+    assert data["config_match"] is None
+    assert data["benchmark_match"]["run_id"] == "r1"
+    assert data["drifted_dimensions"] == ["config"]
     assert data["live_update_time"] == "2026-07-28T16:00:00Z"
+
+
+def test_benchmark_deletion_is_reported_as_benchmark_drift(client, monkeypatch) -> None:
+    known = _with_benchmarks(_space(), "b1", "b2", "b3", "b4")
+    live = _with_benchmarks(_space(), "b1")
+    _stub_delta(
+        monkeypatch,
+        runs=[_run_row(
+            "r1",
+            started_at="2026-07-01 10:00:00",
+            config_snapshot=_snapshot_wrapper(known),
+        )],
+        champions=[{
+            "run_id": "r1",
+            "config_json": json.dumps(known),
+            "observed_config_json": json.dumps(known),
+        }],
+    )
+    _stub_live(monkeypatch, live, update_time="2026-07-28T16:00:00Z")
+
+    data = client.get(
+        f"/api/auto-optimize/spaces/{SPACE_ID}/current-version"
+    ).json()
+    assert data["status"] == "drifted"
+    assert data["config_match"]["run_id"] == "r1"
+    assert data["benchmark_match"] is None
+    assert data["drifted_dimensions"] == ["benchmarks"]
+
+
+def test_known_config_and_benchmarks_from_different_versions_are_mixed(
+    client, monkeypatch,
+) -> None:
+    baseline = _with_benchmarks(_space(instruction="Baseline"), "b1", "b2")
+    champion = _with_benchmarks(_space(instruction="Champion"), "b1", "b2", "b3")
+    live = _with_benchmarks(_space(instruction="Champion"), "b1", "b2")
+    _stub_delta(
+        monkeypatch,
+        runs=[_run_row(
+            "r1",
+            started_at="2026-07-01 10:00:00",
+            config_snapshot=_snapshot_wrapper(baseline),
+        )],
+        champions=[{
+            "run_id": "r1",
+            "config_json": json.dumps(champion),
+            "observed_config_json": json.dumps(champion),
+        }],
+    )
+    _stub_live(monkeypatch, live)
+
+    data = client.get(
+        f"/api/auto-optimize/spaces/{SPACE_ID}/current-version"
+    ).json()
+    assert data["status"] == "mixed"
+    assert data["current"] is None
+    assert data["config_match"]["target"] == "champion"
+    assert data["benchmark_match"]["target"] == "baseline"
+    assert data["drifted_dimensions"] == []
 
 
 def test_missing_observed_champion_can_match_semantically(client, monkeypatch) -> None:
@@ -377,6 +476,44 @@ def test_multi_match_picks_most_recent_and_lists_equivalents(client, monkeypatch
     assert equivalents == {("r1", "baseline"), ("r1", "champion")}
 
 
+def test_hidden_latest_match_is_excluded_from_current_version(
+    client, monkeypatch,
+) -> None:
+    space = _space()
+    _stub_delta(
+        monkeypatch,
+        runs=[
+            _run_row(
+                "r2",
+                started_at="2026-07-10 10:00:00",
+                config_snapshot=_snapshot_wrapper(space),
+            ),
+            _run_row(
+                "r1",
+                started_at="2026-07-01 10:00:00",
+                config_snapshot=_snapshot_wrapper(space),
+            ),
+        ],
+    )
+
+    async def hidden_runs(_space_id: str) -> set[str]:
+        return {"r2"}
+
+    monkeypatch.setattr(
+        auto_optimize.workbench_lakebase,
+        "get_hidden_optimization_run_ids",
+        hidden_runs,
+    )
+    _stub_live(monkeypatch, space)
+
+    data = client.get(
+        f"/api/auto-optimize/spaces/{SPACE_ID}/current-version"
+    ).json()
+    assert data["status"] == "matched"
+    assert data["current"]["run_id"] == "r1"
+    assert all(match["run_id"] != "r2" for match in data["also_matches"])
+
+
 # ── Live fingerprint cache ───────────────────────────────────────────────
 
 
@@ -398,6 +535,11 @@ def test_live_fingerprint_cached_across_calls(client, monkeypatch) -> None:
     assert client.get(url).json()["status"] == "matched"
     assert client.get(url).json()["status"] == "matched"
     assert calls["n"] == 1
+
+    # Returning from the external Genie UI explicitly bypasses the short cache
+    # so a just-made config or benchmark edit is visible immediately.
+    assert client.get(f"{url}?refresh=true").json()["status"] == "matched"
+    assert calls["n"] == 2
 
 
 def test_live_fingerprint_cache_scoped_by_principal(client, monkeypatch) -> None:
@@ -431,9 +573,15 @@ def test_live_fingerprint_cache_scoped_by_principal(client, monkeypatch) -> None
 
 
 def test_invalidate_live_fingerprint_for_run_clears_cache(client, monkeypatch) -> None:
-    auto_optimize._live_fp_cache[f"{SPACE_ID}:p1"] = (float("inf"), "stale-fp", None)
-    auto_optimize._live_fp_cache[f"{SPACE_ID}:p2"] = (float("inf"), "stale-fp", None)
-    auto_optimize._live_fp_cache["other-space:p1"] = (float("inf"), "keep-fp", None)
+    auto_optimize._live_fp_cache[f"{SPACE_ID}:p1"] = (
+        float("inf"), "stale-config-fp", "stale-benchmark-fp", None,
+    )
+    auto_optimize._live_fp_cache[f"{SPACE_ID}:p2"] = (
+        float("inf"), "stale-config-fp", "stale-benchmark-fp", None,
+    )
+    auto_optimize._live_fp_cache["other-space:p1"] = (
+        float("inf"), "keep-config-fp", "keep-benchmark-fp", None,
+    )
 
     def fake(sql: str, *, strict: bool = False) -> list[dict]:
         if "SELECT space_id FROM" in sql:
@@ -446,4 +594,6 @@ def test_invalidate_live_fingerprint_for_run_clears_cache(client, monkeypatch) -
     )
     assert f"{SPACE_ID}:p1" not in auto_optimize._live_fp_cache
     assert f"{SPACE_ID}:p2" not in auto_optimize._live_fp_cache
-    assert auto_optimize._live_fp_cache["other-space:p1"] == (float("inf"), "keep-fp", None)
+    assert auto_optimize._live_fp_cache["other-space:p1"] == (
+        float("inf"), "keep-config-fp", "keep-benchmark-fp", None,
+    )

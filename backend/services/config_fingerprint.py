@@ -1,12 +1,10 @@
-"""Canonical fingerprints for Genie Agent ``serialized_space`` configs.
+"""Canonical fingerprints for Genie Agent config and benchmark state.
 
-Powers the Auto-Optimize "current version" check: given the live space config
-and every config captured by past optimization runs (run baselines in
-``genie_opt_runs.config_snapshot``, champion API observations in
-``genie_opt_iterations.observed_config_json``), a fingerprint match answers
-*"which known optimization version is the live agent on right now?"*. A
-non-match proves external drift only when all expected versions have an
-authoritative observation; submitted-only legacy history is inconclusive.
+Powers the Auto-Optimize "current version" check. Configuration and benchmarks
+are fingerprinted independently because a scoped revert can intentionally mix
+the config from one historical version with the benchmarks from another. A
+component non-match proves external drift only when all expected versions have
+an authoritative observation; submitted-only legacy history is inconclusive.
 
 Fingerprint contract (all three steps matter equally):
 
@@ -18,13 +16,14 @@ Fingerprint contract (all three steps matter equally):
    ``_data_profile``) before persisting the snapshot, so the parsed copy can
    diverge from what the Genie API round-trips. Internal ``_``-prefixed
    top-level keys are stripped regardless of source.
-2. **Canonicalize** — the top-level ``benchmarks`` block is dropped (revert
-   deliberately preserves the *live* benchmark block, so including it would
-   make every revert-to-baseline look like drift); ``content`` and ``sql``
-   fragments are concatenated; boundary quotes added by Genie are ignored;
-   object keys are sorted; arrays whose elements all carry a string ``id`` are
-   sorted by id (Genie's validation rules require id-sorted arrays, so this
-   only normalizes ordering the API itself does not treat as meaningful).
+2. **Canonicalize** — configuration hashing drops the top-level ``benchmarks``
+   block, while benchmark hashing isolates that block and treats an omitted
+   block as an empty question set. ``content`` and ``sql`` fragments are
+   concatenated; boundary quotes added by Genie are ignored for configuration
+   hashing but preserved for benchmark ground-truth SQL; object keys are
+   sorted; arrays whose elements all carry a string ``id`` are sorted by id
+   (Genie's validation rules require id-sorted arrays, so this only normalizes
+   ordering the API itself does not treat as meaningful).
 3. **Hash** — SHA-256 over the compact JSON serialization.
 
 Pure functions only — no I/O, fully unit-testable offline.
@@ -130,6 +129,7 @@ def _normalize_representation_string(value: str) -> str:
 def canonicalize(
     node: Any,
     *,
+    normalize_boundary_quotes: bool = True,
     _depth: int = 0,
     _parent_key: str | None = None,
 ) -> Any:
@@ -140,8 +140,9 @@ def canonicalize(
     * dict keys sorted (``json.dumps(sort_keys=True)`` would do this too, but
       explicit sorting keeps the structure inspectable for debugging);
     * ``content`` / ``sql`` fragment arrays are concatenated;
-    * Genie-added boundary single quotes are ignored while apostrophes inside
-      words remain significant;
+    * Genie-added boundary single quotes are optionally ignored while
+      apostrophes inside words remain significant; benchmark ground-truth SQL
+      disables this because SQL quote punctuation changes semantics;
     * arrays whose elements are all dicts with a string ``id`` are sorted by
       that id — Genie's validation rules require id-sorted arrays, so element
       order there carries no meaning;
@@ -152,6 +153,7 @@ def canonicalize(
         items = {
             key: canonicalize(
                 value,
+                normalize_boundary_quotes=normalize_boundary_quotes,
                 _depth=_depth + 1,
                 _parent_key=key,
             )
@@ -165,10 +167,16 @@ def canonicalize(
             and _parent_key in _FRAGMENT_ARRAY_KEYS
             and all(isinstance(value, str) for value in node)
         ):
-            return _normalize_representation_string("".join(node))
+            joined = "".join(node)
+            return (
+                _normalize_representation_string(joined)
+                if normalize_boundary_quotes
+                else joined
+            )
         items = [
             canonicalize(
                 value,
+                normalize_boundary_quotes=normalize_boundary_quotes,
                 _depth=_depth + 1,
                 _parent_key=_parent_key,
             )
@@ -181,7 +189,11 @@ def canonicalize(
             items.sort(key=lambda value: value["id"])
         return items
     if isinstance(node, str):
-        return _normalize_representation_string(node)
+        return (
+            _normalize_representation_string(node)
+            if normalize_boundary_quotes
+            else node
+        )
     return node
 
 
@@ -200,7 +212,46 @@ def config_fingerprint(config: Any) -> str | None:
     space = unwrap_serialized_space(config)
     if space is None:
         return None
-    canonical = canonicalize(space)
+    return _hash_canonical(canonicalize(space))
+
+
+def benchmark_fingerprint(config: Any) -> str | None:
+    """SHA-256 fingerprint of a stored/live Genie benchmark block.
+
+    The official ``serialized_space`` schema makes ``benchmarks`` optional, so
+    an omitted block, an empty block, and ``questions=[]`` all represent the
+    same empty benchmark state. Malformed benchmark shapes are not matchable and
+    return ``None`` so callers fail open instead of reporting false drift.
+    """
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    space = unwrap_serialized_space(config)
+    if space is None:
+        return None
+
+    benchmarks = space.get("benchmarks")
+    if benchmarks is None:
+        benchmarks = {}
+    if not isinstance(benchmarks, dict):
+        return None
+    questions = benchmarks.get("questions")
+    if questions is None:
+        questions = []
+    if not isinstance(questions, list):
+        return None
+
+    canonical = canonicalize(
+        {**benchmarks, "questions": questions},
+        normalize_boundary_quotes=False,
+    )
+    return _hash_canonical(canonical)
+
+
+def _hash_canonical(canonical: Any) -> str:
+    """Hash one already-canonicalized config component."""
     payload = json.dumps(
         canonical,
         sort_keys=True,

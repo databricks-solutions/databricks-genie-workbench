@@ -26,7 +26,8 @@ from backend.routers._validators import RunId, SpaceId
 
 from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
 from backend.services import gso_lakebase
-from backend.services.config_fingerprint import config_fingerprint
+from backend.services import lakebase as workbench_lakebase
+from backend.services.config_fingerprint import benchmark_fingerprint, config_fingerprint
 from backend.services.genie_client import get_genie_space
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
@@ -34,6 +35,7 @@ from genie_space_optimizer.common.accuracy import (
     compute_run_scores,
     derived_accuracy as _canonical_derived_accuracy,
 )
+from genie_space_optimizer.common.genie_client import user_can_edit_space
 from genie_space_optimizer.integration import (
     trigger_optimization,
     apply_optimization,
@@ -2167,14 +2169,15 @@ _RUNS_SELECT_COLS = (
     "run_id, started_at, status, best_iteration, best_accuracy, config_snapshot, job_run_id"
 )
 
-# Short-TTL cache for the live-space fingerprint (a Genie API call), keyed by
+# Short-TTL cache for the live-space fingerprints (a Genie API call), keyed by
 # space AND principal: the fetch runs under the caller's OBO identity, so a
 # space-only key would let one user's cached result bypass another user's
 # Genie access check. The badge must move immediately after an app-initiated
 # mutation, so apply/discard/revert invalidate all principals' entries for the
-# space on success; external edits surface within the TTL.
+# space on success; returning from an external Genie UI forces a refresh, while
+# ordinary repeated requests remain cached within the TTL.
 _LIVE_FP_CACHE_TTL_S = 60.0
-_live_fp_cache: dict[str, tuple[float, str, str | None]] = {}
+_live_fp_cache: dict[str, tuple[float, str, str, str | None]] = {}
 
 
 def _principal_key() -> str:
@@ -2194,14 +2197,14 @@ def _principal_key() -> str:
 
 
 def _invalidate_live_fingerprint(space_id: str) -> None:
-    """Drop every principal's cached live fingerprint for a space."""
+    """Drop every principal's cached live fingerprints for a space."""
     prefix = f"{space_id}:"
     for key in [k for k in _live_fp_cache if k.startswith(prefix)]:
         _live_fp_cache.pop(key, None)
 
 
 def _invalidate_live_fingerprint_for_run(run_id: str) -> None:
-    """Resolve the run's space and clear its cached live fingerprint."""
+    """Resolve the run's space and clear its cached live fingerprints."""
     safe_run = run_id.replace("'", "''")
     rows = _delta_query(
         f"SELECT space_id FROM {_delta_table('genie_opt_runs')} "
@@ -2211,34 +2214,44 @@ def _invalidate_live_fingerprint_for_run(run_id: str) -> None:
         _invalidate_live_fingerprint(str(rows[0]["space_id"]))
 
 
-def _live_space_fingerprint(
-    space_id: str, principal: str,
-) -> tuple[str | None, str | None]:
-    """Return ``(fingerprint, update_time)`` for the live space.
+def _live_space_fingerprints(
+    space_id: str,
+    principal: str,
+    *,
+    force_refresh: bool = False,
+) -> tuple[str | None, str | None, str | None]:
+    """Return ``(config_fp, benchmark_fp, update_time)`` for the live space.
 
     Uses the OBO client with SP fallback (via ``get_genie_space``), cached for
-    ``_LIVE_FP_CACHE_TTL_S`` per (space, principal) so History-tab polling
-    doesn't hammer the Genie API. Failures and unparseable configs return
-    ``(None, None)`` and are not cached — a transient error must not hide the
-    badge for a whole TTL.
+    ``_LIVE_FP_CACHE_TTL_S`` per (space, principal) so repeated History loads
+    do not hammer the Genie API. ``force_refresh`` bypasses that cache after
+    the browser returns from Genie. Failures and unparseable configs return
+    ``(None, None, None)`` and are not cached — a transient error must not hide
+    the badge for a whole TTL.
     """
     key = f"{space_id}:{principal}"
     hit = _live_fp_cache.get(key)
-    if hit and hit[0] > time.time():
-        return hit[1], hit[2]
+    if not force_refresh and hit and hit[0] > time.time():
+        return hit[1], hit[2], hit[3]
     try:
         snapshot = get_genie_space(space_id)
     except Exception as exc:
         logger.info("current-version live fetch failed for %s: %s", space_id, exc)
-        return None, None
-    fingerprint = config_fingerprint(snapshot)
-    if fingerprint is None:
-        logger.info("current-version live config for %s is not fingerprintable", space_id)
-        return None, None
+        return None, None, None
+    config_fp = config_fingerprint(snapshot)
+    benchmark_fp = benchmark_fingerprint(snapshot)
+    if config_fp is None or benchmark_fp is None:
+        logger.info("current-version live state for %s is not fingerprintable", space_id)
+        return None, None, None
     update_time = snapshot.get("update_time") if isinstance(snapshot, dict) else None
     update_time_str = str(update_time) if update_time else None
-    _live_fp_cache[key] = (time.time() + _LIVE_FP_CACHE_TTL_S, fingerprint, update_time_str)
-    return fingerprint, update_time_str
+    _live_fp_cache[key] = (
+        time.time() + _LIVE_FP_CACHE_TTL_S,
+        config_fp,
+        benchmark_fp,
+        update_time_str,
+    )
+    return config_fp, benchmark_fp, update_time_str
 
 
 def _has_active_run(runs_rows: list[dict]) -> bool:
@@ -2305,15 +2318,23 @@ def _reconcile_zombie_runs(space_id: str, runs_rows: list[dict]) -> list[dict]:
 
 
 @router.get("/spaces/{space_id}/current-version")
-async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
+async def get_current_version(
+    space_id: SpaceId,
+    refresh: bool = Query(
+        False,
+        description="Bypass the short live-state cache after returning from Genie UI.",
+    ),
+) -> CurrentVersionResponse:
     """Report which known optimization version the live Genie Agent matches.
 
-    Fingerprints the live ``serialized_space`` and every captured run config.
+    Fingerprints config and benchmarks independently for the live
+    ``serialized_space`` and every history-visible captured run version.
     Champion identity prefers the authoritative post-PATCH
     ``observed_config_json``; submitted ``config_json`` remains usable for a
     safe positive legacy match, but its absence/mismatch can never prove
-    external drift. ``drifted`` is returned only when every expected baseline
-    and champion has an authoritative, fingerprintable capture.
+    external drift. A component is reported as drifted only when every
+    expected visible version has an authoritative, fingerprintable capture
+    for that component.
     """
     if not _is_configured():
         return CurrentVersionResponse(status="no_known_versions")
@@ -2352,7 +2373,8 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
         return CurrentVersionResponse(status="unavailable")
     runs_rows = runs_result
 
-    history_complete = True
+    config_history_complete = True
+    benchmark_history_complete = True
     if isinstance(champions_result, BaseException):
         if not _looks_like_legacy_schema_error(champions_result):
             logger.warning(
@@ -2362,7 +2384,8 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
             return CurrentVersionResponse(status="unavailable")
         # Pre-migration tables have no observed_config_json. Keep safe semantic
         # legacy matches working, but remember that a non-match is inconclusive.
-        history_complete = False
+        config_history_complete = False
+        benchmark_history_complete = False
         legacy_champions_sql = champions_sql.replace(
             "i.config_json, i.observed_config_json",
             "i.config_json",
@@ -2380,6 +2403,29 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
     else:
         champion_rows = champions_result
 
+    try:
+        hidden_run_ids = await workbench_lakebase.get_hidden_optimization_run_ids(
+            space_id
+        )
+    except Exception:
+        logger.warning(
+            "current-version hidden-run lookup failed for %s",
+            space_id,
+            exc_info=True,
+        )
+        hidden_run_ids = set()
+    if hidden_run_ids:
+        runs_rows = [
+            row
+            for row in runs_rows
+            if str(row.get("run_id") or "") not in hidden_run_ids
+        ]
+        champion_rows = [
+            row
+            for row in champion_rows
+            if str(row.get("run_id") or "") not in hidden_run_ids
+        ]
+
     if _has_active_run(runs_rows):
         runs_rows = await _offload(_reconcile_zombie_runs, space_id, runs_rows)
     if _has_active_run(runs_rows):
@@ -2388,9 +2434,15 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
         return CurrentVersionResponse(status="no_known_versions")
 
     run_by_id = {str(r.get("run_id")): r for r in runs_rows if r.get("run_id")}
-    matches_by_fp: dict[str, list[VersionMatch]] = {}
+    config_matches_by_fp: dict[str, list[VersionMatch]] = {}
+    benchmark_matches_by_fp: dict[str, list[VersionMatch]] = {}
 
-    def _record(fingerprint: str | None, run_id: str, target: str) -> None:
+    def _record(
+        matches_by_fp: dict[str, list[VersionMatch]],
+        fingerprint: str | None,
+        run_id: str,
+        target: str,
+    ) -> None:
         if not fingerprint:
             return
         row = run_by_id.get(run_id) or {}
@@ -2411,56 +2463,141 @@ async def get_current_version(space_id: SpaceId) -> CurrentVersionResponse:
     }
 
     for run_id, row in run_by_id.items():
-        baseline_fp = config_fingerprint(row.get("config_snapshot"))
-        _record(baseline_fp, run_id, "baseline")
-        if baseline_fp is None:
-            history_complete = False
+        snapshot = row.get("config_snapshot")
+        baseline_config_fp = config_fingerprint(snapshot)
+        baseline_benchmark_fp = benchmark_fingerprint(snapshot)
+        _record(config_matches_by_fp, baseline_config_fp, run_id, "baseline")
+        _record(
+            benchmark_matches_by_fp,
+            baseline_benchmark_fp,
+            run_id,
+            "baseline",
+        )
+        if baseline_config_fp is None:
+            config_history_complete = False
+        if baseline_benchmark_fp is None:
+            benchmark_history_complete = False
 
         # A completed iteration selection must have one champion capture. Runs
         # that failed before selecting any iteration legitimately have only a
         # baseline version.
         if _safe_int(row.get("best_iteration")) is not None and run_id not in champion_by_run:
-            history_complete = False
+            config_history_complete = False
+            benchmark_history_complete = False
 
     for row in champion_rows:
         run_id = str(row.get("run_id") or "")
         if run_id:
-            observed_fp = config_fingerprint(row.get("observed_config_json"))
-            if observed_fp is not None:
-                _record(observed_fp, run_id, "champion")
+            observed = row.get("observed_config_json")
+            submitted = row.get("config_json")
+            observed_config_fp = config_fingerprint(observed)
+            observed_benchmark_fp = benchmark_fingerprint(observed)
+            if observed_config_fp is not None:
+                _record(
+                    config_matches_by_fp,
+                    observed_config_fp,
+                    run_id,
+                    "champion",
+                )
             else:
-                history_complete = False
+                config_history_complete = False
                 # Positive semantic equality with a submitted legacy config is
                 # still trustworthy; only a non-match is inconclusive.
-                _record(config_fingerprint(row.get("config_json")), run_id, "champion")
+                _record(
+                    config_matches_by_fp,
+                    config_fingerprint(submitted),
+                    run_id,
+                    "champion",
+                )
+            if observed_benchmark_fp is not None:
+                _record(
+                    benchmark_matches_by_fp,
+                    observed_benchmark_fp,
+                    run_id,
+                    "champion",
+                )
+            else:
+                benchmark_history_complete = False
+                _record(
+                    benchmark_matches_by_fp,
+                    benchmark_fingerprint(submitted),
+                    run_id,
+                    "champion",
+                )
 
-    if not matches_by_fp:
+    if not config_matches_by_fp and not benchmark_matches_by_fp:
         return CurrentVersionResponse(
-            status="history_incomplete" if not history_complete else "no_known_versions"
+            status=(
+                "history_incomplete"
+                if not config_history_complete or not benchmark_history_complete
+                else "no_known_versions"
+            )
         )
 
-    live_fp, live_update_time = await _offload(
-        _live_space_fingerprint, space_id, _principal_key()
+    live_config_fp, live_benchmark_fp, live_update_time = await _offload(
+        _live_space_fingerprints,
+        space_id,
+        _principal_key(),
+        force_refresh=refresh,
     )
-    if live_fp is None:
+    if live_config_fp is None or live_benchmark_fp is None:
         return CurrentVersionResponse(status="unavailable")
 
-    matches = matches_by_fp.get(live_fp)
-    if not matches:
-        if not history_complete:
-            return CurrentVersionResponse(
-                status="history_incomplete", live_update_time=live_update_time,
-            )
-        return CurrentVersionResponse(status="drifted", live_update_time=live_update_time)
+    def _sorted_matches(
+        matches_by_fp: dict[str, list[VersionMatch]], fingerprint: str,
+    ) -> list[VersionMatch]:
+        matches = list(matches_by_fp.get(fingerprint) or [])
+        matches.sort(key=lambda match: match.started_at or "", reverse=True)
+        return matches
 
-    # Multi-match means semantically equivalent configs (e.g. run 2's baseline
-    # IS run 1's champion) — badge the most recent, list the rest as equivalents.
-    matches.sort(key=lambda m: m.started_at or "", reverse=True)
+    config_matches = _sorted_matches(config_matches_by_fp, live_config_fp)
+    benchmark_matches = _sorted_matches(benchmark_matches_by_fp, live_benchmark_fp)
+    config_match = config_matches[0] if config_matches else None
+    benchmark_match = benchmark_matches[0] if benchmark_matches else None
+    common_keys = {
+        (match.run_id, match.target)
+        for match in benchmark_matches
+    }
+    full_matches = [
+        match
+        for match in config_matches
+        if (match.run_id, match.target) in common_keys
+    ]
+    full_matches.sort(key=lambda match: match.started_at or "", reverse=True)
+
+    common_response = {
+        "config_match": config_match,
+        "config_also_matches": config_matches[1:],
+        "benchmark_match": benchmark_match,
+        "benchmark_also_matches": benchmark_matches[1:],
+        "live_update_time": live_update_time,
+    }
+    if full_matches:
+        return CurrentVersionResponse(
+            status="matched",
+            current=full_matches[0],
+            also_matches=full_matches[1:],
+            **common_response,
+        )
+    if config_matches and benchmark_matches:
+        return CurrentVersionResponse(status="mixed", **common_response)
+
+    inconclusive = (
+        (not config_matches and not config_history_complete)
+        or (not benchmark_matches and not benchmark_history_complete)
+    )
+    if inconclusive:
+        return CurrentVersionResponse(status="history_incomplete", **common_response)
+
+    drifted_dimensions: list[Literal["config", "benchmarks"]] = []
+    if not config_matches:
+        drifted_dimensions.append("config")
+    if not benchmark_matches:
+        drifted_dimensions.append("benchmarks")
     return CurrentVersionResponse(
-        status="matched",
-        current=matches[0],
-        also_matches=matches[1:],
-        live_update_time=live_update_time,
+        status="drifted",
+        drifted_dimensions=drifted_dimensions,
+        **common_response,
     )
 
 
@@ -2557,42 +2694,138 @@ async def load_runs_with_fallback(space_id: str) -> list[dict]:
     Shared by the runs endpoint and the history endpoint.
     """
     runs = await gso_lakebase.load_gso_runs_for_space(space_id)
-    if runs:
-        return _enrich_run_summaries(runs)
+    if not runs:
+        if not _is_configured():
+            return []
 
-    if not _is_configured():
-        return []
+        base_cols = (
+            "run_id, space_id, status, started_at, completed_at, best_accuracy, "
+            "best_iteration, convergence_reason, triggered_by, llm_model"
+        )
+        suffix = (
+            "(config_snapshot IS NOT NULL AND length(config_snapshot) > 2) "
+            "AS has_config_snapshot"
+        )
+        table = _delta_table("genie_opt_runs")
+        try:
+            runs = _delta_query(
+                f"SELECT {base_cols}, benchmark_policy, benchmark_mutation_count, "
+                f"{suffix} FROM {table} WHERE space_id = '{space_id}' "
+                "ORDER BY started_at DESC",
+                strict=True,
+            )
+        except Exception:
+            # History remains readable before the next run executes the additive
+            # migration. Legacy rows surface their benchmark handling as unknown.
+            runs = _delta_query(
+                f"SELECT {base_cols}, {suffix} FROM {table} "
+                f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
+            )
 
-    base_cols = (
-        "run_id, space_id, status, started_at, completed_at, best_accuracy, "
-        "best_iteration, convergence_reason, triggered_by, llm_model"
+    hidden_run_ids = await workbench_lakebase.get_hidden_optimization_run_ids(space_id)
+    visible_runs = [
+        run for run in runs
+        if str(run.get("run_id") or "") not in hidden_run_ids
+    ]
+    return _enrich_run_summaries(visible_runs)
+
+
+async def _load_run_for_history_removal(run_id: str) -> dict | None:
+    """Load the authoritative run envelope needed to authorize a removal."""
+    run = await gso_lakebase.load_gso_run(run_id)
+    if run or not _is_configured():
+        return run
+    rows = await _delta_query_async(
+        f"SELECT run_id, space_id, status FROM {_delta_table('genie_opt_runs')} "
+        f"WHERE run_id = '{run_id}' LIMIT 1",
+        strict=True,
     )
-    suffix = (
-        "(config_snapshot IS NOT NULL AND length(config_snapshot) > 2) "
-        "AS has_config_snapshot"
-    )
-    table = _delta_table("genie_opt_runs")
-    try:
-        rows = _delta_query(
-            f"SELECT {base_cols}, benchmark_policy, benchmark_mutation_count, "
-            f"{suffix} FROM {table} WHERE space_id = '{space_id}' "
-            "ORDER BY started_at DESC",
-            strict=True,
-        )
-    except Exception:
-        # History remains readable before the next run executes the additive
-        # migration. Legacy rows surface their benchmark handling as unknown.
-        rows = _delta_query(
-            f"SELECT {base_cols}, {suffix} FROM {table} "
-            f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
-        )
-    return _enrich_run_summaries(rows)
+    return rows[0] if rows else None
 
 
 @router.get("/spaces/{space_id}/runs")
 async def list_runs_for_space(space_id: SpaceId):
     """List past optimization runs for a space."""
     return await load_runs_with_fallback(space_id)
+
+
+@router.delete("/runs/{run_id}/history-entry")
+async def remove_run_from_history(run_id: RunId, request: Request):
+    """Hide a terminal run from Workbench history without deleting GSO audit data."""
+    try:
+        run = await _load_run_for_history_removal(run_id)
+    except Exception as exc:
+        logger.warning("Failed to load run %s for history removal: %s", run_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Optimization history is temporarily unavailable.",
+        ) from exc
+
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    status = str(run.get("status") or "").upper()
+    if status in _ACTIVE_RUN_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="An active optimization run cannot be removed from history.",
+        )
+
+    space_id = str(run.get("space_id") or "")
+    if not space_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Run has no Genie Agent ID and cannot be removed from history.",
+        )
+
+    user_email = (
+        request.headers.get("x-forwarded-email")
+        or request.headers.get("x-forwarded-user")
+    )
+    user_groups = {
+        group.strip().lower()
+        for group in request.headers.get("x-forwarded-groups", "").split(",")
+        if group.strip()
+    }
+    ws = get_workspace_client()
+    sp_ws = get_service_principal_client()
+    can_edit = await _offload(
+        user_can_edit_space,
+        ws,
+        space_id,
+        user_email=user_email,
+        user_groups=user_groups,
+        acl_client=sp_ws,
+    )
+    if not can_edit:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You need CAN_EDIT or CAN_MANAGE permission on this Genie Agent "
+                "to remove its optimization history entry."
+            ),
+        )
+
+    hidden_by = user_email or os.environ.get("DEV_USER_EMAIL") or "unknown"
+    try:
+        await workbench_lakebase.hide_optimization_run_from_history(
+            run_id,
+            space_id,
+            hidden_by,
+        )
+    except Exception as exc:
+        logger.warning("Failed to persist history removal for run %s: %s", run_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="History removal could not be persisted. Please try again.",
+        ) from exc
+
+    return {
+        "status": "removed",
+        "runId": run_id,
+        "spaceId": space_id,
+        "message": "Optimization run removed from Workbench history.",
+    }
 
 
 @router.get("/runs/{run_id}/iterations")

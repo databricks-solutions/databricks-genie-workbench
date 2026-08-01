@@ -2581,6 +2581,10 @@ def _build_schema_contexts(
         f"- {_coerce_question_text(q.get('question', q) if isinstance(q, dict) else q)}"
         for q in sample_questions
     ) if sample_questions else "(none)"
+    example_sql_questions = sorted(_extract_example_sql_question_keys(config))
+    example_sql_questions_context = "\n".join(
+        f"- {question}" for question in example_sql_questions
+    ) if example_sql_questions else "(none)"
 
     columns_by_table: dict[str, list[str]] = {}
     for c in scoped_uc_columns:
@@ -2604,6 +2608,7 @@ def _build_schema_contexts(
         "join_specs_context": join_specs_context,
         "instructions_context": instructions_context,
         "sample_questions_context": sample_questions_context,
+        "example_sql_questions_context": example_sql_questions_context,
         "valid_assets_context": _build_valid_assets_context(config),
         "column_allowlist": column_allowlist,
         "data_profile_context": _format_data_profile_context(
@@ -2758,6 +2763,10 @@ def _attempt_sql_correction(
         tvfs_context=ctx.get("tvfs_context", "None"),
         join_specs_context=ctx.get("join_specs_context", "None"),
         data_profile_context=ctx.get("data_profile_context", "(no data profile available)"),
+        example_sql_questions_context=ctx.get(
+            "example_sql_questions_context",
+            "(none)",
+        ),
         benchmarks_to_fix=benchmarks_to_fix,
     )
     assert "{{ join_specs_context }}" not in prompt, (
@@ -3692,6 +3701,10 @@ def _generate_sql_for_curated_questions(
         join_specs_context=ctx.get("join_specs_context", "None"),
         instructions_context=ctx.get("instructions_context", "None"),
         data_profile_context=ctx.get("data_profile_context", "(no data profile available)"),
+        example_sql_questions_context=ctx.get(
+            "example_sql_questions_context",
+            "(none)",
+        ),
         questions_json=questions_json,
     )
 

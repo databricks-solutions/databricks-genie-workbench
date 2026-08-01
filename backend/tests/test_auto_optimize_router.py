@@ -1516,6 +1516,177 @@ def test_run_summaries_enrich_has_config_snapshot_coerced() -> None:
     assert out[4]["best_iteration"] is None
 
 
+# Workbench-only optimization history removal.
+
+
+@pytest.mark.asyncio
+async def test_hidden_runs_are_filtered_from_history_listings(monkeypatch) -> None:
+    async def load_runs(_space_id: str) -> list[dict]:
+        return [
+            {"run_id": _RUN, "status": "CONVERGED"},
+            {
+                "run_id": "87654321-4321-4321-4321-ba0987654321",
+                "status": "FAILED",
+            },
+        ]
+
+    async def hidden_ids(_space_id: str) -> set[str]:
+        return {_RUN}
+
+    monkeypatch.setattr(
+        auto_optimize.gso_lakebase,
+        "load_gso_runs_for_space",
+        load_runs,
+    )
+    monkeypatch.setattr(
+        auto_optimize.workbench_lakebase,
+        "get_hidden_optimization_run_ids",
+        hidden_ids,
+    )
+
+    runs = await auto_optimize.load_runs_with_fallback("space-1")
+
+    assert [run["run_id"] for run in runs] == [
+        "87654321-4321-4321-4321-ba0987654321"
+    ]
+
+
+def test_remove_history_entry_persists_requesting_user(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    async def load_run(_run_id: str) -> dict:
+        return {"run_id": _RUN, "space_id": "space-1", "status": "CONVERGED"}
+
+    persisted: dict[str, str] = {}
+
+    async def hide_run(run_id: str, space_id: str, hidden_by: str) -> None:
+        persisted.update(
+            run_id=run_id,
+            space_id=space_id,
+            hidden_by=hidden_by,
+        )
+
+    permission_check = MagicMock(return_value=True)
+    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
+    monkeypatch.setattr(auto_optimize, "user_can_edit_space", permission_check)
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(
+        auto_optimize,
+        "get_service_principal_client",
+        lambda: mock_sp_ws,
+    )
+    monkeypatch.setattr(
+        auto_optimize.workbench_lakebase,
+        "hide_optimization_run_from_history",
+        hide_run,
+    )
+
+    response = client.delete(
+        f"/api/auto-optimize/runs/{_RUN}/history-entry",
+        headers={
+            "x-forwarded-email": "editor@example.com",
+            "x-forwarded-groups": "Data Team, Reviewers",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "status": "removed",
+        "runId": _RUN,
+        "spaceId": "space-1",
+        "message": "Optimization run removed from Workbench history.",
+    }
+    assert persisted == {
+        "run_id": _RUN,
+        "space_id": "space-1",
+        "hidden_by": "editor@example.com",
+    }
+    permission_check.assert_called_once_with(
+        mock_user_ws,
+        "space-1",
+        user_email="editor@example.com",
+        user_groups={"data team", "reviewers"},
+        acl_client=mock_sp_ws,
+    )
+
+
+@pytest.mark.parametrize("status", ["QUEUED", "IN_PROGRESS", "RUNNING"])
+def test_remove_history_entry_rejects_active_run(
+    client, monkeypatch, status: str,
+) -> None:
+    async def load_run(_run_id: str) -> dict:
+        return {"run_id": _RUN, "space_id": "space-1", "status": status}
+
+    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
+
+    response = client.delete(f"/api/auto-optimize/runs/{_RUN}/history-entry")
+
+    assert response.status_code == 409
+    assert "active optimization run" in response.json()["detail"]
+
+
+def test_remove_history_entry_requires_edit_permission(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    async def load_run(_run_id: str) -> dict:
+        return {"run_id": _RUN, "space_id": "space-1", "status": "FAILED"}
+
+    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
+    monkeypatch.setattr(auto_optimize, "user_can_edit_space", lambda *a, **k: False)
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(
+        auto_optimize,
+        "get_service_principal_client",
+        lambda: mock_sp_ws,
+    )
+
+    response = client.delete(f"/api/auto-optimize/runs/{_RUN}/history-entry")
+
+    assert response.status_code == 403
+    assert "CAN_EDIT or CAN_MANAGE" in response.json()["detail"]
+
+
+def test_remove_history_entry_returns_not_found(client, monkeypatch) -> None:
+    async def load_run(_run_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
+
+    response = client.delete(f"/api/auto-optimize/runs/{_RUN}/history-entry")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Run not found."
+
+
+def test_remove_history_entry_fails_when_tombstone_cannot_be_persisted(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    async def load_run(_run_id: str) -> dict:
+        return {"run_id": _RUN, "space_id": "space-1", "status": "FAILED"}
+
+    async def fail_to_hide(*_args) -> None:
+        raise RuntimeError("Lakebase unavailable")
+
+    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
+    monkeypatch.setattr(auto_optimize, "user_can_edit_space", lambda *a, **k: True)
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(
+        auto_optimize,
+        "get_service_principal_client",
+        lambda: mock_sp_ws,
+    )
+    monkeypatch.setattr(
+        auto_optimize.workbench_lakebase,
+        "hide_optimization_run_from_history",
+        fail_to_hide,
+    )
+
+    response = client.delete(f"/api/auto-optimize/runs/{_RUN}/history-entry")
+
+    assert response.status_code == 503
+    assert "could not be persisted" in response.json()["detail"]
+
+
 # Item 4 — round-trip target_accuracy + max_attempts.
 
 

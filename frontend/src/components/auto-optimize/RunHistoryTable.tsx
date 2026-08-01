@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { RotateCcw, Loader2, AlertCircle, AlertTriangle, CheckCircle2, Info } from "lucide-react"
+import { RotateCcw, Loader2, AlertCircle, AlertTriangle, CheckCircle2, Info, Trash2 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -15,6 +15,7 @@ import {
   getAutoOptimizeRevertOptions,
   getAutoOptimizeRunsForSpace,
   getCurrentVersion,
+  removeAutoOptimizeRunFromHistory,
   revertAutoOptimizeRun,
 } from "@/lib/api"
 import {
@@ -74,6 +75,23 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
 
   useEffect(() => {
     let cancelled = false
+    let versionRequestInFlight = false
+
+    function loadCurrentVersion(refresh = false) {
+      if (versionRequestInFlight) return
+      versionRequestInFlight = true
+      getCurrentVersion(spaceId, refresh)
+        .then((res) => {
+          if (!cancelled) setCurrentVersion(res)
+        })
+        .catch(() => {
+          if (!cancelled) setCurrentVersion(null)
+        })
+        .finally(() => {
+          versionRequestInFlight = false
+        })
+    }
+
     getAutoOptimizeRunsForSpace(spaceId)
       .then((res) => {
         if (!cancelled) setRuns(res)
@@ -86,15 +104,21 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
       })
     // Independent fetch — the table renders immediately; the live-version
     // badge resolves when the fingerprint check completes.
-    getCurrentVersion(spaceId)
-      .then((res) => {
-        if (!cancelled) setCurrentVersion(res)
-      })
-      .catch(() => {
-        if (!cancelled) setCurrentVersion(null)
-      })
+    loadCurrentVersion()
+
+    // Genie opens in a separate tab for direct edits. Force a fresh live GET
+    // when the user returns so an external config or benchmark change is not
+    // hidden by the short backend cache or the component's previous result.
+    function handlePageReturn() {
+      if (document.visibilityState === "visible") loadCurrentVersion(true)
+    }
+    window.addEventListener("focus", handlePageReturn)
+    document.addEventListener("visibilitychange", handlePageReturn)
+
     return () => {
       cancelled = true
+      window.removeEventListener("focus", handlePageReturn)
+      document.removeEventListener("visibilitychange", handlePageReturn)
     }
   }, [spaceId])
 
@@ -109,8 +133,16 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
       .catch(() => setCurrentVersion(null))
   }
 
+  function removeRunFromView(runId: string) {
+    setRuns((current) => current.filter((run) => run.run_id !== runId))
+  }
+
   const liveMatch =
     currentVersion?.status === "matched" ? currentVersion.current ?? null : null
+  const showDimensionMatches =
+    currentVersion?.status === "mixed" || currentVersion?.status === "drifted"
+  const configMatch = showDimensionMatches ? currentVersion.config_match ?? null : null
+  const benchmarkMatch = showDimensionMatches ? currentVersion.benchmark_match ?? null : null
 
   return (
     <Card>
@@ -125,8 +157,19 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
         ) : (
           <>
           {currentVersion?.status === "drifted" && (
-            <DriftBanner liveUpdateTime={currentVersion.live_update_time} />
+            <DriftBanner
+              dimensions={currentVersion.drifted_dimensions ?? []}
+              liveUpdateTime={currentVersion.live_update_time}
+            />
           )}
+          {currentVersion?.status === "mixed" &&
+            currentVersion.config_match &&
+            currentVersion.benchmark_match && (
+              <MixedStateBanner
+                configMatch={currentVersion.config_match}
+                benchmarkMatch={currentVersion.benchmark_match}
+              />
+            )}
           {currentVersion?.status === "history_incomplete" && (
             <HistoryIncompleteBanner />
           )}
@@ -159,6 +202,12 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                           equivalents={currentVersion?.also_matches ?? []}
                         />
                       )}
+                      {configMatch?.run_id === run.run_id && (
+                        <LiveDimensionBadge dimension="config" current={configMatch} />
+                      )}
+                      {benchmarkMatch?.run_id === run.run_id && (
+                        <LiveDimensionBadge dimension="benchmarks" current={benchmarkMatch} />
+                      )}
                     </div>
                   </TableCell>
                   <TableCell
@@ -182,13 +231,20 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                     </button>
                   </TableCell>
                   <TableCell className="align-top">
-                    {(hasRevertibleChampion(run) || run.has_config_snapshot !== false) && (
-                      <RevertOptionsButton
+                    <div className="flex flex-col items-start gap-2">
+                      {(hasRevertibleChampion(run) || run.has_config_snapshot !== false) && (
+                        <RevertOptionsButton
+                          run={run}
+                          disabled={hasActiveRun}
+                          onReverted={refreshRuns}
+                        />
+                      )}
+                      <RemoveHistoryButton
                         run={run}
-                        disabled={hasActiveRun}
-                        onReverted={refreshRuns}
+                        disabled={hasActiveOptimizationRun([run])}
+                        onRemoved={removeRunFromView}
                       />
-                    )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -235,6 +291,12 @@ interface RevertOptionsButtonProps {
   onReverted: () => void
 }
 
+interface RemoveHistoryButtonProps {
+  run: GSORunSummary
+  disabled: boolean
+  onRemoved: (runId: string) => void
+}
+
 export function BenchmarkPolicyCell({ run }: { run: GSORunSummary }) {
   const count = run.benchmark_mutation_count ?? 0
   if (run.benchmark_policy === "review_only") {
@@ -254,6 +316,86 @@ export function BenchmarkPolicyCell({ run }: { run: GSORunSummary }) {
     )
   }
   return <span className="text-xs text-muted">Legacy / unknown</span>
+}
+
+/** Workbench-only removal: preserve the GSO Delta audit trail and live Agent. */
+export function RemoveHistoryButton({ run, disabled, onRemoved }: RemoveHistoryButtonProps) {
+  const [open, setOpen] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function doRemove() {
+    if (disabled || pending) return
+    setPending(true)
+    setError(null)
+    try {
+      await removeAutoOptimizeRunFromHistory(run.run_id)
+      setOpen(false)
+      onRemoved(run.run_id)
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : "Failed to remove the optimization run from history.",
+      )
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => {
+          if (!disabled) {
+            setError(null)
+            setOpen(true)
+          }
+        }}
+        disabled={disabled}
+        title={disabled ? "Wait for this optimization run to finish before removing it from history." : undefined}
+        className="flex items-center gap-1.5 rounded-md border border-danger/40 px-2.5 py-1.5 text-xs font-medium text-danger-foreground transition-colors hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+        Remove from history
+      </button>
+
+      <AlertDialog open={open} onOpenChange={(next) => !pending && setOpen(next)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove optimization run from history?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the run from Workbench Optimization History and the History chart for everyone. It does not change the live Genie Agent, delete the Databricks workflow run, or purge GSO audit records.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {error && (
+            <p className="mt-4 flex items-start gap-1.5 text-xs text-danger-foreground">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {error}
+            </p>
+          )}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending} onClick={() => setOpen(false)}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={pending}
+              onClick={(event) => {
+                event.preventDefault()
+                void doRemove()
+              }}
+              className="bg-red-600 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              Remove from history
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
 }
 
 /** One history action opens both independent revert dimensions. */
@@ -490,9 +632,8 @@ function formatMatchDate(iso?: string | null): string {
 }
 
 /**
- * Green pill on the history row whose captured config the live agent currently
- * matches ("Live — baseline" / "Live — champion"). Byte-identical equivalents
- * (e.g. run 2's baseline IS run 1's champion) are listed in the tooltip.
+ * Green pill on the history row whose config and benchmarks both match the
+ * live agent. Equivalent complete versions are listed in the tooltip.
  */
 export function LiveVersionBadge({
   current,
@@ -513,7 +654,7 @@ export function LiveVersionBadge({
     <Badge
       variant="success"
       className="gap-1.5"
-      title={`The live agent configuration currently matches this run's ${current.target} config.${equivText}`}
+      title={`The live agent configuration and benchmarks currently match this run's ${current.target} state.${equivText}`}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
       Live — {current.target}
@@ -522,17 +663,75 @@ export function LiveVersionBadge({
 }
 
 /**
- * Amber warning shown when the live agent config matches no known optimization
- * version — i.e. it was changed outside Auto-Optimize (Genie UI, API, …).
+ * Pill for one independently matched component of a mixed or partially drifted
+ * live state.
  */
-export function DriftBanner({ liveUpdateTime }: { liveUpdateTime?: string | null }) {
+export function LiveDimensionBadge({
+  dimension,
+  current,
+}: {
+  dimension: "config" | "benchmarks"
+  current: VersionMatch
+}) {
+  const label = dimension === "config" ? "config" : "benchmarks"
+  const verb = dimension === "config" ? "matches" : "match"
+  return (
+    <Badge
+      variant={dimension === "config" ? "info" : "secondary"}
+      title={`The live agent ${label} ${verb} this run's ${current.target} state.`}
+    >
+      Live {label} — {current.target}
+    </Badge>
+  )
+}
+
+/** Neutral notice when both live components are known but come from different versions. */
+export function MixedStateBanner({
+  configMatch,
+  benchmarkMatch,
+}: {
+  configMatch: VersionMatch
+  benchmarkMatch: VersionMatch
+}) {
+  const configDate = formatMatchDate(configMatch.started_at)
+  const benchmarkDate = formatMatchDate(benchmarkMatch.started_at)
+  return (
+    <div className="mb-3 flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-primary">
+      <Info className="mt-0.5 h-4 w-4 shrink-0 text-info-foreground" />
+      <p>
+        The live agent combines the {configMatch.target} config
+        {configDate ? ` from the ${configDate} run` : ""} with {" "}
+        {benchmarkMatch.target} benchmarks
+        {benchmarkDate ? ` from the ${benchmarkDate} run` : ""}. Both are known
+        states, but they come from different optimization versions.
+      </p>
+    </div>
+  )
+}
+
+/** Amber warning when one or both live components match no known version. */
+export function DriftBanner({
+  dimensions,
+  liveUpdateTime,
+}: {
+  dimensions: Array<"config" | "benchmarks">
+  liveUpdateTime?: string | null
+}) {
   const when = formatMatchDate(liveUpdateTime)
+  const subject =
+    dimensions.length === 1 && dimensions[0] === "config"
+      ? "configuration"
+      : dimensions.length === 1 && dimensions[0] === "benchmarks"
+        ? "benchmarks"
+        : "configuration and benchmarks"
+  const plural = subject !== "configuration"
   return (
     <div className="mb-3 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-primary">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
       <p>
-        The live agent configuration doesn&rsquo;t match any known optimization version
-        &mdash; it was changed outside Auto-Optimize{when ? ` (last modified ${when})` : ""}.
+        The live agent {subject} {plural ? "don’t" : "doesn’t"} match any known
+        optimization version &mdash; {plural ? "they were" : "it was"} changed
+        outside Auto-Optimize{when ? ` (last modified ${when})` : ""}.
       </p>
     </div>
   )
@@ -544,8 +743,8 @@ export function HistoryIncompleteBanner() {
     <div className="mb-3 flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
       <Info className="mt-0.5 h-4 w-4 shrink-0" />
       <p>
-        Some optimization versions predate authoritative configuration capture,
-        so the current live version can&rsquo;t be determined reliably.
+        Some optimization versions predate authoritative configuration or benchmark capture,
+        so the current live state can&rsquo;t be determined reliably.
       </p>
     </div>
   )

@@ -6,6 +6,7 @@ import {
   getAutoOptimizePublishRecord,
   getAutoOptimizeRevertOptions,
   getModels,
+  removeAutoOptimizeRunFromHistory,
   revertAutoOptimizeRun,
   streamAgentChat,
   triggerAutoOptimize,
@@ -249,6 +250,25 @@ describe("model selection API payloads", () => {
       "/api/auto-optimize/runs/run/revert?config_target=champion&benchmark_target=champion",
     )
     expect(options).toEqual(expect.objectContaining({ method: "POST" }))
+  })
+
+  it("removes an optimization history entry with DELETE", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        status: "removed",
+        runId: "run",
+        spaceId: "space",
+        message: "ok",
+      }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await removeAutoOptimizeRunFromHistory("run")
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toBe("/api/auto-optimize/runs/run/history-entry")
+    expect(options).toEqual(expect.objectContaining({ method: "DELETE" }))
   })
 
   it("sends model in Create Agent chat request", async () => {

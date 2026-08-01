@@ -528,3 +528,221 @@ def test_legitimate_where_and_from_are_not_deterministically_rejected(monkeypatc
     assert result["excluded"] == []
     assert result["accepted"][0]["question"] == question
     assert result["counts"]["trusted"] == 1
+
+
+def test_ground_truth_stability_checks_detect_unsafe_sql() -> None:
+    def codes(sql: str) -> set[str]:
+        return {
+            finding["code"]
+            for finding in quality._deterministic_sql_findings(
+                {"question": "Question", "expected_sql": sql},
+                question_id="q1",
+            )
+        }
+
+    assert "UNORDERED_LIMIT" in codes("SELECT id FROM orders LIMIT 10")
+    assert "UNORDERED_LIMIT" in codes(
+        "SELECT * FROM (SELECT id FROM orders LIMIT 10) limited"
+    )
+    assert "UNORDERED_LIMIT" not in codes(
+        "SELECT id FROM orders ORDER BY revenue DESC, id LIMIT 10"
+    )
+    assert "NONDETERMINISTIC_SQL" in codes("SELECT id FROM orders ORDER BY RAND()")
+    assert "NONDETERMINISTIC_SQL" in codes("SELECT * FROM orders TABLESAMPLE (10 PERCENT)")
+    assert "VOLATILE_TIME_REFERENCE" in codes(
+        "SELECT * FROM orders WHERE order_date >= CURRENT_DATE() - INTERVAL 7 DAYS"
+    )
+
+
+def test_ground_truth_stability_checks_ignore_identifier_names() -> None:
+    def codes(sql: str) -> set[str]:
+        return {
+            finding["code"]
+            for finding in quality._deterministic_sql_findings(
+                {"question": "Question", "expected_sql": sql},
+                question_id="q1",
+            )
+        }
+
+    assert "NONDETERMINISTIC_SQL" not in codes(
+        "SELECT sample FROM sample_orders"
+    )
+    assert "NONDETERMINISTIC_SQL" not in codes(
+        "SELECT `sample` FROM `sample`"
+    )
+    assert "UNORDERED_LIMIT" not in codes(
+        "SELECT `limit` FROM account_limits"
+    )
+
+
+def test_volatile_time_reference_is_advisory(monkeypatch) -> None:
+    _patch_deterministic_checks(monkeypatch)
+    monkeypatch.setattr(quality, "_llm_review", lambda *_args, **_kwargs: ([], set()))
+
+    result = quality.review_benchmark_quality(
+        [{
+            "id": "q1",
+            "question": "Show orders from the last seven days",
+            "expected_sql": (
+                "SELECT order_id FROM orders "
+                "WHERE order_date >= CURRENT_DATE() - INTERVAL 7 DAYS"
+            ),
+        }],
+        object(),
+        config={},
+    )
+
+    assert result["benchmark_results"][0]["disposition"] == "warning"
+    assert result["findings"][0]["code"] == "VOLATILE_TIME_REFERENCE"
+    assert result["findings"][0]["recommended_action"] == "review_temporal_ground_truth"
+
+
+def test_unordered_limit_is_excluded_before_semantic_review(monkeypatch) -> None:
+    _patch_deterministic_checks(monkeypatch)
+    semantic_called = False
+
+    def semantic_review(*_args, **_kwargs):
+        nonlocal semantic_called
+        semantic_called = True
+        return [], set()
+
+    monkeypatch.setattr(quality, "_llm_review", semantic_review)
+    result = quality.review_benchmark_quality(
+        [{
+            "id": "q1",
+            "question": "Show ten customers",
+            "expected_sql": "SELECT customer_id FROM customers LIMIT 10",
+        }],
+        object(),
+        config={},
+    )
+
+    assert semantic_called is False
+    assert result["benchmark_results"][0]["disposition"] == "excluded"
+    assert result["findings"][0]["code"] == "UNORDERED_LIMIT"
+
+
+def test_safe_data_value_correction_is_actionable_warning(monkeypatch) -> None:
+    _patch_deterministic_checks(monkeypatch)
+    monkeypatch.setattr(
+        quality,
+        "validate_predicate_values",
+        lambda *_args, **_kwargs: [{
+            "valid": False,
+            "mismatches": [{
+                "table": "cat.sch.orders",
+                "column": "state_code",
+                "literal": "California",
+                "profiled_values": ["CA"],
+                "suggestion": "CA",
+            }],
+        }],
+    )
+    monkeypatch.setattr(quality, "_llm_review", lambda *_args, **_kwargs: ([], set()))
+    benchmark = {
+        "id": "q1",
+        "question": "Show California orders",
+        "expected_sql": "SELECT order_id FROM orders WHERE state_code = 'California'",
+    }
+    result = quality.review_benchmark_quality(
+        [benchmark],
+        object(),
+        config={"_data_profile": {"orders": {"columns": {}}}},
+    )
+
+    assert result["benchmark_results"][0]["disposition"] == "warning"
+    finding = result["findings"][0]
+    assert finding["code"] == "DATA_VALUE_MISMATCH"
+    assert finding["proposed_sql"].endswith("state_code = 'CA'")
+    repaired, _change = quality.build_actionable_warning_repair(
+        benchmark,
+        result["benchmark_results"][0],
+    )
+    assert repaired is not None
+    assert repaired["expected_sql"].endswith("state_code = 'CA'")
+
+
+def test_value_access_gap_distinguishes_agent_metadata_from_bad_sql() -> None:
+    benchmark = {
+        "id": "q1",
+        "question": "Show customers in California",
+        "expected_sql": (
+            "SELECT customer_id FROM cat.sch.customers c WHERE c.state_code = 'CA'"
+        ),
+    }
+    config = {
+        "_parsed_space": {
+            "data_sources": {
+                "tables": [{
+                    "identifier": "cat.sch.customers",
+                    "column_configs": [{
+                        "column_name": "state_code",
+                        "enable_format_assistance": False,
+                        "enable_entity_matching": False,
+                    }],
+                }],
+            },
+        },
+    }
+
+    findings = quality._value_access_findings(
+        benchmark,
+        question_id="q1",
+        config=config,
+    )
+    assert len(findings) == 1
+    assert findings[0]["code"] == "VALUE_ACCESS_GAP"
+    assert findings[0]["recommended_action"] == "enable_value_matching"
+    assert findings[0]["evidence"]["implicit_sql_values"] == ["CA"]
+
+    config["_parsed_space"]["data_sources"]["tables"][0]["column_configs"][0][
+        "enable_entity_matching"
+    ] = True
+    assert quality._value_access_findings(
+        benchmark,
+        question_id="q1",
+        config=config,
+    ) == []
+
+
+def test_value_access_gap_detects_configured_asset_without_column_configs() -> None:
+    benchmark = {
+        "id": "q1",
+        "question": "Show customers in California",
+        "expected_sql": (
+            "SELECT customer_id FROM cat.sch.customers c WHERE c.state_code = 'CA'"
+        ),
+    }
+    config = {
+        "_parsed_space": {
+            "data_sources": {
+                "tables": [{"identifier": "cat.sch.customers"}],
+            },
+        },
+    }
+
+    findings = quality._value_access_findings(
+        benchmark,
+        question_id="q1",
+        config=config,
+    )
+
+    assert [finding["code"] for finding in findings] == ["VALUE_ACCESS_GAP"]
+    assert findings[0]["evidence"]["column"] == "state_code"
+
+
+def test_format_coverage_reports_missing_and_complete_corpora() -> None:
+    complete = [
+        {"category": "aggregation", "question": "Total sales", "expected_sql": "SELECT SUM(x)"},
+        {"category": "detail", "question": "What is customer A's status?", "expected_sql": "SELECT status"},
+        {"category": "comparison", "question": "Compare A versus B", "expected_sql": "SELECT 1"},
+        {"category": "time-series", "question": "Sales last month", "expected_sql": "SELECT 1"},
+        {"category": "ranking", "question": "Top customers", "expected_sql": "SELECT 1 ORDER BY x LIMIT 5"},
+    ]
+    covered = quality.review_benchmark_format_coverage(complete)
+    assert covered["missing"] == []
+    assert covered["findings"] == []
+
+    incomplete = quality.review_benchmark_format_coverage(complete[:2])
+    assert set(incomplete["missing"]) == {"comparison", "time_filter", "top_n"}
+    assert incomplete["findings"][0]["code"] == "MISSING_QUESTION_FORMAT"
