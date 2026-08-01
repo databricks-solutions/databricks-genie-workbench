@@ -325,8 +325,10 @@ def test_revert_preserves_live_benchmarks_byte_for_byte(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("config_target", "benchmark_target", "expected_instruction", "expected_qid"),
     [
+        ("champion", "champion", "champion config", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         ("champion", "current", "champion config", "cccccccccccccccccccccccccccccccc"),
         ("champion", "baseline", "champion config", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ("baseline", "champion", "baseline config", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         ("baseline", "current", "baseline config", "cccccccccccccccccccccccccccccccc"),
         ("baseline", "baseline", "baseline config", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
     ],
@@ -338,7 +340,7 @@ def test_revert_composes_config_and_benchmark_targets_independently(
     expected_instruction: str,
     expected_qid: str,
 ) -> None:
-    """The modal's two selectors form four deterministic revert operations."""
+    """The modal's two selectors form six deterministic revert operations."""
     cfg = _config()
     ws, sp_ws = _ws(), MagicMock(name="sp_ws")
     baseline = {
@@ -357,7 +359,6 @@ def test_revert_composes_config_and_benchmark_targets_independently(
         "version": 2,
         "data_sources": {"tables": []},
         "instructions": {"text_instructions": [{"content": "champion config"}]},
-        # This historical champion block must never leak through either scope.
         "benchmarks": {"questions": [
             _live_benchmark(
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -454,11 +455,20 @@ def test_preview_revert_options_reports_availability_and_benchmark_diff(
         "config_snapshot": json.dumps({"serialized_space": baseline}),
     }
     monkeypatch.setattr(revert, "wh_load_run", lambda *a, **k: run)
+    champion = _champion_config()
+    champion["serialized_space"]["benchmarks"] = {"questions": [
+        _live_benchmark(
+            "44444444444444444444444444444444",
+            "champion only",
+            "SELECT 4",
+        ),
+        _live_benchmark(shared_id, "shared", "SELECT 'champion'"),
+    ]}
     monkeypatch.setattr(
         revert,
         "sql_warehouse_query",
         lambda *a, **k: pd.DataFrame([{
-            "config_json": json.dumps(_champion_config()),
+            "config_json": json.dumps(champion),
         }]),
     )
     _patch_patch_space_config(monkeypatch, live_config=live)
@@ -467,13 +477,23 @@ def test_preview_revert_options_reports_availability_and_benchmark_diff(
 
     assert preview["championAvailable"] is True
     assert preview["baselineAvailable"] is True
+    assert preview["benchmarkChampionAvailable"] is True
     assert preview["benchmarkBaselineAvailable"] is True
-    assert preview["benchmarkDiff"] == {
-        "currentCount": 2,
-        "baselineCount": 2,
-        "willAdd": 1,
-        "willRemove": 1,
-        "willChange": 1,
+    assert preview["benchmarkDiffs"] == {
+        "champion": {
+            "currentCount": 2,
+            "targetCount": 2,
+            "willAdd": 1,
+            "willRemove": 1,
+            "willChange": 1,
+        },
+        "baseline": {
+            "currentCount": 2,
+            "targetCount": 2,
+            "willAdd": 1,
+            "willRemove": 1,
+            "willChange": 1,
+        },
     }
 
 

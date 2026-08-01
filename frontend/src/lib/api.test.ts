@@ -201,13 +201,23 @@ describe("model selection API payloads", () => {
       spaceId: "space",
       championAvailable: true,
       baselineAvailable: true,
+      benchmarkChampionAvailable: true,
       benchmarkBaselineAvailable: true,
-      benchmarkDiff: {
-        currentCount: 12,
-        baselineCount: 10,
-        willAdd: 1,
-        willRemove: 3,
-        willChange: 2,
+      benchmarkDiffs: {
+        champion: {
+          currentCount: 12,
+          targetCount: 11,
+          willAdd: 2,
+          willRemove: 3,
+          willChange: 1,
+        },
+        baseline: {
+          currentCount: 12,
+          targetCount: 10,
+          willAdd: 1,
+          willRemove: 3,
+          willChange: 2,
+        },
       },
     }
     const fetchMock = vi.fn(async () => ({
@@ -230,13 +240,13 @@ describe("model selection API payloads", () => {
     vi.stubGlobal("fetch", fetchMock)
 
     await revertAutoOptimizeRun("run", {
-      configTarget: "baseline",
-      benchmarkTarget: "baseline",
+      configTarget: "champion",
+      benchmarkTarget: "champion",
     })
 
     const [url, options] = fetchMock.mock.calls[0]
     expect(url).toBe(
-      "/api/auto-optimize/runs/run/revert?config_target=baseline&benchmark_target=baseline",
+      "/api/auto-optimize/runs/run/revert?config_target=champion&benchmark_target=champion",
     )
     expect(options).toEqual(expect.objectContaining({ method: "POST" }))
   })

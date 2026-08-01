@@ -166,6 +166,21 @@ def test_repair_task_uses_canonical_quality_review_and_persists_findings():
     assert '"semantic_review_coverage"' in src
 
 
+def test_repair_task_allows_cascading_warning_repairs():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_benchmark_qc_and_repair.py"
+    ).read_text()
+
+    assert "_warning_repair_attempted_ids" not in src
+    assert "_warning_repair_rounds_by_id" in src
+    assert '"warning_repair_rounds": dict(_warning_repair_rounds_by_id)' in src
+    assert '_quality_result_for_benchmark(benchmark).get("disposition")' in src
+
+
 def test_benchmark_qc_is_a_required_verified_handoff():
     jobs_dir = (
         _PKG_ROOT

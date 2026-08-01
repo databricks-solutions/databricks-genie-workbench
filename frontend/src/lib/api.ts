@@ -473,7 +473,7 @@ export async function revertAutoOptimizeRun(
   runId: string,
   options: {
     configTarget: "champion" | "baseline"
-    benchmarkTarget: "current" | "baseline"
+    benchmarkTarget: "current" | "champion" | "baseline"
   } = { configTarget: "champion", benchmarkTarget: "current" },
 ): Promise<{ status: string; runId: string; message: string }> {
   const query = new URLSearchParams({

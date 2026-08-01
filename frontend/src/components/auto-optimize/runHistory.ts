@@ -1,4 +1,10 @@
-import type { GSORunSummary, GSOTerminalReason } from "@/types"
+import type {
+  GSORevertBenchmarkTarget,
+  GSORevertConfigTarget,
+  GSORevertOptions,
+  GSORunSummary,
+  GSOTerminalReason,
+} from "@/types"
 
 const ACTIVE_RUN_STATUSES = new Set(["IN_PROGRESS", "RUNNING", "QUEUED"])
 
@@ -23,6 +29,23 @@ export function hasRevertibleChampion(run: GSORunSummary): boolean {
     && typeof accuracy === "number"
     && Number.isFinite(accuracy)
   )
+}
+
+/** Default to a complete historical state instead of mixing it with live benchmarks. */
+export function defaultRevertTargets(options: GSORevertOptions): {
+  configTarget: GSORevertConfigTarget
+  benchmarkTarget: GSORevertBenchmarkTarget
+} {
+  if (options.championAvailable) {
+    return {
+      configTarget: "champion",
+      benchmarkTarget: options.benchmarkChampionAvailable ? "champion" : "current",
+    }
+  }
+  return {
+    configTarget: "baseline",
+    benchmarkTarget: options.benchmarkBaselineAvailable ? "baseline" : "current",
+  }
 }
 
 // ---------------------------------------------------------------------------

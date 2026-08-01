@@ -47,6 +47,14 @@ subset. Wording that is weak but still has one defensible answer remains
 eligible with a warning. A semantic-review outage is recorded as
 `review_not_run`; it is never silently reported as a successful review.
 
+Repair-enabled runs re-review every changed benchmark. If rewriting a question
+reveals a follow-up expected-SQL correction, GSO applies that correction in a
+later bounded repair round and reviews the result again. A benchmark leaves the
+repair loop only when it passes, has no coherent actionable proposal, or
+exhausts the configured repair limit. The reported repaired count includes only
+benchmarks that finish trusted; the mutation ledger separately records every
+question or SQL change that was actually published.
+
 Generation targets 30 valid questions. A run may proceed with fewer when
 generation or bounded repair cannot reach that ideal. At least 15 valid
 questions are required to optimize; 15–29 is accepted with 30 still treated as
@@ -153,11 +161,13 @@ benchmark additions or SQL updates it made.
 One **Revert Options** action opens a dialog with two independent choices:
 
 - **Agent config:** restore the run's champion or its pre-run baseline.
-- **Benchmarks:** preserve the current live benchmark block or restore the
-  run's pre-run baseline benchmark block.
+- **Benchmarks:** restore the champion iteration's benchmark block, preserve
+  the current live benchmark block, or restore the run's pre-run baseline
+  benchmark block.
 
-The dialog previews how many benchmarks a baseline restore will add, remove,
-or update and requires confirmation before replacing the live Agent. A history
+The dialog defaults to restoring both the champion config and its benchmarks.
+It previews how many benchmarks either historical snapshot will add, remove, or
+update and requires confirmation before replacing the live Agent. A history
 revert does not change the historical run status. Champion config restores the
 captured post-enrichment description when available; legacy runs preserve the
 current description.

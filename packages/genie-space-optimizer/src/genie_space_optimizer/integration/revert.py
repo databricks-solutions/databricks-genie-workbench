@@ -13,6 +13,8 @@ optimization run:
   what the space looked like before this optimization ran. Lets a user ditch
   a champion they don't like and jump back to the starting point.
 * ``benchmark_target="current"`` — preserve the current live benchmark block.
+* ``benchmark_target="champion"`` — restore the champion iteration's benchmark
+  block.
 * ``benchmark_target="baseline"`` — restore the pre-run benchmark block.
 
 Unlike :func:`genie_space_optimizer.integration.discard.discard_optimization`,
@@ -42,7 +44,7 @@ from .types import ActionResult
 logger = logging.getLogger(__name__)
 
 RevertTarget = Literal["champion", "baseline"]
-BenchmarkRevertTarget = Literal["current", "baseline"]
+BenchmarkRevertTarget = Literal["current", "champion", "baseline"]
 
 # Non-terminal statuses — reverting to a still-running run's snapshot is racy
 # (the active pipeline is mutating the live space), so callers should refuse.
@@ -70,6 +72,7 @@ def revert_optimization(
             iteration's full effective config) or ``"baseline"`` (the run's
             pre-run ``config_snapshot``).
         benchmark_target: ``"current"`` preserves the live benchmark block;
+            ``"champion"`` restores the winning iteration's benchmark block;
             ``"baseline"`` restores the pre-run benchmark block independently
             of the selected agent configuration target.
 
@@ -118,25 +121,34 @@ def revert_optimization(
         config=config,
     )
 
-    if benchmark_target not in {"current", "baseline"}:
+    if benchmark_target not in {"current", "champion", "baseline"}:
         raise ValueError(
-            "benchmark_target must be 'current' or 'baseline'."
+            "benchmark_target must be 'current', 'champion', or 'baseline'."
         )
 
     baseline_snapshot = _load_baseline_config(run_data)
+    baseline_config = _as_serialized_space_config(baseline_snapshot)
+    champion_config = None
+    if target == "champion" or benchmark_target == "champion":
+        champion_config = _as_serialized_space_config(
+            _load_champion_config(
+                sp_ws,
+                config.warehouse_id,
+                config.catalog,
+                config.schema_name,
+                run_id,
+            )
+        )
 
     if target == "baseline":
-        target_snapshot = baseline_snapshot
-        target_config = target_snapshot
-        target_description = _description_from_snapshot(target_snapshot)
+        target_config = baseline_config
+        target_description = _description_from_snapshot(baseline_snapshot)
         source = "run baseline (genie_opt_runs.config_snapshot)"
         missing_hint = (
             "This run has no baseline configuration snapshot to revert to."
         )
     else:
-        target_config = _load_champion_config(
-            sp_ws, config.warehouse_id, config.catalog, config.schema_name, run_id,
-        )
+        target_config = champion_config
         target_description = _load_champion_description(
             sp_ws, config.warehouse_id, config.catalog, config.schema_name, run_id,
         )
@@ -147,7 +159,6 @@ def revert_optimization(
             "Try reverting to the baseline instead."
         )
 
-    target_config = _as_serialized_space_config(target_config)
     if not target_config or not isinstance(target_config, dict):
         raise ValueError(missing_hint)
 
@@ -162,15 +173,19 @@ def revert_optimization(
             "Cannot safely revert without capturing the live Genie Agent state."
         )
     live_description = _description_from_snapshot(live_snapshot)
-    baseline_config = _as_serialized_space_config(baseline_snapshot)
     if benchmark_target == "baseline" and not baseline_config:
         raise ValueError(
             "This run has no pre-run benchmark snapshot to restore."
+        )
+    if benchmark_target == "champion" and not champion_config:
+        raise ValueError(
+            "This run has no champion benchmark snapshot to restore."
         )
     target_config = _compose_revert_benchmarks(
         target_config,
         space_id=space_id,
         live_config=live_config,
+        champion_config=champion_config,
         baseline_config=baseline_config,
         benchmark_target=benchmark_target,
     )
@@ -190,13 +205,16 @@ def revert_optimization(
         "(source=%s).",
         space_id, run_id, target, benchmark_target, source,
     )
+    benchmark_message = {
+        "current": "current benchmarks preserved.",
+        "champion": "benchmarks restored to the champion iteration.",
+        "baseline": "benchmarks restored to the pre-run baseline.",
+    }[benchmark_target]
     return ActionResult(
         status="reverted",
         run_id=run_id,
-        message=(
-            f"Genie Agent reverted to this run's {target} configuration; "
-            f"benchmarks {'preserved' if benchmark_target == 'current' else 'restored to the pre-run baseline'}."
-        ),
+        message=f"Genie Agent reverted to this run's {target} configuration; "
+        f"{benchmark_message}",
     )
 
 
@@ -310,12 +328,17 @@ def _compose_revert_benchmarks(
     *,
     space_id: str,
     live_config: dict,
+    champion_config: dict | None,
     baseline_config: dict | None,
     benchmark_target: BenchmarkRevertTarget,
 ) -> dict:
     """Compose the independently selected benchmark scope into a revert."""
     target = copy.deepcopy(target_config)
-    source_config = live_config if benchmark_target == "current" else (baseline_config or {})
+    source_config = {
+        "current": live_config,
+        "champion": champion_config or {},
+        "baseline": baseline_config or {},
+    }[benchmark_target]
     benchmarks = source_config.get("benchmarks")
     if isinstance(benchmarks, dict):
         target["benchmarks"] = copy.deepcopy(benchmarks)
@@ -342,7 +365,7 @@ def preview_revert_options(
     sp_ws: WorkspaceClient,
     config: IntegrationConfig,
 ) -> dict:
-    """Return target availability and the live-to-baseline benchmark diff."""
+    """Return target availability and live-to-snapshot benchmark diffs."""
     run_data = wh_load_run(
         sp_ws, config.warehouse_id, run_id, config.catalog, config.schema_name,
     )
@@ -379,19 +402,24 @@ def preview_revert_options(
         clients=(preferred_client, ws, sp_ws),
     )
     live_config = _as_serialized_space_config(live_snapshot) or {}
-    diff = _benchmark_restore_diff(live_config, baseline_config or {})
+    champion_diff = _benchmark_restore_diff(live_config, champion_config or {})
+    baseline_diff = _benchmark_restore_diff(live_config, baseline_config or {})
     return {
         "runId": run_id,
         "spaceId": space_id,
         "championAvailable": champion_config is not None,
         "baselineAvailable": baseline_config is not None,
+        "benchmarkChampionAvailable": champion_config is not None,
         "benchmarkBaselineAvailable": baseline_config is not None,
-        "benchmarkDiff": diff,
+        "benchmarkDiffs": {
+            "champion": champion_diff,
+            "baseline": baseline_diff,
+        },
     }
 
 
-def _benchmark_restore_diff(current: dict, baseline: dict) -> dict[str, int]:
-    """Summarize changes that restoring baseline benchmarks would perform."""
+def _benchmark_restore_diff(current: dict, target: dict) -> dict[str, int]:
+    """Summarize changes that restoring a benchmark snapshot would perform."""
     def _rows(config: dict) -> dict[str, dict]:
         node = config.get("benchmarks")
         questions = node.get("questions") if isinstance(node, dict) else []
@@ -404,19 +432,19 @@ def _benchmark_restore_diff(current: dict, baseline: dict) -> dict[str, int]:
         return result
 
     current_rows = _rows(current)
-    baseline_rows = _rows(baseline)
-    shared = set(current_rows) & set(baseline_rows)
+    target_rows = _rows(target)
+    shared = set(current_rows) & set(target_rows)
     changed = sum(
         1
         for key in shared
         if json.dumps(current_rows[key], sort_keys=True, separators=(",", ":"))
-        != json.dumps(baseline_rows[key], sort_keys=True, separators=(",", ":"))
+        != json.dumps(target_rows[key], sort_keys=True, separators=(",", ":"))
     )
     return {
         "currentCount": len(current_rows),
-        "baselineCount": len(baseline_rows),
-        "willAdd": len(set(baseline_rows) - set(current_rows)),
-        "willRemove": len(set(current_rows) - set(baseline_rows)),
+        "targetCount": len(target_rows),
+        "willAdd": len(set(target_rows) - set(current_rows)),
+        "willRemove": len(set(current_rows) - set(target_rows)),
         "willChange": changed,
     }
 

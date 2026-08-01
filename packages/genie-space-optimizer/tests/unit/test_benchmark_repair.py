@@ -30,6 +30,9 @@ from genie_space_optimizer.optimization.benchmark_repair import (
     require_minimum_valid_benchmarks,
     run_bounded_benchmark_repair,
 )
+from genie_space_optimizer.optimization.benchmark_quality import (
+    build_actionable_warning_repair,
+)
 
 
 def _q(qid: str, valid: bool) -> dict:
@@ -135,6 +138,140 @@ def test_two_sweeps_first_partial_then_clears_counts_one_try():
     assert {b["id"] for b in out.benchmarks} == {"ok", "x", "y"}
     assert len(out.sweeps) == 2
     assert [s["consumed_try"] for s in out.sweeps] == [True, False]
+
+
+def test_question_rewrite_can_trigger_follow_up_expected_sql_repair():
+    """A second actionable proposal discovered during re-review must run.
+
+    This reproduces the production cascade where QC first clarified the
+    question, then discovered that the expected SQL no longer represented the
+    clarified question.  The stable benchmark ID must not make the second
+    proposal look "already attempted".
+    """
+    benchmark = {
+        "id": "q1",
+        "question": "Show revenue",
+        "expected_sql": "SELECT gross_revenue FROM sales",
+    }
+    latest_results: dict[str, dict] = {}
+    repair_rounds: dict[str, int] = {}
+
+    def validate_fn(benchmarks):
+        valid: list[dict] = []
+        invalid: list[dict] = []
+        for candidate in benchmarks:
+            if candidate["question"] == "Show revenue":
+                result = {
+                    "question_id": candidate["id"],
+                    "disposition": "warning",
+                    "findings": [{
+                        "category": "question_quality",
+                        "code": "AMBIGUOUS_METRIC",
+                        "severity": "warning",
+                        "proposed_question": "Show net revenue",
+                    }],
+                }
+            elif candidate["expected_sql"] == "SELECT gross_revenue FROM sales":
+                result = {
+                    "question_id": candidate["id"],
+                    "disposition": "warning",
+                    "findings": [{
+                        "category": "question_sql_alignment",
+                        "code": "WRONG_METRIC",
+                        "severity": "warning",
+                        "proposed_sql": "SELECT net_revenue FROM sales",
+                    }],
+                }
+            else:
+                result = {
+                    "question_id": candidate["id"],
+                    "disposition": "passed",
+                    "findings": [],
+                }
+            latest_results[candidate["id"]] = result
+            repair, _change = build_actionable_warning_repair(candidate, result)
+            (invalid if repair is not None else valid).append(candidate)
+        return valid, invalid
+
+    def repair_fn(invalid, _valid):
+        repaired: list[dict] = []
+        for candidate in invalid:
+            repair, _change = build_actionable_warning_repair(
+                candidate,
+                latest_results[candidate["id"]],
+            )
+            assert repair is not None
+            repaired.append(repair)
+            repair_rounds[candidate["id"]] = (
+                repair_rounds.get(candidate["id"], 0) + 1
+            )
+        return repaired
+
+    out = run_bounded_benchmark_repair(
+        [benchmark],
+        validate_fn=validate_fn,
+        repair_fn=repair_fn,
+        max_tries=3,
+    )
+
+    assert out.tries_used == 1
+    assert len(out.sweeps) == 2
+    assert repair_rounds == {"q1": 2}
+    assert out.repaired_ids == ["q1"]
+    assert out.benchmarks == [{
+        "id": "q1",
+        "question": "Show net revenue",
+        "expected_sql": "SELECT net_revenue FROM sales",
+    }]
+    assert latest_results["q1"]["disposition"] == "passed"
+
+
+def test_repeated_actionable_warning_repairs_stop_at_retry_limit():
+    """Fresh proposals remain repairable but cannot exceed the loop budget."""
+    latest_results: dict[str, dict] = {}
+    repair_calls = 0
+
+    def validate_fn(benchmarks):
+        invalid: list[dict] = []
+        for candidate in benchmarks:
+            sql_version = int(candidate["expected_sql"].rsplit(" ", 1)[-1])
+            latest_results[candidate["id"]] = {
+                "question_id": candidate["id"],
+                "disposition": "warning",
+                "findings": [{
+                    "category": "question_sql_alignment",
+                    "code": "STILL_MISALIGNED",
+                    "severity": "warning",
+                    "proposed_sql": f"SELECT {sql_version + 1}",
+                }],
+            }
+            invalid.append(candidate)
+        return [], invalid
+
+    def repair_fn(invalid, _valid):
+        nonlocal repair_calls
+        repair_calls += 1
+        repaired: list[dict] = []
+        for candidate in invalid:
+            repair, _change = build_actionable_warning_repair(
+                candidate,
+                latest_results[candidate["id"]],
+            )
+            assert repair is not None
+            repaired.append(repair)
+        return repaired
+
+    with pytest.raises(BenchmarkUnrepairableError) as exc_info:
+        run_bounded_benchmark_repair(
+            [{"id": "q1", "question": "Show metric", "expected_sql": "SELECT 0"}],
+            validate_fn=validate_fn,
+            repair_fn=repair_fn,
+            max_tries=3,
+        )
+
+    assert repair_calls == 3
+    assert exc_info.value.tries_used == 3
+    assert exc_info.value.still_invalid[0]["expected_sql"] == "SELECT 3"
 
 
 def test_prune_as_repair_drops_unfixable_and_succeeds():

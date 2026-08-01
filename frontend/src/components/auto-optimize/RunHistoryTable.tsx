@@ -29,12 +29,14 @@ import {
 } from "@/components/ui/alert-dialog"
 import {
   championAccuracyText,
+  defaultRevertTargets,
   hasActiveOptimizationRun,
   hasRevertibleChampion,
   humanizeTerminalReason,
 } from "@/components/auto-optimize/runHistory"
 import type {
   CurrentVersionResponse,
+  GSORevertBenchmarkDiff,
   GSORevertBenchmarkTarget,
   GSORevertConfigTarget,
   GSORevertOptions,
@@ -265,7 +267,7 @@ export function RevertOptionsButton({ run, disabled, onReverted }: RevertOptions
   const [configTarget, setConfigTarget] = useState<GSORevertConfigTarget>(
     hasRevertibleChampion(run) ? "champion" : "baseline",
   )
-  const [benchmarkTarget, setBenchmarkTarget] = useState<GSORevertBenchmarkTarget>("current")
+  const [benchmarkTarget, setBenchmarkTarget] = useState<GSORevertBenchmarkTarget>("champion")
 
   function showOptions() {
     if (disabled) return
@@ -273,11 +275,12 @@ export function RevertOptionsButton({ run, disabled, onReverted }: RevertOptions
     setLoading(true)
     setError(null)
     setOptions(null)
-    setBenchmarkTarget("current")
     getAutoOptimizeRevertOptions(run.run_id)
       .then((preview) => {
         setOptions(preview)
-        setConfigTarget(preview.championAvailable ? "champion" : "baseline")
+        const defaults = defaultRevertTargets(preview)
+        setConfigTarget(defaults.configTarget)
+        setBenchmarkTarget(defaults.benchmarkTarget)
       })
       .catch((e) => {
         setError(e instanceof Error ? e.message : "Failed to load revert options.")
@@ -310,7 +313,11 @@ export function RevertOptionsButton({ run, disabled, onReverted }: RevertOptions
 
   const selectionAvailable = options != null
     && (configTarget === "champion" ? options.championAvailable : options.baselineAvailable)
-    && (benchmarkTarget === "current" || options.benchmarkBaselineAvailable)
+    && (
+      benchmarkTarget === "current"
+      || (benchmarkTarget === "champion" && options.benchmarkChampionAvailable)
+      || (benchmarkTarget === "baseline" && options.benchmarkBaselineAvailable)
+    )
 
   if (success) {
     return (
@@ -371,6 +378,14 @@ export function RevertOptionsButton({ run, disabled, onReverted }: RevertOptions
                 <legend className="text-sm font-semibold text-primary">Benchmarks</legend>
                 <RadioOption
                   name={`benchmark-target-${run.run_id}`}
+                  checked={benchmarkTarget === "champion"}
+                  disabled={!options.benchmarkChampionAvailable}
+                  onChange={() => setBenchmarkTarget("champion")}
+                  label="Champion iteration"
+                  detail={benchmarkDiffText(options.benchmarkDiffs.champion, "champion")}
+                />
+                <RadioOption
+                  name={`benchmark-target-${run.run_id}`}
                   checked={benchmarkTarget === "current"}
                   onChange={() => setBenchmarkTarget("current")}
                   label="Preserve current benchmarks"
@@ -382,13 +397,17 @@ export function RevertOptionsButton({ run, disabled, onReverted }: RevertOptions
                   disabled={!options.benchmarkBaselineAvailable}
                   onChange={() => setBenchmarkTarget("baseline")}
                   label="Restore pre-run baseline"
-                  detail={benchmarkDiffText(options)}
+                  detail={benchmarkDiffText(options.benchmarkDiffs.baseline, "baseline")}
                 />
               </fieldset>
 
               <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-primary">
                 The live agent config will be replaced with the selected {configTarget} state
-                {benchmarkTarget === "current" ? ", while current benchmarks are preserved." : ", including pre-run baseline benchmarks."}
+                {benchmarkTarget === "current"
+                  ? ", while current benchmarks are preserved."
+                  : benchmarkTarget === "champion"
+                    ? ", including the champion iteration's benchmarks."
+                    : ", including pre-run baseline benchmarks."}
               </div>
             </div>
           ) : null}
@@ -448,12 +467,14 @@ function RadioOption({
   )
 }
 
-function benchmarkDiffText(options: GSORevertOptions): string {
-  const diff = options.benchmarkDiff
+function benchmarkDiffText(
+  diff: GSORevertBenchmarkDiff,
+  targetLabel: "champion" | "baseline",
+): string {
   if (diff.willAdd === 0 && diff.willRemove === 0 && diff.willChange === 0) {
-    return `Baseline matches the current ${diff.currentCount} benchmarks.`
+    return `The ${targetLabel} matches the current ${diff.currentCount} benchmarks.`
   }
-  return `Restore ${diff.baselineCount} baseline benchmarks: add ${diff.willAdd}, remove ${diff.willRemove}, and update ${diff.willChange}.`
+  return `Restore ${diff.targetCount} ${targetLabel} benchmarks: add ${diff.willAdd}, remove ${diff.willRemove}, and update ${diff.willChange}.`
 }
 
 // ---------------------------------------------------------------------------

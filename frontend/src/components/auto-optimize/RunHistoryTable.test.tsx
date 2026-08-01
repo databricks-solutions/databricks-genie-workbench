@@ -18,7 +18,11 @@ import {
   RevertOptionsButton,
   RunMetadataCell,
 } from "./RunHistoryTable"
-import { hasActiveOptimizationRun, hasRevertibleChampion } from "./runHistory"
+import {
+  defaultRevertTargets,
+  hasActiveOptimizationRun,
+  hasRevertibleChampion,
+} from "./runHistory"
 
 function run(overrides: Partial<GSORunSummary>): GSORunSummary {
   return {
@@ -36,6 +40,21 @@ function run(overrides: Partial<GSORunSummary>): GSORunSummary {
 }
 
 describe("RunHistoryTable revert safety", () => {
+  it("defaults a history restore to the champion config and its benchmarks", () => {
+    expect(defaultRevertTargets({
+      runId: "run-1",
+      spaceId: "space-1",
+      championAvailable: true,
+      baselineAvailable: true,
+      benchmarkChampionAvailable: true,
+      benchmarkBaselineAvailable: true,
+      benchmarkDiffs: {
+        champion: { currentCount: 12, targetCount: 10, willAdd: 0, willRemove: 2, willChange: 0 },
+        baseline: { currentCount: 12, targetCount: 8, willAdd: 0, willRemove: 4, willChange: 0 },
+      },
+    })).toEqual({ configTarget: "champion", benchmarkTarget: "champion" })
+  })
+
   it("treats any active run for the agent as a global history lock", () => {
     expect(hasActiveOptimizationRun([
       run({ run_id: "old", status: "CONVERGED" }),

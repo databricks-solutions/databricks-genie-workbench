@@ -450,7 +450,12 @@ _initial_benchmarks_by_id = {
     for benchmark in _benchmarks
     if default_id_of(benchmark)
 }
-_warning_repair_attempted_ids: set[str] = set()
+# Count semantic repair rounds by stable benchmark identity.  A benchmark may
+# need more than one coherent repair: for example, rewriting an ambiguous
+# question can expose a second-pass expected-SQL correction.  Do not use this
+# bookkeeping to suppress re-review repairs; the bounded repair loop owns the
+# retry limit.
+_warning_repair_rounds_by_id: dict[str, int] = {}
 
 
 def _quality_result_for_benchmark(benchmark: dict) -> dict:
@@ -700,8 +705,6 @@ def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
             if (
                 benchmark_policy == "repair_allowed"
                 and repair_candidate is not None
-                and _warning_repair_identity(benchmark)
-                not in _warning_repair_attempted_ids
             ):
                 invalid.append(benchmark)
             else:
@@ -740,7 +743,9 @@ def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
         warning_candidates.append(candidate)
         benchmark_id = _warning_repair_identity(benchmark)
         if benchmark_id:
-            _warning_repair_attempted_ids.add(benchmark_id)
+            _warning_repair_rounds_by_id[benchmark_id] = (
+                _warning_repair_rounds_by_id.get(benchmark_id, 0) + 1
+            )
 
     if not hard_invalid:
         return warning_candidates
@@ -807,7 +812,19 @@ else:
                 schema=schema,
             )
         _repair_tries_used = outcome.tries_used
-        _repaired_ids = outcome.repaired_ids
+        # ``BenchmarkRepairOutcome`` defines repaired as invalid -> eligible.
+        # The QC artifact's public ``repaired_ids`` is stricter: only report
+        # repaired benchmarks whose final semantic disposition is trusted.
+        # Warning rows may remain evaluation-eligible when no coherent repair
+        # is available, but must not be presented as successfully repaired.
+        _eligible_repaired_ids = set(outcome.repaired_ids)
+        _repaired_ids = [
+            default_id_of(benchmark)
+            for benchmark in _benchmarks
+            if default_id_of(benchmark) in _eligible_repaired_ids
+            and _quality_result_for_benchmark(benchmark).get("disposition")
+            == "passed"
+        ]
         _repair_sweeps = outcome.sweeps
         _final_validity = True
         require_minimum_valid_benchmarks(
@@ -894,7 +911,7 @@ if _repair_failed:
 _warning_repairs_applied: list[dict] = []
 for _benchmark in _benchmarks:
     _benchmark_id = default_id_of(_benchmark)
-    if not _benchmark_id or _benchmark_id not in _warning_repair_attempted_ids:
+    if not _benchmark_id or not _warning_repair_rounds_by_id.get(_benchmark_id):
         continue
     _before = _initial_benchmarks_by_id.get(_benchmark_id)
     if not _before:
@@ -1023,6 +1040,7 @@ _qc_payload: dict[str, Any] = {
     "repair_tries_used": _repair_tries_used,
     "repaired_ids": _repaired_ids,
     "repair_sweeps": _repair_sweeps,
+    "warning_repair_rounds": dict(_warning_repair_rounds_by_id),
     "warning_repair_count": len(_warning_repairs_applied),
     "warning_repairs_applied": _warning_repairs_applied,
     "benchmark_repair_max_tries": benchmark_repair_max_tries,

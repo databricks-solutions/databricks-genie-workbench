@@ -2088,12 +2088,12 @@ def test_revert_run_forwards_both_selected_scopes(
     monkeypatch.setattr(auto_optimize, "revert_optimization", _stub)
     resp = client.post(
         f"/api/auto-optimize/runs/{run_id}/revert"
-        "?config_target=baseline&benchmark_target=baseline"
+        "?config_target=baseline&benchmark_target=champion"
     )
 
     assert resp.status_code == 200
     assert captured["target"] == "baseline"
-    assert captured["benchmark_target"] == "baseline"
+    assert captured["benchmark_target"] == "champion"
 
 
 def test_revert_run_rejects_invalid_target(client, monkeypatch, mock_sp_ws, mock_user_ws) -> None:
@@ -2195,13 +2195,23 @@ def test_revert_options_returns_preview(
         "spaceId": "space-1",
         "championAvailable": True,
         "baselineAvailable": True,
+        "benchmarkChampionAvailable": True,
         "benchmarkBaselineAvailable": True,
-        "benchmarkDiff": {
-            "currentCount": 12,
-            "baselineCount": 10,
-            "willAdd": 1,
-            "willRemove": 3,
-            "willChange": 2,
+        "benchmarkDiffs": {
+            "champion": {
+                "currentCount": 12,
+                "targetCount": 11,
+                "willAdd": 2,
+                "willRemove": 3,
+                "willChange": 1,
+            },
+            "baseline": {
+                "currentCount": 12,
+                "targetCount": 10,
+                "willAdd": 1,
+                "willRemove": 3,
+                "willChange": 2,
+            },
         },
     }
     stub = MagicMock(return_value=preview)

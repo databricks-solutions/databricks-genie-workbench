@@ -2069,8 +2069,9 @@ async def revert_run(
     ),
     benchmark_target: str = Query(
         "current",
-        description="Whether to preserve 'current' live benchmarks or restore "
-        "the run's pre-run 'baseline' benchmarks.",
+        description="Whether to preserve 'current' live benchmarks, restore "
+        "the winning iteration's 'champion' benchmarks, or restore the run's "
+        "pre-run 'baseline' benchmarks.",
     ),
     # Deprecated alias retained for existing callers and bookmarked URLs.
     target: str | None = Query(None, include_in_schema=False),
@@ -2081,9 +2082,10 @@ async def revert_run(
     observed config (with legacy ``config_json`` fallback), while
     ``config_target=baseline`` uses the run's pre-run ``config_snapshot``.
     ``benchmark_target=current`` composes the live benchmark block into that
-    config; ``benchmark_target=baseline`` restores the benchmark block from the
-    same pre-run snapshot. Unlike ``/discard``, this leaves the historical run
-    status untouched. Active same-Space runs are refused.
+    config; ``benchmark_target=champion`` restores the benchmark block captured
+    with the winning iteration; and ``benchmark_target=baseline`` restores the
+    benchmark block from the pre-run snapshot. Unlike ``/discard``, this leaves
+    the historical run status untouched. Active same-Space runs are refused.
     """
     resolved_config_target = target or config_target
     if resolved_config_target not in ("champion", "baseline"):
@@ -2091,10 +2093,10 @@ async def revert_run(
             status_code=422,
             detail="config_target must be 'champion' or 'baseline'.",
         )
-    if benchmark_target not in ("current", "baseline"):
+    if benchmark_target not in ("current", "champion", "baseline"):
         raise HTTPException(
             status_code=422,
-            detail="benchmark_target must be 'current' or 'baseline'.",
+            detail="benchmark_target must be 'current', 'champion', or 'baseline'.",
         )
     ws = get_workspace_client()
     sp_ws = get_service_principal_client()
@@ -2124,7 +2126,7 @@ async def revert_run(
 
 @router.get("/runs/{run_id}/revert-options")
 async def get_revert_options(run_id: RunId):
-    """Preview available revert targets and the baseline benchmark diff."""
+    """Preview available revert targets and benchmark snapshot diffs."""
     ws = get_workspace_client()
     sp_ws = get_service_principal_client()
     config = _build_gso_config()

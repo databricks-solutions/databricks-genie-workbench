@@ -388,20 +388,26 @@ export interface CurrentVersionResponse {
 }
 
 export type GSORevertConfigTarget = "champion" | "baseline"
-export type GSORevertBenchmarkTarget = "current" | "baseline"
+export type GSORevertBenchmarkTarget = "current" | "champion" | "baseline"
+
+export interface GSORevertBenchmarkDiff {
+  currentCount: number
+  targetCount: number
+  willAdd: number
+  willRemove: number
+  willChange: number
+}
 
 export interface GSORevertOptions {
   runId: string
   spaceId: string
   championAvailable: boolean
   baselineAvailable: boolean
+  benchmarkChampionAvailable: boolean
   benchmarkBaselineAvailable: boolean
-  benchmarkDiff: {
-    currentCount: number
-    baselineCount: number
-    willAdd: number
-    willRemove: number
-    willChange: number
+  benchmarkDiffs: {
+    champion: GSORevertBenchmarkDiff
+    baseline: GSORevertBenchmarkDiff
   }
 }
 
